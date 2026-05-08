@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 
 const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'media'
+const LOG_RETENTION_DAYS = 30
 
 function toBoolean(value, fallback = true) {
   if (value === undefined || value === null || value === '') return fallback
@@ -12,6 +13,80 @@ function toBoolean(value, fallback = true) {
 function toNumber(value, fallback = 0) {
   const number = Number(value)
   return Number.isFinite(number) ? number : fallback
+}
+
+function getActor(req) {
+  return (
+    req.get('x-admin-actor') ||
+    req.get('x-admin-name') ||
+    req.body?.admin_actor ||
+    req.query?.admin_actor ||
+    'Admin'
+  )
+}
+
+function cleanupDateIso() {
+  const date = new Date()
+  date.setDate(date.getDate() - LOG_RETENTION_DAYS)
+  return date.toISOString()
+}
+
+async function cleanupOldLogs() {
+  try {
+    await supabase
+      .from('admin_activity_logs')
+      .delete()
+      .lt('created_at', cleanupDateIso())
+  } catch (error) {
+    console.warn('CLEANUP OLD LOGS WARNING:', error.message)
+  }
+}
+
+async function createActivityLog({ action, actor, slide, details = {} }) {
+  try {
+    await cleanupOldLogs()
+
+    await supabase.from('admin_activity_logs').insert({
+      entity: 'slides',
+      action,
+      actor: actor || 'Admin',
+      slide_id: slide?.id || null,
+      order_index: slide?.order_index ?? null,
+      title: slide?.title || '',
+      details,
+    })
+  } catch (error) {
+    console.warn('CREATE ACTIVITY LOG WARNING:', error.message)
+  }
+}
+
+function extractStoragePathFromPublicUrl(publicUrl) {
+  if (!publicUrl) return null
+
+  const marker = `/storage/v1/object/public/${BUCKET}/`
+  const markerIndex = publicUrl.indexOf(marker)
+
+  if (markerIndex === -1) return null
+
+  const encodedPath = publicUrl.slice(markerIndex + marker.length)
+
+  try {
+    return decodeURIComponent(encodedPath)
+  } catch {
+    return encodedPath
+  }
+}
+
+async function deleteImageFromStorage(publicUrl) {
+  try {
+    const storagePath = extractStoragePathFromPublicUrl(publicUrl)
+    if (!storagePath) return
+
+    const { error } = await supabase.storage.from(BUCKET).remove([storagePath])
+    if (error) throw error
+  } catch (error) {
+    console.warn('DELETE IMAGE WARNING:', error.message)
+  }
 }
 
 async function uploadImage(file) {
@@ -42,19 +117,32 @@ async function uploadImage(file) {
 export async function getSlides(req, res) {
   try {
     const sectionKey = req.query.section_key || 'home_top_slider'
+    const includeInactive =
+      req.query.include_inactive === 'true' ||
+      req.query.includeInactive === 'true'
 
-    const { data, error } = await supabase
+    let query = supabase
       .from('slides')
       .select('*')
       .eq('section_key', sectionKey)
-      .eq('is_active', true)
+
+    // Frontend normal API: show ACTIVE slides only.
+    // AdminDashboard API with include_inactive=true: show ACTIVE + INACTIVE slides.
+    if (!includeInactive) {
+      query = query.eq('is_active', true)
+    }
+
+    const { data, error } = await query
       .order('order_index', { ascending: true })
+      .order('updated_at', { ascending: false, nullsFirst: false })
+      .order('created_at', { ascending: false })
 
     if (error) throw error
 
     res.status(200).json({
       ok: true,
-      slides: data,
+      include_inactive: includeInactive,
+      slides: data || [],
     })
   } catch (error) {
     console.error('GET SLIDES ERROR:', error)
@@ -68,6 +156,8 @@ export async function getSlides(req, res) {
 
 export async function createSlide(req, res) {
   try {
+    const actor = getActor(req)
+
     const {
       section_key = 'home_top_slider',
       title = '',
@@ -102,6 +192,17 @@ export async function createSlide(req, res) {
 
     if (error) throw error
 
+    await createActivityLog({
+      action: 'CREATE',
+      actor,
+      slide: data,
+      details: {
+        message: `Created Slide ${data.order_index}`,
+        link_url: data.link_url,
+        is_active: data.is_active,
+      },
+    })
+
     res.status(201).json({
       ok: true,
       slide: data,
@@ -118,7 +219,16 @@ export async function createSlide(req, res) {
 
 export async function updateSlide(req, res) {
   try {
+    const actor = getActor(req)
     const { id } = req.params
+
+    const { data: oldSlide, error: oldSlideError } = await supabase
+      .from('slides')
+      .select('*')
+      .eq('id', id)
+      .single()
+
+    if (oldSlideError) throw oldSlideError
 
     const updatePayload = {
       updated_at: new Date().toISOString(),
@@ -153,6 +263,27 @@ export async function updateSlide(req, res) {
 
     if (error) throw error
 
+    const changedFields = Object.keys(updatePayload).filter((field) => field !== 'updated_at')
+    const isVisibilityOnly = changedFields.length === 1 && changedFields[0] === 'is_active'
+
+    await createActivityLog({
+      action: isVisibilityOnly ? 'VISIBILITY' : 'UPDATE',
+      actor,
+      slide: data,
+      details: {
+        message: isVisibilityOnly
+          ? `Changed Slide ${data.order_index} visibility to ${data.is_active ? 'ACTIVE' : 'INACTIVE'}`
+          : `Updated Slide ${data.order_index}`,
+        changed_fields: changedFields,
+        previous_is_active: oldSlide?.is_active,
+        is_active: data.is_active,
+        previous_title: oldSlide?.title,
+        title: data.title,
+        link_url: data.link_url,
+        image_replaced: Boolean(req.file),
+      },
+    })
+
     res.status(200).json({
       ok: true,
       slide: data,
@@ -169,24 +300,41 @@ export async function updateSlide(req, res) {
 
 export async function deleteSlide(req, res) {
   try {
+    const actor = getActor(req)
     const { id } = req.params
 
-    // Soft delete keeps old data safer while testing realtime.
-    const { data, error } = await supabase
+    const { data: existingSlide, error: existingError } = await supabase
       .from('slides')
-      .update({
-        is_active: false,
-        updated_at: new Date().toISOString(),
-      })
+      .select('*')
       .eq('id', id)
-      .select()
       .single()
+
+    if (existingError) throw existingError
+
+    const { error } = await supabase
+      .from('slides')
+      .delete()
+      .eq('id', id)
 
     if (error) throw error
 
+    await deleteImageFromStorage(existingSlide?.image_url)
+
+    await createActivityLog({
+      action: 'DELETE',
+      actor,
+      slide: existingSlide,
+      details: {
+        message: `Deleted Slide ${existingSlide?.order_index}`,
+        deleted: true,
+        title: existingSlide?.title || '',
+        link_url: existingSlide?.link_url || '',
+      },
+    })
+
     res.status(200).json({
       ok: true,
-      slide: data,
+      slide: existingSlide,
     })
   } catch (error) {
     console.error('DELETE SLIDE ERROR:', error)
@@ -194,6 +342,60 @@ export async function deleteSlide(req, res) {
     res.status(500).json({
       ok: false,
       message: 'Failed to delete slide',
+    })
+  }
+}
+
+export async function getSlideActivityLogs(req, res) {
+  try {
+    await cleanupOldLogs()
+
+    const page = Math.max(toNumber(req.query.page, 1), 1)
+    const limit = Math.min(Math.max(toNumber(req.query.limit, 20), 1), 50)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    const { data, error, count } = await supabase
+      .from('admin_activity_logs')
+      .select('*', { count: 'exact' })
+      .eq('entity', 'slides')
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (error) throw error
+
+    const records = (data || []).map((record) => ({
+      id: record.id,
+      action: record.action,
+      actor: record.actor || 'Admin',
+      order_index: record.order_index,
+      slide_title: record.title || '',
+      details:
+        typeof record.details === 'string'
+          ? record.details
+          : record.details?.message || JSON.stringify(record.details || {}),
+      created_at: record.created_at,
+    }))
+
+    const total = count || 0
+    const totalPages = Math.max(Math.ceil(total / limit), 1)
+
+    res.status(200).json({
+      ok: true,
+      records,
+      logs: records,
+      page,
+      limit,
+      total,
+      total_pages: totalPages,
+      totalPages,
+    })
+  } catch (error) {
+    console.error('GET SLIDE ACTIVITY LOGS ERROR:', error)
+
+    res.status(500).json({
+      ok: false,
+      message: 'Failed to fetch slide records',
     })
   }
 }
