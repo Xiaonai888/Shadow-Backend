@@ -1,7 +1,13 @@
 import jwt from 'jsonwebtoken'
 
 const MAX_LOGIN_ATTEMPTS = 5
-const LOCK_TIME_MS = 15 * 60 * 1000 // 15 minutes
+
+const LOCK_DURATIONS = [
+  15 * 60 * 1000, // first lock: 15 minutes
+  60 * 60 * 1000, // second lock: 1 hour
+  6 * 60 * 60 * 1000, // third lock: 6 hours
+  24 * 60 * 60 * 1000, // fourth lock and after: 24 hours
+]
 
 // Simple in-memory lock system.
 // Good for basic protection on Render single service.
@@ -17,17 +23,34 @@ function getClientKey(req, email) {
   return `${ip}:${String(email || '').toLowerCase().trim()}`
 }
 
+function getLockDuration(lockLevel) {
+  const index = Math.min(lockLevel - 1, LOCK_DURATIONS.length - 1)
+  return LOCK_DURATIONS[index]
+}
+
+function formatRemainingTime(ms) {
+  const totalMinutes = Math.ceil(ms / 60000)
+
+  if (totalMinutes >= 1440) {
+    const days = Math.ceil(totalMinutes / 1440)
+    return `${days} day${days > 1 ? 's' : ''}`
+  }
+
+  if (totalMinutes >= 60) {
+    const hours = Math.ceil(totalMinutes / 60)
+    return `${hours} hour${hours > 1 ? 's' : ''}`
+  }
+
+  return `${totalMinutes} minute${totalMinutes > 1 ? 's' : ''}`
+}
+
 function getAttemptState(key) {
   const now = Date.now()
-  const current = loginAttempts.get(key)
 
-  if (!current) {
-    return {
-      count: 0,
-      lockedUntil: 0,
-      isLocked: false,
-      remainingMs: 0,
-    }
+  const current = loginAttempts.get(key) || {
+    count: 0,
+    lockLevel: 0,
+    lockedUntil: 0,
   }
 
   const remainingMs = Math.max(0, current.lockedUntil - now)
@@ -40,18 +63,9 @@ function getAttemptState(key) {
     }
   }
 
-  if (current.lockedUntil && current.lockedUntil <= now) {
-    loginAttempts.delete(key)
-    return {
-      count: 0,
-      lockedUntil: 0,
-      isLocked: false,
-      remainingMs: 0,
-    }
-  }
-
   return {
     ...current,
+    lockedUntil: 0,
     isLocked: false,
     remainingMs: 0,
   }
@@ -59,28 +73,31 @@ function getAttemptState(key) {
 
 function recordFailedLogin(key) {
   const now = Date.now()
-  const current = loginAttempts.get(key) || {
-    count: 0,
-    lockedUntil: 0,
-  }
+  const current = getAttemptState(key)
 
   const nextCount = current.count + 1
 
   if (nextCount >= MAX_LOGIN_ATTEMPTS) {
+    const nextLockLevel = current.lockLevel + 1
+    const lockDuration = getLockDuration(nextLockLevel)
+
     loginAttempts.set(key, {
-      count: nextCount,
-      lockedUntil: now + LOCK_TIME_MS,
+      count: 0,
+      lockLevel: nextLockLevel,
+      lockedUntil: now + lockDuration,
     })
 
     return {
       locked: true,
-      remainingMs: LOCK_TIME_MS,
+      remainingMs: lockDuration,
       attemptsLeft: 0,
+      lockLevel: nextLockLevel,
     }
   }
 
   loginAttempts.set(key, {
     count: nextCount,
+    lockLevel: current.lockLevel,
     lockedUntil: 0,
   })
 
@@ -88,16 +105,12 @@ function recordFailedLogin(key) {
     locked: false,
     remainingMs: 0,
     attemptsLeft: MAX_LOGIN_ATTEMPTS - nextCount,
+    lockLevel: current.lockLevel,
   }
 }
 
 function clearFailedLogin(key) {
   loginAttempts.delete(key)
-}
-
-function formatRemainingTime(ms) {
-  const minutes = Math.ceil(ms / 60000)
-  return `${minutes} minute${minutes > 1 ? 's' : ''}`
 }
 
 function createToken() {
@@ -133,6 +146,7 @@ export async function adminLogin(req, res) {
         message: `Too many failed login attempts. Please try again in ${formatRemainingTime(attemptState.remainingMs)}.`,
         locked: true,
         remainingMs: attemptState.remainingMs,
+        lockLevel: attemptState.lockLevel,
       })
     }
 
@@ -149,6 +163,7 @@ export async function adminLogin(req, res) {
           message: `Too many failed login attempts. Please try again in ${formatRemainingTime(failed.remainingMs)}.`,
           locked: true,
           remainingMs: failed.remainingMs,
+          lockLevel: failed.lockLevel,
         })
       }
 
