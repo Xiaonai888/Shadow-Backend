@@ -1,5 +1,6 @@
 import express from 'express'
 import multer from 'multer'
+import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
   createSlide,
   deleteSlide,
@@ -17,8 +18,8 @@ const upload = multer({
 })
 
 router.get('/', getSlides)
-router.post('/', upload.single('image'), createSlide)
-router.put('/:id', upload.single('image'), updateSlide)
-router.delete('/:id', deleteSlide)
+router.post('/', requireAdmin, upload.single('image'), createSlide)
+router.put('/:id', requireAdmin, upload.single('image'), updateSlide)
+router.delete('/:id', requireAdmin, deleteSlide)
 
 export default router
