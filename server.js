@@ -4,6 +4,7 @@ import dotenv from 'dotenv'
 
 import healthRoutes from './src/routes/health.routes.js'
 import slidesRoutes from './src/routes/slides.routes.js'
+import authRoutes from './src/routes/auth.routes.js'
 
 dotenv.config()
 
@@ -43,6 +44,7 @@ app.get('/', (req, res) => {
 })
 
 app.use('/health', healthRoutes)
+app.use('/api/auth', authRoutes)
 app.use('/api/slides', slidesRoutes)
 
 app.use((req, res) => {
