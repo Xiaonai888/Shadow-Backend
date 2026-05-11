@@ -1,7 +1,7 @@
 import { supabase } from '../config/supabase.js'
 
 const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'media'
-const LOG_RETENTION_DAYS = 30
+const LOG_RETENTION_DAYS = 90
 
 function toBoolean(value, fallback = true) {
   if (value === undefined || value === null || value === '') return fallback
