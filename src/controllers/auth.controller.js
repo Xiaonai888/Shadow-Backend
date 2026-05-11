@@ -3,10 +3,10 @@ import jwt from 'jsonwebtoken'
 const MAX_LOGIN_ATTEMPTS = 5
 
 const LOCK_DURATIONS = [
-  3 * 1000,
-  7 * 1000,
-  15 * 1000,
-  15 * 1000,
+  15 * 60 * 1000,
+  60 * 60 * 1000,
+  6 * 60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
 ]
 
 const loginAttempts = new Map()
