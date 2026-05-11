@@ -3,12 +3,15 @@ import jwt from 'jsonwebtoken'
 const MAX_LOGIN_ATTEMPTS = 5
 
 const LOCK_DURATIONS = [
-  3 * 1000,
-  7 * 1000,
-  15 * 1000,
-  15 * 1000,
+  15 * 60 * 1000, // first lock: 15 minutes
+  60 * 60 * 1000, // second lock: 1 hour
+  6 * 60 * 60 * 1000, // third lock: 6 hours
+  24 * 60 * 60 * 1000, // fourth lock and after: 24 hours
 ]
 
+// Simple in-memory lock system.
+// Good for basic protection on Render single service.
+// If the server restarts, this lock resets.
 const loginAttempts = new Map()
 
 function getClientKey(req, email) {
@@ -26,12 +29,6 @@ function getLockDuration(lockLevel) {
 }
 
 function formatRemainingTime(ms) {
-  const totalSeconds = Math.ceil(ms / 1000)
-
-  if (totalSeconds < 60) {
-    return `${totalSeconds} second${totalSeconds > 1 ? 's' : ''}`
-  }
-
   const totalMinutes = Math.ceil(ms / 60000)
 
   if (totalMinutes >= 1440) {
