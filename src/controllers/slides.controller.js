@@ -17,6 +17,8 @@ function toNumber(value, fallback = 0) {
 
 function getActor(req) {
   return (
+    req.admin?.actor ||
+    req.admin?.name ||
     req.get('x-admin-actor') ||
     req.get('x-admin-name') ||
     req.body?.admin_actor ||
@@ -42,18 +44,46 @@ async function cleanupOldLogs() {
   }
 }
 
-async function createActivityLog({ action, actor, slide, details = {} }) {
+function getChangedFields(oldSlide, newSlide, imageReplaced = false) {
+  const changed = []
+
+  if ((oldSlide?.title || '') !== (newSlide?.title || '')) changed.push('title')
+  if ((oldSlide?.subtitle || '') !== (newSlide?.subtitle || '')) changed.push('subtitle')
+  if ((oldSlide?.link_url || '') !== (newSlide?.link_url || '')) changed.push('link')
+  if (Number(oldSlide?.order_index) !== Number(newSlide?.order_index)) changed.push('order')
+  if (Boolean(oldSlide?.is_active) !== Boolean(newSlide?.is_active)) changed.push('visibility')
+  if (imageReplaced) changed.push('image')
+
+  return changed
+}
+
+function makeUpdateMessage(slide, changedFields) {
+  const slideNumber = slide?.order_index ?? ''
+  const label = slideNumber !== '' ? `Slide ${slideNumber}` : 'slide'
+
+  if (changedFields.length === 0) {
+    return `Saved ${label} with no visible changes`
+  }
+
+  if (changedFields.length === 1 && changedFields[0] === 'visibility') {
+    return `Changed ${label} visibility to ${slide?.is_active ? 'ACTIVE' : 'INACTIVE'}`
+  }
+
+  return `Updated ${label}: ${changedFields.join(', ')}`
+}
+
+async function createActivityLog({ action, actor, slide, details = '' }) {
   try {
     await cleanupOldLogs()
 
     await supabase.from('admin_activity_logs').insert({
-      entity: 'slides',
       action,
-      actor: actor || 'Admin',
+      section_key: slide?.section_key || null,
       slide_id: slide?.id || null,
+      slide_title: slide?.title || '',
       order_index: slide?.order_index ?? null,
-      title: slide?.title || '',
-      details,
+      actor: actor || 'Admin',
+      details: typeof details === 'string' ? details : JSON.stringify(details),
     })
   } catch (error) {
     console.warn('CREATE ACTIVITY LOG WARNING:', error.message)
@@ -126,8 +156,6 @@ export async function getSlides(req, res) {
       .select('*')
       .eq('section_key', sectionKey)
 
-    // Frontend normal API: show ACTIVE slides only.
-    // AdminDashboard API with include_inactive=true: show ACTIVE + INACTIVE slides.
     if (!includeInactive) {
       query = query.eq('is_active', true)
     }
@@ -196,11 +224,7 @@ export async function createSlide(req, res) {
       action: 'CREATE',
       actor,
       slide: data,
-      details: {
-        message: `Created Slide ${data.order_index}`,
-        link_url: data.link_url,
-        is_active: data.is_active,
-      },
+      details: `Created Slide ${data.order_index}`,
     })
 
     res.status(201).json({
@@ -250,7 +274,9 @@ export async function updateSlide(req, res) {
       updatePayload.is_active = toBoolean(req.body.is_active)
     }
 
-    if (req.file) {
+    const imageReplaced = Boolean(req.file)
+
+    if (imageReplaced) {
       updatePayload.image_url = await uploadImage(req.file)
     }
 
@@ -263,25 +289,18 @@ export async function updateSlide(req, res) {
 
     if (error) throw error
 
-    const changedFields = Object.keys(updatePayload).filter((field) => field !== 'updated_at')
-    const isVisibilityOnly = changedFields.length === 1 && changedFields[0] === 'is_active'
+    if (imageReplaced && oldSlide?.image_url) {
+      await deleteImageFromStorage(oldSlide.image_url)
+    }
+
+    const changedFields = getChangedFields(oldSlide, data, imageReplaced)
+    const isVisibilityOnly = changedFields.length === 1 && changedFields[0] === 'visibility'
 
     await createActivityLog({
       action: isVisibilityOnly ? 'VISIBILITY' : 'UPDATE',
       actor,
       slide: data,
-      details: {
-        message: isVisibilityOnly
-          ? `Changed Slide ${data.order_index} visibility to ${data.is_active ? 'ACTIVE' : 'INACTIVE'}`
-          : `Updated Slide ${data.order_index}`,
-        changed_fields: changedFields,
-        previous_is_active: oldSlide?.is_active,
-        is_active: data.is_active,
-        previous_title: oldSlide?.title,
-        title: data.title,
-        link_url: data.link_url,
-        image_replaced: Boolean(req.file),
-      },
+      details: makeUpdateMessage(data, changedFields),
     })
 
     res.status(200).json({
@@ -324,12 +343,7 @@ export async function deleteSlide(req, res) {
       action: 'DELETE',
       actor,
       slide: existingSlide,
-      details: {
-        message: `Deleted Slide ${existingSlide?.order_index}`,
-        deleted: true,
-        title: existingSlide?.title || '',
-        link_url: existingSlide?.link_url || '',
-      },
+      details: `Deleted Slide ${existingSlide?.order_index}`,
     })
 
     res.status(200).json({
@@ -352,13 +366,19 @@ export async function getSlideActivityLogs(req, res) {
 
     const page = Math.max(toNumber(req.query.page, 1), 1)
     const limit = Math.min(Math.max(toNumber(req.query.limit, 20), 1), 50)
+    const sectionKey = req.query.section_key || req.query.sectionKey || ''
     const from = (page - 1) * limit
     const to = from + limit - 1
 
-    const { data, error, count } = await supabase
+    let query = supabase
       .from('admin_activity_logs')
       .select('*', { count: 'exact' })
-      .eq('entity', 'slides')
+
+    if (sectionKey) {
+      query = query.eq('section_key', sectionKey)
+    }
+
+    const { data, error, count } = await query
       .order('created_at', { ascending: false })
       .range(from, to)
 
@@ -369,11 +389,8 @@ export async function getSlideActivityLogs(req, res) {
       action: record.action,
       actor: record.actor || 'Admin',
       order_index: record.order_index,
-      slide_title: record.title || '',
-      details:
-        typeof record.details === 'string'
-          ? record.details
-          : record.details?.message || JSON.stringify(record.details || {}),
+      slide_title: record.slide_title || '',
+      details: record.details || '',
       created_at: record.created_at,
     }))
 
