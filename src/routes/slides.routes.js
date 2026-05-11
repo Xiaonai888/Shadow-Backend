@@ -4,6 +4,7 @@ import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
   createSlide,
   deleteSlide,
+  getSlideActivityLogs,
   getSlides,
   updateSlide,
 } from '../controllers/slides.controller.js'
@@ -18,6 +19,7 @@ const upload = multer({
 })
 
 router.get('/', getSlides)
+router.get('/records', requireAdmin, getSlideActivityLogs)
 router.post('/', requireAdmin, upload.single('image'), createSlide)
 router.put('/:id', requireAdmin, upload.single('image'), updateSlide)
 router.delete('/:id', requireAdmin, deleteSlide)
