@@ -205,3 +205,69 @@ export async function checkAdmin(req, res) {
     admin: req.admin || null,
   })
 }
+
+export async function changeAdminPassword(req, res) {
+  try {
+    const {
+      currentPassword = '',
+      newPassword = '',
+      confirmPassword = '',
+    } = req.body
+
+    if (!process.env.ADMIN_PASSWORD) {
+      return res.status(500).json({
+        ok: false,
+        message: 'ADMIN_PASSWORD environment variable is missing',
+      })
+    }
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Current password, new password, and confirm password are required',
+      })
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({
+        ok: false,
+        message: 'New password and confirm password do not match',
+      })
+    }
+
+    if (String(newPassword).length < 8) {
+      return res.status(400).json({
+        ok: false,
+        message: 'New password must be at least 8 characters',
+      })
+    }
+
+    if (currentPassword !== process.env.ADMIN_PASSWORD) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Current password is incorrect',
+      })
+    }
+
+    if (newPassword === currentPassword) {
+      return res.status(400).json({
+        ok: false,
+        message: 'New password must be different from current password',
+      })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message:
+        'Password validation passed. Update ADMIN_PASSWORD in Render environment variables, then redeploy backend.',
+    })
+  } catch (error) {
+    console.error('CHANGE ADMIN PASSWORD ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to change admin password',
+    })
+  }
+}
+
