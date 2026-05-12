@@ -1,8 +1,32 @@
 import { supabase } from '../config/supabase.js'
 
+function toBoolean(value, fallback = true) {
+  if (value === undefined || value === null || value === '') return fallback
+  if (value === true || value === 'true') return true
+  if (value === false || value === 'false') return false
+  return fallback
+}
+
 function toNumber(value, fallback = 0) {
   const number = Number(value)
   return Number.isFinite(number) ? number : fallback
+}
+
+function toGenres(value) {
+  if (Array.isArray(value)) return value
+  if (!value) return []
+  return String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function makeSlug(title) {
+  return String(title || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '')
 }
 
 function normalizeBook(book) {
@@ -41,6 +65,24 @@ function normalizeEpisode(episode) {
   }
 }
 
+async function refreshBookEpisodeCount(bookId) {
+  const { count, error } = await supabase
+    .from('episodes')
+    .select('id', { count: 'exact', head: true })
+    .eq('book_id', bookId)
+    .eq('is_published', true)
+
+  if (error) throw error
+
+  await supabase
+    .from('books')
+    .update({
+      total_episodes: count || 0,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', bookId)
+}
+
 export async function getBooks(req, res) {
   try {
     const page = Math.max(toNumber(req.query.page, 1), 1)
@@ -48,25 +90,16 @@ export async function getBooks(req, res) {
     const search = String(req.query.search || '').trim()
     const genre = String(req.query.genre || '').trim()
     const status = String(req.query.status || '').trim()
+    const includeInactive = req.query.include_inactive === 'true'
     const from = (page - 1) * limit
     const to = from + limit - 1
 
-    let query = supabase
-      .from('books')
-      .select('*', { count: 'exact' })
-      .eq('is_active', true)
+    let query = supabase.from('books').select('*', { count: 'exact' })
 
-    if (search) {
-      query = query.ilike('title', `%${search}%`)
-    }
-
-    if (genre) {
-      query = query.contains('genres', [genre])
-    }
-
-    if (status) {
-      query = query.eq('status', status)
-    }
+    if (!includeInactive) query = query.eq('is_active', true)
+    if (search) query = query.ilike('title', `%${search}%`)
+    if (genre) query = query.contains('genres', [genre])
+    if (status) query = query.eq('status', status)
 
     const { data, error, count } = await query
       .order('updated_at', { ascending: false, nullsFirst: false })
@@ -85,12 +118,7 @@ export async function getBooks(req, res) {
     })
   } catch (error) {
     console.error('GET BOOKS ERROR:', error)
-
-    res.status(500).json({
-  ok: false,
-  message: 'Failed to fetch books',
-  error: error.message,
-})
+    res.status(500).json({ ok: false, message: 'Failed to fetch books', error: error.message })
   }
 }
 
@@ -102,27 +130,16 @@ export async function getBookById(req, res) {
       .from('books')
       .select('*')
       .eq('id', id)
-      .eq('is_active', true)
       .single()
 
-    if (error) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Book not found',
-      })
+    if (error || !data) {
+      return res.status(404).json({ ok: false, message: 'Book not found' })
     }
 
-    res.status(200).json({
-      ok: true,
-      book: normalizeBook(data),
-    })
+    res.status(200).json({ ok: true, book: normalizeBook(data) })
   } catch (error) {
     console.error('GET BOOK BY ID ERROR:', error)
-
-    res.status(500).json({
-      ok: false,
-      message: 'Failed to fetch book',
-    })
+    res.status(500).json({ ok: false, message: 'Failed to fetch book', error: error.message })
   }
 }
 
@@ -153,11 +170,7 @@ export async function getBookEpisodes(req, res) {
     })
   } catch (error) {
     console.error('GET BOOK EPISODES ERROR:', error)
-
-    res.status(500).json({
-      ok: false,
-      message: 'Failed to fetch episodes',
-    })
+    res.status(500).json({ ok: false, message: 'Failed to fetch episodes', error: error.message })
   }
 }
 
@@ -172,11 +185,8 @@ export async function getEpisodeById(req, res) {
       .eq('is_published', true)
       .single()
 
-    if (error) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Episode not found',
-      })
+    if (error || !data) {
+      return res.status(404).json({ ok: false, message: 'Episode not found' })
     }
 
     res.status(200).json({
@@ -186,10 +196,213 @@ export async function getEpisodeById(req, res) {
     })
   } catch (error) {
     console.error('GET EPISODE BY ID ERROR:', error)
+    res.status(500).json({ ok: false, message: 'Failed to fetch episode', error: error.message })
+  }
+}
 
-    res.status(500).json({
-      ok: false,
-      message: 'Failed to fetch episode',
-    })
+export async function createBook(req, res) {
+  try {
+    const {
+      title,
+      slug,
+      author_name = '',
+      cover_url = '',
+      description = '',
+      genres = [],
+      status = 'ongoing',
+      is_premium = false,
+      is_active = true,
+    } = req.body
+
+    if (!title) {
+      return res.status(400).json({ ok: false, message: 'Book title is required' })
+    }
+
+    const { data, error } = await supabase
+      .from('books')
+      .insert({
+        title,
+        slug: slug || makeSlug(title),
+        author_name,
+        cover_url,
+        description,
+        genres: toGenres(genres),
+        status,
+        is_premium: toBoolean(is_premium, false),
+        is_active: toBoolean(is_active, true),
+        updated_at: new Date().toISOString(),
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+
+    res.status(201).json({ ok: true, book: normalizeBook(data) })
+  } catch (error) {
+    console.error('CREATE BOOK ERROR:', error)
+    res.status(500).json({ ok: false, message: 'Failed to create book', error: error.message })
+  }
+}
+
+export async function updateBook(req, res) {
+  try {
+    const { id } = req.params
+    const updatePayload = { updated_at: new Date().toISOString() }
+
+    const allowedFields = ['title', 'slug', 'author_name', 'cover_url', 'description', 'status']
+
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) updatePayload[field] = req.body[field]
+    }
+
+    if (req.body.genres !== undefined) updatePayload.genres = toGenres(req.body.genres)
+    if (req.body.is_premium !== undefined) updatePayload.is_premium = toBoolean(req.body.is_premium, false)
+    if (req.body.is_active !== undefined) updatePayload.is_active = toBoolean(req.body.is_active, true)
+    if (req.body.title && !req.body.slug) updatePayload.slug = makeSlug(req.body.title)
+
+    const { data, error } = await supabase
+      .from('books')
+      .update(updatePayload)
+      .eq('id', id)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    res.status(200).json({ ok: true, book: normalizeBook(data) })
+  } catch (error) {
+    console.error('UPDATE BOOK ERROR:', error)
+    res.status(500).json({ ok: false, message: 'Failed to update book', error: error.message })
+  }
+}
+
+export async function deleteBook(req, res) {
+  try {
+    const { id } = req.params
+
+    const { data, error } = await supabase
+      .from('books')
+      .update({
+        is_active: false,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    res.status(200).json({ ok: true, book: normalizeBook(data) })
+  } catch (error) {
+    console.error('DELETE BOOK ERROR:', error)
+    res.status(500).json({ ok: false, message: 'Failed to delete book', error: error.message })
+  }
+}
+
+export async function createEpisode(req, res) {
+  try {
+    const { id: bookId } = req.params
+    const {
+      episode_number,
+      title,
+      content = '',
+      is_free = true,
+      is_published = true,
+    } = req.body
+
+    if (!episode_number || !title) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Episode number and title are required',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('episodes')
+      .insert({
+        book_id: bookId,
+        episode_number: toNumber(episode_number),
+        title,
+        content,
+        is_free: toBoolean(is_free, true),
+        is_published: toBoolean(is_published, true),
+        published_at: toBoolean(is_published, true) ? new Date().toISOString() : null,
+        updated_at: new Date().toISOString(),
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+
+    await refreshBookEpisodeCount(bookId)
+
+    res.status(201).json({ ok: true, episode: normalizeEpisode(data) })
+  } catch (error) {
+    console.error('CREATE EPISODE ERROR:', error)
+    res.status(500).json({ ok: false, message: 'Failed to create episode', error: error.message })
+  }
+}
+
+export async function updateEpisode(req, res) {
+  try {
+    const { id } = req.params
+    const updatePayload = { updated_at: new Date().toISOString() }
+
+    const allowedFields = ['title', 'content']
+
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) updatePayload[field] = req.body[field]
+    }
+
+    if (req.body.episode_number !== undefined) updatePayload.episode_number = toNumber(req.body.episode_number)
+    if (req.body.is_free !== undefined) updatePayload.is_free = toBoolean(req.body.is_free, true)
+    if (req.body.is_published !== undefined) {
+      updatePayload.is_published = toBoolean(req.body.is_published, true)
+      updatePayload.published_at = updatePayload.is_published ? new Date().toISOString() : null
+    }
+
+    const { data, error } = await supabase
+      .from('episodes')
+      .update(updatePayload)
+      .eq('id', id)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    await refreshBookEpisodeCount(data.book_id)
+
+    res.status(200).json({ ok: true, episode: normalizeEpisode(data) })
+  } catch (error) {
+    console.error('UPDATE EPISODE ERROR:', error)
+    res.status(500).json({ ok: false, message: 'Failed to update episode', error: error.message })
+  }
+}
+
+export async function deleteEpisode(req, res) {
+  try {
+    const { id } = req.params
+
+    const { data: existingEpisode, error: existingError } = await supabase
+      .from('episodes')
+      .select('*')
+      .eq('id', id)
+      .single()
+
+    if (existingError) throw existingError
+
+    const { error } = await supabase
+      .from('episodes')
+      .delete()
+      .eq('id', id)
+
+    if (error) throw error
+
+    await refreshBookEpisodeCount(existingEpisode.book_id)
+
+    res.status(200).json({ ok: true, episode: normalizeEpisode(existingEpisode) })
+  } catch (error) {
+    console.error('DELETE EPISODE ERROR:', error)
+    res.status(500).json({ ok: false, message: 'Failed to delete episode', error: error.message })
   }
 }
