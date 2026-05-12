@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken'
+import { supabase } from '../config/supabase.js'
 
 const MAX_LOGIN_ATTEMPTS = 5
 
@@ -116,11 +117,13 @@ function clearFailedLogin(key) {
   loginAttempts.delete(key)
 }
 
-function createToken() {
+function createToken(admin) {
   return jwt.sign(
     {
       role: 'admin',
-      actor: 'Admin',
+      actor: admin?.name || 'Admin',
+      email: admin?.email || '',
+      admin_id: admin?.id || '',
     },
     process.env.JWT_SECRET,
     {
@@ -133,10 +136,10 @@ export async function adminLogin(req, res) {
   try {
     const { email = '', password = '' } = req.body
 
-    if (!process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD || !process.env.JWT_SECRET) {
+    if (!process.env.JWT_SECRET) {
       return res.status(500).json({
         ok: false,
-        message: 'Admin auth environment variables are missing',
+        message: 'JWT_SECRET is missing',
       })
     }
 
@@ -153,11 +156,16 @@ export async function adminLogin(req, res) {
       })
     }
 
-    const cleanEmail = String(email).trim()
-    const emailOk = cleanEmail === process.env.ADMIN_EMAIL
-    const passwordOk = password === process.env.ADMIN_PASSWORD
+    const { data, error } = await supabase.rpc('verify_admin_password', {
+      p_email: String(email).trim(),
+      p_password: password,
+    })
 
-    if (!emailOk || !passwordOk) {
+    if (error) throw error
+
+    const admin = Array.isArray(data) ? data[0] : null
+
+    if (!admin) {
       const failed = recordFailedLogin(clientKey)
 
       if (failed.locked) {
@@ -179,20 +187,23 @@ export async function adminLogin(req, res) {
 
     clearFailedLogin(clientKey)
 
-    const token = createToken()
+    const token = createToken(admin)
 
-    res.status(200).json({
+    return res.status(200).json({
       ok: true,
       token,
       admin: {
-        email: process.env.ADMIN_EMAIL,
-        name: 'Admin',
+        id: admin.id,
+        email: admin.email,
+        name: admin.name,
+        role: admin.role,
+        password_changed_at: admin.password_changed_at,
       },
     })
   } catch (error) {
     console.error('ADMIN LOGIN ERROR:', error)
 
-    res.status(500).json({
+    return res.status(500).json({
       ok: false,
       message: 'Admin login failed',
     })
@@ -200,7 +211,7 @@ export async function adminLogin(req, res) {
 }
 
 export async function checkAdmin(req, res) {
-  res.status(200).json({
+  return res.status(200).json({
     ok: true,
     admin: req.admin || null,
   })
@@ -214,10 +225,12 @@ export async function changeAdminPassword(req, res) {
       confirmPassword = '',
     } = req.body
 
-    if (!process.env.ADMIN_PASSWORD) {
-      return res.status(500).json({
+    const email = req.admin?.email
+
+    if (!email) {
+      return res.status(401).json({
         ok: false,
-        message: 'ADMIN_PASSWORD environment variable is missing',
+        message: 'Admin email missing from token. Please login again.',
       })
     }
 
@@ -235,31 +248,26 @@ export async function changeAdminPassword(req, res) {
       })
     }
 
-    if (String(newPassword).length < 8) {
+    const { data, error } = await supabase.rpc('change_admin_password', {
+      p_email: email,
+      p_current_password: currentPassword,
+      p_new_password: newPassword,
+    })
+
+    if (error) throw error
+
+    const result = Array.isArray(data) ? data[0] : null
+
+    if (!result?.ok) {
       return res.status(400).json({
         ok: false,
-        message: 'New password must be at least 8 characters',
-      })
-    }
-
-    if (currentPassword !== process.env.ADMIN_PASSWORD) {
-      return res.status(401).json({
-        ok: false,
-        message: 'Current password is incorrect',
-      })
-    }
-
-    if (newPassword === currentPassword) {
-      return res.status(400).json({
-        ok: false,
-        message: 'New password must be different from current password',
+        message: result?.message || 'Failed to change admin password',
       })
     }
 
     return res.status(200).json({
       ok: true,
-      message:
-        'Password validation passed. Update ADMIN_PASSWORD in Render environment variables, then redeploy backend.',
+      message: result.message || 'Admin password changed successfully',
     })
   } catch (error) {
     console.error('CHANGE ADMIN PASSWORD ERROR:', error)
@@ -270,4 +278,3 @@ export async function changeAdminPassword(req, res) {
     })
   }
 }
-
