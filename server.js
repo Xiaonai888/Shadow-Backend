@@ -5,6 +5,7 @@ import dotenv from 'dotenv'
 import healthRoutes from './src/routes/health.routes.js'
 import slidesRoutes from './src/routes/slides.routes.js'
 import authRoutes from './src/routes/auth.routes.js'
+import booksRoutes from './src/routes/books.routes.js'
 
 dotenv.config()
 
@@ -22,7 +23,6 @@ const allowedOrigins = [
 app.use(
   cors({
     origin(origin, callback) {
-      // Allow server-to-server tools, curl, Postman, and same-origin requests with no origin.
       if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true)
       }
@@ -46,6 +46,7 @@ app.get('/', (req, res) => {
 app.use('/health', healthRoutes)
 app.use('/api/auth', authRoutes)
 app.use('/api/slides', slidesRoutes)
+app.use('/api/books', booksRoutes)
 
 app.use((req, res) => {
   res.status(404).json({
