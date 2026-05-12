@@ -87,9 +87,10 @@ export async function getBooks(req, res) {
     console.error('GET BOOKS ERROR:', error)
 
     res.status(500).json({
-      ok: false,
-      message: 'Failed to fetch books',
-    })
+  ok: false,
+  message: 'Failed to fetch books',
+  error: error.message,
+})
   }
 }
 
