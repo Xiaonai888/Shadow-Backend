@@ -1,11 +1,14 @@
 import { supabase } from '../config/supabase.js'
 
-function makeSlug(text) {
-  return String(text || '')
+function normalizePageUsername(username) {
+  return String(username || '')
     .trim()
+    .replace(/^@+/, '')
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
+}
+
+function isValidPageUsername(username) {
+  return /^[a-z0-9_]+$/.test(username)
 }
 
 function publicAuthorPage(page) {
@@ -15,6 +18,7 @@ function publicAuthorPage(page) {
     id: page.id,
     user_id: page.user_id,
     page_name: page.page_name,
+    page_username: page.page_username,
     page_slug: page.page_slug,
     bio: page.bio,
     avatar_url: page.avatar_url,
@@ -24,32 +28,6 @@ function publicAuthorPage(page) {
     total_followers: page.total_followers,
     created_at: page.created_at,
     updated_at: page.updated_at,
-  }
-}
-
-async function createUniqueSlug(pageName) {
-  const baseSlug = makeSlug(pageName)
-
-  if (!baseSlug) {
-    return ''
-  }
-
-  let slug = baseSlug
-  let count = 1
-
-  while (true) {
-    const { data, error } = await supabase
-      .from('author_pages')
-      .select('id')
-      .eq('page_slug', slug)
-      .maybeSingle()
-
-    if (error) throw error
-
-    if (!data) return slug
-
-    count += 1
-    slug = `${baseSlug}-${count}`
   }
 }
 
@@ -100,19 +78,34 @@ export async function createAuthorPage(req, res) {
     }
 
     const pageName = String(req.body.page_name || req.body.pageName || '').trim()
+    const pageUsername = normalizePageUsername(req.body.page_username || req.body.pageUsername)
     const bio = String(req.body.bio || '').trim() || null
 
-    if (!pageName) {
+    if (!pageName || !pageUsername) {
       return res.status(400).json({
         ok: false,
-        message: 'Author name is required',
+        message: 'Page name and page username are required',
       })
     }
 
     if (pageName.length < 2) {
       return res.status(400).json({
         ok: false,
-        message: 'Author name must be at least 2 characters',
+        message: 'Page name must be at least 2 characters',
+      })
+    }
+
+    if (pageUsername.length < 3) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Page username must be at least 3 characters',
+      })
+    }
+
+    if (!isValidPageUsername(pageUsername)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Page username can only use letters, numbers, and underscore',
       })
     }
 
@@ -132,12 +125,18 @@ export async function createAuthorPage(req, res) {
       })
     }
 
-    const pageSlug = await createUniqueSlug(pageName)
+    const { data: usernameTaken, error: usernameError } = await supabase
+      .from('author_pages')
+      .select('id')
+      .eq('page_username', pageUsername)
+      .maybeSingle()
 
-    if (!pageSlug) {
-      return res.status(400).json({
+    if (usernameError) throw usernameError
+
+    if (usernameTaken) {
+      return res.status(409).json({
         ok: false,
-        message: 'Author name cannot create a valid slug',
+        message: 'Page username already exists',
       })
     }
 
@@ -146,7 +145,8 @@ export async function createAuthorPage(req, res) {
       .insert({
         user_id: userId,
         page_name: pageName,
-        page_slug: pageSlug,
+        page_username: pageUsername,
+        page_slug: pageUsername,
         bio,
         status: 'active',
         updated_at: new Date().toISOString(),
