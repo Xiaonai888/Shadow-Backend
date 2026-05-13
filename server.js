@@ -16,10 +16,22 @@ const app = express()
 const allowedOrigins = [
   process.env.FRONTEND_URL,
   process.env.ADMIN_URL,
+
+  'https://shadowerabook.site',
+  'https://www.shadowerabook.site',
+  'https://admin.shadowerabook.site',
+
+  'https://shadow-backend-kucw.onrender.com',
+
   'http://localhost:5173',
   'http://localhost:5174',
+  'http://localhost:3000',
+  'http://localhost:5000',
+
   'http://127.0.0.1:5173',
   'http://127.0.0.1:5174',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:5000',
 ].filter(Boolean)
 
 app.use(
@@ -32,11 +44,15 @@ app.use(
       return callback(new Error(`Not allowed by CORS: ${origin}`))
     },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 )
 
-app.use(express.json())
-app.use(express.urlencoded({ extended: true }))
+app.options('*', cors())
+
+app.use(express.json({ limit: '10mb' }))
+app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
 app.get('/', (req, res) => {
   res.status(200).json({
