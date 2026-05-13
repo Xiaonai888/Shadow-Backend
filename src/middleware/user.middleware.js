@@ -1,15 +1,35 @@
-import express from 'express'
-import {
-  getCurrentUser,
-  loginUser,
-  registerUser,
-} from '../controllers/users.controller.js'
-import { requireUser } from '../middleware/user.middleware.js'
+import jwt from 'jsonwebtoken'
 
-const router = express.Router()
+export function requireUser(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization || ''
+    const token = authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7)
+      : ''
 
-router.post('/register', registerUser)
-router.post('/login', loginUser)
-router.get('/me', requireUser, getCurrentUser)
+    if (!token) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Token is required',
+      })
+    }
 
-export default router
+    const decoded = jwt.verify(token, process.env.JWT_SECRET)
+
+    if (decoded.type !== 'reader') {
+      return res.status(403).json({
+        ok: false,
+        message: 'Reader account token is required',
+      })
+    }
+
+    req.user = decoded
+
+    return next()
+  } catch (error) {
+    return res.status(401).json({
+      ok: false,
+      message: 'Invalid or expired token',
+    })
+  }
+}
