@@ -7,6 +7,7 @@ import slidesRoutes from './src/routes/slides.routes.js'
 import authRoutes from './src/routes/auth.routes.js'
 import booksRoutes from './src/routes/books.routes.js'
 import usersRoutes from './src/routes/users.routes.js'
+import authorsRoutes from './src/routes/authors.routes.js'
 
 dotenv.config()
 
@@ -49,6 +50,7 @@ app.use('/api/auth', authRoutes)
 app.use('/api/slides', slidesRoutes)
 app.use('/api/books', booksRoutes)
 app.use('/api/users', usersRoutes)
+app.use('/api/authors', authorsRoutes)
 
 app.use((req, res) => {
   res.status(404).json({
