@@ -9,6 +9,7 @@ import booksRoutes from './src/routes/books.routes.js'
 import usersRoutes from './src/routes/users.routes.js'
 import authorsRoutes from './src/routes/authors.routes.js'
 import storiesRoutes from './src/routes/stories.routes.js'
+import storyMediaRoutes from './src/routes/storyMedia.routes.js'
 
 dotenv.config()
 
@@ -69,6 +70,7 @@ app.use('/api/books', booksRoutes)
 app.use('/api/users', usersRoutes)
 app.use('/api/authors', authorsRoutes)
 app.use('/api/stories', storiesRoutes)
+app.use('/api/story-media', storyMediaRoutes)
 
 app.use((req, res) => {
   res.status(404).json({
