@@ -92,6 +92,19 @@ async function getOwnedStory({ storyId, userId }) {
   return data
 }
 
+async function getOwnedEpisode({ storyId, episodeId, userId }) {
+  const { data, error } = await supabase
+    .from('episodes')
+    .select('*')
+    .eq('id', episodeId)
+    .eq('story_id', storyId)
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (error) throw error
+  return data
+}
+
 async function getNextEpisodeNumber(storyId) {
   const { data, error } = await supabase
     .from('episodes')
@@ -125,6 +138,31 @@ async function updateStoryEpisodeCount(storyId) {
   if (updateError) throw updateError
 
   return count || 0
+}
+
+async function updateStoryStatusAfterEpisodeChange(storyId) {
+  const { data: publishedEpisodes, error: publishedError } = await supabase
+    .from('episodes')
+    .select('id')
+    .eq('story_id', storyId)
+    .eq('status', 'published')
+    .limit(1)
+
+  if (publishedError) throw publishedError
+
+  const hasPublishedEpisode = Boolean(publishedEpisodes?.length)
+
+  if (hasPublishedEpisode) {
+    const { error } = await supabase
+      .from('stories')
+      .update({
+        status: 'published',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', storyId)
+
+    if (error) throw error
+  }
 }
 
 export async function createStory(req, res) {
@@ -514,17 +552,9 @@ export async function getEpisodeById(req, res) {
       })
     }
 
-    const { data, error } = await supabase
-      .from('episodes')
-      .select('*')
-      .eq('id', episodeId)
-      .eq('story_id', storyId)
-      .eq('user_id', userId)
-      .maybeSingle()
+    const episode = await getOwnedEpisode({ storyId, episodeId, userId })
 
-    if (error) throw error
-
-    if (!data) {
+    if (!episode) {
       return res.status(404).json({
         ok: false,
         message: 'Episode not found',
@@ -533,7 +563,7 @@ export async function getEpisodeById(req, res) {
 
     return res.status(200).json({
       ok: true,
-      episode: publicEpisode(data),
+      episode: publicEpisode(episode),
     })
   } catch (error) {
     console.error('GET EPISODE BY ID ERROR:', error)
@@ -541,6 +571,119 @@ export async function getEpisodeById(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to fetch episode',
+      error: error.message,
+    })
+  }
+}
+
+export async function updateEpisodeStatus(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId, episodeId } = req.params
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const story = await getOwnedStory({ storyId, userId })
+
+    if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    const episode = await getOwnedEpisode({ storyId, episodeId, userId })
+
+    if (!episode) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Episode not found',
+      })
+    }
+
+    const status = cleanText(req.body.status)
+
+    if (!['published', 'scheduled', 'draft'].includes(status)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid publish status',
+      })
+    }
+
+    const updatePayload = {
+      status,
+      updated_at: new Date().toISOString(),
+    }
+
+    if (status === 'published') {
+      updatePayload.published_at = new Date().toISOString()
+      updatePayload.scheduled_at = null
+    }
+
+    if (status === 'scheduled') {
+      const scheduledAt = cleanText(req.body.scheduled_at || req.body.scheduledAt)
+
+      if (!scheduledAt) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Schedule date and time are required',
+        })
+      }
+
+      const scheduleDate = new Date(scheduledAt)
+
+      if (Number.isNaN(scheduleDate.getTime())) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Invalid schedule date and time',
+        })
+      }
+
+      updatePayload.scheduled_at = scheduleDate.toISOString()
+      updatePayload.published_at = null
+    }
+
+    if (status === 'draft') {
+      updatePayload.scheduled_at = null
+      updatePayload.published_at = null
+    }
+
+    const { data: updatedEpisode, error: updateError } = await supabase
+      .from('episodes')
+      .update(updatePayload)
+      .eq('id', episodeId)
+      .eq('story_id', storyId)
+      .eq('user_id', userId)
+      .select()
+      .single()
+
+    if (updateError) throw updateError
+
+    if (status === 'published') {
+      await updateStoryStatusAfterEpisodeChange(storyId)
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message:
+        status === 'published'
+          ? 'Episode published successfully'
+          : status === 'scheduled'
+            ? 'Episode scheduled successfully'
+            : 'Episode saved as draft',
+      episode: publicEpisode(updatedEpisode),
+    })
+  } catch (error) {
+    console.error('UPDATE EPISODE STATUS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update episode status',
       error: error.message,
     })
   }
