@@ -1,6 +1,8 @@
 import { supabase } from '../config/supabase.js'
 
 const ALLOWED_LANGUAGES = ['Khmer', 'English', 'Chinese', 'Japanese', 'Korean']
+const MIN_EPISODE_CHARACTERS = 1500
+const MAX_EPISODE_CHARACTERS = 12000
 
 function cleanText(value) {
   return String(value || '').trim()
@@ -45,6 +47,28 @@ function publicStory(story, slides = []) {
   }
 }
 
+function publicEpisode(episode) {
+  if (!episode) return null
+
+  return {
+    id: episode.id,
+    story_id: episode.story_id,
+    author_id: episode.author_id,
+    user_id: episode.user_id,
+    title: episode.title,
+    cover_url: episode.cover_url,
+    content: episode.content,
+    is_adult: episode.is_adult,
+    status: episode.status,
+    episode_number: episode.episode_number,
+    character_count: episode.character_count,
+    published_at: episode.published_at,
+    scheduled_at: episode.scheduled_at,
+    created_at: episode.created_at,
+    updated_at: episode.updated_at,
+  }
+}
+
 async function getAuthorPageForUser(userId) {
   const { data, error } = await supabase
     .from('author_pages')
@@ -54,6 +78,53 @@ async function getAuthorPageForUser(userId) {
 
   if (error) throw error
   return data
+}
+
+async function getOwnedStory({ storyId, userId }) {
+  const { data, error } = await supabase
+    .from('stories')
+    .select('*')
+    .eq('id', storyId)
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (error) throw error
+  return data
+}
+
+async function getNextEpisodeNumber(storyId) {
+  const { data, error } = await supabase
+    .from('episodes')
+    .select('episode_number')
+    .eq('story_id', storyId)
+    .order('episode_number', { ascending: false })
+    .limit(1)
+
+  if (error) throw error
+
+  const latestNumber = data?.[0]?.episode_number || 0
+  return latestNumber + 1
+}
+
+async function updateStoryEpisodeCount(storyId) {
+  const { count, error: countError } = await supabase
+    .from('episodes')
+    .select('id', { count: 'exact', head: true })
+    .eq('story_id', storyId)
+
+  if (countError) throw countError
+
+  const { error: updateError } = await supabase
+    .from('stories')
+    .update({
+      total_episodes: count || 0,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', storyId)
+
+  if (updateError) throw updateError
+
+  return count || 0
 }
 
 export async function createStory(req, res) {
@@ -235,14 +306,7 @@ export async function getStoryById(req, res) {
       })
     }
 
-    const { data: story, error: storyError } = await supabase
-      .from('stories')
-      .select('*')
-      .eq('id', storyId)
-      .eq('user_id', userId)
-      .maybeSingle()
-
-    if (storyError) throw storyError
+    const story = await getOwnedStory({ storyId, userId })
 
     if (!story) {
       return res.status(404).json({
@@ -269,6 +333,214 @@ export async function getStoryById(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to fetch story',
+      error: error.message,
+    })
+  }
+}
+
+export async function createEpisode(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId } = req.params
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const story = await getOwnedStory({ storyId, userId })
+
+    if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    const title = cleanText(req.body.title)
+    const content = String(req.body.content || '')
+    const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
+    const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
+    const status = cleanText(req.body.status || 'draft')
+
+    const characterCount = content.length
+
+    if (!title) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Episode title is required',
+      })
+    }
+
+    if (title.length < 2) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Episode title must be at least 2 characters',
+      })
+    }
+
+    if (!content.trim()) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Episode content is required',
+      })
+    }
+
+    if (characterCount < MIN_EPISODE_CHARACTERS) {
+      return res.status(400).json({
+        ok: false,
+        message: `Episode needs at least ${MIN_EPISODE_CHARACTERS} characters`,
+      })
+    }
+
+    if (characterCount > MAX_EPISODE_CHARACTERS) {
+      return res.status(400).json({
+        ok: false,
+        message: `Episode must be ${MAX_EPISODE_CHARACTERS} characters or less`,
+      })
+    }
+
+    if (!['draft', 'ready'].includes(status)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid episode status',
+      })
+    }
+
+    const episodeNumber = await getNextEpisodeNumber(storyId)
+
+    const { data: episode, error: episodeError } = await supabase
+      .from('episodes')
+      .insert({
+        story_id: story.id,
+        author_id: story.author_id,
+        user_id: userId,
+        title,
+        cover_url: coverUrl,
+        content,
+        is_adult: isAdult,
+        status,
+        episode_number: episodeNumber,
+        character_count: characterCount,
+      })
+      .select()
+      .single()
+
+    if (episodeError) throw episodeError
+
+    const totalEpisodes = await updateStoryEpisodeCount(storyId)
+
+    return res.status(201).json({
+      ok: true,
+      message: 'Episode created successfully',
+      episode: publicEpisode(episode),
+      total_episodes: totalEpisodes,
+    })
+  } catch (error) {
+    console.error('CREATE EPISODE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to create episode',
+      error: error.message,
+    })
+  }
+}
+
+export async function getStoryEpisodes(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId } = req.params
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const story = await getOwnedStory({ storyId, userId })
+
+    if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('episodes')
+      .select('*')
+      .eq('story_id', storyId)
+      .order('episode_number', { ascending: true })
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      episodes: (data || []).map(publicEpisode),
+    })
+  } catch (error) {
+    console.error('GET STORY EPISODES ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to fetch episodes',
+      error: error.message,
+    })
+  }
+}
+
+export async function getEpisodeById(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId, episodeId } = req.params
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const story = await getOwnedStory({ storyId, userId })
+
+    if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('episodes')
+      .select('*')
+      .eq('id', episodeId)
+      .eq('story_id', storyId)
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Episode not found',
+      })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      episode: publicEpisode(data),
+    })
+  } catch (error) {
+    console.error('GET EPISODE BY ID ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to fetch episode',
       error: error.message,
     })
   }
