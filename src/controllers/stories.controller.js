@@ -452,17 +452,18 @@ export async function createEpisode(req, res) {
     const { data: episode, error: episodeError } = await supabase
       .from('episodes')
       .insert({
-        story_id: story.id,
-        author_id: story.author_id,
-        user_id: userId,
-        title,
-        cover_url: coverUrl,
-        content,
-        is_adult: isAdult,
-        status,
-        episode_number: episodeNumber,
-        character_count: characterCount,
-      })
+  story_id: story.id,
+  book_id: story.id,
+  author_id: story.author_id,
+  user_id: userId,
+  title,
+  cover_url: coverUrl,
+  content,
+  is_adult: isAdult,
+  status,
+  episode_number: episodeNumber,
+  character_count: characterCount,
+})
       .select()
       .single()
 
