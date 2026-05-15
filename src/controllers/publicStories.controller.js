@@ -19,6 +19,7 @@ function publicStory(story, slides = []) {
     is_shadow_exclusive: Boolean(story.is_shadow_exclusive),
     exclusive_status: story.exclusive_status || 'none',
     exclusive_sections: story.exclusive_sections || [],
+    update_days: story.update_days || [],
     total_episodes: story.total_episodes,
     total_views: story.total_views,
     total_likes: story.total_likes,
@@ -46,6 +47,7 @@ function publicStoryListItem(story) {
     is_shadow_exclusive: Boolean(story.is_shadow_exclusive),
     exclusive_status: story.exclusive_status || 'none',
     exclusive_sections: story.exclusive_sections || [],
+    update_days: story.update_days || [],
     total_episodes: story.total_episodes,
     total_views: story.total_views,
     total_likes: story.total_likes,
@@ -64,6 +66,8 @@ function publicEpisodeListItem(episode) {
     title: episode.title,
     cover_url: episode.cover_url,
     is_adult: episode.is_adult,
+    is_locked: Boolean(episode.is_locked),
+    unlock_methods: episode.unlock_methods || [],
     status: episode.status,
     episode_number: episode.episode_number,
     character_count: episode.character_count,
@@ -83,6 +87,8 @@ function publicEpisode(episode) {
     cover_url: episode.cover_url,
     content: episode.content,
     is_adult: episode.is_adult,
+    is_locked: Boolean(episode.is_locked),
+    unlock_methods: episode.unlock_methods || [],
     status: episode.status,
     episode_number: episode.episode_number,
     character_count: episode.character_count,
@@ -350,7 +356,7 @@ export async function getPublicStoryEpisodes(req, res) {
 
     const { data, error } = await supabase
       .from('episodes')
-      .select('id, story_id, title, cover_url, is_adult, status, episode_number, character_count, published_at, created_at, updated_at')
+      .select('id, story_id, title, cover_url, is_adult, is_locked, unlock_methods, status, episode_number, character_count, published_at, created_at, updated_at')
       .eq('story_id', storyId)
       .eq('status', 'published')
       .order('episode_number', { ascending: true })
