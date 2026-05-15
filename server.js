@@ -11,6 +11,7 @@ import authorsRoutes from './src/routes/authors.routes.js'
 import storiesRoutes from './src/routes/stories.routes.js'
 import storyMediaRoutes from './src/routes/storyMedia.routes.js'
 import publicStoriesRoutes from './src/routes/publicStories.routes.js'
+import adminExclusiveRoutes from './src/routes/adminExclusive.routes.js'
 
 dotenv.config()
 
@@ -73,6 +74,7 @@ app.use('/api/authors', authorsRoutes)
 app.use('/api/stories', storiesRoutes)
 app.use('/api/story-media', storyMediaRoutes)
 app.use('/api/public', publicStoriesRoutes)
+app.use('/api/admin/exclusive', adminExclusiveRoutes)
 
 app.use((req, res) => {
   res.status(404).json({
