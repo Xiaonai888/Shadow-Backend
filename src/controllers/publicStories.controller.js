@@ -25,6 +25,28 @@ function publicStory(story, slides = []) {
   }
 }
 
+function publicStoryListItem(story) {
+  if (!story) return null
+
+  return {
+    id: story.id,
+    title: story.title,
+    story_language: story.story_language,
+    main_genre: story.main_genre,
+    tags: story.tags || [],
+    description: story.description,
+    is_adult: story.is_adult,
+    cover_url: story.cover_url,
+    status: story.status,
+    total_episodes: story.total_episodes,
+    total_views: story.total_views,
+    total_likes: story.total_likes,
+    total_comments: story.total_comments,
+    created_at: story.created_at,
+    updated_at: story.updated_at,
+  }
+}
+
 function publicEpisodeListItem(episode) {
   if (!episode) return null
 
@@ -62,6 +84,14 @@ function publicEpisode(episode) {
   }
 }
 
+function normalizeLimit(value, fallback = 12, max = 48) {
+  const number = Number(value)
+
+  if (!Number.isFinite(number) || number <= 0) return fallback
+
+  return Math.min(Math.floor(number), max)
+}
+
 async function getPublishedStory(storyId) {
   const { data, error } = await supabase
     .from('stories')
@@ -72,6 +102,56 @@ async function getPublishedStory(storyId) {
 
   if (error) throw error
   return data
+}
+
+export async function getPublicStories(req, res) {
+  try {
+    const limit = normalizeLimit(req.query.limit)
+    const genre = String(req.query.genre || '').trim()
+    const language = String(req.query.language || '').trim()
+    const sort = String(req.query.sort || 'latest').trim()
+
+    let query = supabase
+      .from('stories')
+      .select('*')
+      .eq('status', 'published')
+      .limit(limit)
+
+    if (genre) {
+      query = query.eq('main_genre', genre)
+    }
+
+    if (language) {
+      query = query.eq('story_language', language)
+    }
+
+    if (sort === 'popular') {
+      query = query.order('total_views', { ascending: false }).order('updated_at', { ascending: false })
+    } else if (sort === 'likes') {
+      query = query.order('total_likes', { ascending: false }).order('updated_at', { ascending: false })
+    } else if (sort === 'updated') {
+      query = query.order('updated_at', { ascending: false })
+    } else {
+      query = query.order('created_at', { ascending: false })
+    }
+
+    const { data, error } = await query
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      stories: (data || []).map(publicStoryListItem),
+    })
+  } catch (error) {
+    console.error('GET PUBLIC STORIES ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load stories',
+      error: error.message,
+    })
+  }
 }
 
 export async function getPublicStoryById(req, res) {
