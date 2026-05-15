@@ -15,6 +15,10 @@ function publicStory(story, slides = []) {
     is_adult: story.is_adult,
     cover_url: story.cover_url,
     status: story.status,
+    access_type: story.access_type || 'free',
+    is_shadow_exclusive: Boolean(story.is_shadow_exclusive),
+    exclusive_status: story.exclusive_status || 'none',
+    exclusive_sections: story.exclusive_sections || [],
     total_episodes: story.total_episodes,
     total_views: story.total_views,
     total_likes: story.total_likes,
@@ -38,6 +42,10 @@ function publicStoryListItem(story) {
     is_adult: story.is_adult,
     cover_url: story.cover_url,
     status: story.status,
+    access_type: story.access_type || 'free',
+    is_shadow_exclusive: Boolean(story.is_shadow_exclusive),
+    exclusive_status: story.exclusive_status || 'none',
+    exclusive_sections: story.exclusive_sections || [],
     total_episodes: story.total_episodes,
     total_views: story.total_views,
     total_likes: story.total_likes,
@@ -92,12 +100,55 @@ function normalizeLimit(value, fallback = 12, max = 48) {
   return Math.min(Math.floor(number), max)
 }
 
-async function getPublishedStory(storyId) {
+function applyStorySort(query, sort) {
+  if (sort === 'popular') {
+    return query.order('total_views', { ascending: false }).order('updated_at', { ascending: false })
+  }
+
+  if (sort === 'likes') {
+    return query.order('total_likes', { ascending: false }).order('updated_at', { ascending: false })
+  }
+
+  if (sort === 'updated') {
+    return query.order('updated_at', { ascending: false })
+  }
+
+  return query.order('created_at', { ascending: false })
+}
+
+async function getPublishedNormalStory(storyId) {
   const { data, error } = await supabase
     .from('stories')
     .select('*')
     .eq('id', storyId)
     .eq('status', 'published')
+    .neq('is_shadow_exclusive', true)
+    .maybeSingle()
+
+  if (error) throw error
+  return data
+}
+
+async function getPublishedReadableStory(storyId) {
+  const { data, error } = await supabase
+    .from('stories')
+    .select('*')
+    .eq('id', storyId)
+    .eq('status', 'published')
+    .maybeSingle()
+
+  if (error) throw error
+  return data
+}
+
+async function getApprovedExclusiveStory(storyId) {
+  const { data, error } = await supabase
+    .from('stories')
+    .select('*')
+    .eq('id', storyId)
+    .eq('status', 'published')
+    .eq('is_shadow_exclusive', true)
+    .eq('exclusive_status', 'approved')
     .maybeSingle()
 
   if (error) throw error
@@ -115,6 +166,7 @@ export async function getPublicStories(req, res) {
       .from('stories')
       .select('*')
       .eq('status', 'published')
+      .neq('is_shadow_exclusive', true)
       .limit(limit)
 
     if (genre) {
@@ -125,15 +177,7 @@ export async function getPublicStories(req, res) {
       query = query.eq('story_language', language)
     }
 
-    if (sort === 'popular') {
-      query = query.order('total_views', { ascending: false }).order('updated_at', { ascending: false })
-    } else if (sort === 'likes') {
-      query = query.order('total_likes', { ascending: false }).order('updated_at', { ascending: false })
-    } else if (sort === 'updated') {
-      query = query.order('updated_at', { ascending: false })
-    } else {
-      query = query.order('created_at', { ascending: false })
-    }
+    query = applyStorySort(query, sort)
 
     const { data, error } = await query
 
@@ -154,13 +198,69 @@ export async function getPublicStories(req, res) {
   }
 }
 
+export async function getPublicShadowExclusiveStories(req, res) {
+  try {
+    const limit = normalizeLimit(req.query.limit)
+    const section = String(req.query.section || '').trim()
+    const genre = String(req.query.genre || '').trim()
+    const language = String(req.query.language || '').trim()
+    const sort = String(req.query.sort || 'updated').trim()
+
+    let query = supabase
+      .from('stories')
+      .select('*')
+      .eq('status', 'published')
+      .eq('is_shadow_exclusive', true)
+      .eq('exclusive_status', 'approved')
+      .limit(limit)
+
+    if (section) {
+      query = query.contains('exclusive_sections', [section])
+    }
+
+    if (genre) {
+      query = query.eq('main_genre', genre)
+    }
+
+    if (language) {
+      query = query.eq('story_language', language)
+    }
+
+    query = applyStorySort(query, sort)
+
+    const { data, error } = await query
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      stories: (data || []).map(publicStoryListItem),
+    })
+  } catch (error) {
+    console.error('GET PUBLIC SHADOW EXCLUSIVE STORIES ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load Shadow Exclusive stories',
+      error: error.message,
+    })
+  }
+}
+
 export async function getPublicStoryById(req, res) {
   try {
     const { storyId } = req.params
 
-    const story = await getPublishedStory(storyId)
+    const story = await getPublishedReadableStory(storyId)
 
     if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
       return res.status(404).json({
         ok: false,
         message: 'Story not found',
@@ -191,13 +291,57 @@ export async function getPublicStoryById(req, res) {
   }
 }
 
+export async function getPublicShadowExclusiveStoryById(req, res) {
+  try {
+    const { storyId } = req.params
+
+    const story = await getApprovedExclusiveStory(storyId)
+
+    if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Shadow Exclusive story not found',
+      })
+    }
+
+    const { data: slides, error: slidesError } = await supabase
+      .from('story_carousel_slides')
+      .select('*')
+      .eq('story_id', storyId)
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true })
+
+    if (slidesError) throw slidesError
+
+    return res.status(200).json({
+      ok: true,
+      story: publicStory(story, slides || []),
+    })
+  } catch (error) {
+    console.error('GET PUBLIC SHADOW EXCLUSIVE STORY ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load Shadow Exclusive story',
+      error: error.message,
+    })
+  }
+}
+
 export async function getPublicStoryEpisodes(req, res) {
   try {
     const { storyId } = req.params
 
-    const story = await getPublishedStory(storyId)
+    const story = await getPublishedReadableStory(storyId)
 
     if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
       return res.status(404).json({
         ok: false,
         message: 'Story not found',
@@ -232,9 +376,16 @@ export async function getPublicEpisodeById(req, res) {
   try {
     const { storyId, episodeId } = req.params
 
-    const story = await getPublishedStory(storyId)
+    const story = await getPublishedReadableStory(storyId)
 
     if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
       return res.status(404).json({
         ok: false,
         message: 'Story not found',
