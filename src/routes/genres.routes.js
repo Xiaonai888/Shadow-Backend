@@ -1,5 +1,7 @@
+import express from 'express'
 import { supabase } from '../config/supabase.js'
 
+const router = express.Router()
 const MAX_FEATURED_TABS = 12
 
 function slugify(value) {
@@ -55,7 +57,7 @@ async function getGenreById(id) {
   return data
 }
 
-export async function getGenres(req, res) {
+async function getGenres(req, res) {
   try {
     const includeInactive =
       req.query.include_inactive === 'true' ||
@@ -80,7 +82,7 @@ export async function getGenres(req, res) {
   }
 }
 
-export async function getAdminGenres(req, res) {
+async function getAdminGenres(req, res) {
   try {
     const { data, error } = await supabase
       .from('genres')
@@ -105,7 +107,7 @@ export async function getAdminGenres(req, res) {
   }
 }
 
-export async function createGenre(req, res) {
+async function createGenre(req, res) {
   try {
     const name = String(req.body.name || '').trim()
     const slug = slugify(req.body.slug || name)
@@ -130,7 +132,7 @@ export async function createGenre(req, res) {
   }
 }
 
-export async function updateGenre(req, res) {
+async function updateGenre(req, res) {
   try {
     const { id } = req.params
     const oldGenre = await getGenreById(id)
@@ -144,7 +146,13 @@ export async function updateGenre(req, res) {
 
     const { data, error } = await supabase
       .from('genres')
-      .update({ name, slug, sort_order: sortOrder, is_active: isActive, updated_at: new Date().toISOString() })
+      .update({
+        name,
+        slug,
+        sort_order: sortOrder,
+        is_active: isActive,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', id)
       .select()
       .single()
@@ -153,7 +161,12 @@ export async function updateGenre(req, res) {
 
     await supabase
       .from('featured_genre_tabs')
-      .update({ label: data.name, slug: data.slug, is_active: data.is_active, updated_at: new Date().toISOString() })
+      .update({
+        label: data.name,
+        slug: data.slug,
+        is_active: data.is_active,
+        updated_at: new Date().toISOString(),
+      })
       .eq('genre_id', id)
       .eq('is_locked', false)
 
@@ -164,7 +177,7 @@ export async function updateGenre(req, res) {
   }
 }
 
-export async function deleteGenre(req, res) {
+async function deleteGenre(req, res) {
   try {
     const { id } = req.params
     const genre = await getGenreById(id)
@@ -191,7 +204,7 @@ export async function deleteGenre(req, res) {
   }
 }
 
-export async function getFeaturedGenreTabs(req, res) {
+async function getFeaturedGenreTabs(req, res) {
   try {
     const includeInactive =
       req.query.include_inactive === 'true' ||
@@ -201,7 +214,10 @@ export async function getFeaturedGenreTabs(req, res) {
 
     if (!includeInactive) query = query.eq('is_active', true)
 
-    const { data, error } = await query.order('sort_order', { ascending: true }).limit(MAX_FEATURED_TABS)
+    const { data, error } = await query
+      .order('sort_order', { ascending: true })
+      .limit(MAX_FEATURED_TABS)
+
     if (error) throw error
 
     res.status(200).json({ ok: true, max_tabs: MAX_FEATURED_TABS, tabs: data || [] })
@@ -211,7 +227,7 @@ export async function getFeaturedGenreTabs(req, res) {
   }
 }
 
-export async function updateFeaturedGenreTabs(req, res) {
+async function updateFeaturedGenreTabs(req, res) {
   try {
     const rawGenreIds = Array.isArray(req.body.genre_ids) ? req.body.genre_ids : []
     const uniqueGenreIds = [...new Set(rawGenreIds.map((id) => String(id || '').trim()).filter(Boolean))]
@@ -252,11 +268,24 @@ export async function updateFeaturedGenreTabs(req, res) {
       .maybeSingle()
 
     if (!todayTab) {
-      await supabase.from('featured_genre_tabs').insert({ label: 'Today', slug: 'today', is_locked: true, is_active: true, sort_order: 0 })
+      await supabase.from('featured_genre_tabs').insert({
+        label: 'Today',
+        slug: 'today',
+        is_locked: true,
+        is_active: true,
+        sort_order: 0,
+      })
     } else {
       await supabase
         .from('featured_genre_tabs')
-        .update({ label: 'Today', slug: 'today', is_locked: true, is_active: true, sort_order: 0, updated_at: new Date().toISOString() })
+        .update({
+          label: 'Today',
+          slug: 'today',
+          is_locked: true,
+          is_active: true,
+          sort_order: 0,
+          updated_at: new Date().toISOString(),
+        })
         .eq('id', todayTab.id)
     }
 
@@ -275,3 +304,13 @@ export async function updateFeaturedGenreTabs(req, res) {
     res.status(500).json({ ok: false, message: 'Failed to update featured genre tabs' })
   }
 }
+
+router.get('/', getGenres)
+router.get('/featured-tabs', getFeaturedGenreTabs)
+router.get('/admin/records', getAdminGenres)
+router.post('/admin/records', createGenre)
+router.put('/admin/records/:id', updateGenre)
+router.delete('/admin/records/:id', deleteGenre)
+router.put('/admin/featured-tabs', updateFeaturedGenreTabs)
+
+export default router
