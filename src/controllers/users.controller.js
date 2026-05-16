@@ -16,6 +16,9 @@ function normalizeUsername(username) {
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 }
+function isGmailEmail(email) {
+  return /^[^\s@]+@gmail\.com$/.test(email)
+}
 
 function calculateAge(dateOfBirth) {
   const birthDate = new Date(dateOfBirth)
@@ -119,6 +122,12 @@ export async function registerUser(req, res) {
         message: 'Email is not valid',
       })
     }
+    if (!isGmailEmail(email)) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Only Gmail accounts are allowed',
+  })
+}
 
     if (username.length < 3) {
       return res.status(400).json({
