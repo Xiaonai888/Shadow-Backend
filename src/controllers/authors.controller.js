@@ -36,10 +36,7 @@ export async function getMyAuthorPage(req, res) {
     const userId = req.user?.user_id
 
     if (!userId) {
-      return res.status(401).json({
-        ok: false,
-        message: 'Unauthorized',
-      })
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
     }
 
     const { data, error } = await supabase
@@ -57,12 +54,7 @@ export async function getMyAuthorPage(req, res) {
     })
   } catch (error) {
     console.error('GET MY AUTHOR PAGE ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to fetch author page',
-      error: error.message,
-    })
+    return res.status(500).json({ ok: false, message: 'Failed to fetch author page', error: error.message })
   }
 }
 
@@ -71,10 +63,7 @@ export async function createAuthorPage(req, res) {
     const userId = req.user?.user_id
 
     if (!userId) {
-      return res.status(401).json({
-        ok: false,
-        message: 'Unauthorized',
-      })
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
     }
 
     const pageName = String(req.body.page_name || req.body.pageName || '').trim()
@@ -82,31 +71,19 @@ export async function createAuthorPage(req, res) {
     const bio = String(req.body.bio || '').trim() || null
 
     if (!pageName || !pageUsername) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Page name and page username are required',
-      })
+      return res.status(400).json({ ok: false, message: 'Page name and page username are required' })
     }
 
     if (pageName.length < 2) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Page name must be at least 2 characters',
-      })
+      return res.status(400).json({ ok: false, message: 'Page name must be at least 2 characters' })
     }
 
     if (pageUsername.length < 3) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Page username must be at least 3 characters',
-      })
+      return res.status(400).json({ ok: false, message: 'Page username must be at least 3 characters' })
     }
 
     if (!isValidPageUsername(pageUsername)) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Page username can only use letters, numbers, and underscore',
-      })
+      return res.status(400).json({ ok: false, message: 'Page username can only use letters, numbers, and underscore' })
     }
 
     const { data: existingPage, error: existingError } = await supabase
@@ -118,11 +95,7 @@ export async function createAuthorPage(req, res) {
     if (existingError) throw existingError
 
     if (existingPage) {
-      return res.status(200).json({
-        ok: true,
-        message: 'Author page already exists',
-        author_page: publicAuthorPage(existingPage),
-      })
+      return res.status(200).json({ ok: true, message: 'Author page already exists', author_page: publicAuthorPage(existingPage) })
     }
 
     const { data: usernameTaken, error: usernameError } = await supabase
@@ -134,10 +107,7 @@ export async function createAuthorPage(req, res) {
     if (usernameError) throw usernameError
 
     if (usernameTaken) {
-      return res.status(409).json({
-        ok: false,
-        message: 'Page username already exists',
-      })
+      return res.status(409).json({ ok: false, message: 'Page username already exists' })
     }
 
     const { data: createdPage, error: createError } = await supabase
@@ -158,26 +128,44 @@ export async function createAuthorPage(req, res) {
 
     const { error: userUpdateError } = await supabase
       .from('users')
-      .update({
-        is_author: true,
-        updated_at: new Date().toISOString(),
-      })
+      .update({ is_author: true, updated_at: new Date().toISOString() })
       .eq('id', userId)
 
     if (userUpdateError) throw userUpdateError
 
-    return res.status(201).json({
-      ok: true,
-      message: 'Author page created successfully',
-      author_page: publicAuthorPage(createdPage),
-    })
+    return res.status(201).json({ ok: true, message: 'Author page created successfully', author_page: publicAuthorPage(createdPage) })
   } catch (error) {
     console.error('CREATE AUTHOR PAGE ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to create author page', error: error.message })
+  }
+}
 
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to create author page',
-      error: error.message,
-    })
+export async function updateAuthorAvatar(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const avatarUrl = String(req.body.avatar_url || req.body.avatarUrl || '').trim()
+
+    if (!avatarUrl) {
+      return res.status(400).json({ ok: false, message: 'Avatar URL is required' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_pages')
+      .update({ avatar_url: avatarUrl, updated_at: new Date().toISOString() })
+      .eq('user_id', userId)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({ ok: true, message: 'Author profile photo updated', author_page: publicAuthorPage(data) })
+  } catch (error) {
+    console.error('UPDATE AUTHOR AVATAR ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to update author profile photo', error: error.message })
   }
 }
