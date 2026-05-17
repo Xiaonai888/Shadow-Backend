@@ -81,6 +81,9 @@ function publicUser(user) {
     username: user.username,
     email: user.email,
     avatar_url: user.avatar_url || null,
+    bio: user.bio || '',
+    work: user.work || '',
+    location: user.location || '',
     date_of_birth: user.date_of_birth,
     gender: user.gender,
     custom_gender: user.custom_gender,
@@ -216,6 +219,9 @@ export async function registerUser(req, res) {
         gender,
         custom_gender: gender === 'custom' ? customGender : null,
         avatar_url: null,
+        bio: '',
+        work: '',
+        location: '',
         role: 'reader',
         is_author: false,
         is_active: true,
@@ -384,6 +390,82 @@ export async function updateUserAvatar(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to update profile photo',
+      error: error.message,
+    })
+  }
+}
+
+export async function updateUserProfile(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const name = String(req.body.name || '').trim()
+    const bio = String(req.body.bio || '').trim()
+    const work = String(req.body.work || '').trim()
+    const location = String(req.body.location || '').trim()
+
+    if (!name) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Display name is required',
+      })
+    }
+
+    if (name.length < 2) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Display name must be at least 2 characters',
+      })
+    }
+
+    if (bio.length > 180) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Bio must be 180 characters or less',
+      })
+    }
+
+    if (work.length > 80 || location.length > 80) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Work and location must be 80 characters or less',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('users')
+      .update({
+        name,
+        bio,
+        work,
+        location,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', userId)
+      .eq('is_active', true)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Profile updated',
+      user: publicUser(data),
+    })
+  } catch (error) {
+    console.error('UPDATE USER PROFILE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update profile',
       error: error.message,
     })
   }
