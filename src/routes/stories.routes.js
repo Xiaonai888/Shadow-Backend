@@ -6,6 +6,7 @@ import {
   getMyStories,
   getStoryById,
   getStoryEpisodes,
+  updateEpisode,
   updateEpisodeStatus,
   updateStory,
 } from '../controllers/stories.controller.js'
@@ -21,6 +22,7 @@ router.put('/:storyId', requireUser, updateStory)
 router.post('/:storyId/episodes/create', requireUser, createEpisode)
 router.get('/:storyId/episodes', requireUser, getStoryEpisodes)
 router.get('/:storyId/episodes/:episodeId', requireUser, getEpisodeById)
+router.put('/:storyId/episodes/:episodeId', requireUser, updateEpisode)
 router.patch('/:storyId/episodes/:episodeId/status', requireUser, updateEpisodeStatus)
 
 export default router
