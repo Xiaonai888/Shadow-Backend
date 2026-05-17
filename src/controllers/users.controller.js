@@ -16,6 +16,7 @@ function normalizeUsername(username) {
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 }
+
 function isGmailEmail(email) {
   return /^[^\s@]+@gmail\.com$/.test(email)
 }
@@ -79,6 +80,7 @@ function publicUser(user) {
     name: user.name,
     username: user.username,
     email: user.email,
+    avatar_url: user.avatar_url || null,
     date_of_birth: user.date_of_birth,
     gender: user.gender,
     custom_gender: user.custom_gender,
@@ -122,12 +124,13 @@ export async function registerUser(req, res) {
         message: 'Email is not valid',
       })
     }
+
     if (!isGmailEmail(email)) {
-  return res.status(400).json({
-    ok: false,
-    message: 'Only Gmail accounts are allowed',
-  })
-}
+      return res.status(400).json({
+        ok: false,
+        message: 'Only Gmail accounts are allowed',
+      })
+    }
 
     if (username.length < 3) {
       return res.status(400).json({
@@ -212,6 +215,7 @@ export async function registerUser(req, res) {
         date_of_birth: dateOfBirth,
         gender,
         custom_gender: gender === 'custom' ? customGender : null,
+        avatar_url: null,
         role: 'reader',
         is_author: false,
         is_active: true,
@@ -331,6 +335,55 @@ export async function getCurrentUser(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to fetch user',
+      error: error.message,
+    })
+  }
+}
+
+export async function updateUserAvatar(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const avatarUrl = String(req.body.avatar_url || req.body.avatarUrl || '').trim()
+
+    if (!avatarUrl) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Avatar URL is required',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('users')
+      .update({
+        avatar_url: avatarUrl,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', userId)
+      .eq('is_active', true)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Profile photo updated',
+      user: publicUser(data),
+    })
+  } catch (error) {
+    console.error('UPDATE USER AVATAR ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update profile photo',
       error: error.message,
     })
   }
