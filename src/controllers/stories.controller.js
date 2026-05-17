@@ -188,6 +188,74 @@ async function updateStoryStatusAfterEpisodeChange(storyId) {
   }
 }
 
+async function getStorySlides(storyId) {
+  const { data, error } = await supabase
+    .from('story_carousel_slides')
+    .select('*')
+    .eq('story_id', storyId)
+    .order('sort_order', { ascending: true })
+
+  if (error) throw error
+  return data || []
+}
+
+async function replaceStorySlides(storyId, slides) {
+  const { error: deleteError } = await supabase
+    .from('story_carousel_slides')
+    .delete()
+    .eq('story_id', storyId)
+
+  if (deleteError) throw deleteError
+
+  const slideRows = (Array.isArray(slides) ? slides : [])
+    .slice(0, 5)
+    .map((slide, index) => ({
+      story_id: storyId,
+      image_url: cleanText(slide.image_url || slide.imageUrl),
+      link_url: cleanNullableText(slide.link_url || slide.linkUrl),
+      sort_order: Number.isFinite(Number(slide.sort_order ?? slide.sortOrder))
+        ? Number(slide.sort_order ?? slide.sortOrder)
+        : index,
+      is_active: slide.is_active ?? slide.isActive ?? true,
+    }))
+    .filter((slide) => slide.image_url)
+
+  if (!slideRows.length) return []
+
+  const { data, error } = await supabase
+    .from('story_carousel_slides')
+    .insert(slideRows)
+    .select()
+
+  if (error) throw error
+
+  return data || []
+}
+
+function validateStoryPayload({ title, storyLanguage, mainGenre, description }) {
+  if (!title) {
+    return 'Story title is required'
+  }
+
+  if (title.length < 2) {
+    return 'Story title must be at least 2 characters'
+  }
+
+  if (!ALLOWED_LANGUAGES.includes(storyLanguage)) {
+    return 'Invalid story language'
+  }
+
+  if (!mainGenre) {
+    return 'Main genre is required'
+  }
+
+  if (description && description.length > 5000) {
+    return 'Description must be 5000 characters or less'
+  }
+
+  return ''
+}
+
 export async function createStory(req, res) {
   try {
     const userId = req.user?.user_id
@@ -216,41 +284,14 @@ export async function createStory(req, res) {
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
     const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
     const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
-
     const slides = Array.isArray(req.body.slides) ? req.body.slides.slice(0, 5) : []
 
-    if (!title) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Story title is required',
-      })
-    }
+    const payloadError = validateStoryPayload({ title, storyLanguage, mainGenre, description })
 
-    if (title.length < 2) {
+    if (payloadError) {
       return res.status(400).json({
         ok: false,
-        message: 'Story title must be at least 2 characters',
-      })
-    }
-
-    if (!ALLOWED_LANGUAGES.includes(storyLanguage)) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Invalid story language',
-      })
-    }
-
-    if (!mainGenre) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Main genre is required',
-      })
-    }
-
-    if (description && description.length > 5000) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Description must be 5000 characters or less',
+        message: payloadError,
       })
     }
 
@@ -274,29 +315,7 @@ export async function createStory(req, res) {
 
     if (storyError) throw storyError
 
-    let createdSlides = []
-
-    const slideRows = slides
-      .map((slide, index) => ({
-        story_id: story.id,
-        image_url: cleanText(slide.image_url || slide.imageUrl),
-        link_url: cleanNullableText(slide.link_url || slide.linkUrl),
-        sort_order: Number.isFinite(Number(slide.sort_order ?? slide.sortOrder))
-          ? Number(slide.sort_order ?? slide.sortOrder)
-          : index,
-        is_active: slide.is_active ?? slide.isActive ?? true,
-      }))
-      .filter((slide) => slide.image_url)
-
-    if (slideRows.length) {
-      const { data: slideData, error: slideError } = await supabase
-        .from('story_carousel_slides')
-        .insert(slideRows)
-        .select()
-
-      if (slideError) throw slideError
-      createdSlides = slideData || []
-    }
+    const createdSlides = await replaceStorySlides(story.id, slides)
 
     return res.status(201).json({
       ok: true,
@@ -309,6 +328,84 @@ export async function createStory(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to create story',
+      error: error.message,
+    })
+  }
+}
+
+export async function updateStory(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId } = req.params
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const oldStory = await getOwnedStory({ storyId, userId })
+
+    if (!oldStory) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    const title = cleanText(req.body.title)
+    const storyLanguage = cleanText(req.body.story_language || req.body.storyLanguage || oldStory.story_language || 'Khmer')
+    const mainGenre = cleanText(req.body.main_genre || req.body.mainGenre)
+    const tags = cleanTags(req.body.tags)
+    const description = cleanNullableText(req.body.description)
+    const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
+    const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
+    const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
+    const slides = Array.isArray(req.body.slides) ? req.body.slides.slice(0, 5) : []
+
+    const payloadError = validateStoryPayload({ title, storyLanguage, mainGenre, description })
+
+    if (payloadError) {
+      return res.status(400).json({
+        ok: false,
+        message: payloadError,
+      })
+    }
+
+    const { data: story, error: storyError } = await supabase
+      .from('stories')
+      .update({
+        title,
+        story_language: storyLanguage,
+        main_genre: mainGenre,
+        tags,
+        description,
+        is_adult: isAdult,
+        cover_url: coverUrl,
+        update_days: updateDays,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', storyId)
+      .eq('user_id', userId)
+      .select()
+      .single()
+
+    if (storyError) throw storyError
+
+    const updatedSlides = await replaceStorySlides(storyId, slides)
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Story updated successfully',
+      story: publicStory(story, updatedSlides),
+    })
+  } catch (error) {
+    console.error('UPDATE STORY ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update story',
       error: error.message,
     })
   }
@@ -378,13 +475,7 @@ export async function getStoryById(req, res) {
       })
     }
 
-    const { data: slides, error: slidesError } = await supabase
-      .from('story_carousel_slides')
-      .select('*')
-      .eq('story_id', storyId)
-      .order('sort_order', { ascending: true })
-
-    if (slidesError) throw slidesError
+    const slides = await getStorySlides(storyId)
 
     return res.status(200).json({
       ok: true,
@@ -427,7 +518,6 @@ export async function createEpisode(req, res) {
     const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
     const status = cleanText(req.body.status || 'draft')
-
     const characterCount = content.length
 
     if (!title) {
