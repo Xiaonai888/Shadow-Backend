@@ -2,7 +2,7 @@ import { supabase } from '../config/supabase.js'
 
 const ALLOWED_LANGUAGES = ['Khmer', 'English', 'Chinese', 'Japanese', 'Korean']
 const ALLOWED_UPDATE_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-const ALLOWED_STORY_STATUSES = ['New', 'Ongoing', 'Complete']
+const ALLOWED_STORY_STATUSES = ['New', 'Ongoing', 'Completed']
 const ALLOWED_UNLOCK_METHODS = ['gem', 'voucher', 'story_card', 'free_item']
 const MIN_EPISODE_CHARACTERS = 1500
 const MAX_EPISODE_CHARACTERS = 12000
