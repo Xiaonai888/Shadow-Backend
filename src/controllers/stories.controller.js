@@ -703,6 +703,139 @@ export async function getEpisodeById(req, res) {
   }
 }
 
+
+export async function updateEpisode(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId, episodeId } = req.params
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const story = await getOwnedStory({ storyId, userId })
+
+    if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    const episode = await getOwnedEpisode({ storyId, episodeId, userId })
+
+    if (!episode) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Episode not found',
+      })
+    }
+
+    const title = cleanText(req.body.title)
+    const content = String(req.body.content || '')
+    const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
+    const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
+    const status = cleanText(req.body.status || episode.status || 'draft')
+    const isLocked =
+      typeof req.body.is_locked === 'boolean'
+        ? req.body.is_locked
+        : typeof req.body.isLocked === 'boolean'
+          ? req.body.isLocked
+          : Boolean(episode.is_locked)
+    const unlockMethods = cleanUnlockMethods(req.body.unlock_methods || req.body.unlockMethods || episode.unlock_methods)
+    const characterCount = content.length
+
+    if (!title) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Episode title is required',
+      })
+    }
+
+    if (title.length < 2) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Episode title must be at least 2 characters',
+      })
+    }
+
+    if (!content.trim()) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Episode content is required',
+      })
+    }
+
+    if (characterCount < MIN_EPISODE_CHARACTERS) {
+      return res.status(400).json({
+        ok: false,
+        message: `Episode needs at least ${MIN_EPISODE_CHARACTERS} characters`,
+      })
+    }
+
+    if (characterCount > MAX_EPISODE_CHARACTERS) {
+      return res.status(400).json({
+        ok: false,
+        message: `Episode must be ${MAX_EPISODE_CHARACTERS} characters or less`,
+      })
+    }
+
+    if (!['draft', 'ready', 'published', 'scheduled'].includes(status)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid episode status',
+      })
+    }
+
+    const updatePayload = {
+      title,
+      cover_url: coverUrl,
+      content,
+      is_adult: isAdult,
+      is_locked: isLocked,
+      unlock_methods: unlockMethods,
+      status,
+      character_count: characterCount,
+      updated_at: new Date().toISOString(),
+    }
+
+    const { data: updatedEpisode, error: updateError } = await supabase
+      .from('episodes')
+      .update(updatePayload)
+      .eq('id', episodeId)
+      .eq('story_id', storyId)
+      .eq('user_id', userId)
+      .select()
+      .single()
+
+    if (updateError) throw updateError
+
+    await supabase
+      .from('stories')
+      .update({
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', storyId)
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Episode updated successfully',
+      episode: publicEpisode(updatedEpisode),
+    })
+  } catch (error) {
+    console.error('UPDATE EPISODE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update episode',
+      error: error.message,
+    })
+  }
+}
+
 export async function updateEpisodeStatus(req, res) {
   try {
     const userId = req.user?.user_id
