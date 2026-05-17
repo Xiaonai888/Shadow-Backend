@@ -2,6 +2,7 @@ import { supabase } from '../config/supabase.js'
 
 const ALLOWED_LANGUAGES = ['Khmer', 'English', 'Chinese', 'Japanese', 'Korean']
 const ALLOWED_UPDATE_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+const ALLOWED_STORY_STATUSES = ['New', 'Ongoing', 'Complete']
 const ALLOWED_UNLOCK_METHODS = ['gem', 'voucher', 'story_card', 'free_item']
 const MIN_EPISODE_CHARACTERS = 1500
 const MAX_EPISODE_CHARACTERS = 12000
@@ -33,6 +34,11 @@ function cleanUpdateDays(value) {
     .filter((day, index, array) => array.indexOf(day) === index)
 }
 
+function cleanStoryStatus(value) {
+  const status = cleanText(value || 'New')
+  return ALLOWED_STORY_STATUSES.includes(status) ? status : 'New'
+}
+
 function cleanUnlockMethods(value) {
   if (!Array.isArray(value)) return []
 
@@ -52,6 +58,7 @@ function publicStory(story, slides = []) {
     title: story.title,
     story_language: story.story_language,
     main_genre: story.main_genre,
+    story_status: story.story_status || 'New',
     tags: story.tags || [],
     description: story.description,
     is_adult: story.is_adult,
@@ -279,6 +286,8 @@ export async function createStory(req, res) {
     const title = cleanText(req.body.title)
     const storyLanguage = cleanText(req.body.story_language || req.body.storyLanguage || 'Khmer')
     const mainGenre = cleanText(req.body.main_genre || req.body.mainGenre)
+    const storyStatus = cleanStoryStatus(req.body.story_status || req.body.storyStatus || oldStory.story_status || 'New')
+    const storyStatus = cleanStoryStatus(req.body.story_status || req.body.storyStatus)
     const tags = cleanTags(req.body.tags)
     const description = cleanNullableText(req.body.description)
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
@@ -303,6 +312,7 @@ export async function createStory(req, res) {
         title,
         story_language: storyLanguage,
         main_genre: mainGenre,
+        story_status: storyStatus,
         tags,
         description,
         is_adult: isAdult,
@@ -379,6 +389,7 @@ export async function updateStory(req, res) {
         title,
         story_language: storyLanguage,
         main_genre: mainGenre,
+        story_status: storyStatus,
         tags,
         description,
         is_adult: isAdult,
