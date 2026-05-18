@@ -286,8 +286,7 @@ export async function createStory(req, res) {
     const title = cleanText(req.body.title)
     const storyLanguage = cleanText(req.body.story_language || req.body.storyLanguage || 'Khmer')
     const mainGenre = cleanText(req.body.main_genre || req.body.mainGenre)
-    const storyStatus = cleanStoryStatus(req.body.story_status || req.body.storyStatus || oldStory.story_status || 'New')
-    const storyStatus = cleanStoryStatus(req.body.story_status || req.body.storyStatus)
+    const storyStatus = cleanStoryStatus(req.body.story_status || req.body.storyStatus || 'New')
     const tags = cleanTags(req.body.tags)
     const description = cleanNullableText(req.body.description)
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
@@ -366,6 +365,7 @@ export async function updateStory(req, res) {
 
     const title = cleanText(req.body.title)
     const storyLanguage = cleanText(req.body.story_language || req.body.storyLanguage || oldStory.story_language || 'Khmer')
+    const storyStatus = cleanStoryStatus(req.body.story_status || req.body.storyStatus || oldStory.story_status || 'New')
     const mainGenre = cleanText(req.body.main_genre || req.body.mainGenre)
     const tags = cleanTags(req.body.tags)
     const description = cleanNullableText(req.body.description)
