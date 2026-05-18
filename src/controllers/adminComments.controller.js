@@ -10,13 +10,17 @@ function normalizeText(value) {
 
 function normalizeLimit(value, fallback = DEFAULT_LIMIT) {
   const number = Number(value)
+
   if (!Number.isFinite(number) || number <= 0) return fallback
+
   return Math.min(Math.floor(number), MAX_LIMIT)
 }
 
 function normalizePage(value) {
   const number = Number(value)
+
   if (!Number.isFinite(number) || number <= 0) return 1
+
   return Math.floor(number)
 }
 
@@ -61,6 +65,11 @@ function publicStory(story) {
       title: 'Unknown Story',
       cover_url: '',
       author_id: null,
+      main_genre: '',
+      story_language: '',
+      total_comments: 0,
+      total_views: 0,
+      status: '',
     }
   }
 
@@ -69,6 +78,13 @@ function publicStory(story) {
     title: story.title || 'Untitled Story',
     cover_url: story.cover_url || '',
     author_id: story.author_id || null,
+    main_genre: story.main_genre || '',
+    story_language: story.story_language || '',
+    total_comments: Number(story.total_comments || 0),
+    total_views: Number(story.total_views || 0),
+    status: story.status || '',
+    created_at: story.created_at,
+    updated_at: story.updated_at,
   }
 }
 
@@ -124,17 +140,15 @@ async function createOwnerReport({ req, action, comment, reason = '' }) {
     const actor = getActor(req)
     const details = buildActionDetails({ action, comment, actor, reason })
 
-    await supabase
-      .from('admin_activity_logs')
-      .insert({
-        action,
-        section_key: 'comments',
-        slide_id: comment?.id || null,
-        slide_title: comment?.story?.title || 'Comment Moderation',
-        order_index: null,
-        actor,
-        details,
-      })
+    await supabase.from('admin_activity_logs').insert({
+      action,
+      section_key: 'comments',
+      slide_id: comment?.id || null,
+      slide_title: comment?.story?.title || 'Comment Moderation',
+      order_index: null,
+      actor,
+      details,
+    })
   } catch (error) {
     console.warn('CREATE COMMENT OWNER REPORT WARNING:', error.message)
   }
@@ -143,7 +157,7 @@ async function createOwnerReport({ req, action, comment, reason = '' }) {
 async function getCommentById(commentId) {
   const { data, error } = await supabase
     .from('comments')
-    .select('*, user:users(id, name, username, avatar_url, role), story:stories(id, title, cover_url, author_id, total_comments)')
+    .select('*, user:users(id, name, username, avatar_url, role), story:stories(id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)')
     .eq('id', commentId)
     .maybeSingle()
 
@@ -179,6 +193,7 @@ async function updateStoryCommentCount(storyId, amount) {
 
 function filterComments(comments, query) {
   const text = normalizeText(query).toLowerCase()
+
   if (!text) return comments
 
   return comments.filter((comment) => {
@@ -191,6 +206,102 @@ function filterComments(comments, query) {
 
     return values.some((value) => String(value || '').toLowerCase().includes(text))
   })
+}
+
+export async function searchAdminCommentStories(req, res) {
+  try {
+    const search = normalizeText(req.query.search || req.query.q)
+    const limit = normalizeLimit(req.query.limit, 20, 50)
+
+    if (!search) {
+      return res.status(200).json({
+        ok: true,
+        stories: [],
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('stories')
+      .select('id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at')
+      .ilike('title', `%${search}%`)
+      .order('total_comments', { ascending: false })
+      .order('updated_at', { ascending: false })
+      .limit(limit)
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      stories: (data || []).map(publicStory),
+    })
+  } catch (error) {
+    console.error('SEARCH ADMIN COMMENT STORIES ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to search stories',
+      error: error.message,
+    })
+  }
+}
+
+export async function getAdminStoryComments(req, res) {
+  try {
+    const storyId = normalizeText(req.params.storyId)
+    const status = normalizeText(req.query.status || 'all').toLowerCase()
+    const limit = normalizeLimit(req.query.limit, 100, 200)
+
+    if (!storyId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Story id is required',
+      })
+    }
+
+    const { data: story, error: storyError } = await supabase
+      .from('stories')
+      .select('id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at')
+      .eq('id', storyId)
+      .maybeSingle()
+
+    if (storyError) throw storyError
+
+    if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    let query = supabase
+      .from('comments')
+      .select('*, user:users(id, name, username, avatar_url, role), story:stories(id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)')
+      .eq('story_id', storyId)
+      .order('is_pinned', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(limit)
+
+    if (status === 'hidden') query = query.eq('is_hidden', true)
+    if (status === 'visible') query = query.eq('is_hidden', false)
+
+    const { data, error } = await query
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      story: publicStory(story),
+      comments: (data || []).map(publicComment),
+    })
+  } catch (error) {
+    console.error('GET ADMIN STORY COMMENTS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load story comments',
+      error: error.message,
+    })
+  }
 }
 
 export async function getAdminComments(req, res) {
@@ -207,7 +318,7 @@ export async function getAdminComments(req, res) {
 
     let query = supabase
       .from('comments')
-      .select('*, user:users(id, name, username, avatar_url, role), story:stories(id, title, cover_url, author_id, total_comments)', {
+      .select('*, user:users(id, name, username, avatar_url, role), story:stories(id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)', {
         count: 'exact',
       })
       .order('created_at', { ascending: false })
@@ -326,7 +437,7 @@ export async function moderateAdminComment(req, res) {
       .from('comments')
       .update(updateData)
       .eq('id', commentId)
-      .select('*, user:users(id, name, username, avatar_url, role), story:stories(id, title, cover_url, author_id, total_comments)')
+      .select('*, user:users(id, name, username, avatar_url, role), story:stories(id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)')
       .single()
 
     if (error) throw error
