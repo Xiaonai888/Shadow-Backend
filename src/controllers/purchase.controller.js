@@ -53,6 +53,52 @@ function publicWallet(wallet) {
   }
 }
 
+function formatTelegramPurchaseMessage(purchase, user) {
+  const lines = [
+    '💎 New Purchase Request',
+    '',
+    `Request ID: ${purchase.id}`,
+    `Amount: $${purchase.package_usd}`,
+    `Diamonds: ${purchase.diamonds}`,
+    `Bonus Gems: ${purchase.bonus_gems}`,
+    `Status: ${purchase.status}`,
+    '',
+    `User: ${user?.name || 'Unknown'}`,
+    `Username: ${user?.username || '-'}`,
+    `Email: ${user?.email || '-'}`,
+    '',
+    `Payer Name: ${purchase.payer_name || '-'}`,
+    `Reference: ${purchase.payment_reference || '-'}`,
+    `Proof: ${purchase.proof_url || '-'}`,
+  ]
+
+  return lines.join('\n')
+}
+
+async function sendTelegramMessage(message) {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN
+  const chatId = process.env.TELEGRAM_ADMIN_CHAT_ID
+
+  if (!botToken || !chatId) return
+
+  const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text: message,
+      disable_web_page_preview: false,
+    }),
+  })
+
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(text || 'Telegram notification failed')
+  }
+}
+
 async function getOrCreateWallet(userId) {
   const { data: existingWallet, error: existingError } = await supabase
     .from('user_wallets')
@@ -178,9 +224,16 @@ export async function createPurchaseRequest(req, res) {
 
     if (error) throw error
 
+    const userMap = await getUsersMap([userId])
+    const purchase = publicPurchase(data, userMap)
+
+    sendTelegramMessage(formatTelegramPurchaseMessage(purchase, userMap[userId])).catch((telegramError) => {
+      console.error('TELEGRAM PURCHASE ALERT ERROR:', telegramError)
+    })
+
     return res.status(201).json({
       ok: true,
-      purchase: publicPurchase(data),
+      purchase,
     })
   } catch (error) {
     console.error('CREATE PURCHASE REQUEST ERROR:', error)
