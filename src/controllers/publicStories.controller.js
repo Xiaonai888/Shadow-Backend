@@ -1,6 +1,26 @@
 import { supabase } from '../config/supabase.js'
 
-function publicStory(story, slides = []) {
+function publicAuthorPage(page) {
+  if (!page) return null
+
+  return {
+    id: page.id,
+    user_id: page.user_id,
+    page_name: page.page_name,
+    page_username: page.page_username,
+    page_slug: page.page_slug,
+    bio: page.bio,
+    avatar_url: page.avatar_url,
+    cover_url: page.cover_url,
+    status: page.status,
+    total_stories: page.total_stories,
+    total_followers: page.total_followers,
+    created_at: page.created_at,
+    updated_at: page.updated_at,
+  }
+}
+
+function publicStory(story, slides = [], authorPage = null) {
   if (!story) return null
 
   return {
@@ -24,6 +44,7 @@ function publicStory(story, slides = []) {
     total_views: story.total_views,
     total_likes: story.total_likes,
     total_comments: story.total_comments,
+    author_page: publicAuthorPage(authorPage),
     slides,
     created_at: story.created_at,
     updated_at: story.updated_at,
@@ -35,6 +56,8 @@ function publicStoryListItem(story) {
 
   return {
     id: story.id,
+    author_id: story.author_id,
+    user_id: story.user_id,
     title: story.title,
     story_language: story.story_language,
     main_genre: story.main_genre,
@@ -122,6 +145,19 @@ function applyStorySort(query, sort) {
   return query.order('created_at', { ascending: false })
 }
 
+async function getAuthorPageById(authorId) {
+  if (!authorId) return null
+
+  const { data, error } = await supabase
+    .from('author_pages')
+    .select('*')
+    .eq('id', authorId)
+    .maybeSingle()
+
+  if (error) throw error
+  return data
+}
+
 async function getPublishedNormalStory(storyId) {
   const { data, error } = await supabase
     .from('stories')
@@ -167,6 +203,8 @@ export async function getPublicStories(req, res) {
     const genre = String(req.query.genre || '').trim()
     const language = String(req.query.language || '').trim()
     const sort = String(req.query.sort || 'latest').trim()
+    const authorId = String(req.query.authorId || req.query.author_id || '').trim()
+    const exclude = String(req.query.exclude || req.query.excludeId || req.query.exclude_id || '').trim()
 
     let query = supabase
       .from('stories')
@@ -181,6 +219,14 @@ export async function getPublicStories(req, res) {
 
     if (language) {
       query = query.eq('story_language', language)
+    }
+
+    if (authorId) {
+      query = query.eq('author_id', authorId)
+    }
+
+    if (exclude) {
+      query = query.neq('id', exclude)
     }
 
     query = applyStorySort(query, sort)
@@ -273,18 +319,21 @@ export async function getPublicStoryById(req, res) {
       })
     }
 
-    const { data: slides, error: slidesError } = await supabase
-      .from('story_carousel_slides')
-      .select('*')
-      .eq('story_id', storyId)
-      .eq('is_active', true)
-      .order('sort_order', { ascending: true })
+    const [{ data: slides, error: slidesError }, authorPage] = await Promise.all([
+      supabase
+        .from('story_carousel_slides')
+        .select('*')
+        .eq('story_id', storyId)
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true }),
+      getAuthorPageById(story.author_id),
+    ])
 
     if (slidesError) throw slidesError
 
     return res.status(200).json({
       ok: true,
-      story: publicStory(story, slides || []),
+      story: publicStory(story, slides || [], authorPage),
     })
   } catch (error) {
     console.error('GET PUBLIC STORY ERROR:', error)
@@ -310,18 +359,21 @@ export async function getPublicShadowExclusiveStoryById(req, res) {
       })
     }
 
-    const { data: slides, error: slidesError } = await supabase
-      .from('story_carousel_slides')
-      .select('*')
-      .eq('story_id', storyId)
-      .eq('is_active', true)
-      .order('sort_order', { ascending: true })
+    const [{ data: slides, error: slidesError }, authorPage] = await Promise.all([
+      supabase
+        .from('story_carousel_slides')
+        .select('*')
+        .eq('story_id', storyId)
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true }),
+      getAuthorPageById(story.author_id),
+    ])
 
     if (slidesError) throw slidesError
 
     return res.status(200).json({
       ok: true,
-      story: publicStory(story, slides || []),
+      story: publicStory(story, slides || [], authorPage),
     })
   } catch (error) {
     console.error('GET PUBLIC SHADOW EXCLUSIVE STORY ERROR:', error)
