@@ -14,6 +14,7 @@ import publicStoriesRoutes from './src/routes/publicStories.routes.js'
 import adminExclusiveRoutes from './src/routes/adminExclusive.routes.js'
 import genresRoutes from './src/routes/genres.routes.js'
 import commentsRoutes from './src/routes/comments.routes.js'
+import adminCommentsRoutes from './src/routes/adminComments.routes.js'
 
 dotenv.config()
 
@@ -66,6 +67,7 @@ app.use('/api/stories', storiesRoutes)
 app.use('/api/story-media', storyMediaRoutes)
 app.use('/api/public', publicStoriesRoutes)
 app.use('/api/admin/exclusive', adminExclusiveRoutes)
+app.use('/api/admin/comments', adminCommentsRoutes)
 app.use('/api/genres', genresRoutes)
 app.use('/api/comments', commentsRoutes)
 
