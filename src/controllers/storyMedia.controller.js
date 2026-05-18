@@ -7,6 +7,7 @@ const ALLOWED_FOLDERS = {
   story_slide: 'story-slides',
   episode_cover: 'episode-covers',
   episode_content: 'episode-content',
+  payment_proof: 'payment-proofs',
 }
 
 function safeFileExt(filename = '') {
