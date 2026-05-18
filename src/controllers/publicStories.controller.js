@@ -129,9 +129,17 @@ function normalizeLimit(value, fallback = 12, max = 48) {
   return Math.min(Math.floor(number), max)
 }
 
+function normalizeSearch(value) {
+  return String(value || '').trim().replace(/[%_]/g, '\\$&')
+}
+
 function applyStorySort(query, sort) {
-  if (sort === 'popular') {
+  if (sort === 'weekly_top' || sort === 'weekly' || sort === 'trending') {
     return query.order('total_views', { ascending: false }).order('updated_at', { ascending: false })
+  }
+
+  if (sort === 'popular') {
+    return query.order('total_likes', { ascending: false }).order('total_views', { ascending: false }).order('updated_at', { ascending: false })
   }
 
   if (sort === 'likes') {
@@ -140,6 +148,10 @@ function applyStorySort(query, sort) {
 
   if (sort === 'updated') {
     return query.order('updated_at', { ascending: false })
+  }
+
+  if (sort === 'new' || sort === 'newest' || sort === 'latest') {
+    return query.order('created_at', { ascending: false })
   }
 
   return query.order('created_at', { ascending: false })
@@ -186,12 +198,13 @@ async function getApprovedExclusiveStory(storyId) {
 
 export async function getPublicStories(req, res) {
   try {
-    const limit = normalizeLimit(req.query.limit)
+    const limit = normalizeLimit(req.query.limit, 10, 48)
     const genre = String(req.query.genre || '').trim()
     const language = String(req.query.language || '').trim()
     const sort = String(req.query.sort || 'latest').trim()
     const authorId = String(req.query.authorId || req.query.author_id || '').trim()
     const exclude = String(req.query.exclude || req.query.excludeId || req.query.exclude_id || '').trim()
+    const search = normalizeSearch(req.query.q || req.query.search || req.query.keyword)
 
     let query = supabase
       .from('stories')
@@ -204,6 +217,10 @@ export async function getPublicStories(req, res) {
     if (language) query = query.eq('story_language', language)
     if (authorId) query = query.eq('author_id', authorId)
     if (exclude) query = query.neq('id', exclude)
+
+    if (search) {
+      query = query.or(`title.ilike.%${search}%,description.ilike.%${search}%,main_genre.ilike.%${search}%`)
+    }
 
     query = applyStorySort(query, sort)
 
