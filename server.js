@@ -13,6 +13,7 @@ import storyMediaRoutes from './src/routes/storyMedia.routes.js'
 import publicStoriesRoutes from './src/routes/publicStories.routes.js'
 import adminExclusiveRoutes from './src/routes/adminExclusive.routes.js'
 import genresRoutes from './src/routes/genres.routes.js'
+import commentsRoutes from './src/routes/comments.routes.js'
 
 dotenv.config()
 
@@ -66,6 +67,7 @@ app.use('/api/story-media', storyMediaRoutes)
 app.use('/api/public', publicStoriesRoutes)
 app.use('/api/admin/exclusive', adminExclusiveRoutes)
 app.use('/api/genres', genresRoutes)
+app.use('/api/comments', commentsRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
