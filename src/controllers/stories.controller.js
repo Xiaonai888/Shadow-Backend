@@ -714,7 +714,6 @@ export async function getEpisodeById(req, res) {
   }
 }
 
-
 export async function updateEpisode(req, res) {
   try {
     const userId = req.user?.user_id
