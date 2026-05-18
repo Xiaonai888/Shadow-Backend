@@ -1,484 +1,203 @@
-import { supabase } from '../config/supabase.js'
+import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
-function publicAuthorPage(page) {
-  if (!page) return null
+const API_BASE_URL =
+  import.meta.env.VITE_API_URL ||
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'http://localhost:5000'
+    : 'https://shadow-backend-kucw.onrender.com')
 
-  return {
-    id: page.id,
-    user_id: page.user_id,
-    page_name: page.page_name,
-    page_username: page.page_username,
-    page_slug: page.page_slug,
-    bio: page.bio,
-    avatar_url: page.avatar_url,
-    cover_url: page.cover_url,
-    status: page.status,
-    total_stories: page.total_stories,
-    total_followers: page.total_followers,
-    created_at: page.created_at,
-    updated_at: page.updated_at,
-  }
+function uniqueStories(stories) {
+  const map = new Map()
+
+  stories.forEach((story) => {
+    if (story?.id && !map.has(story.id)) {
+      map.set(story.id, story)
+    }
+  })
+
+  return Array.from(map.values())
 }
 
-function publicStory(story, slides = [], authorPage = null) {
-  if (!story) return null
-
-  return {
-    id: story.id,
-    author_id: story.author_id,
-    user_id: story.user_id,
-    title: story.title,
-    story_language: story.story_language,
-    main_genre: story.main_genre,
-    tags: story.tags || [],
-    description: story.description,
-    is_adult: story.is_adult,
-    cover_url: story.cover_url,
-    status: story.status,
-    access_type: story.access_type || 'free',
-    is_shadow_exclusive: Boolean(story.is_shadow_exclusive),
-    exclusive_status: story.exclusive_status || 'none',
-    exclusive_sections: story.exclusive_sections || [],
-    update_days: story.update_days || [],
-    total_episodes: story.total_episodes,
-    total_views: story.total_views,
-    total_likes: story.total_likes,
-    total_comments: story.total_comments,
-    author_page: publicAuthorPage(authorPage),
-    slides,
-    created_at: story.created_at,
-    updated_at: story.updated_at,
-  }
+function EmptyCard({ title, text, icon }) {
+  return (
+    <div className="rounded-[22px] bg-[#f8fafc] p-4 text-center">
+      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-white text-[#111827] shadow-sm ring-1 ring-black/5">
+        <i className={`${icon} text-[18px]`} />
+      </div>
+      <div className="mt-3 text-[14px] font-black text-[#111827]">{title}</div>
+      <div className="mt-1 text-[12px] font-semibold leading-5 text-[#98a2b3]">{text}</div>
+    </div>
+  )
 }
 
-function publicStoryListItem(story) {
-  if (!story) return null
+function BookCard({ story, onClick }) {
+  return (
+    <button type="button" onClick={onClick} className="min-w-0 text-left active:scale-[0.99]">
+      <div className="aspect-[2/3] w-full overflow-hidden rounded-[14px] bg-[#eef1f5]">
+        {story.cover_url ? (
+          <img
+            src={story.cover_url}
+            alt={story.title || 'Story cover'}
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-[#98a2b3]">
+            <i className="fa-regular fa-bookmark text-[20px]" />
+          </div>
+        )}
+      </div>
 
-  return {
-    id: story.id,
-    author_id: story.author_id,
-    user_id: story.user_id,
-    title: story.title,
-    story_language: story.story_language,
-    main_genre: story.main_genre,
-    tags: story.tags || [],
-    description: story.description,
-    is_adult: story.is_adult,
-    cover_url: story.cover_url,
-    status: story.status,
-    access_type: story.access_type || 'free',
-    is_shadow_exclusive: Boolean(story.is_shadow_exclusive),
-    exclusive_status: story.exclusive_status || 'none',
-    exclusive_sections: story.exclusive_sections || [],
-    update_days: story.update_days || [],
-    total_episodes: story.total_episodes,
-    total_views: story.total_views,
-    total_likes: story.total_likes,
-    total_comments: story.total_comments,
-    created_at: story.created_at,
-    updated_at: story.updated_at,
-  }
+      <h3 className="mt-2 line-clamp-2 text-[13px] font-black leading-4 text-[#111827]">
+        {story.title || 'Untitled Story'}
+      </h3>
+
+      <p className="mt-0.5 line-clamp-1 text-[12px] font-semibold text-[#98a2b3]">
+        {story.main_genre || 'Story'}
+      </p>
+    </button>
+  )
 }
 
-function publicEpisodeListItem(episode) {
-  if (!episode) return null
-
-  return {
-    id: episode.id,
-    story_id: episode.story_id,
-    title: episode.title,
-    cover_url: episode.cover_url,
-    is_adult: episode.is_adult,
-    is_locked: Boolean(episode.is_locked),
-    unlock_methods: episode.unlock_methods || [],
-    status: episode.status,
-    episode_number: episode.episode_number,
-    character_count: episode.character_count,
-    published_at: episode.published_at,
-    created_at: episode.created_at,
-    updated_at: episode.updated_at,
-  }
-}
-
-function publicEpisode(episode) {
-  if (!episode) return null
-
-  return {
-    id: episode.id,
-    story_id: episode.story_id,
-    title: episode.title,
-    cover_url: episode.cover_url,
-    content: episode.content,
-    is_adult: episode.is_adult,
-    is_locked: Boolean(episode.is_locked),
-    unlock_methods: episode.unlock_methods || [],
-    status: episode.status,
-    episode_number: episode.episode_number,
-    character_count: episode.character_count,
-    published_at: episode.published_at,
-    created_at: episode.created_at,
-    updated_at: episode.updated_at,
-  }
-}
-
-function normalizeLimit(value, fallback = 12, max = 48) {
-  const number = Number(value)
-
-  if (!Number.isFinite(number) || number <= 0) return fallback
-
-  return Math.min(Math.floor(number), max)
-}
-
-function applyStorySort(query, sort) {
-  if (sort === 'popular') {
-    return query.order('total_views', { ascending: false }).order('updated_at', { ascending: false })
+function StoryGrid({ stories, emptyTitle, emptyText, emptyIcon, onOpenStory }) {
+  if (!stories.length) {
+    return <EmptyCard icon={emptyIcon} title={emptyTitle} text={emptyText} />
   }
 
-  if (sort === 'likes') {
-    return query.order('total_likes', { ascending: false }).order('updated_at', { ascending: false })
+  return (
+    <div className="grid grid-cols-3 gap-3">
+      {stories.slice(0, 3).map((item) => (
+        <BookCard key={item.id} story={item} onClick={() => onOpenStory(item.id)} />
+      ))}
+    </div>
+  )
+}
+
+export default function RecommendationSection({ story }) {
+  const navigate = useNavigate()
+  const [authorStories, setAuthorStories] = useState([])
+  const [topStories, setTopStories] = useState([])
+  const [similarStories, setSimilarStories] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  const authorName =
+    story?.author_page?.page_name ||
+    story?.authorPage?.page_name ||
+    story?.author?.page_name ||
+    story?.author_name ||
+    'Author'
+
+  useEffect(() => {
+    let ignore = false
+
+    async function loadRecommendations() {
+      if (!story?.id) return
+
+      setLoading(true)
+
+      try {
+        const authorUrl = story.author_id
+          ? `${API_BASE_URL}/api/public/stories?authorId=${encodeURIComponent(story.author_id)}&exclude=${encodeURIComponent(story.id)}&sort=popular&limit=3`
+          : ''
+
+        const similarUrl = story.main_genre
+          ? `${API_BASE_URL}/api/public/stories?genre=${encodeURIComponent(story.main_genre)}&exclude=${encodeURIComponent(story.id)}&sort=popular&limit=6`
+          : ''
+
+        const topUrl = `${API_BASE_URL}/api/public/stories?sort=popular&exclude=${encodeURIComponent(story.id)}&limit=6`
+
+        const [authorResponse, similarResponse, topResponse] = await Promise.all([
+          authorUrl ? fetch(authorUrl) : Promise.resolve(null),
+          similarUrl ? fetch(similarUrl) : Promise.resolve(null),
+          fetch(topUrl),
+        ])
+
+        const authorData = authorResponse ? await authorResponse.json().catch(() => ({})) : {}
+        const similarData = similarResponse ? await similarResponse.json().catch(() => ({})) : {}
+        const topData = await topResponse.json().catch(() => ({}))
+
+        const nextAuthorStories = Array.isArray(authorData.stories) ? authorData.stories.slice(0, 3) : []
+        const nextTopStories = Array.isArray(topData.stories) ? topData.stories : []
+        const sameGenreStories = Array.isArray(similarData.stories) ? similarData.stories : []
+        const filledSimilarStories = uniqueStories([...sameGenreStories, ...nextTopStories]).slice(0, 3)
+
+        if (ignore) return
+
+        setAuthorStories(nextAuthorStories)
+        setTopStories(nextTopStories.slice(0, 3))
+        setSimilarStories(filledSimilarStories)
+      } catch {
+        if (ignore) return
+
+        setAuthorStories([])
+        setTopStories([])
+        setSimilarStories([])
+      } finally {
+        if (!ignore) setLoading(false)
+      }
+    }
+
+    loadRecommendations()
+
+    return () => {
+      ignore = true
+    }
+  }, [story?.author_id, story?.id, story?.main_genre])
+
+  const authorSectionStories = useMemo(() => {
+    return authorStories.length ? authorStories : topStories
+  }, [authorStories, topStories])
+
+  const handleOpenStory = (storyId) => {
+    if (!storyId) return
+    navigate(`/story/${storyId}`)
   }
 
-  if (sort === 'updated') {
-    return query.order('updated_at', { ascending: false })
-  }
+  return (
+    <section className="mt-2 space-y-0 sm:mt-4 sm:space-y-4">
+      <div className="bg-white p-4 sm:rounded-[28px] sm:p-5 sm:shadow-sm sm:ring-1 sm:ring-black/5">
+        <div className="mb-3">
+          <h2 className="text-[18px] font-black text-[#111827]">Other work by {authorName}</h2>
+        </div>
 
-  return query.order('created_at', { ascending: false })
-}
+        {loading ? (
+          <EmptyCard
+            icon="fa-solid fa-spinner fa-spin"
+            title="Loading stories..."
+            text="Please wait while recommendations are loading."
+          />
+        ) : (
+          <StoryGrid
+            stories={authorSectionStories}
+            emptyIcon="fa-solid fa-pen-nib"
+            emptyTitle="No other stories yet"
+            emptyText="This author does not have more published stories yet."
+            onOpenStory={handleOpenStory}
+          />
+        )}
+      </div>
 
-async function getAuthorPageById(authorId) {
-  if (!authorId) return null
+      <div className="bg-white p-4 sm:rounded-[28px] sm:p-5 sm:shadow-sm sm:ring-1 sm:ring-black/5">
+        <div className="mb-3">
+          <h2 className="text-[18px] font-black text-[#111827]">You Might Like</h2>
+        </div>
 
-  const { data, error } = await supabase
-    .from('author_pages')
-    .select('*')
-    .eq('id', authorId)
-    .maybeSingle()
-
-  if (error) throw error
-  return data
-}
-
-async function getPublishedNormalStory(storyId) {
-  const { data, error } = await supabase
-    .from('stories')
-    .select('*')
-    .eq('id', storyId)
-    .eq('status', 'published')
-    .neq('is_shadow_exclusive', true)
-    .maybeSingle()
-
-  if (error) throw error
-  return data
-}
-
-async function getPublishedReadableStory(storyId) {
-  const { data, error } = await supabase
-    .from('stories')
-    .select('*')
-    .eq('id', storyId)
-    .eq('status', 'published')
-    .maybeSingle()
-
-  if (error) throw error
-  return data
-}
-
-async function getApprovedExclusiveStory(storyId) {
-  const { data, error } = await supabase
-    .from('stories')
-    .select('*')
-    .eq('id', storyId)
-    .eq('status', 'published')
-    .eq('is_shadow_exclusive', true)
-    .eq('exclusive_status', 'approved')
-    .maybeSingle()
-
-  if (error) throw error
-  return data
-}
-
-export async function getPublicStories(req, res) {
-  try {
-    const limit = normalizeLimit(req.query.limit)
-    const genre = String(req.query.genre || '').trim()
-    const language = String(req.query.language || '').trim()
-    const sort = String(req.query.sort || 'latest').trim()
-    const authorId = String(req.query.authorId || req.query.author_id || '').trim()
-    const exclude = String(req.query.exclude || req.query.excludeId || req.query.exclude_id || '').trim()
-
-    let query = supabase
-      .from('stories')
-      .select('*')
-      .eq('status', 'published')
-      .neq('is_shadow_exclusive', true)
-      .limit(limit)
-
-    if (genre) {
-      query = query.eq('main_genre', genre)
-    }
-
-    if (language) {
-      query = query.eq('story_language', language)
-    }
-
-    if (authorId) {
-      query = query.eq('author_id', authorId)
-    }
-
-    if (exclude) {
-      query = query.neq('id', exclude)
-    }
-
-    query = applyStorySort(query, sort)
-
-    const { data, error } = await query
-
-    if (error) throw error
-
-    return res.status(200).json({
-      ok: true,
-      stories: (data || []).map(publicStoryListItem),
-    })
-  } catch (error) {
-    console.error('GET PUBLIC STORIES ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load stories',
-      error: error.message,
-    })
-  }
-}
-
-export async function getPublicShadowExclusiveStories(req, res) {
-  try {
-    const limit = normalizeLimit(req.query.limit)
-    const section = String(req.query.section || '').trim()
-    const genre = String(req.query.genre || '').trim()
-    const language = String(req.query.language || '').trim()
-    const sort = String(req.query.sort || 'updated').trim()
-
-    let query = supabase
-      .from('stories')
-      .select('*')
-      .eq('status', 'published')
-      .eq('is_shadow_exclusive', true)
-      .eq('exclusive_status', 'approved')
-      .limit(limit)
-
-    if (section) {
-      query = query.contains('exclusive_sections', [section])
-    }
-
-    if (genre) {
-      query = query.eq('main_genre', genre)
-    }
-
-    if (language) {
-      query = query.eq('story_language', language)
-    }
-
-    query = applyStorySort(query, sort)
-
-    const { data, error } = await query
-
-    if (error) throw error
-
-    return res.status(200).json({
-      ok: true,
-      stories: (data || []).map(publicStoryListItem),
-    })
-  } catch (error) {
-    console.error('GET PUBLIC SHADOW EXCLUSIVE STORIES ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load Shadow Exclusive stories',
-      error: error.message,
-    })
-  }
-}
-
-export async function getPublicStoryById(req, res) {
-  try {
-    const { storyId } = req.params
-
-    const story = await getPublishedReadableStory(storyId)
-
-    if (!story) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Story not found',
-      })
-    }
-
-    if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
-      return res.status(404).json({
-        ok: false,
-        message: 'Story not found',
-      })
-    }
-
-    const [{ data: slides, error: slidesError }, authorPage] = await Promise.all([
-      supabase
-        .from('story_carousel_slides')
-        .select('*')
-        .eq('story_id', storyId)
-        .eq('is_active', true)
-        .order('sort_order', { ascending: true }),
-      getAuthorPageById(story.author_id),
-    ])
-
-    if (slidesError) throw slidesError
-
-    return res.status(200).json({
-      ok: true,
-      story: publicStory(story, slides || [], authorPage),
-    })
-  } catch (error) {
-    console.error('GET PUBLIC STORY ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load story',
-      error: error.message,
-    })
-  }
-}
-
-export async function getPublicShadowExclusiveStoryById(req, res) {
-  try {
-    const { storyId } = req.params
-
-    const story = await getApprovedExclusiveStory(storyId)
-
-    if (!story) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Shadow Exclusive story not found',
-      })
-    }
-
-    const [{ data: slides, error: slidesError }, authorPage] = await Promise.all([
-      supabase
-        .from('story_carousel_slides')
-        .select('*')
-        .eq('story_id', storyId)
-        .eq('is_active', true)
-        .order('sort_order', { ascending: true }),
-      getAuthorPageById(story.author_id),
-    ])
-
-    if (slidesError) throw slidesError
-
-    return res.status(200).json({
-      ok: true,
-      story: publicStory(story, slides || [], authorPage),
-    })
-  } catch (error) {
-    console.error('GET PUBLIC SHADOW EXCLUSIVE STORY ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load Shadow Exclusive story',
-      error: error.message,
-    })
-  }
-}
-
-export async function getPublicStoryEpisodes(req, res) {
-  try {
-    const { storyId } = req.params
-
-    const story = await getPublishedReadableStory(storyId)
-
-    if (!story) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Story not found',
-      })
-    }
-
-    if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
-      return res.status(404).json({
-        ok: false,
-        message: 'Story not found',
-      })
-    }
-
-    const { data, error } = await supabase
-      .from('episodes')
-      .select('id, story_id, title, cover_url, is_adult, is_locked, unlock_methods, status, episode_number, character_count, published_at, created_at, updated_at')
-      .eq('story_id', storyId)
-      .eq('status', 'published')
-      .order('episode_number', { ascending: true })
-
-    if (error) throw error
-
-    return res.status(200).json({
-      ok: true,
-      episodes: (data || []).map(publicEpisodeListItem),
-    })
-  } catch (error) {
-    console.error('GET PUBLIC STORY EPISODES ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load episodes',
-      error: error.message,
-    })
-  }
-}
-
-export async function getPublicEpisodeById(req, res) {
-  try {
-    const { storyId, episodeId } = req.params
-
-    const story = await getPublishedReadableStory(storyId)
-
-    if (!story) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Story not found',
-      })
-    }
-
-    if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
-      return res.status(404).json({
-        ok: false,
-        message: 'Story not found',
-      })
-    }
-
-    const { data: episode, error } = await supabase
-      .from('episodes')
-      .select('*')
-      .eq('id', episodeId)
-      .eq('story_id', storyId)
-      .eq('status', 'published')
-      .maybeSingle()
-
-    if (error) throw error
-
-    if (!episode) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Episode not found',
-      })
-    }
-
-    return res.status(200).json({
-      ok: true,
-      story: publicStory(story),
-      episode: publicEpisode(episode),
-    })
-  } catch (error) {
-    console.error('GET PUBLIC EPISODE ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load episode',
-      error: error.message,
-    })
-  }
+        {loading ? (
+          <EmptyCard
+            icon="fa-solid fa-spinner fa-spin"
+            title="Loading similar stories..."
+            text="Please wait while similar stories are loading."
+          />
+        ) : (
+          <StoryGrid
+            stories={similarStories}
+            emptyIcon="fa-regular fa-compass"
+            emptyTitle="No similar stories yet"
+            emptyText="Similar stories will appear after more published stories are available."
+            onOpenStory={handleOpenStory}
+          />
+        )}
+      </div>
+    </section>
+  )
 }
