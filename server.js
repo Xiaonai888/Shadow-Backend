@@ -15,6 +15,7 @@ import adminExclusiveRoutes from './src/routes/adminExclusive.routes.js'
 import genresRoutes from './src/routes/genres.routes.js'
 import commentsRoutes from './src/routes/comments.routes.js'
 import adminCommentsRoutes from './src/routes/adminComments.routes.js'
+import libraryRoutes from './src/routes/library.routes.js'
 
 dotenv.config()
 
@@ -70,6 +71,7 @@ app.use('/api/admin/exclusive', adminExclusiveRoutes)
 app.use('/api/admin/comments', adminCommentsRoutes)
 app.use('/api/genres', genresRoutes)
 app.use('/api/comments', commentsRoutes)
+app.use('/api/reader', libraryRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
