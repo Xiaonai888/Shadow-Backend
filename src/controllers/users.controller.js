@@ -57,19 +57,18 @@ function verifyPassword(password, passwordHash) {
   return crypto.timingSafeEqual(hashBuffer, storedBuffer)
 }
 
-function hashResetToken(token) {
-  return crypto.createHash('sha256').update(token).digest('hex')
+function hashResetOtp(email, otp) {
+  return crypto
+    .createHash('sha256')
+    .update(`${normalizeEmail(email)}:${String(otp || '').trim()}`)
+    .digest('hex')
 }
 
-function createResetToken() {
-  return crypto.randomBytes(32).toString('hex')
+function createResetOtp() {
+  return String(crypto.randomInt(100000, 1000000))
 }
 
-function getReaderAppUrl() {
-  return String(process.env.READER_APP_URL || 'https://shadowerabook.site').replace(/\/$/, '')
-}
-
-async function sendPasswordResetEmail({ to, resetUrl }) {
+async function sendPasswordResetOtpEmail({ to, otp }) {
   const apiKey = String(process.env.RESEND_API_KEY || '').trim()
   const from = String(process.env.RESET_FROM_EMAIL || 'Shadow Era Book <onboarding@resend.dev>').trim()
 
@@ -84,14 +83,23 @@ async function sendPasswordResetEmail({ to, resetUrl }) {
     body: JSON.stringify({
       from,
       to,
-      subject: 'Reset your Shadow Era Book password',
-      html: `<p>You requested to reset your password.</p><p><a href="${resetUrl}">Reset Password</a></p><p>This link expires in 30 minutes.</p>`,
+      subject: 'Your Shadow Era Book password reset code',
+      html: `
+        <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111827">
+          <h2>Password reset code</h2>
+          <p>Use this 6-digit code to reset your Shadow Era Book password.</p>
+          <div style="font-size:32px;font-weight:800;letter-spacing:8px;background:#f5f3fa;border-radius:14px;padding:18px 22px;display:inline-block">${otp}</div>
+          <p>This code expires in 10 minutes.</p>
+          <p>If you did not request this, you can ignore this email.</p>
+        </div>
+      `,
+      text: `Your Shadow Era Book password reset code is ${otp}. This code expires in 10 minutes.`,
     }),
   })
 
   if (!response.ok) {
     const text = await response.text().catch(() => '')
-    throw new Error(text || 'Failed to send reset email')
+    throw new Error(text || 'Failed to send reset code')
   }
 
   return true
@@ -367,7 +375,8 @@ export async function requestPasswordReset(req, res) {
     if (!user) {
       return res.status(200).json({
         ok: true,
-        message: 'If this email exists, a reset link has been sent.',
+        message: 'If this email exists, a reset code has been sent.',
+        email_sent: true,
       })
     }
 
@@ -377,28 +386,27 @@ export async function requestPasswordReset(req, res) {
       .eq('user_id', user.id)
       .is('used_at', null)
 
-    const token = createResetToken()
-    const tokenHash = hashResetToken(token)
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString()
+    const otp = createResetOtp()
+    const otpHash = hashResetOtp(user.email, otp)
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString()
 
     const { error: insertError } = await supabase
       .from('password_reset_tokens')
       .insert({
         user_id: user.id,
-        token_hash: tokenHash,
+        token_hash: otpHash,
         expires_at: expiresAt,
+        attempt_count: 0,
       })
 
     if (insertError) throw insertError
 
-    const resetUrl = `${getReaderAppUrl()}/reset-password?token=${token}`
-    const emailSent = await sendPasswordResetEmail({ to: user.email, resetUrl })
+    const emailSent = await sendPasswordResetOtpEmail({ to: user.email, otp })
 
     return res.status(200).json({
       ok: true,
-      message: 'If this email exists, a reset link has been sent.',
+      message: 'If this email exists, a reset code has been sent.',
       email_sent: emailSent,
-      reset_url: emailSent ? undefined : resetUrl,
     })
   } catch (error) {
     console.error('REQUEST PASSWORD RESET ERROR:', error)
@@ -413,14 +421,22 @@ export async function requestPasswordReset(req, res) {
 
 export async function resetPassword(req, res) {
   try {
-    const token = String(req.body.token || '').trim()
+    const email = normalizeEmail(req.body.email)
+    const otp = String(req.body.otp || '').trim()
     const password = String(req.body.password || '')
     const confirmPassword = String(req.body.confirmPassword || '')
 
-    if (!token) {
+    if (!email || !isValidEmail(email)) {
       return res.status(400).json({
         ok: false,
-        message: 'Reset token is required',
+        message: 'Valid email is required',
+      })
+    }
+
+    if (!/^\d{6}$/.test(otp)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'A valid 6-digit code is required',
       })
     }
 
@@ -438,13 +454,31 @@ export async function resetPassword(req, res) {
       })
     }
 
-    const tokenHash = hashResetToken(token)
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (userError) throw userError
+
+    if (!user) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Reset code is invalid or expired',
+      })
+    }
+
+    const otpHash = hashResetOtp(email, otp)
 
     const { data: resetRow, error: resetError } = await supabase
       .from('password_reset_tokens')
-      .select('id, user_id, expires_at, used_at')
-      .eq('token_hash', tokenHash)
+      .select('id, user_id, expires_at, used_at, attempt_count')
+      .eq('user_id', user.id)
       .is('used_at', null)
+      .order('created_at', { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     if (resetError) throw resetError
@@ -452,20 +486,44 @@ export async function resetPassword(req, res) {
     if (!resetRow || new Date(resetRow.expires_at).getTime() < Date.now()) {
       return res.status(400).json({
         ok: false,
-        message: 'Reset link is invalid or expired',
+        message: 'Reset code is invalid or expired',
+      })
+    }
+
+    if (Number(resetRow.attempt_count || 0) >= 5) {
+      await supabase
+        .from('password_reset_tokens')
+        .update({ used_at: new Date().toISOString() })
+        .eq('id', resetRow.id)
+
+      return res.status(400).json({
+        ok: false,
+        message: 'Too many wrong attempts. Please request a new code.',
+      })
+    }
+
+    if (resetRow.token_hash !== otpHash) {
+      await supabase
+        .from('password_reset_tokens')
+        .update({ attempt_count: Number(resetRow.attempt_count || 0) + 1 })
+        .eq('id', resetRow.id)
+
+      return res.status(400).json({
+        ok: false,
+        message: 'Reset code is incorrect',
       })
     }
 
     const passwordHash = hashPassword(password)
     const updatedAt = new Date().toISOString()
 
-    const { data: user, error: updateUserError } = await supabase
+    const { data: updatedUser, error: updateUserError } = await supabase
       .from('users')
       .update({
         password_hash: passwordHash,
         updated_at: updatedAt,
       })
-      .eq('id', resetRow.user_id)
+      .eq('id', user.id)
       .eq('is_active', true)
       .select()
       .single()
@@ -479,13 +537,13 @@ export async function resetPassword(req, res) {
 
     if (updateTokenError) throw updateTokenError
 
-    const authToken = createUserToken(user)
+    const authToken = createUserToken(updatedUser)
 
     return res.status(200).json({
       ok: true,
       message: 'Password reset successfully',
       token: authToken,
-      user: publicUser(user),
+      user: publicUser(updatedUser),
     })
   } catch (error) {
     console.error('RESET PASSWORD ERROR:', error)
