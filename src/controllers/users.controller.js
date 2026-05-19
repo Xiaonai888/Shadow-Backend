@@ -57,6 +57,46 @@ function verifyPassword(password, passwordHash) {
   return crypto.timingSafeEqual(hashBuffer, storedBuffer)
 }
 
+function hashResetToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex')
+}
+
+function createResetToken() {
+  return crypto.randomBytes(32).toString('hex')
+}
+
+function getReaderAppUrl() {
+  return String(process.env.READER_APP_URL || 'https://shadowerabook.site').replace(/\/$/, '')
+}
+
+async function sendPasswordResetEmail({ to, resetUrl }) {
+  const apiKey = String(process.env.RESEND_API_KEY || '').trim()
+  const from = String(process.env.RESET_FROM_EMAIL || 'Shadow Era Book <onboarding@resend.dev>').trim()
+
+  if (!apiKey) return false
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from,
+      to,
+      subject: 'Reset your Shadow Era Book password',
+      html: `<p>You requested to reset your password.</p><p><a href="${resetUrl}">Reset Password</a></p><p>This link expires in 30 minutes.</p>`,
+    }),
+  })
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(text || 'Failed to send reset email')
+  }
+
+  return true
+}
+
 function createUserToken(user) {
   return jwt.sign(
     {
@@ -299,6 +339,160 @@ export async function loginUser(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Login failed',
+      error: error.message,
+    })
+  }
+}
+
+export async function requestPasswordReset(req, res) {
+  try {
+    const email = normalizeEmail(req.body.email)
+
+    if (!email || !isValidEmail(email)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Valid email is required',
+      })
+    }
+
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email, is_active')
+      .eq('email', email)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (userError) throw userError
+
+    if (!user) {
+      return res.status(200).json({
+        ok: true,
+        message: 'If this email exists, a reset link has been sent.',
+      })
+    }
+
+    await supabase
+      .from('password_reset_tokens')
+      .update({ used_at: new Date().toISOString() })
+      .eq('user_id', user.id)
+      .is('used_at', null)
+
+    const token = createResetToken()
+    const tokenHash = hashResetToken(token)
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString()
+
+    const { error: insertError } = await supabase
+      .from('password_reset_tokens')
+      .insert({
+        user_id: user.id,
+        token_hash: tokenHash,
+        expires_at: expiresAt,
+      })
+
+    if (insertError) throw insertError
+
+    const resetUrl = `${getReaderAppUrl()}/reset-password?token=${token}`
+    const emailSent = await sendPasswordResetEmail({ to: user.email, resetUrl })
+
+    return res.status(200).json({
+      ok: true,
+      message: 'If this email exists, a reset link has been sent.',
+      email_sent: emailSent,
+      reset_url: emailSent ? undefined : resetUrl,
+    })
+  } catch (error) {
+    console.error('REQUEST PASSWORD RESET ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to request password reset',
+      error: error.message,
+    })
+  }
+}
+
+export async function resetPassword(req, res) {
+  try {
+    const token = String(req.body.token || '').trim()
+    const password = String(req.body.password || '')
+    const confirmPassword = String(req.body.confirmPassword || '')
+
+    if (!token) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Reset token is required',
+      })
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Password must be at least 6 characters',
+      })
+    }
+
+    if (password !== confirmPassword) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Password and confirm password do not match',
+      })
+    }
+
+    const tokenHash = hashResetToken(token)
+
+    const { data: resetRow, error: resetError } = await supabase
+      .from('password_reset_tokens')
+      .select('id, user_id, expires_at, used_at')
+      .eq('token_hash', tokenHash)
+      .is('used_at', null)
+      .maybeSingle()
+
+    if (resetError) throw resetError
+
+    if (!resetRow || new Date(resetRow.expires_at).getTime() < Date.now()) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Reset link is invalid or expired',
+      })
+    }
+
+    const passwordHash = hashPassword(password)
+    const updatedAt = new Date().toISOString()
+
+    const { data: user, error: updateUserError } = await supabase
+      .from('users')
+      .update({
+        password_hash: passwordHash,
+        updated_at: updatedAt,
+      })
+      .eq('id', resetRow.user_id)
+      .eq('is_active', true)
+      .select()
+      .single()
+
+    if (updateUserError) throw updateUserError
+
+    const { error: updateTokenError } = await supabase
+      .from('password_reset_tokens')
+      .update({ used_at: updatedAt })
+      .eq('id', resetRow.id)
+
+    if (updateTokenError) throw updateTokenError
+
+    const authToken = createUserToken(user)
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Password reset successfully',
+      token: authToken,
+      user: publicUser(user),
+    })
+  } catch (error) {
+    console.error('RESET PASSWORD ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to reset password',
       error: error.message,
     })
   }
