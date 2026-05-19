@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
+import { sendManualPaymentProofAlert } from '../services/telegram.service.js'
 
 const PACKAGES = [
   { package_usd: 1, diamonds: 100, bonus_gems: 0 },
@@ -42,7 +43,7 @@ function isPaymentExpired(payment) {
 }
 
 function isProofExpired(payment) {
-  const proofExpiresAt = payment?.proof_expires_at || payment?.expires_at
+  const proofExpiresAt = payment?.proof_expires_at || payment?.expires_at || payment?.expired_at
   return proofExpiresAt && new Date(proofExpiresAt).getTime() < Date.now()
 }
 
@@ -65,7 +66,7 @@ function publicManualPayment(item) {
     created_at: item.created_at,
     expires_at: item.expires_at,
     expired_at: item.expired_at || item.expires_at,
-    proof_expires_at: item.proof_expires_at || item.expires_at,
+    proof_expires_at: item.proof_expires_at || item.expires_at || item.expired_at,
     proof_uploaded_at: item.proof_uploaded_at,
     paid_at: item.paid_at,
     released_at: item.released_at,
@@ -240,6 +241,10 @@ export async function submitManualPaymentProof(req, res) {
       .single()
 
     if (error) throw error
+
+    sendManualPaymentProofAlert(publicManualPayment(data)).catch((telegramError) => {
+      console.error('TELEGRAM MANUAL PAYMENT ALERT ERROR:', telegramError)
+    })
 
     return res.status(200).json({ ok: true, payment: publicManualPayment(data) })
   } catch (error) {
