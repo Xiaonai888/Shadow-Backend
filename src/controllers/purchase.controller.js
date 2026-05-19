@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
 
 const PACKAGES = [
@@ -16,6 +17,38 @@ function getUserId(req) {
 function getPackageByUsd(value) {
   const packageUsd = Number(value)
   return PACKAGES.find((item) => item.package_usd === packageUsd) || null
+}
+
+function publicWallet(wallet) {
+  return {
+    id: wallet.id,
+    user_id: wallet.user_id,
+    diamond_balance: Number(wallet.diamond_balance || 0),
+    gem_balance: Number(wallet.gem_balance || 0),
+    created_at: wallet.created_at,
+    updated_at: wallet.updated_at,
+  }
+}
+
+function publicTransaction(item) {
+  return {
+    id: item.id,
+    user_id: item.user_id,
+    order_id: item.order_id,
+    aba_transaction_id: item.aba_transaction_id || '',
+    package_usd: Number(item.package_usd || 0),
+    amount_usd: Number(item.amount_usd || 0),
+    diamonds: Number(item.diamonds || 0),
+    bonus_gems: Number(item.bonus_gems || 0),
+    payment_method: item.payment_method || 'aba_khqr',
+    qr_string: item.qr_string || '',
+    checkout_url: item.checkout_url || '',
+    status: item.status,
+    created_at: item.created_at,
+    expired_at: item.expired_at,
+    paid_at: item.paid_at,
+    updated_at: item.updated_at,
+  }
 }
 
 function publicPurchase(item, userMap = {}) {
@@ -42,60 +75,74 @@ function publicPurchase(item, userMap = {}) {
   }
 }
 
-function publicWallet(wallet) {
+function createOrderId() {
+  return `SHD-${Date.now()}-${crypto.randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase()}`
+}
+
+function formatAmount(value) {
+  return Number(value || 0).toFixed(2)
+}
+
+function getHashFields() {
+  return String(process.env.ABA_PAYWAY_HASH_FIELDS || 'req_time,merchant_id,tran_id,amount,currency,payment_option,return_url,continue_success_url,return_params')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function createHashFromFields(payload) {
+  const secret = process.env.ABA_PAYWAY_HASH_KEY || process.env.ABA_PAYWAY_SECRET_KEY || ''
+  if (!secret) return ''
+
+  const raw = getHashFields().map((field) => payload[field] || '').join('')
+  return crypto.createHmac('sha512', secret).update(raw).digest('base64')
+}
+
+function getCallbackSignature(req) {
+  return String(req.headers['x-aba-signature'] || req.headers['x-payway-signature'] || req.body.hash || req.body.signature || '').trim()
+}
+
+function verifyCallback(req) {
+  const secret = process.env.ABA_PAYWAY_CALLBACK_SECRET || process.env.ABA_PAYWAY_HASH_KEY || process.env.ABA_PAYWAY_SECRET_KEY || ''
+  const devMode = process.env.ABA_PAYMENT_DEV_MODE === 'true'
+
+  if (devMode) return true
+  if (!secret) return false
+
+  const signature = getCallbackSignature(req)
+  if (!signature) return false
+
+  const payload = { ...req.body }
+  delete payload.hash
+  delete payload.signature
+
+  const raw = JSON.stringify(payload)
+  const expectedBase64 = crypto.createHmac('sha512', secret).update(raw).digest('base64')
+  const expectedHex = crypto.createHmac('sha512', secret).update(raw).digest('hex')
+
+  return signature === expectedBase64 || signature === expectedHex
+}
+
+function getCallbackOrderId(body) {
+  return String(body.order_id || body.tran_id || body.transaction_id || body.return_params || '').trim()
+}
+
+function getCallbackStatus(body) {
+  return String(body.status || body.payment_status || body.result || body.approval_status || '').trim().toLowerCase()
+}
+
+function isSuccessStatus(value) {
+  return ['success', 'successful', 'approved', 'paid', 'completed', '0'].includes(value)
+}
+
+function extractAbaResponse(data) {
+  const source = data?.data || data || {}
+
   return {
-    id: wallet.id,
-    user_id: wallet.user_id,
-    diamond_balance: Number(wallet.diamond_balance || 0),
-    gem_balance: Number(wallet.gem_balance || 0),
-    created_at: wallet.created_at,
-    updated_at: wallet.updated_at,
-  }
-}
-
-function formatTelegramPurchaseMessage(purchase, user) {
-  const lines = [
-    '💎 New Purchase Request',
-    '',
-    `Request ID: ${purchase.id}`,
-    `Amount: $${purchase.package_usd}`,
-    `Diamonds: ${purchase.diamonds}`,
-    `Bonus Gems: ${purchase.bonus_gems}`,
-    `Status: ${purchase.status}`,
-    '',
-    `User: ${user?.name || 'Unknown'}`,
-    `Username: ${user?.username || '-'}`,
-    `Email: ${user?.email || '-'}`,
-    '',
-    `Payer Name: ${purchase.payer_name || '-'}`,
-    `Reference: ${purchase.payment_reference || '-'}`,
-    `Proof: ${purchase.proof_url || '-'}`,
-  ]
-
-  return lines.join('\n')
-}
-
-async function sendTelegramMessage(message) {
-  const botToken = process.env.TELEGRAM_BOT_TOKEN
-  const chatId = process.env.TELEGRAM_ADMIN_CHAT_ID
-
-  if (!botToken || !chatId) return
-
-  const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: message,
-      disable_web_page_preview: false,
-    }),
-  })
-
-  if (!response.ok) {
-    const text = await response.text()
-    throw new Error(text || 'Telegram notification failed')
+    raw: data || {},
+    qr_string: source.qr_string || source.qrString || source.abapay_khqr || source.khqr || source.qr || '',
+    checkout_url: source.checkout_url || source.checkoutUrl || source.payment_url || source.paymentUrl || source.url || '',
+    aba_transaction_id: source.transaction_id || source.tran_id || source.payment_id || '',
   }
 }
 
@@ -149,6 +196,68 @@ async function getUsersMap(userIds) {
   )
 }
 
+async function createAbaPaywayCharge({ orderId, amountUsd }) {
+  const url = process.env.ABA_PAYWAY_CREATE_PAYMENT_URL || ''
+  const merchantId = process.env.ABA_PAYWAY_MERCHANT_ID || ''
+  const returnUrl = process.env.ABA_PAYWAY_RETURN_URL || ''
+  const successUrl = process.env.ABA_PAYWAY_SUCCESS_URL || ''
+  const currency = process.env.ABA_PAYWAY_CURRENCY || 'USD'
+  const paymentOption = process.env.ABA_PAYWAY_PAYMENT_OPTION || 'abapay_khqr'
+  const reqTime = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)
+
+  const payload = {
+    req_time: reqTime,
+    merchant_id: merchantId,
+    tran_id: orderId,
+    amount: formatAmount(amountUsd),
+    currency,
+    payment_option: paymentOption,
+    return_url: returnUrl,
+    continue_success_url: successUrl,
+    return_params: orderId,
+    lifetime: '2',
+  }
+
+  const hash = createHashFromFields(payload)
+  const body = hash ? { ...payload, hash } : payload
+
+  if (!url || !merchantId) {
+    return {
+      configured: false,
+      qr_string: '',
+      checkout_url: '',
+      aba_transaction_id: '',
+      raw: { message: 'ABA PayWay is not configured' },
+    }
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+
+  const text = await response.text()
+  let data = {}
+
+  try {
+    data = text ? JSON.parse(text) : {}
+  } catch (error) {
+    data = { raw: text }
+  }
+
+  if (!response.ok) {
+    throw new Error(data.message || data.error || 'ABA PayWay payment creation failed')
+  }
+
+  return {
+    configured: true,
+    ...extractAbaResponse(data),
+  }
+}
+
 export async function getPurchasePackages(req, res) {
   return res.status(200).json({
     ok: true,
@@ -184,13 +293,10 @@ export async function getMyWallet(req, res) {
   }
 }
 
-export async function createPurchaseRequest(req, res) {
+export async function createAbaPayment(req, res) {
   try {
     const userId = getUserId(req)
     const selectedPackage = getPackageByUsd(req.body.package_usd)
-    const payerName = String(req.body.payer_name || '').trim()
-    const paymentReference = String(req.body.payment_reference || '').trim()
-    const proofUrl = String(req.body.proof_url || '').trim()
 
     if (!userId) {
       return res.status(401).json({
@@ -206,6 +312,148 @@ export async function createPurchaseRequest(req, res) {
       })
     }
 
+    const orderId = createOrderId()
+    const createdAt = new Date()
+    const expiredAt = new Date(createdAt.getTime() + 2 * 60 * 1000).toISOString()
+    const aba = await createAbaPaywayCharge({ orderId, amountUsd: selectedPackage.package_usd })
+
+    const { data, error } = await supabase
+      .from('payment_transactions')
+      .insert({
+        user_id: userId,
+        order_id: orderId,
+        aba_transaction_id: aba.aba_transaction_id || null,
+        package_usd: selectedPackage.package_usd,
+        amount_usd: selectedPackage.package_usd,
+        diamonds: selectedPackage.diamonds,
+        bonus_gems: selectedPackage.bonus_gems,
+        payment_method: 'aba_khqr',
+        qr_string: aba.qr_string || null,
+        checkout_url: aba.checkout_url || null,
+        status: 'waiting_payment',
+        aba_payload: aba.raw || {},
+        expired_at: expiredAt,
+      })
+      .select('*')
+      .single()
+
+    if (error) throw error
+
+    return res.status(201).json({
+      ok: true,
+      configured: aba.configured,
+      payment: publicTransaction(data),
+    })
+  } catch (error) {
+    console.error('CREATE ABA PAYMENT ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to create ABA payment',
+      error: error.message,
+    })
+  }
+}
+
+export async function getAbaPaymentStatus(req, res) {
+  try {
+    const userId = getUserId(req)
+    const orderId = String(req.params.orderId || '').trim()
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
+    const { data: expiredData, error: expiredError } = await supabase.rpc('expire_aba_payment', {
+      p_order_id: orderId,
+    })
+
+    if (expiredError) throw expiredError
+
+    const payment = Array.isArray(expiredData) ? expiredData[0] : expiredData
+
+    if (!payment || payment.user_id !== userId) {
+      return res.status(404).json({ ok: false, message: 'Payment not found' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      payment: publicTransaction(payment),
+    })
+  } catch (error) {
+    console.error('GET ABA PAYMENT STATUS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load payment status',
+      error: error.message,
+    })
+  }
+}
+
+export async function handleAbaCallback(req, res) {
+  try {
+    if (!verifyCallback(req)) {
+      return res.status(401).json({ ok: false, message: 'Invalid callback signature' })
+    }
+
+    const orderId = getCallbackOrderId(req.body)
+    const status = getCallbackStatus(req.body)
+    const abaTransactionId = String(req.body.aba_transaction_id || req.body.transaction_id || req.body.tran_id || req.body.payment_id || '').trim()
+
+    if (!orderId) {
+      return res.status(400).json({ ok: false, message: 'Missing order id' })
+    }
+
+    if (!isSuccessStatus(status)) {
+      await supabase
+        .from('payment_transactions')
+        .update({
+          status: status === 'cancelled' || status === 'canceled' ? 'cancelled' : 'failed',
+          aba_payload: req.body,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('order_id', orderId)
+        .eq('status', 'waiting_payment')
+
+      return res.status(200).json({ ok: true })
+    }
+
+    const { data, error } = await supabase.rpc('release_aba_payment', {
+      p_order_id: orderId,
+      p_aba_transaction_id: abaTransactionId || null,
+      p_aba_payload: req.body,
+    })
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      wallet: Array.isArray(data) ? data[0] : data,
+    })
+  } catch (error) {
+    console.error('ABA CALLBACK ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to process ABA callback',
+    })
+  }
+}
+
+export async function createPurchaseRequest(req, res) {
+  try {
+    const userId = getUserId(req)
+    const selectedPackage = getPackageByUsd(req.body.package_usd)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
+    if (!selectedPackage) {
+      return res.status(400).json({ ok: false, message: 'Invalid purchase package' })
+    }
+
     const { data, error } = await supabase
       .from('purchase_requests')
       .insert({
@@ -214,9 +462,6 @@ export async function createPurchaseRequest(req, res) {
         diamonds: selectedPackage.diamonds,
         bonus_gems: selectedPackage.bonus_gems,
         payment_method: 'aba_khqr',
-        payer_name: payerName || null,
-        payment_reference: paymentReference || null,
-        proof_url: proofUrl || null,
         status: 'pending',
       })
       .select('*')
@@ -224,17 +469,7 @@ export async function createPurchaseRequest(req, res) {
 
     if (error) throw error
 
-    const userMap = await getUsersMap([userId])
-    const purchase = publicPurchase(data, userMap)
-
-    sendTelegramMessage(formatTelegramPurchaseMessage(purchase, userMap[userId])).catch((telegramError) => {
-      console.error('TELEGRAM PURCHASE ALERT ERROR:', telegramError)
-    })
-
-    return res.status(201).json({
-      ok: true,
-      purchase,
-    })
+    return res.status(201).json({ ok: true, purchase: publicPurchase(data) })
   } catch (error) {
     console.error('CREATE PURCHASE REQUEST ERROR:', error)
 
@@ -251,14 +486,11 @@ export async function getMyPurchaseRequests(req, res) {
     const userId = getUserId(req)
 
     if (!userId) {
-      return res.status(401).json({
-        ok: false,
-        message: 'User is required',
-      })
+      return res.status(401).json({ ok: false, message: 'User is required' })
     }
 
     const { data, error } = await supabase
-      .from('purchase_requests')
+      .from('payment_transactions')
       .select('*')
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
@@ -268,7 +500,7 @@ export async function getMyPurchaseRequests(req, res) {
 
     return res.status(200).json({
       ok: true,
-      purchases: (data || []).map((item) => publicPurchase(item)),
+      purchases: (data || []).map((item) => publicTransaction(item)),
     })
   } catch (error) {
     console.error('GET MY PURCHASE REQUESTS ERROR:', error)
@@ -290,9 +522,7 @@ export async function getAdminPurchaseRequests(req, res) {
       .order('created_at', { ascending: false })
       .limit(100)
 
-    if (['pending', 'approved', 'rejected'].includes(status)) {
-      query = query.eq('status', status)
-    }
+    if (['pending', 'approved', 'rejected'].includes(status)) query = query.eq('status', status)
 
     const { data, error } = await query
 
@@ -327,19 +557,11 @@ export async function getAdminPurchaseRequest(req, res) {
 
     if (error) throw error
 
-    if (!data) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Purchase request not found',
-      })
-    }
+    if (!data) return res.status(404).json({ ok: false, message: 'Purchase request not found' })
 
     const userMap = await getUsersMap([data.user_id])
 
-    return res.status(200).json({
-      ok: true,
-      purchase: publicPurchase(data, userMap),
-    })
+    return res.status(200).json({ ok: true, purchase: publicPurchase(data, userMap) })
   } catch (error) {
     console.error('GET ADMIN PURCHASE REQUEST ERROR:', error)
 
@@ -383,10 +605,7 @@ export async function approveAdminPurchaseRequest(req, res) {
   } catch (error) {
     console.error('APPROVE ADMIN PURCHASE REQUEST ERROR:', error)
 
-    return res.status(500).json({
-      ok: false,
-      message: error.message || 'Failed to approve purchase request',
-    })
+    return res.status(500).json({ ok: false, message: error.message || 'Failed to approve purchase request' })
   }
 }
 
@@ -414,16 +633,10 @@ export async function rejectAdminPurchaseRequest(req, res) {
 
     const userMap = await getUsersMap([purchase.user_id])
 
-    return res.status(200).json({
-      ok: true,
-      purchase: publicPurchase(purchase, userMap),
-    })
+    return res.status(200).json({ ok: true, purchase: publicPurchase(purchase, userMap) })
   } catch (error) {
     console.error('REJECT ADMIN PURCHASE REQUEST ERROR:', error)
 
-    return res.status(500).json({
-      ok: false,
-      message: error.message || 'Failed to reject purchase request',
-    })
+    return res.status(500).json({ ok: false, message: error.message || 'Failed to reject purchase request' })
   }
 }
