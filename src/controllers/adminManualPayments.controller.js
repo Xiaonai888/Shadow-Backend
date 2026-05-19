@@ -1,188 +1,180 @@
-import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
 
-const PACKAGES = [
-  { package_usd: 1, diamonds: 100, bonus_gems: 0 },
-  { package_usd: 5, diamonds: 500, bonus_gems: 1000 },
-  { package_usd: 10, diamonds: 1000, bonus_gems: 2000 },
-  { package_usd: 20, diamonds: 2000, bonus_gems: 4000 },
-  { package_usd: 50, diamonds: 5000, bonus_gems: 10000 },
-  { package_usd: 100, diamonds: 10000, bonus_gems: 20000 },
-]
+function normalizeStatus(status) {
+  const value = String(status || '').trim().toLowerCase()
 
-const PAYMENT_LINK = process.env.ABA_PAYMENT_LINK_URL || 'https://link.payway.com.kh/ABAPAYnw446278Y'
-const PROOF_BUCKET = process.env.PAYMENT_PROOF_BUCKET || 'payment-proofs'
+  if (value === 'approved') return 'success'
+  if (value === 'confirmed') return 'success'
+  if (value === 'pending') return 'waiting_payment'
+  if (value === 'created') return 'waiting_payment'
 
-function getUserId(req) {
-  return req.user?.user_id || req.user?.id || null
+  return value || 'waiting_payment'
 }
 
-function getPackageByUsd(value) {
-  return PACKAGES.find((item) => item.package_usd === Number(value)) || null
-}
+function publicUser(user) {
+  if (!user) return null
 
-function createOrderId() {
-  const time = Date.now().toString(36).toUpperCase()
-  const random = crypto.randomBytes(4).toString('hex').toUpperCase()
-  return `M${time}${random}`.slice(0, 20)
-}
-
-function getExpiresAt() {
-  const minutes = Math.max(10, Number(process.env.MANUAL_PAYMENT_EXPIRES_MINUTES || 60))
-  return new Date(Date.now() + minutes * 60 * 1000).toISOString()
-}
-
-function publicManualPayment(item) {
   return {
-    id: item.id,
-    user_id: item.user_id,
-    order_id: item.order_id,
-    package_usd: Number(item.package_usd || 0),
-    amount_usd: Number(item.amount_usd || 0),
-    currency: item.currency || 'USD',
-    diamonds: Number(item.diamonds || 0),
-    bonus_gems: Number(item.bonus_gems || 0),
-    payment_method: item.payment_method || 'aba_payment_link',
-    checkout_url: item.checkout_url || PAYMENT_LINK,
-    status: item.status,
-    proof_image_url: item.proof_image_url || '',
-    proof_note: item.proof_note || '',
-    manual_reference: item.manual_reference || '',
-    created_at: item.created_at,
-    expires_at: item.expires_at,
-    proof_uploaded_at: item.proof_uploaded_at,
-    paid_at: item.paid_at,
-    released_at: item.released_at,
-    updated_at: item.updated_at,
+    id: user.id,
+    name: user.name || '',
+    username: user.username || '',
+    email: user.email || '',
+    avatar_url: user.avatar_url || '',
   }
 }
 
-function getFileExt(file) {
-  const map = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }
-  return map[file?.mimetype] || 'jpg'
+function publicManualPayment(payment, userMap = {}) {
+  const user = userMap[payment.user_id] || null
+
+  return {
+    id: payment.id,
+    user_id: payment.user_id,
+    order_id: payment.order_id || '',
+    package_usd: Number(payment.package_usd || payment.amount_usd || 0),
+    amount_usd: Number(payment.amount_usd || payment.package_usd || 0),
+    payment_amount: Number(payment.payment_amount || payment.amount_usd || payment.package_usd || 0),
+    payment_currency: payment.payment_currency || payment.currency || 'USD',
+    diamonds: Number(payment.diamonds || 0),
+    bonus_gems: Number(payment.bonus_gems || 0),
+    payment_method: payment.payment_method || 'aba_payment_link',
+    status: normalizeStatus(payment.status),
+    checkout_url: payment.checkout_url || '',
+    proof_image_url: payment.proof_image_url || '',
+    proof_note: payment.proof_note || '',
+    manual_reference: payment.manual_reference || '',
+    admin_note: payment.admin_note || '',
+    created_at: payment.created_at,
+    expires_at: payment.expires_at,
+    proof_uploaded_at: payment.proof_uploaded_at,
+    confirmed_at: payment.confirmed_at,
+    rejected_at: payment.rejected_at,
+    paid_at: payment.paid_at,
+    released_at: payment.released_at,
+    updated_at: payment.updated_at,
+    user: publicUser(user),
+  }
 }
 
-async function uploadProofImage({ userId, orderId, file }) {
-  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp']
+async function getUsersMap(userIds) {
+  const ids = [...new Set((userIds || []).filter(Boolean))]
 
-  if (!file) return ''
-  if (!allowedTypes.includes(file.mimetype)) throw new Error('Only JPG, PNG, or WEBP proof images are allowed')
+  if (!ids.length) return {}
 
-  const filePath = `${userId}/${orderId}-${Date.now()}.${getFileExt(file)}`
-  const { error } = await supabase.storage.from(PROOF_BUCKET).upload(filePath, file.buffer, {
-    contentType: file.mimetype,
-    upsert: false,
-  })
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, name, username, email, avatar_url')
+    .in('id', ids)
 
   if (error) throw error
 
-  const { data } = supabase.storage.from(PROOF_BUCKET).getPublicUrl(filePath)
-  return data.publicUrl || ''
+  return Object.fromEntries((data || []).map((user) => [user.id, user]))
 }
 
-export async function createManualPayment(req, res) {
+function applyStatusFilter(query, status) {
+  const value = normalizeStatus(status)
+
+  if (!status || value === 'all') return query
+  if (value === 'success') return query.in('status', ['success', 'approved', 'confirmed'])
+  if (value === 'waiting_payment') return query.in('status', ['waiting_payment', 'pending', 'created'])
+  if (value === 'pending_review') return query.eq('status', 'pending_review')
+  if (value === 'rejected') return query.eq('status', 'rejected')
+  if (value === 'expired') return query.eq('status', 'expired')
+
+  return query.eq('status', value)
+}
+
+function getAdminId(req) {
+  return String(req.admin?.id || req.admin?.admin_id || req.admin?.email || req.admin?.username || 'admin')
+}
+
+export async function getAdminManualPayments(req, res) {
   try {
-    const userId = getUserId(req)
-    const selectedPackage = getPackageByUsd(req.body.package_usd)
+    const status = String(req.query.status || 'pending_review').trim()
+    const limit = Math.min(Math.max(Number(req.query.limit || 100), 1), 200)
 
-    if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
-    if (!selectedPackage) return res.status(400).json({ ok: false, message: 'Invalid purchase package' })
-
-    const orderId = createOrderId()
-    const { data, error } = await supabase
+    let query = supabase
       .from('payment_transactions')
-      .insert({
-        user_id: userId,
-        order_id: orderId,
-        package_usd: selectedPackage.package_usd,
-        amount_usd: selectedPackage.package_usd,
-        currency: 'USD',
-        diamonds: selectedPackage.diamonds,
-        bonus_gems: selectedPackage.bonus_gems,
-        payment_method: 'aba_payment_link',
-        checkout_url: PAYMENT_LINK,
-        status: 'waiting_payment',
-        request_payload: { type: 'manual_aba_payment_link', amount_usd: selectedPackage.package_usd, checkout_url: PAYMENT_LINK },
-        expires_at: getExpiresAt(),
-      })
       .select('*')
-      .single()
+      .eq('payment_method', 'aba_payment_link')
+      .order('created_at', { ascending: false })
+      .limit(limit)
+
+    query = applyStatusFilter(query, status)
+
+    const { data, error } = await query
 
     if (error) throw error
-    return res.status(201).json({ ok: true, payment: publicManualPayment(data) })
+
+    const userMap = await getUsersMap((data || []).map((item) => item.user_id))
+    const payments = (data || []).map((item) => publicManualPayment(item, userMap))
+
+    return res.status(200).json({ ok: true, payments, purchases: payments })
   } catch (error) {
-    console.error('CREATE MANUAL PAYMENT ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to create manual payment', error: error.message })
+    console.error('GET ADMIN MANUAL PAYMENTS ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load manual payments', error: error.message })
   }
 }
 
-export async function submitManualPaymentProof(req, res) {
+export async function confirmAdminManualPayment(req, res) {
   try {
-    const userId = getUserId(req)
-    const orderId = String(req.body.order_id || req.params.orderId || '').trim()
-    const proofNote = String(req.body.proof_note || '').trim().slice(0, 500)
-    const manualReference = String(req.body.manual_reference || '').trim().slice(0, 100)
+    const paymentId = String(req.params.paymentId || '').trim()
+    const adminNote = String(req.body.admin_note || '').trim().slice(0, 500)
 
-    if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
-    if (!orderId) return res.status(400).json({ ok: false, message: 'Order ID is required' })
-    if (!req.file) return res.status(400).json({ ok: false, message: 'Payment screenshot is required' })
+    if (!paymentId) return res.status(400).json({ ok: false, message: 'Payment ID is required' })
 
-    const { data: payment, error: paymentError } = await supabase
-      .from('payment_transactions')
-      .select('*')
-      .eq('order_id', orderId)
-      .eq('user_id', userId)
-      .maybeSingle()
+    const { data, error } = await supabase.rpc('confirm_manual_payment', {
+      p_payment_id: paymentId,
+      p_admin_id: getAdminId(req),
+      p_admin_note: adminNote || null,
+    })
 
-    if (paymentError) throw paymentError
-    if (!payment) return res.status(404).json({ ok: false, message: 'Payment order not found' })
-    if (!['waiting_payment', 'pending_review'].includes(payment.status)) return res.status(400).json({ ok: false, message: 'This payment order cannot accept proof now' })
+    if (error) throw error
 
-    if (payment.expires_at && new Date(payment.expires_at).getTime() < Date.now()) {
-      await supabase.from('payment_transactions').update({ status: 'expired', updated_at: new Date().toISOString() }).eq('id', payment.id).eq('status', 'waiting_payment')
-      return res.status(400).json({ ok: false, message: 'Payment order expired. Please create a new order.' })
-    }
+    const payment = Array.isArray(data) ? data[0] : data
+    const userMap = await getUsersMap([payment?.user_id])
 
-    const proofImageUrl = await uploadProofImage({ userId, orderId, file: req.file })
+    return res.status(200).json({
+      ok: true,
+      payment: publicManualPayment(payment, userMap),
+    })
+  } catch (error) {
+    console.error('CONFIRM ADMIN MANUAL PAYMENT ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to confirm manual payment', error: error.message })
+  }
+}
+
+export async function rejectAdminManualPayment(req, res) {
+  try {
+    const paymentId = String(req.params.paymentId || '').trim()
+    const adminNote = String(req.body.admin_note || '').trim().slice(0, 500)
+
+    if (!paymentId) return res.status(400).json({ ok: false, message: 'Payment ID is required' })
+
     const { data, error } = await supabase
       .from('payment_transactions')
       .update({
-        status: 'pending_review',
-        proof_image_url: proofImageUrl,
-        proof_note: proofNote || null,
-        manual_reference: manualReference || null,
-        proof_uploaded_at: new Date().toISOString(),
+        status: 'rejected',
+        admin_reviewed_by: getAdminId(req),
+        admin_reviewed_at: new Date().toISOString(),
+        admin_note: adminNote || null,
+        rejected_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
-      .eq('id', payment.id)
-      .in('status', ['waiting_payment', 'pending_review'])
+      .eq('id', paymentId)
+      .eq('status', 'pending_review')
       .select('*')
       .single()
 
     if (error) throw error
-    return res.status(200).json({ ok: true, payment: publicManualPayment(data) })
+
+    const userMap = await getUsersMap([data.user_id])
+
+    return res.status(200).json({
+      ok: true,
+      payment: publicManualPayment(data, userMap),
+    })
   } catch (error) {
-    console.error('SUBMIT MANUAL PAYMENT PROOF ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to submit payment proof', error: error.message })
-  }
-}
-
-export async function getManualPaymentStatus(req, res) {
-  try {
-    const userId = getUserId(req)
-    const orderId = String(req.params.orderId || '').trim()
-
-    if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
-    if (!orderId) return res.status(400).json({ ok: false, message: 'Order ID is required' })
-
-    const { data, error } = await supabase.from('payment_transactions').select('*').eq('order_id', orderId).eq('user_id', userId).maybeSingle()
-
-    if (error) throw error
-    if (!data) return res.status(404).json({ ok: false, message: 'Payment order not found' })
-
-    return res.status(200).json({ ok: true, payment: publicManualPayment(data) })
-  } catch (error) {
-    console.error('GET MANUAL PAYMENT STATUS ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load manual payment status', error: error.message })
+    console.error('REJECT ADMIN MANUAL PAYMENT ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to reject manual payment', error: error.message })
   }
 }
