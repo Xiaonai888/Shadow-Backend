@@ -28,8 +28,12 @@ function createOrderId() {
 }
 
 function getExpiresAt() {
-  const minutes = Math.max(10, Number(process.env.MANUAL_PAYMENT_EXPIRES_MINUTES || 60))
+  const minutes = Math.max(3, Number(process.env.MANUAL_PAYMENT_EXPIRES_MINUTES || 3))
   return new Date(Date.now() + minutes * 60 * 1000).toISOString()
+}
+
+function isExpired(payment) {
+  return payment?.expires_at && new Date(payment.expires_at).getTime() < Date.now()
 }
 
 function publicManualPayment(item) {
@@ -62,6 +66,18 @@ function getFileExt(file) {
   return map[file?.mimetype] || 'jpg'
 }
 
+async function cleanOldWaitingPayments(userId) {
+  if (!userId) return
+
+  await supabase
+    .from('payment_transactions')
+    .delete()
+    .eq('user_id', userId)
+    .eq('payment_method', 'aba_payment_link')
+    .eq('status', 'waiting_payment')
+    .lt('expires_at', new Date().toISOString())
+}
+
 async function uploadProofImage({ userId, orderId, file }) {
   const allowedTypes = ['image/jpeg', 'image/png', 'image/webp']
 
@@ -87,6 +103,8 @@ export async function createManualPayment(req, res) {
 
     if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
     if (!selectedPackage) return res.status(400).json({ ok: false, message: 'Invalid purchase package' })
+
+    await cleanOldWaitingPayments(userId)
 
     const orderId = createOrderId()
     const { data, error } = await supabase
@@ -116,6 +134,43 @@ export async function createManualPayment(req, res) {
   }
 }
 
+export async function cancelManualPayment(req, res) {
+  try {
+    const userId = getUserId(req)
+    const orderId = String(req.params.orderId || req.body.order_id || '').trim()
+
+    if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
+    if (!orderId) return res.status(400).json({ ok: false, message: 'Order ID is required' })
+
+    const { data: payment, error: paymentError } = await supabase
+      .from('payment_transactions')
+      .select('*')
+      .eq('order_id', orderId)
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (paymentError) throw paymentError
+    if (!payment) return res.status(200).json({ ok: true, cancelled: true })
+
+    if (payment.status !== 'waiting_payment') {
+      return res.status(400).json({ ok: false, message: 'Only waiting payment can be cancelled' })
+    }
+
+    const { error } = await supabase
+      .from('payment_transactions')
+      .delete()
+      .eq('id', payment.id)
+      .eq('status', 'waiting_payment')
+
+    if (error) throw error
+
+    return res.status(200).json({ ok: true, cancelled: true })
+  } catch (error) {
+    console.error('CANCEL MANUAL PAYMENT ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to cancel payment', error: error.message })
+  }
+}
+
 export async function submitManualPaymentProof(req, res) {
   try {
     const userId = getUserId(req)
@@ -138,8 +193,8 @@ export async function submitManualPaymentProof(req, res) {
     if (!payment) return res.status(404).json({ ok: false, message: 'Payment order not found' })
     if (!['waiting_payment', 'pending_review'].includes(payment.status)) return res.status(400).json({ ok: false, message: 'This payment order cannot accept proof now' })
 
-    if (payment.expires_at && new Date(payment.expires_at).getTime() < Date.now()) {
-      await supabase.from('payment_transactions').update({ status: 'expired', updated_at: new Date().toISOString() }).eq('id', payment.id).eq('status', 'waiting_payment')
+    if (payment.status === 'waiting_payment' && isExpired(payment)) {
+      await supabase.from('payment_transactions').delete().eq('id', payment.id).eq('status', 'waiting_payment')
       return res.status(400).json({ ok: false, message: 'Payment order expired. Please create a new order.' })
     }
 
@@ -179,6 +234,11 @@ export async function getManualPaymentStatus(req, res) {
 
     if (error) throw error
     if (!data) return res.status(404).json({ ok: false, message: 'Payment order not found' })
+
+    if (data.status === 'waiting_payment' && isExpired(data)) {
+      await supabase.from('payment_transactions').delete().eq('id', data.id).eq('status', 'waiting_payment')
+      return res.status(410).json({ ok: false, expired: true, message: 'Payment order expired' })
+    }
 
     return res.status(200).json({ ok: true, payment: publicManualPayment(data) })
   } catch (error) {
