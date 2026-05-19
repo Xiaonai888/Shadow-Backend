@@ -27,13 +27,23 @@ function createOrderId() {
   return `M${time}${random}`.slice(0, 20)
 }
 
-function getExpiresAt() {
+function getPaymentExpiresAt() {
   const minutes = Math.max(3, Number(process.env.MANUAL_PAYMENT_EXPIRES_MINUTES || 3))
   return new Date(Date.now() + minutes * 60 * 1000).toISOString()
 }
 
-function isExpired(payment) {
+function getProofExpiresAt() {
+  const minutes = Math.max(5, Number(process.env.MANUAL_PROOF_EXPIRES_MINUTES || 15))
+  return new Date(Date.now() + minutes * 60 * 1000).toISOString()
+}
+
+function isPaymentExpired(payment) {
   return payment?.expires_at && new Date(payment.expires_at).getTime() < Date.now()
+}
+
+function isProofExpired(payment) {
+  const proofExpiresAt = payment?.proof_expires_at || payment?.expires_at
+  return proofExpiresAt && new Date(proofExpiresAt).getTime() < Date.now()
 }
 
 function publicManualPayment(item) {
@@ -54,6 +64,8 @@ function publicManualPayment(item) {
     manual_reference: item.manual_reference || '',
     created_at: item.created_at,
     expires_at: item.expires_at,
+    expired_at: item.expired_at || item.expires_at,
+    proof_expires_at: item.proof_expires_at || item.expires_at,
     proof_uploaded_at: item.proof_uploaded_at,
     paid_at: item.paid_at,
     released_at: item.released_at,
@@ -75,7 +87,7 @@ async function cleanOldWaitingPayments(userId) {
     .eq('user_id', userId)
     .eq('payment_method', 'aba_payment_link')
     .eq('status', 'waiting_payment')
-    .lt('expires_at', new Date().toISOString())
+    .lt('proof_expires_at', new Date().toISOString())
 }
 
 async function uploadProofImage({ userId, orderId, file }) {
@@ -107,6 +119,9 @@ export async function createManualPayment(req, res) {
     await cleanOldWaitingPayments(userId)
 
     const orderId = createOrderId()
+    const paymentExpiresAt = getPaymentExpiresAt()
+    const proofExpiresAt = getProofExpiresAt()
+
     const { data, error } = await supabase
       .from('payment_transactions')
       .insert({
@@ -120,13 +135,20 @@ export async function createManualPayment(req, res) {
         payment_method: 'aba_payment_link',
         checkout_url: PAYMENT_LINK,
         status: 'waiting_payment',
-        request_payload: { type: 'manual_aba_payment_link', amount_usd: selectedPackage.package_usd, checkout_url: PAYMENT_LINK },
-        expires_at: getExpiresAt(),
+        request_payload: {
+          type: 'manual_aba_payment_link',
+          amount_usd: selectedPackage.package_usd,
+          checkout_url: PAYMENT_LINK,
+        },
+        expires_at: paymentExpiresAt,
+        expired_at: paymentExpiresAt,
+        proof_expires_at: proofExpiresAt,
       })
       .select('*')
       .single()
 
     if (error) throw error
+
     return res.status(201).json({ ok: true, payment: publicManualPayment(data) })
   } catch (error) {
     console.error('CREATE MANUAL PAYMENT ERROR:', error)
@@ -191,14 +213,17 @@ export async function submitManualPaymentProof(req, res) {
 
     if (paymentError) throw paymentError
     if (!payment) return res.status(404).json({ ok: false, message: 'Payment order not found' })
-    if (!['waiting_payment', 'pending_review'].includes(payment.status)) return res.status(400).json({ ok: false, message: 'This payment order cannot accept proof now' })
+    if (!['waiting_payment', 'pending_review'].includes(payment.status)) {
+      return res.status(400).json({ ok: false, message: 'This payment order cannot accept proof now' })
+    }
 
-    if (payment.status === 'waiting_payment' && isExpired(payment)) {
+    if (payment.status === 'waiting_payment' && isProofExpired(payment)) {
       await supabase.from('payment_transactions').delete().eq('id', payment.id).eq('status', 'waiting_payment')
-      return res.status(400).json({ ok: false, message: 'Payment order expired. Please create a new order.' })
+      return res.status(400).json({ ok: false, message: 'Payment proof upload time expired. Please create a new order.' })
     }
 
     const proofImageUrl = await uploadProofImage({ userId, orderId, file: req.file })
+
     const { data, error } = await supabase
       .from('payment_transactions')
       .update({
@@ -215,6 +240,7 @@ export async function submitManualPaymentProof(req, res) {
       .single()
 
     if (error) throw error
+
     return res.status(200).json({ ok: true, payment: publicManualPayment(data) })
   } catch (error) {
     console.error('SUBMIT MANUAL PAYMENT PROOF ERROR:', error)
@@ -230,17 +256,28 @@ export async function getManualPaymentStatus(req, res) {
     if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
     if (!orderId) return res.status(400).json({ ok: false, message: 'Order ID is required' })
 
-    const { data, error } = await supabase.from('payment_transactions').select('*').eq('order_id', orderId).eq('user_id', userId).maybeSingle()
+    const { data, error } = await supabase
+      .from('payment_transactions')
+      .select('*')
+      .eq('order_id', orderId)
+      .eq('user_id', userId)
+      .maybeSingle()
 
     if (error) throw error
     if (!data) return res.status(404).json({ ok: false, message: 'Payment order not found' })
 
-    if (data.status === 'waiting_payment' && isExpired(data)) {
+    if (data.status === 'waiting_payment' && isProofExpired(data)) {
       await supabase.from('payment_transactions').delete().eq('id', data.id).eq('status', 'waiting_payment')
-      return res.status(410).json({ ok: false, expired: true, message: 'Payment order expired' })
+      return res.status(410).json({ ok: false, expired: true, message: 'Payment proof upload time expired' })
     }
 
-    return res.status(200).json({ ok: true, payment: publicManualPayment(data) })
+    return res.status(200).json({
+      ok: true,
+      payment: {
+        ...publicManualPayment(data),
+        payment_expired: data.status === 'waiting_payment' ? isPaymentExpired(data) : false,
+      },
+    })
   } catch (error) {
     console.error('GET MANUAL PAYMENT STATUS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load manual payment status', error: error.message })
