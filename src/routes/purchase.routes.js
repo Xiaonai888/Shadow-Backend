@@ -10,6 +10,7 @@ import {
   handleAbaCallback,
 } from '../controllers/purchase.controller.js'
 import {
+  cancelManualPayment,
   createManualPayment,
   getManualPaymentStatus,
   submitManualPaymentProof,
@@ -26,6 +27,7 @@ router.get('/wallet', requireUser, getMyWallet)
 router.get('/requests', requireUser, getMyPurchaseRequests)
 
 router.post('/manual/create', requireUser, createManualPayment)
+router.post('/manual/cancel/:orderId', requireUser, cancelManualPayment)
 router.post('/manual/proof/:orderId', requireUser, upload.single('proof_image'), submitManualPaymentProof)
 router.get('/manual/status/:orderId', requireUser, getManualPaymentStatus)
 
