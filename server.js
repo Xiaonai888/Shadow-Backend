@@ -19,6 +19,7 @@ import libraryRoutes from './src/routes/library.routes.js'
 import purchaseRoutes from './src/routes/purchase.routes.js'
 import adminPurchasesRoutes from './src/routes/adminPurchases.routes.js'
 import telegramRoutes from './src/routes/telegram.routes.js'
+import { startTelegramUserListener } from './src/listeners/telegramUserListener.js'
 
 dotenv.config()
 
@@ -92,4 +93,10 @@ const PORT = process.env.PORT || 5000
 
 app.listen(PORT, () => {
   console.log(`Shadow Backend running on port ${PORT}`)
+
+  if (process.env.ENABLE_TELEGRAM_USER_LISTENER === 'true') {
+    startTelegramUserListener().catch((error) => {
+      console.error('TEMP_ABA_TELEGRAM_LISTENER_START_ERROR:', error)
+    })
+  }
 })
