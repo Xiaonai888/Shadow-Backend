@@ -18,6 +18,7 @@ import adminCommentsRoutes from './src/routes/adminComments.routes.js'
 import libraryRoutes from './src/routes/library.routes.js'
 import purchaseRoutes from './src/routes/purchase.routes.js'
 import adminPurchasesRoutes from './src/routes/adminPurchases.routes.js'
+import telegramRoutes from './src/routes/telegram.routes.js'
 
 dotenv.config()
 
@@ -76,6 +77,7 @@ app.use('/api/genres', genresRoutes)
 app.use('/api/comments', commentsRoutes)
 app.use('/api/reader', libraryRoutes)
 app.use('/api/purchase', purchaseRoutes)
+app.use('/api/telegram', telegramRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
