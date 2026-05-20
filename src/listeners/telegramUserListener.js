@@ -15,6 +15,10 @@ function senderUsername(sender) {
   return String(sender?.username || '').replace('@', '').toLowerCase()
 }
 
+function normalizeTitle(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
 function getText(event) {
   return String(event?.message?.message || '').trim()
 }
@@ -29,6 +33,19 @@ function getDate(event) {
   if (!date) return Math.floor(Date.now() / 1000)
   if (typeof date === 'number') return date
   return Math.floor(new Date(date).getTime() / 1000)
+}
+
+function getChatId(event) {
+  return String(event?.message?.peerId?.channelId?.value || event?.message?.peerId?.chatId?.value || event?.message?.chatId?.value || '')
+}
+
+async function getChatTitle(event) {
+  try {
+    const chat = await event.message.getChat()
+    return String(chat?.title || chat?.username || '')
+  } catch {
+    return ''
+  }
 }
 
 function makeTelegramBotUpdate({ event, text, sender, adminChatId }) {
@@ -84,16 +101,25 @@ function getConfig() {
 function validateConfig(config) {
   const missing = []
 
-  if (!config.apiId) missing.push('TELEGRAM_API_ID')
-  if (!config.apiHash) missing.push('TELEGRAM_API_HASH')
-  if (!config.stringSession) missing.push('TELEGRAM_STRING_SESSION')
-  if (!config.backendWebhookUrl) missing.push('BACKEND_TELEGRAM_WEBHOOK_URL')
+  if (!config.apiId) missing.push('TEMP_ABA_LISTENER_API_ID')
+  if (!config.apiHash) missing.push('TEMP_ABA_LISTENER_API_HASH')
+  if (!config.stringSession) missing.push('TEMP_ABA_LISTENER_STRING_SESSION')
+  if (!config.backendWebhookUrl) missing.push('TEMP_ABA_LISTENER_BACKEND_WEBHOOK_URL')
   if (!config.adminChatId) missing.push('TELEGRAM_ADMIN_CHAT_ID')
-  if (!config.targetChat) missing.push('TELEGRAM_LISTENER_CHAT')
 
   if (missing.length) {
     throw new Error(`${TEMP_ABA_TELEGRAM_LISTENER_NAME} missing ENV: ${missing.join(', ')}`)
   }
+}
+
+async function isTargetChat(event, config) {
+  if (!config.targetChat) return true
+
+  const target = normalizeTitle(config.targetChat)
+  const title = normalizeTitle(await getChatTitle(event))
+  const id = getChatId(event)
+
+  return title === target || id === String(config.targetChat).replace('-100', '')
 }
 
 export async function startTelegramUserListener() {
@@ -123,6 +149,9 @@ export async function startTelegramUserListener() {
       const text = getText(event)
       if (!text) return
 
+      const chatOk = await isTargetChat(event, config)
+      if (!chatOk) return
+
       const sender = await event.message.getSender()
       const username = senderUsername(sender)
 
@@ -141,7 +170,7 @@ export async function startTelegramUserListener() {
     } catch (error) {
       console.error('TEMP_ABA_TELEGRAM_LISTENER_EVENT_ERROR:', error)
     }
-  }, new NewMessage({ chats: [config.targetChat] }))
+  }, new NewMessage({}))
 
   return client
 }
