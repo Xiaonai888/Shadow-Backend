@@ -1,5 +1,6 @@
 import express from 'express'
 import { supabase } from '../config/supabase.js'
+import { getAdminActor, logAdminActivity } from '../services/adminActivity.service.js'
 
 const router = express.Router()
 const MAX_FEATURED_TABS = 12
@@ -57,6 +58,15 @@ async function getGenreById(id) {
   return data
 }
 
+function genreChanges(oldGenre, nextGenre) {
+  const changed = []
+  if ((oldGenre?.name || '') !== (nextGenre?.name || '')) changed.push('name')
+  if ((oldGenre?.slug || '') !== (nextGenre?.slug || '')) changed.push('slug')
+  if (Number(oldGenre?.sort_order) !== Number(nextGenre?.sort_order)) changed.push('sort order')
+  if (Boolean(oldGenre?.is_active) !== Boolean(nextGenre?.is_active)) changed.push('visibility')
+  return changed.length ? changed.join(', ') : 'no visible changes'
+}
+
 async function getGenres(req, res) {
   try {
     const includeInactive =
@@ -109,6 +119,7 @@ async function getAdminGenres(req, res) {
 
 async function createGenre(req, res) {
   try {
+    const actor = getAdminActor(req)
     const name = String(req.body.name || '').trim()
     const slug = slugify(req.body.slug || name)
     const sortOrder = toNumber(req.body.sort_order, 0)
@@ -125,6 +136,15 @@ async function createGenre(req, res) {
 
     if (error) throw error
 
+    await logAdminActivity({
+      action: 'CREATE',
+      section_key: 'genres',
+      item_id: data.id,
+      title: data.name,
+      actor,
+      details: `${actor} created genre "${data.name}".`,
+    })
+
     res.status(201).json({ ok: true, genre: data })
   } catch (error) {
     console.error('CREATE GENRE ERROR:', error)
@@ -134,6 +154,7 @@ async function createGenre(req, res) {
 
 async function updateGenre(req, res) {
   try {
+    const actor = getAdminActor(req)
     const { id } = req.params
     const oldGenre = await getGenreById(id)
 
@@ -170,6 +191,17 @@ async function updateGenre(req, res) {
       .eq('genre_id', id)
       .eq('is_locked', false)
 
+    const changed = genreChanges(oldGenre, data)
+
+    await logAdminActivity({
+      action: changed === 'visibility' ? 'VISIBILITY' : 'UPDATE',
+      section_key: 'genres',
+      item_id: data.id,
+      title: data.name,
+      actor,
+      details: `${actor} updated genre "${data.name}": ${changed}.`,
+    })
+
     res.status(200).json({ ok: true, genre: data })
   } catch (error) {
     console.error('UPDATE GENRE ERROR:', error)
@@ -179,6 +211,7 @@ async function updateGenre(req, res) {
 
 async function deleteGenre(req, res) {
   try {
+    const actor = getAdminActor(req)
     const { id } = req.params
     const genre = await getGenreById(id)
     const counts = await getStoryCountsByGenre()
@@ -196,6 +229,15 @@ async function deleteGenre(req, res) {
 
     const { error } = await supabase.from('genres').delete().eq('id', id)
     if (error) throw error
+
+    await logAdminActivity({
+      action: 'DELETE',
+      section_key: 'genres',
+      item_id: genre.id,
+      title: genre.name,
+      actor,
+      details: `${actor} deleted genre "${genre.name}".`,
+    })
 
     res.status(200).json({ ok: true, deleted_id: id })
   } catch (error) {
@@ -229,6 +271,7 @@ async function getFeaturedGenreTabs(req, res) {
 
 async function updateFeaturedGenreTabs(req, res) {
   try {
+    const actor = getAdminActor(req)
     const rawGenreIds = Array.isArray(req.body.genre_ids) ? req.body.genre_ids : []
     const uniqueGenreIds = [...new Set(rawGenreIds.map((id) => String(id || '').trim()).filter(Boolean))]
     const selectedGenreIds = uniqueGenreIds.slice(0, MAX_FEATURED_TABS - 1)
@@ -297,6 +340,14 @@ async function updateFeaturedGenreTabs(req, res) {
       .limit(MAX_FEATURED_TABS)
 
     if (tabsError) throw tabsError
+
+    await logAdminActivity({
+      action: 'UPDATE',
+      section_key: 'featured_genre_tabs',
+      title: 'Featured Genre Tabs',
+      actor,
+      details: `${actor} updated featured genre tabs: ${orderedGenres.map((genre) => genre.name).join(', ') || 'Today only'}.`,
+    })
 
     res.status(200).json({ ok: true, max_tabs: MAX_FEATURED_TABS, tabs: tabs || [] })
   } catch (error) {
