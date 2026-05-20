@@ -71,13 +71,13 @@ async function postToBackend(update, backendWebhookUrl) {
 
 function getConfig() {
   return {
-    apiId: Number(process.env.TELEGRAM_API_ID || 0),
-    apiHash: process.env.TELEGRAM_API_HASH || '',
-    stringSession: process.env.TELEGRAM_STRING_SESSION || '',
-    backendWebhookUrl: process.env.BACKEND_TELEGRAM_WEBHOOK_URL || '',
+    apiId: Number(process.env.TEMP_ABA_LISTENER_API_ID || process.env.TELEGRAM_API_ID || 0),
+    apiHash: process.env.TEMP_ABA_LISTENER_API_HASH || process.env.TELEGRAM_API_HASH || '',
+    stringSession: process.env.TEMP_ABA_LISTENER_STRING_SESSION || process.env.TELEGRAM_STRING_SESSION || '',
+    backendWebhookUrl: process.env.TEMP_ABA_LISTENER_BACKEND_WEBHOOK_URL || process.env.BACKEND_TELEGRAM_WEBHOOK_URL || '',
     adminChatId: process.env.TELEGRAM_ADMIN_CHAT_ID || '',
-    targetChat: process.env.TELEGRAM_LISTENER_CHAT || '',
-    abaBotUsername: String(process.env.ABA_BOT_USERNAME || 'PayWayByABA_bot').replace('@', '').toLowerCase(),
+    targetChat: process.env.TEMP_ABA_LISTENER_CHAT || process.env.TELEGRAM_LISTENER_CHAT || '',
+    abaBotUsername: String(process.env.TEMP_ABA_LISTENER_ABA_BOT_USERNAME || process.env.ABA_BOT_USERNAME || 'PayWayByABA_bot').replace('@', '').toLowerCase(),
   }
 }
 
