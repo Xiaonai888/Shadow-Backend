@@ -2,18 +2,15 @@ import { supabase } from '../config/supabase.js'
 
 function normalizeStatus(status) {
   const value = String(status || '').trim().toLowerCase()
-
   if (value === 'approved') return 'success'
   if (value === 'confirmed') return 'success'
   if (value === 'pending') return 'waiting_payment'
   if (value === 'created') return 'waiting_payment'
-
   return value || 'waiting_payment'
 }
 
 function publicUser(user) {
   if (!user) return null
-
   return {
     id: user.id,
     name: user.name || '',
@@ -25,7 +22,6 @@ function publicUser(user) {
 
 function publicManualPayment(payment, userMap = {}) {
   const user = userMap[payment.user_id] || null
-
   return {
     id: payment.id,
     user_id: payment.user_id,
@@ -43,8 +39,15 @@ function publicManualPayment(payment, userMap = {}) {
     proof_note: payment.proof_note || '',
     manual_reference: payment.manual_reference || '',
     admin_note: payment.admin_note || '',
+    aba_trx_id: payment.aba_trx_id || '',
+    aba_apv: payment.aba_apv || '',
+    payer_name: payment.payer_name || '',
+    match_status: payment.match_status || '',
+    match_reason: payment.match_reason || '',
     created_at: payment.created_at,
     expires_at: payment.expires_at,
+    expired_at: payment.expired_at,
+    proof_expires_at: payment.proof_expires_at,
     proof_uploaded_at: payment.proof_uploaded_at,
     confirmed_at: payment.confirmed_at,
     rejected_at: payment.rejected_at,
@@ -57,7 +60,6 @@ function publicManualPayment(payment, userMap = {}) {
 
 async function getUsersMap(userIds) {
   const ids = [...new Set((userIds || []).filter(Boolean))]
-
   if (!ids.length) return {}
 
   const { data, error } = await supabase
@@ -66,20 +68,18 @@ async function getUsersMap(userIds) {
     .in('id', ids)
 
   if (error) throw error
-
   return Object.fromEntries((data || []).map((user) => [user.id, user]))
 }
 
 function applyStatusFilter(query, status) {
   const value = normalizeStatus(status)
-
   if (!status || value === 'all') return query
   if (value === 'success') return query.in('status', ['success', 'approved', 'confirmed'])
   if (value === 'waiting_payment') return query.in('status', ['waiting_payment', 'pending', 'created'])
   if (value === 'pending_review') return query.eq('status', 'pending_review')
   if (value === 'rejected') return query.eq('status', 'rejected')
   if (value === 'expired') return query.eq('status', 'expired')
-
+  if (value === 'cancelled') return query.eq('status', 'cancelled')
   return query.eq('status', value)
 }
 
@@ -102,7 +102,6 @@ export async function getAdminManualPayments(req, res) {
     query = applyStatusFilter(query, status)
 
     const { data, error } = await query
-
     if (error) throw error
 
     const userMap = await getUsersMap((data || []).map((item) => item.user_id))
@@ -122,7 +121,7 @@ export async function confirmAdminManualPayment(req, res) {
 
     if (!paymentId) return res.status(400).json({ ok: false, message: 'Payment ID is required' })
 
-    const { data, error } = await supabase.rpc('confirm_manual_payment', {
+    const { data, error } = await supabase.rpc('admin_release_manual_payment', {
       p_payment_id: paymentId,
       p_admin_id: getAdminId(req),
       p_admin_note: adminNote || null,
@@ -133,10 +132,7 @@ export async function confirmAdminManualPayment(req, res) {
     const payment = Array.isArray(data) ? data[0] : data
     const userMap = await getUsersMap([payment?.user_id])
 
-    return res.status(200).json({
-      ok: true,
-      payment: publicManualPayment(payment, userMap),
-    })
+    return res.status(200).json({ ok: true, payment: publicManualPayment(payment, userMap) })
   } catch (error) {
     console.error('CONFIRM ADMIN MANUAL PAYMENT ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to confirm manual payment', error: error.message })
@@ -157,22 +153,20 @@ export async function rejectAdminManualPayment(req, res) {
         admin_reviewed_by: getAdminId(req),
         admin_reviewed_at: new Date().toISOString(),
         admin_note: adminNote || null,
+        match_status: 'rejected',
+        match_reason: adminNote || 'Rejected by admin.',
         rejected_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
       .eq('id', paymentId)
-      .eq('status', 'pending_review')
+      .in('status', ['waiting_payment', 'pending_review'])
       .select('*')
       .single()
 
     if (error) throw error
 
     const userMap = await getUsersMap([data.user_id])
-
-    return res.status(200).json({
-      ok: true,
-      payment: publicManualPayment(data, userMap),
-    })
+    return res.status(200).json({ ok: true, payment: publicManualPayment(data, userMap) })
   } catch (error) {
     console.error('REJECT ADMIN MANUAL PAYMENT ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to reject manual payment', error: error.message })
