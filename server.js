@@ -18,6 +18,7 @@ import adminCommentsRoutes from './src/routes/adminComments.routes.js'
 import libraryRoutes from './src/routes/library.routes.js'
 import purchaseRoutes from './src/routes/purchase.routes.js'
 import adminPurchasesRoutes from './src/routes/adminPurchases.routes.js'
+import adminActivityRoutes from './src/routes/adminActivity.routes.js'
 import telegramRoutes from './src/routes/telegram.routes.js'
 import { startTelegramUserListener } from './src/listeners/telegramUserListener.js'
 
@@ -74,6 +75,7 @@ app.use('/api/public', publicStoriesRoutes)
 app.use('/api/admin/exclusive', adminExclusiveRoutes)
 app.use('/api/admin/comments', adminCommentsRoutes)
 app.use('/api/admin/purchases', adminPurchasesRoutes)
+app.use('/api/admin/activity-logs', adminActivityRoutes)
 app.use('/api/genres', genresRoutes)
 app.use('/api/comments', commentsRoutes)
 app.use('/api/reader', libraryRoutes)
