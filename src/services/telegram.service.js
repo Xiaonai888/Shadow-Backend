@@ -1,90 +1,485 @@
-const TELEGRAM_API_URL = 'https://api.telegram.org'
+import { supabase } from '../config/supabase.js'
+import {
+  answerCallbackQuery,
+  editTelegramMessage,
+  html,
+  replyTelegram,
+  reviewKeyboard,
+} from '../services/telegram.service.js'
 
-function isTelegramConfigured() {
-  return Boolean(process.env.TELEGRAM_BOT_TOKEN)
-}
-
-function escapeHtml(value) {
+function normalizeName(value) {
   return String(value || '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .sort()
+    .join(' ')
 }
 
-export function html(value) {
-  return escapeHtml(value)
+function parseAbaDate(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return null
+
+  const year = new Date().getFullYear()
+  const date = new Date(`${raw} ${year}`)
+
+  if (Number.isNaN(date.getTime())) return null
+
+  return date.toISOString()
 }
 
-export async function callTelegram(method, payload) {
-  if (!isTelegramConfigured()) return { ok: false, skipped: true }
+function parseAbaPaywayMessage(text) {
+  const source = String(text || '').replace(/\s+/g, ' ').trim()
+  const pattern = /\$\s*([0-9]+(?:\.[0-9]{1,2})?)\s+paid by\s+(.+?)\s+\(\*(\d+)\)\s+on\s+(.+?)\s+via\s+(.+?)\s+\((.+?)\)\s+at\s+(.+?)\.\s*Trx\.\s*ID:\s*([A-Za-z0-9_-]+)\s*,\s*APV:\s*([A-Za-z0-9_-]+)/i
+  const match = source.match(pattern)
 
-  const response = await fetch(`${TELEGRAM_API_URL}/bot${process.env.TELEGRAM_BOT_TOKEN}/${method}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
+  if (!match) return null
 
-  const data = await response.json().catch(() => ({}))
-
-  if (!response.ok || data.ok === false) {
-    throw new Error(data.description || `Telegram ${method} failed`)
+  return {
+    amount: Number(match[1]),
+    currency: 'USD',
+    payer_name: match[2].trim(),
+    payer_name_normalized: normalizeName(match[2]),
+    payer_phone_last: match[3].trim(),
+    transaction_time: parseAbaDate(match[4]),
+    transaction_time_text: match[4].trim(),
+    payment_method_text: match[5].trim(),
+    bank_name: match[6].trim(),
+    outlet_name: match[7].trim(),
+    outlet_name_normalized: normalizeName(match[7]),
+    trx_id: match[8].trim(),
+    apv: match[9].trim(),
+    raw_text: source,
   }
+}
 
+function getUpdateMessage(update) {
+  return update?.message || update?.channel_post || update?.edited_message || update?.edited_channel_post || null
+}
+
+function getMessageText(message) {
+  return String(message?.text || message?.caption || '').trim()
+}
+
+function money(value) {
+  return `$${Number(value || 0).toFixed(2)}`
+}
+
+function getWindowMinutes() {
+  return Math.max(3, Number(process.env.TELEGRAM_MATCH_WINDOW_MINUTES || 20))
+}
+
+function getMerchantNames() {
+  return String(process.env.ABA_MERCHANT_NAMES || 'TEN KIMLANG,KIMLANG TEN')
+    .split(',')
+    .map((item) => normalizeName(item))
+    .filter(Boolean)
+}
+
+function getAllowedApproverIds() {
+  return String(process.env.TELEGRAM_APPROVER_IDS || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function isAllowedApprover(userId) {
+  const ids = getAllowedApproverIds()
+  if (!ids.length) return true
+  return ids.includes(String(userId))
+}
+
+function merchantMatches(parsed) {
+  const names = getMerchantNames()
+  if (!names.length) return true
+  return names.includes(normalizeName(parsed.outlet_name))
+}
+
+async function findMatchingOrders(parsed) {
+  const trxTime = parsed.transaction_time ? new Date(parsed.transaction_time) : new Date()
+  const windowMinutes = getWindowMinutes()
+  const start = new Date(trxTime.getTime() - windowMinutes * 60 * 1000).toISOString()
+  const end = new Date(trxTime.getTime() + 5 * 60 * 1000).toISOString()
+
+  const { data, error } = await supabase
+    .from('payment_transactions')
+    .select('*')
+    .eq('payment_method', 'aba_payment_link')
+    .eq('status', 'waiting_payment')
+    .eq('amount_usd', parsed.amount)
+    .gte('created_at', start)
+    .lte('created_at', end)
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return data || []
+}
+
+async function getUser(userId) {
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, username, name, email')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (error) throw error
+  return data || null
+}
+
+async function saveTelegramPayment(parsed, message) {
+  const { data: existing, error: existingError } = await supabase
+    .from('telegram_payments')
+    .select('*')
+    .eq('trx_id', parsed.trx_id)
+    .maybeSingle()
+
+  if (existingError) throw existingError
+  if (existing) return { payment: existing, duplicate: true }
+
+  const { data, error } = await supabase
+    .from('telegram_payments')
+    .insert({
+      trx_id: parsed.trx_id,
+      apv: parsed.apv || null,
+      amount_usd: parsed.amount,
+      currency: parsed.currency,
+      payer_name: parsed.payer_name,
+      payer_name_normalized: parsed.payer_name_normalized,
+      payer_phone_last: parsed.payer_phone_last,
+      transaction_time: parsed.transaction_time,
+      transaction_time_text: parsed.transaction_time_text,
+      payment_method_text: parsed.payment_method_text,
+      bank_name: parsed.bank_name,
+      outlet_name: parsed.outlet_name,
+      outlet_name_normalized: parsed.outlet_name_normalized,
+      raw_text: parsed.raw_text,
+      telegram_chat_id: String(message.chat?.id || ''),
+      telegram_message_id: message.message_id || null,
+      status: 'received',
+      match_status: 'unmatched',
+    })
+    .select('*')
+    .single()
+
+  if (error) throw error
+  return { payment: data, duplicate: false }
+}
+
+async function updateTelegramPayment(id, payload) {
+  const { data, error } = await supabase
+    .from('telegram_payments')
+    .update({ ...payload, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select('*')
+    .single()
+
+  if (error) throw error
   return data
 }
 
-export async function sendTelegramMessage(text, options = {}) {
-  const chatId = options.chat_id || process.env.TELEGRAM_ADMIN_CHAT_ID
-  if (!chatId) return { ok: false, skipped: true }
-
-  return callTelegram('sendMessage', {
-    chat_id: chatId,
-    text,
-    parse_mode: 'HTML',
-    disable_web_page_preview: false,
-    reply_to_message_id: options.reply_to_message_id,
-    allow_sending_without_reply: true,
-    reply_markup: options.reply_markup,
-  })
+async function markCandidatesPendingReview(matches, telegramPayment, reason) {
+  for (const payment of matches) {
+    await supabase
+      .from('payment_transactions')
+      .update({
+        status: 'pending_review',
+        aba_trx_id: telegramPayment.trx_id,
+        aba_apv: telegramPayment.apv,
+        telegram_payment_id: telegramPayment.id,
+        match_status: 'pending_review',
+        match_reason: reason,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', payment.id)
+      .eq('status', 'waiting_payment')
+  }
 }
 
-export async function replyTelegram(chatId, messageId, text, options = {}) {
-  return sendTelegramMessage(text, {
-    chat_id: chatId,
-    reply_to_message_id: messageId,
-    reply_markup: options.reply_markup,
+async function releaseMatchedOrder(payment, telegramPayment) {
+  const { data, error } = await supabase.rpc('release_payment_from_telegram', {
+    p_payment_id: payment.id,
+    p_telegram_payment_id: telegramPayment.id,
+    p_trx_id: telegramPayment.trx_id,
+    p_apv: telegramPayment.apv || null,
+    p_payer_name: telegramPayment.payer_name || null,
   })
+
+  if (error) throw error
+  return Array.isArray(data) ? data[0] : data
 }
 
-export async function answerCallbackQuery(callbackQueryId, text, showAlert = false) {
-  return callTelegram('answerCallbackQuery', {
-    callback_query_id: callbackQueryId,
-    text,
-    show_alert: showAlert,
-  })
+async function getPaymentForAction(paymentId) {
+  const { data, error } = await supabase
+    .from('payment_transactions')
+    .select('*')
+    .eq('id', paymentId)
+    .maybeSingle()
+
+  if (error) throw error
+  return data || null
 }
 
-export async function editTelegramMessage(chatId, messageId, text, options = {}) {
-  return callTelegram('editMessageText', {
-    chat_id: chatId,
-    message_id: messageId,
-    text,
-    parse_mode: 'HTML',
-    disable_web_page_preview: false,
-    reply_markup: options.reply_markup,
-  })
+async function getTelegramPaymentForAction(payment) {
+  if (payment?.telegram_payment_id) {
+    const { data, error } = await supabase
+      .from('telegram_payments')
+      .select('*')
+      .eq('id', payment.telegram_payment_id)
+      .maybeSingle()
+
+    if (error) throw error
+    if (data) return data
+  }
+
+  if (payment?.aba_trx_id) {
+    const { data, error } = await supabase
+      .from('telegram_payments')
+      .select('*')
+      .eq('trx_id', payment.aba_trx_id)
+      .maybeSingle()
+
+    if (error) throw error
+    return data || null
+  }
+
+  return null
 }
 
-export function reviewKeyboard(paymentId) {
+function releasedMessage(payment, user, title = '✅ APPROVED') {
+  return [
+    `<b>${title}</b>`,
+    '',
+    `💎 Released: <b>${html(Number(payment.diamonds || 0).toLocaleString())} Diamonds</b>`,
+    `👤 User: <b>${html(user?.username ? '@' + user.username : user?.name || payment.user_id)}</b>`,
+    `💵 Amount: <b>${html(money(payment.amount_usd))}</b>`,
+    `📦 Order ID: <code>${html(payment.order_id)}</code>`,
+    payment.aba_trx_id ? `🧾 Trx ID: <code>${html(payment.aba_trx_id)}</code>` : '',
+    '',
+    'No extra Diamonds were added if this was already approved.',
+  ].filter(Boolean).join('\n')
+}
+
+function needApprovalMessage(payment, user, reason) {
+  return [
+    '🟠 <b>NEED APPROVAL</b>',
+    '',
+    `💵 Amount: <b>${html(money(payment.amount_usd))}</b>`,
+    `👤 User: <b>${html(user?.username ? '@' + user.username : user?.name || payment.user_id)}</b>`,
+    `💎 Diamonds: <b>${html(Number(payment.diamonds || 0).toLocaleString())}</b>`,
+    `📦 Order ID: <code>${html(payment.order_id)}</code>`,
+    payment.aba_trx_id ? `🧾 Trx ID: <code>${html(payment.aba_trx_id)}</code>` : '',
+    '',
+    `⚠️ Reason: ${html(reason || payment.match_reason || 'Needs admin approval.')}`,
+  ].filter(Boolean).join('\n')
+}
+
+async function approvePaymentFromTelegram(paymentId) {
+  const payment = await getPaymentForAction(paymentId)
+  if (!payment) return { status: 'missing', text: 'Payment not found.' }
+
+  const user = await getUser(payment.user_id)
+
+  if (payment.status === 'success') {
+    return { status: 'already', text: releasedMessage(payment, user, '✅ ALREADY APPROVED') }
+  }
+
+  if (!['waiting_payment', 'pending_review'].includes(payment.status)) {
+    return { status: 'blocked', text: `❌ Cannot approve this payment. Current status: ${html(payment.status)}` }
+  }
+
+  const telegramPayment = await getTelegramPaymentForAction(payment)
+
+  if (!telegramPayment || !payment.aba_trx_id) {
+    return { status: 'blocked', text: '❌ Cannot approve: missing Telegram payment / Trx ID.' }
+  }
+
+  const released = await releaseMatchedOrder(payment, telegramPayment)
+  const releasedUser = await getUser(released.user_id)
+
+  return { status: 'approved', text: releasedMessage(released, releasedUser, '✅ APPROVED') }
+}
+
+async function rejectPaymentFromTelegram(paymentId) {
+  const payment = await getPaymentForAction(paymentId)
+  if (!payment) return { status: 'missing', text: 'Payment not found.' }
+
+  if (payment.status === 'success') {
+    const user = await getUser(payment.user_id)
+    return { status: 'already', text: releasedMessage(payment, user, '✅ ALREADY APPROVED') }
+  }
+
+  const { data, error } = await supabase
+    .from('payment_transactions')
+    .update({
+      status: 'rejected',
+      match_status: 'rejected',
+      match_reason: 'Rejected from Telegram quick action.',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', payment.id)
+    .in('status', ['waiting_payment', 'pending_review'])
+    .select('*')
+    .single()
+
+  if (error) throw error
+
   return {
-    inline_keyboard: [
-      [
-        { text: '✅ Approve', callback_data: `pay_ok:${paymentId}` },
-        { text: '❌ Reject', callback_data: `pay_no:${paymentId}` },
-      ],
-      [
-        { text: '🔎 Open Admin', url: process.env.ADMIN_PAYMENT_URL || 'https://admin.shadowerabook.site/payment' },
-      ],
-    ],
+    status: 'rejected',
+    text: [
+      '❌ <b>REJECTED</b>',
+      '',
+      `💵 Amount: <b>${html(money(data.amount_usd))}</b>`,
+      `📦 Order ID: <code>${html(data.order_id)}</code>`,
+      data.aba_trx_id ? `🧾 Trx ID: <code>${html(data.aba_trx_id)}</code>` : '',
+    ].filter(Boolean).join('\n'),
+  }
+}
+
+async function handleCallbackQuery(callbackQuery) {
+  const data = String(callbackQuery?.data || '')
+  const userId = callbackQuery?.from?.id
+  const chatId = callbackQuery?.message?.chat?.id
+  const messageId = callbackQuery?.message?.message_id
+
+  if (!isAllowedApprover(userId)) {
+    await answerCallbackQuery(callbackQuery.id, 'Not allowed.', true)
+    return
+  }
+
+  const [action, paymentId] = data.split(':')
+
+  if (!paymentId || !['pay_ok', 'pay_no'].includes(action)) {
+    await answerCallbackQuery(callbackQuery.id, 'Invalid action.', true)
+    return
+  }
+
+  const result = action === 'pay_ok'
+    ? await approvePaymentFromTelegram(paymentId)
+    : await rejectPaymentFromTelegram(paymentId)
+
+  await answerCallbackQuery(
+    callbackQuery.id,
+    result.status === 'approved' ? 'Approved.' : result.status === 'already' ? 'Already approved.' : result.status === 'rejected' ? 'Rejected.' : 'Done.',
+    result.status === 'blocked'
+  )
+
+  if (chatId && messageId) {
+    await editTelegramMessage(chatId, messageId, result.text)
+  }
+}
+
+async function processAbaMessage(parsed, message) {
+  const chatId = message.chat?.id
+  const messageId = message.message_id
+  const { payment: telegramPayment, duplicate } = await saveTelegramPayment(parsed, message)
+
+  if (duplicate || ['auto_released', 'duplicate'].includes(telegramPayment.match_status)) {
+    await replyTelegram(chatId, messageId, [
+      '🔁 <b>DUPLICATE IGNORED</b>',
+      '',
+      `🧾 Trx ID: <code>${html(parsed.trx_id)}</code>`,
+      'This transaction was already received.',
+    ].join('\n'))
+    return
+  }
+
+  if (!merchantMatches(parsed)) {
+    await updateTelegramPayment(telegramPayment.id, {
+      match_status: 'pending_review',
+      status: 'pending_review',
+      match_reason: 'Merchant/outlet name did not match expected account.',
+    })
+
+    await replyTelegram(chatId, messageId, [
+      '❌ <b>PAYMENT BLOCKED</b>',
+      '',
+      `💵 Amount: <b>${html(money(parsed.amount))}</b>`,
+      `🧾 Trx ID: <code>${html(parsed.trx_id)}</code>`,
+      `🏦 Outlet: ${html(parsed.outlet_name)}`,
+      '⚠️ Reason: merchant/outlet name does not match.',
+    ].join('\n'))
+    return
+  }
+
+  const matches = await findMatchingOrders(parsed)
+
+  if (matches.length === 1) {
+    const released = await releaseMatchedOrder(matches[0], telegramPayment)
+    const user = await getUser(released.user_id)
+
+    await updateTelegramPayment(telegramPayment.id, {
+      matched_payment_id: released.id,
+      matched_user_id: released.user_id,
+      match_status: 'auto_released',
+      status: 'auto_released',
+      match_reason: 'Unique waiting order matched by amount and time.',
+    })
+
+    await replyTelegram(chatId, messageId, releasedMessage(released, user, '✅ AUTO RELEASED'))
+    return
+  }
+
+  if (matches.length > 1) {
+    const reason = `Multiple waiting orders matched this ${money(parsed.amount)} payment.`
+
+    await markCandidatesPendingReview(matches, telegramPayment, reason)
+    await updateTelegramPayment(telegramPayment.id, {
+      match_status: 'pending_review',
+      status: 'pending_review',
+      match_reason: reason,
+    })
+
+    for (const payment of matches.slice(0, 4)) {
+      const user = await getUser(payment.user_id)
+      await replyTelegram(chatId, messageId, needApprovalMessage(payment, user, reason), {
+        reply_markup: reviewKeyboard(payment.id),
+      })
+    }
+
+    return
+  }
+
+  await updateTelegramPayment(telegramPayment.id, {
+    match_status: 'unmatched',
+    status: 'unmatched',
+    match_reason: 'No waiting order matched by amount and time.',
+  })
+
+  await replyTelegram(chatId, messageId, [
+    '🟡 <b>PAYMENT RECEIVED — NO ORDER FOUND</b>',
+    '',
+    `💵 Amount: <b>${html(money(parsed.amount))}</b>`,
+    `👤 Payer: ${html(parsed.payer_name)} (*${html(parsed.payer_phone_last)})`,
+    `🧾 Trx ID: <code>${html(parsed.trx_id)}</code>`,
+    '',
+    '⚠️ No active website order matched this payment.',
+    `🔎 Admin: ${html(process.env.ADMIN_PAYMENT_URL || 'https://admin.shadowerabook.site/payment')}`,
+  ].join('\n'))
+}
+
+export async function handleTelegramWebhook(req, res) {
+  try {
+    const secret = String(req.params.secret || '')
+    const expected = String(process.env.TELEGRAM_WEBHOOK_SECRET || '')
+    if (!expected || secret !== expected) return res.status(403).json({ ok: false, message: 'Forbidden' })
+
+    if (req.body?.callback_query) {
+      await handleCallbackQuery(req.body.callback_query)
+      return res.status(200).json({ ok: true })
+    }
+
+    const message = getUpdateMessage(req.body)
+    const text = getMessageText(message)
+    if (!message || !text) return res.status(200).json({ ok: true, skipped: true })
+
+    const parsed = parseAbaPaywayMessage(text)
+    if (!parsed) return res.status(200).json({ ok: true, skipped: true })
+
+    await processAbaMessage(parsed, message)
+    return res.status(200).json({ ok: true })
+  } catch (error) {
+    console.error('TELEGRAM WEBHOOK ERROR:', error)
+    return res.status(200).json({ ok: false, message: error.message })
   }
 }
