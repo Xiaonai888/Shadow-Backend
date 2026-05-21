@@ -21,6 +21,7 @@ import adminPurchasesRoutes from './src/routes/adminPurchases.routes.js'
 import adminActivityRoutes from './src/routes/adminActivity.routes.js'
 import telegramRoutes from './src/routes/telegram.routes.js'
 import { startTelegramUserListener } from './src/listeners/telegramUserListener.js'
+import unlocksRoutes from './src/routes/unlocks.routes.js'
 
 dotenv.config()
 
@@ -81,6 +82,7 @@ app.use('/api/comments', commentsRoutes)
 app.use('/api/reader', libraryRoutes)
 app.use('/api/purchase', purchaseRoutes)
 app.use('/api/telegram', telegramRoutes)
+app.use('/api/unlocks', unlocksRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
