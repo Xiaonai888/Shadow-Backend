@@ -132,6 +132,8 @@ function publicPayment(item) {
     user_id: item.user_id,
     order_id: item.order_id,
     aba_transaction_id: item.aba_transaction_id || '',
+    aba_trx_id: item.aba_trx_id || item.aba_transaction_id || '',
+    aba_apv: item.aba_apv || '',
     package_usd: Number(item.package_usd || 0),
     amount_usd: Number(item.amount_usd || 0),
     currency: item.currency || 'USD',
@@ -143,6 +145,9 @@ function publicPayment(item) {
     checkout_url: item.checkout_url || '',
     deeplink: item.deeplink || '',
     status: item.status,
+    match_status: item.match_status || '',
+    match_reason: item.match_reason || '',
+    admin_note: item.admin_note || '',
     created_at: item.created_at,
     expires_at: item.expires_at,
     paid_at: item.paid_at,
@@ -433,16 +438,52 @@ export async function getMyPurchaseRequests(req, res) {
 
     if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
 
-    const { data, error } = await supabase
+    const page = Math.max(Number(req.query.page || 1), 1)
+    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 20)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+    const status = String(req.query.status || 'all').trim().toLowerCase()
+    const search = String(req.query.q || req.query.search || '').trim()
+
+    const cutoffDate = new Date()
+    cutoffDate.setFullYear(cutoffDate.getFullYear() - 1)
+    const cutoffIso = cutoffDate.toISOString()
+
+    let query = supabase
       .from('payment_transactions')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('user_id', userId)
+      .gte('created_at', cutoffIso)
+
+    if (status && status !== 'all') {
+      query = query.eq('status', status)
+    }
+
+    if (search) {
+      const safeSearch = search.replace(/[%_,]/g, '')
+      query = query.or(`order_id.ilike.%${safeSearch}%,aba_transaction_id.ilike.%${safeSearch}%`)
+    }
+
+    const { data, error, count } = await query
       .order('created_at', { ascending: false })
-      .limit(50)
+      .range(from, to)
 
     if (error) throw error
 
-    return res.status(200).json({ ok: true, purchases: (data || []).map((item) => publicPayment(item)) })
+    const total = Number(count || 0)
+    const totalPages = Math.max(Math.ceil(total / limit), 1)
+
+    return res.status(200).json({
+      ok: true,
+      purchases: (data || []).map((item) => publicPayment(item)),
+      page,
+      limit,
+      total,
+      total_pages: totalPages,
+      has_next: page < totalPages,
+      has_prev: page > 1,
+      history_limit_days: 365,
+    })
   } catch (error) {
     console.error('GET MY PURCHASE REQUESTS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load purchase requests', error: error.message })
