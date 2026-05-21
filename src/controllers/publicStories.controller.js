@@ -1,4 +1,6 @@
 import { supabase } from '../config/supabase.js'
+import jwt from 'jsonwebtoken'
+
 
 function publicAuthorPage(page) {
   if (!page) return null
@@ -101,6 +103,48 @@ function publicEpisodeListItem(episode) {
 }
 
 function publicEpisode(episode) {
+  ADD:
+function getOptionalUserId(req) {
+  try {
+    const authHeader = req.headers.authorization || ''
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
+
+    if (!token || !process.env.JWT_SECRET) return ''
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET)
+
+    if (decoded.type !== 'reader') return ''
+
+    return decoded.user_id || ''
+  } catch {
+    return ''
+  }
+}
+
+function isEpisodeFreeForReader(episode) {
+  return !episode?.is_locked || Number(episode?.episode_number || 0) <= 1
+}
+
+async function hasActiveEpisodeUnlock({ userId, episodeId }) {
+  if (!userId || !episodeId) return false
+
+  const { data, error } = await supabase
+    .from('episode_unlocks')
+    .select('id, access_type, expires_at, unlock_status')
+    .eq('user_id', userId)
+    .eq('episode_id', episodeId)
+    .eq('unlock_status', 'active')
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) return false
+
+  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now()) {
+    return false
+  }
+
+  return true
+}
   if (!episode) return null
 
   return {
@@ -416,6 +460,76 @@ export async function getPublicStoryEpisodes(req, res) {
 }
 
 export async function getPublicEpisodeById(req, res) {
+  try {
+    const { storyId, episodeId } = req.params
+
+    const story = await getPublishedReadableStory(storyId)
+
+    if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    const { data: episode, error } = await supabase
+      .from('episodes')
+      .select('*')
+      .eq('id', episodeId)
+      .eq('story_id', storyId)
+      .eq('status', 'published')
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!episode) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Episode not found',
+      })
+    }
+
+    const userId = getOptionalUserId(req)
+    const freeEpisode = isEpisodeFreeForReader(episode)
+    const unlocked = freeEpisode || await hasActiveEpisodeUnlock({ userId, episodeId })
+
+    if (!unlocked) {
+      return res.status(423).json({
+        ok: false,
+        code: 'EPISODE_LOCKED',
+        message: 'This episode is locked',
+        locked: true,
+        story: publicStory(story),
+        episode: {
+          ...publicEpisodeListItem(episode),
+          content: '',
+        },
+      })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      locked: false,
+      story: publicStory(story),
+      episode: publicEpisode(episode),
+    })
+  } catch (error) {
+    console.error('GET PUBLIC EPISODE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load episode',
+      error: error.message,
+    })
+  }
+}
   try {
     const { storyId, episodeId } = req.params
 
