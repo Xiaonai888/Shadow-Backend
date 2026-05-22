@@ -1,8 +1,27 @@
 import { supabase } from '../config/supabase.js'
 
-const DIAMOND_PRICE_PER_EPISODE = 10
-const GEM_PRICE_PER_EPISODE = 1000
-const GEM_ACCESS_DAYS = 7
+const FALLBACK_RULES = {
+  diamond_per_episode: 10,
+  gem_per_episode: 1000,
+  gem_access_days: 7,
+  gem_new_episode_wait_days: 7,
+  standard_gem_daily_limit: 5,
+  vip_gem_daily_limit: 10,
+  premium_gem_daily_limit: 20,
+  standard_gem_monthly_story_limit: 10,
+  vip_gem_monthly_story_limit: 20,
+  premium_gem_monthly_story_limit: 40,
+  standard_free_first_episode_monthly_limit: 10,
+  vip_free_first_episode_monthly_limit: 50,
+  premium_free_first_episode_unlimited: true,
+  voucher_cost_per_episode: 10,
+  simple_story_card_cost_per_episode: 10,
+  special_story_card_cost_per_episode: 1,
+  view_count_cooldown_hours: 12,
+  show_ads_after_free_unlock: true,
+  free_unlock_ad_duration_seconds: 7,
+  free_unlock_ad_close_after_seconds: 3,
+}
 
 const PACKAGE_RULES = {
   single: {
@@ -65,8 +84,73 @@ function isEpisodeFree(episode) {
   return !episode?.is_locked || Number(episode?.episode_number || 0) <= 1
 }
 
-function calculateDiamondCost(count, discountPercent = 0) {
-  const original = Number(count || 0) * DIAMOND_PRICE_PER_EPISODE
+function normalizeTier(value) {
+  const tier = String(value || 'standard').trim().toLowerCase()
+
+  if (tier === 'vip') return 'vip'
+  if (tier === 'premium') return 'premium'
+
+  return 'standard'
+}
+
+function getReaderTier(req) {
+  return normalizeTier(req.user?.reader_tier || req.user?.subscription_tier || req.user?.membership_tier || req.user?.role)
+}
+
+function startOfTodayIso() {
+  const date = new Date()
+  date.setHours(0, 0, 0, 0)
+  return date.toISOString()
+}
+
+function startOfMonthIso() {
+  const date = new Date()
+  date.setDate(1)
+  date.setHours(0, 0, 0, 0)
+  return date.toISOString()
+}
+
+function getRuleNumber(rules, key) {
+  return Number(rules?.[key] ?? FALLBACK_RULES[key])
+}
+
+function getGemDailyLimit(rules, tier) {
+  if (tier === 'premium') return getRuleNumber(rules, 'premium_gem_daily_limit')
+  if (tier === 'vip') return getRuleNumber(rules, 'vip_gem_daily_limit')
+  return getRuleNumber(rules, 'standard_gem_daily_limit')
+}
+
+function getGemMonthlyStoryLimit(rules, tier) {
+  if (tier === 'premium') return getRuleNumber(rules, 'premium_gem_monthly_story_limit')
+  if (tier === 'vip') return getRuleNumber(rules, 'vip_gem_monthly_story_limit')
+  return getRuleNumber(rules, 'standard_gem_monthly_story_limit')
+}
+
+function getEpisodeAvailableForGemAt(episode, rules) {
+  const waitDays = getRuleNumber(rules, 'gem_new_episode_wait_days')
+  const publishedAt = episode?.published_at || episode?.created_at
+
+  if (!publishedAt || waitDays <= 0) {
+    return {
+      available: true,
+      available_at: null,
+      wait_seconds: 0,
+    }
+  }
+
+  const availableAtMs = new Date(publishedAt).getTime() + waitDays * 24 * 60 * 60 * 1000
+  const nowMs = Date.now()
+  const waitSeconds = Math.max(0, Math.ceil((availableAtMs - nowMs) / 1000))
+
+  return {
+    available: waitSeconds <= 0,
+    available_at: new Date(availableAtMs).toISOString(),
+    wait_seconds: waitSeconds,
+  }
+}
+
+function calculateDiamondCost(count, discountPercent = 0, rules = FALLBACK_RULES) {
+  const original = Number(count || 0) * getRuleNumber(rules, 'diamond_per_episode')
   const discount = Math.max(0, Math.min(100, Number(discountPercent || 0)))
   const total = Math.ceil(original * ((100 - discount) / 100))
 
@@ -77,12 +161,12 @@ function calculateDiamondCost(count, discountPercent = 0) {
   }
 }
 
-function publicPackageOption({ rule, availableEpisodes, story }) {
+function publicPackageOption({ rule, availableEpisodes, story, rules }) {
   const availableCount = availableEpisodes.length
   const requiredCount = rule.key === 'all_released' ? availableCount : Number(rule.count || 0)
   const canUseAllReleased = rule.key !== 'all_released' || availableCount > 70 || isStoryCompleted(story)
   const enabled = availableCount >= requiredCount && requiredCount > 0 && canUseAllReleased
-  const cost = calculateDiamondCost(requiredCount, rule.discount_percent)
+  const cost = calculateDiamondCost(requiredCount, rule.discount_percent, rules)
 
   return {
     key: rule.key,
@@ -104,6 +188,17 @@ function publicPackageOption({ rule, availableEpisodes, story }) {
   }
 }
 
+async function getPlatformUnlockRules() {
+  const { data, error } = await supabase
+    .from('platform_unlock_rules')
+    .select('*')
+    .eq('id', 1)
+    .maybeSingle()
+
+  if (error) return FALLBACK_RULES
+  return data || FALLBACK_RULES
+}
+
 async function getStory(storyId) {
   const { data, error } = await supabase
     .from('stories')
@@ -118,7 +213,7 @@ async function getStory(storyId) {
 async function getEpisode({ storyId, episodeId }) {
   const { data, error } = await supabase
     .from('episodes')
-    .select('id, story_id, author_id, user_id, title, episode_number, is_locked, status')
+    .select('id, story_id, author_id, user_id, title, episode_number, is_locked, status, published_at, created_at')
     .eq('id', episodeId)
     .eq('story_id', storyId)
     .maybeSingle()
@@ -189,7 +284,7 @@ async function getAvailableLockedEpisodes({ userId, storyId, fromEpisodeNumber }
 
   const { data, error } = await supabase
     .from('episodes')
-    .select('id, story_id, author_id, title, episode_number, is_locked, status')
+    .select('id, story_id, author_id, title, episode_number, is_locked, status, published_at, created_at')
     .eq('story_id', storyId)
     .eq('status', 'published')
     .eq('is_locked', true)
@@ -203,8 +298,60 @@ async function getAvailableLockedEpisodes({ userId, storyId, fromEpisodeNumber }
     .filter((episode) => !unlockedIds.has(episode.id))
 }
 
-async function getUnlockStatusPayload({ userId, storyId, episodeId }) {
-  const [story, episode, wallet] = await Promise.all([
+async function countGemUnlocksToday(userId) {
+  const { count, error } = await supabase
+    .from('episode_unlock_transactions')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('currency', 'gem')
+    .gte('created_at', startOfTodayIso())
+
+  if (error) throw error
+  return Number(count || 0)
+}
+
+async function countGemUnlocksThisMonthForStory({ userId, storyId }) {
+  const { count, error } = await supabase
+    .from('episode_unlock_transactions')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('story_id', storyId)
+    .eq('currency', 'gem')
+    .gte('created_at', startOfMonthIso())
+
+  if (error) throw error
+  return Number(count || 0)
+}
+
+async function getGemLimitStatus({ userId, storyId, tier, rules }) {
+  const [dailyUsed, monthlyStoryUsed] = await Promise.all([
+    countGemUnlocksToday(userId),
+    countGemUnlocksThisMonthForStory({ userId, storyId }),
+  ])
+
+  const dailyLimit = getGemDailyLimit(rules, tier)
+  const monthlyStoryLimit = getGemMonthlyStoryLimit(rules, tier)
+
+  return {
+    tier,
+    daily: {
+      used: dailyUsed,
+      limit: dailyLimit,
+      remaining: Math.max(0, dailyLimit - dailyUsed),
+      allowed: dailyUsed < dailyLimit,
+    },
+    monthly_story: {
+      used: monthlyStoryUsed,
+      limit: monthlyStoryLimit,
+      remaining: Math.max(0, monthlyStoryLimit - monthlyStoryUsed),
+      allowed: monthlyStoryUsed < monthlyStoryLimit,
+    },
+  }
+}
+
+async function getUnlockStatusPayload({ userId, storyId, episodeId, tier = 'standard' }) {
+  const [rules, story, episode, wallet] = await Promise.all([
+    getPlatformUnlockRules(),
     getStory(storyId),
     getEpisode({ storyId, episodeId }),
     getWallet(userId),
@@ -224,9 +371,12 @@ async function getUnlockStatusPayload({ userId, storyId, episodeId }) {
     storyId,
     fromEpisodeNumber: episode.episode_number,
   })
+  const gemWait = getEpisodeAvailableForGemAt(episode, rules)
+  const gemLimits = await getGemLimitStatus({ userId, storyId, tier, rules })
 
   return {
     notFound: false,
+    rules,
     story,
     episode,
     wallet,
@@ -234,12 +384,14 @@ async function getUnlockStatusPayload({ userId, storyId, episodeId }) {
     freeEpisode,
     unlocked,
     availableEpisodes,
+    gemWait,
+    gemLimits,
     packageOptions: [
-      publicPackageOption({ rule: PACKAGE_RULES.single, availableEpisodes, story }),
-      publicPackageOption({ rule: PACKAGE_RULES.next10, availableEpisodes, story }),
-      publicPackageOption({ rule: PACKAGE_RULES.next30, availableEpisodes, story }),
-      publicPackageOption({ rule: PACKAGE_RULES.next50, availableEpisodes, story }),
-      publicPackageOption({ rule: PACKAGE_RULES.all_released, availableEpisodes, story }),
+      publicPackageOption({ rule: PACKAGE_RULES.single, availableEpisodes, story, rules }),
+      publicPackageOption({ rule: PACKAGE_RULES.next10, availableEpisodes, story, rules }),
+      publicPackageOption({ rule: PACKAGE_RULES.next30, availableEpisodes, story, rules }),
+      publicPackageOption({ rule: PACKAGE_RULES.next50, availableEpisodes, story, rules }),
+      publicPackageOption({ rule: PACKAGE_RULES.all_released, availableEpisodes, story, rules }),
     ],
   }
 }
@@ -304,6 +456,7 @@ async function createUnlocksAndTransactions({ userId, storyId, episodes, unlockT
   if (unlockError) throw unlockError
 
   const unlockMap = new Map((unlocks || []).map((unlock) => [unlock.episode_id, unlock.id]))
+  const perEpisodeAmount = episodes.length > 0 ? Math.ceil(Number(transactionAmount || 0) / episodes.length) : 0
 
   const transactionRows = episodes.map((episode) => ({
     unlock_id: unlockMap.get(episode.id) || null,
@@ -312,12 +465,13 @@ async function createUnlocksAndTransactions({ userId, storyId, episodes, unlockT
     episode_id: episode.id,
     author_id: episode.author_id,
     currency: transactionCurrency,
-    amount: transactionAmount,
+    amount: perEpisodeAmount,
     transaction_type: 'unlock',
     metadata: {
       ...metadata,
       episode_number: episode.episode_number,
       episode_title: episode.title,
+      package_total_amount: transactionAmount,
     },
   }))
 
@@ -334,8 +488,9 @@ export async function getEpisodeUnlockStatus(req, res) {
   try {
     const userId = req.user?.user_id
     const { storyId, episodeId } = req.params
+    const tier = getReaderTier(req)
 
-    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId })
+    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId, tier })
 
     if (payload.notFound) {
       return res.status(404).json({
@@ -352,12 +507,16 @@ export async function getEpisodeUnlockStatus(req, res) {
       unlock_type: payload.freeEpisode ? 'free' : payload.unlock?.unlock_type || null,
       price: {
         currency: 'diamond',
-        amount: DIAMOND_PRICE_PER_EPISODE,
+        amount: getRuleNumber(payload.rules, 'diamond_per_episode'),
       },
       gem_access: {
         currency: 'gem',
-        amount: GEM_PRICE_PER_EPISODE,
-        access_days: GEM_ACCESS_DAYS,
+        amount: getRuleNumber(payload.rules, 'gem_per_episode'),
+        access_days: getRuleNumber(payload.rules, 'gem_access_days'),
+        available: payload.gemWait.available && payload.gemLimits.daily.allowed && payload.gemLimits.monthly_story.allowed,
+        available_at: payload.gemWait.available_at,
+        wait_seconds: payload.gemWait.wait_seconds,
+        limit_status: payload.gemLimits,
       },
       package_options: payload.packageOptions,
       story_unlock_rules: {
@@ -403,6 +562,7 @@ export async function unlockEpisodePackageWithDiamonds(req, res) {
   try {
     const userId = req.user?.user_id
     const { storyId, episodeId } = req.params
+    const tier = getReaderTier(req)
     const packageKey = String(req.body.package_key || req.body.packageKey || 'single').trim()
     const rule = PACKAGE_RULES[packageKey]
 
@@ -413,7 +573,7 @@ export async function unlockEpisodePackageWithDiamonds(req, res) {
       })
     }
 
-    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId })
+    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId, tier })
 
     if (payload.notFound) {
       return res.status(404).json({
@@ -481,6 +641,7 @@ export async function unlockEpisodePackageWithDiamonds(req, res) {
         discount_percent: option.discount_percent,
         original_price: option.original_price,
         final_price: option.price,
+        reader_tier: tier,
       },
     })
 
@@ -508,8 +669,9 @@ export async function unlockEpisodeWithGems(req, res) {
   try {
     const userId = req.user?.user_id
     const { storyId, episodeId } = req.params
+    const tier = getReaderTier(req)
 
-    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId })
+    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId, tier })
 
     if (payload.notFound) {
       return res.status(404).json({
@@ -527,22 +689,60 @@ export async function unlockEpisodeWithGems(req, res) {
       })
     }
 
-    if (Number(payload.wallet.gem_balance || 0) < GEM_PRICE_PER_EPISODE) {
-      return res.status(402).json({
+    if (!payload.gemWait.available) {
+      return res.status(403).json({
         ok: false,
-        code: 'INSUFFICIENT_GEMS',
-        message: 'Not enough Gems',
-        need: GEM_PRICE_PER_EPISODE - Number(payload.wallet.gem_balance || 0),
-        price: GEM_PRICE_PER_EPISODE,
+        code: 'GEM_WAIT_REQUIRED',
+        message: 'This episode is newly released. Free access with Gems is not available yet.',
+        available_at: payload.gemWait.available_at,
+        wait_seconds: payload.gemWait.wait_seconds,
+        gem_access: {
+          amount: getRuleNumber(payload.rules, 'gem_per_episode'),
+          access_days: getRuleNumber(payload.rules, 'gem_access_days'),
+        },
         wallet: publicWallet(payload.wallet),
       })
     }
 
-    const expiresAt = new Date(Date.now() + GEM_ACCESS_DAYS * 24 * 60 * 60 * 1000).toISOString()
+    if (!payload.gemLimits.daily.allowed) {
+      return res.status(403).json({
+        ok: false,
+        code: 'GEM_DAILY_LIMIT_REACHED',
+        message: `You reached your daily Gem unlock limit for ${tier} readers.`,
+        limit_status: payload.gemLimits,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    if (!payload.gemLimits.monthly_story.allowed) {
+      return res.status(403).json({
+        ok: false,
+        code: 'GEM_MONTHLY_STORY_LIMIT_REACHED',
+        message: `You reached your monthly Gem unlock limit for this story.`,
+        limit_status: payload.gemLimits,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    const gemPrice = getRuleNumber(payload.rules, 'gem_per_episode')
+    const accessDays = getRuleNumber(payload.rules, 'gem_access_days')
+
+    if (Number(payload.wallet.gem_balance || 0) < gemPrice) {
+      return res.status(402).json({
+        ok: false,
+        code: 'INSUFFICIENT_GEMS',
+        message: 'Not enough Gems',
+        need: gemPrice - Number(payload.wallet.gem_balance || 0),
+        price: gemPrice,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    const expiresAt = new Date(Date.now() + accessDays * 24 * 60 * 60 * 1000).toISOString()
     const updatedWallet = await updateGemBalance({
       userId,
       wallet: payload.wallet,
-      amount: GEM_PRICE_PER_EPISODE,
+      amount: gemPrice,
     })
 
     const unlocks = await createUnlocksAndTransactions({
@@ -555,9 +755,12 @@ export async function unlockEpisodeWithGems(req, res) {
       expiresAt,
       diamondSpent: 0,
       transactionCurrency: 'gem',
-      transactionAmount: GEM_PRICE_PER_EPISODE,
+      transactionAmount: gemPrice,
       metadata: {
-        access_days: GEM_ACCESS_DAYS,
+        access_days: accessDays,
+        reader_tier: tier,
+        daily_limit_status: payload.gemLimits.daily,
+        monthly_story_limit_status: payload.gemLimits.monthly_story,
       },
     })
 
