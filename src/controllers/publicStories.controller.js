@@ -1,6 +1,11 @@
-import { supabase } from '../config/supabase.js'
 import jwt from 'jsonwebtoken'
+import { supabase } from '../config/supabase.js'
 
+const FALLBACK_UNLOCK_RULES = {
+  standard_free_first_episode_monthly_limit: 10,
+  vip_free_first_episode_monthly_limit: 50,
+  premium_free_first_episode_unlimited: true,
+}
 
 function publicAuthorPage(page) {
   if (!page) return null
@@ -103,48 +108,6 @@ function publicEpisodeListItem(episode) {
 }
 
 function publicEpisode(episode) {
-  ADD:
-function getOptionalUserId(req) {
-  try {
-    const authHeader = req.headers.authorization || ''
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
-
-    if (!token || !process.env.JWT_SECRET) return ''
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET)
-
-    if (decoded.type !== 'reader') return ''
-
-    return decoded.user_id || ''
-  } catch {
-    return ''
-  }
-}
-
-function isEpisodeFreeForReader(episode) {
-  return !episode?.is_locked || Number(episode?.episode_number || 0) <= 1
-}
-
-async function hasActiveEpisodeUnlock({ userId, episodeId }) {
-  if (!userId || !episodeId) return false
-
-  const { data, error } = await supabase
-    .from('episode_unlocks')
-    .select('id, access_type, expires_at, unlock_status')
-    .eq('user_id', userId)
-    .eq('episode_id', episodeId)
-    .eq('unlock_status', 'active')
-    .maybeSingle()
-
-  if (error) throw error
-  if (!data) return false
-
-  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now()) {
-    return false
-  }
-
-  return true
-}
   if (!episode) return null
 
   return {
@@ -163,6 +126,58 @@ async function hasActiveEpisodeUnlock({ userId, episodeId }) {
     created_at: episode.created_at,
     updated_at: episode.updated_at,
   }
+}
+
+function getOptionalUser(req) {
+  try {
+    const authHeader = req.headers.authorization || ''
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
+
+    if (!token || !process.env.JWT_SECRET) return null
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET)
+
+    if (decoded.type !== 'reader') return null
+
+    return decoded
+  } catch {
+    return null
+  }
+}
+
+function normalizeTier(value) {
+  const tier = String(value || 'standard').trim().toLowerCase()
+
+  if (tier === 'vip') return 'vip'
+  if (tier === 'premium') return 'premium'
+
+  return 'standard'
+}
+
+function getReaderTier(user) {
+  return normalizeTier(user?.reader_tier || user?.subscription_tier || user?.membership_tier || user?.role)
+}
+
+function getMonthKey(date = new Date()) {
+  const year = date.getUTCFullYear()
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0')
+
+  return `${year}-${month}`
+}
+
+function isFirstEpisode(episode) {
+  return Number(episode?.episode_number || 0) <= 1
+}
+
+function isEpisodeFreeForReader(episode) {
+  return !episode?.is_locked || isFirstEpisode(episode)
+}
+
+function getFreeFirstEpisodeLimit(rules, tier) {
+  if (tier === 'premium' && rules.premium_free_first_episode_unlimited) return null
+  if (tier === 'vip') return Number(rules.vip_free_first_episode_monthly_limit || FALLBACK_UNLOCK_RULES.vip_free_first_episode_monthly_limit)
+
+  return Number(rules.standard_free_first_episode_monthly_limit || FALLBACK_UNLOCK_RULES.standard_free_first_episode_monthly_limit)
 }
 
 function normalizeLimit(value, fallback = 12, max = 48) {
@@ -199,6 +214,193 @@ function applyStorySort(query, sort) {
   }
 
   return query.order('created_at', { ascending: false })
+}
+
+async function getPlatformUnlockRules() {
+  const { data, error } = await supabase
+    .from('platform_unlock_rules')
+    .select('*')
+    .eq('id', 1)
+    .maybeSingle()
+
+  if (error || !data) return FALLBACK_UNLOCK_RULES
+
+  return {
+    ...FALLBACK_UNLOCK_RULES,
+    ...data,
+  }
+}
+
+async function getFreeFirstEpisodeUsage({ userId, monthKey }) {
+  const { count, error } = await supabase
+    .from('free_first_episode_reads')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('month_key', monthKey)
+
+  if (error) throw error
+
+  return Number(count || 0)
+}
+
+async function hasFreeFirstEpisodeRead({ userId, storyId, monthKey }) {
+  const { data, error } = await supabase
+    .from('free_first_episode_reads')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('story_id', storyId)
+    .eq('month_key', monthKey)
+    .maybeSingle()
+
+  if (error) throw error
+
+  return Boolean(data)
+}
+
+async function saveFreeFirstEpisodeRead({ userId, storyId, episodeId, monthKey, tier }) {
+  const { error } = await supabase
+    .from('free_first_episode_reads')
+    .upsert(
+      {
+        user_id: userId,
+        story_id: storyId,
+        episode_id: episodeId,
+        month_key: monthKey,
+        reader_tier: tier,
+      },
+      {
+        onConflict: 'user_id,story_id,month_key',
+      }
+    )
+
+  if (error) throw error
+}
+
+async function checkAndSaveFreeFirstEpisodeAccess({ user, storyId, episode }) {
+  if (!isFirstEpisode(episode)) {
+    return {
+      ok: true,
+      counted: false,
+      limit: null,
+      used: null,
+      remaining: null,
+    }
+  }
+
+  if (!user?.user_id) {
+    return {
+      ok: false,
+      code: 'LOGIN_REQUIRED',
+      message: 'Please login to read this episode.',
+      status: 401,
+    }
+  }
+
+  const rules = await getPlatformUnlockRules()
+  const tier = getReaderTier(user)
+  const limit = getFreeFirstEpisodeLimit(rules, tier)
+  const monthKey = getMonthKey()
+
+  if (limit === null) {
+    await saveFreeFirstEpisodeRead({
+      userId: user.user_id,
+      storyId,
+      episodeId: episode.id,
+      monthKey,
+      tier,
+    })
+
+    return {
+      ok: true,
+      counted: true,
+      limit: 'unlimited',
+      used: null,
+      remaining: 'unlimited',
+      tier,
+      month_key: monthKey,
+    }
+  }
+
+  const alreadyReadThisStory = await hasFreeFirstEpisodeRead({
+    userId: user.user_id,
+    storyId,
+    monthKey,
+  })
+
+  if (alreadyReadThisStory) {
+    const used = await getFreeFirstEpisodeUsage({
+      userId: user.user_id,
+      monthKey,
+    })
+
+    return {
+      ok: true,
+      counted: false,
+      limit,
+      used,
+      remaining: Math.max(0, limit - used),
+      tier,
+      month_key: monthKey,
+    }
+  }
+
+  const used = await getFreeFirstEpisodeUsage({
+    userId: user.user_id,
+    monthKey,
+  })
+
+  if (used >= limit) {
+    return {
+      ok: false,
+      code: 'FREE_FIRST_EPISODE_MONTHLY_LIMIT_REACHED',
+      message: `You reached your monthly free first-episode limit for ${tier} readers.`,
+      status: 403,
+      limit,
+      used,
+      remaining: 0,
+      tier,
+      month_key: monthKey,
+    }
+  }
+
+  await saveFreeFirstEpisodeRead({
+    userId: user.user_id,
+    storyId,
+    episodeId: episode.id,
+    monthKey,
+    tier,
+  })
+
+  return {
+    ok: true,
+    counted: true,
+    limit,
+    used: used + 1,
+    remaining: Math.max(0, limit - used - 1),
+    tier,
+    month_key: monthKey,
+  }
+}
+
+async function hasActiveEpisodeUnlock({ userId, episodeId }) {
+  if (!userId || !episodeId) return false
+
+  const { data, error } = await supabase
+    .from('episode_unlocks')
+    .select('id, access_type, expires_at, unlock_status')
+    .eq('user_id', userId)
+    .eq('episode_id', episodeId)
+    .eq('unlock_status', 'active')
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) return false
+
+  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now()) {
+    return false
+  }
+
+  return true
 }
 
 async function getAuthorPageById(authorId) {
@@ -496,9 +698,49 @@ export async function getPublicEpisodeById(req, res) {
       })
     }
 
-    const userId = getOptionalUserId(req)
+    const user = getOptionalUser(req)
+    const userId = user?.user_id || ''
     const freeEpisode = isEpisodeFreeForReader(episode)
-    const unlocked = freeEpisode || await hasActiveEpisodeUnlock({ userId, episodeId })
+    const activeUnlock = await hasActiveEpisodeUnlock({ userId, episodeId })
+
+    if (isFirstEpisode(episode)) {
+      const freeAccess = await checkAndSaveFreeFirstEpisodeAccess({
+        user,
+        storyId,
+        episode,
+      })
+
+      if (!freeAccess.ok) {
+        return res.status(freeAccess.status || 403).json({
+          ok: false,
+          code: freeAccess.code,
+          message: freeAccess.message,
+          locked: true,
+          story: publicStory(story),
+          episode: {
+            ...publicEpisodeListItem(episode),
+            content: '',
+          },
+          free_first_episode: {
+            limit: freeAccess.limit,
+            used: freeAccess.used,
+            remaining: freeAccess.remaining,
+            tier: freeAccess.tier,
+            month_key: freeAccess.month_key,
+          },
+        })
+      }
+
+      return res.status(200).json({
+        ok: true,
+        locked: false,
+        story: publicStory(story),
+        episode: publicEpisode(episode),
+        free_first_episode: freeAccess,
+      })
+    }
+
+    const unlocked = freeEpisode || activeUnlock
 
     if (!unlocked) {
       return res.status(423).json({
@@ -517,57 +759,6 @@ export async function getPublicEpisodeById(req, res) {
     return res.status(200).json({
       ok: true,
       locked: false,
-      story: publicStory(story),
-      episode: publicEpisode(episode),
-    })
-  } catch (error) {
-    console.error('GET PUBLIC EPISODE ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load episode',
-      error: error.message,
-    })
-  }
-}
-  try {
-    const { storyId, episodeId } = req.params
-
-    const story = await getPublishedReadableStory(storyId)
-
-    if (!story) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Story not found',
-      })
-    }
-
-    if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
-      return res.status(404).json({
-        ok: false,
-        message: 'Story not found',
-      })
-    }
-
-    const { data: episode, error } = await supabase
-      .from('episodes')
-      .select('*')
-      .eq('id', episodeId)
-      .eq('story_id', storyId)
-      .eq('status', 'published')
-      .maybeSingle()
-
-    if (error) throw error
-
-    if (!episode) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Episode not found',
-      })
-    }
-
-    return res.status(200).json({
-      ok: true,
       story: publicStory(story),
       episode: publicEpisode(episode),
     })
