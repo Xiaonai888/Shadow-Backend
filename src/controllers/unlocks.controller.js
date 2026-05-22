@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { createAuthorEarningsFromDiamondUnlock } from '../services/authorRevenue.service.js'
 
 const FALLBACK_RULES = {
   diamond_per_episode: 10,
@@ -475,11 +476,18 @@ async function createUnlocksAndTransactions({ userId, storyId, episodes, unlockT
     },
   }))
 
-  const { error: transactionError } = await supabase
+    const { data: transactions, error: transactionError } = await supabase
     .from('episode_unlock_transactions')
     .insert(transactionRows)
+    .select()
 
   if (transactionError) throw transactionError
+
+  if (transactionCurrency === 'diamond') {
+    await createAuthorEarningsFromDiamondUnlock({
+      transactions: transactions || [],
+    })
+  }
 
   return unlocks || []
 }
