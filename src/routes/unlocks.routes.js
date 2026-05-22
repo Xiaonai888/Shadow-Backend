@@ -5,10 +5,12 @@ import {
   unlockEpisodePackageWithDiamonds,
   unlockEpisodeWithGems,
 } from '../controllers/unlocks.controller.js'
+import { getPlatformUnlockRules } from '../controllers/unlockRules.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
 
+router.get('/rules', getPlatformUnlockRules)
 router.get('/stories/:storyId/episodes/:episodeId/status', requireUser, getEpisodeUnlockStatus)
 router.post('/stories/:storyId/episodes/:episodeId/diamond', requireUser, unlockEpisodeWithDiamonds)
 router.post('/stories/:storyId/episodes/:episodeId/package', requireUser, unlockEpisodePackageWithDiamonds)
