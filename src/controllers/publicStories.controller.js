@@ -382,6 +382,104 @@ async function checkAndSaveFreeFirstEpisodeAccess({ user, storyId, episode }) {
   }
 }
 
+async function getViewCooldownHours() {
+  const { data, error } = await supabase
+    .from('platform_unlock_rules')
+    .select('view_count_cooldown_hours')
+    .eq('id', 1)
+    .maybeSingle()
+
+  if (error || !data) return 12
+
+  return Number(data.view_count_cooldown_hours || 12)
+}
+
+async function recordEpisodeView({ userId, storyId, episodeId }) {
+  if (!userId || !storyId || !episodeId) {
+    return {
+      counted: false,
+      reason: 'missing_user_or_episode',
+    }
+  }
+
+  const cooldownHours = await getViewCooldownHours()
+  const now = new Date()
+  const cooldownMs = cooldownHours * 60 * 60 * 1000
+
+  const { data: oldLog, error: oldLogError } = await supabase
+    .from('episode_view_logs')
+    .select('id, last_counted_at')
+    .eq('user_id', userId)
+    .eq('episode_id', episodeId)
+    .maybeSingle()
+
+  if (oldLogError) throw oldLogError
+
+  if (oldLog?.last_counted_at) {
+    const lastCountedAt = new Date(oldLog.last_counted_at).getTime()
+
+    if (now.getTime() - lastCountedAt < cooldownMs) {
+      return {
+        counted: false,
+        reason: 'cooldown',
+        cooldown_hours: cooldownHours,
+      }
+    }
+  }
+
+  const { error: upsertError } = await supabase
+    .from('episode_view_logs')
+    .upsert(
+      {
+        user_id: userId,
+        story_id: storyId,
+        episode_id: episodeId,
+        last_counted_at: now.toISOString(),
+      },
+      {
+        onConflict: 'user_id,episode_id',
+      }
+    )
+
+  if (upsertError) throw upsertError
+
+  const [{ data: story }, { data: episode }] = await Promise.all([
+    supabase
+      .from('stories')
+      .select('total_views')
+      .eq('id', storyId)
+      .maybeSingle(),
+    supabase
+      .from('episodes')
+      .select('total_views')
+      .eq('id', episodeId)
+      .maybeSingle(),
+  ])
+
+  await Promise.all([
+    supabase
+      .from('stories')
+      .update({
+        total_views: Number(story?.total_views || 0) + 1,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', storyId),
+    supabase
+      .from('episodes')
+      .update({
+        total_views: Number(episode?.total_views || 0) + 1,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', episodeId),
+  ])
+
+  return {
+    counted: true,
+    reason: 'counted',
+    cooldown_hours: cooldownHours,
+  }
+}
+
 async function hasActiveEpisodeUnlock({ userId, episodeId }) {
   if (!userId || !episodeId) return false
 
@@ -731,12 +829,19 @@ export async function getPublicEpisodeById(req, res) {
         })
       }
 
+      const viewResult = await recordEpisodeView({
+        userId: user.user_id,
+        storyId,
+        episodeId,
+      })
+
       return res.status(200).json({
         ok: true,
         locked: false,
         story: publicStory(story),
         episode: publicEpisode(episode),
         free_first_episode: freeAccess,
+        view: viewResult,
       })
     }
 
@@ -756,11 +861,18 @@ export async function getPublicEpisodeById(req, res) {
       })
     }
 
+    const viewResult = await recordEpisodeView({
+      userId,
+      storyId,
+      episodeId,
+    })
+
     return res.status(200).json({
       ok: true,
       locked: false,
       story: publicStory(story),
       episode: publicEpisode(episode),
+      view: viewResult,
     })
   } catch (error) {
     console.error('GET PUBLIC EPISODE ERROR:', error)
