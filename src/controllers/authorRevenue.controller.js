@@ -242,7 +242,7 @@ async function getAuthorTotals(authorPage) {
   if (storyIds.length) {
     const { data: episodeRows, error: episodesError } = await supabase
       .from('episodes')
-      .select('id, story_id, character_count, word_count, status')
+      .select('id, story_id, character_count, word_count, total_likes, status')
       .in('story_id', storyIds)
 
     if (episodesError) throw episodesError
@@ -258,7 +258,10 @@ async function getAuthorTotals(authorPage) {
   (sum, episode) => sum + numberValue(episode.word_count || episode.character_count),
   0,
 ),
-    total_likes: (stories || []).reduce((sum, story) => sum + numberValue(story.total_likes), 0),
+    total_likes: publishedEpisodes.reduce(
+  (sum, episode) => sum + numberValue(episode.total_likes),
+  0,
+),
     total_followers: numberValue(authorPage.total_followers),
     total_views: (stories || []).reduce((sum, story) => sum + numberValue(story.total_views), 0),
     total_comments: (stories || []).reduce((sum, story) => sum + numberValue(story.total_comments), 0),
