@@ -10,6 +10,21 @@ const MAX_EPISODE_CHARACTERS = 12000
 function cleanText(value) {
   return String(value || '').trim()
 }
+function calculateWordCount(value) {
+  const text = String(value || '').trim()
+
+  if (!text) return 0
+
+  const latinWords = text
+    .replace(/[\u1780-\u17FF]+/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean).length
+
+  const khmerChars = (text.match(/[\u1780-\u17FF]/g) || []).length
+  const khmerEstimatedWords = Math.ceil(khmerChars / 6)
+
+  return latinWords + khmerEstimatedWords
+}
 
 function cleanNullableText(value) {
   const text = cleanText(value)
@@ -530,6 +545,7 @@ export async function createEpisode(req, res) {
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
     const status = cleanText(req.body.status || 'draft')
     const characterCount = content.length
+    const wordCount = calculateWordCount(content)
 
     if (!title) {
       return res.status(400).json({
@@ -600,6 +616,7 @@ export async function createEpisode(req, res) {
         status,
         episode_number: episodeNumber,
         character_count: characterCount,
+word_count: wordCount,
       })
       .select()
       .single()
@@ -757,6 +774,7 @@ export async function updateEpisode(req, res) {
           : Boolean(episode.is_locked)
     const unlockMethods = cleanUnlockMethods(req.body.unlock_methods || req.body.unlockMethods || episode.unlock_methods)
     const characterCount = content.length
+    const wordCount = calculateWordCount(content)
 
     if (!title) {
       return res.status(400).json({
@@ -809,6 +827,7 @@ export async function updateEpisode(req, res) {
       unlock_methods: unlockMethods,
       status,
       character_count: characterCount,
+word_count: wordCount,
       updated_at: new Date().toISOString(),
     }
 
