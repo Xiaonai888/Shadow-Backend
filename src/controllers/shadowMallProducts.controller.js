@@ -320,7 +320,18 @@ export async function updateShadowMallProduct(req, res) {
     }
 
     const payload = { updated_at: new Date().toISOString() }
-    const fields = ['title', 'author_name', 'description', 'condition_label', 'youtube_url']
+    const fields = [
+  'title',
+  'author_name',
+  'publisher',
+  'novel_type',
+  'genre',
+  'paper_type',
+  'cover_type',
+  'description',
+  'condition_label',
+  'youtube_url',
+]
 
     fields.forEach((field) => {
       if (req.body[field] !== undefined) payload[field] = req.body[field]
