@@ -42,16 +42,16 @@ function normalizeProduct(product) {
     paper_type: product.paper_type || '',
     cover_type: product.cover_type || '',
     page_count: product.page_count || 0,
-    cover_url: product.cover_url,
+    cover_url: product.cover_url || '',
     gallery_image_urls: normalizeImageArray(product.gallery_image_urls),
     youtube_url: product.youtube_url || '',
-    description: product.description,
+    description: product.description || '',
     category: product.category,
     stock_status: product.stock_status,
     price_usd: Number(product.price_usd || 0),
     old_price_usd: product.old_price_usd === null ? null : Number(product.old_price_usd || 0),
     stock_quantity: product.stock_quantity || 0,
-    condition_label: product.condition_label,
+    condition_label: product.condition_label || '',
     is_best_seller: Boolean(product.is_best_seller),
     is_discount: Boolean(product.is_discount),
     is_active: Boolean(product.is_active),
@@ -64,17 +64,13 @@ function normalizeProduct(product) {
 
 function normalizeCategory(value) {
   const category = String(value || 'new_books').trim()
-
   if (['new_books', 'second_hand', 'pre_order'].includes(category)) return category
-
   return 'new_books'
 }
 
 function normalizeStockStatus(value) {
   const status = String(value || 'in_stock').trim()
-
   if (['in_stock', 'sold_out', 'pre_order'].includes(status)) return status
-
   return 'in_stock'
 }
 
@@ -107,7 +103,6 @@ function getUploadedFile(req, name) {
   const files = req.files || {}
 
   if (!files[name]) return null
-
   if (Array.isArray(files[name])) return files[name][0] || null
 
   return files[name]
@@ -118,7 +113,7 @@ async function getUploadedGalleryUrls(req) {
   const gallery = ['', '', '', '', '']
 
   existingGallery.forEach((url, index) => {
-    if (index < 5) gallery[index] = url
+    if (index < 5 && url.startsWith('http')) gallery[index] = url
   })
 
   for (let index = 0; index < 5; index += 1) {
@@ -191,14 +186,11 @@ export async function getShadowMallHome(req, res) {
     ]
 
     const results = await Promise.all(sections.map(([, query]) => query))
-
     const response = {}
 
     results.forEach((result, index) => {
       const key = sections[index][0]
-
       if (result.error) throw result.error
-
       response[key] = (result.data || []).map(normalizeProduct)
     })
 
@@ -235,8 +227,6 @@ export async function createShadowMallProduct(req, res) {
     const {
       title,
       author_name = '',
-      cover_url = '',
-      author_name = '',
       publisher = '',
       novel_type = '',
       genre = '',
@@ -265,6 +255,7 @@ export async function createShadowMallProduct(req, res) {
     const mainCoverFile = getUploadedFile(req, 'main_cover')
     const uploadedCoverUrl = mainCoverFile ? await uploadShadowMallImage(mainCoverFile, 'covers') : ''
     const galleryImageUrls = await getUploadedGalleryUrls(req)
+    const normalizedStockStatus = normalizeStockStatus(stock_status)
 
     const payload = {
       title,
@@ -280,7 +271,7 @@ export async function createShadowMallProduct(req, res) {
       youtube_url,
       description,
       category: normalizeCategory(category),
-      stock_status: normalizeStockStatus(stock_status),
+      stock_status: normalizedStockStatus,
       price_usd: toNumber(price_usd, 0),
       old_price_usd: old_price_usd === '' || old_price_usd === null ? null : toNumber(old_price_usd, 0),
       stock_quantity: toNumber(stock_quantity, 0),
@@ -289,7 +280,7 @@ export async function createShadowMallProduct(req, res) {
       is_discount: toBoolean(is_discount, false),
       is_active: toBoolean(is_active, true),
       sort_order: toNumber(sort_order, 0),
-      sold_out_at: normalizeStockStatus(stock_status) === 'sold_out' ? new Date().toISOString() : null,
+      sold_out_at: normalizedStockStatus === 'sold_out' ? new Date().toISOString() : null,
       updated_at: new Date().toISOString(),
     }
 
@@ -323,25 +314,26 @@ export async function updateShadowMallProduct(req, res) {
     }
 
     const payload = { updated_at: new Date().toISOString() }
-    const fields = [
-  'title',
-  'author_name',
-  'publisher',
-  'novel_type',
-  'genre',
-  'paper_type',
-  'cover_type',
-  if (req.body.page_count !== undefined) payload.page_count = toNumber(req.body.page_count, 0)
-  'description',
-  'condition_label',
-  'youtube_url',
-]
 
-    fields.forEach((field) => {
+    const textFields = [
+      'title',
+      'author_name',
+      'publisher',
+      'novel_type',
+      'genre',
+      'paper_type',
+      'cover_type',
+      'description',
+      'condition_label',
+      'youtube_url',
+    ]
+
+    textFields.forEach((field) => {
       if (req.body[field] !== undefined) payload[field] = req.body[field]
     })
 
     const mainCoverFile = getUploadedFile(req, 'main_cover')
+
     if (mainCoverFile) {
       payload.cover_url = await uploadShadowMallImage(mainCoverFile, 'covers')
     } else if (req.body.cover_url !== undefined) {
@@ -357,6 +349,7 @@ export async function updateShadowMallProduct(req, res) {
     if (req.body.price_usd !== undefined) payload.price_usd = toNumber(req.body.price_usd, 0)
     if (req.body.old_price_usd !== undefined) payload.old_price_usd = req.body.old_price_usd === '' || req.body.old_price_usd === null ? null : toNumber(req.body.old_price_usd, 0)
     if (req.body.stock_quantity !== undefined) payload.stock_quantity = toNumber(req.body.stock_quantity, 0)
+    if (req.body.page_count !== undefined) payload.page_count = toNumber(req.body.page_count, 0)
     if (req.body.is_best_seller !== undefined) payload.is_best_seller = toBoolean(req.body.is_best_seller, false)
     if (req.body.is_discount !== undefined) payload.is_discount = toBoolean(req.body.is_discount, false)
     if (req.body.is_active !== undefined) payload.is_active = toBoolean(req.body.is_active, true)
