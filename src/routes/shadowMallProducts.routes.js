@@ -37,5 +37,3 @@ router.put('/products/:id', requireAdmin, upload.fields(shadowMallUploadFields),
 router.delete('/products/:id', requireAdmin, deleteShadowMallProduct)
 
 export default router
-.
-  
