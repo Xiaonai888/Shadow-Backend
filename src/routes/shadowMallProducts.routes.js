@@ -1,6 +1,7 @@
 import express from 'express'
 import multer from 'multer'
 import { requireAdmin } from '../middleware/auth.middleware.js'
+import { requireUser } from '../middleware/user.middleware.js'
 import {
   createShadowMallProduct,
   deleteShadowMallProduct,
@@ -9,6 +10,10 @@ import {
   getShadowMallProducts,
   updateShadowMallProduct,
 } from '../controllers/shadowMallProducts.controller.js'
+import {
+  getShadowMallBuyerProfile,
+  saveShadowMallBuyerProfile,
+} from '../controllers/shadowMallBuyerProfiles.controller.js'
 
 const router = express.Router()
 
@@ -32,6 +37,8 @@ const shadowMallUploadFields = [
 router.get('/home', getShadowMallHome)
 router.get('/products', getShadowMallProducts)
 router.get('/products/:id', getShadowMallProductById)
+router.get('/buyer-profile', requireUser, getShadowMallBuyerProfile)
+router.put('/buyer-profile', requireUser, saveShadowMallBuyerProfile)
 router.post('/products', requireAdmin, upload.fields(shadowMallUploadFields), createShadowMallProduct)
 router.put('/products/:id', requireAdmin, upload.fields(shadowMallUploadFields), updateShadowMallProduct)
 router.delete('/products/:id', requireAdmin, deleteShadowMallProduct)
