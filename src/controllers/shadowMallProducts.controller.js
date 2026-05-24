@@ -1,5 +1,7 @@
 import { supabase } from '../config/supabase.js'
 
+const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'media'
+
 function toNumber(value, fallback = 0) {
   const number = Number(value)
   return Number.isFinite(number) ? number : fallback
@@ -12,12 +14,31 @@ function toBoolean(value, fallback = true) {
   return fallback
 }
 
+function normalizeImageArray(value) {
+  if (Array.isArray(value)) return value.filter(Boolean).slice(0, 5)
+
+  if (!value) return []
+
+  try {
+    const parsed = JSON.parse(value)
+    if (Array.isArray(parsed)) return parsed.filter(Boolean).slice(0, 5)
+  } catch {}
+
+  return String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 5)
+}
+
 function normalizeProduct(product) {
   return {
     id: product.id,
     title: product.title,
     author_name: product.author_name,
     cover_url: product.cover_url,
+    gallery_image_urls: normalizeImageArray(product.gallery_image_urls),
+    youtube_url: product.youtube_url || '',
     description: product.description,
     category: product.category,
     stock_status: product.stock_status,
@@ -49,6 +70,59 @@ function normalizeStockStatus(value) {
   if (['in_stock', 'sold_out', 'pre_order'].includes(status)) return status
 
   return 'in_stock'
+}
+
+async function uploadShadowMallImage(file, folder = 'products') {
+  if (!file) return null
+
+  const originalName = file.originalname || 'shadow-mall-image'
+  const fileExt = originalName.includes('.') ? originalName.split('.').pop() : 'jpg'
+  const safeExt = fileExt.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
+  const fileName = `shadow-mall/${folder}/${Date.now()}-${Math.random().toString(36).slice(2)}.${safeExt}`
+
+  const { error: uploadError } = await supabase.storage
+    .from(BUCKET)
+    .upload(fileName, file.buffer, {
+      contentType: file.mimetype,
+      cacheControl: '3600',
+      upsert: false,
+    })
+
+  if (uploadError) throw uploadError
+
+  const { data: publicUrlData } = supabase.storage
+    .from(BUCKET)
+    .getPublicUrl(fileName)
+
+  return publicUrlData.publicUrl
+}
+
+function getUploadedFile(req, name) {
+  const files = req.files || {}
+
+  if (!files[name]) return null
+
+  if (Array.isArray(files[name])) return files[name][0] || null
+
+  return files[name]
+}
+
+async function getUploadedGalleryUrls(req) {
+  const existingGallery = normalizeImageArray(req.body.gallery_image_urls)
+  const gallery = ['', '', '', '', '']
+
+  existingGallery.forEach((url, index) => {
+    if (index < 5) gallery[index] = url
+  })
+
+  for (let index = 0; index < 5; index += 1) {
+    const file = getUploadedFile(req, `gallery_image_${index}`)
+    if (file) {
+      gallery[index] = await uploadShadowMallImage(file, 'gallery')
+    }
+  }
+
+  return gallery.filter(Boolean).slice(0, 5)
 }
 
 export async function getShadowMallProducts(req, res) {
@@ -163,6 +237,7 @@ export async function createShadowMallProduct(req, res) {
       old_price_usd = null,
       stock_quantity = 0,
       condition_label = '',
+      youtube_url = '',
       is_best_seller = false,
       is_discount = false,
       is_active = true,
@@ -173,10 +248,16 @@ export async function createShadowMallProduct(req, res) {
       return res.status(400).json({ ok: false, message: 'Product title is required' })
     }
 
+    const mainCoverFile = getUploadedFile(req, 'main_cover')
+    const uploadedCoverUrl = mainCoverFile ? await uploadShadowMallImage(mainCoverFile, 'covers') : ''
+    const galleryImageUrls = await getUploadedGalleryUrls(req)
+
     const payload = {
       title,
       author_name,
-      cover_url,
+      cover_url: uploadedCoverUrl || cover_url || '',
+      gallery_image_urls: galleryImageUrls,
+      youtube_url,
       description,
       category: normalizeCategory(category),
       stock_status: normalizeStockStatus(stock_status),
@@ -213,7 +294,7 @@ export async function updateShadowMallProduct(req, res) {
 
     const { data: current, error: currentError } = await supabase
       .from('shadow_mall_products')
-      .select('stock_status')
+      .select('stock_status, cover_url, gallery_image_urls')
       .eq('id', id)
       .single()
 
@@ -222,11 +303,22 @@ export async function updateShadowMallProduct(req, res) {
     }
 
     const payload = { updated_at: new Date().toISOString() }
-    const fields = ['title', 'author_name', 'cover_url', 'description', 'condition_label']
+    const fields = ['title', 'author_name', 'description', 'condition_label', 'youtube_url']
 
     fields.forEach((field) => {
       if (req.body[field] !== undefined) payload[field] = req.body[field]
     })
+
+    const mainCoverFile = getUploadedFile(req, 'main_cover')
+    if (mainCoverFile) {
+      payload.cover_url = await uploadShadowMallImage(mainCoverFile, 'covers')
+    } else if (req.body.cover_url !== undefined) {
+      payload.cover_url = req.body.cover_url
+    }
+
+    if (req.body.gallery_image_urls !== undefined || Object.keys(req.files || {}).some((key) => key.startsWith('gallery_image_'))) {
+      payload.gallery_image_urls = await getUploadedGalleryUrls(req)
+    }
 
     if (req.body.category !== undefined) payload.category = normalizeCategory(req.body.category)
     if (req.body.stock_status !== undefined) payload.stock_status = normalizeStockStatus(req.body.stock_status)
