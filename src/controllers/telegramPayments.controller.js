@@ -519,12 +519,12 @@ async function processAbaMessage(parsed, message) {
     const user = await getUser(released.user_id)
 
     await updateTelegramPayment(telegramPayment.id, {
-      matched_payment_id: released.id,
-      matched_user_id: released.user_id,
-      match_status: 'auto_released',
-      status: 'auto_released',
-      match_reason: 'Unique diamond order matched by amount and time.',
-    })
+  matched_payment_id: null,
+  matched_user_id: updatedMallOrder.user_id,
+  match_status: 'shadow_mall_under_review',
+  status: 'under_review',
+  match_reason: `Unique Shadow Mall order matched by amount and time. Order ID: ${updatedMallOrder.order_id}`,
+})
 
     await replyTelegram(chatId, messageId, releasedMessage(released, user, '✅ AUTO RELEASED'))
     return
