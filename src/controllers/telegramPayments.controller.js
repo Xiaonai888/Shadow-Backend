@@ -541,18 +541,27 @@ async function processAbaMessage(parsed, message) {
       match_reason: 'Unique Shadow Mall order matched by amount and time.',
     })
 
-    await replyTelegram(chatId, messageId, [
-  '📚 <b>SHADOW MALL MATCHED</b>',
-  '',
-  `📦 Order ID: <code>${html(updatedMallOrder.order_id)}</code>`,
-  `💵 Amount: <b>${html(money(updatedMallOrder.total_usd))}</b>`,
-  `🧾 Trx ID: <code>${html(updatedMallOrder.aba_transaction_id)}</code>`,
-  '',
-  'Status: <b>Under Review</b>',
-  'Report sent to Shadow Mall group.',
-].join('\n'))
+    try {
+  await sendShadowMallOrderReport(updatedMallOrder)
+} catch (error) {
+  console.error('SEND SHADOW MALL REPORT ERROR:', error)
+}
 
-await sendShadowMallOrderReport(updatedMallOrder)
+try {
+  await replyTelegram(chatId, messageId, [
+    '📚 <b>SHADOW MALL MATCHED</b>',
+    '',
+    `📦 Order ID: <code>${html(updatedMallOrder.order_id)}</code>`,
+    `💵 Amount: <b>${html(money(updatedMallOrder.total_usd))}</b>`,
+    `🧾 Trx ID: <code>${html(updatedMallOrder.aba_transaction_id)}</code>`,
+    '',
+    'Status: <b>Under Review</b>',
+    'Report sent to Shadow Mall group.',
+  ].join('\n'))
+} catch (error) {
+  console.error('REPLY ABA GROUP ERROR:', error)
+}
+
 return
   }
 
