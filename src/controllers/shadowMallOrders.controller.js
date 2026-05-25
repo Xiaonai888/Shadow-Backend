@@ -24,6 +24,7 @@ const PAYWAY_HASH_ORDER = [
 ]
 
 const DELIVERY_FEE_USD = 2
+const ADMIN_ORDER_STATUSES = ['under_review', 'confirmed', 'preparing', 'shipped', 'completed', 'cancelled', 'rejected']
 
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
@@ -262,7 +263,7 @@ async function buildOrderItems(cartItems) {
 
   const { data: products, error } = await supabase
     .from('shadow_mall_products')
-    .select('id, title, author_name, cover_url, price_usd, stock_status, is_active')
+    .select('id, title, author_name, cover_url, price_usd, stock_status, stock_quantity, is_active')
     .in('id', ids)
 
   if (error) throw error
@@ -280,6 +281,11 @@ async function buildOrderItems(cartItems) {
       throw new Error(`${product.title} is sold out`)
     }
 
+    const quantityAvailable = Number(product.stock_quantity || 0)
+    if (product.stock_status !== 'pre_order' && quantityAvailable > 0 && item.quantity > quantityAvailable) {
+      throw new Error(`${product.title} has only ${quantityAvailable} in stock`)
+    }
+
     const unitPrice = Number(product.price_usd || 0)
 
     return {
@@ -292,6 +298,48 @@ async function buildOrderItems(cartItems) {
       total_usd: Number((unitPrice * item.quantity).toFixed(2)),
     }
   })
+}
+
+export async function deductShadowMallOrderStock(order) {
+  const items = Array.isArray(order?.items) ? order.items : []
+
+  for (const item of items) {
+    const productId = item.product_id
+    const quantity = Math.max(1, Number(item.quantity || 1))
+
+    if (!productId || !quantity) continue
+
+    const { data: product, error: productError } = await supabase
+      .from('shadow_mall_products')
+      .select('id, stock_quantity, stock_status')
+      .eq('id', productId)
+      .maybeSingle()
+
+    if (productError) throw productError
+    if (!product) continue
+
+    if (product.stock_status === 'pre_order') continue
+
+    const currentQuantity = Math.max(0, Number(product.stock_quantity || 0))
+    const nextQuantity = Math.max(0, currentQuantity - quantity)
+
+    const payload = {
+      stock_quantity: nextQuantity,
+      updated_at: new Date().toISOString(),
+    }
+
+    if (nextQuantity <= 0) {
+      payload.stock_status = 'sold_out'
+      payload.sold_out_at = new Date().toISOString()
+    }
+
+    const { error: updateError } = await supabase
+      .from('shadow_mall_products')
+      .update(payload)
+      .eq('id', productId)
+
+    if (updateError) throw updateError
+  }
 }
 
 export async function createShadowMallOrderPayment(req, res) {
@@ -352,14 +400,14 @@ export async function createShadowMallOrderPayment(req, res) {
         aba_transaction_id: aba.aba_transaction_id || null,
         items: orderItems,
         buyer_profile: {
-  name: user?.name || user?.username || '',
-  phone_number: buyerProfile.phone_number,
-  telegram_username: buyerProfile.telegram_username || '',
-  facebook_link: buyerProfile.facebook_link || '',
-  province_city: buyerProfile.province_city,
-  delivery_address: buyerProfile.delivery_address,
-  delivery_note: buyerProfile.delivery_note || '',
-},
+          name: user?.name || user?.username || '',
+          phone_number: buyerProfile.phone_number,
+          telegram_username: buyerProfile.telegram_username || '',
+          facebook_link: buyerProfile.facebook_link || '',
+          province_city: buyerProfile.province_city,
+          delivery_address: buyerProfile.delivery_address,
+          delivery_note: buyerProfile.delivery_note || '',
+        },
         delivery_company: deliveryCompany,
         subtotal_usd: subtotal,
         delivery_fee_usd: deliveryFee,
@@ -417,6 +465,84 @@ export async function getShadowMallOrderStatus(req, res) {
   }
 }
 
+export async function getAdminShadowMallOrders(req, res) {
+  try {
+    const page = Math.max(Number(req.query.page || 1), 1)
+    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 100)
+    const status = String(req.query.status || 'under_review').trim()
+    const q = String(req.query.q || '').trim()
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    let query = supabase
+      .from('shadow_mall_orders')
+      .select('*', { count: 'exact' })
+
+    if (status === 'all') {
+      query = query
+        .neq('status', 'waiting_payment')
+        .neq('status', 'expired')
+    } else if (ADMIN_ORDER_STATUSES.includes(status)) {
+      query = query.eq('status', status)
+    } else {
+      query = query.eq('status', 'under_review')
+    }
+
+    if (q) {
+      query = query.or(`order_id.ilike.%${q}%,aba_transaction_id.ilike.%${q}%`)
+    }
+
+    const { data, error, count } = await query
+      .order('updated_at', { ascending: false })
+      .range(from, to)
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      orders: (data || []).map(publicMallOrder),
+      page,
+      limit,
+      total: count || 0,
+      total_pages: Math.max(Math.ceil((count || 0) / limit), 1),
+      has_next: to + 1 < (count || 0),
+      has_prev: page > 1,
+    })
+  } catch (error) {
+    console.error('GET ADMIN SHADOW MALL ORDERS ERROR:', error)
+    return res.status(500).json({ ok: false, message: error.message || 'Failed to load Shadow Mall orders' })
+  }
+}
+
+export async function updateAdminShadowMallOrderStatus(req, res) {
+  try {
+    const orderId = String(req.params.orderId || '').trim()
+    const status = String(req.body.status || '').trim()
+
+    if (!ADMIN_ORDER_STATUSES.includes(status)) {
+      return res.status(400).json({ ok: false, message: 'Invalid order status' })
+    }
+
+    const { data, error } = await supabase
+      .from('shadow_mall_orders')
+      .update({
+        status,
+        admin_note: req.body.admin_note || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('order_id', orderId)
+      .select('*')
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({ ok: true, order: publicMallOrder(data) })
+  } catch (error) {
+    console.error('UPDATE ADMIN SHADOW MALL ORDER STATUS ERROR:', error)
+    return res.status(500).json({ ok: false, message: error.message || 'Failed to update Shadow Mall order' })
+  }
+}
+
 export async function handleShadowMallAbaCallback(req, res) {
   try {
     const orderId = getCallbackOrderId(req.body)
@@ -462,7 +588,7 @@ export async function handleShadowMallAbaCallback(req, res) {
 
     if (order.status !== 'waiting_payment') return res.status(200).json({ ok: true })
 
-    await supabase
+    const { data: updatedOrder, error: updateError } = await supabase
       .from('shadow_mall_orders')
       .update({
         status: 'under_review',
@@ -473,6 +599,12 @@ export async function handleShadowMallAbaCallback(req, res) {
       })
       .eq('id', order.id)
       .eq('status', 'waiting_payment')
+      .select('*')
+      .single()
+
+    if (updateError) throw updateError
+
+    await deductShadowMallOrderStock(updatedOrder)
 
     return res.status(200).json({ ok: true })
   } catch (error) {
