@@ -244,8 +244,7 @@ async function callPayWayGenerateQr(payload) {
     ...extractQrResponse(data),
   }
 }
-
-async function buildOrderItems(cartItems) {
+  
   function createCartSignature(orderItems, deliveryCompany) {
   const items = [...orderItems]
     .map((item) => ({
@@ -264,6 +263,7 @@ async function buildOrderItems(cartItems) {
     .update(JSON.stringify(payload))
     .digest('hex')
 }
+async function buildOrderItems(cartItems) {
   const cleanItems = Array.isArray(cartItems)
     ? cartItems
         .map((item) => ({
