@@ -246,6 +246,24 @@ async function callPayWayGenerateQr(payload) {
 }
 
 async function buildOrderItems(cartItems) {
+  function createCartSignature(orderItems, deliveryCompany) {
+  const items = [...orderItems]
+    .map((item) => ({
+      product_id: String(item.product_id),
+      quantity: Number(item.quantity || 1),
+    }))
+    .sort((a, b) => String(a.product_id).localeCompare(String(b.product_id)))
+
+  const payload = {
+    items,
+    delivery_company_key: deliveryCompany?.key || deliveryCompany?.shortName || deliveryCompany?.name || '',
+  }
+
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(payload))
+    .digest('hex')
+}
   const cleanItems = Array.isArray(cartItems)
     ? cartItems
         .map((item) => ({
@@ -356,16 +374,41 @@ export async function createShadowMallOrderPayment(req, res) {
     }
 
     const orderItems = await buildOrderItems(req.body.items)
-    const subtotal = Number(orderItems.reduce((total, item) => total + item.total_usd, 0).toFixed(2))
-    const deliveryFee = DELIVERY_FEE_USD
-    const total = Number((subtotal + deliveryFee).toFixed(2))
-    const orderId = createOrderId()
+const subtotal = Number(orderItems.reduce((total, item) => total + item.total_usd, 0).toFixed(2))
+const deliveryFee = DELIVERY_FEE_USD
+const total = Number((subtotal + deliveryFee).toFixed(2))
 
-    const deliveryCompany = req.body.delivery_company || {
-      key: 'jnt',
-      name: 'J&T Express',
-      shortName: 'J&T',
-    }
+const deliveryCompany = req.body.delivery_company || {
+  key: 'jnt',
+  name: 'J&T Express',
+  shortName: 'J&T',
+}
+
+const cartSignature = createCartSignature(orderItems, deliveryCompany)
+const activeWindowStart = new Date(Date.now() - 20 * 60 * 1000).toISOString()
+
+const { data: currentOrder, error: currentOrderError } = await supabase
+  .from('shadow_mall_orders')
+  .select('*')
+  .eq('user_id', userId)
+  .eq('status', 'waiting_payment')
+  .eq('cart_signature', cartSignature)
+  .gte('created_at', activeWindowStart)
+  .order('created_at', { ascending: false })
+  .limit(1)
+  .maybeSingle()
+
+if (currentOrderError) throw currentOrderError
+
+if (currentOrder) {
+  return res.status(200).json({
+    ok: true,
+    reused: true,
+    order: publicMallOrder(currentOrder),
+  })
+}
+
+const orderId = createOrderId()
 
     const payItems = [
       ...orderItems.map((item) => ({
@@ -394,11 +437,12 @@ export async function createShadowMallOrderPayment(req, res) {
 
     const { data, error } = await supabase
       .from('shadow_mall_orders')
-      .insert({
-        user_id: userId,
-        order_id: orderId,
-        aba_transaction_id: aba.aba_transaction_id || null,
-        items: orderItems,
+.insert({
+  user_id: userId,
+  order_id: orderId,
+  cart_signature: cartSignature,
+  aba_transaction_id: aba.aba_transaction_id || null,
+  items: orderItems,
         buyer_profile: {
           name: user?.name || user?.username || '',
           phone_number: buyerProfile.phone_number,
