@@ -344,18 +344,7 @@ function needApprovalMessage(payment, user, reason) {
   ].filter(Boolean).join('\n')
 }
 
-async function sendShadowMallOrderReport(order) {
-  const chatId = process.env.TELEGRAM_SHADOW_MALL_CHAT_ID
-  if (!chatId) return { ok: false, skipped: true }
-
-  async function sendShadowMallOrderReport(order) {
-  const chatId = process.env.TELEGRAM_SHADOW_MALL_CHAT_ID
-  if (!chatId) return { ok: false, skipped: true }
-
-  return sendTelegramMessage(mallOrderUnderReviewMessage(order), {
-    chat_id: chatId,
-  })
-}
+function mallOrderUnderReviewMessage(order) {
   const buyer = order.buyer_profile || {}
   const delivery = order.delivery_company || {}
   const items = Array.isArray(order.items) ? order.items : []
@@ -383,6 +372,15 @@ async function sendShadowMallOrderReport(order) {
     '',
     'Status: <b>Under Review</b>',
   ].filter(Boolean).join('\n')
+}
+
+async function sendShadowMallOrderReport(order) {
+  const chatId = process.env.TELEGRAM_SHADOW_MALL_CHAT_ID
+  if (!chatId) return { ok: false, skipped: true }
+
+  return sendTelegramMessage(mallOrderUnderReviewMessage(order), {
+    chat_id: chatId,
+  })
 }
 
 async function approvePaymentFromTelegram(paymentId) {
