@@ -10,6 +10,8 @@ function normalizeProfile(profile) {
     province_city: profile.province_city || 'Phnom Penh',
     delivery_address: profile.delivery_address || '',
     delivery_note: profile.delivery_note || '',
+    telegram_username: profile.telegram_username || '',
+    facebook_link: profile.facebook_link || '',
     created_at: profile.created_at,
     updated_at: profile.updated_at,
   }
@@ -57,6 +59,8 @@ export async function saveShadowMallBuyerProfile(req, res) {
     const provinceCity = String(req.body.province_city || 'Phnom Penh').trim()
     const deliveryAddress = String(req.body.delivery_address || '').trim()
     const deliveryNote = String(req.body.delivery_note || '').trim()
+    const telegramUsername = String(req.body.telegram_username || '').trim()
+    const facebookLink = String(req.body.facebook_link || '').trim()
 
     if (!phoneNumber) {
       return res.status(400).json({ ok: false, message: 'Phone number is required' })
@@ -72,6 +76,8 @@ export async function saveShadowMallBuyerProfile(req, res) {
       province_city: provinceCity || 'Phnom Penh',
       delivery_address: deliveryAddress,
       delivery_note: deliveryNote,
+      telegram_username: telegramUsername,
+      facebook_link: facebookLink,
       updated_at: new Date().toISOString(),
     }
 
