@@ -533,13 +533,13 @@ async function processAbaMessage(parsed, message) {
   if (diamondMatches.length === 0 && mallMatches.length === 1) {
     const updatedMallOrder = await markMallOrderUnderReview(mallMatches[0], telegramPayment, parsed)
 
-    await updateTelegramPayment(telegramPayment.id, {
-      matched_payment_id: updatedMallOrder.id,
-      matched_user_id: updatedMallOrder.user_id,
-      match_status: 'shadow_mall_under_review',
-      status: 'under_review',
-      match_reason: 'Unique Shadow Mall order matched by amount and time.',
-    })
+   await updateTelegramPayment(telegramPayment.id, {
+  matched_payment_id: released.id,
+  matched_user_id: released.user_id,
+  match_status: 'auto_released',
+  status: 'auto_released',
+  match_reason: 'Unique diamond order matched by amount and time.',
+})
 
     try {
   await sendShadowMallOrderReport(updatedMallOrder)
@@ -570,10 +570,12 @@ return
 
     await markCandidatesPendingReview(diamondMatches, telegramPayment, reason)
     await updateTelegramPayment(telegramPayment.id, {
-      match_status: 'pending_review',
-      status: 'pending_review',
-      match_reason: reason,
-    })
+  matched_payment_id: null,
+  matched_user_id: updatedMallOrder.user_id,
+  match_status: 'shadow_mall_under_review',
+  status: 'under_review',
+  match_reason: `Unique Shadow Mall order matched by amount and time. Order ID: ${updatedMallOrder.order_id}`,
+})
 
     for (const payment of diamondMatches.slice(0, 4)) {
       const user = await getUser(payment.user_id)
