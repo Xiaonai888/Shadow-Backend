@@ -573,10 +573,12 @@ export async function getAdminShadowMallOrders(req, res) {
     const from = (page - 1) * limit
     const to = from + limit - 1
 
-    let query = supabase
-      .from('shadow_mall_orders')
-      .select('*', { count: 'exact' })
+    const adminHistoryWindowStart = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString()
 
+let query = supabase
+  .from('shadow_mall_orders')
+  .select('*', { count: 'exact' })
+  .gte('created_at', adminHistoryWindowStart)
     if (status === 'all') {
       query = query
         .neq('status', 'waiting_payment')
