@@ -352,12 +352,14 @@ export async function createShadowMallOrderPayment(req, res) {
         aba_transaction_id: aba.aba_transaction_id || null,
         items: orderItems,
         buyer_profile: {
-          name: user?.name || user?.username || '',
-          phone_number: buyerProfile.phone_number,
-          province_city: buyerProfile.province_city,
-          delivery_address: buyerProfile.delivery_address,
-          delivery_note: buyerProfile.delivery_note || '',
-        },
+  name: user?.name || user?.username || '',
+  phone_number: buyerProfile.phone_number,
+  telegram_username: buyerProfile.telegram_username || '',
+  facebook_link: buyerProfile.facebook_link || '',
+  province_city: buyerProfile.province_city,
+  delivery_address: buyerProfile.delivery_address,
+  delivery_note: buyerProfile.delivery_note || '',
+},
         delivery_company: deliveryCompany,
         subtotal_usd: subtotal,
         delivery_fee_usd: deliveryFee,
@@ -463,7 +465,7 @@ export async function handleShadowMallAbaCallback(req, res) {
     await supabase
       .from('shadow_mall_orders')
       .update({
-        status: 'paid',
+        status: 'under_review',
         aba_transaction_id: req.body.transaction_id || req.body.tran_id || order.aba_transaction_id || null,
         callback_payload: req.body,
         paid_at: req.body.transaction_date ? new Date(req.body.transaction_date).toISOString() : new Date().toISOString(),
