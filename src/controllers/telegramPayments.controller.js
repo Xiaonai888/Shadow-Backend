@@ -375,15 +375,45 @@ function mallOrderUnderReviewMessage(order) {
   ].filter(Boolean).join('\n')
 }
 
+function shadowMallOrderKeyboard(orderId) {
+  return {
+    inline_keyboard: [
+      [
+        { text: '✅ Confirm Order', callback_data: `mall_confirm:${orderId}` },
+      ],
+      [
+        { text: '📦 Mark Preparing', callback_data: `mall_preparing:${orderId}` },
+      ],
+      [
+        { text: '❌ Cancel', callback_data: `mall_cancel:${orderId}` },
+      ],
+    ],
+  }
+}
+
 async function sendShadowMallOrderReport(order) {
   const chatId = process.env.TELEGRAM_SHADOW_MALL_CHAT_ID
   if (!chatId) return { ok: false, skipped: true }
 
   return sendTelegramMessage(mallOrderUnderReviewMessage(order), {
     chat_id: chatId,
+    reply_markup: shadowMallOrderKeyboard(order.order_id),
   })
 }
+async function updateShadowMallOrderFromTelegram(orderId, status) {
+  const { data, error } = await supabase
+    .from('shadow_mall_orders')
+    .update({
+      status,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('order_id', orderId)
+    .select('*')
+    .single()
 
+  if (error) throw error
+  return data
+}
 async function approvePaymentFromTelegram(paymentId) {
   const payment = await getPaymentForAction(paymentId)
   if (!payment) return { status: 'missing', text: 'Payment not found.' }
@@ -458,6 +488,40 @@ async function handleCallbackQuery(callbackQuery) {
   }
 
   const [action, paymentId] = data.split(':')
+
+  if (action && action.startsWith('mall_')) {
+  const orderId = paymentId
+
+  const statusMap = {
+    mall_confirm: 'confirmed',
+    mall_preparing: 'preparing',
+    mall_cancel: 'cancelled',
+  }
+
+  const nextStatus = statusMap[action]
+
+  if (!orderId || !nextStatus) {
+    await answerCallbackQuery(callbackQuery.id, 'Invalid order action.', true)
+    return
+  }
+
+  const updatedOrder = await updateShadowMallOrderFromTelegram(orderId, nextStatus)
+
+  await answerCallbackQuery(callbackQuery.id, `Order updated to ${nextStatus}.`, false)
+
+  if (chatId && messageId) {
+    await editTelegramMessage(
+      chatId,
+      messageId,
+      mallOrderUnderReviewMessage(updatedOrder),
+      {
+        reply_markup: shadowMallOrderKeyboard(updatedOrder.order_id),
+      }
+    )
+  }
+
+  return
+}
 
   if (!paymentId || !['pay_ok', 'pay_no'].includes(action)) {
     await answerCallbackQuery(callbackQuery.id, 'Invalid action.', true)
