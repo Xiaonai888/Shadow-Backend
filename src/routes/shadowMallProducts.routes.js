@@ -21,6 +21,11 @@ import {
   handleShadowMallAbaCallback,
   updateAdminShadowMallOrderStatus,
 } from '../controllers/shadowMallOrders.controller.js'
+import {
+  addShadowMallWishlist,
+  getShadowMallWishlist,
+  removeShadowMallWishlist,
+} from '../controllers/shadowMallWishlists.controller.js'
 
 const router = express.Router()
 
@@ -46,6 +51,10 @@ router.get('/products', getShadowMallProducts)
 
 router.get('/buyer-profile', requireUser, getShadowMallBuyerProfile)
 router.put('/buyer-profile', requireUser, saveShadowMallBuyerProfile)
+
+router.get('/wishlist', requireUser, getShadowMallWishlist)
+router.post('/wishlist/:productId', requireUser, addShadowMallWishlist)
+router.delete('/wishlist/:productId', requireUser, removeShadowMallWishlist)
 
 router.get('/admin/orders', requireAdmin, getAdminShadowMallOrders)
 router.patch('/admin/orders/:orderId/status', requireAdmin, updateAdminShadowMallOrderStatus)
