@@ -344,7 +344,10 @@ function needApprovalMessage(payment, user, reason) {
   ].filter(Boolean).join('\n')
 }
 
-function mallOrderUnderReviewMessage(order) {
+async function sendShadowMallOrderReport(order) {
+  const chatId = process.env.TELEGRAM_SHADOW_MALL_CHAT_ID
+  if (!chatId) return { ok: false, skipped: true }
+
   async function sendShadowMallOrderReport(order) {
   const chatId = process.env.TELEGRAM_SHADOW_MALL_CHAT_ID
   if (!chatId) return { ok: false, skipped: true }
