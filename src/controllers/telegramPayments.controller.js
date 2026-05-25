@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { deductShadowMallOrderStock } from './shadowMallOrders.controller.js'
 import {
   answerCallbackQuery,
   editTelegramMessage,
@@ -519,12 +520,12 @@ async function processAbaMessage(parsed, message) {
     const user = await getUser(released.user_id)
 
     await updateTelegramPayment(telegramPayment.id, {
-  matched_payment_id: null,
-  matched_user_id: updatedMallOrder.user_id,
-  match_status: 'shadow_mall_under_review',
-  status: 'under_review',
-  match_reason: `Unique Shadow Mall order matched by amount and time. Order ID: ${updatedMallOrder.order_id}`,
-})
+      matched_payment_id: released.id,
+      matched_user_id: released.user_id,
+      match_status: 'auto_released',
+      status: 'auto_released',
+      match_reason: 'Unique diamond order matched by amount and time.',
+    })
 
     await replyTelegram(chatId, messageId, releasedMessage(released, user, '✅ AUTO RELEASED'))
     return
@@ -533,36 +534,42 @@ async function processAbaMessage(parsed, message) {
   if (diamondMatches.length === 0 && mallMatches.length === 1) {
     const updatedMallOrder = await markMallOrderUnderReview(mallMatches[0], telegramPayment, parsed)
 
-   await updateTelegramPayment(telegramPayment.id, {
-  matched_payment_id: released.id,
-  matched_user_id: released.user_id,
-  match_status: 'auto_released',
-  status: 'auto_released',
-  match_reason: 'Unique diamond order matched by amount and time.',
-})
+    try {
+      await deductShadowMallOrderStock(updatedMallOrder)
+    } catch (error) {
+      console.error('DEDUCT SHADOW MALL STOCK ERROR:', error)
+    }
+
+    await updateTelegramPayment(telegramPayment.id, {
+      matched_payment_id: null,
+      matched_user_id: updatedMallOrder.user_id,
+      match_status: 'shadow_mall_under_review',
+      status: 'under_review',
+      match_reason: `Unique Shadow Mall order matched by amount and time. Order ID: ${updatedMallOrder.order_id}`,
+    })
 
     try {
-  await sendShadowMallOrderReport(updatedMallOrder)
-} catch (error) {
-  console.error('SEND SHADOW MALL REPORT ERROR:', error)
-}
+      await sendShadowMallOrderReport(updatedMallOrder)
+    } catch (error) {
+      console.error('SEND SHADOW MALL REPORT ERROR:', error)
+    }
 
-try {
-  await replyTelegram(chatId, messageId, [
-    '📚 <b>SHADOW MALL MATCHED</b>',
-    '',
-    `📦 Order ID: <code>${html(updatedMallOrder.order_id)}</code>`,
-    `💵 Amount: <b>${html(money(updatedMallOrder.total_usd))}</b>`,
-    `🧾 Trx ID: <code>${html(updatedMallOrder.aba_transaction_id)}</code>`,
-    '',
-    'Status: <b>Under Review</b>',
-    'Report sent to Shadow Mall group.',
-  ].join('\n'))
-} catch (error) {
-  console.error('REPLY ABA GROUP ERROR:', error)
-}
+    try {
+      await replyTelegram(chatId, messageId, [
+        '📚 <b>SHADOW MALL MATCHED</b>',
+        '',
+        `📦 Order ID: <code>${html(updatedMallOrder.order_id)}</code>`,
+        `💵 Amount: <b>${html(money(updatedMallOrder.total_usd))}</b>`,
+        `🧾 Trx ID: <code>${html(updatedMallOrder.aba_transaction_id)}</code>`,
+        '',
+        'Status: <b>Under Review</b>',
+        'Report sent to Shadow Mall group.',
+      ].join('\n'))
+    } catch (error) {
+      console.error('REPLY ABA GROUP ERROR:', error)
+    }
 
-return
+    return
   }
 
   if (diamondMatches.length > 1 && mallMatches.length === 0) {
@@ -570,12 +577,10 @@ return
 
     await markCandidatesPendingReview(diamondMatches, telegramPayment, reason)
     await updateTelegramPayment(telegramPayment.id, {
-  matched_payment_id: null,
-  matched_user_id: updatedMallOrder.user_id,
-  match_status: 'shadow_mall_under_review',
-  status: 'under_review',
-  match_reason: `Unique Shadow Mall order matched by amount and time. Order ID: ${updatedMallOrder.order_id}`,
-})
+      match_status: 'pending_review',
+      status: 'pending_review',
+      match_reason: reason,
+    })
 
     for (const payment of diamondMatches.slice(0, 4)) {
       const user = await getUser(payment.user_id)
@@ -601,7 +606,7 @@ return
       return `📦 <code>${html(order.order_id)}</code> — ${html(buyer.name || order.user_id)} — ${html(money(order.total_usd))}`
     })
 
-    await replyTelegram(chatId, messageId, [
+    const needReviewText = [
       '🟠 <b>SHADOW MALL NEED REVIEW</b>',
       '',
       `💵 Amount: <b>${html(money(parsed.amount))}</b>`,
@@ -611,7 +616,17 @@ return
       ...mallLines,
       '',
       'Please review in Admin later.',
-    ].join('\n'))
+    ].join('\n')
+
+    await replyTelegram(chatId, messageId, needReviewText)
+
+    try {
+      await sendTelegramMessage(needReviewText, {
+        chat_id: process.env.TELEGRAM_SHADOW_MALL_CHAT_ID,
+      })
+    } catch (error) {
+      console.error('SEND SHADOW MALL NEED REVIEW ERROR:', error)
+    }
 
     return
   }
