@@ -14,6 +14,11 @@ import {
   getShadowMallBuyerProfile,
   saveShadowMallBuyerProfile,
 } from '../controllers/shadowMallBuyerProfiles.controller.js'
+import {
+  createShadowMallOrderPayment,
+  getShadowMallOrderStatus,
+  handleShadowMallAbaCallback,
+} from '../controllers/shadowMallOrders.controller.js'
 
 const router = express.Router()
 
@@ -36,9 +41,15 @@ const shadowMallUploadFields = [
 
 router.get('/home', getShadowMallHome)
 router.get('/products', getShadowMallProducts)
-router.get('/products/:id', getShadowMallProductById)
+
 router.get('/buyer-profile', requireUser, getShadowMallBuyerProfile)
 router.put('/buyer-profile', requireUser, saveShadowMallBuyerProfile)
+
+router.post('/orders/create-payment', requireUser, createShadowMallOrderPayment)
+router.get('/orders/status/:orderId', requireUser, getShadowMallOrderStatus)
+router.post('/orders/callback', handleShadowMallAbaCallback)
+
+router.get('/products/:id', getShadowMallProductById)
 router.post('/products', requireAdmin, upload.fields(shadowMallUploadFields), createShadowMallProduct)
 router.put('/products/:id', requireAdmin, upload.fields(shadowMallUploadFields), updateShadowMallProduct)
 router.delete('/products/:id', requireAdmin, deleteShadowMallProduct)
