@@ -524,11 +524,13 @@ export async function getMyShadowMallOrders(req, res) {
     const from = (page - 1) * limit
     const to = from + limit - 1
 
-    let query = supabase
-      .from('shadow_mall_orders')
-      .select('*', { count: 'exact' })
-      .eq('user_id', userId)
+    const historyWindowStart = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
 
+let query = supabase
+  .from('shadow_mall_orders')
+  .select('*', { count: 'exact' })
+  .eq('user_id', userId)
+  .gte('created_at', historyWindowStart)
     if (status !== 'all' && READER_ORDER_STATUSES.includes(status)) {
       query = query.eq('status', status)
     }
