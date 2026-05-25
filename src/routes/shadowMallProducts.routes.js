@@ -16,8 +16,10 @@ import {
 } from '../controllers/shadowMallBuyerProfiles.controller.js'
 import {
   createShadowMallOrderPayment,
+  getAdminShadowMallOrders,
   getShadowMallOrderStatus,
   handleShadowMallAbaCallback,
+  updateAdminShadowMallOrderStatus,
 } from '../controllers/shadowMallOrders.controller.js'
 
 const router = express.Router()
@@ -44,6 +46,9 @@ router.get('/products', getShadowMallProducts)
 
 router.get('/buyer-profile', requireUser, getShadowMallBuyerProfile)
 router.put('/buyer-profile', requireUser, saveShadowMallBuyerProfile)
+
+router.get('/admin/orders', requireAdmin, getAdminShadowMallOrders)
+router.patch('/admin/orders/:orderId/status', requireAdmin, updateAdminShadowMallOrderStatus)
 
 router.post('/orders/create-payment', requireUser, createShadowMallOrderPayment)
 router.get('/orders/status/:orderId', requireUser, getShadowMallOrderStatus)
