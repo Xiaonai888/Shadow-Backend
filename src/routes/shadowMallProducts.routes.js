@@ -17,6 +17,7 @@ import {
 import {
   createShadowMallOrderPayment,
   getAdminShadowMallOrders,
+  getMyShadowMallOrders,
   getShadowMallOrderStatus,
   handleShadowMallAbaCallback,
   updateAdminShadowMallOrderStatus,
@@ -60,6 +61,7 @@ router.get('/admin/orders', requireAdmin, getAdminShadowMallOrders)
 router.patch('/admin/orders/:orderId/status', requireAdmin, updateAdminShadowMallOrderStatus)
 
 router.post('/orders/create-payment', requireUser, createShadowMallOrderPayment)
+router.get('/orders/my', requireUser, getMyShadowMallOrders)
 router.get('/orders/status/:orderId', requireUser, getShadowMallOrderStatus)
 router.post('/orders/callback', handleShadowMallAbaCallback)
 
