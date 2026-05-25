@@ -1,10 +1,10 @@
-import { supabase } from '../config/supabase.js'
 import {
   answerCallbackQuery,
   editTelegramMessage,
   html,
   replyTelegram,
   reviewKeyboard,
+  sendTelegramMessage,
 } from '../services/telegram.service.js'
 
 function normalizeName(value) {
@@ -344,6 +344,14 @@ function needApprovalMessage(payment, user, reason) {
 }
 
 function mallOrderUnderReviewMessage(order) {
+  async function sendShadowMallOrderReport(order) {
+  const chatId = process.env.TELEGRAM_SHADOW_MALL_CHAT_ID
+  if (!chatId) return { ok: false, skipped: true }
+
+  return sendTelegramMessage(mallOrderUnderReviewMessage(order), {
+    chat_id: chatId,
+  })
+}
   const buyer = order.buyer_profile || {}
   const delivery = order.delivery_company || {}
   const items = Array.isArray(order.items) ? order.items : []
@@ -531,8 +539,19 @@ async function processAbaMessage(parsed, message) {
       match_reason: 'Unique Shadow Mall order matched by amount and time.',
     })
 
-    await replyTelegram(chatId, messageId, mallOrderUnderReviewMessage(updatedMallOrder))
-    return
+    await replyTelegram(chatId, messageId, [
+  '📚 <b>SHADOW MALL MATCHED</b>',
+  '',
+  `📦 Order ID: <code>${html(updatedMallOrder.order_id)}</code>`,
+  `💵 Amount: <b>${html(money(updatedMallOrder.total_usd))}</b>`,
+  `🧾 Trx ID: <code>${html(updatedMallOrder.aba_transaction_id)}</code>`,
+  '',
+  'Status: <b>Under Review</b>',
+  'Report sent to Shadow Mall group.',
+].join('\n'))
+
+await sendShadowMallOrderReport(updatedMallOrder)
+return
   }
 
   if (diamondMatches.length > 1 && mallMatches.length === 0) {
