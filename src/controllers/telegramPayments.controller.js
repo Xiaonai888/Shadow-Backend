@@ -116,6 +116,26 @@ function merchantMatches(parsed) {
 }
 
 async function findMatchingOrders(parsed) {
+async function findMatchingMallOrders(parsed) {
+  const trxTime = parsed.transaction_time ? new Date(parsed.transaction_time) : new Date()
+  const windowMinutes = getWindowMinutes()
+  const start = new Date(trxTime.getTime() - windowMinutes * 60 * 1000).toISOString()
+  const end = new Date(trxTime.getTime() + 5 * 60 * 1000).toISOString()
+
+  const { data, error } = await supabase
+    .from('shadow_mall_orders')
+    .select('*')
+    .eq('status', 'waiting_payment')
+    .eq('total_usd', parsed.amount)
+    .gte('created_at', start)
+    .lte('created_at', end)
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return data || []
+}
+
+  
   const trxTime = parsed.transaction_time ? new Date(parsed.transaction_time) : new Date()
   const windowMinutes = getWindowMinutes()
   const start = new Date(trxTime.getTime() - windowMinutes * 60 * 1000).toISOString()
@@ -280,6 +300,66 @@ function releasedMessage(payment, user, title = '✅ APPROVED') {
 }
 
 function needApprovalMessage(payment, user, reason) {
+  async function markMallOrderUnderReview(order, telegramPayment, parsed) {
+  const payload = {
+    source: 'telegram_aba_alert',
+    telegram_payment_id: telegramPayment.id,
+    trx_id: telegramPayment.trx_id,
+    apv: telegramPayment.apv || null,
+    amount_usd: telegramPayment.amount_usd,
+    payer_name: telegramPayment.payer_name,
+    payer_phone_last: telegramPayment.payer_phone_last,
+    bank_name: telegramPayment.bank_name,
+    raw_text: telegramPayment.raw_text,
+  }
+
+  const { data, error } = await supabase
+    .from('shadow_mall_orders')
+    .update({
+      status: 'under_review',
+      aba_transaction_id: telegramPayment.trx_id,
+      callback_payload: payload,
+      paid_at: parsed.transaction_time || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', order.id)
+    .eq('status', 'waiting_payment')
+    .select('*')
+    .single()
+
+  if (error) throw error
+  return data
+}
+
+function mallOrderUnderReviewMessage(order) {
+  const buyer = order.buyer_profile || {}
+  const delivery = order.delivery_company || {}
+  const items = Array.isArray(order.items) ? order.items : []
+
+  const bookLines = items.slice(0, 8).map((item) => {
+    return `- ${html(item.title || 'Book')} x${html(item.quantity || 1)}`
+  })
+
+  return [
+    '📚 <b>SHADOW MALL PAYMENT UNDER REVIEW</b>',
+    '',
+    `📦 Order ID: <code>${html(order.order_id)}</code>`,
+    `💵 Amount: <b>${html(money(order.total_usd))}</b>`,
+    order.aba_transaction_id ? `🧾 Trx ID: <code>${html(order.aba_transaction_id)}</code>` : '',
+    '',
+    `👤 Buyer: <b>${html(buyer.name || order.user_id)}</b>`,
+    buyer.phone_number ? `📞 Phone: <code>${html(buyer.phone_number)}</code>` : '',
+    buyer.telegram_username ? `💬 Telegram: ${html(buyer.telegram_username)}` : '',
+    buyer.facebook_link ? `🔗 Facebook: ${html(buyer.facebook_link)}` : '',
+    buyer.delivery_address ? `📍 Address: ${html(buyer.delivery_address)}` : '',
+    delivery.shortName || delivery.name ? `🚚 Delivery: <b>${html(delivery.shortName || delivery.name)}</b>` : '',
+    '',
+    '<b>Books:</b>',
+    ...bookLines,
+    '',
+    'Status: <b>Under Review</b>',
+  ].filter(Boolean).join('\n')
+}
   return [
     '🟠 <b>NEED APPROVAL</b>',
     '',
@@ -421,46 +501,116 @@ async function processAbaMessage(parsed, message) {
     return
   }
 
-  const matches = await findMatchingOrders(parsed)
+const diamondMatches = await findMatchingOrders(parsed)
+const mallMatches = await findMatchingMallOrders(parsed)
 
-  if (matches.length === 1) {
-    const released = await releaseMatchedOrder(matches[0], telegramPayment)
-    const user = await getUser(released.user_id)
+if (diamondMatches.length === 1 && mallMatches.length === 0) {
+  const released = await releaseMatchedOrder(diamondMatches[0], telegramPayment)
+  const user = await getUser(released.user_id)
 
-    await updateTelegramPayment(telegramPayment.id, {
-      matched_payment_id: released.id,
-      matched_user_id: released.user_id,
-      match_status: 'auto_released',
-      status: 'auto_released',
-      match_reason: 'Unique waiting order matched by amount and time.',
+  await updateTelegramPayment(telegramPayment.id, {
+    matched_payment_id: released.id,
+    matched_user_id: released.user_id,
+    match_status: 'auto_released',
+    status: 'auto_released',
+    match_reason: 'Unique diamond order matched by amount and time.',
+  })
+
+  await replyTelegram(chatId, messageId, releasedMessage(released, user, '✅ AUTO RELEASED'))
+  return
+}
+
+if (diamondMatches.length === 0 && mallMatches.length === 1) {
+  const updatedMallOrder = await markMallOrderUnderReview(mallMatches[0], telegramPayment, parsed)
+
+  await updateTelegramPayment(telegramPayment.id, {
+    matched_payment_id: updatedMallOrder.id,
+    matched_user_id: updatedMallOrder.user_id,
+    match_status: 'shadow_mall_under_review',
+    status: 'under_review',
+    match_reason: 'Unique Shadow Mall order matched by amount and time.',
+  })
+
+  await replyTelegram(chatId, messageId, mallOrderUnderReviewMessage(updatedMallOrder))
+  return
+}
+
+if (diamondMatches.length > 1 && mallMatches.length === 0) {
+  const reason = `Multiple diamond waiting orders matched this ${money(parsed.amount)} payment.`
+
+  await markCandidatesPendingReview(diamondMatches, telegramPayment, reason)
+  await updateTelegramPayment(telegramPayment.id, {
+    match_status: 'pending_review',
+    status: 'pending_review',
+    match_reason: reason,
+  })
+
+  for (const payment of diamondMatches.slice(0, 4)) {
+    const user = await getUser(payment.user_id)
+    await replyTelegram(chatId, messageId, needApprovalMessage(payment, user, reason), {
+      reply_markup: reviewKeyboard(payment.id),
     })
-
-    await replyTelegram(chatId, messageId, releasedMessage(released, user, '✅ AUTO RELEASED'))
-    return
   }
 
-  if (matches.length > 1) {
-    const reason = `Multiple waiting orders matched this ${money(parsed.amount)} payment.`
+  return
+}
 
-    await markCandidatesPendingReview(matches, telegramPayment, reason)
-    await updateTelegramPayment(telegramPayment.id, {
-      match_status: 'pending_review',
-      status: 'pending_review',
-      match_reason: reason,
-    })
+if (diamondMatches.length === 0 && mallMatches.length > 1) {
+  const reason = `Multiple Shadow Mall waiting orders matched this ${money(parsed.amount)} payment.`
 
-    for (const payment of matches.slice(0, 4)) {
-      const user = await getUser(payment.user_id)
-      await replyTelegram(chatId, messageId, needApprovalMessage(payment, user, reason), {
-        reply_markup: reviewKeyboard(payment.id),
-      })
-    }
+  await updateTelegramPayment(telegramPayment.id, {
+    match_status: 'pending_review',
+    status: 'pending_review',
+    match_reason: reason,
+  })
 
-    return
+  const mallLines = mallMatches.slice(0, 6).map((order) => {
+    const buyer = order.buyer_profile || {}
+    return `📦 <code>${html(order.order_id)}</code> — ${html(buyer.name || order.user_id)} — ${html(money(order.total_usd))}`
+  })
+
+  await replyTelegram(chatId, messageId, [
+    '🟠 <b>SHADOW MALL NEED REVIEW</b>',
+    '',
+    `💵 Amount: <b>${html(money(parsed.amount))}</b>`,
+    `🧾 Trx ID: <code>${html(parsed.trx_id)}</code>`,
+    '',
+    'Multiple book orders matched this payment:',
+    ...mallLines,
+    '',
+    'Please review in Admin later.',
+  ].join('\n'))
+
+  return
+}
+
+if (diamondMatches.length > 0 && mallMatches.length > 0) {
+  const reason = `Diamond and Shadow Mall orders both matched this ${money(parsed.amount)} payment.`
+
+  if (diamondMatches.length) {
+    await markCandidatesPendingReview(diamondMatches, telegramPayment, reason)
   }
 
   await updateTelegramPayment(telegramPayment.id, {
-    match_status: 'unmatched',
+    match_status: 'pending_review',
+    status: 'pending_review',
+    match_reason: reason,
+  })
+
+  await replyTelegram(chatId, messageId, [
+    '🟠 <b>PAYMENT NEED REVIEW</b>',
+    '',
+    `💵 Amount: <b>${html(money(parsed.amount))}</b>`,
+    `🧾 Trx ID: <code>${html(parsed.trx_id)}</code>`,
+    '',
+    `Diamond matches: <b>${html(diamondMatches.length)}</b>`,
+    `Shadow Mall matches: <b>${html(mallMatches.length)}</b>`,
+    '',
+    'Reason: Diamond and book orders matched at the same time.',
+  ].join('\n'))
+
+  return
+}
     status: 'unmatched',
     match_reason: 'No waiting order matched by amount and time.',
   })
