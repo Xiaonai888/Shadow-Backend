@@ -29,9 +29,13 @@ import {
 } from '../controllers/shadowMallWishlists.controller.js'
 
 import {
+  assignShadowMallPublisherProducts,
+  autoMatchShadowMallPublisherProducts,
   createShadowMallPublisher,
   deleteShadowMallPublisher,
+  getShadowMallPublisherProducts,
   getShadowMallPublishers,
+  removeShadowMallPublisherProducts,
   updateShadowMallPublisher,
 } from '../controllers/shadowMallPublishers.controller.js'
 
@@ -60,6 +64,11 @@ router.get('/publishers', getShadowMallPublishers)
 router.post('/admin/publishers', requireAdmin, createShadowMallPublisher)
 router.put('/admin/publishers/:id', requireAdmin, updateShadowMallPublisher)
 router.delete('/admin/publishers/:id', requireAdmin, deleteShadowMallPublisher)
+router.get('/admin/publishers/:id/products', requireAdmin, getShadowMallPublisherProducts)
+router.get('/admin/publishers/:id/auto-match', requireAdmin, autoMatchShadowMallPublisherProducts)
+router.post('/admin/publishers/:id/assign-products', requireAdmin, assignShadowMallPublisherProducts)
+router.post('/admin/publishers/:id/remove-products', requireAdmin, removeShadowMallPublisherProducts)
+
 
 router.get('/buyer-profile', requireUser, getShadowMallBuyerProfile)
 router.put('/buyer-profile', requireUser, saveShadowMallBuyerProfile)
