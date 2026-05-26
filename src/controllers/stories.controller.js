@@ -5,7 +5,7 @@ const ALLOWED_UPDATE_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const ALLOWED_STORY_STATUSES = ['New', 'Ongoing', 'Completed']
 const ALLOWED_UNLOCK_METHODS = ['gem', 'voucher', 'story_card', 'free_item']
 const MIN_EPISODE_CHARACTERS = 1500
-const MAX_EPISODE_CHARACTERS = 12000
+const MAX_EPISODE_CHARACTERS = 30000
 
 function cleanText(value) {
   return String(value || '').trim()
