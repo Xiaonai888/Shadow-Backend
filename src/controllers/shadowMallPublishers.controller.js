@@ -1,5 +1,7 @@
 import { supabase } from '../config/supabase.js'
 
+const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'media'
+
 function normalizePublisher(publisher) {
   return {
     id: publisher.id,
@@ -37,6 +39,31 @@ function cleanProductIds(value) {
   return value
     .map((id) => Number(id))
     .filter((id) => Number.isFinite(id) && id > 0)
+}
+
+async function uploadPublisherLogo(file) {
+  if (!file) return ''
+
+  const originalName = file.originalname || 'publisher-logo'
+  const fileExt = originalName.includes('.') ? originalName.split('.').pop() : 'jpg'
+  const safeExt = fileExt.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
+  const fileName = `shadow-mall/publishers/${Date.now()}-${Math.random().toString(36).slice(2)}.${safeExt}`
+
+  const { error: uploadError } = await supabase.storage
+    .from(BUCKET)
+    .upload(fileName, file.buffer, {
+      contentType: file.mimetype,
+      cacheControl: '3600',
+      upsert: false,
+    })
+
+  if (uploadError) throw uploadError
+
+  const { data: publicUrlData } = supabase.storage
+    .from(BUCKET)
+    .getPublicUrl(fileName)
+
+  return publicUrlData.publicUrl
 }
 
 async function getPublisherById(id) {
@@ -115,8 +142,8 @@ export async function createShadowMallPublisher(req, res) {
     const payload = {
       name,
       description: String(req.body.description || '').trim(),
-      logo_url: String(req.body.logo_url || '').trim(),
-      is_active: req.body.is_active === undefined ? true : Boolean(req.body.is_active),
+      logo_url: req.file ? await uploadPublisherLogo(req.file) : String(req.body.logo_url || '').trim(),
+      is_active: req.body.is_active === undefined ? true : req.body.is_active === true || req.body.is_active === 'true',
       sort_order: Number(req.body.sort_order || 0),
       updated_at: new Date().toISOString(),
     }
@@ -168,8 +195,9 @@ export async function updateShadowMallPublisher(req, res) {
 
     if (req.body.name !== undefined) payload.name = String(req.body.name || '').trim()
     if (req.body.description !== undefined) payload.description = String(req.body.description || '').trim()
-    if (req.body.logo_url !== undefined) payload.logo_url = String(req.body.logo_url || '').trim()
-    if (req.body.is_active !== undefined) payload.is_active = Boolean(req.body.is_active)
+    if (req.file) payload.logo_url = await uploadPublisherLogo(req.file)
+    if (req.body.logo_url !== undefined && !req.file) payload.logo_url = String(req.body.logo_url || '').trim()
+    if (req.body.is_active !== undefined) payload.is_active = req.body.is_active === true || req.body.is_active === 'true'
     if (req.body.sort_order !== undefined) payload.sort_order = Number(req.body.sort_order || 0)
 
     if (payload.name === '') {
