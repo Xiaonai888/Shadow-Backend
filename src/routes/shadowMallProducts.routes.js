@@ -27,12 +27,12 @@ import {
   getShadowMallWishlist,
   removeShadowMallWishlist,
 } from '../controllers/shadowMallWishlists.controller.js'
-
 import {
   assignShadowMallPublisherProducts,
   autoMatchShadowMallPublisherProducts,
   createShadowMallPublisher,
   deleteShadowMallPublisher,
+  getShadowMallPublisherLogs,
   getShadowMallPublisherProducts,
   getShadowMallPublishers,
   removeShadowMallPublisherProducts,
@@ -60,7 +60,9 @@ const shadowMallUploadFields = [
 
 router.get('/home', getShadowMallHome)
 router.get('/products', getShadowMallProducts)
+
 router.get('/publishers', getShadowMallPublishers)
+router.get('/admin/publishers/logs', requireAdmin, getShadowMallPublisherLogs)
 router.post('/admin/publishers', requireAdmin, upload.single('publisher_logo'), createShadowMallPublisher)
 router.put('/admin/publishers/:id', requireAdmin, upload.single('publisher_logo'), updateShadowMallPublisher)
 router.delete('/admin/publishers/:id', requireAdmin, deleteShadowMallPublisher)
@@ -68,7 +70,6 @@ router.get('/admin/publishers/:id/products', requireAdmin, getShadowMallPublishe
 router.get('/admin/publishers/:id/auto-match', requireAdmin, autoMatchShadowMallPublisherProducts)
 router.post('/admin/publishers/:id/assign-products', requireAdmin, assignShadowMallPublisherProducts)
 router.post('/admin/publishers/:id/remove-products', requireAdmin, removeShadowMallPublisherProducts)
-
 
 router.get('/buyer-profile', requireUser, getShadowMallBuyerProfile)
 router.put('/buyer-profile', requireUser, saveShadowMallBuyerProfile)
