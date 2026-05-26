@@ -101,6 +101,56 @@ export async function getShadowMallPublishers(req, res) {
   }
 }
 
+export async function createShadowMallPublisher(req, res) {
+  try {
+    const name = String(req.body.name || '').trim()
+
+    if (!name) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Publisher name is required',
+      })
+    }
+
+    const payload = {
+      name,
+      description: String(req.body.description || '').trim(),
+      logo_url: String(req.body.logo_url || '').trim(),
+      is_active: req.body.is_active === undefined ? true : Boolean(req.body.is_active),
+      sort_order: Number(req.body.sort_order || 0),
+      updated_at: new Date().toISOString(),
+    }
+
+    const { data, error } = await supabase
+      .from('shadow_mall_publishers')
+      .insert(payload)
+      .select('*')
+      .single()
+
+    if (error) throw error
+
+    return res.status(201).json({
+      ok: true,
+      publisher: normalizePublisher(data),
+    })
+  } catch (error) {
+    console.error('CREATE SHADOW MALL PUBLISHER ERROR:', error)
+
+    if (String(error.message || '').toLowerCase().includes('duplicate')) {
+      return res.status(409).json({
+        ok: false,
+        message: 'Publisher name already exists',
+      })
+    }
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to create Shadow Mall publisher',
+      error: error.message,
+    })
+  }
+}
+
 export async function updateShadowMallPublisher(req, res) {
   try {
     const id = Number(req.params.id)
