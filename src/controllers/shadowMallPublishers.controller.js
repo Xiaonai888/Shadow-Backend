@@ -77,6 +77,19 @@ async function getPublisherById(id) {
   return data || null
 }
 
+async function createPublisherLog({ action, publisherId, publisherName, details, adminName = 'Admin' }) {
+  const { error } = await supabase
+    .from('shadow_mall_publisher_logs')
+    .insert({
+      action,
+      publisher_id: publisherId || null,
+      publisher_name: publisherName || '',
+      details: details || '',
+      admin_name: adminName || 'Admin',
+    })
+
+  if (error) console.error('CREATE PUBLISHER LOG ERROR:', error)
+}
 export async function getShadowMallPublishers(req, res) {
   try {
     const includeInactive = req.query.include_inactive === 'true'
@@ -86,6 +99,46 @@ export async function getShadowMallPublishers(req, res) {
       .select('*')
       .order('sort_order', { ascending: true })
       .order('name', { ascending: true })
+
+    export async function getShadowMallPublisherLogs(req, res) {
+  try {
+    const q = String(req.query.q || '').trim()
+    const page = Math.max(Number(req.query.page || 1), 1)
+    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 50)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    let query = supabase
+      .from('shadow_mall_publisher_logs')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (q) {
+      query = query.or(`publisher_name.ilike.%${q}%,action.ilike.%${q}%,details.ilike.%${q}%,admin_name.ilike.%${q}%`)
+    }
+
+    const { data, error, count } = await query
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      logs: data || [],
+      page,
+      limit,
+      total: count || 0,
+      total_pages: Math.max(Math.ceil((count || 0) / limit), 1),
+    })
+  } catch (error) {
+    console.error('GET PUBLISHER LOGS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load publisher records',
+      error: error.message,
+    })
+  }
+}
 
     if (!includeInactive) query = query.eq('is_active', true)
 
