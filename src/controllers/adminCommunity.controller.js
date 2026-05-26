@@ -12,7 +12,32 @@ function getMonthStartIso() {
 }
 
 function cleanSearch(value) {
-  return String(value || '').trim().replace(/[,()]/g, ' ')
+  return String(value || '').trim().replace(/[%_,()]/g, ' ')
+}
+
+async function getOverviewData() {
+  const monthStart = getMonthStartIso()
+
+  const [readersResult, authorsResult, newReadersResult] = await Promise.all([
+    supabase.from('users').select('id', { count: 'exact', head: true }),
+    supabase.from('author_pages').select('id', { count: 'exact', head: true }),
+    supabase.from('users').select('id', { count: 'exact', head: true }).gte('created_at', monthStart),
+  ])
+
+  if (readersResult.error) throw readersResult.error
+  if (authorsResult.error) throw authorsResult.error
+  if (newReadersResult.error) throw newReadersResult.error
+
+  const totalReaders = readersResult.count || 0
+  const totalAuthors = authorsResult.count || 0
+  const newReaders = newReadersResult.count || 0
+
+  return {
+    total_readers: totalReaders,
+    total_authors: totalAuthors,
+    total_community_members: totalReaders,
+    new_this_month: newReaders,
+  }
 }
 
 function formatReader(user) {
@@ -27,7 +52,7 @@ function formatReader(user) {
   }
 }
 
-function formatAuthor(page, userMap) {
+function formatAuthor(page, userMap, storyCountMap) {
   const user = userMap.get(page.user_id) || {}
 
   return {
@@ -36,8 +61,7 @@ function formatAuthor(page, userMap) {
     author_name: page.page_name || user.name || 'Author',
     username: page.page_username || page.page_slug || user.username || '',
     email: user.email || '',
-    books_count: Number(page.total_stories || 0),
-    followers_count: Number(page.total_followers || 0),
+    books_count: storyCountMap.get(page.id) || 0,
     status: page.status || (user.is_active === false ? 'inactive' : 'active'),
     joined_at: page.created_at,
     updated_at: page.updated_at,
@@ -46,40 +70,11 @@ function formatAuthor(page, userMap) {
 
 export async function getAdminCommunityOverview(req, res) {
   try {
-    const monthStart = getMonthStartIso()
-
-    const [
-      readersResult,
-      authorsResult,
-      newReadersResult,
-      newAuthorsResult,
-    ] = await Promise.all([
-      supabase.from('users').select('id', { count: 'exact', head: true }),
-      supabase.from('author_pages').select('id', { count: 'exact', head: true }),
-      supabase.from('users').select('id', { count: 'exact', head: true }).gte('created_at', monthStart),
-      supabase.from('author_pages').select('id', { count: 'exact', head: true }).gte('created_at', monthStart),
-    ])
-
-    if (readersResult.error) throw readersResult.error
-    if (authorsResult.error) throw authorsResult.error
-    if (newReadersResult.error) throw newReadersResult.error
-    if (newAuthorsResult.error) throw newAuthorsResult.error
-
-    const totalReaders = readersResult.count || 0
-    const totalAuthors = authorsResult.count || 0
-    const newReaders = newReadersResult.count || 0
-    const newAuthors = newAuthorsResult.count || 0
+    const summary = await getOverviewData()
 
     return res.status(200).json({
       ok: true,
-      overview: {
-        total_readers: totalReaders,
-        total_authors: totalAuthors,
-        total_members: totalReaders,
-        new_this_month: newReaders + newAuthors,
-        new_readers_this_month: newReaders,
-        new_authors_this_month: newAuthors,
-      },
+      summary,
     })
   } catch (error) {
     console.error('ADMIN COMMUNITY OVERVIEW ERROR:', error)
@@ -138,7 +133,7 @@ export async function getAdminCommunityAuthors(req, res) {
 
     let query = supabase
       .from('author_pages')
-      .select('id, user_id, page_name, page_username, page_slug, status, total_stories, total_followers, created_at, updated_at', { count: 'exact' })
+      .select('id, user_id, page_name, page_username, page_slug, status, created_at, updated_at', { count: 'exact' })
       .order('created_at', { ascending: false })
       .range(from, to)
 
@@ -150,8 +145,11 @@ export async function getAdminCommunityAuthors(req, res) {
 
     if (error) throw error
 
-    const userIds = [...new Set((data || []).map((pageItem) => pageItem.user_id).filter(Boolean))]
+    const authorPages = data || []
+    const userIds = [...new Set(authorPages.map((pageItem) => pageItem.user_id).filter(Boolean))]
+    const authorIds = authorPages.map((pageItem) => pageItem.id).filter(Boolean)
     const userMap = new Map()
+    const storyCountMap = new Map()
 
     if (userIds.length) {
       const { data: users, error: usersError } = await supabase
@@ -166,12 +164,25 @@ export async function getAdminCommunityAuthors(req, res) {
       })
     }
 
+    if (authorIds.length) {
+      const { data: stories, error: storiesError } = await supabase
+        .from('stories')
+        .select('id, author_id')
+        .in('author_id', authorIds)
+
+      if (!storiesError) {
+        ;(stories || []).forEach((story) => {
+          storyCountMap.set(story.author_id, (storyCountMap.get(story.author_id) || 0) + 1)
+        })
+      }
+    }
+
     const total = count || 0
     const totalPages = Math.max(1, Math.ceil(total / limit))
 
     return res.status(200).json({
       ok: true,
-      authors: (data || []).map((pageItem) => formatAuthor(pageItem, userMap)),
+      authors: authorPages.map((pageItem) => formatAuthor(pageItem, userMap, storyCountMap)),
       page,
       limit,
       total,
