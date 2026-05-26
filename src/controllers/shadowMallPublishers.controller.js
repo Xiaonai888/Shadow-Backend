@@ -13,6 +13,43 @@ function normalizePublisher(publisher) {
   }
 }
 
+function normalizeProduct(product) {
+  return {
+    id: product.id,
+    title: product.title || '',
+    author_name: product.author_name || '',
+    publisher: product.publisher || '',
+    publisher_id: product.publisher_id || null,
+    cover_url: product.cover_url || '',
+    category: product.category || '',
+    stock_status: product.stock_status || '',
+    price_usd: Number(product.price_usd || 0),
+    old_price_usd: product.old_price_usd === null ? null : Number(product.old_price_usd || 0),
+    is_active: Boolean(product.is_active),
+    created_at: product.created_at,
+    updated_at: product.updated_at,
+  }
+}
+
+function cleanProductIds(value) {
+  if (!Array.isArray(value)) return []
+
+  return value
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id) && id > 0)
+}
+
+async function getPublisherById(id) {
+  const { data, error } = await supabase
+    .from('shadow_mall_publishers')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle()
+
+  if (error) throw error
+  return data || null
+}
+
 export async function getShadowMallPublishers(req, res) {
   try {
     const includeInactive = req.query.include_inactive === 'true'
@@ -23,9 +60,7 @@ export async function getShadowMallPublishers(req, res) {
       .order('sort_order', { ascending: true })
       .order('name', { ascending: true })
 
-    if (!includeInactive) {
-      query = query.eq('is_active', true)
-    }
+    if (!includeInactive) query = query.eq('is_active', true)
 
     const { data, error } = await query
 
@@ -186,6 +221,194 @@ export async function deleteShadowMallPublisher(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to disable Shadow Mall publisher',
+      error: error.message,
+    })
+  }
+}
+
+export async function getShadowMallPublisherProducts(req, res) {
+  try {
+    const publisherId = Number(req.params.id)
+
+    if (!publisherId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Publisher id is required',
+      })
+    }
+
+    const publisher = await getPublisherById(publisherId)
+
+    if (!publisher) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Publisher not found',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('shadow_mall_products')
+      .select('id, title, author_name, publisher, publisher_id, cover_url, category, stock_status, price_usd, old_price_usd, is_active, created_at, updated_at')
+      .eq('publisher_id', publisherId)
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      publisher: normalizePublisher(publisher),
+      products: (data || []).map(normalizeProduct),
+    })
+  } catch (error) {
+    console.error('GET SHADOW MALL PUBLISHER PRODUCTS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load publisher products',
+      error: error.message,
+    })
+  }
+}
+
+export async function autoMatchShadowMallPublisherProducts(req, res) {
+  try {
+    const publisherId = Number(req.params.id)
+
+    if (!publisherId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Publisher id is required',
+      })
+    }
+
+    const publisher = await getPublisherById(publisherId)
+
+    if (!publisher) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Publisher not found',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('shadow_mall_products')
+      .select('id, title, author_name, publisher, publisher_id, cover_url, category, stock_status, price_usd, old_price_usd, is_active, created_at, updated_at')
+      .is('publisher_id', null)
+      .ilike('publisher', `%${publisher.name}%`)
+      .order('created_at', { ascending: false })
+      .limit(100)
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      publisher: normalizePublisher(publisher),
+      matches: (data || []).map(normalizeProduct),
+    })
+  } catch (error) {
+    console.error('AUTO MATCH SHADOW MALL PUBLISHER PRODUCTS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to auto match publisher products',
+      error: error.message,
+    })
+  }
+}
+
+export async function assignShadowMallPublisherProducts(req, res) {
+  try {
+    const publisherId = Number(req.params.id)
+    const productIds = cleanProductIds(req.body.product_ids)
+
+    if (!publisherId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Publisher id is required',
+      })
+    }
+
+    if (!productIds.length) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Product ids are required',
+      })
+    }
+
+    const publisher = await getPublisherById(publisherId)
+
+    if (!publisher) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Publisher not found',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('shadow_mall_products')
+      .update({
+        publisher_id: publisherId,
+        publisher: publisher.name,
+        updated_at: new Date().toISOString(),
+      })
+      .in('id', productIds)
+      .select('id, title, author_name, publisher, publisher_id, cover_url, category, stock_status, price_usd, old_price_usd, is_active, created_at, updated_at')
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      publisher: normalizePublisher(publisher),
+      products: (data || []).map(normalizeProduct),
+    })
+  } catch (error) {
+    console.error('ASSIGN SHADOW MALL PUBLISHER PRODUCTS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to assign publisher products',
+      error: error.message,
+    })
+  }
+}
+
+export async function removeShadowMallPublisherProducts(req, res) {
+  try {
+    const publisherId = Number(req.params.id)
+    const productIds = cleanProductIds(req.body.product_ids)
+
+    if (!publisherId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Publisher id is required',
+      })
+    }
+
+    if (!productIds.length) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Product ids are required',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('shadow_mall_products')
+      .update({
+        publisher_id: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('publisher_id', publisherId)
+      .in('id', productIds)
+      .select('id, title, author_name, publisher, publisher_id, cover_url, category, stock_status, price_usd, old_price_usd, is_active, created_at, updated_at')
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      products: (data || []).map(normalizeProduct),
+    })
+  } catch (error) {
+    console.error('REMOVE SHADOW MALL PUBLISHER PRODUCTS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to remove publisher products',
       error: error.message,
     })
   }
