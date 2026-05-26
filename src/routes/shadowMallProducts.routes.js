@@ -28,6 +28,13 @@ import {
   removeShadowMallWishlist,
 } from '../controllers/shadowMallWishlists.controller.js'
 
+import {
+  createShadowMallPublisher,
+  deleteShadowMallPublisher,
+  getShadowMallPublishers,
+  updateShadowMallPublisher,
+} from '../controllers/shadowMallPublishers.controller.js'
+
 const router = express.Router()
 
 const upload = multer({
@@ -49,6 +56,10 @@ const shadowMallUploadFields = [
 
 router.get('/home', getShadowMallHome)
 router.get('/products', getShadowMallProducts)
+router.get('/publishers', getShadowMallPublishers)
+router.post('/admin/publishers', requireAdmin, createShadowMallPublisher)
+router.put('/admin/publishers/:id', requireAdmin, updateShadowMallPublisher)
+router.delete('/admin/publishers/:id', requireAdmin, deleteShadowMallPublisher)
 
 router.get('/buyer-profile', requireUser, getShadowMallBuyerProfile)
 router.put('/buyer-profile', requireUser, saveShadowMallBuyerProfile)
