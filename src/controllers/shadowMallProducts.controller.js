@@ -132,6 +132,7 @@ export async function getShadowMallProducts(req, res) {
     const limit = Math.min(Math.max(toNumber(req.query.limit, 20), 1), 100)
     const section = String(req.query.section || 'all').trim()
     const search = String(req.query.search || '').trim()
+    const publisher = String(req.query.publisher || '').trim()
     const includeInactive = req.query.include_inactive === 'true'
     const from = (page - 1) * limit
     const to = from + limit - 1
@@ -142,9 +143,13 @@ export async function getShadowMallProducts(req, res) {
 
     if (!includeInactive) query = query.eq('is_active', true)
 
-    if (search) {
-      query = query.or(`title.ilike.%${search}%,author_name.ilike.%${search}%`)
-    }
+   if (search) {
+  query = query.or(`title.ilike.%${search}%,author_name.ilike.%${search}%,publisher.ilike.%${search}%`)
+}
+
+if (publisher) {
+  query = query.eq('publisher', publisher)
+}
 
     if (section === 'new_books') query = query.eq('category', 'new_books').neq('stock_status', 'sold_out')
     if (section === 'second_hand') query = query.eq('category', 'second_hand').neq('stock_status', 'sold_out')
