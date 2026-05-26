@@ -66,65 +66,36 @@ export async function getShadowMallPublishers(req, res) {
 
     if (error) throw error
 
+    const publisherIds = (data || []).map((publisher) => publisher.id)
+    const bookCounts = {}
+
+    if (publisherIds.length) {
+      const { data: products, error: productsError } = await supabase
+        .from('shadow_mall_products')
+        .select('publisher_id')
+        .in('publisher_id', publisherIds)
+        .eq('is_active', true)
+
+      if (productsError) throw productsError
+
+      ;(products || []).forEach((product) => {
+        if (!product.publisher_id) return
+        bookCounts[product.publisher_id] = (bookCounts[product.publisher_id] || 0) + 1
+      })
+    }
+
     return res.status(200).json({
       ok: true,
-      publishers: (data || []).map(normalizePublisher),
+      publishers: (data || []).map((publisher) => ({
+        ...normalizePublisher(publisher),
+        book_count: bookCounts[publisher.id] || 0,
+      })),
     })
   } catch (error) {
     console.error('GET SHADOW MALL PUBLISHERS ERROR:', error)
     return res.status(500).json({
       ok: false,
       message: 'Failed to load Shadow Mall publishers',
-      error: error.message,
-    })
-  }
-}
-
-export async function createShadowMallPublisher(req, res) {
-  try {
-    const name = String(req.body.name || '').trim()
-
-    if (!name) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Publisher name is required',
-      })
-    }
-
-    const payload = {
-      name,
-      description: String(req.body.description || '').trim(),
-      logo_url: String(req.body.logo_url || '').trim(),
-      is_active: req.body.is_active === undefined ? true : Boolean(req.body.is_active),
-      sort_order: Number(req.body.sort_order || 0),
-      updated_at: new Date().toISOString(),
-    }
-
-    const { data, error } = await supabase
-      .from('shadow_mall_publishers')
-      .insert(payload)
-      .select('*')
-      .single()
-
-    if (error) throw error
-
-    return res.status(201).json({
-      ok: true,
-      publisher: normalizePublisher(data),
-    })
-  } catch (error) {
-    console.error('CREATE SHADOW MALL PUBLISHER ERROR:', error)
-
-    if (String(error.message || '').toLowerCase().includes('duplicate')) {
-      return res.status(409).json({
-        ok: false,
-        message: 'Publisher name already exists',
-      })
-    }
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to create Shadow Mall publisher',
       error: error.message,
     })
   }
