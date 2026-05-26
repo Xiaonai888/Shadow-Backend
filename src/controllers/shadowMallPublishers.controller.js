@@ -100,46 +100,6 @@ export async function getShadowMallPublishers(req, res) {
       .order('sort_order', { ascending: true })
       .order('name', { ascending: true })
 
-    export async function getShadowMallPublisherLogs(req, res) {
-  try {
-    const q = String(req.query.q || '').trim()
-    const page = Math.max(Number(req.query.page || 1), 1)
-    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 50)
-    const from = (page - 1) * limit
-    const to = from + limit - 1
-
-    let query = supabase
-      .from('shadow_mall_publisher_logs')
-      .select('*', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(from, to)
-
-    if (q) {
-      query = query.or(`publisher_name.ilike.%${q}%,action.ilike.%${q}%,details.ilike.%${q}%,admin_name.ilike.%${q}%`)
-    }
-
-    const { data, error, count } = await query
-
-    if (error) throw error
-
-    return res.status(200).json({
-      ok: true,
-      logs: data || [],
-      page,
-      limit,
-      total: count || 0,
-      total_pages: Math.max(Math.ceil((count || 0) / limit), 1),
-    })
-  } catch (error) {
-    console.error('GET PUBLISHER LOGS ERROR:', error)
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load publisher records',
-      error: error.message,
-    })
-  }
-}
-
     if (!includeInactive) query = query.eq('is_active', true)
 
     const { data, error } = await query
@@ -181,6 +141,47 @@ export async function getShadowMallPublishers(req, res) {
   }
 }
 
+
+export async function getShadowMallPublisherLogs(req, res) {
+  try {
+    const q = String(req.query.q || '').trim()
+    const page = Math.max(Number(req.query.page || 1), 1)
+    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 50)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    let query = supabase
+      .from('shadow_mall_publisher_logs')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (q) {
+      query = query.or(`publisher_name.ilike.%${q}%,action.ilike.%${q}%,details.ilike.%${q}%,admin_name.ilike.%${q}%`)
+    }
+
+    const { data, error, count } = await query
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      logs: data || [],
+      page,
+      limit,
+      total: count || 0,
+      total_pages: Math.max(Math.ceil((count || 0) / limit), 1),
+    })
+  } catch (error) {
+    console.error('GET PUBLISHER LOGS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load publisher records',
+      error: error.message,
+    })
+  }
+}
+
 export async function createShadowMallPublisher(req, res) {
   try {
     const name = String(req.body.name || '').trim()
@@ -208,6 +209,13 @@ export async function createShadowMallPublisher(req, res) {
       .single()
 
     if (error) throw error
+
+    await createPublisherLog({
+      action: 'CREATE',
+      publisherId: data.id,
+      publisherName: data.name,
+      details: `Created publisher ${data.name}`,
+    })
 
     return res.status(201).json({
       ok: true,
@@ -269,6 +277,13 @@ export async function updateShadowMallPublisher(req, res) {
 
     if (error) throw error
 
+    await createPublisherLog({
+      action: 'UPDATE',
+      publisherId: data.id,
+      publisherName: data.name,
+      details: `Updated publisher ${data.name}`,
+    })
+
     return res.status(200).json({
       ok: true,
       publisher: normalizePublisher(data),
@@ -313,6 +328,13 @@ export async function deleteShadowMallPublisher(req, res) {
       .single()
 
     if (error) throw error
+
+    await createPublisherLog({
+      action: 'HIDE',
+      publisherId: data.id,
+      publisherName: data.name,
+      details: `Hidden publisher ${data.name}`,
+    })
 
     return res.status(200).json({
       ok: true,
@@ -456,6 +478,13 @@ export async function assignShadowMallPublisherProducts(req, res) {
 
     if (error) throw error
 
+    await createPublisherLog({
+      action: 'ASSIGN',
+      publisherId: publisher.id,
+      publisherName: publisher.name,
+      details: `Assigned ${productIds.length} product${productIds.length > 1 ? 's' : ''} to ${publisher.name}`,
+    })
+
     return res.status(200).json({
       ok: true,
       publisher: normalizePublisher(publisher),
@@ -490,6 +519,8 @@ export async function removeShadowMallPublisherProducts(req, res) {
       })
     }
 
+    const publisher = await getPublisherById(publisherId)
+
     const { data, error } = await supabase
       .from('shadow_mall_products')
       .update({
@@ -501,6 +532,13 @@ export async function removeShadowMallPublisherProducts(req, res) {
       .select('id, title, author_name, publisher, publisher_id, cover_url, category, stock_status, price_usd, old_price_usd, is_active, created_at, updated_at')
 
     if (error) throw error
+
+    await createPublisherLog({
+      action: 'REMOVE',
+      publisherId,
+      publisherName: publisher?.name || '',
+      details: `Removed ${productIds.length} product${productIds.length > 1 ? 's' : ''} from ${publisher?.name || 'publisher'}`,
+    })
 
     return res.status(200).json({
       ok: true,
