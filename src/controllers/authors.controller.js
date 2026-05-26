@@ -58,6 +58,37 @@ export async function getMyAuthorPage(req, res) {
   }
 }
 
+export async function getPublicAuthorPage(req, res) {
+  try {
+    const pageUsername = normalizePageUsername(req.params.pageUsername)
+
+    if (!pageUsername) {
+      return res.status(400).json({ ok: false, message: 'Page username is required' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_pages')
+      .select('*')
+      .eq('page_username', pageUsername)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      author_page: publicAuthorPage(data),
+    })
+  } catch (error) {
+    console.error('GET PUBLIC AUTHOR PAGE ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to fetch author page', error: error.message })
+  }
+}
+
 export async function createAuthorPage(req, res) {
   try {
     const userId = req.user?.user_id
@@ -167,5 +198,47 @@ export async function updateAuthorAvatar(req, res) {
   } catch (error) {
     console.error('UPDATE AUTHOR AVATAR ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to update author profile photo', error: error.message })
+  }
+}
+
+export async function updateAuthorProfileImages(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const avatarUrl = String(req.body.avatar_url || req.body.avatarUrl || '').trim()
+    const coverUrl = String(req.body.cover_url || req.body.coverUrl || '').trim()
+
+    if (!avatarUrl && !coverUrl) {
+      return res.status(400).json({ ok: false, message: 'Avatar URL or cover URL is required' })
+    }
+
+    const updates = {
+      updated_at: new Date().toISOString(),
+    }
+
+    if (avatarUrl) updates.avatar_url = avatarUrl
+    if (coverUrl) updates.cover_url = coverUrl
+
+    const { data, error } = await supabase
+      .from('author_pages')
+      .update(updates)
+      .eq('user_id', userId)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Author profile images updated',
+      author_page: publicAuthorPage(data),
+    })
+  } catch (error) {
+    console.error('UPDATE AUTHOR PROFILE IMAGES ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to update author profile images', error: error.message })
   }
 }
