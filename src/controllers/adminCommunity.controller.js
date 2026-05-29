@@ -46,6 +46,7 @@ function formatReader(user) {
     name: user.name || user.username || 'Reader',
     username: user.username || '',
     email: user.email || '',
+    avatar_url: user.avatar_url || '',
     status: user.is_active === false ? 'inactive' : 'active',
     is_author: Boolean(user.is_author),
     joined_at: user.created_at,
@@ -61,6 +62,7 @@ function formatAuthor(page, userMap, storyCountMap) {
     author_name: page.page_name || user.name || 'Author',
     username: page.page_username || page.page_slug || user.username || '',
     email: user.email || '',
+    avatar_url: page.avatar_url || user.avatar_url || '',
     books_count: storyCountMap.get(page.id) || 0,
     status: page.status || (user.is_active === false ? 'inactive' : 'active'),
     joined_at: page.created_at,
@@ -92,7 +94,7 @@ export async function getAdminCommunityReaders(req, res) {
 
     let query = supabase
       .from('users')
-      .select('id, name, username, email, is_active, is_author, created_at', { count: 'exact' })
+      .select('id, name, username, email, avatar_url, is_active, is_author, created_at', { count: 'exact' })
       .order('created_at', { ascending: false })
       .range(from, to)
 
@@ -133,7 +135,7 @@ export async function getAdminCommunityAuthors(req, res) {
 
     let query = supabase
       .from('author_pages')
-      .select('id, user_id, page_name, page_username, page_slug, status, created_at, updated_at', { count: 'exact' })
+      .select('id, user_id, page_name, page_username, page_slug, avatar_url, status, created_at, updated_at', { count: 'exact' })
       .order('created_at', { ascending: false })
       .range(from, to)
 
@@ -154,7 +156,7 @@ export async function getAdminCommunityAuthors(req, res) {
     if (userIds.length) {
       const { data: users, error: usersError } = await supabase
         .from('users')
-        .select('id, name, username, email, is_active')
+        .select('id, name, username, email, avatar_url, is_active')
         .in('id', userIds)
 
       if (usersError) throw usersError
