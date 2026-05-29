@@ -6,6 +6,9 @@ import {
   getMyStories,
   getStoryById,
   getStoryEpisodes,
+  getStoryTrash,
+  moveStoryToTrash,
+  restoreStoryFromTrash,
   updateEpisode,
   updateEpisodeStatus,
   updateStory,
@@ -16,8 +19,11 @@ const router = express.Router()
 
 router.post('/create', requireUser, createStory)
 router.get('/my', requireUser, getMyStories)
+router.get('/trash', requireUser, getStoryTrash)
 router.get('/:storyId', requireUser, getStoryById)
 router.put('/:storyId', requireUser, updateStory)
+router.delete('/:storyId', requireUser, moveStoryToTrash)
+router.post('/:storyId/restore', requireUser, restoreStoryFromTrash)
 
 router.post('/:storyId/episodes/create', requireUser, createEpisode)
 router.get('/:storyId/episodes', requireUser, getStoryEpisodes)
