@@ -6,9 +6,26 @@ const ALLOWED_STORY_STATUSES = ['New', 'Ongoing', 'Completed']
 const ALLOWED_UNLOCK_METHODS = ['gem', 'voucher', 'story_card', 'free_item']
 const MIN_EPISODE_CHARACTERS = 1500
 const MAX_EPISODE_CHARACTERS = 30000
+const AUTHOR_TRASH_DAYS = 30
+const ADMIN_ARCHIVE_DAYS = 90
 
 function cleanText(value) {
   return String(value || '').trim()
+}
+
+function addDays(date, days) {
+  const nextDate = new Date(date)
+  nextDate.setDate(nextDate.getDate() + days)
+  return nextDate
+}
+
+function isRestoreExpired(value) {
+  if (!value) return true
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return true
+
+  return date.getTime() <= Date.now()
 }
 function calculateWordCount(value) {
   const text = String(value || '').trim()
@@ -85,6 +102,13 @@ function publicStory(story, slides = []) {
     total_likes: story.total_likes,
     total_comments: story.total_comments,
     slides,
+    deleted_at: story.deleted_at || null,
+    delete_expires_at: story.delete_expires_at || null,
+    admin_archive_expires_at: story.admin_archive_expires_at || null,
+    deleted_by_user_id: story.deleted_by_user_id || null,
+    days_left: story.delete_expires_at
+      ? Math.max(0, Math.ceil((new Date(story.delete_expires_at).getTime() - Date.now()) / 86400000))
+      : null,
     created_at: story.created_at,
     updated_at: story.updated_at,
   }
@@ -111,6 +135,8 @@ function publicEpisode(episode) {
     total_likes: episode.total_likes || 0,
     published_at: episode.published_at,
     scheduled_at: episode.scheduled_at,
+    deleted_at: episode.deleted_at || null,
+    delete_expires_at: episode.delete_expires_at || null,
     created_at: episode.created_at,
     updated_at: episode.updated_at,
   }
@@ -127,26 +153,36 @@ async function getAuthorPageForUser(userId) {
   return data
 }
 
-async function getOwnedStory({ storyId, userId }) {
-  const { data, error } = await supabase
+async function getOwnedStory({ storyId, userId, includeDeleted = false }) {
+  let query = supabase
     .from('stories')
     .select('*')
     .eq('id', storyId)
     .eq('user_id', userId)
-    .maybeSingle()
+
+  if (!includeDeleted) {
+    query = query.is('deleted_at', null)
+  }
+
+  const { data, error } = await query.maybeSingle()
 
   if (error) throw error
   return data
 }
 
-async function getOwnedEpisode({ storyId, episodeId, userId }) {
-  const { data, error } = await supabase
+async function getOwnedEpisode({ storyId, episodeId, userId, includeDeleted = false }) {
+  let query = supabase
     .from('episodes')
     .select('*')
     .eq('id', episodeId)
     .eq('story_id', storyId)
     .eq('user_id', userId)
-    .maybeSingle()
+
+  if (!includeDeleted) {
+    query = query.is('deleted_at', null)
+  }
+
+  const { data, error } = await query.maybeSingle()
 
   if (error) throw error
   return data
@@ -171,6 +207,7 @@ async function updateStoryEpisodeCount(storyId) {
     .from('episodes')
     .select('id', { count: 'exact', head: true })
     .eq('story_id', storyId)
+    .is('deleted_at', null)
 
   if (countError) throw countError
 
@@ -193,6 +230,7 @@ async function updateStoryStatusAfterEpisodeChange(storyId) {
     .select('id')
     .eq('story_id', storyId)
     .eq('status', 'published')
+    .is('deleted_at', null)
     .limit(1)
 
   if (publishedError) throw publishedError
@@ -463,6 +501,7 @@ export async function getMyStories(req, res) {
       .from('stories')
       .select('*')
       .eq('author_id', authorPage.id)
+      .is('deleted_at', null)
       .order('created_at', { ascending: false })
 
     if (error) throw error
@@ -669,6 +708,7 @@ export async function getStoryEpisodes(req, res) {
       .from('episodes')
       .select('*')
       .eq('story_id', storyId)
+      .is('deleted_at', null)
       .order('episode_number', { ascending: true })
 
     if (error) throw error
@@ -979,3 +1019,197 @@ export async function updateEpisodeStatus(req, res) {
     })
   }
 }
+
+export async function getStoryTrash(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const authorPage = await getAuthorPageForUser(userId)
+
+    if (!authorPage) {
+      return res.status(200).json({
+        ok: true,
+        stories: [],
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('stories')
+      .select('*')
+      .eq('author_id', authorPage.id)
+      .not('deleted_at', 'is', null)
+      .order('deleted_at', { ascending: false })
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      stories: (data || []).map((story) => publicStory(story)),
+    })
+  } catch (error) {
+    console.error('GET STORY TRASH ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to fetch story trash',
+      error: error.message,
+    })
+  }
+}
+
+export async function moveStoryToTrash(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId } = req.params
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const story = await getOwnedStory({ storyId, userId })
+
+    if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    const now = new Date()
+    const deletedAt = now.toISOString()
+    const deleteExpiresAt = addDays(now, AUTHOR_TRASH_DAYS).toISOString()
+    const adminArchiveExpiresAt = addDays(now, AUTHOR_TRASH_DAYS + ADMIN_ARCHIVE_DAYS).toISOString()
+
+    const { data: updatedStory, error: storyError } = await supabase
+      .from('stories')
+      .update({
+        deleted_at: deletedAt,
+        delete_expires_at: deleteExpiresAt,
+        admin_archive_expires_at: adminArchiveExpiresAt,
+        deleted_by_user_id: userId,
+        updated_at: deletedAt,
+      })
+      .eq('id', storyId)
+      .eq('user_id', userId)
+      .is('deleted_at', null)
+      .select()
+      .single()
+
+    if (storyError) throw storyError
+
+    const { error: episodeError } = await supabase
+      .from('episodes')
+      .update({
+        deleted_at: deletedAt,
+        delete_expires_at: deleteExpiresAt,
+        updated_at: deletedAt,
+      })
+      .eq('story_id', storyId)
+      .eq('user_id', userId)
+      .is('deleted_at', null)
+
+    if (episodeError) throw episodeError
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Story moved to Trash. You can restore it within 30 days.',
+      story: publicStory(updatedStory),
+    })
+  } catch (error) {
+    console.error('MOVE STORY TO TRASH ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to move story to Trash',
+      error: error.message,
+    })
+  }
+}
+
+export async function restoreStoryFromTrash(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId } = req.params
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const story = await getOwnedStory({ storyId, userId, includeDeleted: true })
+
+    if (!story || !story.deleted_at) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found in Trash',
+      })
+    }
+
+    if (isRestoreExpired(story.delete_expires_at)) {
+      return res.status(403).json({
+        ok: false,
+        message: 'Restore period expired. This story is now in admin archive.',
+      })
+    }
+
+    const restoredAt = new Date().toISOString()
+
+    const { data: restoredStory, error: storyError } = await supabase
+      .from('stories')
+      .update({
+        deleted_at: null,
+        delete_expires_at: null,
+        admin_archive_expires_at: null,
+        deleted_by_user_id: null,
+        updated_at: restoredAt,
+      })
+      .eq('id', storyId)
+      .eq('user_id', userId)
+      .not('deleted_at', 'is', null)
+      .select()
+      .single()
+
+    if (storyError) throw storyError
+
+    const { error: episodeError } = await supabase
+      .from('episodes')
+      .update({
+        deleted_at: null,
+        delete_expires_at: null,
+        updated_at: restoredAt,
+      })
+      .eq('story_id', storyId)
+      .eq('user_id', userId)
+
+    if (episodeError) throw episodeError
+
+    await updateStoryEpisodeCount(storyId)
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Story restored successfully',
+      story: publicStory(restoredStory),
+    })
+  } catch (error) {
+    console.error('RESTORE STORY FROM TRASH ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to restore story',
+      error: error.message,
+    })
+  }
+}
+
