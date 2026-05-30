@@ -26,6 +26,7 @@ import shadowMallProductsRoutes from './src/routes/shadowMallProducts.routes.js'
 import adminCommunityRoutes from './src/routes/adminCommunity.routes.js'
 import tasksRoutes from './src/routes/tasks.routes.js'
 import adminStoriesRoutes from './src/routes/adminStories.routes.js'
+import adminRankingRoutes from './src/routes/adminRanking.routes.js'
 
 dotenv.config()
 
@@ -91,6 +92,7 @@ app.use('/api/shadow-mall', shadowMallProductsRoutes)
 app.use('/api/admin/community', adminCommunityRoutes)
 app.use('/api/tasks', tasksRoutes)
 app.use('/api/admin/stories', adminStoriesRoutes)
+app.use('/api/admin/ranking', adminRankingRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
