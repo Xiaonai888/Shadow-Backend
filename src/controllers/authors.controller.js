@@ -1,3 +1,4 @@
+import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 
 function normalizePageUsername(username) {
@@ -31,6 +32,67 @@ function publicAuthorPage(page) {
   }
 }
 
+function getOptionalUserId(req) {
+  try {
+    const authHeader = req.headers.authorization || ''
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
+
+    if (!token) return null
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET)
+
+    if (decoded.type !== 'reader') return null
+
+    return decoded.user_id || null
+  } catch {
+    return null
+  }
+}
+
+async function getFollowCount(authorPageId) {
+  const { count, error } = await supabase
+    .from('author_page_follows')
+    .select('id', { count: 'exact', head: true })
+    .eq('author_page_id', authorPageId)
+
+  if (error) throw error
+
+  return Number(count || 0)
+}
+
+async function syncAuthorFollowerCount(authorPageId) {
+  const totalFollowers = await getFollowCount(authorPageId)
+
+  const { data, error } = await supabase
+    .from('author_pages')
+    .update({
+      total_followers: totalFollowers,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', authorPageId)
+    .select()
+    .single()
+
+  if (error) throw error
+
+  return data
+}
+
+async function getFollowStatus(authorPageId, userId) {
+  if (!authorPageId || !userId) return false
+
+  const { data, error } = await supabase
+    .from('author_page_follows')
+    .select('id')
+    .eq('author_page_id', authorPageId)
+    .eq('follower_user_id', userId)
+    .maybeSingle()
+
+  if (error) throw error
+
+  return Boolean(data)
+}
+
 export async function getMyAuthorPage(req, res) {
   try {
     const userId = req.user?.user_id
@@ -61,6 +123,7 @@ export async function getMyAuthorPage(req, res) {
 export async function getPublicAuthorPage(req, res) {
   try {
     const pageUsername = normalizePageUsername(req.params.pageUsername)
+    const userId = getOptionalUserId(req)
 
     if (!pageUsername) {
       return res.status(400).json({ ok: false, message: 'Page username is required' })
@@ -79,13 +142,124 @@ export async function getPublicAuthorPage(req, res) {
       return res.status(404).json({ ok: false, message: 'Author page not found' })
     }
 
+    const isFollowing = await getFollowStatus(data.id, userId)
+
     return res.status(200).json({
       ok: true,
       author_page: publicAuthorPage(data),
+      is_following: isFollowing,
+      total_followers: Number(data.total_followers || 0),
     })
   } catch (error) {
     console.error('GET PUBLIC AUTHOR PAGE ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to fetch author page', error: error.message })
+  }
+}
+
+export async function followAuthorPage(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const pageUsername = normalizePageUsername(req.params.pageUsername)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!pageUsername) {
+      return res.status(400).json({ ok: false, message: 'Page username is required' })
+    }
+
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('*')
+      .eq('page_username', pageUsername)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (pageError) throw pageError
+
+    if (!authorPage) {
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
+    }
+
+    if (authorPage.user_id === userId) {
+      return res.status(400).json({ ok: false, message: 'You cannot follow your own author page' })
+    }
+
+    const alreadyFollowing = await getFollowStatus(authorPage.id, userId)
+
+    if (!alreadyFollowing) {
+      const { error: followError } = await supabase
+        .from('author_page_follows')
+        .insert({
+          author_page_id: authorPage.id,
+          follower_user_id: userId,
+        })
+
+      if (followError && followError.code !== '23505') throw followError
+    }
+
+    const updatedPage = await syncAuthorFollowerCount(authorPage.id)
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Author page followed',
+      author_page: publicAuthorPage(updatedPage),
+      is_following: true,
+      total_followers: Number(updatedPage.total_followers || 0),
+    })
+  } catch (error) {
+    console.error('FOLLOW AUTHOR PAGE ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to follow author page', error: error.message })
+  }
+}
+
+export async function unfollowAuthorPage(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const pageUsername = normalizePageUsername(req.params.pageUsername)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!pageUsername) {
+      return res.status(400).json({ ok: false, message: 'Page username is required' })
+    }
+
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('*')
+      .eq('page_username', pageUsername)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (pageError) throw pageError
+
+    if (!authorPage) {
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
+    }
+
+    const { error: deleteError } = await supabase
+      .from('author_page_follows')
+      .delete()
+      .eq('author_page_id', authorPage.id)
+      .eq('follower_user_id', userId)
+
+    if (deleteError) throw deleteError
+
+    const updatedPage = await syncAuthorFollowerCount(authorPage.id)
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Author page unfollowed',
+      author_page: publicAuthorPage(updatedPage),
+      is_following: false,
+      total_followers: Number(updatedPage.total_followers || 0),
+    })
+  } catch (error) {
+    console.error('UNFOLLOW AUTHOR PAGE ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to unfollow author page', error: error.message })
   }
 }
 
