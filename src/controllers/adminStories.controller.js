@@ -124,17 +124,26 @@ async function countStories(builder) {
 
 export async function getAdminStoriesOverview(req, res) {
   try {
-    const [totalStories, activeStories, deletedStories, restrictedStories, disabledStories, warnedStories, disabledAuthors] = await Promise.all([
-      countStories(supabase.from('stories')),
-      countStories(supabase.from('stories').is('deleted_at', null)),
-      countStories(supabase.from('stories').not('deleted_at', 'is', null)),
-      countStories(supabase.from('stories').eq('admin_visibility_status', 'restricted')),
-      countStories(supabase.from('stories').eq('admin_visibility_status', 'disabled')),
-      countStories(supabase.from('stories').gt('policy_warning_count', 0)),
-      supabase.from('author_pages').select('id', { count: 'exact', head: true }).eq('admin_status', 'disabled'),
-    ])
+    const { data: stories, error: storiesError } = await supabase
+      .from('stories')
+      .select('id, deleted_at, admin_visibility_status, policy_warning_count')
 
-    if (disabledAuthors.error) throw disabledAuthors.error
+    if (storiesError) throw storiesError
+
+    const { data: authors, error: authorsError } = await supabase
+      .from('author_pages')
+      .select('id, admin_status')
+
+    const storyRows = stories || []
+    const authorRows = authorsError ? [] : authors || []
+
+    const totalStories = storyRows.length
+    const activeStories = storyRows.filter((story) => !story.deleted_at).length
+    const deletedStories = storyRows.filter((story) => story.deleted_at).length
+    const restrictedStories = storyRows.filter((story) => story.admin_visibility_status === 'restricted').length
+    const disabledStories = storyRows.filter((story) => story.admin_visibility_status === 'disabled').length
+    const warnedStories = storyRows.filter((story) => Number(story.policy_warning_count || 0) > 0).length
+    const disabledAuthors = authorRows.filter((author) => author.admin_status === 'disabled').length
 
     return res.status(200).json({
       ok: true,
@@ -145,12 +154,16 @@ export async function getAdminStoriesOverview(req, res) {
         restricted_stories: restrictedStories,
         disabled_stories: disabledStories,
         warned_stories: warnedStories,
-        disabled_authors: disabledAuthors.count || 0,
+        disabled_authors: disabledAuthors,
       },
     })
   } catch (error) {
     console.error('GET ADMIN STORIES OVERVIEW ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load stories overview', error: error.message })
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load stories overview',
+      error: error.message,
+    })
   }
 }
 
