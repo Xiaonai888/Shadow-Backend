@@ -1,8 +1,10 @@
 import express from 'express'
 import {
   createAuthorPage,
+  followAuthorPage,
   getMyAuthorPage,
   getPublicAuthorPage,
+  unfollowAuthorPage,
   updateAuthorAvatar,
   updateAuthorProfileImages,
 } from '../controllers/authors.controller.js'
@@ -21,6 +23,8 @@ router.get('/me/quest', requireUser, getMyAuthorQuest)
 router.get('/me/income', requireUser, getMyAuthorIncome)
 router.get('/me/payment-methods', requireUser, getMyAuthorPaymentMethods)
 router.get('/page/:pageUsername', getPublicAuthorPage)
+router.post('/page/:pageUsername/follow', requireUser, followAuthorPage)
+router.delete('/page/:pageUsername/follow', requireUser, unfollowAuthorPage)
 router.post('/me/payment-methods', requireUser, saveMyAuthorPaymentMethod)
 router.post('/create', requireUser, createAuthorPage)
 router.put('/avatar', requireUser, updateAuthorAvatar)
