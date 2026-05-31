@@ -27,5 +27,7 @@ router.get('/:username/followers', requireUser, getUserFollowers)
 router.get('/:username/following', requireUser, getUserFollowing)
 router.post('/:username/follow', requireUser, followUser)
 router.delete('/:username/follow', requireUser, unfollowUser)
+router.get('/:username/followers', requireUser, getUserFollowers)
+router.get('/:username/following', requireUser, getUserFollowing)
 
 export default router
