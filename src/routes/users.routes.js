@@ -1,3 +1,4 @@
+import express from 'express'
 import {
   followUser,
   getCurrentUser,
@@ -12,6 +13,7 @@ import {
   updateUserAvatar,
   updateUserProfile,
 } from '../controllers/users.controller.js'
+import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
 
@@ -27,7 +29,5 @@ router.get('/:username/followers', requireUser, getUserFollowers)
 router.get('/:username/following', requireUser, getUserFollowing)
 router.post('/:username/follow', requireUser, followUser)
 router.delete('/:username/follow', requireUser, unfollowUser)
-router.get('/:username/followers', requireUser, getUserFollowers)
-router.get('/:username/following', requireUser, getUserFollowing)
 
 export default router
