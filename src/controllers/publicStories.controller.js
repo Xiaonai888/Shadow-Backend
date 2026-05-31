@@ -567,11 +567,11 @@ export async function getPublicStories(req, res) {
     const search = normalizeSearch(req.query.q || req.query.search || req.query.keyword)
 
     let query = supabase
-      .from('stories')
-      .select('*')
-      .eq('status', 'published')
-      .neq('is_shadow_exclusive', true)
-      .limit(limit)
+  .from('stories')
+  .select('*')
+  .eq('status', 'published')
+  .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false')
+  .limit(limit)
 
     if (genre) query = query.eq('main_genre', genre)
     if (language) query = query.eq('story_language', language)
