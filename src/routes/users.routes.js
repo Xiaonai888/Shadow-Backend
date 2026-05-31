@@ -1,5 +1,8 @@
 import express from 'express'
 import {
+  getPublicUserProfile,
+  followUser,
+  unfollowUser,
   getCurrentUser,
   loginUser,
   registerUser,
@@ -19,5 +22,8 @@ router.post('/reset-password', resetPassword)
 router.get('/me', requireUser, getCurrentUser)
 router.put('/avatar', requireUser, updateUserAvatar)
 router.put('/profile', requireUser, updateUserProfile)
+router.get('/:username/profile', requireUser, getPublicUserProfile)
+router.post('/:username/follow', requireUser, followUser)
+router.delete('/:username/follow', requireUser, unfollowUser)
 
 export default router
