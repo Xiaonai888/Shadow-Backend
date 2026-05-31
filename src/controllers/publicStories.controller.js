@@ -95,7 +95,7 @@ function publicStoryListItem(story) {
     update_days: story.update_days || [],
     total_episodes: story.total_episodes,
     total_views: story.total_views,
-    rank_by_views: rankByViews,
+    rank_by_views: null,
     total_likes: story.total_likes,
     total_comments: story.total_comments,
     created_at: story.created_at,
