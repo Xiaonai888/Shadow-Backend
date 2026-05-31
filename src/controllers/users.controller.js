@@ -856,10 +856,49 @@ return res.status(500).json({ ok: false, message: 'Failed to follow user', error
 
 export async function unfollowUser(req, res) {
   try {
-const followerUserId = req.user?.user_id
-const username = normalizeUsername(req.params.username)
+    const followerUserId = req.user?.user_id
+    const username = normalizeUsername(req.params.username)
 
-    function normalizePage(value, fallback = 1) {
+    if (!followerUserId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const { data: targetUser, error: targetError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('username', username)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (targetError) throw targetError
+
+    if (!targetUser) {
+      return res.status(404).json({ ok: false, message: 'User not found' })
+    }
+
+    const { error: deleteError } = await supabase
+      .from('user_follows')
+      .delete()
+      .eq('follower_user_id', followerUserId)
+      .eq('following_user_id', targetUser.id)
+
+    if (deleteError) throw deleteError
+
+    const counts = await getUserFollowCounts(targetUser.id)
+
+    return res.status(200).json({
+      ok: true,
+      message: 'User unfollowed',
+      is_following: false,
+      ...counts,
+    })
+  } catch (error) {
+    console.error('UNFOLLOW USER ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to unfollow user', error: error.message })
+  }
+}
+
+function normalizePage(value, fallback = 1) {
   const number = Number(value)
 
   if (!Number.isFinite(number) || number <= 0) return fallback
