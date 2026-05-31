@@ -51,6 +51,7 @@ function publicStory(story, slides = [], authorPage = null, rankByViews = null) 
     title: story.title,
     story_language: story.story_language,
     main_genre: story.main_genre,
+    story_status: story.story_status || 'New',
     tags: story.tags || [],
     description: story.description,
     is_adult: story.is_adult,
@@ -83,6 +84,7 @@ function publicStoryListItem(story) {
     title: story.title,
     story_language: story.story_language,
     main_genre: story.main_genre,
+    story_status: story.story_status || 'New',
     tags: story.tags || [],
     description: story.description,
     is_adult: story.is_adult,
@@ -609,7 +611,8 @@ export async function getPublicShadowExclusiveStories(req, res) {
     const section = String(req.query.section || '').trim()
     const genre = String(req.query.genre || '').trim()
     const language = String(req.query.language || '').trim()
-    const sort = String(req.query.sort || 'updated').trim()
+    const storyStatus = String(req.query.story_status || req.query.storyStatus || '').trim()
+    const sort = String(req.query.sort || 'latest').trim()
 
     let query = supabase
       .from('stories')
@@ -619,10 +622,10 @@ export async function getPublicShadowExclusiveStories(req, res) {
       .eq('exclusive_status', 'approved')
       .limit(limit)
 
-    if (section) query = query.contains('exclusive_sections', [section])
     if (genre) query = query.eq('main_genre', genre)
     if (language) query = query.eq('story_language', language)
-
+    if (storyStatus) query = query.eq('story_status', storyStatus)
+    if (authorId) query = query.eq('author_id', authorId)
     query = applyStorySort(query, sort)
 
     const { data, error } = await query
