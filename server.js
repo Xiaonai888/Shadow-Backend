@@ -14,6 +14,7 @@ import publicStoriesRoutes from './src/routes/publicStories.routes.js'
 import adminExclusiveRoutes from './src/routes/adminExclusive.routes.js'
 import genresRoutes from './src/routes/genres.routes.js'
 import commentsRoutes from './src/routes/comments.routes.js'
+import reactionsRoutes from './src/routes/reactions.routes.js'
 import adminCommentsRoutes from './src/routes/adminComments.routes.js'
 import libraryRoutes from './src/routes/library.routes.js'
 import purchaseRoutes from './src/routes/purchase.routes.js'
@@ -84,6 +85,7 @@ app.use('/api/admin/purchases', adminPurchasesRoutes)
 app.use('/api/admin/activity-logs', adminActivityRoutes)
 app.use('/api/genres', genresRoutes)
 app.use('/api/comments', commentsRoutes)
+app.use('/api/reactions', reactionsRoutes)
 app.use('/api/reader', libraryRoutes)
 app.use('/api/purchase', purchaseRoutes)
 app.use('/api/telegram', telegramRoutes)
