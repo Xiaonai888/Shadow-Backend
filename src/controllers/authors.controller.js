@@ -32,6 +32,48 @@ function publicAuthorPage(page) {
   }
 }
 
+function publicAuthorWork(story) {
+  if (!story) return null
+
+  return {
+    id: story.id,
+    author_id: story.author_id,
+    user_id: story.user_id,
+    title: story.title,
+    story_language: story.story_language,
+    main_genre: story.main_genre,
+    story_status: story.story_status || 'New',
+    tags: story.tags || [],
+    description: story.description,
+    is_adult: story.is_adult,
+    cover_url: story.cover_url,
+    status: story.status,
+    access_type: story.access_type || 'free',
+    total_episodes: Number(story.total_episodes || 0),
+    total_views: Number(story.total_views || 0),
+    total_likes: Number(story.total_likes || 0),
+    total_comments: Number(story.total_comments || 0),
+    created_at: story.created_at,
+    updated_at: story.updated_at,
+  }
+}
+
+async function getAuthorPageWorks(authorPageId) {
+  if (!authorPageId) return []
+
+  const { data, error } = await supabase
+    .from('stories')
+    .select('id, author_id, user_id, title, story_language, main_genre, story_status, tags, description, is_adult, cover_url, status, access_type, total_episodes, total_views, total_likes, total_comments, created_at, updated_at')
+    .eq('author_id', authorPageId)
+    .eq('status', 'published')
+    .is('deleted_at', null)
+    .order('updated_at', { ascending: false })
+
+  if (error) throw error
+
+  return (data || []).map(publicAuthorWork)
+}
+
 function getOptionalUserId(req) {
   try {
     const authHeader = req.headers.authorization || ''
@@ -142,14 +184,21 @@ export async function getPublicAuthorPage(req, res) {
       return res.status(404).json({ ok: false, message: 'Author page not found' })
     }
 
-    const isFollowing = await getFollowStatus(data.id, userId)
+    const [isFollowing, works] = await Promise.all([
+  getFollowStatus(data.id, userId),
+  getAuthorPageWorks(data.id),
+])
 
-    return res.status(200).json({
-      ok: true,
-      author_page: publicAuthorPage(data),
-      is_following: isFollowing,
-      total_followers: Number(data.total_followers || 0),
-    })
+return res.status(200).json({
+  ok: true,
+  author_page: publicAuthorPage({
+    ...data,
+    total_stories: works.length,
+  }),
+  is_following: isFollowing,
+  total_followers: Number(data.total_followers || 0),
+  works,
+})
   } catch (error) {
     console.error('GET PUBLIC AUTHOR PAGE ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to fetch author page', error: error.message })
