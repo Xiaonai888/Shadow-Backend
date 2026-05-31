@@ -859,6 +859,162 @@ export async function unfollowUser(req, res) {
 const followerUserId = req.user?.user_id
 const username = normalizeUsername(req.params.username)
 
+    function normalizePage(value, fallback = 1) {
+  const number = Number(value)
+
+  if (!Number.isFinite(number) || number <= 0) return fallback
+
+  return Math.floor(number)
+}
+
+function normalizeListLimit(value, fallback = 20, max = 50) {
+  const number = Number(value)
+
+  if (!Number.isFinite(number) || number <= 0) return fallback
+
+  return Math.min(Math.floor(number), max)
+}
+
+function publicFollowUser(user) {
+  return {
+    id: user.id,
+    name: user.name,
+    username: user.username,
+    avatar_url: user.avatar_url || null,
+    bio: user.bio || '',
+    is_author: Boolean(user.is_author),
+  }
+}
+
+async function getUserByUsername(username) {
+  const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('username', username)
+    .eq('is_active', true)
+    .maybeSingle()
+
+  if (error) throw error
+
+  return data
+}
+
+export async function getUserFollowers(req, res) {
+  try {
+    const currentUserId = req.user?.user_id || ''
+    const username = normalizeUsername(req.params.username)
+    const q = String(req.query.q || '').trim()
+    const page = normalizePage(req.query.page)
+    const limit = normalizeListLimit(req.query.limit)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    const targetUser = await getUserByUsername(username)
+
+    if (!targetUser) {
+      return res.status(404).json({ ok: false, message: 'User not found' })
+    }
+
+    const { data, error, count } = await supabase
+      .from('user_follows')
+      .select('follower:users!user_follows_follower_user_id_fkey(id, name, username, avatar_url, bio, is_author)', { count: 'exact' })
+      .eq('following_user_id', targetUser.id)
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (error) throw error
+
+    let users = (data || []).map((item) => item.follower).filter(Boolean)
+
+    if (q) {
+      const keyword = q.toLowerCase()
+      users = users.filter((user) => {
+        return (
+          String(user.name || '').toLowerCase().includes(keyword) ||
+          String(user.username || '').toLowerCase().includes(keyword)
+        )
+      })
+    }
+
+    const usersWithFollowStatus = await Promise.all(
+      users.map(async (user) => ({
+        ...publicFollowUser(user),
+        is_following: await isFollowingUser(currentUserId, user.id),
+      }))
+    )
+
+    return res.status(200).json({
+      ok: true,
+      users: usersWithFollowStatus,
+      page,
+      limit,
+      total: Number(count || 0),
+      has_next: to + 1 < Number(count || 0),
+    })
+  } catch (error) {
+    console.error('GET USER FOLLOWERS ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load followers', error: error.message })
+  }
+}
+
+export async function getUserFollowing(req, res) {
+  try {
+    const currentUserId = req.user?.user_id || ''
+    const username = normalizeUsername(req.params.username)
+    const q = String(req.query.q || '').trim()
+    const page = normalizePage(req.query.page)
+    const limit = normalizeListLimit(req.query.limit)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    const targetUser = await getUserByUsername(username)
+
+    if (!targetUser) {
+      return res.status(404).json({ ok: false, message: 'User not found' })
+    }
+
+    const { data, error, count } = await supabase
+      .from('user_follows')
+      .select('following:users!user_follows_following_user_id_fkey(id, name, username, avatar_url, bio, is_author)', { count: 'exact' })
+      .eq('follower_user_id', targetUser.id)
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (error) throw error
+
+    let users = (data || []).map((item) => item.following).filter(Boolean)
+
+    if (q) {
+      const keyword = q.toLowerCase()
+      users = users.filter((user) => {
+        return (
+          String(user.name || '').toLowerCase().includes(keyword) ||
+          String(user.username || '').toLowerCase().includes(keyword)
+        )
+      })
+    }
+
+    const usersWithFollowStatus = await Promise.all(
+      users.map(async (user) => ({
+        ...publicFollowUser(user),
+        is_following: await isFollowingUser(currentUserId, user.id),
+      }))
+    )
+
+    return res.status(200).json({
+      ok: true,
+      users: usersWithFollowStatus,
+      page,
+      limit,
+      total: Number(count || 0),
+      has_next: to + 1 < Number(count || 0),
+    })
+  } catch (error) {
+    console.error('GET USER FOLLOWING ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load following', error: error.message })
+  }
+}
+
 if (!followerUserId) {
   return res.status(401).json({ ok: false, message: 'Unauthorized' })
 }
