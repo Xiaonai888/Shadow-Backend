@@ -5,6 +5,7 @@ import {
   getPublicUserProfile,
   getUserFollowers,
   getUserFollowing,
+  getUserSuggestions,
   loginUser,
   registerUser,
   requestPasswordReset,
@@ -22,6 +23,7 @@ router.post('/login', loginUser)
 router.post('/forgot-password', requestPasswordReset)
 router.post('/reset-password', resetPassword)
 router.get('/me', requireUser, getCurrentUser)
+router.get('/suggestions', requireUser, getUserSuggestions)
 router.put('/avatar', requireUser, updateUserAvatar)
 router.put('/profile', requireUser, updateUserProfile)
 router.get('/:username/profile', requireUser, getPublicUserProfile)
