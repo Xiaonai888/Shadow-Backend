@@ -27,7 +27,21 @@ function publicAuthorPage(page) {
   }
 }
 
-function publicStory(story, slides = [], authorPage = null) {
+async function getStoryRankByViews(story) {
+  const totalViews = Number(story?.total_views || 0)
+
+  const { count, error } = await supabase
+    .from('stories')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'published')
+    .gt('total_views', totalViews)
+
+  if (error) throw error
+
+  return Number(count || 0) + 1
+}
+
+function publicStory(story, slides = [], authorPage = null, rankByViews = null) {
   if (!story) return null
 
   return {
@@ -80,6 +94,7 @@ function publicStoryListItem(story) {
     update_days: story.update_days || [],
     total_episodes: story.total_episodes,
     total_views: story.total_views,
+    rank_by_views: rankByViews,
     total_likes: story.total_likes,
     total_comments: story.total_comments,
     created_at: story.created_at,
@@ -613,10 +628,12 @@ export async function getPublicShadowExclusiveStories(req, res) {
 
     if (error) throw error
 
-    return res.status(200).json({
-      ok: true,
-      stories: (data || []).map(publicStoryListItem),
-    })
+   const rankByViews = await getStoryRankByViews(story)
+
+return res.status(200).json({
+  ok: true,
+  story: publicStory(story, slides || [], authorPage, rankByViews),
+})
   } catch (error) {
     console.error('GET PUBLIC SHADOW EXCLUSIVE STORIES ERROR:', error)
 
@@ -660,10 +677,12 @@ export async function getPublicStoryById(req, res) {
 
     if (slidesError) throw slidesError
 
-    return res.status(200).json({
-      ok: true,
-      story: publicStory(story, slides || [], authorPage),
-    })
+    const rankByViews = await getStoryRankByViews(story)
+
+return res.status(200).json({
+  ok: true,
+  story: publicStory(story, slides || [], authorPage, rankByViews),
+})
   } catch (error) {
     console.error('GET PUBLIC STORY ERROR:', error)
 
