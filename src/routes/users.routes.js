@@ -1,17 +1,17 @@
-import express from 'express'
 import {
-  getPublicUserProfile,
   followUser,
-  unfollowUser,
   getCurrentUser,
+  getPublicUserProfile,
+  getUserFollowers,
+  getUserFollowing,
   loginUser,
   registerUser,
   requestPasswordReset,
   resetPassword,
+  unfollowUser,
   updateUserAvatar,
   updateUserProfile,
 } from '../controllers/users.controller.js'
-import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
 
@@ -23,6 +23,8 @@ router.get('/me', requireUser, getCurrentUser)
 router.put('/avatar', requireUser, updateUserAvatar)
 router.put('/profile', requireUser, updateUserProfile)
 router.get('/:username/profile', requireUser, getPublicUserProfile)
+router.get('/:username/followers', requireUser, getUserFollowers)
+router.get('/:username/following', requireUser, getUserFollowing)
 router.post('/:username/follow', requireUser, followUser)
 router.delete('/:username/follow', requireUser, unfollowUser)
 
