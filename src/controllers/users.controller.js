@@ -832,6 +832,251 @@ export async function unfollowUser(req, res) {
     return res.status(500).json({ ok: false, message: 'Failed to unfollow user', error: error.message })
   }
 }
+    
+    const name = String(req.body.name || '').trim()
+    const bio = String(req.body.bio || '').trim()
+    const work = String(req.body.work || '').trim()
+    const location = String(req.body.location || '').trim()
+
+    if (!name) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Display name is required',
+      })
+    }
+
+    if (name.length < 2) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Display name must be at least 2 characters',
+      })
+    }
+
+    if (bio.length > 180) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Bio must be 180 characters or less',
+      })
+    }
+
+    if (work.length > 80 || location.length > 80) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Work and location must be 80 characters or less',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('users')
+      .update({
+        name,
+        bio,
+        work,
+        location,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', userId)
+      .eq('is_active', true)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Profile updated',
+      user: publicUser(data),
+    })
+  } catch (error) {
+    console.error('UPDATE USER PROFILE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update profile',
+      error: error.message,
+    })
+  }
+}
+
+export async function getPublicUserProfile(req, res) {
+  try {
+    const currentUserId = req.user?.user_id || ''
+    const username = normalizeUsername(req.params.username)
+
+    if (!username) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Username is required',
+      })
+    }
+
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('username', username)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        message: 'User not found',
+      })
+    }
+
+    const [counts, isFollowing] = await Promise.all([
+      getUserFollowCounts(user.id),
+      isFollowingUser(currentUserId, user.id),
+    ])
+
+    return res.status(200).json({
+      ok: true,
+      user: publicUserProfile(user, counts, isFollowing),
+    })
+  } catch (error) {
+    console.error('GET PUBLIC USER PROFILE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to fetch profile',
+      error: error.message,
+    })
+  }
+}
+
+export async function followUser(req, res) {
+  try {
+    const followerUserId = req.user?.user_id
+    const username = normalizeUsername(req.params.username)
+
+    if (!followerUserId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!username) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Username is required',
+      })
+    }
+
+    const { data: targetUser, error: targetError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('username', username)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (targetError) throw targetError
+
+    if (!targetUser) {
+      return res.status(404).json({
+        ok: false,
+        message: 'User not found',
+      })
+    }
+
+    if (targetUser.id === followerUserId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'You cannot follow yourself',
+      })
+    }
+
+    const { error: followError } = await supabase
+      .from('user_follows')
+      .insert({
+        follower_user_id: followerUserId,
+        following_user_id: targetUser.id,
+      })
+
+    if (followError && followError.code !== '23505') throw followError
+
+    const counts = await getUserFollowCounts(targetUser.id)
+
+    return res.status(200).json({
+      ok: true,
+      message: 'User followed',
+      is_following: true,
+      ...counts,
+    })
+  } catch (error) {
+    console.error('FOLLOW USER ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to follow user',
+      error: error.message,
+    })
+  }
+}
+
+export async function unfollowUser(req, res) {
+  try {
+    const followerUserId = req.user?.user_id
+    const username = normalizeUsername(req.params.username)
+
+    if (!followerUserId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!username) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Username is required',
+      })
+    }
+
+    const { data: targetUser, error: targetError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('username', username)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (targetError) throw targetError
+
+    if (!targetUser) {
+      return res.status(404).json({
+        ok: false,
+        message: 'User not found',
+      })
+    }
+
+    const { error: deleteError } = await supabase
+      .from('user_follows')
+      .delete()
+      .eq('follower_user_id', followerUserId)
+      .eq('following_user_id', targetUser.id)
+
+    if (deleteError) throw deleteError
+
+    const counts = await getUserFollowCounts(targetUser.id)
+
+    return res.status(200).json({
+      ok: true,
+      message: 'User unfollowed',
+      is_following: false,
+      ...counts,
+    })
+  } catch (error) {
+    console.error('UNFOLLOW USER ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to unfollow user',
+      error: error.message,
+    })
+  }
+}
 
 function normalizePage(value, fallback = 1) {
   const number = Number(value)
@@ -849,14 +1094,19 @@ function normalizeListLimit(value, fallback = 20, max = 50) {
   return Math.min(Math.floor(number), max)
 }
 
-function publicFollowUser(user) {
+function publicFollowUser(user, isFollowing = false, isFollowedBy = false) {
   return {
     id: user.id,
     name: user.name,
     username: user.username,
     avatar_url: user.avatar_url || null,
     bio: user.bio || '',
+    work: user.work || '',
+    location: user.location || '',
     is_author: Boolean(user.is_author),
+    is_following: Boolean(isFollowing),
+    is_followed_by: Boolean(isFollowedBy),
+    can_follow_back: Boolean(isFollowedBy && !isFollowing),
   }
 }
 
@@ -873,6 +1123,19 @@ async function getUserByUsername(username) {
   return data
 }
 
+async function enrichFollowUsers(users, currentUserId) {
+  return Promise.all(
+    users.map(async (user) => {
+      const [isFollowing, isFollowedBy] = await Promise.all([
+        isFollowingUser(currentUserId, user.id),
+        isFollowingUser(user.id, currentUserId),
+      ])
+
+      return publicFollowUser(user, isFollowing, isFollowedBy)
+    })
+  )
+}
+
 export async function getUserFollowers(req, res) {
   try {
     const currentUserId = req.user?.user_id || ''
@@ -883,39 +1146,40 @@ export async function getUserFollowers(req, res) {
     const from = (page - 1) * limit
     const to = from + limit - 1
 
-    const targetUser = await getUserByUsername(username)
-
-    if (!targetUser) {
-      return res.status(404).json({ ok: false, message: 'User not found' })
-    }
-
-    const { data, error, count } = await supabase
-      .from('user_follows')
-      .select('follower:users!user_follows_follower_user_id_fkey(id, name, username, avatar_url, bio, is_author)', { count: 'exact' })
-      .eq('following_user_id', targetUser.id)
-      .order('created_at', { ascending: false })
-      .range(from, to)
-
-    if (error) throw error
-
-    let users = (data || []).map((item) => item.follower).filter(Boolean)
-
-    if (q) {
-      const keyword = q.toLowerCase()
-      users = users.filter((user) => {
-        return (
-          String(user.name || '').toLowerCase().includes(keyword) ||
-          String(user.username || '').toLowerCase().includes(keyword)
-        )
+    if (!username) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Username is required',
       })
     }
 
-    const usersWithFollowStatus = await Promise.all(
-      users.map(async (user) => ({
-        ...publicFollowUser(user),
-        is_following: await isFollowingUser(currentUserId, user.id),
-      }))
-    )
+    const targetUser = await getUserByUsername(username)
+
+    if (!targetUser) {
+      return res.status(404).json({
+        ok: false,
+        message: 'User not found',
+      })
+    }
+
+    let query = supabase
+      .from('user_follows')
+      .select('follower:users!user_follows_follower_user_id_fkey(id, name, username, avatar_url, bio, work, location, is_author)', { count: 'exact' })
+      .eq('following_user_id', targetUser.id)
+      .order('created_at', { ascending: false })
+
+    if (q) {
+      query = query.or(`name.ilike.%${q}%,username.ilike.%${q}%`, {
+        foreignTable: 'follower',
+      })
+    }
+
+    const { data, error, count } = await query.range(from, to)
+
+    if (error) throw error
+
+    const users = (data || []).map((item) => item.follower).filter(Boolean)
+    const usersWithFollowStatus = await enrichFollowUsers(users, currentUserId)
 
     return res.status(200).json({
       ok: true,
@@ -927,7 +1191,12 @@ export async function getUserFollowers(req, res) {
     })
   } catch (error) {
     console.error('GET USER FOLLOWERS ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load followers', error: error.message })
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load followers',
+      error: error.message,
+    })
   }
 }
 
@@ -941,39 +1210,40 @@ export async function getUserFollowing(req, res) {
     const from = (page - 1) * limit
     const to = from + limit - 1
 
-    const targetUser = await getUserByUsername(username)
-
-    if (!targetUser) {
-      return res.status(404).json({ ok: false, message: 'User not found' })
-    }
-
-    const { data, error, count } = await supabase
-      .from('user_follows')
-      .select('following:users!user_follows_following_user_id_fkey(id, name, username, avatar_url, bio, is_author)', { count: 'exact' })
-      .eq('follower_user_id', targetUser.id)
-      .order('created_at', { ascending: false })
-      .range(from, to)
-
-    if (error) throw error
-
-    let users = (data || []).map((item) => item.following).filter(Boolean)
-
-    if (q) {
-      const keyword = q.toLowerCase()
-      users = users.filter((user) => {
-        return (
-          String(user.name || '').toLowerCase().includes(keyword) ||
-          String(user.username || '').toLowerCase().includes(keyword)
-        )
+    if (!username) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Username is required',
       })
     }
 
-    const usersWithFollowStatus = await Promise.all(
-      users.map(async (user) => ({
-        ...publicFollowUser(user),
-        is_following: await isFollowingUser(currentUserId, user.id),
-      }))
-    )
+    const targetUser = await getUserByUsername(username)
+
+    if (!targetUser) {
+      return res.status(404).json({
+        ok: false,
+        message: 'User not found',
+      })
+    }
+
+    let query = supabase
+      .from('user_follows')
+      .select('following:users!user_follows_following_user_id_fkey(id, name, username, avatar_url, bio, work, location, is_author)', { count: 'exact' })
+      .eq('follower_user_id', targetUser.id)
+      .order('created_at', { ascending: false })
+
+    if (q) {
+      query = query.or(`name.ilike.%${q}%,username.ilike.%${q}%`, {
+        foreignTable: 'following',
+      })
+    }
+
+    const { data, error, count } = await query.range(from, to)
+
+    if (error) throw error
+
+    const users = (data || []).map((item) => item.following).filter(Boolean)
+    const usersWithFollowStatus = await enrichFollowUsers(users, currentUserId)
 
     return res.status(200).json({
       ok: true,
@@ -985,6 +1255,11 @@ export async function getUserFollowing(req, res) {
     })
   } catch (error) {
     console.error('GET USER FOLLOWING ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load following', error: error.message })
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load following',
+      error: error.message,
+    })
   }
 }
