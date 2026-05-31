@@ -63,7 +63,7 @@ function publicStory(story, slides = [], authorPage = null, rankByViews = null) 
     update_days: story.update_days || [],
     total_episodes: story.total_episodes,
     total_views: story.total_views,
-    rank_by_views: null,
+    rank_by_views: rankByViews,
     total_likes: story.total_likes,
     total_comments: story.total_comments,
     author_page: publicAuthorPage(authorPage),
