@@ -703,154 +703,89 @@ export async function updateUserProfile(req, res) {
       })
     }
 
-    const name = String(req.body.name || '').trim()
-    const bio = String(req.body.bio || '').trim()
-    const work = String(req.body.work || '').trim()
-    const location = String(req.body.location || '').trim()
+    export async function getPublicUserProfile(req, res) {
+  try {
+    const currentUserId = req.user?.user_id || ''
+    const username = normalizeUsername(req.params.username)
 
-    if (!name) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Display name is required',
-      })
+    if (!username) {
+      return res.status(400).json({ ok: false, message: 'Username is required' })
     }
 
-    if (name.length < 2) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Display name must be at least 2 characters',
-      })
-    }
-
-    if (bio.length > 180) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Bio must be 180 characters or less',
-      })
-    }
-
-    if (work.length > 80 || location.length > 80) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Work and location must be 80 characters or less',
-      })
-    }
-
-    const { data, error } = await supabase
+    const { data: user, error } = await supabase
       .from('users')
-      .update({
-        name,
-        bio,
-        work,
-        location,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', userId)
+      .select('*')
+      .eq('username', username)
       .eq('is_active', true)
-      .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
+    if (!user) {
+      return res.status(404).json({ ok: false, message: 'User not found' })
+    }
+
+    const [counts, isFollowing] = await Promise.all([
+      getUserFollowCounts(user.id),
+      isFollowingUser(currentUserId, user.id),
+    ])
+
     return res.status(200).json({
       ok: true,
-      message: 'Profile updated',
-      user: publicUser(data),
+      user: publicUserProfile(user, counts, isFollowing),
     })
   } catch (error) {
-    console.error('UPDATE USER PROFILE ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to update profile',
-      error: error.message,
-    })
-  }
-}
-
-export async function getPublicUserProfile(req, res) {
-  try {
-const currentUserId = req.user?.user_id || ''
-const username = normalizeUsername(req.params.username)
-
-if (!username) {
-  return res.status(400).json({ ok: false, message: 'Username is required' })
-}
-
-const { data: user, error } = await supabase
-  .from('users')
-  .select('*')
-  .eq('username', username)
-  .eq('is_active', true)
-  .maybeSingle()
-
-if (error) throw error
-
-if (!user) {
-  return res.status(404).json({ ok: false, message: 'User not found' })
-}
-
-const [counts, isFollowing] = await Promise.all([
-  getUserFollowCounts(user.id),
-  isFollowingUser(currentUserId, user.id),
-])
-
-return res.status(200).json({
-  ok: true,
-  user: publicUserProfile(user, counts, isFollowing),
-})
-  } catch (error) {
-console.error('GET PUBLIC USER PROFILE ERROR:', error)
-return res.status(500).json({ ok: false, message: 'Failed to fetch profile', error: error.message })
+    console.error('GET PUBLIC USER PROFILE ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to fetch profile', error: error.message })
   }
 }
 
 export async function followUser(req, res) {
   try {
-const followerUserId = req.user?.user_id
-const username = normalizeUsername(req.params.username)
+    const followerUserId = req.user?.user_id
+    const username = normalizeUsername(req.params.username)
 
-if (!followerUserId) {
-  return res.status(401).json({ ok: false, message: 'Unauthorized' })
-}
+    if (!followerUserId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
 
-const { data: targetUser, error: targetError } = await supabase
-  .from('users')
-  .select('*')
-  .eq('username', username)
-  .eq('is_active', true)
-  .maybeSingle()
+    const { data: targetUser, error: targetError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('username', username)
+      .eq('is_active', true)
+      .maybeSingle()
 
-if (targetError) throw targetError
+    if (targetError) throw targetError
 
-if (!targetUser) {
-  return res.status(404).json({ ok: false, message: 'User not found' })
-}
+    if (!targetUser) {
+      return res.status(404).json({ ok: false, message: 'User not found' })
+    }
 
-if (targetUser.id === followerUserId) {
-  return res.status(400).json({ ok: false, message: 'You cannot follow yourself' })
-}
+    if (targetUser.id === followerUserId) {
+      return res.status(400).json({ ok: false, message: 'You cannot follow yourself' })
+    }
 
-const { error: followError } = await supabase
-  .from('user_follows')
-  .insert({
-    follower_user_id: followerUserId,
-    following_user_id: targetUser.id,
-  })
+    const { error: followError } = await supabase
+      .from('user_follows')
+      .insert({
+        follower_user_id: followerUserId,
+        following_user_id: targetUser.id,
+      })
 
-if (followError && followError.code !== '23505') throw followError
+    if (followError && followError.code !== '23505') throw followError
 
-const counts = await getUserFollowCounts(targetUser.id)
+    const counts = await getUserFollowCounts(targetUser.id)
 
-return res.status(200).json({
-  ok: true,
-  message: 'User followed',
-  is_following: true,
-  ...counts,
-})
+    return res.status(200).json({
+      ok: true,
+      message: 'User followed',
+      is_following: true,
+      ...counts,
+    })
   } catch (error) {
-console.error('FOLLOW USER ERROR:', error)
-return res.status(500).json({ ok: false, message: 'Failed to follow user', error: error.message })
+    console.error('FOLLOW USER ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to follow user', error: error.message })
   }
 }
 
@@ -1051,44 +986,5 @@ export async function getUserFollowing(req, res) {
   } catch (error) {
     console.error('GET USER FOLLOWING ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load following', error: error.message })
-  }
-}
-
-if (!followerUserId) {
-  return res.status(401).json({ ok: false, message: 'Unauthorized' })
-}
-
-const { data: targetUser, error: targetError } = await supabase
-  .from('users')
-  .select('*')
-  .eq('username', username)
-  .eq('is_active', true)
-  .maybeSingle()
-
-if (targetError) throw targetError
-
-if (!targetUser) {
-  return res.status(404).json({ ok: false, message: 'User not found' })
-}
-
-const { error: deleteError } = await supabase
-  .from('user_follows')
-  .delete()
-  .eq('follower_user_id', followerUserId)
-  .eq('following_user_id', targetUser.id)
-
-if (deleteError) throw deleteError
-
-const counts = await getUserFollowCounts(targetUser.id)
-
-return res.status(200).json({
-  ok: true,
-  message: 'User unfollowed',
-  is_following: false,
-  ...counts,
-})
-  } catch (error) {
-console.error('UNFOLLOW USER ERROR:', error)
-return res.status(500).json({ ok: false, message: 'Failed to unfollow user', error: error.message })
   }
 }
