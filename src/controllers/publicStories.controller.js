@@ -63,6 +63,7 @@ function publicStory(story, slides = [], authorPage = null, rankByViews = null) 
     update_days: story.update_days || [],
     total_episodes: story.total_episodes,
     total_views: story.total_views,
+    rank_by_views: null,
     total_likes: story.total_likes,
     total_comments: story.total_comments,
     author_page: publicAuthorPage(authorPage),
@@ -628,12 +629,10 @@ export async function getPublicShadowExclusiveStories(req, res) {
 
     if (error) throw error
 
-   const rankByViews = await getStoryRankByViews(story)
-
-return res.status(200).json({
-  ok: true,
-  story: publicStory(story, slides || [], authorPage, rankByViews),
-})
+    return res.status(200).json({
+      ok: true,
+      stories: (data || []).map(publicStoryListItem),
+    })
   } catch (error) {
     console.error('GET PUBLIC SHADOW EXCLUSIVE STORIES ERROR:', error)
 
@@ -719,9 +718,11 @@ export async function getPublicShadowExclusiveStoryById(req, res) {
 
     if (slidesError) throw slidesError
 
+    const rankByViews = await getStoryRankByViews(story)
+
     return res.status(200).json({
       ok: true,
-      story: publicStory(story, slides || [], authorPage),
+      story: publicStory(story, slides || [], authorPage, rankByViews),
     })
   } catch (error) {
     console.error('GET PUBLIC SHADOW EXCLUSIVE STORY ERROR:', error)
