@@ -1133,3 +1133,71 @@ export async function getUserFollowing(req, res) {
     })
   }
 }
+
+export async function getUserSuggestions(req, res) {
+  try {
+    const currentUserId = req.user?.user_id || ''
+    const q = String(req.query.q || '').trim()
+    const page = normalizePage(req.query.page)
+    const limit = normalizeListLimit(req.query.limit)
+    const from = (page - 1) * limit
+    const fetchLimit = limit * 4
+
+    if (!currentUserId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const { data: followingRows, error: followingError } = await supabase
+      .from('user_follows')
+      .select('following_user_id')
+      .eq('follower_user_id', currentUserId)
+
+    if (followingError) throw followingError
+
+    const followingIds = new Set(
+      (followingRows || []).map((item) => item.following_user_id)
+    )
+
+    let query = supabase
+      .from('users')
+      .select('id, name, username, avatar_url, bio, work, location, is_author, created_at')
+      .eq('is_active', true)
+      .neq('id', currentUserId)
+      .order('created_at', { ascending: false })
+      .range(0, fetchLimit - 1)
+
+    if (q) {
+      query = query.or(`name.ilike.%${q}%,username.ilike.%${q}%`)
+    }
+
+    const { data, error } = await query
+
+    if (error) throw error
+
+    const suggestions = (data || [])
+      .filter((user) => !followingIds.has(user.id))
+      .slice(from, from + limit)
+
+    const users = suggestions.map((user) => publicFollowUser(user, false, false))
+
+    return res.status(200).json({
+      ok: true,
+      users,
+      page,
+      limit,
+      total: users.length,
+      has_next: users.length === limit,
+    })
+  } catch (error) {
+    console.error('GET USER SUGGESTIONS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load suggestions',
+      error: error.message,
+    })
+  }
+}
