@@ -4,10 +4,10 @@ import { supabase } from '../config/supabase.js'
 const MAX_LOGIN_ATTEMPTS = 5
 
 const LOCK_DURATIONS = [
-  15 * 60 * 1000,
-  60 * 60 * 1000,
-  6 * 60 * 60 * 1000,
-  24 * 60 * 60 * 1000,
+  1 * 1000,
+  1 * 1000,
+  1 * 1000,
+  1 * 1000,
 ]
 
 const loginAttempts = new Map()
