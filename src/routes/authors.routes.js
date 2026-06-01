@@ -5,7 +5,7 @@ import {
   getFollowedAuthorPages,
   getMyAuthorPage,
   getPublicAuthorPage,
-  getPublicAuthorPage,
+  getTopAuthorPages,
   unfollowAuthorPage,
   updateAuthorAvatar,
   updateAuthorProfileImages,
