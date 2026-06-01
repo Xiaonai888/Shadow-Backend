@@ -312,6 +312,90 @@ export async function unfollowAuthorPage(req, res) {
   }
 }
 
+export async function getFollowedAuthorPages(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const q = String(req.query.q || '').trim()
+    const sort = String(req.query.sort || 'recent')
+    const page = Math.max(1, Number(req.query.page || 1))
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit || 20)))
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const { data: followRows, error: followError, count } = await supabase
+      .from('author_page_follows')
+      .select('author_page_id, created_at', { count: 'exact' })
+      .eq('follower_user_id', userId)
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (followError) throw followError
+
+    const followedAtByPageId = new Map((followRows || []).map((item) => [item.author_page_id, item.created_at]))
+    const authorPageIds = (followRows || []).map((item) => item.author_page_id).filter(Boolean)
+
+    if (!authorPageIds.length) {
+      return res.status(200).json({
+        ok: true,
+        author_pages: [],
+        page,
+        limit,
+        total: Number(count || 0),
+        has_next: false,
+      })
+    }
+
+    let query = supabase
+      .from('author_pages')
+      .select('id, user_id, page_name, page_username, page_slug, bio, avatar_url, cover_url, status, total_stories, total_followers, created_at, updated_at')
+      .in('id', authorPageIds)
+      .eq('status', 'active')
+
+    if (q) {
+      query = query.or(`page_name.ilike.%${q}%,page_username.ilike.%${q}%`)
+    }
+
+    if (sort === 'popular') {
+      query = query.order('total_followers', { ascending: false })
+    } else if (sort === 'updated') {
+      query = query.order('updated_at', { ascending: false })
+    } else {
+      query = query.order('created_at', { ascending: false })
+    }
+
+    const { data: pages, error: pagesError } = await query
+
+    if (pagesError) throw pagesError
+
+    const authorPages = (pages || []).map((pageItem) => ({
+      ...publicAuthorPage(pageItem),
+      followed_at: followedAtByPageId.get(pageItem.id) || null,
+      is_following: true,
+    }))
+
+    return res.status(200).json({
+      ok: true,
+      author_pages: authorPages,
+      page,
+      limit,
+      total: Number(count || 0),
+      has_next: to + 1 < Number(count || 0),
+    })
+  } catch (error) {
+    console.error('GET FOLLOWED AUTHOR PAGES ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load followed authors',
+      error: error.message,
+    })
+  }
+}
+
+
 export async function createAuthorPage(req, res) {
   try {
     const userId = req.user?.user_id
