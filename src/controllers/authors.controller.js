@@ -205,6 +205,36 @@ return res.status(200).json({
   }
 }
 
+export async function getTopAuthorPages(req, res) {
+  try {
+    const limit = Math.min(20, Math.max(1, Number(req.query.limit || 5)))
+
+    const { data, error } = await supabase
+      .from('author_pages')
+      .select('id, user_id, page_name, page_username, page_slug, bio, avatar_url, cover_url, status, total_stories, total_followers, created_at, updated_at')
+      .eq('status', 'active')
+      .order('total_followers', { ascending: false })
+      .order('updated_at', { ascending: false })
+      .limit(limit)
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      author_pages: (data || []).map(publicAuthorPage),
+      limit,
+    })
+  } catch (error) {
+    console.error('GET TOP AUTHOR PAGES ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load top authors',
+      error: error.message,
+    })
+  }
+}
+
 export async function followAuthorPage(req, res) {
   try {
     const userId = req.user?.user_id
