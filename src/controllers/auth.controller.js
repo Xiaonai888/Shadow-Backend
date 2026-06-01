@@ -5,10 +5,10 @@ import { supabase } from '../config/supabase.js'
 const MAX_LOGIN_ATTEMPTS = 5
 
 const LOCK_DURATIONS = [
-  1 * 1000,
-  1 * 1000,
-  1 * 1000,
-  1 * 1000,
+  15 * 60 * 1000,
+  60 * 60 * 1000,
+  6 * 60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
 ]
 
 const loginAttempts = new Map()
@@ -327,7 +327,7 @@ export async function adminForgotPassword(req, res) {
 
     return res.status(500).json({
       ok: false,
-      message: error.message || 'Failed to request admin password reset',
+      message: 'Failed to request admin password reset',
     })
   }
 }
