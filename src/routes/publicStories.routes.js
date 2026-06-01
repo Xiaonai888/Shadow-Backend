@@ -1,5 +1,6 @@
 import express from 'express'
 import {
+  countQualifiedEpisodeView,
   getPublicEpisodeById,
   getPublicShadowExclusiveStories,
   getPublicShadowExclusiveStoryById,
@@ -17,5 +18,6 @@ router.get('/shadow-exclusive/stories/:storyId', getPublicShadowExclusiveStoryBy
 router.get('/stories/:storyId', getPublicStoryById)
 router.get('/stories/:storyId/episodes', getPublicStoryEpisodes)
 router.get('/stories/:storyId/episodes/:episodeId', getPublicEpisodeById)
+router.post('/stories/:storyId/episodes/:episodeId/view', countQualifiedEpisodeView)
 
 export default router
