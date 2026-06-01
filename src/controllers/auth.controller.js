@@ -279,7 +279,7 @@ export async function adminForgotPassword(req, res) {
     }
 
     const { data: admin, error: adminError } = await supabase
-      .from('admins')
+      .from('admin_users')
       .select('id, email')
       .eq('email', email)
       .maybeSingle()
@@ -368,7 +368,7 @@ export async function adminResetPassword(req, res) {
     }
 
     const { data: admin, error: adminError } = await supabase
-      .from('admins')
+      .from('admin_users')
       .select('id, email')
       .eq('email', email)
       .maybeSingle()
