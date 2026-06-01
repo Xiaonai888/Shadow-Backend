@@ -208,8 +208,9 @@ return res.status(200).json({
 export async function getTopAuthorPages(req, res) {
   try {
     const limit = Math.min(20, Math.max(1, Number(req.query.limit || 5)))
+    const userId = getOptionalUserId(req)
 
-    const { data, error } = await supabase
+    const { data: pages, error } = await supabase
       .from('author_pages')
       .select('id, user_id, page_name, page_username, page_slug, bio, avatar_url, cover_url, status, total_stories, total_followers, created_at, updated_at')
       .eq('status', 'active')
@@ -219,9 +220,51 @@ export async function getTopAuthorPages(req, res) {
 
     if (error) throw error
 
+    const authorPageIds = (pages || []).map((page) => page.id).filter(Boolean)
+    const storyCountByAuthorId = new Map()
+    const followingPageIds = new Set()
+
+    if (authorPageIds.length) {
+      const { data: stories, error: storiesError } = await supabase
+        .from('stories')
+        .select('author_id')
+        .in('author_id', authorPageIds)
+        .eq('status', 'published')
+        .is('deleted_at', null)
+
+      if (storiesError) throw storiesError
+
+      for (const story of stories || []) {
+        storyCountByAuthorId.set(story.author_id, Number(storyCountByAuthorId.get(story.author_id) || 0) + 1)
+      }
+
+      if (userId) {
+        const { data: follows, error: followsError } = await supabase
+          .from('author_page_follows')
+          .select('author_page_id')
+          .in('author_page_id', authorPageIds)
+          .eq('follower_user_id', userId)
+
+        if (followsError) throw followsError
+
+        for (const follow of follows || []) {
+          followingPageIds.add(follow.author_page_id)
+        }
+      }
+    }
+
+    const authorPages = (pages || []).map((page) => ({
+      ...publicAuthorPage({
+        ...page,
+        total_stories: Number(storyCountByAuthorId.get(page.id) || 0),
+      }),
+      is_following: followingPageIds.has(page.id),
+      is_owner: Boolean(userId && page.user_id === userId),
+    }))
+
     return res.status(200).json({
       ok: true,
-      author_pages: (data || []).map(publicAuthorPage),
+      author_pages: authorPages,
       limit,
     })
   } catch (error) {
