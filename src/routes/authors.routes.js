@@ -2,6 +2,7 @@ import express from 'express'
 import {
   createAuthorPage,
   followAuthorPage,
+  getFollowedAuthorPages,
   getMyAuthorPage,
   getPublicAuthorPage,
   unfollowAuthorPage,
@@ -22,6 +23,7 @@ router.get('/me', requireUser, getMyAuthorPage)
 router.get('/me/quest', requireUser, getMyAuthorQuest)
 router.get('/me/income', requireUser, getMyAuthorIncome)
 router.get('/me/payment-methods', requireUser, getMyAuthorPaymentMethods)
+router.get('/following', requireUser, getFollowedAuthorPages)
 router.get('/page/:pageUsername', getPublicAuthorPage)
 router.post('/page/:pageUsername/follow', requireUser, followAuthorPage)
 router.delete('/page/:pageUsername/follow', requireUser, unfollowAuthorPage)
