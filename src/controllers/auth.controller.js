@@ -327,7 +327,7 @@ export async function adminForgotPassword(req, res) {
 
     return res.status(500).json({
       ok: false,
-      message: 'Failed to request admin password reset',
+      message: error.message || 'Failed to request admin password reset',
     })
   }
 }
