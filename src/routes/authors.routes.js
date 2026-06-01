@@ -5,6 +5,7 @@ import {
   getFollowedAuthorPages,
   getMyAuthorPage,
   getPublicAuthorPage,
+  getPublicAuthorPage,
   unfollowAuthorPage,
   updateAuthorAvatar,
   updateAuthorProfileImages,
@@ -24,6 +25,7 @@ router.get('/me/quest', requireUser, getMyAuthorQuest)
 router.get('/me/income', requireUser, getMyAuthorIncome)
 router.get('/me/payment-methods', requireUser, getMyAuthorPaymentMethods)
 router.get('/following', requireUser, getFollowedAuthorPages)
+router.get('/top', getTopAuthorPages)
 router.get('/page/:pageUsername', getPublicAuthorPage)
 router.post('/page/:pageUsername/follow', requireUser, followAuthorPage)
 router.delete('/page/:pageUsername/follow', requireUser, unfollowAuthorPage)
