@@ -13,6 +13,14 @@ const LOCK_DURATIONS = [
 
 const loginAttempts = new Map()
 
+const RESET_REQUEST_COOLDOWN_MS = 60 * 1000
+const RESET_REQUEST_15_MIN_MS = 15 * 60 * 1000
+const RESET_REQUEST_24_HOUR_MS = 24 * 60 * 60 * 1000
+const RESET_REQUEST_15_MIN_LIMIT = 3
+const RESET_REQUEST_24_HOUR_LIMIT = 10
+const adminResetRequestAttempts = new Map()
+
+
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase()
 }
@@ -28,6 +36,41 @@ function getClientKey(req, email) {
     'unknown-ip'
 
   return `${ip}:${String(email || '').toLowerCase().trim()}`
+}
+
+function getAdminResetRequestKey(req, email) {
+  const ip =
+    req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+    req.socket?.remoteAddress ||
+    'unknown-ip'
+
+  return `${ip}:${normalizeEmail(email)}`
+}
+
+function checkAdminResetRequestLimit(key) {
+  const now = Date.now()
+  const current = adminResetRequestAttempts.get(key) || []
+  const recent = current.filter((time) => now - time < RESET_REQUEST_24_HOUR_MS)
+  const lastRequest = recent[recent.length - 1] || 0
+  const requestsIn15Minutes = recent.filter((time) => now - time < RESET_REQUEST_15_MIN_MS).length
+
+  if (lastRequest && now - lastRequest < RESET_REQUEST_COOLDOWN_MS) {
+    adminResetRequestAttempts.set(key, recent)
+    return false
+  }
+
+  if (requestsIn15Minutes >= RESET_REQUEST_15_MIN_LIMIT) {
+    adminResetRequestAttempts.set(key, recent)
+    return false
+  }
+
+  if (recent.length >= RESET_REQUEST_24_HOUR_LIMIT) {
+    adminResetRequestAttempts.set(key, recent)
+    return false
+  }
+
+  adminResetRequestAttempts.set(key, [...recent, now])
+  return true
 }
 
 function getLockDuration(lockLevel) {
@@ -275,6 +318,15 @@ export async function adminForgotPassword(req, res) {
       return res.status(400).json({
         ok: false,
         message: 'Valid admin email is required',
+      })
+    }
+
+    const resetRequestKey = getAdminResetRequestKey(req, email)
+
+    if (!checkAdminResetRequestLimit(resetRequestKey)) {
+      return res.status(429).json({
+        ok: false,
+        message: 'Too many reset requests. Please try again later.',
       })
     }
 
