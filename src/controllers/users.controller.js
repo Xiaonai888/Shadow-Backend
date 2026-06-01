@@ -519,7 +519,7 @@ export async function resetPassword(req, res) {
 
     const { data: resetRow, error: resetError } = await supabase
       .from('password_reset_tokens')
-      .select('id, user_id, expires_at, used_at, attempt_count')
+      .select('id, user_id, token_hash, expires_at, used_at, attempt_count')
       .eq('user_id', user.id)
       .is('used_at', null)
       .order('created_at', { ascending: false })
