@@ -116,11 +116,14 @@ function buildPayWayPayload({ tranId, amount, user }) {
 }
 
 function publicWallet(wallet) {
+  const coinBalance = Number(wallet.gem_balance || 0)
+
   return {
     id: wallet.id,
     user_id: wallet.user_id,
     diamond_balance: Number(wallet.diamond_balance || 0),
-    gem_balance: Number(wallet.gem_balance || 0),
+    gem_balance: coinBalance,
+    coin_balance: coinBalance,
     created_at: wallet.created_at,
     updated_at: wallet.updated_at,
   }
@@ -139,6 +142,7 @@ function publicPayment(item) {
     currency: item.currency || 'USD',
     diamonds: Number(item.diamonds || 0),
     bonus_gems: Number(item.bonus_gems || 0),
+    bonus_coins: Number(item.bonus_gems || 0),
     payment_method: item.payment_method || 'aba_khqr',
     qr_string: item.qr_string || '',
     qr_image: item.qr_image || '',
