@@ -206,6 +206,26 @@ function publicStoryListItem(story, accessSummary = null) {
   }
 }
 
+function publicEpisodeListItem(episode) {
+  if (!episode) return null
+
+  return {
+    id: episode.id,
+    story_id: episode.story_id,
+    title: episode.title,
+    cover_url: episode.cover_url,
+    is_adult: episode.is_adult,
+    is_locked: Boolean(episode.is_locked),
+    unlock_methods: episode.unlock_methods || [],
+    status: episode.status,
+    episode_number: episode.episode_number,
+    character_count: episode.character_count,
+    published_at: episode.published_at,
+    created_at: episode.created_at,
+    updated_at: episode.updated_at,
+  }
+}
+
 function publicEpisode(episode) {
   if (!episode) return null
 
