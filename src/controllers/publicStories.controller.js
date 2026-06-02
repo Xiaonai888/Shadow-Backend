@@ -7,6 +7,9 @@ const FALLBACK_UNLOCK_RULES = {
   premium_free_first_episode_unlimited: true,
 }
 
+const WAIT_FREE_DAYS = 7
+const WAIT_FREE_MS = WAIT_FREE_DAYS * 24 * 60 * 60 * 1000
+
 function publicAuthorPage(page) {
   if (!page) return null
 
@@ -75,7 +78,99 @@ function publicStory(story, slides = [], authorPage = null, rankByViews = null) 
   }
 }
 
-function publicStoryListItem(story) {
+function isStoryCompleted(story) {
+  return String(story?.story_status || '').trim().toLowerCase() === 'completed'
+}
+
+function getEpisodePublishedTime(episode) {
+  const value = episode?.published_at || episode?.created_at
+  const time = value ? new Date(value).getTime() : 0
+
+  return Number.isFinite(time) ? time : 0
+}
+
+function isPublicEpisode(episode, now = Date.now()) {
+  const status = String(episode?.status || 'published').trim().toLowerCase()
+
+  if (status && status !== 'published') return false
+
+  const publishedTime = getEpisodePublishedTime(episode)
+
+  if (publishedTime && publishedTime > now) return false
+
+  return true
+}
+
+function isWaitFreeEpisode(episode, now = Date.now()) {
+  const episodeNumber = Number(episode?.episode_number || 0)
+  const publishedTime = getEpisodePublishedTime(episode)
+
+  if (episodeNumber <= 1) return false
+  if (!episode?.is_locked) return false
+  if (!publishedTime) return false
+
+  return now - publishedTime >= 0 && now - publishedTime < WAIT_FREE_MS
+}
+
+function isFreeEpisode(episode, now = Date.now()) {
+  const episodeNumber = Number(episode?.episode_number || 0)
+  const publishedTime = getEpisodePublishedTime(episode)
+
+  if (episodeNumber <= 1) return true
+  if (!episode?.is_locked) return true
+  if (!publishedTime) return false
+
+  return now - publishedTime >= WAIT_FREE_MS
+}
+
+async function getStoryAccessSummaries(storyIds = []) {
+  const ids = [...new Set(storyIds.filter(Boolean))]
+
+  if (!ids.length) return new Map()
+
+  const summaries = new Map(
+    ids.map((id) => [
+      id,
+      {
+        has_wait_free_episode: false,
+        has_free_episode: false,
+        wait_free_episode_count: 0,
+        free_episode_count: 0,
+      },
+    ])
+  )
+
+  const { data, error } = await supabase
+    .from('episodes')
+    .select('story_id, episode_number, is_locked, published_at, created_at, status')
+    .in('story_id', ids)
+
+  if (error) throw error
+
+  const now = Date.now()
+
+  ;(data || []).forEach((episode) => {
+    if (!isPublicEpisode(episode, now)) return
+
+    const summary = summaries.get(episode.story_id)
+
+    if (!summary) return
+
+    if (isWaitFreeEpisode(episode, now)) {
+      summary.has_wait_free_episode = true
+      summary.wait_free_episode_count += 1
+    }
+
+    if (isFreeEpisode(episode, now)) {
+      summary.has_free_episode = true
+      summary.free_episode_count += 1
+    }
+  })
+
+  return summaries
+}
+
+function publicStoryListItem(story, accessSummary = null) {
   if (!story) return null
 
   return {
@@ -101,28 +196,13 @@ function publicStoryListItem(story) {
     rank_by_views: null,
     total_likes: story.total_likes,
     total_comments: story.total_comments,
+    has_wait_free_episode: Boolean(accessSummary?.has_wait_free_episode),
+    has_free_episode: Boolean(accessSummary?.has_free_episode),
+    is_completed: isStoryCompleted(story),
+    wait_free_episode_count: Number(accessSummary?.wait_free_episode_count || 0),
+    free_episode_count: Number(accessSummary?.free_episode_count || 0),
     created_at: story.created_at,
     updated_at: story.updated_at,
-  }
-}
-
-function publicEpisodeListItem(episode) {
-  if (!episode) return null
-
-  return {
-    id: episode.id,
-    story_id: episode.story_id,
-    title: episode.title,
-    cover_url: episode.cover_url,
-    is_adult: episode.is_adult,
-    is_locked: Boolean(episode.is_locked),
-    unlock_methods: episode.unlock_methods || [],
-    status: episode.status,
-    episode_number: episode.episode_number,
-    character_count: episode.character_count,
-    published_at: episode.published_at,
-    created_at: episode.created_at,
-    updated_at: episode.updated_at,
   }
 }
 
@@ -594,10 +674,12 @@ export async function getPublicStories(req, res) {
 
     if (error) throw error
 
-    return res.status(200).json({
-      ok: true,
-      stories: (data || []).map(publicStoryListItem),
-    })
+   const accessSummaries = await getStoryAccessSummaries((data || []).map((story) => story.id))
+
+return res.status(200).json({
+  ok: true,
+  stories: (data || []).map((story) => publicStoryListItem(story, accessSummaries.get(story.id))),
+})
   } catch (error) {
     console.error('GET PUBLIC STORIES ERROR:', error)
 
