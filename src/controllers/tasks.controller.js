@@ -43,9 +43,12 @@ function isPremiumRole(role) {
 }
 
 function publicWallet(wallet) {
+  const coinBalance = Number(wallet?.gem_balance || 0)
+
   return {
     diamond_balance: Number(wallet?.diamond_balance || 0),
-    gem_balance: Number(wallet?.gem_balance || 0),
+    gem_balance: coinBalance,
+    coin_balance: coinBalance,
   }
 }
 
@@ -76,6 +79,7 @@ function publicHistoryItem(item) {
     source_key: item.source_key,
     source_title: item.source_title,
     amount_gems: Number(item.amount_gems || 0),
+    amount_coins: Number(item.amount_gems || 0),
     amount_diamonds: Number(item.amount_diamonds || 0),
     amount_vouchers: Number(item.amount_vouchers || 0),
     story_cards: Number(item.story_cards || 0),
