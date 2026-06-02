@@ -572,6 +572,7 @@ export async function getPublicStories(req, res) {
   .from('stories')
   .select('*')
   .eq('status', 'published')
+  .is('deleted_at', null)
   .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false')
   .limit(limit)
 
