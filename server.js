@@ -28,6 +28,7 @@ import adminCommunityRoutes from './src/routes/adminCommunity.routes.js'
 import tasksRoutes from './src/routes/tasks.routes.js'
 import adminStoriesRoutes from './src/routes/adminStories.routes.js'
 import adminRankingRoutes from './src/routes/adminRanking.routes.js'
+import notificationsRoutes from './src/routes/notifications.routes.js'
 
 dotenv.config()
 
@@ -93,6 +94,7 @@ app.use('/api/unlocks', unlocksRoutes)
 app.use('/api/shadow-mall', shadowMallProductsRoutes)
 app.use('/api/admin/community', adminCommunityRoutes)
 app.use('/api/tasks', tasksRoutes)
+app.use('/api/notifications', notificationsRoutes)
 app.use('/api/admin/stories', adminStoriesRoutes)
 app.use('/api/admin/ranking', adminRankingRoutes)
 
