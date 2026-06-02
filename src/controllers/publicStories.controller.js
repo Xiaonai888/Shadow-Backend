@@ -811,6 +811,7 @@ export async function getPublicEpisodeById(req, res) {
       .eq('id', episodeId)
       .eq('story_id', storyId)
       .eq('status', 'published')
+      .is('deleted_at', null)
       .maybeSingle()
 
     if (error) throw error
@@ -854,6 +855,137 @@ export async function getPublicEpisodeById(req, res) {
           },
         })
       }
+
+      return res.status(200).json({
+        ok: true,
+        locked: false,
+        story: publicStory(story),
+        episode: publicEpisode(episode),
+        free_first_episode: freeAccess,
+        view: {
+          counted: false,
+          reason: 'qualified_view_required',
+        },
+      })
+    }
+
+    const unlocked = freeEpisode || activeUnlock
+
+    if (!unlocked) {
+      return res.status(423).json({
+        ok: false,
+        code: 'EPISODE_LOCKED',
+        message: 'This episode is locked',
+        locked: true,
+        story: publicStory(story),
+        episode: {
+          ...publicEpisodeListItem(episode),
+          content: '',
+        },
+      })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      locked: false,
+      story: publicStory(story),
+      episode: publicEpisode(episode),
+      view: {
+        counted: false,
+        reason: 'qualified_view_required',
+      },
+    })
+  } catch (error) {
+    console.error('GET PUBLIC EPISODE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load episode',
+      error: error.message,
+    })
+  }
+}
+
+export async function countQualifiedEpisodeView(req, res) {
+  try {
+    const { storyId, episodeId } = req.params
+    const user = getOptionalUser(req)
+
+    if (!user?.user_id) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Please login to count view.',
+      })
+    }
+
+    const story = await getPublishedReadableStory(storyId)
+
+    if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    const { data: episode, error } = await supabase
+      .from('episodes')
+      .select('*')
+      .eq('id', episodeId)
+      .eq('story_id', storyId)
+      .eq('status', 'published')
+      .is('deleted_at', null)
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!episode) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Episode not found',
+      })
+    }
+
+    const freeEpisode = isEpisodeFreeForReader(episode)
+    const activeUnlock = await hasActiveEpisodeUnlock({
+      userId: user.user_id,
+      episodeId,
+    })
+
+    if (!freeEpisode && !activeUnlock) {
+      return res.status(423).json({
+        ok: false,
+        code: 'EPISODE_LOCKED',
+        message: 'This episode is locked',
+      })
+    }
+
+    const viewResult = await recordEpisodeView({
+      userId: user.user_id,
+      storyId,
+      episodeId,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      view: viewResult,
+    })
+  } catch (error) {
+    console.error('COUNT QUALIFIED EPISODE VIEW ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to count view',
+      error: error.message,
+    })
+  }
+}
 
       return res.status(200).json({
         ok: true,
