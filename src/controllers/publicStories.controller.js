@@ -34,8 +34,8 @@ async function getStoryRankByViews(story) {
     .from('stories')
     .select('id', { count: 'exact', head: true })
     .eq('status', 'published')
-    .gt('total_views', totalViews)
-
+    .is('deleted_at', null)
+    .maybeSingle()
   if (error) throw error
 
   return Number(count || 0) + 1
@@ -550,6 +550,7 @@ async function getApprovedExclusiveStory(storyId) {
     .select('*')
     .eq('id', storyId)
     .eq('status', 'published')
+    .is('deleted_at', null)
     .eq('is_shadow_exclusive', true)
     .eq('exclusive_status', 'approved')
     .maybeSingle()
@@ -619,6 +620,7 @@ export async function getPublicShadowExclusiveStories(req, res) {
       .from('stories')
       .select('*')
       .eq('status', 'published')
+      .is('deleted_at', null)
       .eq('is_shadow_exclusive', true)
       .eq('exclusive_status', 'approved')
       .limit(limit)
