@@ -985,18 +985,6 @@ export async function countQualifiedEpisodeView(req, res) {
   }
 }
 
-
-      return res.status(200).json({
-  ok: true,
-  locked: false,
-  story: publicStory(story),
-  episode: publicEpisode(episode),
-  view: {
-    counted: false,
-    reason: 'qualified_view_required',
-  },
-})
-
     const unlocked = freeEpisode || activeUnlock
 
     if (!unlocked) {
