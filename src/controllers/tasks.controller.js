@@ -1,13 +1,13 @@
 import { supabase } from '../config/supabase.js'
 
 const DAILY_REWARDS = [
-  { day: 1, gems: 50, story_cards: 0 },
-  { day: 2, gems: 100, story_cards: 0 },
-  { day: 3, gems: 150, story_cards: 0 },
-  { day: 4, gems: 200, story_cards: 0 },
-  { day: 5, gems: 250, story_cards: 0 },
-  { day: 6, gems: 300, story_cards: 0 },
-  { day: 7, gems: 500, story_cards: 1 },
+  { day: 1, gems: 50, coins: 50, story_cards: 0 },
+  { day: 2, gems: 100, coins: 100, story_cards: 0 },
+  { day: 3, gems: 150, coins: 150, story_cards: 0 },
+  { day: 4, gems: 200, coins: 200, story_cards: 0 },
+  { day: 5, gems: 250, coins: 250, story_cards: 0 },
+  { day: 6, gems: 300, coins: 300, story_cards: 0 },
+  { day: 7, gems: 500, coins: 500, story_cards: 1 },
 ]
 
 function getUserId(req) {
