@@ -63,9 +63,12 @@ const PACKAGE_RULES = {
 }
 
 function publicWallet(wallet) {
+  const coinBalance = Number(wallet?.gem_balance || 0)
+
   return {
     diamond_balance: Number(wallet?.diamond_balance || 0),
-    gem_balance: Number(wallet?.gem_balance || 0),
+    gem_balance: coinBalance,
+    coin_balance: coinBalance,
     voucher_balance: Number(wallet?.voucher_balance || 0),
     story_card_balance: Number(wallet?.story_card_balance || 0),
     auto_unlock: Boolean(wallet?.auto_unlock),
@@ -517,15 +520,27 @@ export async function getEpisodeUnlockStatus(req, res) {
         currency: 'diamond',
         amount: getRuleNumber(payload.rules, 'diamond_per_episode'),
       },
-      gem_access: {
-        currency: 'gem',
-        amount: getRuleNumber(payload.rules, 'gem_per_episode'),
-        access_days: getRuleNumber(payload.rules, 'gem_access_days'),
-        available: payload.gemWait.available && payload.gemLimits.daily.allowed && payload.gemLimits.monthly_story.allowed,
-        available_at: payload.gemWait.available_at,
-        wait_seconds: payload.gemWait.wait_seconds,
-        limit_status: payload.gemLimits,
-      },
+     gem_access: {
+  currency: 'gem',
+  display_currency: 'coin',
+  amount: getRuleNumber(payload.rules, 'gem_per_episode'),
+  coin_amount: getRuleNumber(payload.rules, 'gem_per_episode'),
+  access_days: getRuleNumber(payload.rules, 'gem_access_days'),
+  coin_access_days: getRuleNumber(payload.rules, 'gem_access_days'),
+  available: payload.gemWait.available && payload.gemLimits.daily.allowed && payload.gemLimits.monthly_story.allowed,
+  available_at: payload.gemWait.available_at,
+  wait_seconds: payload.gemWait.wait_seconds,
+  limit_status: payload.gemLimits,
+},
+coin_access: {
+  currency: 'coin',
+  amount: getRuleNumber(payload.rules, 'gem_per_episode'),
+  access_days: getRuleNumber(payload.rules, 'gem_access_days'),
+  available: payload.gemWait.available && payload.gemLimits.daily.allowed && payload.gemLimits.monthly_story.allowed,
+  available_at: payload.gemWait.available_at,
+  wait_seconds: payload.gemWait.wait_seconds,
+  limit_status: payload.gemLimits,
+},
       package_options: payload.packageOptions,
       story_unlock_rules: {
         completed: isStoryCompleted(payload.story),
@@ -738,8 +753,9 @@ export async function unlockEpisodeWithGems(req, res) {
     if (Number(payload.wallet.gem_balance || 0) < gemPrice) {
       return res.status(402).json({
         ok: false,
-        code: 'INSUFFICIENT_GEMS',
-        message: 'Not enough Gems',
+        code: 'INSUFFICIENT_COINS',
+        legacy_code: 'INSUFFICIENT_GEMS',
+        message: 'Not enough Coins',
         need: gemPrice - Number(payload.wallet.gem_balance || 0),
         price: gemPrice,
         wallet: publicWallet(payload.wallet),
@@ -774,7 +790,7 @@ export async function unlockEpisodeWithGems(req, res) {
 
     return res.status(200).json({
       ok: true,
-      message: 'Episode unlocked with Gems',
+      message: 'Episode unlocked with Coins',
       unlocked: true,
       access_type: 'temporary',
       expires_at: expiresAt,
@@ -786,7 +802,7 @@ export async function unlockEpisodeWithGems(req, res) {
 
     return res.status(500).json({
       ok: false,
-      message: 'Failed to unlock episode with Gems',
+      message: 'Failed to unlock episode with Coins',
       error: error.message,
     })
   }
