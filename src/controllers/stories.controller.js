@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { blockedWordsWarningPayload, findBlockedWordsInContent } from '../utils/blockedWords.js'
 
 const ALLOWED_LANGUAGES = ['Khmer', 'English', 'Chinese', 'Japanese', 'Korean']
 const ALLOWED_UPDATE_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
@@ -945,6 +946,19 @@ export async function updateEpisodeStatus(req, res) {
         message: 'Invalid publish status',
       })
     }
+
+    if (['published', 'scheduled'].includes(status)) {
+  const blockedMatches = await findBlockedWordsInContent([
+    { label: 'Story Title', value: story.title },
+    { label: 'Story Description', value: story.description },
+    { label: 'Episode Title', value: episode.title },
+    { label: 'Episode Content', value: episode.content },
+  ])
+
+  if (blockedMatches.length) {
+    return res.status(422).json(blockedWordsWarningPayload(blockedMatches))
+  }
+}
 
     const updatePayload = {
       status,
