@@ -1,6 +1,7 @@
 import express from 'express'
 import {
   createStoryComment,
+  getMyCommentActivities,
   getStoryComments,
   moderateComment,
   updateOwnComment,
@@ -9,6 +10,7 @@ import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
 
+router.get('/me/activities', requireUser, getMyCommentActivities)
 router.get('/story/:storyId', getStoryComments)
 router.post('/story/:storyId', requireUser, createStoryComment)
 router.patch('/:commentId', requireUser, updateOwnComment)
