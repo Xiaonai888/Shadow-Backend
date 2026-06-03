@@ -402,7 +402,7 @@ export async function updateAdminAnnouncement(req, res) {
 
     const { data: existing, error: findError } = await supabase
       .from('notifications')
-      .select('reference_id, target_type, title')
+      .select('reference_id, title')
       .eq('type', 'announcements')
       .eq('reference_id', referenceId)
       .is('deleted_at', null)
