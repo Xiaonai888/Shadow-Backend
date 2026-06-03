@@ -19,7 +19,6 @@ async function cleanupOldNotifications(userId) {
   }
 }
 
-
 function normalizeType(value) {
   const type = String(value || '').trim().toLowerCase()
   return ['community', 'announcements'].includes(type) ? type : 'announcements'
@@ -32,6 +31,7 @@ function publicNotification(item) {
     type: item.type,
     title: item.title,
     message: item.message,
+    image_url: item.image_url || '',
     link: item.link || '',
     reference_id: item.reference_id || '',
     is_read: Boolean(item.is_read),
@@ -62,8 +62,9 @@ export async function getMyNotifications(req, res) {
 
     let query = supabase
       .from('notifications')
-      .select('id, user_id, type, title, message, link, reference_id, is_read, created_at, read_at')
+      .select('id, user_id, type, title, message, image_url, link, reference_id, is_read, created_at, read_at')
       .eq('user_id', userId)
+      .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(80)
 
@@ -81,6 +82,7 @@ export async function getMyNotifications(req, res) {
       .from('notifications')
       .select('id, type, is_read')
       .eq('user_id', userId)
+      .is('deleted_at', null)
       .limit(500)
 
     if (countError) throw countError
@@ -116,6 +118,7 @@ export async function getMyNotificationUnreadCount(req, res) {
       .select('id', { count: 'exact', head: true })
       .eq('user_id', userId)
       .eq('is_read', false)
+      .is('deleted_at', null)
 
     if (error) throw error
 
@@ -155,7 +158,8 @@ export async function markNotificationAsRead(req, res) {
       })
       .eq('id', notificationId)
       .eq('user_id', userId)
-      .select('id, user_id, type, title, message, link, reference_id, is_read, created_at, read_at')
+      .is('deleted_at', null)
+      .select('id, user_id, type, title, message, image_url, link, reference_id, is_read, created_at, read_at')
       .maybeSingle()
 
     if (error) throw error
@@ -195,6 +199,7 @@ export async function markAllNotificationsAsRead(req, res) {
       })
       .eq('user_id', userId)
       .eq('is_read', false)
+      .is('deleted_at', null)
 
     if (error) throw error
 
@@ -213,7 +218,7 @@ export async function markAllNotificationsAsRead(req, res) {
   }
 }
 
-export async function createNotification({ userId, type, title, message, link = '', referenceId = '' }) {
+export async function createNotification({ userId, type, title, message, imageUrl = '', link = '', referenceId = '' }) {
   if (!userId || !title || !message) return null
 
   const { data, error } = await supabase
@@ -223,11 +228,12 @@ export async function createNotification({ userId, type, title, message, link = 
       type: normalizeType(type),
       title: String(title || '').trim(),
       message: String(message || '').trim(),
+      image_url: String(imageUrl || '').trim(),
       link: String(link || '').trim(),
       reference_id: String(referenceId || '').trim(),
       is_read: false,
     })
-    .select('id, user_id, type, title, message, link, reference_id, is_read, created_at, read_at')
+    .select('id, user_id, type, title, message, image_url, link, reference_id, is_read, created_at, read_at')
     .single()
 
   if (error) {
