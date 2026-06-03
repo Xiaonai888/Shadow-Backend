@@ -101,6 +101,14 @@ function getReaderTier(req) {
   return normalizeTier(req.user?.reader_tier || req.user?.subscription_tier || req.user?.membership_tier || req.user?.role)
 }
 
+function getEpisodeAdPolicy({ tier, unlock, freeEpisode }) {
+  if (tier === 'premium') return { show_read_ad: false, reason: 'premium' }
+  if (unlock?.unlock_type === 'diamond') return { show_read_ad: false, reason: 'diamond_unlock' }
+  if (unlock?.unlock_type === 'gem' || unlock?.unlock_type === 'coin') return { show_read_ad: true, reason: 'coin_unlock' }
+  if (freeEpisode) return { show_read_ad: true, reason: 'free_episode' }
+  return { show_read_ad: true, reason: 'free_access' }
+}
+
 function startOfTodayIso() {
   const date = new Date()
   date.setHours(0, 0, 0, 0)
@@ -547,6 +555,11 @@ coin_access: {
         all_released_minimum_episodes: 70,
       },
       wallet: publicWallet(payload.wallet),
+      ad_policy: getEpisodeAdPolicy({
+  tier,
+  unlock: payload.unlock,
+  freeEpisode: payload.freeEpisode,
+}),
     })
   } catch (error) {
     console.error('GET EPISODE UNLOCK STATUS ERROR:', error)
