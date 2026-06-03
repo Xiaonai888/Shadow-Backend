@@ -422,12 +422,73 @@ function publicMyCommentActivity(comment, storyMap, type) {
     story_id: comment.story_id,
     parent_id: comment.parent_id,
     text: comment.text,
+    message: comment.text,
+    link: `/story/${comment.story_id}`,
     is_hidden: Boolean(comment.is_hidden),
+    is_read: true,
+    notification_id: null,
     created_at: comment.created_at,
     updated_at: comment.updated_at,
     story,
   }
 }
+
+async function getMyOwnComments(userId) {
+  const { data, error } = await supabase
+    .from('comments')
+    .select('id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at')
+    .eq('user_id', userId)
+    .eq('is_hidden', false)
+    .order('created_at', { ascending: false })
+    .limit(80)
+
+  if (error) throw error
+  return data || []
+}
+
+async function getMyReplies(userId) {
+  const { data: parents, error: parentError } = await supabase
+    .from('comments')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('is_hidden', false)
+    .limit(300)
+
+  if (parentError) throw parentError
+
+  const parentIds = (parents || []).map((item) => item.id)
+  if (!parentIds.length) return []
+
+  const { data, error } = await supabase
+    .from('comments')
+    .select('id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at')
+    .in('parent_id', parentIds)
+    .neq('user_id', userId)
+    .eq('is_hidden', false)
+    .order('created_at', { ascending: false })
+    .limit(80)
+
+  if (error) throw error
+  return data || []
+}
+
+async function getMyMentions(userId, username) {
+  const cleanUsername = String(username || '').trim()
+  if (!cleanUsername) return []
+
+  const { data, error } = await supabase
+    .from('comments')
+    .select('id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at')
+    .ilike('text', `%@${cleanUsername}%`)
+    .neq('user_id', userId)
+    .eq('is_hidden', false)
+    .order('created_at', { ascending: false })
+    .limit(80)
+
+  if (error) throw error
+  return data || []
+}
+
 
 export async function getMyCommentActivities(req, res) {
   try {
