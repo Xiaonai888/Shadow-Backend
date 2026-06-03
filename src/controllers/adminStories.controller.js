@@ -270,7 +270,7 @@ export async function getAdminStoryById(req, res) {
     if (storyError) throw storyError
     if (!story) return res.status(404).json({ ok: false, message: 'Story not found' })
 
-    const [{ data: episodes, error: episodesError }, { data: logs, error: logsError }, authors] = await Promise.all([
+    const [{ data: episodes, error: episodesError }, { data: logs, error: logsError }, { data: slides, error: slidesError }, authors] = await Promise.all([
       supabase
         .from('episodes')
         .select('id, story_id, title, status, episode_number, character_count, word_count, total_likes, total_views, published_at, scheduled_at, deleted_at, delete_expires_at, created_at, updated_at')
@@ -282,25 +282,32 @@ export async function getAdminStoryById(req, res) {
         .eq('story_id', storyId)
         .order('created_at', { ascending: false })
         .limit(50),
+      supabase
+        .from('story_carousel_slides')
+        .select('*')
+        .eq('story_id', storyId)
+        .order('sort_order', { ascending: true })
+        .limit(5),
       fetchAuthors([story.author_id]),
     ])
 
     if (episodesError) throw episodesError
     if (logsError) throw logsError
+    if (slidesError) throw slidesError
 
-    const slides = extractStorySlides(story)
-const storyData = publicStory(story, authors.get(story.author_id))
+    const storySlides = slides || []
+    const storyData = publicStory(story, authors.get(story.author_id))
 
-return res.status(200).json({
-  ok: true,
-  story: {
-    ...storyData,
-    slides,
-  },
-  slides,
-  episodes: episodes || [],
-  moderation_logs: logs || [],
-})
+    return res.status(200).json({
+      ok: true,
+      story: {
+        ...storyData,
+        slides: storySlides,
+      },
+      slides: storySlides,
+      episodes: episodes || [],
+      moderation_logs: logs || [],
+    })
   } catch (error) {
     console.error('GET ADMIN STORY BY ID ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load story details', error: error.message })
