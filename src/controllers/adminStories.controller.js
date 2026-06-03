@@ -102,6 +102,35 @@ function publicStory(story, author = null) {
   }
 }
 
+function extractStorySlides(story) {
+  const possibleSlides = story?.slides || story?.slide_urls || story?.story_slides || story?.images
+
+  if (Array.isArray(possibleSlides)) {
+    return possibleSlides
+      .map((item, index) => {
+        if (typeof item === 'string') {
+          return { id: `slide-${index + 1}`, image_url: item, order_index: index + 1 }
+        }
+
+        return {
+          id: item.id || `slide-${index + 1}`,
+          image_url: item.image_url || item.slide_url || item.url || item.cover_url || '',
+          order_index: item.order_index || item.sort_order || index + 1,
+        }
+      })
+      .filter((item) => item.image_url)
+      .slice(0, 5)
+  }
+
+  return [
+    story?.slide_1_url ? { id: 'slide-1', image_url: story.slide_1_url, order_index: 1 } : null,
+    story?.slide_2_url ? { id: 'slide-2', image_url: story.slide_2_url, order_index: 2 } : null,
+    story?.slide_3_url ? { id: 'slide-3', image_url: story.slide_3_url, order_index: 3 } : null,
+    story?.slide_4_url ? { id: 'slide-4', image_url: story.slide_4_url, order_index: 4 } : null,
+    story?.slide_5_url ? { id: 'slide-5', image_url: story.slide_5_url, order_index: 5 } : null,
+  ].filter(Boolean)
+}
+
 async function fetchAuthors(authorIds) {
   const ids = [...new Set((authorIds || []).filter(Boolean))]
   if (!ids.length) return new Map()
@@ -259,12 +288,19 @@ export async function getAdminStoryById(req, res) {
     if (episodesError) throw episodesError
     if (logsError) throw logsError
 
-    return res.status(200).json({
-      ok: true,
-      story: publicStory(story, authors.get(story.author_id)),
-      episodes: episodes || [],
-      moderation_logs: logs || [],
-    })
+    const slides = extractStorySlides(story)
+const storyData = publicStory(story, authors.get(story.author_id))
+
+return res.status(200).json({
+  ok: true,
+  story: {
+    ...storyData,
+    slides,
+  },
+  slides,
+  episodes: episodes || [],
+  moderation_logs: logs || [],
+})
   } catch (error) {
     console.error('GET ADMIN STORY BY ID ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load story details', error: error.message })
