@@ -1,6 +1,7 @@
 import express from 'express'
 import multer from 'multer'
 import {
+  getAdminAdvertisementLogs,
   getAdminAdvertisements,
   getPublicAdvertisement,
   updateAdminAdvertisement,
@@ -17,7 +18,8 @@ const upload = multer({
 })
 
 router.get('/public', getPublicAdvertisement)
-router.get('/admin', requireAdmin, getAdminAdvertisements)
+router.get('/admin', requireAdmin, getAdminAdvertisements).
+router.get('/admin/logs', requireAdmin, getAdminAdvertisementLogs)
 router.put('/admin/:placement', requireAdmin, upload.single('image'), updateAdminAdvertisement)
 
 export default router
