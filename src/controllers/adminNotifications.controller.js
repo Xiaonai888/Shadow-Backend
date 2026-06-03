@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'media'
 
 function normalizeText(value) {
   return String(value || '').trim()
@@ -196,6 +197,50 @@ async function cleanupOldRecords() {
 
   if (error) {
     console.error('CLEANUP NOTIFICATION RECORDS ERROR:', error)
+  }
+}
+
+export async function uploadAdminNotificationImage(req, res) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ ok: false, message: 'Image file is required' })
+    }
+
+    if (!String(req.file.mimetype || '').startsWith('image/')) {
+      return res.status(400).json({ ok: false, message: 'Only image files are allowed' })
+    }
+
+    const originalName = req.file.originalname || 'notification-image'
+    const fileExt = originalName.includes('.') ? originalName.split('.').pop() : 'jpg'
+    const safeExt = fileExt.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
+    const fileName = `notifications/${Date.now()}-${Math.random().toString(36).slice(2)}.${safeExt}`
+
+    const { error: uploadError } = await supabase.storage
+      .from(BUCKET)
+      .upload(fileName, req.file.buffer, {
+        contentType: req.file.mimetype,
+        cacheControl: '3600',
+        upsert: false,
+      })
+
+    if (uploadError) throw uploadError
+
+    const { data: publicUrlData } = supabase.storage
+      .from(BUCKET)
+      .getPublicUrl(fileName)
+
+    return res.status(201).json({
+      ok: true,
+      image_url: publicUrlData.publicUrl,
+    })
+  } catch (error) {
+    console.error('UPLOAD NOTIFICATION IMAGE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to upload notification image',
+      error: error.message,
+    })
   }
 }
 
