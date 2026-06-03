@@ -398,3 +398,134 @@ export async function moderateComment(req, res) {
     })
   }
 }
+
+async function fetchStoryMap(storyIds) {
+  const ids = [...new Set((storyIds || []).filter(Boolean))]
+  if (!ids.length) return new Map()
+
+  const { data, error } = await supabase
+    .from('stories')
+    .select('id, title, cover_url')
+    .in('id', ids)
+
+  if (error) throw error
+
+  return new Map((data || []).map((story) => [story.id, story]))
+}
+
+function publicMyCommentActivity(comment, storyMap, type) {
+  const story = storyMap.get(comment.story_id) || null
+
+  return {
+    id: comment.id,
+    activity_type: type,
+    story_id: comment.story_id,
+    parent_id: comment.parent_id,
+    text: comment.text,
+    is_hidden: Boolean(comment.is_hidden),
+    created_at: comment.created_at,
+    updated_at: comment.updated_at,
+    story,
+  }
+}
+
+export async function getMyCommentActivities(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const filter = String(req.query.filter || 'mine').trim().toLowerCase()
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, username, name')
+      .eq('id', userId)
+      .maybeSingle()
+
+    if (userError) throw userError
+
+    let activities = []
+
+    if (filter === 'replies') {
+      const { data: parents, error: parentError } = await supabase
+        .from('comments')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('is_hidden', false)
+        .limit(300)
+
+      if (parentError) throw parentError
+
+      const parentIds = (parents || []).map((item) => item.id)
+
+      if (parentIds.length) {
+        const { data, error } = await supabase
+          .from('comments')
+          .select('id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at')
+          .in('parent_id', parentIds)
+          .neq('user_id', userId)
+          .eq('is_hidden', false)
+          .order('created_at', { ascending: false })
+          .limit(80)
+
+        if (error) throw error
+        activities = data || []
+      }
+    } else if (filter === 'mentions') {
+      const username = String(user?.username || '').trim()
+
+      if (username) {
+        const { data, error } = await supabase
+          .from('comments')
+          .select('id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at')
+          .ilike('text', `%@${username}%`)
+          .neq('user_id', userId)
+          .eq('is_hidden', false)
+          .order('created_at', { ascending: false })
+          .limit(80)
+
+        if (error) throw error
+        activities = data || []
+      }
+    } else {
+      const { data, error } = await supabase
+        .from('comments')
+        .select('id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at')
+        .eq('user_id', userId)
+        .eq('is_hidden', false)
+        .order('created_at', { ascending: false })
+        .limit(80)
+
+      if (error) throw error
+      activities = data || []
+    }
+
+    const storyMap = await fetchStoryMap(activities.map((item) => item.story_id))
+
+    return res.status(200).json({
+      ok: true,
+      filter,
+      activities: activities.map((item) => publicMyCommentActivity(item, storyMap, filter === 'mine' ? 'mine' : filter.slice(0, -1))),
+      counts: {
+        all: 0,
+        mine: filter === 'mine' ? activities.length : 0,
+        replies: filter === 'replies' ? activities.length : 0,
+        mentions: filter === 'mentions' ? activities.length : 0,
+      },
+    })
+  } catch (error) {
+    console.error('GET MY COMMENT ACTIVITIES ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load comment activity',
+      error: error.message,
+    })
+  }
+}
+
