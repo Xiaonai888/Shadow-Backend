@@ -30,6 +30,37 @@ function publicAd(item) {
   }
 }
 
+function getAdminActor(req) {
+  return req.admin?.username || req.admin?.email || req.user?.username || req.user?.email || 'Admin'
+}
+
+function getAdvertisementAction(payload) {
+  if (payload.enabled) return 'UPDATE'
+  return 'DISABLE'
+}
+
+function getAdvertisementDetails(payload) {
+  const placementLabel = payload.placement === 'freeUnlock'
+    ? 'Free Unlock & Read Ad'
+    : payload.placement === 'opening'
+      ? 'Opening Ad'
+      : 'Splash Logo Ad'
+
+  return `${placementLabel} updated. Status: ${payload.enabled ? 'Enabled' : 'Disabled'}. Frequency: ${payload.frequency || 'once_per_session'}.`
+}
+
+async function createAdvertisementLog(req, payload) {
+  await supabase.from('shadow_advertisement_logs').insert({
+    placement: payload.placement,
+    action: getAdvertisementAction(payload),
+    details: getAdvertisementDetails(payload),
+    actor: getAdminActor(req),
+    image_url: payload.image_url || '',
+    frequency: payload.frequency || '',
+    enabled: Boolean(payload.enabled),
+  })
+}
+
 async function uploadAdvertisementImage(file, placement) {
   if (!file) return ''
 
@@ -108,6 +139,52 @@ export async function getAdminAdvertisements(req, res) {
   }
 }
 
+export async function getAdminAdvertisementLogs(req, res) {
+  try {
+    const page = Math.max(1, Number(req.query.page || 1))
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit || 20)))
+    const placement = normalizeText(req.query.placement)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    let query = supabase
+      .from('shadow_advertisement_logs')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (allowedPlacements.includes(placement)) {
+      query = query.eq('placement', placement)
+    }
+
+    const { data, error, count } = await query
+
+    if (error) throw error
+
+    const total = Number(count || 0)
+    const totalPages = Math.max(1, Math.ceil(total / limit))
+
+    return res.status(200).json({
+      ok: true,
+      logs: data || [],
+      page,
+      limit,
+      total,
+      total_pages: totalPages,
+      has_next: page < totalPages,
+      has_prev: page > 1,
+    })
+  } catch (error) {
+    console.error('GET ADMIN ADVERTISEMENT LOGS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load advertisement logs',
+      error: error.message,
+    })
+  }
+}
+
 export async function updateAdminAdvertisement(req, res) {
   try {
     const placement = normalizeText(req.params.placement)
@@ -142,9 +219,13 @@ export async function updateAdminAdvertisement(req, res) {
       .select('placement, enabled, image_url, link_url, duration_seconds, close_after_seconds, frequency, created_at, updated_at')
       .single()
 
-    if (error) throw error
+   if (error) throw error
 
-    return res.status(200).json({
+await createAdvertisementLog(req, data).catch((logError) => {
+  console.error('CREATE ADVERTISEMENT LOG ERROR:', logError)
+})
+
+return res.status(200).json({
       ok: true,
       advertisement: data,
     })
