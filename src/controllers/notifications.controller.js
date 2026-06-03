@@ -1,5 +1,25 @@
 import { supabase } from '../config/supabase.js'
 
+const NOTIFICATION_RETENTION_DAYS = 90
+
+async function cleanupOldNotifications(userId) {
+  if (!userId) return
+
+  const cutoffDate = new Date()
+  cutoffDate.setDate(cutoffDate.getDate() - NOTIFICATION_RETENTION_DAYS)
+
+  const { error } = await supabase
+    .from('notifications')
+    .delete()
+    .eq('user_id', userId)
+    .lt('created_at', cutoffDate.toISOString())
+
+  if (error) {
+    console.error('CLEANUP OLD NOTIFICATIONS ERROR:', error)
+  }
+}
+
+
 function normalizeType(value) {
   const type = String(value || '').trim().toLowerCase()
   return ['community', 'announcements'].includes(type) ? type : 'announcements'
@@ -37,6 +57,8 @@ export async function getMyNotifications(req, res) {
     if (!userId) {
       return res.status(401).json({ ok: false, message: 'Unauthorized' })
     }
+
+    await cleanupOldNotifications(userId)
 
     let query = supabase
       .from('notifications')
@@ -86,6 +108,8 @@ export async function getMyNotificationUnreadCount(req, res) {
     if (!userId) {
       return res.status(401).json({ ok: false, message: 'Unauthorized' })
     }
+
+    await cleanupOldNotifications(userId)
 
     const { count, error } = await supabase
       .from('notifications')
