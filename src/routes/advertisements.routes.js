@@ -1,4 +1,5 @@
 import express from 'express'
+import multer from 'multer'
 import {
   getAdminAdvertisements,
   getPublicAdvertisement,
@@ -8,8 +9,15 @@ import { requireAdmin } from '../middleware/auth.middleware.js'
 
 const router = express.Router()
 
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+})
+
 router.get('/public', getPublicAdvertisement)
 router.get('/admin', requireAdmin, getAdminAdvertisements)
-router.put('/admin/:placement', requireAdmin, updateAdminAdvertisement)
+router.put('/admin/:placement', requireAdmin, upload.single('image'), updateAdminAdvertisement)
 
 export default router
