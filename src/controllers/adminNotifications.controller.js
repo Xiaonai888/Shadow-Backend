@@ -31,13 +31,34 @@ function targetLabel(type) {
   return 'All readers'
 }
 
+function getAdminIdentity(req) {
+  const admin = req.admin || {}
+  return {
+    admin_id: String(admin.id || admin.admin_id || admin.user_id || admin.email || admin.username || ''),
+    admin_email: String(admin.email || admin.username || ''),
+  }
+}
+
+function clampPage(value) {
+  const page = Number.parseInt(value, 10)
+  return Number.isFinite(page) && page > 0 ? page : 1
+}
+
+function clampLimit(value, fallback, max) {
+  const limit = Number.parseInt(value, 10)
+  if (!Number.isFinite(limit) || limit < 1) return fallback
+  return Math.min(limit, max)
+}
+
 function publicAnnouncement(item) {
   return {
     reference_id: item.reference_id || item.id,
     title: item.title,
     message: item.message,
+    image_url: item.image_url || '',
     link: item.link || '',
     created_at: item.created_at,
+    deleted_at: item.deleted_at || null,
     recipient_count: Number(item.recipient_count || 0),
     unread_count: Number(item.unread_count || 0),
     target_type: item.target_type || 'all',
@@ -144,16 +165,61 @@ async function resolveRecipients({ targetType, recipient, recipients }) {
   }
 }
 
+async function createRecord(req, { action, referenceId, title, targetType = 'all', recipientCount = 0 }) {
+  const identity = getAdminIdentity(req)
+
+  const { error } = await supabase
+    .from('notification_admin_records')
+    .insert({
+      action,
+      reference_id: referenceId,
+      title,
+      target_type: targetType,
+      recipient_count: Number(recipientCount || 0),
+      admin_id: identity.admin_id,
+      admin_email: identity.admin_email,
+    })
+
+  if (error) {
+    console.error('CREATE NOTIFICATION ADMIN RECORD ERROR:', error)
+  }
+}
+
+async function cleanupOldRecords() {
+  const cutoffDate = new Date()
+  cutoffDate.setDate(cutoffDate.getDate() - 90)
+
+  const { error } = await supabase
+    .from('notification_admin_records')
+    .delete()
+    .lt('created_at', cutoffDate.toISOString())
+
+  if (error) {
+    console.error('CLEANUP NOTIFICATION RECORDS ERROR:', error)
+  }
+}
+
 export async function getAdminAnnouncements(req, res) {
   try {
+    const page = clampPage(req.query.page)
+    const limit = clampLimit(req.query.limit, 5, 20)
+    const status = String(req.query.status || 'active').trim().toLowerCase()
     const totalReaders = await getTotalReaderCount()
 
-    const { data, error } = await supabase
+    let query = supabase
       .from('notifications')
-      .select('id, type, title, message, link, reference_id, is_read, created_at')
+      .select('id, type, title, message, image_url, link, reference_id, is_read, created_at, deleted_at')
       .eq('type', 'announcements')
       .order('created_at', { ascending: false })
-      .limit(500)
+      .limit(10000)
+
+    if (status === 'deleted') {
+      query = query.not('deleted_at', 'is', null)
+    } else {
+      query = query.is('deleted_at', null)
+    }
+
+    const { data, error } = await query
 
     if (error) throw error
 
@@ -167,8 +233,10 @@ export async function getAdminAnnouncements(req, res) {
           reference_id: key,
           title: item.title,
           message: item.message,
+          image_url: item.image_url || '',
           link: item.link || '',
           created_at: item.created_at,
+          deleted_at: item.deleted_at || null,
           recipient_count: 0,
           unread_count: 0,
           target_type: 'all',
@@ -181,9 +249,22 @@ export async function getAdminAnnouncements(req, res) {
       record.target_type = inferTargetType(key, record.recipient_count, totalReaders)
     })
 
+    const allAnnouncements = Array.from(grouped.values()).map(publicAnnouncement)
+    const total = allAnnouncements.length
+    const totalPages = Math.max(1, Math.ceil(total / limit))
+    const safePage = Math.min(page, totalPages)
+    const start = (safePage - 1) * limit
+    const announcements = allAnnouncements.slice(start, start + limit)
+
     return res.status(200).json({
       ok: true,
-      announcements: Array.from(grouped.values()).map(publicAnnouncement).slice(0, 50),
+      announcements,
+      page: safePage,
+      limit,
+      total,
+      total_pages: totalPages,
+      has_next: safePage < totalPages,
+      has_prev: safePage > 1,
       total_readers: totalReaders,
     })
   } catch (error) {
@@ -201,6 +282,7 @@ export async function createAdminAnnouncement(req, res) {
   try {
     const title = normalizeText(req.body.title)
     const message = normalizeText(req.body.message)
+    const imageUrl = normalizeText(req.body.image_url)
     const link = normalizeText(req.body.link)
     const targetType = normalizeTargetType(req.body.target_type)
     const recipient = normalizeText(req.body.recipient)
@@ -242,6 +324,7 @@ export async function createAdminAnnouncement(req, res) {
       type: 'announcements',
       title,
       message,
+      image_url: imageUrl,
       link,
       reference_id: referenceId,
       is_read: false,
@@ -258,6 +341,14 @@ export async function createAdminAnnouncement(req, res) {
       insertedCount += chunk.length
     }
 
+    await createRecord(req, {
+      action: 'SEND',
+      referenceId,
+      title,
+      targetType,
+      recipientCount: insertedCount,
+    })
+
     return res.status(201).json({
       ok: true,
       message: resolved.notFound.length
@@ -267,6 +358,7 @@ export async function createAdminAnnouncement(req, res) {
         reference_id: referenceId,
         title,
         message,
+        image_url: imageUrl,
         link,
         target_type: targetType,
         target_label: targetLabel(targetType),
@@ -283,6 +375,192 @@ export async function createAdminAnnouncement(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to send announcement',
+      error: error.message,
+    })
+  }
+}
+
+export async function updateAdminAnnouncement(req, res) {
+  try {
+    const referenceId = normalizeText(req.params.referenceId)
+    const title = normalizeText(req.body.title)
+    const message = normalizeText(req.body.message)
+    const imageUrl = normalizeText(req.body.image_url)
+    const link = normalizeText(req.body.link)
+
+    if (!referenceId) {
+      return res.status(400).json({ ok: false, message: 'Announcement reference is required' })
+    }
+
+    if (!title) {
+      return res.status(400).json({ ok: false, message: 'Title is required' })
+    }
+
+    if (!message) {
+      return res.status(400).json({ ok: false, message: 'Message is required' })
+    }
+
+    const { data: existing, error: findError } = await supabase
+      .from('notifications')
+      .select('reference_id, target_type, title')
+      .eq('type', 'announcements')
+      .eq('reference_id', referenceId)
+      .is('deleted_at', null)
+      .limit(1)
+
+    if (findError) throw findError
+
+    if (!existing?.length) {
+      return res.status(404).json({ ok: false, message: 'Announcement not found' })
+    }
+
+    const { count, error } = await supabase
+      .from('notifications')
+      .update({
+        title,
+        message,
+        image_url: imageUrl,
+        link,
+      })
+      .eq('type', 'announcements')
+      .eq('reference_id', referenceId)
+      .is('deleted_at', null)
+      .select('id', { count: 'exact', head: true })
+
+    if (error) throw error
+
+    await createRecord(req, {
+      action: 'UPDATE',
+      referenceId,
+      title,
+      targetType: inferTargetType(referenceId, Number(count || 0), await getTotalReaderCount()),
+      recipientCount: Number(count || 0),
+    })
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Announcement updated',
+      announcement: {
+        reference_id: referenceId,
+        title,
+        message,
+        image_url: imageUrl,
+        link,
+        recipient_count: Number(count || 0),
+      },
+    })
+  } catch (error) {
+    console.error('UPDATE ADMIN ANNOUNCEMENT ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update announcement',
+      error: error.message,
+    })
+  }
+}
+
+export async function deleteAdminAnnouncement(req, res) {
+  try {
+    const referenceId = normalizeText(req.params.referenceId)
+
+    if (!referenceId) {
+      return res.status(400).json({ ok: false, message: 'Announcement reference is required' })
+    }
+
+    const identity = getAdminIdentity(req)
+    const deletedAt = new Date().toISOString()
+
+    const { data: existing, error: findError } = await supabase
+      .from('notifications')
+      .select('id, title, reference_id')
+      .eq('type', 'announcements')
+      .eq('reference_id', referenceId)
+      .is('deleted_at', null)
+
+    if (findError) throw findError
+
+    if (!existing?.length) {
+      return res.status(404).json({ ok: false, message: 'Announcement not found' })
+    }
+
+    const title = existing[0]?.title || ''
+    const { count, error } = await supabase
+      .from('notifications')
+      .update({
+        deleted_at: deletedAt,
+        deleted_by_admin: identity.admin_id || identity.admin_email || '',
+      })
+      .eq('type', 'announcements')
+      .eq('reference_id', referenceId)
+      .is('deleted_at', null)
+      .select('id', { count: 'exact', head: true })
+
+    if (error) throw error
+
+    await createRecord(req, {
+      action: 'DELETE',
+      referenceId,
+      title,
+      targetType: inferTargetType(referenceId, Number(count || 0), await getTotalReaderCount()),
+      recipientCount: Number(count || 0),
+    })
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Announcement deleted',
+      reference_id: referenceId,
+      deleted_at: deletedAt,
+      deleted_count: Number(count || 0),
+    })
+  } catch (error) {
+    console.error('DELETE ADMIN ANNOUNCEMENT ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to delete announcement',
+      error: error.message,
+    })
+  }
+}
+
+export async function getAdminAnnouncementRecords(req, res) {
+  try {
+    await cleanupOldRecords()
+
+    const page = clampPage(req.query.page)
+    const limit = clampLimit(req.query.limit, 20, 50)
+    const start = (page - 1) * limit
+    const end = start + limit - 1
+
+    const { data, error, count } = await supabase
+      .from('notification_admin_records')
+      .select('id, action, reference_id, title, target_type, recipient_count, admin_id, admin_email, created_at', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(start, end)
+
+    if (error) throw error
+
+    const total = Number(count || 0)
+    const totalPages = Math.max(1, Math.ceil(total / limit))
+
+    return res.status(200).json({
+      ok: true,
+      records: data || [],
+      page,
+      limit,
+      total,
+      total_pages: totalPages,
+      has_next: page < totalPages,
+      has_prev: page > 1,
+      history_limit_days: 90,
+    })
+  } catch (error) {
+    console.error('GET NOTIFICATION RECORDS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load notification records',
       error: error.message,
     })
   }
