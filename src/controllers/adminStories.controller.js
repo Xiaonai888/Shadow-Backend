@@ -274,6 +274,7 @@ export async function getAdminStoryById(req, res) {
       supabase
         .from('episodes')
         .select('id, story_id, title, status, episode_number, character_count, word_count, total_likes, total_views, published_at, scheduled_at, deleted_at, delete_expires_at, created_at, updated_at')
+      .select('id, story_id, title, content, status, episode_number, character_count, word_count, total_likes, total_views, published_at, scheduled_at, deleted_at, delete_expires_at, created_at, updated_at')
         .eq('story_id', storyId)
         .order('episode_number', { ascending: true }),
       supabase
