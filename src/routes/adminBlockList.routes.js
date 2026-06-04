@@ -13,6 +13,11 @@ import {
   searchReadersForBlock,
   unblockReaderComment,
 } from '../controllers/adminReaderBlocks.controller.js'
+import {
+  getHiddenCommentReviews,
+  keepHiddenComment,
+  restoreHiddenComment,
+} from '../controllers/adminHiddenCommentReviews.controller.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 
 const router = express.Router()
@@ -28,5 +33,9 @@ router.get('/readers/blocks', requireAdmin, getReaderCommentBlocks)
 router.post('/readers/blocks', requireAdmin, createReaderCommentBlock)
 router.patch('/readers/blocks/:blockId/unblock', requireAdmin, unblockReaderComment)
 router.get('/readers/records', requireAdmin, getReaderCommentBlockRecords)
+
+router.get('/readers/hidden-comments', requireAdmin, getHiddenCommentReviews)
+router.patch('/readers/hidden-comments/:reviewId/restore', requireAdmin, restoreHiddenComment)
+router.patch('/readers/hidden-comments/:reviewId/keep-hidden', requireAdmin, keepHiddenComment)
 
 export default router
