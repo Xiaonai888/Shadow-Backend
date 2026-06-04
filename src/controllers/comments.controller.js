@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { getActiveReaderCommentBlock, readerCommentBlockedPayload } from '../utils/readerCommentBlocks.js'
 
 function normalizeText(value) {
   return String(value || '').trim()
@@ -163,6 +164,12 @@ export async function createStoryComment(req, res) {
         message: 'Unauthorized',
       })
     }
+
+    const readerCommentBlock = await getActiveReaderCommentBlock(userId)
+
+if (readerCommentBlock) {
+  return res.status(403).json(readerCommentBlockedPayload(readerCommentBlock))
+}
 
     if (!text) {
       return res.status(400).json({
