@@ -24,6 +24,7 @@ function publicMail(item) {
     reward_type: item.reward_type || '',
     reward_amount: Number(item.reward_amount || 0),
     link: item.link || '',
+    image_url: item.image_url || '',
     reference_id: item.reference_id || '',
     is_read: Boolean(item.is_read),
     read_at: item.read_at || null,
@@ -138,7 +139,7 @@ export async function getMyMails(req, res) {
 
     let query = supabase
       .from('reader_mails')
-      .select('id, user_id, sender_type, mail_type, title, message, detail, action_type, reward_type, reward_amount, link, reference_id, is_read, read_at, claimed_at, created_at')
+      .select('id, user_id, sender_type, mail_type, title, message, detail, action_type, reward_type, reward_amount, link, image_url, reference_id, is_read, read_at, claimed_at, created_at')
       .eq('user_id', userId)
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
@@ -350,6 +351,7 @@ export async function createReaderMail({
   rewardType = '',
   rewardAmount = 0,
   link = '',
+  imageUrl = '',
   referenceId = '',
 }) {
   if (!userId || !title || !message) return null
@@ -367,6 +369,7 @@ export async function createReaderMail({
       reward_type: String(rewardType || '').trim().toLowerCase(),
       reward_amount: Number(rewardAmount || 0),
       link: String(link || '').trim(),
+      image_url: String(imageUrl || '').trim(),
       reference_id: String(referenceId || '').trim(),
       is_read: false,
     })
