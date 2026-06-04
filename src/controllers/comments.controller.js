@@ -1,4 +1,9 @@
 import { supabase } from '../config/supabase.js'
+import {
+  autoHiddenCommentPayload,
+  findBlockedWordsInComment,
+  saveAutoHiddenCommentLog,
+} from '../utils/commentAutoModeration.js'
 import { getActiveReaderCommentBlock, readerCommentBlockedPayload } from '../utils/readerCommentBlocks.js'
 
 function normalizeText(value) {
@@ -206,6 +211,34 @@ if (readerCommentBlock) {
         })
       }
     }
+
+    const blockedCommentWords = await findBlockedWordsInComment(text)
+
+if (blockedCommentWords.length) {
+  const { data: hiddenComment, error: hiddenError } = await supabase
+    .from('comments')
+    .insert({
+      story_id: storyId,
+      user_id: userId,
+      parent_id: parentId,
+      text,
+      is_hidden: true,
+    })
+    .select('id')
+    .single()
+
+  if (hiddenError) throw hiddenError
+
+  await saveAutoHiddenCommentLog({
+    commentId: hiddenComment.id,
+    storyId,
+    userId,
+    text,
+    matchedWords: blockedCommentWords,
+  })
+
+  return res.status(202).json(autoHiddenCommentPayload(blockedCommentWords))
+}
 
     const { data, error } = await supabase
       .from('comments')
