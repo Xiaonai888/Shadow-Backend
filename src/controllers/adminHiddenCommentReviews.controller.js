@@ -23,6 +23,47 @@ function adminActor(req) {
   return cleanText(req.admin?.email || req.admin?.username || req.admin?.admin_name || req.headers['x-admin-name'] || req.headers['x-admin-actor'] || 'Admin')
 }
 
+function matchedWordsText(words) {
+  if (!Array.isArray(words) || !words.length) return ''
+  return words
+    .map((item) => `${item.word || ''}${item.count ? ` ×${item.count}` : ''}`)
+    .filter(Boolean)
+    .join(', ')
+}
+
+async function getUser(userId) {
+  if (!userId) return null
+
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, name, username, email, avatar_url')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (error) throw error
+  return data
+}
+
+async function createReaderRecord({ action, userId, reason = '', note = '', actor = 'Admin', details = '', expiresAt = null }) {
+  const user = await getUser(userId)
+
+  const { error } = await supabase
+    .from('reader_comment_block_logs')
+    .insert({
+      action,
+      user_id: userId,
+      reader_name: user?.name || user?.username || 'Reader',
+      reader_email: user?.email || '',
+      reason,
+      note,
+      actor,
+      details,
+      expires_at: expiresAt,
+    })
+
+  if (error) console.error('CREATE READER RECORD ERROR:', error)
+}
+
 async function getUserMap(userIds) {
   const ids = [...new Set((userIds || []).filter(Boolean).map(String))]
   const map = new Map()
@@ -181,6 +222,15 @@ export async function restoreHiddenComment(req, res) {
 
     if (error) throw error
 
+    await createReaderRecord({
+      action: 'RESTORE_COMMENT',
+      userId: review.user_id,
+      reason: 'Admin review',
+      note: adminNote,
+      actor,
+      details: `Restored auto hidden comment. Matched: ${matchedWordsText(review.matched_words)}`,
+    })
+
     return res.status(200).json({
       ok: true,
       review: data,
@@ -232,6 +282,15 @@ export async function keepHiddenComment(req, res) {
       .single()
 
     if (error) throw error
+
+    await createReaderRecord({
+      action: 'KEEP_HIDDEN',
+      userId: review.user_id,
+      reason: 'Admin review',
+      note: adminNote,
+      actor,
+      details: `Kept auto hidden comment hidden. Matched: ${matchedWordsText(review.matched_words)}`,
+    })
 
     return res.status(200).json({
       ok: true,
