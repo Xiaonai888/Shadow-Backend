@@ -57,9 +57,19 @@ function publicReader(user) {
   }
 }
 
-function publicBlock(row) {
-  const user = row.user || {}
+function readerFromMap(userMap, userId) {
+  const user = userMap.get(String(userId)) || {}
 
+  return {
+    id: userId,
+    name: user.name || user.username || 'Reader',
+    username: user.username || '',
+    email: user.email || '',
+    avatar_url: user.avatar_url || '',
+  }
+}
+
+function publicBlock(row, userMap = new Map()) {
   return {
     id: row.id,
     user_id: row.user_id,
@@ -71,13 +81,7 @@ function publicBlock(row) {
     is_permanent: !row.expires_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
-    reader: {
-      id: row.user_id,
-      name: user.name || user.username || 'Reader',
-      username: user.username || '',
-      email: user.email || '',
-      avatar_url: user.avatar_url || '',
-    },
+    reader: readerFromMap(userMap, row.user_id),
   }
 }
 
@@ -106,6 +110,26 @@ async function getUser(userId) {
 
   if (error) throw error
   return data
+}
+
+async function getUserMap(userIds) {
+  const ids = [...new Set((userIds || []).filter(Boolean).map(String))]
+  const map = new Map()
+
+  if (!ids.length) return map
+
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, name, username, email, avatar_url')
+    .in('id', ids)
+
+  if (error) throw error
+
+  ;(data || []).forEach((user) => {
+    map.set(String(user.id), user)
+  })
+
+  return map
 }
 
 async function createReaderBlockRecord({ action, user, reason = '', note = '', actor = 'Admin', details = '', expiresAt = null }) {
@@ -167,7 +191,7 @@ export async function getReaderCommentBlocks(req, res) {
 
     let query = supabase
       .from('reader_comment_blocks')
-      .select('*, user:users(id, name, username, email, avatar_url)', { count: 'exact' })
+      .select('*', { count: 'exact' })
 
     if (status === 'active') query = query.eq('is_active', true)
     if (status === 'removed') query = query.eq('is_active', false)
@@ -178,12 +202,14 @@ export async function getReaderCommentBlocks(req, res) {
 
     if (error) throw error
 
+    const blocks = data || []
+    const userMap = await getUserMap(blocks.map((block) => block.user_id))
     const total = count || 0
     const totalPages = Math.max(1, Math.ceil(total / limit))
 
     return res.status(200).json({
       ok: true,
-      blocks: (data || []).map(publicBlock),
+      blocks: blocks.map((block) => publicBlock(block, userMap)),
       page,
       limit,
       total,
@@ -244,10 +270,12 @@ export async function createReaderCommentBlock(req, res) {
         expires_at: expiresAt,
         is_active: true,
       })
-      .select('*, user:users(id, name, username, email, avatar_url)')
+      .select('*')
       .single()
 
     if (error) throw error
+
+    const userMap = new Map([[String(user.id), user]])
 
     await createReaderBlockRecord({
       action: 'BLOCK',
@@ -263,7 +291,7 @@ export async function createReaderCommentBlock(req, res) {
 
     return res.status(201).json({
       ok: true,
-      block: publicBlock(data),
+      block: publicBlock(data, userMap),
     })
   } catch (error) {
     console.error('CREATE READER COMMENT BLOCK ERROR:', error)
@@ -278,12 +306,14 @@ export async function unblockReaderComment(req, res) {
 
     const { data: block, error: blockError } = await supabase
       .from('reader_comment_blocks')
-      .select('*, user:users(id, name, username, email, avatar_url)')
+      .select('*')
       .eq('id', blockId)
       .maybeSingle()
 
     if (blockError) throw blockError
     if (!block) return res.status(404).json({ ok: false, message: 'Reader block not found' })
+
+    const user = await getUser(block.user_id)
 
     const { data: updatedBlock, error } = await supabase
       .from('reader_comment_blocks')
@@ -292,16 +322,17 @@ export async function unblockReaderComment(req, res) {
         updated_at: new Date().toISOString(),
       })
       .eq('id', blockId)
-      .select('*, user:users(id, name, username, email, avatar_url)')
+      .select('*')
       .single()
 
     if (error) throw error
 
-    const user = block.user || { id: block.user_id, name: '', username: '', email: '' }
+    const safeUser = user || { id: block.user_id, name: '', username: '', email: '' }
+    const userMap = new Map([[String(safeUser.id), safeUser]])
 
     await createReaderBlockRecord({
       action: 'UNBLOCK',
-      user: { id: block.user_id, name: user.name, username: user.username, email: user.email },
+      user: safeUser,
       reason: block.reason,
       note: block.note,
       actor,
@@ -311,7 +342,7 @@ export async function unblockReaderComment(req, res) {
 
     return res.status(200).json({
       ok: true,
-      block: publicBlock(updatedBlock),
+      block: publicBlock(updatedBlock, userMap),
     })
   } catch (error) {
     console.error('UNBLOCK READER COMMENT ERROR:', error)
