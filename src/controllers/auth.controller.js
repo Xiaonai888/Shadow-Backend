@@ -172,8 +172,8 @@ function clearFailedLogin(key) {
 function createToken(admin) {
   return jwt.sign(
     {
-      role: 'admin',
-      actor: admin?.name || 'Admin',
+      role: admin?.role || 'admin',
+      actor: admin?.name || admin?.email || 'Admin',
       email: admin?.email || '',
       admin_id: admin?.id || '',
     },
@@ -568,7 +568,6 @@ export async function checkAdmin(req, res) {
     })
   }
 }
-
 export async function changeAdminPassword(req, res) {
   try {
     const {
