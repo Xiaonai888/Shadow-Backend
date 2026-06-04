@@ -29,6 +29,7 @@ import tasksRoutes from './src/routes/tasks.routes.js'
 import adminStoriesRoutes from './src/routes/adminStories.routes.js'
 import adminRankingRoutes from './src/routes/adminRanking.routes.js'
 import notificationsRoutes from './src/routes/notifications.routes.js'
+import readerMailsRoutes from './src/routes/readerMails.routes.js'
 import adminNotificationsRoutes from './src/routes/adminNotifications.routes.js'
 import advertisementsRoutes from './src/routes/advertisements.routes.js'
 import adminBlockListRoutes from './src/routes/adminBlockList.routes.js'
@@ -100,6 +101,7 @@ app.use('/api/admin/community', adminCommunityRoutes)
 app.use('/api/tasks', tasksRoutes)
 app.use('/api/notifications', notificationsRoutes)
 app.use('/api/admin/notifications', adminNotificationsRoutes)
+app.use('/api/mails', readerMailsRoutes)
 app.use('/api/admin/stories', adminStoriesRoutes)
 app.use('/api/admin/ranking', adminRankingRoutes)
 app.use('/api/advertisements', advertisementsRoutes)
