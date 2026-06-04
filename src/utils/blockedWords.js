@@ -8,15 +8,21 @@ function normalizeContent(value) {
   return cleanText(value).toLowerCase().replace(/\s+/g, ' ')
 }
 
-function uniqueMatches(matches) {
-  const seen = new Set()
+function countOccurrences(text, word) {
+  if (!text || !word) return 0
 
-  return matches.filter((item) => {
-    const key = item.normalized_word || item.word
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
+  let count = 0
+  let index = 0
+
+  while (index <= text.length) {
+    const foundIndex = text.indexOf(word, index)
+    if (foundIndex === -1) break
+
+    count += 1
+    index = foundIndex + word.length
+  }
+
+  return count
 }
 
 export async function findBlockedWordsInContent(fields = []) {
@@ -36,18 +42,20 @@ export async function findBlockedWordsInContent(fields = []) {
 
   if (error) throw error
 
-  const matches = (data || []).filter((item) => {
-    const blockedWord = normalizeContent(item.normalized_word || item.word)
-    if (!blockedWord) return false
-    return text.includes(blockedWord)
-  })
+  return (data || [])
+    .map((item) => {
+      const blockedWord = normalizeContent(item.normalized_word || item.word)
+      const count = countOccurrences(text, blockedWord)
 
-  return uniqueMatches(matches).map((item) => ({
-    id: item.id,
-    word: item.word,
-    category: item.category,
-    severity: item.severity,
-  }))
+      return {
+        id: item.id,
+        word: item.word,
+        category: item.category,
+        severity: item.severity,
+        count,
+      }
+    })
+    .filter((item) => item.count > 0)
 }
 
 export function blockedWordsWarningPayload(matches = []) {
