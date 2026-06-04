@@ -44,6 +44,58 @@ function publicBlockedWord(row) {
   }
 }
 
+function publicBlockedWordRecord(row) {
+  return {
+    id: row.id,
+    action: row.action,
+    blocked_word_id: row.blocked_word_id || '',
+    word: row.word || '',
+    category: row.category || '',
+    severity: row.severity || '',
+    actor: row.actor || 'Admin',
+    details: row.details || '',
+    created_at: row.created_at,
+  }
+}
+
+async function createBlockedWordRecord({ action, blockedWordId = null, word = '', category = '', severity = '', actor = 'Admin', details = '' }) {
+  const { error } = await supabase
+    .from('blocked_word_logs')
+    .insert({
+      action,
+      blocked_word_id: blockedWordId,
+      word,
+      category,
+      severity,
+      actor,
+      details,
+    })
+
+  if (error) console.error('CREATE BLOCKED WORD RECORD ERROR:', error)
+}
+
+function updateDetails(oldWord, newWord, updates) {
+  const changes = []
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'word') && oldWord.word !== newWord.word) {
+    changes.push(`Word: ${oldWord.word} → ${newWord.word}`)
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'category') && oldWord.category !== newWord.category) {
+    changes.push(`Category: ${oldWord.category} → ${newWord.category}`)
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'severity') && oldWord.severity !== newWord.severity) {
+    changes.push(`Severity: ${oldWord.severity} → ${newWord.severity}`)
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'note') && (oldWord.note || '') !== (newWord.note || '')) {
+    changes.push('Admin note updated')
+  }
+
+  return changes.join(' · ') || 'Blocked word updated'
+}
+
 export async function getBlockedWords(req, res) {
   try {
     const page = normalizePage(req.query.page)
@@ -89,6 +141,40 @@ export async function getBlockedWords(req, res) {
   } catch (error) {
     console.error('GET BLOCKED WORDS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load blocked words', error: error.message })
+  }
+}
+
+export async function getBlockedWordRecords(req, res) {
+  try {
+    const page = normalizePage(req.query.page)
+    const limit = normalizeLimit(req.query.limit || 20)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    const { data, count, error } = await supabase
+      .from('blocked_word_logs')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (error) throw error
+
+    const total = count || 0
+    const totalPages = Math.max(1, Math.ceil(total / limit))
+
+    return res.status(200).json({
+      ok: true,
+      records: (data || []).map(publicBlockedWordRecord),
+      page,
+      limit,
+      total,
+      total_pages: totalPages,
+      has_next: page < totalPages,
+      has_prev: page > 1,
+    })
+  } catch (error) {
+    console.error('GET BLOCKED WORD RECORDS ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load block word records', error: error.message })
   }
 }
 
@@ -149,6 +235,16 @@ export async function createBlockedWord(req, res) {
 
     if (error) throw error
 
+    await createBlockedWordRecord({
+      action: 'CREATE',
+      blockedWordId: data.id,
+      word: data.word,
+      category: data.category,
+      severity: data.severity,
+      actor,
+      details: `Added blocked word: ${data.word}`,
+    })
+
     return res.status(201).json({ ok: true, word: publicBlockedWord(data) })
   } catch (error) {
     console.error('CREATE BLOCKED WORD ERROR:', error)
@@ -159,7 +255,17 @@ export async function createBlockedWord(req, res) {
 export async function updateBlockedWord(req, res) {
   try {
     const { wordId } = req.params
+    const actor = adminActor(req)
     const updates = {}
+
+    const { data: oldWord, error: oldError } = await supabase
+      .from('blocked_words')
+      .select('*')
+      .eq('id', wordId)
+      .maybeSingle()
+
+    if (oldError) throw oldError
+    if (!oldWord) return res.status(404).json({ ok: false, message: 'Blocked word not found' })
 
     if (Object.prototype.hasOwnProperty.call(req.body, 'word')) {
       const word = cleanText(req.body.word)
@@ -230,6 +336,24 @@ export async function updateBlockedWord(req, res) {
     if (error) throw error
     if (!data) return res.status(404).json({ ok: false, message: 'Blocked word not found' })
 
+    let action = 'UPDATE'
+    let details = updateDetails(oldWord, data, updates)
+
+    if (Object.prototype.hasOwnProperty.call(updates, 'is_active') && Object.keys(updates).filter((key) => key !== 'updated_at').length === 1) {
+      action = data.is_active ? 'ENABLE' : 'DISABLE'
+      details = `${data.is_active ? 'Enabled' : 'Disabled'} blocked word: ${data.word}`
+    }
+
+    await createBlockedWordRecord({
+      action,
+      blockedWordId: data.id,
+      word: data.word,
+      category: data.category,
+      severity: data.severity,
+      actor,
+      details,
+    })
+
     return res.status(200).json({ ok: true, word: publicBlockedWord(data) })
   } catch (error) {
     console.error('UPDATE BLOCKED WORD ERROR:', error)
@@ -240,6 +364,16 @@ export async function updateBlockedWord(req, res) {
 export async function deleteBlockedWord(req, res) {
   try {
     const { wordId } = req.params
+    const actor = adminActor(req)
+
+    const { data: oldWord, error: oldError } = await supabase
+      .from('blocked_words')
+      .select('*')
+      .eq('id', wordId)
+      .maybeSingle()
+
+    if (oldError) throw oldError
+    if (!oldWord) return res.status(404).json({ ok: false, message: 'Blocked word not found' })
 
     const { error } = await supabase
       .from('blocked_words')
@@ -247,6 +381,16 @@ export async function deleteBlockedWord(req, res) {
       .eq('id', wordId)
 
     if (error) throw error
+
+    await createBlockedWordRecord({
+      action: 'DELETE',
+      blockedWordId: oldWord.id,
+      word: oldWord.word,
+      category: oldWord.category,
+      severity: oldWord.severity,
+      actor,
+      details: `Deleted blocked word: ${oldWord.word}`,
+    })
 
     return res.status(200).json({ ok: true, message: 'Blocked word deleted' })
   } catch (error) {
