@@ -518,10 +518,55 @@ export async function adminResetPassword(req, res) {
 }
 
 export async function checkAdmin(req, res) {
-  return res.status(200).json({
-    ok: true,
-    admin: req.admin || null,
-  })
+  try {
+    const adminId = req.admin?.admin_id || ''
+    const adminEmail = req.admin?.email || ''
+
+    let query = supabase
+      .from('admin_users')
+      .select('id, email, name, role, password_changed_at')
+      .limit(1)
+
+    if (adminId) {
+      query = query.eq('id', adminId)
+    } else if (adminEmail) {
+      query = query.eq('email', adminEmail)
+    } else {
+      return res.status(401).json({
+        ok: false,
+        message: 'Admin identity missing from token',
+      })
+    }
+
+    const { data, error } = await query.maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Admin account not found',
+      })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      admin: {
+        id: data.id,
+        email: data.email,
+        name: data.name,
+        role: data.role,
+        password_changed_at: data.password_changed_at,
+      },
+    })
+  } catch (error) {
+    console.error('CHECK ADMIN ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load admin profile',
+    })
+  }
 }
 
 export async function changeAdminPassword(req, res) {
