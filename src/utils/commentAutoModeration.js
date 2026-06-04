@@ -25,6 +25,47 @@ function countOccurrences(text, word) {
   return count
 }
 
+function matchedWordsText(words) {
+  if (!Array.isArray(words) || !words.length) return ''
+  return words
+    .map((item) => `${item.word || ''}${item.count ? ` ×${item.count}` : ''}`)
+    .filter(Boolean)
+    .join(', ')
+}
+
+async function getUser(userId) {
+  if (!userId) return null
+
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, name, username, email')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (error) throw error
+  return data
+}
+
+async function createReaderRecord({ action, userId, reason = '', note = '', actor = 'System', details = '', expiresAt = null }) {
+  const user = await getUser(userId)
+
+  const { error } = await supabase
+    .from('reader_comment_block_logs')
+    .insert({
+      action,
+      user_id: userId,
+      reader_name: user?.name || user?.username || 'Reader',
+      reader_email: user?.email || '',
+      reason,
+      note,
+      actor,
+      details,
+      expires_at: expiresAt,
+    })
+
+  if (error) console.error('CREATE READER RECORD ERROR:', error)
+}
+
 export async function findBlockedWordsInComment(text) {
   const normalizedText = normalizeContent(text)
 
@@ -67,6 +108,14 @@ export async function saveAutoHiddenCommentLog({ commentId, storyId, userId, tex
     })
 
   if (error) throw error
+
+  await createReaderRecord({
+    action: 'AUTO_HIDE_COMMENT',
+    userId,
+    reason: 'Blocked words',
+    actor: 'System',
+    details: `Auto hidden reader comment. Matched: ${matchedWordsText(matchedWords)}`,
+  })
 }
 
 export function autoHiddenCommentPayload(matchedWords = []) {
