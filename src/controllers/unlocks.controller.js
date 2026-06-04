@@ -109,6 +109,34 @@ function getEpisodeAdPolicy({ tier, unlock, freeEpisode }) {
   return { show_read_ad: true, reason: 'free_access' }
 }
 
+function publicReaderAdvertisement(item) {
+  if (!item?.image_url) return null
+
+  return {
+    placement: item.placement,
+    enabled: Boolean(item.enabled),
+    image_url: item.image_url || '',
+    link_url: item.link_url || '',
+    duration_seconds: Number(item.duration_seconds || 0),
+    close_after_seconds: Number(item.close_after_seconds || 0),
+    frequency: item.frequency || 'every_unlock',
+    updated_at: item.updated_at,
+  }
+}
+
+async function getFreeUnlockAdvertisement() {
+  const { data, error } = await supabase
+    .from('shadow_advertisements')
+    .select('placement, enabled, image_url, link_url, duration_seconds, close_after_seconds, frequency, updated_at')
+    .eq('placement', 'freeUnlock')
+    .eq('enabled', true)
+    .maybeSingle()
+
+  if (error) throw error
+
+  return publicReaderAdvertisement(data)
+}
+
 function startOfTodayIso() {
   const date = new Date()
   date.setHours(0, 0, 0, 0)
@@ -518,6 +546,14 @@ export async function getEpisodeUnlockStatus(req, res) {
       })
     }
 
+    const adPolicy = getEpisodeAdPolicy({
+  tier,
+  unlock: payload.unlock,
+  freeEpisode: payload.freeEpisode,
+})
+
+const readerAdvertisement = adPolicy.show_read_ad ? await getFreeUnlockAdvertisement() : null
+
     return res.status(200).json({
       ok: true,
       locked: !payload.unlocked,
@@ -555,11 +591,8 @@ coin_access: {
         all_released_minimum_episodes: 70,
       },
       wallet: publicWallet(payload.wallet),
-      ad_policy: getEpisodeAdPolicy({
-  tier,
-  unlock: payload.unlock,
-  freeEpisode: payload.freeEpisode,
-}),
+      ad_policy: adPolicy,
+advertisement: readerAdvertisement,
     })
   } catch (error) {
     console.error('GET EPISODE UNLOCK STATUS ERROR:', error)
