@@ -87,10 +87,10 @@ router.post('/upload-image', requireAdmin, upload.single('image'), async (req, r
   } catch (error) {
     console.error('UPLOAD READER MAIL IMAGE ERROR:', error)
 
-    res.status(500).json({
-      ok: false,
-      message: 'Failed to upload image',
-    })
+   res.status(500).json({
+  ok: false,
+  message: error.message || 'Failed to upload image',
+})
   }
 })
 
