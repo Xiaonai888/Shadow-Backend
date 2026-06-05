@@ -306,3 +306,40 @@ export async function getAdminReaderMailHistory(req, res) {
     })
   }
 }
+
+export async function deleteAdminReaderMail(req, res) {
+  try {
+    const mailId = String(req.params.mailId || '').trim()
+
+    if (!mailId) {
+      return res.status(400).json({ ok: false, message: 'Mail ID is required' })
+    }
+
+    const { data, error } = await supabase
+      .from('reader_mails')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('id', mailId)
+      .is('deleted_at', null)
+      .select('id')
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({ ok: false, message: 'Mail not found' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      deleted_id: data.id,
+    })
+  } catch (error) {
+    console.error('ADMIN DELETE READER MAIL ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to delete mail',
+      error: error.message,
+    })
+  }
+}
