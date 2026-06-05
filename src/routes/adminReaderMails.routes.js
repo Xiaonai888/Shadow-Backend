@@ -8,6 +8,7 @@ import {
   sendReaderMailToAll,
   sendReaderMailToOne,
 } from '../controllers/adminReaderMails.controller.js'
+import { requireAdmin } from '../middleware/auth.middleware.js'
 
 const router = express.Router()
 
