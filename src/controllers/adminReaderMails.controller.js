@@ -60,12 +60,14 @@ function getAdminName(req) {
 }
 
 async function findReader({ userId, email }) {
-  let query = supabase.from('users').select('id, name, email').limit(1)
+  const identifier = String(email || '').trim().replace(/^@+/, '').toLowerCase()
+
+  let query = supabase.from('users').select('id, name, username, email').limit(1)
 
   if (userId) {
     query = query.eq('id', userId)
   } else {
-    query = query.eq('email', email)
+    query = query.or(`email.eq.${identifier},username.eq.${identifier}`)
   }
 
   const { data, error } = await query.maybeSingle()
@@ -73,40 +75,6 @@ async function findReader({ userId, email }) {
   if (error) throw error
 
   return data || null
-}
-
-export async function searchReadersForMail(req, res) {
-  try {
-    const q = String(req.query.q || '').trim()
-    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 50)
-
-    let query = supabase
-      .from('users')
-      .select('id, name, email, created_at')
-      .order('created_at', { ascending: false })
-      .limit(limit)
-
-    if (q) {
-      query = query.or(`name.ilike.%${q}%,email.ilike.%${q}%`)
-    }
-
-    const { data, error } = await query
-
-    if (error) throw error
-
-    return res.status(200).json({
-      ok: true,
-      readers: data || [],
-    })
-  } catch (error) {
-    console.error('ADMIN SEARCH READERS FOR MAIL ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load readers',
-      error: error.message,
-    })
-  }
 }
 
 export async function sendReaderMailToOne(req, res) {
