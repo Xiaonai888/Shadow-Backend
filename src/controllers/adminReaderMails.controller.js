@@ -77,6 +77,41 @@ async function findReader({ userId, email }) {
   return data || null
 }
 
+export async function searchReadersForMail(req, res) {
+  try {
+    const q = String(req.query.q || '').trim()
+    const cleanQ = q.replace(/^@+/, '')
+    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 50)
+
+    let query = supabase
+      .from('users')
+      .select('id, name, username, email, created_at')
+      .order('created_at', { ascending: false })
+      .limit(limit)
+
+    if (cleanQ) {
+      query = query.or(`name.ilike.%${cleanQ}%,username.ilike.%${cleanQ}%,email.ilike.%${cleanQ}%`)
+    }
+
+    const { data, error } = await query
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      readers: data || [],
+    })
+  } catch (error) {
+    console.error('ADMIN SEARCH READERS FOR MAIL ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load readers',
+      error: error.message,
+    })
+  }
+}
+
 export async function sendReaderMailToOne(req, res) {
   try {
     const {
