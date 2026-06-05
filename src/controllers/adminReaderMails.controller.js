@@ -343,3 +343,60 @@ export async function deleteAdminReaderMail(req, res) {
     })
   }
 }
+
+export async function updateAdminReaderMail(req, res) {
+  try {
+    const mailId = String(req.params.mailId || '').trim()
+
+    if (!mailId) {
+      return res.status(400).json({ ok: false, message: 'Mail ID is required' })
+    }
+
+    const cleanTitle = String(req.body?.title || '').trim()
+    const cleanMessage = String(req.body?.message || '').trim()
+
+    if (!cleanTitle || !cleanMessage) {
+      return res.status(400).json({ ok: false, message: 'Title and message are required' })
+    }
+
+    const payload = {
+      sender_type: normalizeSenderType(req.body?.sender_type),
+      mail_type: normalizeMailType(req.body?.mail_type),
+      title: cleanTitle,
+      message: cleanMessage,
+      detail: String(req.body?.detail || cleanMessage).trim(),
+      action_type: normalizeActionType(req.body?.action_type),
+      reward_type: normalizeRewardType(req.body?.reward_type),
+      reward_amount: Number(req.body?.reward_amount || 0),
+      link: String(req.body?.link || '').trim(),
+      image_url: String(req.body?.image_url || '').trim(),
+    }
+
+    const { data, error } = await supabase
+      .from('reader_mails')
+      .update(payload)
+      .eq('id', mailId)
+      .is('deleted_at', null)
+      .select('id')
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({ ok: false, message: 'Mail not found' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      mail_id: data.id,
+    })
+  } catch (error) {
+    console.error('ADMIN UPDATE READER MAIL ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update mail',
+      error: error.message,
+    })
+  }
+}
