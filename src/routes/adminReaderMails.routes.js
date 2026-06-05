@@ -7,6 +7,7 @@ import {
   searchReadersForMail,
   sendReaderMailToAll,
   sendReaderMailToOne,
+  updateAdminReaderMail,
 } from '../controllers/adminReaderMails.controller.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 
@@ -38,6 +39,7 @@ function getSafeFileExt(file) {
 router.get('/readers', requireAdmin, searchReadersForMail)
 router.get('/history', requireAdmin, getAdminReaderMailHistory)
 router.delete('/:mailId', requireAdmin, deleteAdminReaderMail)
+router.put('/:mailId', requireAdmin, updateAdminReaderMail)
 router.post('/upload-image', requireAdmin, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
