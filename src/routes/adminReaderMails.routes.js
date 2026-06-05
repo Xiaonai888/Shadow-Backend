@@ -2,12 +2,12 @@ import express from 'express'
 import multer from 'multer'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import {
+  deleteAdminReaderMail,
   getAdminReaderMailHistory,
   searchReadersForMail,
   sendReaderMailToAll,
   sendReaderMailToOne,
 } from '../controllers/adminReaderMails.controller.js'
-import { requireAdmin } from '../middleware/auth.middleware.js'
 
 const router = express.Router()
 
@@ -36,7 +36,7 @@ function getSafeFileExt(file) {
 
 router.get('/readers', requireAdmin, searchReadersForMail)
 router.get('/history', requireAdmin, getAdminReaderMailHistory)
-
+router.delete('/:mailId', requireAdmin, deleteAdminReaderMail)
 router.post('/upload-image', requireAdmin, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
