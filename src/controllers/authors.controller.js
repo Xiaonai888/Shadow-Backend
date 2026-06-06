@@ -621,8 +621,9 @@ export async function updateAuthorProfileImages(req, res) {
     console.error('UPDATE AUTHOR PROFILE IMAGES ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to update author profile images', error: error.message })
   }
+}
 
-  export async function updateMyAuthorPage(req, res) {
+export async function updateMyAuthorPage(req, res) {
   try {
     const userId = req.user?.user_id
 
@@ -700,4 +701,4 @@ export async function updateAuthorProfileImages(req, res) {
     return res.status(500).json({ ok: false, message: 'Failed to update author page', error: error.message })
   }
 }
-}
+
