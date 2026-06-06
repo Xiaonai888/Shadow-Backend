@@ -621,4 +621,83 @@ export async function updateAuthorProfileImages(req, res) {
     console.error('UPDATE AUTHOR PROFILE IMAGES ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to update author profile images', error: error.message })
   }
+
+  export async function updateMyAuthorPage(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const pageName = String(req.body.page_name || req.body.pageName || '').trim()
+    const pageUsername = normalizePageUsername(req.body.page_username || req.body.pageUsername)
+    const bio = String(req.body.bio || '').trim()
+
+    if (!pageName || !pageUsername) {
+      return res.status(400).json({ ok: false, message: 'Page name and page username are required' })
+    }
+
+    if (pageName.length < 2) {
+      return res.status(400).json({ ok: false, message: 'Page name must be at least 2 characters' })
+    }
+
+    if (pageUsername.length < 3) {
+      return res.status(400).json({ ok: false, message: 'Page username must be at least 3 characters' })
+    }
+
+    if (!isValidPageUsername(pageUsername)) {
+      return res.status(400).json({ ok: false, message: 'Page username can only use letters, numbers, and underscore' })
+    }
+
+    const { data: currentPage, error: currentError } = await supabase
+      .from('author_pages')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (currentError) throw currentError
+
+    if (!currentPage) {
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
+    }
+
+    const { data: usernameOwner, error: usernameError } = await supabase
+      .from('author_pages')
+      .select('id')
+      .eq('page_username', pageUsername)
+      .neq('user_id', userId)
+      .maybeSingle()
+
+    if (usernameError) throw usernameError
+
+    if (usernameOwner) {
+      return res.status(409).json({ ok: false, message: 'Page username already exists' })
+    }
+
+    const { data: updatedPage, error: updateError } = await supabase
+      .from('author_pages')
+      .update({
+        page_name: pageName,
+        page_username: pageUsername,
+        page_slug: pageUsername,
+        bio,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('user_id', userId)
+      .select()
+      .single()
+
+    if (updateError) throw updateError
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Author page updated',
+      author_page: publicAuthorPage(updatedPage),
+    })
+  } catch (error) {
+    console.error('UPDATE MY AUTHOR PAGE ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to update author page', error: error.message })
+  }
+}
 }
