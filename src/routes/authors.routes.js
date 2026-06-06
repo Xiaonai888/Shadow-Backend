@@ -1,5 +1,6 @@
 import express from 'express'
 import {
+  updateMyAuthorPage,
   createAuthorPage,
   followAuthorPage,
   getFollowedAuthorPages,
@@ -33,5 +34,6 @@ router.post('/me/payment-methods', requireUser, saveMyAuthorPaymentMethod)
 router.post('/create', requireUser, createAuthorPage)
 router.put('/avatar', requireUser, updateAuthorAvatar)
 router.put('/profile-images', requireUser, updateAuthorProfileImages)
+router.put('/me', requireUser, updateMyAuthorPage)
 
 export default router
