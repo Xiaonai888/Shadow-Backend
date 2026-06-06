@@ -21,12 +21,37 @@ const upload = multer({
   },
 })
 
+function envValue(key) {
+  return String(process.env[key] || '').trim()
+}
+
+const r2AccountId = envValue('R2_ACCOUNT_ID')
+const r2Endpoint =
+  envValue('CLOUDFLARE_R2_ENDPOINT') ||
+  (r2AccountId ? `https://${r2AccountId}.r2.cloudflarestorage.com` : '')
+
+const r2AccessKeyId =
+  envValue('CLOUDFLARE_R2_ACCESS_KEY_ID') ||
+  envValue('R2_ACCESS_KEY_ID')
+
+const r2SecretAccessKey =
+  envValue('CLOUDFLARE_R2_SECRET_ACCESS_KEY') ||
+  envValue('R2_SECRET_ACCESS_KEY')
+
+const r2Bucket =
+  envValue('CLOUDFLARE_R2_BUCKET') ||
+  envValue('R2_BUCKET_NAME')
+
+const r2PublicUrl =
+  envValue('CLOUDFLARE_R2_PUBLIC_URL') ||
+  envValue('R2_PUBLIC_URL')
+
 const r2 = new S3Client({
   region: 'auto',
-  endpoint: process.env.CLOUDFLARE_R2_ENDPOINT,
+  endpoint: r2Endpoint,
   credentials: {
-    accessKeyId: process.env.CLOUDFLARE_R2_ACCESS_KEY_ID,
-    secretAccessKey: process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY,
+    accessKeyId: r2AccessKeyId,
+    secretAccessKey: r2SecretAccessKey,
   },
 })
 
@@ -58,8 +83,8 @@ router.post('/upload-image', requireAdmin, upload.single('image'), async (req, r
       })
     }
 
-    const bucket = process.env.CLOUDFLARE_R2_BUCKET
-    const publicBaseUrl = process.env.CLOUDFLARE_R2_PUBLIC_URL
+    const bucket = r2Bucket
+    const publicBaseUrl = r2PublicUrl
 
     if (!bucket || !publicBaseUrl) {
       return res.status(500).json({
