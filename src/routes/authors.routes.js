@@ -10,15 +10,11 @@ import {
   unfollowAuthorPage,
   updateAuthorAvatar,
   updateAuthorProfileImages,
-
-  
+} from '../controllers/authors.controller.js'
 import {
   createMyAuthorPost,
   getAuthorPagePosts,
 } from '../controllers/authorPosts.controller.js'
-
-
-} from '../controllers/authors.controller.js'
 import {
   getMyAuthorIncome,
   getMyAuthorPaymentMethods,
