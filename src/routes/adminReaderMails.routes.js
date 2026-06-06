@@ -4,6 +4,7 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import {
   deleteAdminReaderMail,
   getAdminReaderMailHistory,
+  getAdminReaderMailLogs,
   searchReadersForMail,
   sendReaderMailToAll,
   sendReaderMailToOne,
@@ -38,6 +39,7 @@ function getSafeFileExt(file) {
 
 router.get('/readers', requireAdmin, searchReadersForMail)
 router.get('/history', requireAdmin, getAdminReaderMailHistory)
+router.get('/logs', requireAdmin, getAdminReaderMailLogs)
 router.delete('/:mailId', requireAdmin, deleteAdminReaderMail)
 router.put('/:mailId', requireAdmin, updateAdminReaderMail)
 router.post('/upload-image', requireAdmin, upload.single('image'), async (req, res) => {
