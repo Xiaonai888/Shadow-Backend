@@ -1,7 +1,53 @@
+import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { supabase } from '../config/supabase.js'
 
 const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'media'
 const LOG_RETENTION_DAYS = 90
+
+let r2Client = null
+
+function getR2Client() {
+  if (r2Client) return r2Client
+
+  const accountId = process.env.R2_ACCOUNT_ID
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY
+
+  if (!accountId || !accessKeyId || !secretAccessKey) {
+    throw new Error('Missing R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, or R2_SECRET_ACCESS_KEY')
+  }
+
+  r2Client = new S3Client({
+    region: 'auto',
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId,
+      secretAccessKey,
+    },
+  })
+
+  return r2Client
+}
+
+function getR2BucketName() {
+  const bucketName = process.env.R2_BUCKET_NAME
+
+  if (!bucketName) {
+    throw new Error('Missing R2_BUCKET_NAME')
+  }
+
+  return bucketName
+}
+
+function getR2PublicUrl() {
+  const publicUrl = process.env.R2_PUBLIC_URL
+
+  if (!publicUrl) {
+    throw new Error('Missing R2_PUBLIC_URL')
+  }
+
+  return publicUrl.replace(/\/+$/, '')
+}
 
 function toBoolean(value, fallback = true) {
   if (value === undefined || value === null || value === '') return fallback
@@ -107,8 +153,28 @@ function extractStoragePathFromPublicUrl(publicUrl) {
   }
 }
 
+function extractR2ObjectKeyFromPublicUrl(publicUrl) {
+  if (!publicUrl) return null
+
+  const publicBaseUrl = process.env.R2_PUBLIC_URL?.replace(/\/+$/, '')
+  if (!publicBaseUrl || !publicUrl.startsWith(`${publicBaseUrl}/`)) return null
+
+  const objectKey = publicUrl.slice(publicBaseUrl.length + 1)
+  return objectKey || null
+}
+
 async function deleteImageFromStorage(publicUrl) {
   try {
+    const r2ObjectKey = extractR2ObjectKeyFromPublicUrl(publicUrl)
+
+    if (r2ObjectKey) {
+      await getR2Client().send(new DeleteObjectCommand({
+        Bucket: getR2BucketName(),
+        Key: r2ObjectKey,
+      }))
+      return
+    }
+
     const storagePath = extractStoragePathFromPublicUrl(publicUrl)
     if (!storagePath) return
 
@@ -127,21 +193,15 @@ async function uploadImage(file) {
   const safeExt = fileExt.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
   const fileName = `slides/${Date.now()}-${Math.random().toString(36).slice(2)}.${safeExt}`
 
-  const { error: uploadError } = await supabase.storage
-    .from(BUCKET)
-    .upload(fileName, file.buffer, {
-      contentType: file.mimetype,
-      cacheControl: '3600',
-      upsert: false,
-    })
+  await getR2Client().send(new PutObjectCommand({
+    Bucket: getR2BucketName(),
+    Key: fileName,
+    Body: file.buffer,
+    ContentType: file.mimetype,
+    CacheControl: 'public, max-age=31536000, immutable',
+  }))
 
-  if (uploadError) throw uploadError
-
-  const { data: publicUrlData } = supabase.storage
-    .from(BUCKET)
-    .getPublicUrl(fileName)
-
-  return publicUrlData.publicUrl
+  return `${getR2PublicUrl()}/${fileName}`
 }
 
 export async function getSlides(req, res) {
