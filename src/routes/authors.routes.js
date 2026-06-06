@@ -10,6 +10,14 @@ import {
   unfollowAuthorPage,
   updateAuthorAvatar,
   updateAuthorProfileImages,
+
+  
+import {
+  createMyAuthorPost,
+  getAuthorPagePosts,
+} from '../controllers/authorPosts.controller.js'
+
+
 } from '../controllers/authors.controller.js'
 import {
   getMyAuthorIncome,
@@ -35,5 +43,8 @@ router.post('/create', requireUser, createAuthorPage)
 router.put('/avatar', requireUser, updateAuthorAvatar)
 router.put('/profile-images', requireUser, updateAuthorProfileImages)
 router.put('/me', requireUser, updateMyAuthorPage)
+router.get('/page/:pageUsername/posts', getAuthorPagePosts)
+router.post('/me/posts', requireUser, createMyAuthorPost)
+
 
 export default router
