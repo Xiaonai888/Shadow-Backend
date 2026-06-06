@@ -59,6 +59,29 @@ function getAdminName(req) {
   )
 }
 
+function getMailLogAdminName(req) {
+  return String(getAdminName(req) || 'Admin').trim()
+}
+
+async function createAdminReaderMailLog({ action, mailId, title, message, readerName, readerEmail, adminName }) {
+  const { error } = await supabase
+    .from('admin_reader_mail_logs')
+    .insert({
+      action: String(action || '').toUpperCase(),
+      mail_id: mailId || null,
+      title: String(title || '').trim(),
+      message: String(message || '').trim(),
+      reader_name: String(readerName || '').trim(),
+      reader_email: String(readerEmail || '').trim(),
+      admin_name: String(adminName || 'Admin').trim(),
+    })
+
+  if (error) {
+    console.error('ADMIN READER MAIL LOG INSERT ERROR:', error)
+  }
+}
+
+
 async function findReader({ userId, email }) {
   const identifier = String(email || '').trim().replace(/^@+/, '').toLowerCase()
 
@@ -175,6 +198,16 @@ export async function sendReaderMailToOne(req, res) {
       return res.status(500).json({ ok: false, message: 'Failed to send mail' })
     }
 
+    await createAdminReaderMailLog({
+  action: 'SEND',
+  mailId: mail.id,
+  title: cleanTitle,
+  message: cleanMessage,
+  readerName: reader.name || '',
+  readerEmail: reader.email || '',
+  adminName: getMailLogAdminName(req),
+})
+
     return res.status(201).json({
       ok: true,
       mail,
@@ -257,6 +290,16 @@ export async function sendReaderMailToAll(req, res) {
 
     if (error) throw error
 
+    await createAdminReaderMailLog({
+  action: 'SEND_ALL',
+  mailId: data?.[0]?.id || null,
+  title: cleanTitle,
+  message: cleanMessage,
+  readerName: 'All Readers',
+  readerEmail: '',
+  adminName: getMailLogAdminName(req),
+})
+
     return res.status(201).json({
       ok: true,
       sent_count: data?.length || rows.length,
@@ -320,7 +363,7 @@ export async function deleteAdminReaderMail(req, res) {
       .update({ deleted_at: new Date().toISOString() })
       .eq('id', mailId)
       .is('deleted_at', null)
-      .select('id')
+      .select('id, title, message, users(name, email)')
       .maybeSingle()
 
     if (error) throw error
@@ -328,6 +371,17 @@ export async function deleteAdminReaderMail(req, res) {
     if (!data) {
       return res.status(404).json({ ok: false, message: 'Mail not found' })
     }
+
+    await createAdminReaderMailLog({
+  action: 'DELETE',
+  mailId: data.id,
+  title: data.title || '',
+  message: data.message || '',
+  readerName: data.users?.name || '',
+  readerEmail: data.users?.email || '',
+  adminName: getMailLogAdminName(req),
+})
+
 
     return res.status(200).json({
       ok: true,
@@ -377,7 +431,7 @@ export async function updateAdminReaderMail(req, res) {
       .update(payload)
       .eq('id', mailId)
       .is('deleted_at', null)
-      .select('id')
+      .select('id, title, message, users(name, email)')
       .maybeSingle()
 
     if (error) throw error
@@ -385,6 +439,16 @@ export async function updateAdminReaderMail(req, res) {
     if (!data) {
       return res.status(404).json({ ok: false, message: 'Mail not found' })
     }
+
+    await createAdminReaderMailLog({
+  action: 'UPDATE',
+  mailId: data.id,
+  title: data.title || cleanTitle,
+  message: data.message || cleanMessage,
+  readerName: data.users?.name || '',
+  readerEmail: data.users?.email || '',
+  adminName: getMailLogAdminName(req),
+})
 
     return res.status(200).json({
       ok: true,
@@ -396,6 +460,41 @@ export async function updateAdminReaderMail(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to update mail',
+      error: error.message,
+    })
+  }
+}
+
+
+export async function getAdminReaderMailLogs(req, res) {
+  try {
+    const page = Math.max(Number(req.query.page || 1), 1)
+    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 50)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    const { data, error, count } = await supabase
+      .from('admin_reader_mail_logs')
+      .select('id, action, mail_id, title, message, reader_name, reader_email, admin_name, created_at', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      logs: data || [],
+      page,
+      limit,
+      total: Number(count || 0),
+      total_pages: Math.max(Math.ceil(Number(count || 0) / limit), 1),
+    })
+  } catch (error) {
+    console.error('ADMIN READER MAIL LOGS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load mail logs',
       error: error.message,
     })
   }
