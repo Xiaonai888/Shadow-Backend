@@ -34,6 +34,7 @@ import adminNotificationsRoutes from './src/routes/adminNotifications.routes.js'
 import advertisementsRoutes from './src/routes/advertisements.routes.js'
 import adminBlockListRoutes from './src/routes/adminBlockList.routes.js'
 import adminReaderMailsRoutes from './src/routes/adminReaderMails.routes.js'
+import authorMediaRoutes from './src/routes/authorMedia.routes.js'
 
 
 dotenv.config()
@@ -108,6 +109,7 @@ app.use('/api/admin/ranking', adminRankingRoutes)
 app.use('/api/advertisements', advertisementsRoutes)
 app.use('/api/admin/block-list', adminBlockListRoutes)
 app.use('/api/admin/mails', adminReaderMailsRoutes)
+app.use('/api/authors/media', authorMediaRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
