@@ -14,6 +14,7 @@ import {
 import {
   createMyAuthorPost,
   getAuthorPagePosts,
+  setMyAuthorPostPinned,
 } from '../controllers/authorPosts.controller.js'
 import {
   getMyAuthorIncome,
@@ -51,6 +52,7 @@ router.put('/profile-images', requireUser, updateAuthorProfileImages)
 router.put('/me', requireUser, updateMyAuthorPage)
 router.get('/page/:pageUsername/posts', getAuthorPagePosts)
 router.post('/me/posts', requireUser, createMyAuthorPost)
+router.patch('/me/posts/:postId/pin', requireUser, setMyAuthorPostPinned)
 
 
 export default router
