@@ -15,10 +15,11 @@ import {
   updateUserProfile,
 } from '../controllers/users.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
+import { verifyTurnstile } from '../middleware/turnstile.middleware.js'
 
 const router = express.Router()
 
-router.post('/register', registerUser)
+router.post('/register', verifyTurnstile, registerUser)
 router.post('/login', loginUser)
 router.post('/forgot-password', requestPasswordReset)
 router.post('/reset-password', resetPassword)
