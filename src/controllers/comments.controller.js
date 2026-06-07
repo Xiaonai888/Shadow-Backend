@@ -1,9 +1,26 @@
+import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
-
 import { getActiveReaderCommentBlock, readerCommentBlockedPayload } from '../utils/readerCommentBlocks.js'
 
 function normalizeText(value) {
   return String(value || '').trim()
+}
+
+function getRequestUserId(req) {
+  try {
+    const authHeader = req.headers.authorization || ''
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
+
+    if (!token) return null
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET)
+
+    if (decoded.type !== 'reader') return null
+
+    return decoded.user_id || null
+  } catch {
+    return null
+  }
 }
 
 function publicUser(user) {
@@ -26,7 +43,7 @@ function publicUser(user) {
   }
 }
 
-function publicComment(comment) {
+function publicComment(comment, likedIds = new Set()) {
   return {
     id: comment.id,
     story_id: comment.story_id,
@@ -40,7 +57,7 @@ function publicComment(comment) {
     updated_at: comment.updated_at,
     user: publicUser(comment.user),
     likes: Number(comment.likes || 0),
-    liked: Boolean(comment.liked),
+    liked: likedIds.has(String(comment.id)),
   }
 }
 
@@ -52,6 +69,7 @@ async function getStory(storyId) {
     .maybeSingle()
 
   if (error) throw error
+
   return data
 }
 
@@ -63,7 +81,34 @@ async function getComment(commentId) {
     .maybeSingle()
 
   if (error) throw error
+
   return data
+}
+
+async function getPublicComment(commentId, userId = null) {
+  const { data, error } = await supabase
+    .from('comments')
+    .select('*, user:users(id, name, username, avatar_url, role)')
+    .eq('id', commentId)
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) return null
+
+  const likedIds = new Set()
+
+  if (userId) {
+    const { data: like } = await supabase
+      .from('comment_likes')
+      .select('comment_id')
+      .eq('comment_id', commentId)
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (like?.comment_id) likedIds.add(String(like.comment_id))
+  }
+
+  return publicComment(data, likedIds)
 }
 
 async function getUser(userId) {
@@ -74,6 +119,7 @@ async function getUser(userId) {
     .maybeSingle()
 
   if (error) throw error
+
   return data
 }
 
@@ -86,6 +132,7 @@ async function isBannedFromStory(storyId, userId) {
     .maybeSingle()
 
   if (error) throw error
+
   return Boolean(data)
 }
 
@@ -114,9 +161,45 @@ async function canModerateStory(storyId, userId) {
   }
 }
 
+async function getLikedIds(commentIds, userId) {
+  if (!userId || !commentIds.length) return new Set()
+
+  const { data, error } = await supabase
+    .from('comment_likes')
+    .select('comment_id')
+    .eq('user_id', userId)
+    .in('comment_id', commentIds)
+
+  if (error) throw error
+
+  return new Set((data || []).map((item) => String(item.comment_id)))
+}
+
+function attachReplies(parentComments, replies) {
+  const replyMap = new Map()
+
+  replies.forEach((reply) => {
+    const key = String(reply.parent_id || '')
+    const current = replyMap.get(key) || []
+    current.push(reply)
+    replyMap.set(key, current)
+  })
+
+  return parentComments.map((comment) => ({
+    ...comment,
+    replies: replyMap.get(String(comment.id)) || [],
+  }))
+}
+
 export async function getStoryComments(req, res) {
   try {
     const storyId = String(req.params.storyId || '').trim()
+    const page = Math.max(1, Number(req.query.page || 1))
+    const limit = Math.min(30, Math.max(5, Number(req.query.limit || 20)))
+    const sort = String(req.query.sort || 'newest').trim().toLowerCase()
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+    const userId = getRequestUserId(req)
 
     const story = await getStory(storyId)
 
@@ -127,19 +210,64 @@ export async function getStoryComments(req, res) {
       })
     }
 
-    const { data, error } = await supabase
+    let query = supabase
       .from('comments')
-      .select('*, user:users(id, name, username, avatar_url, role)')
+      .select('*, user:users(id, name, username, avatar_url, role)', { count: 'exact' })
       .eq('story_id', storyId)
       .eq('is_hidden', false)
-      .order('is_pinned', { ascending: false })
-      .order('created_at', { ascending: false })
+      .is('parent_id', null)
+      .range(from, to)
+
+    if (sort === 'top') {
+      query = query
+        .order('is_pinned', { ascending: false })
+        .order('likes', { ascending: false })
+        .order('created_at', { ascending: false })
+    } else if (sort === 'oldest') {
+      query = query
+        .order('is_pinned', { ascending: false })
+        .order('created_at', { ascending: true })
+    } else {
+      query = query
+        .order('is_pinned', { ascending: false })
+        .order('created_at', { ascending: false })
+    }
+
+    const { data, error, count } = await query
 
     if (error) throw error
 
+    const parentIds = (data || []).map((comment) => comment.id)
+    let replies = []
+
+    if (parentIds.length) {
+      const { data: replyData, error: replyError } = await supabase
+        .from('comments')
+        .select('*, user:users(id, name, username, avatar_url, role)')
+        .eq('story_id', storyId)
+        .eq('is_hidden', false)
+        .in('parent_id', parentIds)
+        .order('created_at', { ascending: true })
+
+      if (replyError) throw replyError
+
+      replies = replyData || []
+    }
+
+    const allIds = [...parentIds, ...replies.map((reply) => reply.id)]
+    const likedIds = await getLikedIds(allIds, userId)
+    const publicParents = (data || []).map((comment) => publicComment(comment, likedIds))
+    const publicReplies = replies.map((reply) => publicComment(reply, likedIds))
+    const comments = attachReplies(publicParents, publicReplies)
+    const total = Number(count || 0)
+
     return res.status(200).json({
       ok: true,
-      comments: (data || []).map(publicComment),
+      comments,
+      page,
+      limit,
+      total,
+      has_more: page * limit < total,
     })
   } catch (error) {
     console.error('GET STORY COMMENTS ERROR:', error)
@@ -168,9 +296,9 @@ export async function createStoryComment(req, res) {
 
     const readerCommentBlock = await getActiveReaderCommentBlock(userId)
 
-if (readerCommentBlock) {
-  return res.status(403).json(readerCommentBlockedPayload(readerCommentBlock))
-}
+    if (readerCommentBlock) {
+      return res.status(403).json(readerCommentBlockedPayload(readerCommentBlock))
+    }
 
     if (!text) {
       return res.status(400).json({
@@ -208,8 +336,6 @@ if (readerCommentBlock) {
       }
     }
 
-    c
-
     const { data, error } = await supabase
       .from('comments')
       .insert({
@@ -241,6 +367,94 @@ if (readerCommentBlock) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to create comment',
+      error: error.message,
+    })
+  }
+}
+
+export async function toggleCommentLike(req, res) {
+  try {
+    const commentId = String(req.params.commentId || '').trim()
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const comment = await getComment(commentId)
+
+    if (!comment || comment.is_hidden) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
+
+    const { data: existingLike, error: likeLookupError } = await supabase
+      .from('comment_likes')
+      .select('id')
+      .eq('comment_id', commentId)
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (likeLookupError) throw likeLookupError
+
+    let liked = false
+
+    if (existingLike?.id) {
+      const { error } = await supabase
+        .from('comment_likes')
+        .delete()
+        .eq('id', existingLike.id)
+
+      if (error) throw error
+    } else {
+      const { error } = await supabase
+        .from('comment_likes')
+        .insert({
+          comment_id: commentId,
+          user_id: userId,
+        })
+
+      if (error) throw error
+
+      liked = true
+    }
+
+    const { count, error: countError } = await supabase
+      .from('comment_likes')
+      .select('id', { count: 'exact', head: true })
+      .eq('comment_id', commentId)
+
+    if (countError) throw countError
+
+    const likes = Number(count || 0)
+
+    const { error: updateError } = await supabase
+      .from('comments')
+      .update({
+        likes,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', commentId)
+
+    if (updateError) throw updateError
+
+    return res.status(200).json({
+      ok: true,
+      comment_id: commentId,
+      liked,
+      likes,
+    })
+  } catch (error) {
+    console.error('TOGGLE COMMENT LIKE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update like',
       error: error.message,
     })
   }
@@ -287,9 +501,11 @@ export async function updateOwnComment(req, res) {
 
     if (error) throw error
 
+    const updatedComment = await getPublicComment(data.id, userId)
+
     return res.status(200).json({
       ok: true,
-      comment: publicComment(data),
+      comment: updatedComment || publicComment(data),
     })
   } catch (error) {
     console.error('UPDATE OWN COMMENT ERROR:', error)
@@ -394,9 +610,11 @@ export async function moderateComment(req, res) {
 
     if (error) throw error
 
+    const updatedComment = await getPublicComment(data.id, userId)
+
     return res.status(200).json({
       ok: true,
-      comment: publicComment(data),
+      comment: updatedComment || publicComment(data),
     })
   } catch (error) {
     console.error('MODERATE COMMENT ERROR:', error)
@@ -411,6 +629,7 @@ export async function moderateComment(req, res) {
 
 async function fetchStoryMap(storyIds) {
   const ids = [...new Set((storyIds || []).filter(Boolean))]
+
   if (!ids.length) return new Map()
 
   const { data, error } = await supabase
@@ -442,63 +661,6 @@ function publicMyCommentActivity(comment, storyMap, type) {
     story,
   }
 }
-
-async function getMyOwnComments(userId) {
-  const { data, error } = await supabase
-    .from('comments')
-    .select('id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at')
-    .eq('user_id', userId)
-    .eq('is_hidden', false)
-    .order('created_at', { ascending: false })
-    .limit(80)
-
-  if (error) throw error
-  return data || []
-}
-
-async function getMyReplies(userId) {
-  const { data: parents, error: parentError } = await supabase
-    .from('comments')
-    .select('id')
-    .eq('user_id', userId)
-    .eq('is_hidden', false)
-    .limit(300)
-
-  if (parentError) throw parentError
-
-  const parentIds = (parents || []).map((item) => item.id)
-  if (!parentIds.length) return []
-
-  const { data, error } = await supabase
-    .from('comments')
-    .select('id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at')
-    .in('parent_id', parentIds)
-    .neq('user_id', userId)
-    .eq('is_hidden', false)
-    .order('created_at', { ascending: false })
-    .limit(80)
-
-  if (error) throw error
-  return data || []
-}
-
-async function getMyMentions(userId, username) {
-  const cleanUsername = String(username || '').trim()
-  if (!cleanUsername) return []
-
-  const { data, error } = await supabase
-    .from('comments')
-    .select('id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at')
-    .ilike('text', `%@${cleanUsername}%`)
-    .neq('user_id', userId)
-    .eq('is_hidden', false)
-    .order('created_at', { ascending: false })
-    .limit(80)
-
-  if (error) throw error
-  return data || []
-}
-
 
 export async function getMyCommentActivities(req, res) {
   try {
@@ -545,6 +707,7 @@ export async function getMyCommentActivities(req, res) {
           .limit(80)
 
         if (error) throw error
+
         activities = data || []
       }
     } else if (filter === 'mentions') {
@@ -561,8 +724,21 @@ export async function getMyCommentActivities(req, res) {
           .limit(80)
 
         if (error) throw error
+
         activities = data || []
       }
+    } else if (filter === 'all') {
+      const { data: mine, error: mineError } = await supabase
+        .from('comments')
+        .select('id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at')
+        .eq('user_id', userId)
+        .eq('is_hidden', false)
+        .order('created_at', { ascending: false })
+        .limit(80)
+
+      if (mineError) throw mineError
+
+      activities = mine || []
     } else {
       const { data, error } = await supabase
         .from('comments')
@@ -573,6 +749,7 @@ export async function getMyCommentActivities(req, res) {
         .limit(80)
 
       if (error) throw error
+
       activities = data || []
     }
 
@@ -583,7 +760,7 @@ export async function getMyCommentActivities(req, res) {
       filter,
       activities: activities.map((item) => publicMyCommentActivity(item, storyMap, filter === 'mine' ? 'mine' : filter.slice(0, -1))),
       counts: {
-        all: 0,
+        all: filter === 'all' ? activities.length : 0,
         mine: filter === 'mine' ? activities.length : 0,
         replies: filter === 'replies' ? activities.length : 0,
         mentions: filter === 'mentions' ? activities.length : 0,
@@ -599,4 +776,3 @@ export async function getMyCommentActivities(req, res) {
     })
   }
 }
-
