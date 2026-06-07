@@ -23,12 +23,22 @@ import {
 } from '../controllers/authorRevenue.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
+import {
+  getMyAuthorPageNotifications,
+  markAllMyAuthorPageNotificationsRead,
+  markMyAuthorPageNotificationRead,
+} from '../controllers/authorPageNotifications.controller.js'
+
+
 const router = express.Router()
 
 router.get('/me', requireUser, getMyAuthorPage)
 router.get('/me/quest', requireUser, getMyAuthorQuest)
 router.get('/me/income', requireUser, getMyAuthorIncome)
 router.get('/me/payment-methods', requireUser, getMyAuthorPaymentMethods)
+router.get('/me/page-notifications', requireUser, getMyAuthorPageNotifications)
+router.patch('/me/page-notifications/read-all', requireUser, markAllMyAuthorPageNotificationsRead)
+router.patch('/me/page-notifications/:id/read', requireUser, markMyAuthorPageNotificationRead)
 router.get('/following', requireUser, getFollowedAuthorPages)
 router.get('/top', getTopAuthorPages)
 router.get('/page/:pageUsername', getPublicAuthorPage)
