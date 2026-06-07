@@ -26,6 +26,18 @@ function publicAuthorPost(post) {
   }
 }
 
+const AUTHOR_POSTS_DAILY_LIMIT = 5
+
+function getUtcDayRange(date = new Date()) {
+  const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0))
+  const end = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1, 0, 0, 0, 0))
+
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+  }
+}
+
 export async function getAuthorPagePosts(req, res) {
   try {
     const pageUsername = normalizePageUsername(req.params.pageUsername)
@@ -102,6 +114,27 @@ export async function createMyAuthorPost(req, res) {
       return res.status(404).json({ ok: false, message: 'Author page not found' })
     }
 
+    const todayRange = getUtcDayRange()
+
+    const { count: todayPostCount, error: countError } = await supabase
+      .from('author_page_posts')
+      .select('id', { count: 'exact', head: true })
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .gte('created_at', todayRange.start)
+      .lt('created_at', todayRange.end)
+
+    if (countError) throw countError
+
+    if (Number(todayPostCount || 0) >= AUTHOR_POSTS_DAILY_LIMIT) {
+      return res.status(429).json({
+        ok: false,
+        message: 'You reached today’s posting limit. You can publish up to 5 posts per day.',
+        daily_post_limit: AUTHOR_POSTS_DAILY_LIMIT,
+        daily_post_count: Number(todayPostCount || 0),
+      })
+    }
+
     const { data: createdPost, error: createError } = await supabase
       .from('author_page_posts')
       .insert({
@@ -122,6 +155,8 @@ export async function createMyAuthorPost(req, res) {
       ok: true,
       message: 'Post created',
       post: publicAuthorPost(createdPost),
+      daily_post_limit: AUTHOR_POSTS_DAILY_LIMIT,
+      daily_post_count: Number(todayPostCount || 0) + 1,
     })
   } catch (error) {
     console.error('CREATE MY AUTHOR POST ERROR:', error)
