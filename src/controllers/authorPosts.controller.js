@@ -17,6 +17,7 @@ function publicAuthorPost(post) {
     post_type: post.post_type || 'article',
     content: post.content || '',
     status: post.status || 'active',
+    is_pinned: Boolean(post.is_pinned),
     like_count: Number(post.like_count || 0),
     comment_count: Number(post.comment_count || 0),
     echo_count: Number(post.echo_count || 0),
@@ -52,6 +53,7 @@ export async function getAuthorPagePosts(req, res) {
       .select('*')
       .eq('author_page_id', authorPage.id)
       .eq('status', 'active')
+      .order('is_pinned', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(limit)
 
@@ -108,6 +110,7 @@ export async function createMyAuthorPost(req, res) {
         post_type: allowedTypes.has(postType) ? postType : 'article',
         content,
         status: 'active',
+        is_pinned: false,
         updated_at: new Date().toISOString(),
       })
       .select()
@@ -123,5 +126,85 @@ export async function createMyAuthorPost(req, res) {
   } catch (error) {
     console.error('CREATE MY AUTHOR POST ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to create author post', error: error.message })
+  }
+}
+
+export async function setMyAuthorPostPinned(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const postId = req.params.postId
+    const isPinned = Boolean(req.body?.is_pinned ?? req.body?.pinned)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!postId) {
+      return res.status(400).json({ ok: false, message: 'Post ID is required' })
+    }
+
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('id, user_id')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (pageError) throw pageError
+
+    if (!authorPage) {
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
+    }
+
+    const { data: existingPost, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('id, author_page_id, status')
+      .eq('id', postId)
+      .eq('author_page_id', authorPage.id)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!existingPost) {
+      return res.status(404).json({ ok: false, message: 'Post not found' })
+    }
+
+    const now = new Date().toISOString()
+
+    if (isPinned) {
+      const { error: unpinError } = await supabase
+        .from('author_page_posts')
+        .update({
+          is_pinned: false,
+          updated_at: now,
+        })
+        .eq('author_page_id', authorPage.id)
+        .neq('id', postId)
+
+      if (unpinError) throw unpinError
+    }
+
+    const { data: updatedPost, error: updateError } = await supabase
+      .from('author_page_posts')
+      .update({
+        is_pinned: isPinned,
+        updated_at: now,
+      })
+      .eq('id', postId)
+      .eq('author_page_id', authorPage.id)
+      .select()
+      .single()
+
+    if (updateError) throw updateError
+
+    return res.status(200).json({
+      ok: true,
+      message: isPinned ? 'Post pinned' : 'Post unpinned',
+      post: publicAuthorPost(updatedPost),
+    })
+  } catch (error) {
+    console.error('SET MY AUTHOR POST PINNED ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to update pinned post', error: error.message })
   }
 }
