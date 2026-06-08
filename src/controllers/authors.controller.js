@@ -151,6 +151,49 @@ export async function getMyAuthorPage(req, res) {
 
     if (error) throw error
 
+    if (!data) {
+      return res.status(200).json({
+        ok: true,
+        has_author_page: false,
+        author_page: null,
+        works: [],
+      })
+    }
+
+    const works = await getAuthorPageWorks(data.id)
+
+    return res.status(200).json({
+      ok: true,
+      has_author_page: true,
+      author_page: {
+        ...publicAuthorPage({
+          ...data,
+          total_stories: works.length,
+        }),
+        works,
+      },
+      works,
+    })
+  } catch (error) {
+    console.error('GET MY AUTHOR PAGE ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to fetch author page', error: error.message })
+  }
+}
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_pages')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (error) throw error
+
     return res.status(200).json({
       ok: true,
       has_author_page: Boolean(data),
