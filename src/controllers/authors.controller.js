@@ -179,31 +179,6 @@ export async function getMyAuthorPage(req, res) {
     return res.status(500).json({ ok: false, message: 'Failed to fetch author page', error: error.message })
   }
 }
-  try {
-    const userId = req.user?.user_id
-
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
-    }
-
-    const { data, error } = await supabase
-      .from('author_pages')
-      .select('*')
-      .eq('user_id', userId)
-      .maybeSingle()
-
-    if (error) throw error
-
-    return res.status(200).json({
-      ok: true,
-      has_author_page: Boolean(data),
-      author_page: publicAuthorPage(data),
-    })
-  } catch (error) {
-    console.error('GET MY AUTHOR PAGE ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to fetch author page', error: error.message })
-  }
-}
 
 export async function getPublicAuthorPage(req, res) {
   try {
