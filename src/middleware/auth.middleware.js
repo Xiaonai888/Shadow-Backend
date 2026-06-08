@@ -23,13 +23,13 @@ export function requireAdmin(req, res, next) {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET)
+const role = String(decoded.role || '').trim().toLowerCase()
+const allowedRoles = ['owner', 'admin']
 
-    const allowedRoles = ['owner', 'admin']
-
-if (!allowedRoles.includes(decoded.role)) {
+if (!allowedRoles.includes(role)) {
   return res.status(403).json({
     ok: false,
-    message: 'Owner or admin access only',
+    message: `Owner or admin access only. Current role: ${decoded.role || 'missing'}`,
   })
 }
 
