@@ -20,6 +20,15 @@ const R2_FOLDERS = {
   author_post_image: 'author-posts/images',
   author_store_cover: 'author-store/covers',
 }
+function getMissingR2EnvKeys() {
+  return [
+    'R2_ACCOUNT_ID',
+    'R2_ACCESS_KEY_ID',
+    'R2_SECRET_ACCESS_KEY',
+    'R2_BUCKET_NAME',
+    'R2_PUBLIC_URL',
+  ].filter((key) => !String(process.env[key] || '').trim())
+}
 
 let r2Client = null
 
@@ -183,7 +192,25 @@ export async function uploadStoryImage(req, res) {
     const requestedFolder = String(req.body.folder || req.query.folder || '').trim()
 
     if (R2_FOLDERS[requestedFolder]) {
-      const authorPage = await getMyAuthorPage(userId)
+  const missingR2EnvKeys = getMissingR2EnvKeys()
+
+  if (missingR2EnvKeys.length) {
+    return res.status(500).json({
+      ok: false,
+      code: 'R2_ENV_MISSING',
+      message: `Missing R2 environment: ${missingR2EnvKeys.join(', ')}`,
+      missing_env: missingR2EnvKeys,
+      required_env: [
+        'R2_ACCOUNT_ID',
+        'R2_ACCESS_KEY_ID',
+        'R2_SECRET_ACCESS_KEY',
+        'R2_BUCKET_NAME',
+        'R2_PUBLIC_URL',
+      ],
+    })
+  }
+
+  const authorPage = await getMyAuthorPage(userId)
 
       if (!authorPage) {
         return res.status(403).json({
