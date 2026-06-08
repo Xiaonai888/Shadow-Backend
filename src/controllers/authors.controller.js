@@ -24,6 +24,7 @@ function publicAuthorPage(page) {
     bio: page.bio,
     avatar_url: page.avatar_url,
     cover_url: page.cover_url,
+    slide_urls: Array.isArray(page.slide_urls) ? page.slide_urls : [],
     status: page.status,
     total_stories: page.total_stories,
     total_followers: page.total_followers,
@@ -609,10 +610,13 @@ export async function updateAuthorProfileImages(req, res) {
 
     const avatarUrl = String(req.body.avatar_url || req.body.avatarUrl || '').trim()
     const coverUrl = String(req.body.cover_url || req.body.coverUrl || '').trim()
+    const slideUrls = Array.isArray(req.body.slide_urls)
+    ? req.body.slide_urls.filter(Boolean).map((item) => String(item).trim()).filter(Boolean).slice(0, 5)
+    : null
 
-    if (!avatarUrl && !coverUrl) {
-      return res.status(400).json({ ok: false, message: 'Avatar URL or cover URL is required' })
-    }
+   if (!avatarUrl && !coverUrl && slideUrls === null) {
+  return res.status(400).json({ ok: false, message: 'Avatar URL, cover URL, or slide URLs are required' })
+}
 
     const updates = {
       updated_at: new Date().toISOString(),
@@ -620,6 +624,7 @@ export async function updateAuthorProfileImages(req, res) {
 
     if (avatarUrl) updates.avatar_url = avatarUrl
     if (coverUrl) updates.cover_url = coverUrl
+    if (slideUrls !== null) updates.slide_urls = slideUrls
 
     const { data, error } = await supabase
       .from('author_pages')
