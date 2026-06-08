@@ -273,3 +273,113 @@ export async function setMyAuthorPostPinned(req, res) {
     return res.status(500).json({ ok: false, message: 'Failed to update pinned post', error: error.message })
   }
 }
+
+export async function setMyAuthorPostReaction(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const postId = req.params.postId
+    const reactionType = String(req.body?.reaction_type || req.body?.reactionType || 'love').trim().toLowerCase()
+    const allowedReactions = new Set(['love', 'haha', 'wow', 'sad', 'angry', 'support', 'touched'])
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!postId) {
+      return res.status(400).json({ ok: false, message: 'Post ID is required' })
+    }
+
+    if (!allowedReactions.has(reactionType)) {
+      return res.status(400).json({ ok: false, message: 'Invalid reaction type' })
+    }
+
+    const { data: post, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('*')
+      .eq('id', postId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({ ok: false, message: 'Post not found' })
+    }
+
+    const { data: existingReaction, error: existingError } = await supabase
+      .from('author_page_post_reactions')
+      .select('id, reaction_type')
+      .eq('post_id', postId)
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (existingError) throw existingError
+
+    let reacted = true
+    let nextReactionType = reactionType
+
+    if (existingReaction?.reaction_type === reactionType) {
+      const { error: deleteError } = await supabase
+        .from('author_page_post_reactions')
+        .delete()
+        .eq('id', existingReaction.id)
+
+      if (deleteError) throw deleteError
+
+      reacted = false
+      nextReactionType = null
+    } else if (existingReaction?.id) {
+      const { error: updateReactionError } = await supabase
+        .from('author_page_post_reactions')
+        .update({
+          reaction_type: reactionType,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existingReaction.id)
+
+      if (updateReactionError) throw updateReactionError
+    } else {
+      const { error: insertReactionError } = await supabase
+        .from('author_page_post_reactions')
+        .insert({
+          post_id: postId,
+          user_id: userId,
+          reaction_type: reactionType,
+        })
+
+      if (insertReactionError) throw insertReactionError
+    }
+
+    const { count, error: countError } = await supabase
+      .from('author_page_post_reactions')
+      .select('id', { count: 'exact', head: true })
+      .eq('post_id', postId)
+
+    if (countError) throw countError
+
+    const nextLikeCount = Number(count || 0)
+
+    const { data: updatedPost, error: updatePostError } = await supabase
+      .from('author_page_posts')
+      .update({
+        like_count: nextLikeCount,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', postId)
+      .select()
+      .single()
+
+    if (updatePostError) throw updatePostError
+
+    return res.status(200).json({
+      ok: true,
+      reacted,
+      reaction_type: nextReactionType,
+      like_count: nextLikeCount,
+      post: publicAuthorPost(updatedPost),
+    })
+  } catch (error) {
+    console.error('SET MY AUTHOR POST REACTION ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to update post reaction', error: error.message })
+  }
+}
