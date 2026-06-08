@@ -19,7 +19,11 @@ const ALLOWED_FOLDERS = {
 const R2_FOLDERS = {
   author_post_image: 'author-posts/images',
   author_store_cover: 'author-store/covers',
+  author_page_cover: 'author-page/covers',
+  author_page_slide: 'author-page/slides',
+  author_page_avatar: 'author-page/avatars',
 }
+
 function getMissingR2EnvKeys() {
   return [
     'R2_ACCOUNT_ID',
