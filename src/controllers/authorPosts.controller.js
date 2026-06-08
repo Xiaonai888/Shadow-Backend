@@ -383,3 +383,156 @@ export async function setMyAuthorPostReaction(req, res) {
     return res.status(500).json({ ok: false, message: 'Failed to update post reaction', error: error.message })
   }
 }
+
+
+function publicAuthorPostComment(comment) {
+  return {
+    id: comment.id,
+    post_id: comment.post_id,
+    user_id: comment.user_id,
+    parent_id: comment.parent_id,
+    text: comment.text || '',
+    is_hidden: Boolean(comment.is_hidden),
+    is_pinned: Boolean(comment.is_pinned),
+    likes: Number(comment.likes || 0),
+    created_at: comment.created_at,
+    updated_at: comment.updated_at,
+    user: comment.user
+      ? {
+          id: comment.user.id,
+          name: comment.user.name || comment.user.username || 'Reader',
+          username: comment.user.username || '',
+          avatar_url: comment.user.avatar_url || '',
+          role: comment.user.role || 'reader',
+        }
+      : {
+          id: null,
+          name: 'Reader',
+          username: '',
+          avatar_url: '',
+          role: 'reader',
+        },
+  }
+}
+
+export async function getAuthorPostComments(req, res) {
+  try {
+    const postId = req.params.postId
+    const limit = Math.min(30, Math.max(1, Number(req.query.limit || 20)))
+
+    if (!postId) {
+      return res.status(400).json({ ok: false, message: 'Post ID is required' })
+    }
+
+    const { data: post, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('id, status')
+      .eq('id', postId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({ ok: false, message: 'Post not found' })
+    }
+
+    const { data: comments, error: commentsError } = await supabase
+      .from('author_page_post_comments')
+      .select('*, user:users(id, name, username, avatar_url, role)')
+      .eq('post_id', postId)
+      .eq('is_hidden', false)
+      .is('parent_id', null)
+      .order('is_pinned', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(limit)
+
+    if (commentsError) throw commentsError
+
+    return res.status(200).json({
+      ok: true,
+      comments: (comments || []).map(publicAuthorPostComment),
+    })
+  } catch (error) {
+    console.error('GET AUTHOR POST COMMENTS ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load post comments', error: error.message })
+  }
+}
+
+export async function createAuthorPostComment(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const postId = req.params.postId
+    const text = String(req.body.text || '').trim()
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!postId) {
+      return res.status(400).json({ ok: false, message: 'Post ID is required' })
+    }
+
+    if (!text) {
+      return res.status(400).json({ ok: false, message: 'Comment text is required' })
+    }
+
+    if (text.length > 1000) {
+      return res.status(400).json({ ok: false, message: 'Comment is too long' })
+    }
+
+    const { data: post, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('id, status, comment_count')
+      .eq('id', postId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({ ok: false, message: 'Post not found' })
+    }
+
+    const { data: createdComment, error: createError } = await supabase
+      .from('author_page_post_comments')
+      .insert({
+        post_id: postId,
+        user_id: userId,
+        text,
+      })
+      .select('*, user:users(id, name, username, avatar_url, role)')
+      .single()
+
+    if (createError) throw createError
+
+    const { count, error: countError } = await supabase
+      .from('author_page_post_comments')
+      .select('id', { count: 'exact', head: true })
+      .eq('post_id', postId)
+      .eq('is_hidden', false)
+
+    if (countError) throw countError
+
+    const nextCommentCount = Number(count || 0)
+
+    const { error: updatePostError } = await supabase
+      .from('author_page_posts')
+      .update({
+        comment_count: nextCommentCount,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', postId)
+
+    if (updatePostError) throw updatePostError
+
+    return res.status(201).json({
+      ok: true,
+      comment: publicAuthorPostComment(createdComment),
+      comment_count: nextCommentCount,
+    })
+  } catch (error) {
+    console.error('CREATE AUTHOR POST COMMENT ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to create post comment', error: error.message })
+  }
+}
