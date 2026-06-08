@@ -366,3 +366,187 @@ export async function deleteMyAuthorStoreProduct(req, res) {
     return res.status(500).json({ ok: false, message: 'Failed to delete product', error: error.message })
   }
 }
+
+
+function publicOrder(order) {
+  return {
+    id: order.id,
+    author_page_id: order.author_page_id,
+    buyer_id: order.buyer_id,
+    order_number: order.order_number,
+    buyer_name: order.buyer_name || '',
+    buyer_phone: order.buyer_phone || '',
+    buyer_email: order.buyer_email || '',
+    delivery_address: order.delivery_address || '',
+    subtotal: Number(order.subtotal || 0),
+    delivery_fee: Number(order.delivery_fee || 0),
+    total_amount: Number(order.total_amount || 0),
+    payment_status: order.payment_status || 'pending',
+    order_status: order.order_status || 'pending',
+    note: order.note || '',
+    created_at: order.created_at,
+    updated_at: order.updated_at,
+    items: Array.isArray(order.items)
+      ? order.items.map((item) => ({
+          id: item.id,
+          product_id: item.product_id,
+          product_title: item.product_title || '',
+          product_type: item.product_type || 'book',
+          cover_url: item.cover_url || '',
+          quantity: Number(item.quantity || 1),
+          unit_price: Number(item.unit_price || 0),
+          total_price: Number(item.total_price || 0),
+        }))
+      : [],
+  }
+}
+
+export async function getMyAuthorStoreOrders(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    const { data: orders, error } = await supabase
+      .from('author_store_orders')
+      .select('*, items:author_store_order_items(*)')
+      .eq('author_page_id', authorPage.id)
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+
+    const safeOrders = (orders || []).map(publicOrder)
+    const revenue = safeOrders
+      .filter((order) => order.payment_status === 'paid')
+      .reduce((sum, order) => sum + Number(order.total_amount || 0), 0)
+
+    return res.status(200).json({
+      ok: true,
+      orders: safeOrders,
+      summary: {
+        orders_count: safeOrders.length,
+        revenue,
+      },
+    })
+  } catch (error) {
+    console.error('GET MY AUTHOR STORE ORDERS ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load store orders', error: error.message })
+  }
+}
+
+export async function createAuthorStoreOrder(req, res) {
+  try {
+    const buyerId = req.user?.user_id || null
+    const pageUsername = normalizePageUsername(req.body.page_username || req.body.pageUsername)
+    const items = Array.isArray(req.body.items) ? req.body.items : []
+
+    if (!pageUsername) {
+      return res.status(400).json({ ok: false, message: 'Page username is required' })
+    }
+
+    if (!items.length) {
+      return res.status(400).json({ ok: false, message: 'Order items are required' })
+    }
+
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('id')
+      .eq('page_username', pageUsername)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (pageError) throw pageError
+
+    if (!authorPage) {
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
+    }
+
+    const productIds = items.map((item) => item.product_id || item.productId).filter(Boolean)
+
+    const { data: products, error: productsError } = await supabase
+      .from('author_store_products')
+      .select('*')
+      .in('id', productIds)
+      .eq('author_page_id', authorPage.id)
+      .eq('status', 'active')
+
+    if (productsError) throw productsError
+
+    const productMap = new Map((products || []).map((product) => [product.id, product]))
+    const orderItems = []
+
+    for (const item of items) {
+      const productId = item.product_id || item.productId
+      const product = productMap.get(productId)
+
+      if (!product) {
+        return res.status(400).json({ ok: false, message: 'Invalid product in order' })
+      }
+
+      const quantity = Math.max(1, cleanInteger(item.quantity, 1))
+      const unitPrice = Number(product.sale_price || product.original_price || 0)
+
+      orderItems.push({
+        product_id: product.id,
+        product_title: product.title || '',
+        product_type: product.product_type || 'book',
+        cover_url: product.cover_url || '',
+        quantity,
+        unit_price: unitPrice,
+        total_price: unitPrice * quantity,
+      })
+    }
+
+    const subtotal = orderItems.reduce((sum, item) => sum + item.total_price, 0)
+    const deliveryFee = cleanNumber(req.body.delivery_fee ?? req.body.deliveryFee, 0)
+    const totalAmount = subtotal + deliveryFee
+    const orderNumber = `AS-${Date.now()}-${Math.floor(Math.random() * 9000 + 1000)}`
+
+    const { data: order, error: orderError } = await supabase
+      .from('author_store_orders')
+      .insert({
+        author_page_id: authorPage.id,
+        buyer_id: buyerId,
+        order_number: orderNumber,
+        buyer_name: cleanText(req.body.buyer_name || req.body.buyerName),
+        buyer_phone: cleanText(req.body.buyer_phone || req.body.buyerPhone),
+        buyer_email: cleanText(req.body.buyer_email || req.body.buyerEmail),
+        delivery_address: cleanText(req.body.delivery_address || req.body.deliveryAddress),
+        subtotal: subtotal,
+        delivery_fee: deliveryFee,
+        total_amount: totalAmount,
+        payment_status: 'pending',
+        order_status: 'pending',
+        note: cleanText(req.body.note),
+        updated_at: new Date().toISOString(),
+      })
+      .select()
+      .single()
+
+    if (orderError) throw orderError
+
+    const { data: createdItems, error: itemsError } = await supabase
+      .from('author_store_order_items')
+      .insert(orderItems.map((item) => ({ ...item, order_id: order.id })))
+      .select()
+
+    if (itemsError) throw itemsError
+
+    return res.status(201).json({
+      ok: true,
+      message: 'Order created',
+      order: publicOrder({ ...order, items: createdItems || [] }),
+    })
+  } catch (error) {
+    console.error('CREATE AUTHOR STORE ORDER ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to create order', error: error.message })
+  }
+}
