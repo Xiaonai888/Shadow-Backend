@@ -1,10 +1,14 @@
 import express from 'express'
 import {
   createAuthorStoreOrder,
+  createMyAuthorStoreCategory,
   createMyAuthorStoreProduct,
+  deleteMyAuthorStoreCategory,
+  getMyAuthorStoreCategories,
   getMyAuthorStoreOrders,
   getMyAuthorStoreProducts,
   getPublicAuthorStoreProducts,
+  reorderMyAuthorStoreCategories,
 } from '../controllers/authorStore.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
