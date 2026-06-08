@@ -12,8 +12,10 @@ import {
   updateAuthorProfileImages,
 } from '../controllers/authors.controller.js'
 import {
+  createAuthorPostComment,
   createMyAuthorPost,
   getAuthorPagePosts,
+  getAuthorPostComments,
   setMyAuthorPostPinned,
   setMyAuthorPostReaction,
 } from '../controllers/authorPosts.controller.js'
@@ -54,6 +56,8 @@ router.put('/me', requireUser, updateMyAuthorPage)
 router.get('/page/:pageUsername/posts', getAuthorPagePosts)
 router.post('/me/posts', requireUser, createMyAuthorPost)
 router.post('/me/posts/:postId/react', requireUser, setMyAuthorPostReaction)
+router.get('/page/posts/:postId/comments', getAuthorPostComments)
+router.post('/me/posts/:postId/comments', requireUser, createAuthorPostComment)
 
 
 export default router
