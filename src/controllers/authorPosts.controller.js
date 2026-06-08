@@ -7,6 +7,15 @@ function normalizePageUsername(username) {
     .toLowerCase()
 }
 
+function normalizeImageUrls(value) {
+  if (!Array.isArray(value)) return []
+
+  return value
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .slice(0, 5)
+}
+
 function publicAuthorPost(post) {
   if (!post) return null
 
@@ -16,6 +25,7 @@ function publicAuthorPost(post) {
     user_id: post.user_id,
     post_type: post.post_type || 'article',
     content: post.content || '',
+    image_urls: normalizeImageUrls(post.image_urls),
     status: post.status || 'active',
     is_pinned: Boolean(post.is_pinned),
     like_count: Number(post.like_count || 0),
@@ -27,6 +37,7 @@ function publicAuthorPost(post) {
 }
 
 const AUTHOR_POSTS_DAILY_LIMIT = 5
+const AUTHOR_POST_IMAGES_LIMIT = 5
 
 function getUtcDayRange(date = new Date()) {
   const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0))
@@ -91,14 +102,32 @@ export async function createMyAuthorPost(req, res) {
 
     const content = String(req.body.content || '').trim()
     const postType = String(req.body.post_type || req.body.postType || 'article').trim().toLowerCase()
+    const imageUrlsRaw = Array.isArray(req.body.image_urls)
+      ? req.body.image_urls
+      : Array.isArray(req.body.imageUrls)
+        ? req.body.imageUrls
+        : []
+    const imageUrls = normalizeImageUrls(imageUrlsRaw)
     const allowedTypes = new Set(['article', 'announcement', 'update'])
 
-    if (!content) {
-      return res.status(400).json({ ok: false, message: 'Post content is required' })
+    if (!content && !imageUrls.length) {
+      return res.status(400).json({ ok: false, message: 'Post content or photo is required' })
     }
 
     if (content.length > 5000) {
       return res.status(400).json({ ok: false, message: 'Post content is too long' })
+    }
+
+    if (imageUrlsRaw.length > AUTHOR_POST_IMAGES_LIMIT) {
+      return res.status(400).json({
+        ok: false,
+        message: 'You can add up to 5 photos per post.',
+        image_limit: AUTHOR_POST_IMAGES_LIMIT,
+      })
+    }
+
+    if (imageUrls.length !== imageUrlsRaw.length) {
+      return res.status(400).json({ ok: false, message: 'Invalid post photo URL' })
     }
 
     const { data: authorPage, error: pageError } = await supabase
@@ -142,6 +171,7 @@ export async function createMyAuthorPost(req, res) {
         user_id: userId,
         post_type: allowedTypes.has(postType) ? postType : 'article',
         content,
+        image_urls: imageUrls,
         status: 'active',
         is_pinned: false,
         updated_at: new Date().toISOString(),
