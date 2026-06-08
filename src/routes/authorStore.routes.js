@@ -15,6 +15,10 @@ import { requireUser } from '../middleware/user.middleware.js'
 const router = express.Router()
 
 router.get('/me/products', requireUser, getMyAuthorStoreProducts)
+router.get('/me/categories', requireUser, getMyAuthorStoreCategories)
+router.post('/me/categories', requireUser, createMyAuthorStoreCategory)
+router.patch('/me/categories/reorder', requireUser, reorderMyAuthorStoreCategories)
+router.delete('/me/categories/:categoryId', requireUser, deleteMyAuthorStoreCategory)
 router.post('/me/products', requireUser, createMyAuthorStoreProduct)
 router.get('/me/orders', requireUser, getMyAuthorStoreOrders)
 router.post('/orders', createAuthorStoreOrder)
