@@ -225,3 +225,144 @@ export async function createMyAuthorStoreProduct(req, res) {
     return res.status(500).json({ ok: false, message: 'Failed to create product', error: error.message })
   }
 }
+
+export async function updateMyAuthorStoreProduct(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const productId = req.params.productId
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!productId) {
+      return res.status(400).json({ ok: false, message: 'Product ID is required' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    const title = cleanText(req.body.title)
+    const productTypeRaw = cleanText(req.body.product_type || req.body.productType || req.body.type || 'book').toLowerCase()
+    const productType = productTypeRaw === 'pdf' ? 'pdf' : 'book'
+    const statusRaw = cleanText(req.body.status || 'draft').toLowerCase()
+    const status = PRODUCT_STATUSES.has(statusRaw) ? statusRaw : 'draft'
+    const coverUrl = cleanText(req.body.cover_url || req.body.coverUrl)
+
+    if (!title) {
+      return res.status(400).json({ ok: false, message: 'Product title is required' })
+    }
+
+    if (!PRODUCT_TYPES.has(productType)) {
+      return res.status(400).json({ ok: false, message: 'Invalid product type' })
+    }
+
+    if (!coverUrl) {
+      return res.status(400).json({ ok: false, message: 'Product cover is required' })
+    }
+
+    const bookCondition = cleanText(req.body.book_condition || req.body.bookCondition || 'New')
+    const qualityPercentRaw = req.body.quality_percent ?? req.body.qualityPercent ?? null
+    const qualityPercent = qualityPercentRaw === null || qualityPercentRaw === ''
+      ? null
+      : cleanInteger(qualityPercentRaw, null)
+
+    if (bookCondition === 'Second Hand' && (!qualityPercent || qualityPercent < 1 || qualityPercent > 100)) {
+      return res.status(400).json({ ok: false, message: 'Book quality must be between 1% and 100%.' })
+    }
+
+    const payload = {
+      product_type: productType,
+      title,
+      category: cleanText(req.body.category, 'New Release') || 'New Release',
+      description: cleanText(req.body.description),
+      original_price: cleanNumber(req.body.original_price ?? req.body.originalPrice, 0),
+      sale_price: cleanNumber(req.body.sale_price ?? req.body.salePrice, 0),
+      status,
+      cover_url: coverUrl,
+      stock_quantity: cleanInteger(req.body.stock_quantity ?? req.body.stockQuantity ?? req.body.stock, 0),
+      paper_type: cleanText(req.body.paper_type || req.body.paperType),
+      book_condition: bookCondition,
+      quality_percent: bookCondition === 'Second Hand' ? qualityPercent : null,
+      delivery_note: cleanText(req.body.delivery_note || req.body.deliveryNote),
+      pre_order: Boolean(req.body.pre_order ?? req.body.preOrder),
+      pdf_file_url: cleanText(req.body.pdf_file_url || req.body.pdfFileUrl),
+      pdf_file_name: cleanText(req.body.pdf_file_name || req.body.pdfFileName),
+      page_count: cleanInteger(req.body.page_count ?? req.body.pageCount, 0),
+      access_rule: cleanText(req.body.access_rule || req.body.accessRule),
+      updated_at: new Date().toISOString(),
+    }
+
+    const { data, error } = await supabase
+      .from('author_store_products')
+      .update(payload)
+      .eq('id', productId)
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .select()
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({ ok: false, message: 'Product not found' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Product updated',
+      product: publicProduct(data),
+    })
+  } catch (error) {
+    console.error('UPDATE MY AUTHOR STORE PRODUCT ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to update product', error: error.message })
+  }
+}
+
+export async function deleteMyAuthorStoreProduct(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const productId = req.params.productId
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!productId) {
+      return res.status(400).json({ ok: false, message: 'Product ID is required' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_store_products')
+      .delete()
+      .eq('id', productId)
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .select('id')
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({ ok: false, message: 'Product not found' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Product deleted',
+      product_id: productId,
+    })
+  } catch (error) {
+    console.error('DELETE MY AUTHOR STORE PRODUCT ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to delete product', error: error.message })
+  }
+}
