@@ -550,3 +550,263 @@ export async function createAuthorStoreOrder(req, res) {
     return res.status(500).json({ ok: false, message: 'Failed to create order', error: error.message })
   }
 }
+
+const DEFAULT_AUTHOR_STORE_CATEGORIES = [
+  'New Books',
+  'Second Hand',
+  'Best Seller',
+  'PDF Books',
+  'Pre-order',
+  'Author Picks',
+  'New Release',
+]
+
+function publicCategory(category) {
+  return {
+    id: category.id,
+    author_page_id: category.author_page_id,
+    user_id: category.user_id,
+    name: category.name || '',
+    sort_order: Number(category.sort_order || 0),
+    is_default: Boolean(category.is_default),
+    created_at: category.created_at,
+    updated_at: category.updated_at,
+  }
+}
+
+async function ensureDefaultAuthorStoreCategories(authorPage, userId) {
+  const { count, error: countError } = await supabase
+    .from('author_store_categories')
+    .select('id', { count: 'exact', head: true })
+    .eq('author_page_id', authorPage.id)
+
+  if (countError) throw countError
+
+  if (Number(count || 0) > 0) return
+
+  const rows = DEFAULT_AUTHOR_STORE_CATEGORIES.map((name, index) => ({
+    author_page_id: authorPage.id,
+    user_id: userId,
+    name,
+    sort_order: index,
+    is_default: true,
+    updated_at: new Date().toISOString(),
+  }))
+
+  const { error } = await supabase
+    .from('author_store_categories')
+    .insert(rows)
+
+  if (error) throw error
+}
+
+export async function getMyAuthorStoreCategories(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    await ensureDefaultAuthorStoreCategories(authorPage, userId)
+
+    const { data, error } = await supabase
+      .from('author_store_categories')
+      .select('*')
+      .eq('author_page_id', authorPage.id)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true })
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      categories: (data || []).map(publicCategory),
+    })
+  } catch (error) {
+    console.error('GET MY AUTHOR STORE CATEGORIES ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load store categories', error: error.message })
+  }
+}
+
+export async function createMyAuthorStoreCategory(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const name = cleanText(req.body.name)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!name) {
+      return res.status(400).json({ ok: false, message: 'Category name is required' })
+    }
+
+    if (name.length > 40) {
+      return res.status(400).json({ ok: false, message: 'Category name is too long' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    const { data: existing, error: existingError } = await supabase
+      .from('author_store_categories')
+      .select('id')
+      .eq('author_page_id', authorPage.id)
+      .ilike('name', name)
+      .maybeSingle()
+
+    if (existingError) throw existingError
+
+    if (existing) {
+      return res.status(409).json({ ok: false, message: 'Category already exists' })
+    }
+
+    const { data: lastCategory, error: lastError } = await supabase
+      .from('author_store_categories')
+      .select('sort_order')
+      .eq('author_page_id', authorPage.id)
+      .order('sort_order', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (lastError) throw lastError
+
+    const nextSortOrder = Number(lastCategory?.sort_order || 0) + 1
+
+    const { data, error } = await supabase
+      .from('author_store_categories')
+      .insert({
+        author_page_id: authorPage.id,
+        user_id: userId,
+        name,
+        sort_order: nextSortOrder,
+        is_default: false,
+        updated_at: new Date().toISOString(),
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return res.status(201).json({
+      ok: true,
+      message: 'Category created',
+      category: publicCategory(data),
+    })
+  } catch (error) {
+    console.error('CREATE MY AUTHOR STORE CATEGORY ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to create store category', error: error.message })
+  }
+}
+
+export async function deleteMyAuthorStoreCategory(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const categoryId = req.params.categoryId
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!categoryId) {
+      return res.status(400).json({ ok: false, message: 'Category ID is required' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_store_categories')
+      .delete()
+      .eq('id', categoryId)
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .select('id')
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({ ok: false, message: 'Category not found' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Category deleted',
+      category_id: categoryId,
+    })
+  } catch (error) {
+    console.error('DELETE MY AUTHOR STORE CATEGORY ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to delete store category', error: error.message })
+  }
+}
+
+export async function reorderMyAuthorStoreCategories(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const categoryIds = Array.isArray(req.body.category_ids)
+      ? req.body.category_ids
+      : Array.isArray(req.body.categoryIds)
+        ? req.body.categoryIds
+        : []
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!categoryIds.length) {
+      return res.status(400).json({ ok: false, message: 'Category order is required' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    for (let index = 0; index < categoryIds.length; index += 1) {
+      const { error } = await supabase
+        .from('author_store_categories')
+        .update({
+          sort_order: index,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', categoryIds[index])
+        .eq('author_page_id', authorPage.id)
+        .eq('user_id', userId)
+
+      if (error) throw error
+    }
+
+    const { data, error } = await supabase
+      .from('author_store_categories')
+      .select('*')
+      .eq('author_page_id', authorPage.id)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true })
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Categories reordered',
+      categories: (data || []).map(publicCategory),
+    })
+  } catch (error) {
+    console.error('REORDER MY AUTHOR STORE CATEGORIES ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to reorder store categories', error: error.message })
+  }
+}
