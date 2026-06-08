@@ -4,11 +4,13 @@ import {
   createMyAuthorStoreCategory,
   createMyAuthorStoreProduct,
   deleteMyAuthorStoreCategory,
+  deleteMyAuthorStoreProduct,
   getMyAuthorStoreCategories,
   getMyAuthorStoreOrders,
   getMyAuthorStoreProducts,
   getPublicAuthorStoreProducts,
   reorderMyAuthorStoreCategories,
+  updateMyAuthorStoreProduct,
 } from '../controllers/authorStore.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
