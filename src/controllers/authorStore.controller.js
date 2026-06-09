@@ -534,7 +534,7 @@ function calculateAuthorStoreIncome(amount) {
     author_income_usd: authorIncome,
   }
 }
-const AUTHOR_STORE_READER_STATUSES = ['waiting_payment', 'under_review', 'confirmed', 'preparing', 'shipped', 'completed', 'cancelled', 'rejected', 'expired', 'amount_mismatch']
+const AUTHOR_STORE_ADMIN_STATUSES = ['under_review', 'confirmed', 'preparing', 'shipped', 'completed', 'cancelled', 'rejected']
 
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
@@ -1355,6 +1355,97 @@ export async function getMyAuthorStoreBuyerOrders(req, res) {
   } catch (error) {
     console.error('GET MY AUTHOR STORE BUYER ORDERS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load Author Store orders' })
+  }
+}
+
+export async function getAdminAuthorStoreOrders(req, res) {
+  try {
+    const page = Math.max(Number(req.query.page || 1), 1)
+    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 100)
+    const status = String(req.query.status || 'under_review').trim()
+    const q = String(req.query.q || '').trim()
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    const adminHistoryWindowStart = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString()
+
+    let query = supabase
+      .from('author_store_orders')
+      .select('*', { count: 'exact' })
+      .gte('created_at', adminHistoryWindowStart)
+
+    if (status === 'all') {
+      query = query
+        .neq('status', 'waiting_payment')
+        .neq('status', 'expired')
+    } else if (AUTHOR_STORE_ADMIN_STATUSES.includes(status)) {
+      query = query.eq('status', status)
+    } else {
+      query = query.eq('status', 'under_review')
+    }
+
+    if (q) {
+      query = query.or(`order_id.ilike.%${q}%,order_number.ilike.%${q}%,aba_transaction_id.ilike.%${q}%`)
+    }
+
+    const { data, error, count } = await query
+      .order('updated_at', { ascending: false })
+      .range(from, to)
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      orders: (data || []).map(publicAuthorPaymentOrder),
+      page,
+      limit,
+      total: count || 0,
+      total_pages: Math.max(Math.ceil((count || 0) / limit), 1),
+      has_next: to + 1 < (count || 0),
+      has_prev: page > 1,
+    })
+  } catch (error) {
+    console.error('GET ADMIN AUTHOR STORE ORDERS ERROR:', error)
+    return res.status(500).json({ ok: false, message: error.message || 'Failed to load Author Store orders' })
+  }
+}
+
+export async function updateAdminAuthorStoreOrderStatus(req, res) {
+  try {
+    const orderId = String(req.params.orderId || '').trim()
+    const status = String(req.body.status || '').trim()
+
+    if (!AUTHOR_STORE_ADMIN_STATUSES.includes(status)) {
+      return res.status(400).json({ ok: false, message: 'Invalid order status' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_store_orders')
+      .update({
+        status,
+        order_status: status,
+        payment_status: status === 'confirmed' ? 'paid' : undefined,
+        admin_note: req.body.admin_note || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('order_id', orderId)
+      .select('*')
+      .single()
+
+    if (error) throw error
+
+    if (status === 'confirmed') {
+      await deductAuthorStoreOrderStock(data)
+      await unlockAuthorStorePdfDownloads(data)
+    }
+
+    return res.status(200).json({
+      ok: true,
+      order: publicAuthorPaymentOrder(data),
+    })
+  } catch (error) {
+    console.error('UPDATE ADMIN AUTHOR STORE ORDER STATUS ERROR:', error)
+    return res.status(500).json({ ok: false, message: error.message || 'Failed to update Author Store order' })
   }
 }
 
