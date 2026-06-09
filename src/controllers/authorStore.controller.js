@@ -521,6 +521,19 @@ const PAYWAY_HASH_ORDER = [
 ]
 
 const AUTHOR_STORE_DELIVERY_FEE_USD = 2
+const AUTHOR_STORE_PLATFORM_FEE_RATE = 0.10
+
+function calculateAuthorStoreIncome(amount) {
+  const gross = Number(amount || 0)
+  const platformFee = Number((gross * AUTHOR_STORE_PLATFORM_FEE_RATE).toFixed(2))
+  const authorIncome = Number((gross - platformFee).toFixed(2))
+
+  return {
+    platform_fee_rate: AUTHOR_STORE_PLATFORM_FEE_RATE,
+    platform_fee_usd: platformFee,
+    author_income_usd: authorIncome,
+  }
+}
 const AUTHOR_STORE_READER_STATUSES = ['waiting_payment', 'under_review', 'confirmed', 'preparing', 'shipped', 'completed', 'cancelled', 'rejected', 'expired', 'amount_mismatch']
 
 function getUserId(req) {
@@ -813,19 +826,24 @@ async function buildAuthorStoreOrderItems(cartItems) {
     }
 
     const unitPrice = Number(product.sale_price || product.original_price || 0)
+const itemTotal = Number((unitPrice * item.quantity).toFixed(2))
+const itemIncome = calculateAuthorStoreIncome(itemTotal)
 
-    return {
-      product_id: product.id,
-      author_page_id: product.author_page_id,
-      seller_user_id: product.user_id,
-      title: product.title,
-      product_title: product.title,
-      product_type: product.product_type || 'book',
-      cover_url: product.cover_url || '',
-      quantity: item.quantity,
-      unit_price_usd: unitPrice,
-      total_usd: Number((unitPrice * item.quantity).toFixed(2)),
-    }
+return {
+  product_id: product.id,
+  author_page_id: product.author_page_id,
+  seller_user_id: product.user_id,
+  title: product.title,
+  product_title: product.title,
+  product_type: product.product_type || 'book',
+  cover_url: product.cover_url || '',
+  quantity: item.quantity,
+  unit_price_usd: unitPrice,
+  total_usd: itemTotal,
+  platform_fee_rate: itemIncome.platform_fee_rate,
+  platform_fee_usd: itemIncome.platform_fee_usd,
+  author_income_usd: itemIncome.author_income_usd,
+}
   })
 
   return {
@@ -1131,6 +1149,7 @@ export async function createAuthorStoreOrderPayment(req, res) {
     const subtotal = Number(orderItems.reduce((total, item) => total + item.total_usd, 0).toFixed(2))
     const deliveryFee = AUTHOR_STORE_DELIVERY_FEE_USD
     const total = Number((subtotal + deliveryFee).toFixed(2))
+    const income = calculateAuthorStoreIncome(subtotal)
 
     const deliveryCompany = req.body.delivery_company || {
       key: 'jnt',
@@ -1219,6 +1238,10 @@ export async function createAuthorStoreOrderPayment(req, res) {
         subtotal_usd: subtotal,
         delivery_fee_usd: deliveryFee,
         total_usd: total,
+        product_subtotal_usd: subtotal,
+        platform_fee_rate: income.platform_fee_rate,
+        platform_fee_usd: income.platform_fee_usd,
+        author_income_usd: income.author_income_usd,
         currency: payload.currency,
         qr_string: aba.qr_string || null,
         qr_image: aba.qr_image || null,
@@ -1239,17 +1262,20 @@ export async function createAuthorStoreOrderPayment(req, res) {
     if (orderError) throw orderError
 
     await supabase
-      .from('author_store_order_items')
-      .insert(orderItems.map((item) => ({
-        order_id: order.id,
-        product_id: item.product_id,
-        product_title: item.product_title,
-        product_type: item.product_type,
-        cover_url: item.cover_url,
-        quantity: item.quantity,
-        unit_price: item.unit_price_usd,
-        total_price: item.total_usd,
-      })))
+  .from('author_store_order_items')
+  .insert(orderItems.map((item) => ({
+    order_id: order.id,
+    product_id: item.product_id,
+    product_title: item.product_title,
+    product_type: item.product_type,
+    cover_url: item.cover_url,
+    quantity: item.quantity,
+    unit_price: item.unit_price_usd,
+    total_price: item.total_usd,
+    platform_fee_rate: item.platform_fee_rate,
+    platform_fee_usd: item.platform_fee_usd,
+    author_income_usd: item.author_income_usd,
+  })))
 
     return res.status(201).json({
       ok: true,
