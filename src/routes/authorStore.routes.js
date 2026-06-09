@@ -11,15 +11,17 @@ import {
   getMyAuthorStoreCategories,
   getMyAuthorStoreDeliverySettings,
   getMyAuthorStoreOrders,
-    getAdminAuthorStoreOrders,
+  getAdminAuthorStoreOrders,
   getMyAuthorStoreProducts,
   getPublicAuthorStoreProducts,
   handleAuthorStoreAbaCallback,
   reorderMyAuthorStoreCategories,
   updateMyAuthorStoreCategory,
   updateMyAuthorStoreDeliverySettings,
-    updateAdminAuthorStoreOrderStatus,
+  updateAdminAuthorStoreOrderStatus,
   updateMyAuthorStoreProduct,
+  getMyAuthorStoreTelegramSettings,
+  updateMyAuthorStoreTelegramSettings,
 } from '../controllers/authorStore.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
@@ -30,6 +32,8 @@ router.get('/me/products', requireUser, getMyAuthorStoreProducts)
 router.get('/me/categories', requireUser, getMyAuthorStoreCategories)
 router.get('/me/delivery-settings', requireUser, getMyAuthorStoreDeliverySettings)
 router.put('/me/delivery-settings', requireUser, updateMyAuthorStoreDeliverySettings)
+router.get('/me/telegram-settings', requireUser, getMyAuthorStoreTelegramSettings)
+router.put('/me/telegram-settings', requireUser, updateMyAuthorStoreTelegramSettings)
 router.post('/me/categories', requireUser, createMyAuthorStoreCategory)
 router.patch('/me/categories/reorder', requireUser, reorderMyAuthorStoreCategories)
 router.patch('/me/categories/:categoryId', requireUser, updateMyAuthorStoreCategory)
