@@ -11,15 +11,18 @@ import {
   getMyAuthorStoreCategories,
   getMyAuthorStoreDeliverySettings,
   getMyAuthorStoreOrders,
+    getAdminAuthorStoreOrders,
   getMyAuthorStoreProducts,
   getPublicAuthorStoreProducts,
   handleAuthorStoreAbaCallback,
   reorderMyAuthorStoreCategories,
   updateMyAuthorStoreCategory,
   updateMyAuthorStoreDeliverySettings,
+    updateAdminAuthorStoreOrderStatus,
   updateMyAuthorStoreProduct,
 } from '../controllers/authorStore.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
+import { requireAdmin } from '../middleware/auth.middleware.js'
 
 const router = express.Router()
 
@@ -33,6 +36,8 @@ router.patch('/me/categories/:categoryId', requireUser, updateMyAuthorStoreCateg
 router.delete('/me/categories/:categoryId', requireUser, deleteMyAuthorStoreCategory)
 router.post('/me/products', requireUser, createMyAuthorStoreProduct)
 router.get('/me/orders', requireUser, getMyAuthorStoreOrders)
+router.get('/admin/orders', requireAdmin, getAdminAuthorStoreOrders)
+router.patch('/admin/orders/:orderId/status', requireAdmin, updateAdminAuthorStoreOrderStatus)
 router.post('/orders', createAuthorStoreOrder)
 router.post('/orders/create-payment', requireUser, createAuthorStoreOrderPayment)
 router.get('/orders/my', requireUser, getMyAuthorStoreBuyerOrders)
