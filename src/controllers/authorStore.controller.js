@@ -110,6 +110,26 @@ async function getMyAuthorPage(userId) {
   return data
 }
 
+async function createUniqueTelegramLinkCode() {
+  const now = new Date().toISOString()
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const code = String(Math.floor(1000 + Math.random() * 9000))
+
+    const { data, error } = await supabase
+      .from('author_pages')
+      .select('id')
+      .eq('telegram_link_code', code)
+      .gt('telegram_link_expires_at', now)
+      .maybeSingle()
+
+    if (error) throw error
+    if (!data) return code
+  }
+
+  throw new Error('Failed to generate Telegram link code')
+}
+
 export async function getMyAuthorStoreDeliverySettings(req, res) {
   try {
     const userId = req.user?.user_id
@@ -267,6 +287,60 @@ export async function updateMyAuthorStoreTelegramSettings(req, res) {
   } catch (error) {
     console.error('UPDATE MY AUTHOR STORE TELEGRAM SETTINGS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to save Telegram settings', error: error.message })
+  }
+}
+
+export async function createMyAuthorStoreTelegramLinkCode(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    const code = await createUniqueTelegramLinkCode()
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString()
+
+    const { data, error } = await supabase
+      .from('author_pages')
+      .update({
+        telegram_link_code: code,
+        telegram_link_expires_at: expiresAt,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', authorPage.id)
+      .eq('user_id', userId)
+      .select('id, page_name, page_username, telegram_chat_id, telegram_chat_title, telegram_link_code, telegram_link_expires_at, telegram_linked_at')
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Telegram link code created',
+      telegram_settings: {
+        page_name: data.page_name || '',
+        page_username: data.page_username || '',
+        chat_id: data.telegram_chat_id || '',
+        chat_title: data.telegram_chat_title || '',
+        linked_at: data.telegram_linked_at || null,
+        link_code: data.telegram_link_code || '',
+        expires_at: data.telegram_link_expires_at || null,
+        bot_username: process.env.TELEGRAM_BOT_USERNAME || '',
+      },
+    })
+  } catch (error) {
+    console.error('CREATE AUTHOR STORE TELEGRAM LINK CODE ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to create Telegram link code',
+    })
   }
 }
 
