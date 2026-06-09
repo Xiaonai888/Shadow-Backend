@@ -1,6 +1,9 @@
 import { supabase } from '../config/supabase.js'
 import { deductShadowMallOrderStock } from './shadowMallOrders.controller.js'
-import { deductAuthorStoreOrderStock } from './authorStore.controller.js'
+import {
+  deductAuthorStoreOrderStock,
+  unlockAuthorStorePdfDownloads,
+} from './authorStore.controller.js'
 import {
   answerCallbackQuery,
   editTelegramMessage,
@@ -176,6 +179,17 @@ async function findMatchingAuthorStoreOrders(parsed) {
   return data || []
 }
 
+function isAuthorPdfOrder(order) {
+  const items = Array.isArray(order?.items) ? order.items : []
+
+  if (!items.length) return false
+
+  return items.every((item) => {
+    const type = String(item.product_type || item.type || '').toLowerCase()
+    return type === 'pdf'
+  })
+}
+
 async function getUser(userId) {
   const { data, error } = await supabase
     .from('users')
@@ -333,6 +347,39 @@ async function getAuthorPageForStoreOrder(order) {
   return data || null
 }
 
+async function markAuthorPdfOrderCompleted(order, telegramPayment, parsed) {
+  const payload = {
+    source: 'telegram_aba_alert',
+    telegram_payment_id: telegramPayment.id,
+    trx_id: telegramPayment.trx_id,
+    apv: telegramPayment.apv || null,
+    amount_usd: telegramPayment.amount_usd,
+    payer_name: telegramPayment.payer_name,
+    payer_phone_last: telegramPayment.payer_phone_last,
+    bank_name: telegramPayment.bank_name,
+    raw_text: telegramPayment.raw_text,
+  }
+
+  const { data, error } = await supabase
+    .from('author_store_orders')
+    .update({
+      status: 'completed',
+      order_status: 'completed',
+      payment_status: 'paid',
+      aba_transaction_id: telegramPayment.trx_id,
+      callback_payload: payload,
+      paid_at: parsed.transaction_time || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', order.id)
+    .eq('status', 'waiting_payment')
+    .select('*')
+    .single()
+
+  if (error) throw error
+  return data
+}
+
 function authorStoreOrderUnderReviewMessage(order, authorPage) {
   const buyer = order.buyer_profile || {}
   const delivery = order.delivery_company || {}
@@ -408,6 +455,46 @@ async function updateAuthorStoreOrderFromTelegram(orderId, status) {
 
   if (error) throw error
   return data
+}
+
+function authorPdfCompletedMessage(order, authorPage) {
+  const buyer = order.buyer_profile || {}
+  const items = Array.isArray(order.items) ? order.items : []
+
+  const pdfLines = items.slice(0, 8).map((item) => {
+    return `- ${html(item.title || item.product_title || 'PDF')} x${html(item.quantity || 1)}`
+  })
+
+  return [
+    '📄 <b>AUTHOR PDF SOLD</b>',
+    '',
+    `📄 Page: <b>${html(authorPage?.page_name || 'Author Page')}</b>`,
+    authorPage?.page_username ? `🔗 Username: @${html(authorPage.page_username)}` : '',
+    '',
+    `📦 Order ID: <code>${html(order.order_id || order.order_number)}</code>`,
+    `💵 Amount: <b>${html(money(order.total_usd || order.total_amount))}</b>`,
+    order.aba_transaction_id ? `🧾 Trx ID: <code>${html(order.aba_transaction_id)}</code>` : '',
+    '',
+    `👤 Buyer: <b>${html(buyer.name || order.buyer_name || order.buyer_id)}</b>`,
+    buyer.phone_number || order.buyer_phone ? `📞 Phone: <code>${html(buyer.phone_number || order.buyer_phone)}</code>` : '',
+    '',
+    '<b>PDF:</b>',
+    ...pdfLines,
+    '',
+    'Status: <b>Completed</b>',
+    'PDF unlocked in Reader Library Downloads.',
+  ].filter(Boolean).join('\n')
+}
+
+async function sendAuthorPdfCompletedReport(order) {
+  const chatId = process.env.TELEGRAM_AUTHOR_STORE_CHAT_ID
+  if (!chatId) return { ok: false, skipped: true }
+
+  const authorPage = await getAuthorPageForStoreOrder(order)
+
+  return sendTelegramMessage(authorPdfCompletedMessage(order, authorPage), {
+    chat_id: chatId,
+  })
 }
 
 async function releaseMatchedOrder(payment, telegramPayment) {
@@ -727,7 +814,7 @@ async function processAbaMessage(parsed, message) {
   const messageId = message.message_id
   const { payment: telegramPayment, duplicate } = await saveTelegramPayment(parsed, message)
 
-  if (duplicate || ['auto_released', 'duplicate', 'shadow_mall_under_review', 'author_store_under_review'].includes(telegramPayment.match_status)) {
+  if (duplicate || ['auto_released', 'duplicate', 'shadow_mall_under_review', 'author_store_under_review', 'author_pdf_completed'].includes(telegramPayment.match_status)) {
     await replyTelegram(chatId, messageId, [
       '🔁 <b>DUPLICATE IGNORED</b>',
       '',
@@ -817,46 +904,88 @@ async function processAbaMessage(parsed, message) {
   }
 
   if (diamondMatches.length === 0 && mallMatches.length === 0 && authorStoreMatches.length === 1) {
-    const updatedAuthorOrder = await markAuthorStoreOrderUnderReview(authorStoreMatches[0], telegramPayment, parsed)
+  const matchedAuthorOrder = authorStoreMatches[0]
+
+  if (isAuthorPdfOrder(matchedAuthorOrder)) {
+    const completedOrder = await markAuthorPdfOrderCompleted(matchedAuthorOrder, telegramPayment, parsed)
 
     try {
-      await deductAuthorStoreOrderStock(updatedAuthorOrder)
+      await unlockAuthorStorePdfDownloads(completedOrder)
     } catch (error) {
-      console.error('DEDUCT AUTHOR STORE STOCK ERROR:', error)
+      console.error('UNLOCK AUTHOR PDF DOWNLOAD ERROR:', error)
     }
 
     await updateTelegramPayment(telegramPayment.id, {
       matched_payment_id: null,
-      matched_user_id: updatedAuthorOrder.buyer_id,
-      match_status: 'author_store_under_review',
-      status: 'under_review',
-      match_reason: `Unique Author Store order matched by amount and time. Order ID: ${updatedAuthorOrder.order_id || updatedAuthorOrder.order_number}`,
+      matched_user_id: completedOrder.buyer_id,
+      match_status: 'author_pdf_completed',
+      status: 'completed',
+      match_reason: `Unique Author PDF order matched by amount and time. Order ID: ${completedOrder.order_id || completedOrder.order_number}`,
     })
 
     try {
-      await sendAuthorStoreOrderReport(updatedAuthorOrder)
+      await sendAuthorPdfCompletedReport(completedOrder)
     } catch (error) {
-      console.error('SEND AUTHOR STORE REPORT ERROR:', error)
+      console.error('SEND AUTHOR PDF COMPLETED REPORT ERROR:', error)
     }
 
     try {
       await replyTelegram(chatId, messageId, [
-        '✍️ <b>AUTHOR STORE MATCHED</b>',
+        '📄 <b>AUTHOR PDF MATCHED</b>',
         '',
-        `📦 Order ID: <code>${html(updatedAuthorOrder.order_id || updatedAuthorOrder.order_number)}</code>`,
-        `💵 Amount: <b>${html(money(updatedAuthorOrder.total_usd || updatedAuthorOrder.total_amount))}</b>`,
-        `🧾 Trx ID: <code>${html(updatedAuthorOrder.aba_transaction_id)}</code>`,
+        `📦 Order ID: <code>${html(completedOrder.order_id || completedOrder.order_number)}</code>`,
+        `💵 Amount: <b>${html(money(completedOrder.total_usd || completedOrder.total_amount))}</b>`,
+        `🧾 Trx ID: <code>${html(completedOrder.aba_transaction_id)}</code>`,
         '',
-        'Status: <b>Under Review</b>',
-        'Report sent to Author Store group.',
+        'Status: <b>Completed</b>',
+        'PDF unlocked in Reader Library Downloads.',
       ].join('\n'))
     } catch (error) {
-      console.error('REPLY AUTHOR STORE ABA GROUP ERROR:', error)
+      console.error('REPLY AUTHOR PDF ABA GROUP ERROR:', error)
     }
 
     return
   }
 
+  const updatedAuthorOrder = await markAuthorStoreOrderUnderReview(matchedAuthorOrder, telegramPayment, parsed)
+
+  try {
+    await deductAuthorStoreOrderStock(updatedAuthorOrder)
+  } catch (error) {
+    console.error('DEDUCT AUTHOR STORE STOCK ERROR:', error)
+  }
+
+  await updateTelegramPayment(telegramPayment.id, {
+    matched_payment_id: null,
+    matched_user_id: updatedAuthorOrder.buyer_id,
+    match_status: 'author_store_under_review',
+    status: 'under_review',
+    match_reason: `Unique Author Store order matched by amount and time. Order ID: ${updatedAuthorOrder.order_id || updatedAuthorOrder.order_number}`,
+  })
+
+  try {
+    await sendAuthorStoreOrderReport(updatedAuthorOrder)
+  } catch (error) {
+    console.error('SEND AUTHOR STORE REPORT ERROR:', error)
+  }
+
+  try {
+    await replyTelegram(chatId, messageId, [
+      '✍️ <b>AUTHOR STORE MATCHED</b>',
+      '',
+      `📦 Order ID: <code>${html(updatedAuthorOrder.order_id || updatedAuthorOrder.order_number)}</code>`,
+      `💵 Amount: <b>${html(money(updatedAuthorOrder.total_usd || updatedAuthorOrder.total_amount))}</b>`,
+      `🧾 Trx ID: <code>${html(updatedAuthorOrder.aba_transaction_id)}</code>`,
+      '',
+      'Status: <b>Under Review</b>',
+      'Report sent to Author Store group.',
+    ].join('\n'))
+  } catch (error) {
+    console.error('REPLY AUTHOR STORE ABA GROUP ERROR:', error)
+  }
+
+  return
+}
   if (diamondMatches.length > 1 && mallMatches.length === 0 && authorStoreMatches.length === 0) {
     const reason = `Multiple diamond waiting orders matched this ${money(parsed.amount)} payment.`
 
