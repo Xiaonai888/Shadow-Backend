@@ -1595,13 +1595,12 @@ export async function handleAuthorStoreAbaCallback(req, res) {
 
 const DEFAULT_AUTHOR_STORE_CATEGORIES = [
   'New Books',
-  'Second Hand',
-  'Best Seller',
   'PDF Books',
   'Pre-order',
-  'Sold out',
+  'Best Seller',
+  'Second Hand',
   'Author Picks',
-  'New Release',
+  'Sold out',
 ]
 
 function publicCategory(category) {
@@ -1780,8 +1779,8 @@ export async function updateMyAuthorStoreCategory(req, res) {
     }
 
     const { data: currentCategory, error: currentError } = await supabase
-      .from('author_store_categories')
-      .select('*')
+  .from('author_store_categories')
+  .select('name, is_default')
       .eq('id', categoryId)
       .eq('author_page_id', authorPage.id)
       .eq('user_id', userId)
@@ -1884,10 +1883,9 @@ if (!currentCategory) {
   return res.status(404).json({ ok: false, message: 'Category not found' })
 }
 
-if (currentCategory.name === 'Sold out') {
-  return res.status(403).json({ ok: false, message: 'Sold out category cannot be deleted' })
+if (currentCategory.is_default) {
+  return res.status(403).json({ ok: false, message: 'System category cannot be deleted' })
 }
-
     const { data, error } = await supabase
       .from('author_store_categories')
       .delete()
