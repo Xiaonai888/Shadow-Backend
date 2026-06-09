@@ -22,6 +22,7 @@ import {
   updateMyAuthorStoreProduct,
   getMyAuthorStoreTelegramSettings,
   updateMyAuthorStoreTelegramSettings,
+  testMyAuthorStoreTelegramSettings,
 } from '../controllers/authorStore.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
@@ -34,6 +35,7 @@ router.get('/me/delivery-settings', requireUser, getMyAuthorStoreDeliverySetting
 router.put('/me/delivery-settings', requireUser, updateMyAuthorStoreDeliverySettings)
 router.get('/me/telegram-settings', requireUser, getMyAuthorStoreTelegramSettings)
 router.put('/me/telegram-settings', requireUser, updateMyAuthorStoreTelegramSettings)
+router.post('/me/telegram-settings/test', requireUser, testMyAuthorStoreTelegramSettings)
 router.post('/me/categories', requireUser, createMyAuthorStoreCategory)
 router.patch('/me/categories/reorder', requireUser, reorderMyAuthorStoreCategories)
 router.patch('/me/categories/:categoryId', requireUser, updateMyAuthorStoreCategory)
