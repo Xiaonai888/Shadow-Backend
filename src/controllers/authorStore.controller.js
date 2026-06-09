@@ -198,6 +198,77 @@ export async function updateMyAuthorStoreDeliverySettings(req, res) {
   }
 }
 
+export async function getMyAuthorStoreTelegramSettings(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      telegram_settings: {
+        bot_username: authorPage.telegram_bot_username || '',
+        chat_id: authorPage.telegram_chat_id || '',
+      },
+    })
+  } catch (error) {
+    console.error('GET MY AUTHOR STORE TELEGRAM SETTINGS ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load Telegram settings', error: error.message })
+  }
+}
+
+export async function updateMyAuthorStoreTelegramSettings(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const botUsername = cleanText(req.body.bot_username || req.body.botUsername || '')
+    const chatId = cleanText(req.body.chat_id || req.body.chatId || '')
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_pages')
+      .update({
+        telegram_bot_username: botUsername,
+        telegram_chat_id: chatId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', authorPage.id)
+      .eq('user_id', userId)
+      .select('telegram_bot_username, telegram_chat_id')
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Telegram settings saved',
+      telegram_settings: {
+        bot_username: data.telegram_bot_username || '',
+        chat_id: data.telegram_chat_id || '',
+      },
+    })
+  } catch (error) {
+    console.error('UPDATE MY AUTHOR STORE TELEGRAM SETTINGS ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to save Telegram settings', error: error.message })
+  }
+}
+
 export async function getMyAuthorStoreProducts(req, res) {
   try {
     const userId = req.user?.user_id
