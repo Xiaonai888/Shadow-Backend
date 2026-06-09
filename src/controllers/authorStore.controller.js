@@ -959,8 +959,12 @@ function publicOrder(order) {
     buyer_email: order.buyer_email || '',
     delivery_address: order.delivery_address || '',
     subtotal: Number(order.subtotal || 0),
-    delivery_fee: Number(order.delivery_fee || 0),
-    total_amount: Number(order.total_amount || 0),
+delivery_fee: Number(order.delivery_fee || 0),
+total_amount: Number(order.total_amount || 0),
+product_subtotal_usd: Number(order.product_subtotal_usd || order.subtotal || 0),
+platform_fee_rate: Number(order.platform_fee_rate || 0.10),
+platform_fee_usd: Number(order.platform_fee_usd || 0),
+author_income_usd: Number(order.author_income_usd || 0),
     payment_status: order.payment_status || 'pending',
     order_status: order.order_status || 'pending',
     note: order.note || '',
@@ -975,7 +979,10 @@ function publicOrder(order) {
           cover_url: item.cover_url || '',
           quantity: Number(item.quantity || 1),
           unit_price: Number(item.unit_price || 0),
-          total_price: Number(item.total_price || 0),
+total_price: Number(item.total_price || 0),
+platform_fee_rate: Number(item.platform_fee_rate || 0.10),
+platform_fee_usd: Number(item.platform_fee_usd || 0),
+author_income_usd: Number(item.author_income_usd || 0),
         }))
       : [],
   }
@@ -1004,17 +1011,27 @@ export async function getMyAuthorStoreOrders(req, res) {
     if (error) throw error
 
     const safeOrders = (orders || []).map(publicOrder)
-    const revenue = safeOrders
-      .filter((order) => order.payment_status === 'paid')
-      .reduce((sum, order) => sum + Number(order.total_amount || 0), 0)
+    const grossRevenue = safeOrders
+  .filter((order) => order.payment_status === 'paid')
+  .reduce((sum, order) => sum + Number(order.product_subtotal_usd || order.subtotal || 0), 0)
+
+const platformFee = safeOrders
+  .filter((order) => order.payment_status === 'paid')
+  .reduce((sum, order) => sum + Number(order.platform_fee_usd || 0), 0)
+
+const authorIncome = safeOrders
+  .filter((order) => order.payment_status === 'paid')
+  .reduce((sum, order) => sum + Number(order.author_income_usd || 0), 0)
 
     return res.status(200).json({
       ok: true,
-      orders: safeOrders,
       summary: {
-        orders_count: safeOrders.length,
-        revenue,
-      },
+  orders_count: safeOrders.length,
+  revenue: authorIncome,
+  gross_revenue: grossRevenue,
+  platform_fee: platformFee,
+  author_income: authorIncome,
+},
     })
   } catch (error) {
     console.error('GET MY AUTHOR STORE ORDERS ERROR:', error)
