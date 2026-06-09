@@ -25,6 +25,46 @@ function cleanInteger(value, fallback = 0) {
   return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : fallback
 }
 
+const DEFAULT_AUTHOR_STORE_DELIVERY_SETTINGS = [
+  {
+    company_key: 'jnt',
+    company_name: 'J&T Express',
+    short_name: 'J&T',
+    fee_usd: 2,
+    is_active: true,
+    sort_order: 0,
+  },
+  {
+    company_key: 'vet',
+    company_name: 'VET Express',
+    short_name: 'VET',
+    fee_usd: 2,
+    is_active: true,
+    sort_order: 1,
+  },
+]
+
+function publicDeliverySetting(setting) {
+  return {
+    id: setting.id || '',
+    company_key: setting.company_key || '',
+    company_name: setting.company_name || '',
+    short_name: setting.short_name || '',
+    fee_usd: Number(setting.fee_usd || 0),
+    is_active: Boolean(setting.is_active),
+    sort_order: Number(setting.sort_order || 0),
+  }
+}
+
+function mergeDeliverySettings(settings) {
+  const map = new Map((settings || []).map((setting) => [setting.company_key, setting]))
+
+  return DEFAULT_AUTHOR_STORE_DELIVERY_SETTINGS.map((defaultSetting) => {
+    const saved = map.get(defaultSetting.company_key)
+    return publicDeliverySetting(saved || defaultSetting)
+  })
+}
+
 function publicProduct(product) {
   if (!product) return null
 
@@ -67,6 +107,95 @@ async function getMyAuthorPage(userId) {
   if (error) throw error
 
   return data
+}
+
+export async function getMyAuthorStoreDeliverySettings(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_store_delivery_settings')
+      .select('*')
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .order('sort_order', { ascending: true })
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      delivery_settings: mergeDeliverySettings(data || []),
+    })
+  } catch (error) {
+    console.error('GET MY AUTHOR STORE DELIVERY SETTINGS ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load delivery settings', error: error.message })
+  }
+}
+
+export async function updateMyAuthorStoreDeliverySettings(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const settings = Array.isArray(req.body.delivery_settings)
+      ? req.body.delivery_settings
+      : Array.isArray(req.body.deliverySettings)
+        ? req.body.deliverySettings
+        : []
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    const incomingMap = new Map(settings.map((setting) => [String(setting.company_key || setting.companyKey || '').toLowerCase(), setting]))
+
+    const payload = DEFAULT_AUTHOR_STORE_DELIVERY_SETTINGS.map((defaultSetting) => {
+      const incoming = incomingMap.get(defaultSetting.company_key) || {}
+      const fee = cleanNumber(incoming.fee_usd ?? incoming.feeUsd ?? defaultSetting.fee_usd, defaultSetting.fee_usd)
+
+      return {
+        author_page_id: authorPage.id,
+        user_id: userId,
+        company_key: defaultSetting.company_key,
+        company_name: defaultSetting.company_name,
+        short_name: defaultSetting.short_name,
+        fee_usd: Math.max(0, fee),
+        is_active: typeof incoming.is_active === 'boolean' ? incoming.is_active : defaultSetting.is_active,
+        sort_order: defaultSetting.sort_order,
+        updated_at: new Date().toISOString(),
+      }
+    })
+
+    const { data, error } = await supabase
+      .from('author_store_delivery_settings')
+      .upsert(payload, { onConflict: 'author_page_id,company_key' })
+      .select('*')
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Delivery settings updated',
+      delivery_settings: mergeDeliverySettings(data || []),
+    })
+  } catch (error) {
+    console.error('UPDATE MY AUTHOR STORE DELIVERY SETTINGS ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to update delivery settings', error: error.message })
+  }
 }
 
 export async function getMyAuthorStoreProducts(req, res) {
@@ -274,6 +403,7 @@ export async function updateMyAuthorStoreProduct(req, res) {
     if (bookCondition === 'Second Hand' && (!qualityPercent || qualityPercent < 1 || qualityPercent > 100)) {
       return res.status(400).json({ ok: false, message: 'Book quality must be between 1% and 100%.' })
     }
+
 
     const payload = {
       product_type: productType,
