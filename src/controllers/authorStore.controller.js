@@ -874,6 +874,62 @@ export async function deductAuthorStoreOrderStock(order) {
   }
 }
 
+export async function unlockAuthorStorePdfDownloads(order) {
+  const items = Array.isArray(order?.items) ? order.items : []
+  const pdfItems = items.filter((item) => {
+    const type = String(item.product_type || item.type || '').toLowerCase()
+    return type === 'pdf'
+  })
+
+  if (!order?.buyer_id || !pdfItems.length) return []
+
+  const productIds = pdfItems
+    .map((item) => item.product_id)
+    .filter(Boolean)
+
+  if (!productIds.length) return []
+
+  const { data: products, error: productsError } = await supabase
+    .from('author_store_products')
+    .select('id, author_page_id, title, cover_url, pdf_file_url, pdf_file_name, access_rule')
+    .in('id', productIds)
+
+  if (productsError) throw productsError
+
+  const productMap = new Map((products || []).map((product) => [String(product.id), product]))
+
+  const payload = pdfItems
+    .map((item) => {
+      const product = productMap.get(String(item.product_id))
+      if (!product?.pdf_file_url) return null
+
+      return {
+        buyer_id: order.buyer_id,
+        author_page_id: product.author_page_id || item.author_page_id || order.author_page_id || null,
+        product_id: product.id,
+        order_id: order.id,
+        order_number: order.order_id || order.order_number || '',
+        title: product.title || item.title || item.product_title || '',
+        cover_url: product.cover_url || item.cover_url || '',
+        pdf_file_url: product.pdf_file_url,
+        pdf_file_name: product.pdf_file_name || `${product.title || 'download'}.pdf`,
+        access_rule: product.access_rule || 'download',
+      }
+    })
+    .filter(Boolean)
+
+  if (!payload.length) return []
+
+  const { data, error } = await supabase
+    .from('author_store_reader_downloads')
+    .upsert(payload, { onConflict: 'buyer_id,product_id' })
+    .select('*')
+
+  if (error) throw error
+
+  return data || []
+}
+
 function publicOrder(order) {
   return {
     id: order.id,
