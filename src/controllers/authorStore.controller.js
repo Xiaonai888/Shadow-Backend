@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
+import { html, sendTelegramMessage } from '../services/telegram.service.js'
 
 const PRODUCT_TYPES = new Set(['book', 'pdf'])
 const PRODUCT_STATUSES = new Set(['draft', 'active', 'hidden'])
@@ -266,6 +267,51 @@ export async function updateMyAuthorStoreTelegramSettings(req, res) {
   } catch (error) {
     console.error('UPDATE MY AUTHOR STORE TELEGRAM SETTINGS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to save Telegram settings', error: error.message })
+  }
+}
+
+
+export async function testMyAuthorStoreTelegramSettings(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    if (!authorPage.telegram_chat_id) {
+      return res.status(400).json({ ok: false, message: 'Telegram group chat ID is missing' })
+    }
+
+    const message = [
+      '🧪 <b>AUTHOR STORE BOT TEST</b>',
+      '',
+      `📄 Page: <b>${html(authorPage.page_name || 'Author Page')}</b>`,
+      authorPage.page_username ? `🔗 Username: @${html(authorPage.page_username)}` : '',
+      '',
+      '✅ If you see this message, your Telegram bot is connected.',
+    ].filter(Boolean).join('\n')
+
+    await sendTelegramMessage(message, {
+      chat_id: authorPage.telegram_chat_id,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Test message sent to Telegram group',
+    })
+  } catch (error) {
+    console.error('TEST AUTHOR STORE TELEGRAM SETTINGS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to send Telegram test message',
+    })
   }
 }
 
