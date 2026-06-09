@@ -557,6 +557,7 @@ const DEFAULT_AUTHOR_STORE_CATEGORIES = [
   'Best Seller',
   'PDF Books',
   'Pre-order',
+  'Sold out',
   'Author Picks',
   'New Release',
 ]
@@ -569,6 +570,7 @@ function publicCategory(category) {
     name: category.name || '',
     sort_order: Number(category.sort_order || 0),
     is_default: Boolean(category.is_default),
+    is_hidden: Boolean(category.is_hidden),
     created_at: category.created_at,
     updated_at: category.updated_at,
   }
@@ -691,6 +693,7 @@ export async function createMyAuthorStoreCategory(req, res) {
         name,
         sort_order: nextSortOrder,
         is_default: false,
+        is_hidden: false,
         updated_at: new Date().toISOString(),
       })
       .select()
@@ -706,6 +709,103 @@ export async function createMyAuthorStoreCategory(req, res) {
   } catch (error) {
     console.error('CREATE MY AUTHOR STORE CATEGORY ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to create store category', error: error.message })
+  }
+}
+
+export async function updateMyAuthorStoreCategory(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const categoryId = req.params.categoryId
+    const name = cleanText(req.body.name)
+    const isHidden = typeof req.body.is_hidden === 'boolean'
+      ? req.body.is_hidden
+      : typeof req.body.isHidden === 'boolean'
+        ? req.body.isHidden
+        : null
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!categoryId) {
+      return res.status(400).json({ ok: false, message: 'Category ID is required' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    const { data: currentCategory, error: currentError } = await supabase
+      .from('author_store_categories')
+      .select('*')
+      .eq('id', categoryId)
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (currentError) throw currentError
+
+    if (!currentCategory) {
+      return res.status(404).json({ ok: false, message: 'Category not found' })
+    }
+
+    const isSoldOutSystem = currentCategory.name === 'Sold out'
+
+    if (isSoldOutSystem && name && name !== 'Sold out') {
+      return res.status(403).json({ ok: false, message: 'Sold out category cannot be renamed' })
+    }
+
+    const updates = {
+      updated_at: new Date().toISOString(),
+    }
+
+    if (!isSoldOutSystem && name) {
+      if (name.length > 40) {
+        return res.status(400).json({ ok: false, message: 'Category name is too long' })
+      }
+
+      const { data: existing, error: existingError } = await supabase
+        .from('author_store_categories')
+        .select('id')
+        .eq('author_page_id', authorPage.id)
+        .ilike('name', name)
+        .neq('id', categoryId)
+        .maybeSingle()
+
+      if (existingError) throw existingError
+
+      if (existing) {
+        return res.status(409).json({ ok: false, message: 'Category already exists' })
+      }
+
+      updates.name = name
+    }
+
+    if (isHidden !== null) {
+      updates.is_hidden = isHidden
+    }
+
+    const { data, error } = await supabase
+      .from('author_store_categories')
+      .update(updates)
+      .eq('id', categoryId)
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .select()
+      .maybeSingle()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Category updated',
+      category: publicCategory(data),
+    })
+  } catch (error) {
+    console.error('UPDATE MY AUTHOR STORE CATEGORY ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to update store category', error: error.message })
   }
 }
 
@@ -727,6 +827,24 @@ export async function deleteMyAuthorStoreCategory(req, res) {
     if (!authorPage) {
       return res.status(403).json({ ok: false, message: 'Please create an author page first' })
     }
+
+    const { data: currentCategory, error: currentError } = await supabase
+  .from('author_store_categories')
+  .select('name')
+  .eq('id', categoryId)
+  .eq('author_page_id', authorPage.id)
+  .eq('user_id', userId)
+  .maybeSingle()
+
+if (currentError) throw currentError
+
+if (!currentCategory) {
+  return res.status(404).json({ ok: false, message: 'Category not found' })
+}
+
+if (currentCategory.name === 'Sold out') {
+  return res.status(403).json({ ok: false, message: 'Sold out category cannot be deleted' })
+}
 
     const { data, error } = await supabase
       .from('author_store_categories')
