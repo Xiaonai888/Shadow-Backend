@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { deductShadowMallOrderStock } from './shadowMallOrders.controller.js'
+import { deductAuthorStoreOrderStock } from './authorStore.controller.js'
 import {
   answerCallbackQuery,
   editTelegramMessage,
@@ -156,6 +157,25 @@ async function findMatchingMallOrders(parsed) {
   return data || []
 }
 
+async function findMatchingAuthorStoreOrders(parsed) {
+  const trxTime = parsed.transaction_time ? new Date(parsed.transaction_time) : new Date()
+  const windowMinutes = getWindowMinutes()
+  const start = new Date(trxTime.getTime() - windowMinutes * 60 * 1000).toISOString()
+  const end = new Date(trxTime.getTime() + 5 * 60 * 1000).toISOString()
+
+  const { data, error } = await supabase
+    .from('author_store_orders')
+    .select('*')
+    .eq('status', 'waiting_payment')
+    .eq('total_usd', parsed.amount)
+    .gte('created_at', start)
+    .lte('created_at', end)
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return data || []
+}
+
 async function getUser(userId) {
   const { data, error } = await supabase
     .from('users')
@@ -260,6 +280,129 @@ async function markMallOrderUnderReview(order, telegramPayment, parsed) {
     })
     .eq('id', order.id)
     .eq('status', 'waiting_payment')
+    .select('*')
+    .single()
+
+  if (error) throw error
+  return data
+}
+
+async function markAuthorStoreOrderUnderReview(order, telegramPayment, parsed) {
+  const payload = {
+    source: 'telegram_aba_alert',
+    telegram_payment_id: telegramPayment.id,
+    trx_id: telegramPayment.trx_id,
+    apv: telegramPayment.apv || null,
+    amount_usd: telegramPayment.amount_usd,
+    payer_name: telegramPayment.payer_name,
+    payer_phone_last: telegramPayment.payer_phone_last,
+    bank_name: telegramPayment.bank_name,
+    raw_text: telegramPayment.raw_text,
+  }
+
+  const { data, error } = await supabase
+    .from('author_store_orders')
+    .update({
+      status: 'under_review',
+      order_status: 'under_review',
+      payment_status: 'paid',
+      aba_transaction_id: telegramPayment.trx_id,
+      callback_payload: payload,
+      paid_at: parsed.transaction_time || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', order.id)
+    .eq('status', 'waiting_payment')
+    .select('*')
+    .single()
+
+  if (error) throw error
+  return data
+}
+
+async function getAuthorPageForStoreOrder(order) {
+  if (!order?.author_page_id) return null
+
+  const { data, error } = await supabase
+    .from('author_pages')
+    .select('id, page_name, page_username, user_id')
+    .eq('id', order.author_page_id)
+    .maybeSingle()
+
+  if (error) throw error
+  return data || null
+}
+
+function authorStoreOrderUnderReviewMessage(order, authorPage) {
+  const buyer = order.buyer_profile || {}
+  const delivery = order.delivery_company || {}
+  const items = Array.isArray(order.items) ? order.items : []
+
+  const bookLines = items.slice(0, 8).map((item) => {
+    return `- ${html(item.title || item.product_title || 'Book')} x${html(item.quantity || 1)}`
+  })
+
+  return [
+    '✍️ <b>AUTHOR STORE PAYMENT UNDER REVIEW</b>',
+    '',
+    `📄 Page: <b>${html(authorPage?.page_name || 'Author Page')}</b>`,
+    authorPage?.page_username ? `🔗 Username: @${html(authorPage.page_username)}` : '',
+    '',
+    `📦 Order ID: <code>${html(order.order_id || order.order_number)}</code>`,
+    `💵 Amount: <b>${html(money(order.total_usd || order.total_amount))}</b>`,
+    order.aba_transaction_id ? `🧾 Trx ID: <code>${html(order.aba_transaction_id)}</code>` : '',
+    '',
+    `👤 Buyer: <b>${html(buyer.name || order.buyer_name || order.buyer_id)}</b>`,
+    buyer.phone_number || order.buyer_phone ? `📞 Phone: <code>${html(buyer.phone_number || order.buyer_phone)}</code>` : '',
+    buyer.telegram_username ? `💬 Telegram: ${html(buyer.telegram_username)}` : '',
+    buyer.facebook_link ? `🔗 Facebook: ${html(buyer.facebook_link)}` : '',
+    buyer.delivery_address || order.delivery_address ? `📍 Address: ${html(buyer.delivery_address || order.delivery_address)}` : '',
+    delivery.shortName || delivery.name ? `🚚 Delivery: <b>${html(delivery.shortName || delivery.name)}</b>` : '',
+    '',
+    '<b>Books:</b>',
+    ...bookLines,
+    '',
+    'Status: <b>Under Review</b>',
+  ].filter(Boolean).join('\n')
+}
+
+function authorStoreOrderKeyboard(orderId) {
+  return {
+    inline_keyboard: [
+      [
+        { text: '✅ Confirm Order', callback_data: `author_confirm:${orderId}` },
+      ],
+      [
+        { text: '📦 Mark Preparing', callback_data: `author_preparing:${orderId}` },
+      ],
+      [
+        { text: '❌ Cancel', callback_data: `author_cancel:${orderId}` },
+      ],
+    ],
+  }
+}
+
+async function sendAuthorStoreOrderReport(order) {
+  const chatId = process.env.TELEGRAM_AUTHOR_STORE_CHAT_ID
+  if (!chatId) return { ok: false, skipped: true }
+
+  const authorPage = await getAuthorPageForStoreOrder(order)
+
+  return sendTelegramMessage(authorStoreOrderUnderReviewMessage(order, authorPage), {
+    chat_id: chatId,
+    reply_markup: authorStoreOrderKeyboard(order.order_id || order.order_number),
+  })
+}
+
+async function updateAuthorStoreOrderFromTelegram(orderId, status) {
+  const { data, error } = await supabase
+    .from('author_store_orders')
+    .update({
+      status,
+      order_status: status,
+      updated_at: new Date().toISOString(),
+    })
+    .or(`order_id.eq.${orderId},order_number.eq.${orderId}`)
     .select('*')
     .single()
 
@@ -523,6 +666,42 @@ async function handleCallbackQuery(callbackQuery) {
   return
 }
 
+if (action && action.startsWith('author_')) {
+  const orderId = paymentId
+
+  const statusMap = {
+    author_confirm: 'confirmed',
+    author_preparing: 'preparing',
+    author_cancel: 'cancelled',
+  }
+
+  const nextStatus = statusMap[action]
+
+  if (!orderId || !nextStatus) {
+    await answerCallbackQuery(callbackQuery.id, 'Invalid author store order action.', true)
+    return
+  }
+
+  const updatedOrder = await updateAuthorStoreOrderFromTelegram(orderId, nextStatus)
+  const authorPage = await getAuthorPageForStoreOrder(updatedOrder)
+
+  await answerCallbackQuery(callbackQuery.id, `Author Store order updated to ${nextStatus}.`, false)
+
+  if (chatId && messageId) {
+    await editTelegramMessage(
+      chatId,
+      messageId,
+      authorStoreOrderUnderReviewMessage(updatedOrder, authorPage),
+      {
+        reply_markup: authorStoreOrderKeyboard(updatedOrder.order_id || updatedOrder.order_number),
+      }
+    )
+  }
+
+  return
+}
+  
+
   if (!paymentId || !['pay_ok', 'pay_no'].includes(action)) {
     await answerCallbackQuery(callbackQuery.id, 'Invalid action.', true)
     return
@@ -548,7 +727,7 @@ async function processAbaMessage(parsed, message) {
   const messageId = message.message_id
   const { payment: telegramPayment, duplicate } = await saveTelegramPayment(parsed, message)
 
-  if (duplicate || ['auto_released', 'duplicate', 'shadow_mall_under_review'].includes(telegramPayment.match_status)) {
+  if (duplicate || ['auto_released', 'duplicate', 'shadow_mall_under_review', 'author_store_under_review'].includes(telegramPayment.match_status)) {
     await replyTelegram(chatId, messageId, [
       '🔁 <b>DUPLICATE IGNORED</b>',
       '',
@@ -578,8 +757,9 @@ async function processAbaMessage(parsed, message) {
 
   const diamondMatches = await findMatchingOrders(parsed)
   const mallMatches = await findMatchingMallOrders(parsed)
+  const authorStoreMatches = await findMatchingAuthorStoreOrders(parsed)
 
-  if (diamondMatches.length === 1 && mallMatches.length === 0) {
+  if (diamondMatches.length === 1 && mallMatches.length === 0 && authorStoreMatches.length === 0) {
     const released = await releaseMatchedOrder(diamondMatches[0], telegramPayment)
     const user = await getUser(released.user_id)
 
@@ -595,7 +775,7 @@ async function processAbaMessage(parsed, message) {
     return
   }
 
-  if (diamondMatches.length === 0 && mallMatches.length === 1) {
+  if (diamondMatches.length === 0 && mallMatches.length === 1 && authorStoreMatches.length === 0) {
     const updatedMallOrder = await markMallOrderUnderReview(mallMatches[0], telegramPayment, parsed)
 
     try {
@@ -636,7 +816,48 @@ async function processAbaMessage(parsed, message) {
     return
   }
 
-  if (diamondMatches.length > 1 && mallMatches.length === 0) {
+  if (diamondMatches.length === 0 && mallMatches.length === 0 && authorStoreMatches.length === 1) {
+    const updatedAuthorOrder = await markAuthorStoreOrderUnderReview(authorStoreMatches[0], telegramPayment, parsed)
+
+    try {
+      await deductAuthorStoreOrderStock(updatedAuthorOrder)
+    } catch (error) {
+      console.error('DEDUCT AUTHOR STORE STOCK ERROR:', error)
+    }
+
+    await updateTelegramPayment(telegramPayment.id, {
+      matched_payment_id: null,
+      matched_user_id: updatedAuthorOrder.buyer_id,
+      match_status: 'author_store_under_review',
+      status: 'under_review',
+      match_reason: `Unique Author Store order matched by amount and time. Order ID: ${updatedAuthorOrder.order_id || updatedAuthorOrder.order_number}`,
+    })
+
+    try {
+      await sendAuthorStoreOrderReport(updatedAuthorOrder)
+    } catch (error) {
+      console.error('SEND AUTHOR STORE REPORT ERROR:', error)
+    }
+
+    try {
+      await replyTelegram(chatId, messageId, [
+        '✍️ <b>AUTHOR STORE MATCHED</b>',
+        '',
+        `📦 Order ID: <code>${html(updatedAuthorOrder.order_id || updatedAuthorOrder.order_number)}</code>`,
+        `💵 Amount: <b>${html(money(updatedAuthorOrder.total_usd || updatedAuthorOrder.total_amount))}</b>`,
+        `🧾 Trx ID: <code>${html(updatedAuthorOrder.aba_transaction_id)}</code>`,
+        '',
+        'Status: <b>Under Review</b>',
+        'Report sent to Author Store group.',
+      ].join('\n'))
+    } catch (error) {
+      console.error('REPLY AUTHOR STORE ABA GROUP ERROR:', error)
+    }
+
+    return
+  }
+
+  if (diamondMatches.length > 1 && mallMatches.length === 0 && authorStoreMatches.length === 0) {
     const reason = `Multiple diamond waiting orders matched this ${money(parsed.amount)} payment.`
 
     await markCandidatesPendingReview(diamondMatches, telegramPayment, reason)
@@ -656,7 +877,7 @@ async function processAbaMessage(parsed, message) {
     return
   }
 
-  if (diamondMatches.length === 0 && mallMatches.length > 1) {
+  if (diamondMatches.length === 0 && mallMatches.length > 1 && authorStoreMatches.length === 0) {
     const reason = `Multiple Shadow Mall waiting orders matched this ${money(parsed.amount)} payment.`
 
     await updateTelegramPayment(telegramPayment.id, {
@@ -695,8 +916,47 @@ async function processAbaMessage(parsed, message) {
     return
   }
 
-  if (diamondMatches.length > 0 && mallMatches.length > 0) {
-    const reason = `Diamond and Shadow Mall orders both matched this ${money(parsed.amount)} payment.`
+  if (diamondMatches.length === 0 && mallMatches.length === 0 && authorStoreMatches.length > 1) {
+    const reason = `Multiple Author Store waiting orders matched this ${money(parsed.amount)} payment.`
+
+    await updateTelegramPayment(telegramPayment.id, {
+      match_status: 'pending_review',
+      status: 'pending_review',
+      match_reason: reason,
+    })
+
+    const authorLines = authorStoreMatches.slice(0, 6).map((order) => {
+      const buyer = order.buyer_profile || {}
+      return `📦 <code>${html(order.order_id || order.order_number)}</code> — ${html(buyer.name || order.buyer_id)} — ${html(money(order.total_usd || order.total_amount))}`
+    })
+
+    const needReviewText = [
+      '🟠 <b>AUTHOR STORE NEED REVIEW</b>',
+      '',
+      `💵 Amount: <b>${html(money(parsed.amount))}</b>`,
+      `🧾 Trx ID: <code>${html(parsed.trx_id)}</code>`,
+      '',
+      'Multiple Author Store orders matched this payment:',
+      ...authorLines,
+      '',
+      'Please review in Admin later.',
+    ].join('\n')
+
+    await replyTelegram(chatId, messageId, needReviewText)
+
+    try {
+      await sendTelegramMessage(needReviewText, {
+        chat_id: process.env.TELEGRAM_AUTHOR_STORE_CHAT_ID,
+      })
+    } catch (error) {
+      console.error('SEND AUTHOR STORE NEED REVIEW ERROR:', error)
+    }
+
+    return
+  }
+
+  if ((diamondMatches.length > 0 && mallMatches.length > 0) || (diamondMatches.length > 0 && authorStoreMatches.length > 0) || (mallMatches.length > 0 && authorStoreMatches.length > 0)) {
+    const reason = `Multiple order types matched this ${money(parsed.amount)} payment.`
 
     if (diamondMatches.length) {
       await markCandidatesPendingReview(diamondMatches, telegramPayment, reason)
@@ -716,8 +976,9 @@ async function processAbaMessage(parsed, message) {
       '',
       `Diamond matches: <b>${html(diamondMatches.length)}</b>`,
       `Shadow Mall matches: <b>${html(mallMatches.length)}</b>`,
+      `Author Store matches: <b>${html(authorStoreMatches.length)}</b>`,
       '',
-      'Reason: Diamond and book orders matched at the same time.',
+      'Reason: More than one order type matched at the same time.',
     ].join('\n'))
 
     return
