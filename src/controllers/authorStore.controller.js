@@ -270,6 +270,32 @@ async function sendTelegramMessageWithRetry(text, options = {}) {
   throw lastError || new Error('Telegram send failed')
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function sendTelegramMessageWithRetry(text, options = {}) {
+  const delays = [1500, 3000, 5000]
+  let lastError = null
+
+  for (let index = 0; index < delays.length; index += 1) {
+    await sleep(delays[index])
+
+    try {
+      return await sendTelegramMessage(text, options)
+    } catch (error) {
+      lastError = error
+      console.error('TELEGRAM SEND RETRY FAILED:', {
+        attempt: index + 1,
+        chat_id: options.chat_id,
+        error: error.message,
+      })
+    }
+  }
+
+  throw lastError || new Error('Telegram send failed')
+}
+
 export async function handleAuthorStoreTelegramWebhook(req, res) {
   try {
     const update = req.body || {}
@@ -452,7 +478,28 @@ export async function handleAuthorStoreTelegramWebhook(req, res) {
       chat_title: chat.title,
     })
 
-    
+        try {
+      await sendTelegramMessageWithRetry([
+        '🎉 <b>Congratulations!</b>',
+        '',
+        `You’ve successfully linked <b>${html(authorPage.page_name || authorPage.page_username || 'your Author Page')}</b> to this Telegram group.`,
+        '',
+        'Author Store order notifications will appear here.',
+      ].join('\n'), {
+        chat_id: String(chat.id),
+      })
+
+      console.log('TELEGRAM CONGRATULATIONS SENT:', {
+        chat_id: chat.id,
+        chat_title: chat.title,
+      })
+    } catch (sendError) {
+      console.error('TELEGRAM CONGRATULATIONS SEND FAILED:', {
+        chat_id: chat.id,
+        chat_title: chat.title,
+        error: sendError.message,
+      })
+    }
 
     return res.status(200).json({ ok: true, linked: true })
   } catch (error) {
