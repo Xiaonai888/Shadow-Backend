@@ -2248,6 +2248,66 @@ export async function updateAdminAuthorStoreOrderStatus(req, res) {
     return res.status(500).json({ ok: false, message: error.message || 'Failed to update Author Store order' })
   }
 }
+
+export async function resendAdminAuthorStoreOrderTelegram(req, res) {
+  try {
+    const orderId = String(req.params.orderId || '').trim()
+
+    if (!orderId) {
+      return res.status(400).json({ ok: false, message: 'Order ID is required' })
+    }
+
+    const { data: order, error } = await supabase
+      .from('author_store_orders')
+      .select('*, items:author_store_order_items(*)')
+      .eq('order_id', orderId)
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!order) {
+      return res.status(404).json({ ok: false, message: 'Author Store order not found' })
+    }
+
+    const status = order.status || order.order_status
+
+    if (status !== 'confirmed' && status !== 'preparing' && status !== 'shipped' && status !== 'completed') {
+      return res.status(400).json({
+        ok: false,
+        message: 'Telegram can only be resent after the book order is approved.',
+      })
+    }
+
+    const result = await sendAuthorStoreBookOrderTelegram(order)
+
+    if (!result.sent) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          result.reason === 'no_book_items'
+            ? 'This order has no book items.'
+            : result.reason === 'telegram_not_linked'
+              ? 'Author Telegram group is not linked.'
+              : 'Telegram was not sent.',
+        telegram_result: result,
+      })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Telegram notification resent.',
+      telegram_result: result,
+      order: publicAuthorPaymentOrder(order),
+    })
+  } catch (error) {
+    console.error('RESEND ADMIN AUTHOR STORE ORDER TELEGRAM ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to resend Telegram notification',
+    })
+  }
+}
+
 export async function handleAuthorStoreAbaCallback(req, res) {
   try {
     const orderId = getCallbackOrderId(req.body)
