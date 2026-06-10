@@ -26,6 +26,7 @@ import {
   createMyAuthorStoreTelegramConnectLink,
   unlinkMyAuthorStoreTelegramGroup,
   handleAuthorStoreTelegramWebhook,
+  resendAdminAuthorStoreOrderTelegram,
 } from '../controllers/authorStore.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
@@ -58,6 +59,7 @@ router.post('/orders/callback', handleAuthorStoreAbaCallback)
 router.put('/me/products/:productId', requireUser, updateMyAuthorStoreProduct)
 router.delete('/me/products/:productId', requireUser, deleteMyAuthorStoreProduct)
 router.get('/page/:pageUsername/products', getPublicAuthorStoreProducts)
+router.post('/admin/orders/:orderId/resend-telegram', requireAdmin, resendAdminAuthorStoreOrderTelegram)
 
 
 export default router
