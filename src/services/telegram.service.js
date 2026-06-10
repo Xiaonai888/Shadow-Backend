@@ -1,9 +1,12 @@
 const TELEGRAM_API_URL = 'https://api.telegram.org'
 
+function isTelegramConfigured() {
+  return Boolean(process.env.TELEGRAM_BOT_TOKEN)
+}
+
 function isAuthorStoreTelegramConfigured() {
   return Boolean(process.env.TELEGRAM_AUTHOR_STORE_BOT_TOKEN)
 }
-
 function escapeHtml(value) {
   return String(value || '')
     .replaceAll('&', '&amp;')
