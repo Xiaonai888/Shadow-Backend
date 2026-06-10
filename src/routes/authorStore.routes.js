@@ -2,6 +2,9 @@ import express from 'express'
 import {
   createAuthorStoreOrder,
   createAuthorStoreOrderPayment,
+  getMyAuthorStoreIncome,
+createMyAuthorStoreWithdrawal,
+getMyAuthorStoreOrders,
   createMyAuthorStoreCategory,
   createMyAuthorStoreProduct,
   deleteMyAuthorStoreCategory,
@@ -46,6 +49,8 @@ router.patch('/me/categories/:categoryId', requireUser, updateMyAuthorStoreCateg
 router.delete('/me/categories/:categoryId', requireUser, deleteMyAuthorStoreCategory)
 router.post('/me/products', requireUser, createMyAuthorStoreProduct)
 router.get('/me/orders', requireUser, getMyAuthorStoreOrders)
+router.get('/me/income', requireUser, getMyAuthorStoreIncome)
+router.post('/me/withdrawals', requireUser, createMyAuthorStoreWithdrawal)
 router.get('/admin/orders', requireAdmin, getAdminAuthorStoreOrders)
 router.patch('/admin/orders/:orderId/status', requireAdmin, updateAdminAuthorStoreOrderStatus)
 router.post('/orders', createAuthorStoreOrder)
