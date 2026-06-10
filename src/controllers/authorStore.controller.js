@@ -1646,7 +1646,7 @@ export async function unlockAuthorStorePdfDownloads(order) {
   return data || []
 }
 
-async function sendAuthorStoreBookOrderTelegram(order) {
+export async function sendAuthorStoreBookOrderTelegram(order) {
   const items = Array.isArray(order?.items) ? order.items : []
   const bookItems = items.filter((item) => {
     const type = String(item.product_type || item.type || '').toLowerCase()
