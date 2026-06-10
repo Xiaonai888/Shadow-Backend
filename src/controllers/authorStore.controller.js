@@ -2128,15 +2128,13 @@ export async function getAdminAuthorStoreOrders(req, res) {
     const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 100)
     const status = String(req.query.status || 'under_review').trim()
     const type = String(req.query.type || 'all').trim().toLowerCase()
-    const q = String(req.query.q || '').trim()
-    const from = (page - 1) * limit
-    const to = from + limit - 1
+    const q = String(req.query.q || '').trim().toLowerCase()
 
     const adminHistoryWindowStart = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString()
 
     let query = supabase
       .from('author_store_orders')
-      .select('*, items:author_store_order_items(*)', { count: 'exact' })
+      .select('*, items:author_store_order_items(*)')
       .gte('created_at', adminHistoryWindowStart)
 
     if (status === 'all') {
@@ -2145,23 +2143,21 @@ export async function getAdminAuthorStoreOrders(req, res) {
         .neq('status', 'expired')
     } else if (AUTHOR_STORE_ADMIN_STATUSES.includes(status)) {
       query = query.eq('status', status)
+    } else if (status === 'amount_mismatch') {
+      query = query.eq('status', 'amount_mismatch')
     } else {
       query = query.eq('status', 'under_review')
     }
 
-    if (q) {
-      query = query.or(`order_id.ilike.%${q}%,order_number.ilike.%${q}%,aba_transaction_id.ilike.%${q}%,buyer_name.ilike.%${q}%,buyer_phone.ilike.%${q}%`)
-    }
-
-    const { data, error, count } = await query
+    const { data, error } = await query
       .order('updated_at', { ascending: false })
-      .range(from, to)
+      .limit(1000)
 
     if (error) throw error
 
     const allOrders = (data || []).map(publicAuthorPaymentOrder)
 
-    const filteredOrders = allOrders.filter((order) => {
+    const typeFilteredOrders = allOrders.filter((order) => {
       if (type === 'all') return true
 
       const items = Array.isArray(order.items) ? order.items : []
@@ -2174,16 +2170,54 @@ export async function getAdminAuthorStoreOrders(req, res) {
       return true
     })
 
+    const searchFilteredOrders = q
+      ? typeFilteredOrders.filter((order) => {
+          const buyerProfile = order.buyer_profile || {}
+
+          const searchText = [
+            order.id,
+            order.order_id,
+            order.order_number,
+            order.aba_transaction_id,
+            order.buyer_name,
+            order.buyer_phone,
+            buyerProfile.name,
+            buyerProfile.buyer_name,
+            buyerProfile.phone_number,
+            buyerProfile.buyer_phone,
+            buyerProfile.delivery_address,
+            ...(Array.isArray(order.items)
+              ? order.items.map((item) => [
+                  item.product_title,
+                  item.title,
+                  item.product_type,
+                ].join(' '))
+              : []),
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase()
+
+          return searchText.includes(q)
+        })
+      : typeFilteredOrders
+
+    const total = searchFilteredOrders.length
+    const from = (page - 1) * limit
+    const to = from + limit
+    const pagedOrders = searchFilteredOrders.slice(from, to)
+
     return res.status(200).json({
       ok: true,
       type,
-      orders: filteredOrders,
+      status,
+      orders: pagedOrders,
       page,
       limit,
-      total: count || 0,
-      shown: filteredOrders.length,
-      total_pages: Math.max(Math.ceil((count || 0) / limit), 1),
-      has_next: to + 1 < (count || 0),
+      total,
+      shown: pagedOrders.length,
+      total_pages: Math.max(Math.ceil(total / limit), 1),
+      has_next: to < total,
       has_prev: page > 1,
     })
   } catch (error) {
