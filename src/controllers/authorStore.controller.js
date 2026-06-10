@@ -258,6 +258,93 @@ export async function getMyAuthorStoreTelegramSettings(req, res) {
   }
 }
 
+function getTelegramWebhookMessage(update) {
+  return update?.message || update?.channel_post || null
+}
+
+function getTelegramStartToken(text) {
+  const match = String(text || '').trim().match(/^\/start(?:@\w+)?(?:\s+(.+))?$/i)
+  return String(match?.[1] || '').trim()
+}
+
+function isTelegramGroup(chat) {
+  return chat?.type === 'group' || chat?.type === 'supergroup'
+}
+
+export async function handleAuthorStoreTelegramWebhook(req, res) {
+  try {
+    const update = req.body || {}
+    const message = getTelegramWebhookMessage(update)
+    const chat = message?.chat || null
+    const token = getTelegramStartToken(message?.text)
+
+    if (!message || !chat || !token) {
+      return res.status(200).json({ ok: true, ignored: true })
+    }
+
+    if (!isTelegramGroup(chat)) {
+      await sendTelegramMessage('Please add this bot to a Telegram group from your Author Store settings page.', {
+        chat_id: String(chat.id),
+      }).catch(() => {})
+      return res.status(200).json({ ok: true, ignored: true })
+    }
+
+    const now = new Date().toISOString()
+
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('id, page_name, page_username, telegram_chat_id')
+      .eq('telegram_link_token', token)
+      .gt('telegram_link_expires_at', now)
+      .maybeSingle()
+
+    if (pageError) throw pageError
+
+    if (!authorPage) {
+      await sendTelegramMessage('This Telegram connect link is invalid or expired. Please create a new connect link from Author Store settings.', {
+        chat_id: String(chat.id),
+      }).catch(() => {})
+      return res.status(200).json({ ok: true, linked: false })
+    }
+
+    if (authorPage.telegram_chat_id) {
+      await sendTelegramMessage('This Author Page is already linked to a Telegram group. Please unlink it first if you want to change groups.', {
+        chat_id: String(chat.id),
+      }).catch(() => {})
+      return res.status(200).json({ ok: true, linked: false })
+    }
+
+    const { error: updateError } = await supabase
+      .from('author_pages')
+      .update({
+        telegram_chat_id: String(chat.id),
+        telegram_chat_title: chat.title || '',
+        telegram_link_token: null,
+        telegram_link_expires_at: null,
+        telegram_linked_at: now,
+        updated_at: now,
+      })
+      .eq('id', authorPage.id)
+
+    if (updateError) throw updateError
+
+    await sendTelegramMessage([
+      '🎉 <b>Congratulations!</b>',
+      '',
+      `You’ve successfully linked <b>${html(authorPage.page_name || authorPage.page_username || 'your Author Page')}</b> to this Telegram group.`,
+      '',
+      'Author Store order notifications will appear here.',
+    ].join('\n'), {
+      chat_id: String(chat.id),
+    }).catch(() => {})
+
+    return res.status(200).json({ ok: true, linked: true })
+  } catch (error) {
+    console.error('AUTHOR STORE TELEGRAM WEBHOOK ERROR:', error)
+    return res.status(200).json({ ok: false, message: error.message || 'Telegram webhook failed' })
+  }
+}
+
 export async function createMyAuthorStoreTelegramConnectLink(req, res) {
   try {
     const userId = req.user?.user_id
