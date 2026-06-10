@@ -21,9 +21,6 @@ import {
   updateAdminAuthorStoreOrderStatus,
   updateMyAuthorStoreProduct,
   getMyAuthorStoreTelegramSettings,
-  updateMyAuthorStoreTelegramSettings,
-  testMyAuthorStoreTelegramSettings,
-  createMyAuthorStoreTelegramLinkCode,
   createMyAuthorStoreTelegramConnectLink,
   getMyAuthorStoreTelegramSettings,
   unlinkMyAuthorStoreTelegramGroup,
@@ -40,7 +37,6 @@ router.get('/me/telegram-settings', requireUser, getMyAuthorStoreTelegramSetting
 router.post('/me/telegram-settings/connect-link', requireUser, createMyAuthorStoreTelegramConnectLink)
 router.post('/me/telegram-settings/unlink', requireUser, unlinkMyAuthorStoreTelegramGroup)
 router.put('/me/delivery-settings', requireUser, updateMyAuthorStoreDeliverySettings)
-router.get('/me/telegram-settings', requireUser, getMyAuthorStoreTelegramSettings)
 router.post('/me/categories', requireUser, createMyAuthorStoreCategory)
 router.patch('/me/categories/reorder', requireUser, reorderMyAuthorStoreCategories)
 router.patch('/me/categories/:categoryId', requireUser, updateMyAuthorStoreCategory)
