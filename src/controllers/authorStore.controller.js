@@ -1,7 +1,6 @@
 import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
-import { html, sendAuthorStoreTelegramMessage } from '../services/telegram.service.js'
-
+import { html, sendTelegramMessage, sendAuthorStoreTelegramMessage } from '../services/telegram.service.js'
 const PRODUCT_TYPES = new Set(['book', 'pdf'])
 const PRODUCT_STATUSES = new Set(['draft', 'active', 'hidden'])
 
@@ -1714,6 +1713,88 @@ async function sendAuthorStoreBookOrderTelegram(order) {
 }
 
 
+async function sendAuthorStoreAdminOrderReviewAlert(order) {
+  const chatId = process.env.TELEGRAM_AUTHOR_STORE_ADMIN_CHAT_ID || process.env.TELEGRAM_ADMIN_CHAT_ID
+
+  if (!chatId) {
+    return { sent: false, reason: 'admin_chat_id_not_configured' }
+  }
+
+  const items = Array.isArray(order?.items) ? order.items : []
+  const hasPdf = items.some((item) => String(item.product_type || '').toLowerCase() === 'pdf')
+  const hasBook = items.some((item) => String(item.product_type || '').toLowerCase() === 'book')
+  const orderType = hasPdf && !hasBook ? 'PDF Order' : hasBook && !hasPdf ? 'Book Order' : 'Mixed Order'
+
+  const buyerProfile = order.buyer_profile || {}
+  const buyerName = buyerProfile.name || buyerProfile.buyer_name || order.buyer_name || 'Reader'
+  const buyerPhone = buyerProfile.phone_number || buyerProfile.buyer_phone || order.buyer_phone || '-'
+  const buyerAddress = buyerProfile.delivery_address || order.delivery_address || '-'
+
+  const productLines = items.length
+    ? items.map((item, index) => {
+        const title = item.product_title || item.title || 'Product'
+        const type = String(item.product_type || '').toUpperCase() || 'ITEM'
+        const quantity = Number(item.quantity || 1)
+        const total = Number(item.total_price || item.total_usd || 0).toFixed(2)
+
+        return `${index + 1}. ${html(title)} (${html(type)}) × ${quantity} — $${total}`
+      })
+    : ['No item data']
+
+  const text = [
+    '🧾 <b>Author Store Order Review</b>',
+    '',
+    `<b>Type:</b> ${html(orderType)}`,
+    `<b>Order ID:</b> <code>${html(order.order_id || order.order_number || order.id)}</code>`,
+    `<b>Status:</b> ${html(order.status || order.order_status || 'under_review')}`,
+    '',
+    '<b>Products</b>',
+    ...productLines,
+    '',
+    '<b>Reader</b>',
+    `Name: ${html(buyerName)}`,
+    `Phone: ${html(buyerPhone)}`,
+    `Address: ${html(buyerAddress)}`,
+    '',
+    '<b>Payment</b>',
+    `Product subtotal: $${Number(order.product_subtotal_usd || order.subtotal_usd || 0).toFixed(2)}`,
+    `Delivery fee: $${Number(order.delivery_fee_usd || 0).toFixed(2)}`,
+    `Total paid: $${Number(order.total_usd || order.total_amount || 0).toFixed(2)}`,
+    `Platform fee: $${Number(order.platform_fee_usd || 0).toFixed(2)}`,
+    `Author income: $${Number(order.author_income_usd || 0).toFixed(2)}`,
+    '',
+    'Admin, please check the money before confirming.',
+  ].join('\n')
+
+  await sendTelegramMessage(text, {
+    chat_id: chatId,
+    reply_markup: {
+      inline_keyboard: [
+        [
+          {
+            text: '✅ Confirm',
+            callback_data: `author_order_confirm:${order.order_id || order.order_number}`,
+          },
+          {
+            text: '❌ Cancel',
+            callback_data: `author_order_cancel:${order.order_id || order.order_number}`,
+          },
+        ],
+        [
+          {
+            text: '🔎 Open Author Orders',
+            url: 'https://admin.shadowerabook.site/author-store/review',
+          },
+        ],
+      ],
+    },
+  })
+
+  return { sent: true }
+}
+
+  
+
 function publicOrder(order) {
   return {
     id: order.id,
@@ -2492,7 +2573,16 @@ export async function handleAuthorStoreAbaCallback(req, res) {
 
     await deductAuthorStoreOrderStock(updatedOrder)
 
-    return res.status(200).json({ ok: true })
+try {
+  await sendAuthorStoreAdminOrderReviewAlert(updatedOrder)
+} catch (notifyError) {
+  console.error('AUTHOR STORE ADMIN REVIEW ALERT FAILED:', {
+    order_id: updatedOrder.order_id,
+    error: notifyError.message,
+  })
+}
+
+return res.status(200).json({ ok: true })
   } catch (error) {
     console.error('AUTHOR STORE ABA CALLBACK ERROR:', error)
     return res.status(500).json({ ok: false, message: error.message || 'Failed to process Author Store ABA callback' })
