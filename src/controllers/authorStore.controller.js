@@ -1329,10 +1329,14 @@ function publicAuthorPaymentOrder(order) {
     items: order.items || [],
     buyer_profile: order.buyer_profile || {},
     delivery_company: order.delivery_company || {},
-    subtotal_usd: Number(order.subtotal_usd || order.subtotal || 0),
-    delivery_fee_usd: Number(order.delivery_fee_usd || order.delivery_fee || 0),
-    total_usd: Number(order.total_usd || order.total_amount || 0),
-    currency: order.currency || 'USD',
+   subtotal_usd: Number(order.subtotal_usd || order.subtotal || 0),
+delivery_fee_usd: Number(order.delivery_fee_usd || order.delivery_fee || 0),
+total_usd: Number(order.total_usd || order.total_amount || 0),
+product_subtotal_usd: Number(order.product_subtotal_usd || order.subtotal_usd || order.subtotal || 0),
+platform_fee_rate: Number(order.platform_fee_rate || 0.10),
+platform_fee_usd: Number(order.platform_fee_usd || 0),
+author_income_usd: Number(order.author_income_usd || 0),
+currency: order.currency || 'USD',
     qr_string: order.qr_string || '',
     qr_image: order.qr_image || '',
     checkout_url: order.checkout_url || '',
@@ -1628,6 +1632,73 @@ export async function unlockAuthorStorePdfDownloads(order) {
 
   return data || []
 }
+
+async function sendAuthorStoreBookOrderTelegram(order) {
+  const items = Array.isArray(order?.items) ? order.items : []
+  const bookItems = items.filter((item) => {
+    const type = String(item.product_type || item.type || '').toLowerCase()
+    return type === 'book'
+  })
+
+  if (!bookItems.length) {
+    return { sent: false, reason: 'no_book_items' }
+  }
+
+  const { data: authorPage, error: authorPageError } = await supabase
+    .from('author_pages')
+    .select('id, page_name, page_username, telegram_chat_id, telegram_chat_title')
+    .eq('id', order.author_page_id)
+    .maybeSingle()
+
+  if (authorPageError) throw authorPageError
+
+  if (!authorPage?.telegram_chat_id) {
+    return { sent: false, reason: 'telegram_not_linked' }
+  }
+
+  const buyerProfile = order.buyer_profile || {}
+  const buyerName = buyerProfile.name || buyerProfile.buyer_name || order.buyer_name || 'Reader'
+  const buyerPhone = buyerProfile.phone_number || buyerProfile.buyer_phone || order.buyer_phone || '-'
+  const buyerAddress = buyerProfile.delivery_address || order.delivery_address || '-'
+
+  const productLines = bookItems.map((item, index) => {
+    const title = item.product_title || item.title || 'Book'
+    const quantity = Number(item.quantity || 1)
+    const total = Number(item.total_price || item.total_usd || 0).toFixed(2)
+
+    return `${index + 1}. ${html(title)} × ${quantity} — $${total}`
+  })
+
+  const message = [
+    '📚 <b>New Author Store Book Order</b>',
+    '',
+    `Author Page: <b>${html(authorPage.page_name || authorPage.page_username || 'Author Page')}</b>`,
+    `Order ID: <code>${html(order.order_id || order.order_number || order.id)}</code>`,
+    '',
+    '<b>Products</b>',
+    ...productLines,
+    '',
+    '<b>Reader</b>',
+    `Name: ${html(buyerName)}`,
+    `Phone: ${html(buyerPhone)}`,
+    `Address: ${html(buyerAddress)}`,
+    '',
+    '<b>Payment</b>',
+    `Product subtotal: $${Number(order.product_subtotal_usd || order.subtotal_usd || 0).toFixed(2)}`,
+    `Delivery fee: $${Number(order.delivery_fee_usd || 0).toFixed(2)}`,
+    `Total paid: $${Number(order.total_usd || 0).toFixed(2)}`,
+    `Author income: $${Number(order.author_income_usd || 0).toFixed(2)}`,
+    '',
+    'Please prepare this book order for delivery.',
+  ].join('\n')
+
+  await sendTelegramMessageWithRetry(message, {
+    chat_id: String(authorPage.telegram_chat_id),
+  })
+
+  return { sent: true }
+}
+
 
 function publicOrder(order) {
   return {
@@ -2125,41 +2196,58 @@ export async function updateAdminAuthorStoreOrderStatus(req, res) {
   try {
     const orderId = String(req.params.orderId || '').trim()
     const status = String(req.body.status || '').trim()
+    const adminNote = req.body.admin_note || req.body.adminNote || null
+
+    if (!orderId) {
+      return res.status(400).json({ ok: false, message: 'Order ID is required' })
+    }
 
     if (!AUTHOR_STORE_ADMIN_STATUSES.includes(status)) {
       return res.status(400).json({ ok: false, message: 'Invalid order status' })
     }
 
+    const now = new Date().toISOString()
+
+    const updatePayload = {
+      status,
+      order_status: status,
+      admin_note: adminNote,
+      updated_at: now,
+    }
+
+    if (status === 'confirmed') {
+      updatePayload.payment_status = 'paid'
+      updatePayload.confirmed_at = now
+    }
+
     const { data, error } = await supabase
       .from('author_store_orders')
-      .update({
-        status,
-        order_status: status,
-        payment_status: status === 'confirmed' ? 'paid' : undefined,
-        admin_note: req.body.admin_note || null,
-        updated_at: new Date().toISOString(),
-      })
+      .update(updatePayload)
       .eq('order_id', orderId)
-      .select('*')
+      .select('*, items:author_store_order_items(*)')
       .single()
 
     if (error) throw error
 
+    let pdf_unlocks = []
+    let telegram_result = { sent: false, reason: 'not_book_order' }
+
     if (status === 'confirmed') {
-      await deductAuthorStoreOrderStock(data)
-      await unlockAuthorStorePdfDownloads(data)
+      pdf_unlocks = await unlockAuthorStorePdfDownloads(data)
+      telegram_result = await sendAuthorStoreBookOrderTelegram(data)
     }
 
     return res.status(200).json({
       ok: true,
       order: publicAuthorPaymentOrder(data),
+      pdf_unlocks,
+      telegram_result,
     })
   } catch (error) {
     console.error('UPDATE ADMIN AUTHOR STORE ORDER STATUS ERROR:', error)
     return res.status(500).json({ ok: false, message: error.message || 'Failed to update Author Store order' })
   }
 }
-
 export async function handleAuthorStoreAbaCallback(req, res) {
   try {
     const orderId = getCallbackOrderId(req.body)
