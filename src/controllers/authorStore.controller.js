@@ -110,37 +110,44 @@ async function getMyAuthorPage(userId) {
   return data
 }
 
+try {
+  const orderId = String(req.params.orderId || '').trim()
 
+  if (orderId) {
+    await supabase
+      .from('author_store_orders')
+      .update({
+        telegram_status: 'failed',
+        telegram_error: error.message || 'Failed to resend Telegram notification',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('order_id', orderId)
+  }
+} catch {}
 
 async function createUniqueTelegramLinkToken() {
-  const now = new Date().toISOString()
+ const now = new Date().toISOString()
 
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const token = crypto.randomBytes(12).toString('hex')
+const { data: updatedOrder, error: updateError } = await supabase
+  .from('author_store_orders')
+  .update({
+    telegram_status: 'sent',
+    telegram_sent_at: now,
+    telegram_error: '',
+    updated_at: now,
+  })
+  .eq('id', order.id)
+  .select('*, items:author_store_order_items(*)')
+  .single()
 
-    const { data, error } = await supabase
-      .from('author_pages')
-      .select('id')
-      .eq('telegram_link_token', token)
-      .gt('telegram_link_expires_at', now)
-      .maybeSingle()
+if (updateError) throw updateError
 
-    if (error) throw error
-    if (!data) return token
-  }
-
-  throw new Error('Failed to generate Telegram link token')
-}
-
-function publicAuthorStoreTelegramSettings(authorPage) {
-  return {
-    bot_username: process.env.TELEGRAM_BOT_USERNAME || '',
-    chat_id: authorPage.telegram_chat_id || '',
-    chat_title: authorPage.telegram_chat_title || '',
-    linked_at: authorPage.telegram_linked_at || null,
-    is_linked: Boolean(authorPage.telegram_chat_id),
-  }
-}
+return res.status(200).json({
+  ok: true,
+  message: 'Telegram notification resent.',
+  telegram_result: result,
+  order: publicAuthorPaymentOrder(updatedOrder),
+})
 
 export async function getMyAuthorStoreDeliverySettings(req, res) {
   try {
@@ -2269,26 +2276,96 @@ export async function updateAdminAuthorStoreOrderStatus(req, res) {
 
     if (error) throw error
 
-    let pdf_unlocks = []
-    let telegram_result = { sent: false, reason: 'not_book_order' }
+    let pdfUnlockStatus = data.pdf_unlock_status || 'pending'
+    let pdfUnlockedAt = data.pdf_unlocked_at || null
+    let pdfUnlockCount = Number(data.pdf_unlock_count || 0)
+
+    let telegramStatus = data.telegram_status || 'pending'
+    let telegramSentAt = data.telegram_sent_at || null
+    let telegramError = data.telegram_error || ''
 
     if (status === 'confirmed') {
-      pdf_unlocks = await unlockAuthorStorePdfDownloads(data)
-      telegram_result = await sendAuthorStoreBookOrderTelegram(data)
+      const items = Array.isArray(data.items) ? data.items : []
+      const hasPdf = items.some((item) => String(item.product_type || '').toLowerCase() === 'pdf')
+      const hasBook = items.some((item) => String(item.product_type || '').toLowerCase() === 'book')
+
+      if (hasPdf) {
+        try {
+          const pdfUnlocks = await unlockAuthorStorePdfDownloads(data)
+          pdfUnlockStatus = pdfUnlocks.length ? 'unlocked' : 'failed'
+          pdfUnlockedAt = pdfUnlocks.length ? now : null
+          pdfUnlockCount = pdfUnlocks.length
+        } catch (unlockError) {
+          pdfUnlockStatus = 'failed'
+          pdfUnlockedAt = null
+          pdfUnlockCount = 0
+        }
+      } else {
+        pdfUnlockStatus = 'not_pdf'
+        pdfUnlockedAt = null
+        pdfUnlockCount = 0
+      }
+
+      if (hasBook) {
+        try {
+          const telegramResult = await sendAuthorStoreBookOrderTelegram(data)
+
+          if (telegramResult.sent) {
+            telegramStatus = 'sent'
+            telegramSentAt = now
+            telegramError = ''
+          } else if (telegramResult.reason === 'telegram_not_linked') {
+            telegramStatus = 'not_linked'
+            telegramSentAt = null
+            telegramError = 'Author Telegram group is not linked.'
+          } else {
+            telegramStatus = 'failed'
+            telegramSentAt = null
+            telegramError = telegramResult.reason || 'Telegram was not sent.'
+          }
+        } catch (telegramSendError) {
+          telegramStatus = 'failed'
+          telegramSentAt = null
+          telegramError = telegramSendError.message || 'Telegram send failed.'
+        }
+      } else {
+        telegramStatus = 'not_book'
+        telegramSentAt = null
+        telegramError = ''
+      }
+
+      const { data: finalOrder, error: finalUpdateError } = await supabase
+        .from('author_store_orders')
+        .update({
+          pdf_unlock_status: pdfUnlockStatus,
+          pdf_unlocked_at: pdfUnlockedAt,
+          pdf_unlock_count: pdfUnlockCount,
+          telegram_status: telegramStatus,
+          telegram_sent_at: telegramSentAt,
+          telegram_error: telegramError,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', data.id)
+        .select('*, items:author_store_order_items(*)')
+        .single()
+
+      if (finalUpdateError) throw finalUpdateError
+
+      return res.status(200).json({
+        ok: true,
+        order: publicAuthorPaymentOrder(finalOrder),
+      })
     }
 
     return res.status(200).json({
       ok: true,
       order: publicAuthorPaymentOrder(data),
-      pdf_unlocks,
-      telegram_result,
     })
   } catch (error) {
     console.error('UPDATE ADMIN AUTHOR STORE ORDER STATUS ERROR:', error)
     return res.status(500).json({ ok: false, message: error.message || 'Failed to update Author Store order' })
   }
 }
-
 export async function resendAdminAuthorStoreOrderTelegram(req, res) {
   try {
     const orderId = String(req.params.orderId || '').trim()
