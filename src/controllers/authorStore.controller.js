@@ -247,108 +247,163 @@ function isTelegramGroup(chat) {
 export async function handleAuthorStoreTelegramWebhook(req, res) {
   try {
     const update = req.body || {}
+
+    console.log('AUTHOR STORE TELEGRAM WEBHOOK RECEIVED:', JSON.stringify(update))
+
     const message = getTelegramWebhookMessage(update)
-    const chat = message?.chat || null
+    const memberUpdate = update.my_chat_member || null
+
+    const chat = message?.chat || memberUpdate?.chat || null
     const text = message?.text || ''
     const token = getTelegramStartToken(text)
 
-    // No message/chat at all
-    if (!message || !chat) {
-      console.log('TELEGRAM WEBHOOK IGNORED: no message or chat', JSON.stringify(update))
-      return res.status(200).json({ ok: true, ignored: true, reason: 'no_message_or_chat' })
-    }
-
-    // Message came, but no token
-    if (!token) {
-      await sendTelegramMessage([
-        '⚠️ <b>Telegram link failed</b>',
-        '',
-        'Reason: No connect token was received.',
-        '',
-        `Received command: <code>${html(text || 'empty')}</code>`,
-        '',
-        'Please do not type /start manually. Go to Author Store settings and tap <b>Connect Telegram Group</b> again.',
-      ].join('\n'), {
-        chat_id: String(chat.id),
-      }).catch((sendError) => {
-        console.error('TELEGRAM DEBUG SEND FAILED:', sendError)
+    if (!chat) {
+      console.log('TELEGRAM WEBHOOK IGNORED:', {
+        reason: 'no_chat',
+        update_type: Object.keys(update || {}),
       })
 
-      return res.status(200).json({ ok: true, ignored: true, reason: 'missing_token' })
+      return res.status(200).json({ ok: true, ignored: true, reason: 'no_chat' })
     }
 
-    // Not group/supergroup
     if (!isTelegramGroup(chat)) {
-      await sendTelegramMessage([
-        '⚠️ <b>Telegram link failed</b>',
-        '',
-        'Reason: This chat is not a Telegram group.',
-        '',
-        'Please add this bot to a Telegram group from your Author Store settings page.',
-      ].join('\n'), {
-        chat_id: String(chat.id),
-      }).catch((sendError) => {
-        console.error('TELEGRAM DEBUG SEND FAILED:', sendError)
+      console.log('TELEGRAM WEBHOOK IGNORED:', {
+        reason: 'not_group',
+        chat_id: chat.id,
+        chat_type: chat.type,
       })
 
       return res.status(200).json({ ok: true, ignored: true, reason: 'not_group' })
     }
 
     const now = new Date().toISOString()
+    let authorPage = null
 
-    const { data: authorPage, error: pageError } = await supabase
-      .from('author_pages')
-      .select('id, page_name, page_username, telegram_chat_id')
-      .eq('telegram_link_token', token)
-      .gt('telegram_link_expires_at', now)
-      .maybeSingle()
+    if (token) {
+      const { data, error: pageError } = await supabase
+        .from('author_pages')
+        .select('id, page_name, page_username, telegram_chat_id')
+        .eq('telegram_link_token', token)
+        .gt('telegram_link_expires_at', now)
+        .maybeSingle()
 
-    if (pageError) {
-      await sendTelegramMessage([
-        '❌ <b>Telegram link failed</b>',
-        '',
-        'Reason: Database error while checking connect token.',
-        '',
-        `<code>${html(pageError.message || 'Unknown database error')}</code>`,
-      ].join('\n'), {
-        chat_id: String(chat.id),
-      }).catch((sendError) => {
-        console.error('TELEGRAM DEBUG SEND FAILED:', sendError)
+      if (pageError) throw pageError
+
+      authorPage = data || null
+
+      console.log('TELEGRAM TOKEN CHECK:', {
+        has_token: true,
+        found_author_page: Boolean(authorPage),
+        chat_id: chat.id,
+      })
+    } else if (memberUpdate) {
+      const newStatus = memberUpdate?.new_chat_member?.status || ''
+      const oldStatus = memberUpdate?.old_chat_member?.status || ''
+
+      console.log('TELEGRAM MEMBER UPDATE:', {
+        chat_id: chat.id,
+        chat_title: chat.title,
+        old_status: oldStatus,
+        new_status: newStatus,
       })
 
-      throw pageError
+      if (newStatus !== 'member' && newStatus !== 'administrator') {
+        return res.status(200).json({
+          ok: true,
+          ignored: true,
+          reason: 'bot_not_added',
+          status: newStatus,
+        })
+      }
+
+      const { data: pendingPages, error: pendingError } = await supabase
+        .from('author_pages')
+        .select('id, page_name, page_username, telegram_chat_id, telegram_link_token')
+        .is('telegram_chat_id', null)
+        .not('telegram_link_token', 'is', null)
+        .gt('telegram_link_expires_at', now)
+        .order('telegram_link_expires_at', { ascending: false })
+        .limit(2)
+
+      if (pendingError) throw pendingError
+
+      if (!pendingPages || pendingPages.length === 0) {
+        console.log('TELEGRAM LINK FAILED:', {
+          reason: 'no_pending_link',
+          chat_id: chat.id,
+          chat_title: chat.title,
+        })
+
+        return res.status(200).json({
+          ok: true,
+          linked: false,
+          reason: 'no_pending_link',
+        })
+      }
+
+      if (pendingPages.length > 1) {
+        console.log('TELEGRAM LINK FAILED:', {
+          reason: 'too_many_pending_links',
+          chat_id: chat.id,
+          chat_title: chat.title,
+          count: pendingPages.length,
+        })
+
+        return res.status(200).json({
+          ok: true,
+          linked: false,
+          reason: 'too_many_pending_links',
+        })
+      }
+
+      authorPage = pendingPages[0]
+
+      console.log('TELEGRAM PENDING LINK FOUND:', {
+        author_page_id: authorPage.id,
+        chat_id: chat.id,
+        chat_title: chat.title,
+      })
+    } else {
+      console.log('TELEGRAM WEBHOOK IGNORED:', {
+        reason: 'missing_token_and_not_member_update',
+        chat_id: chat.id,
+        text,
+      })
+
+      return res.status(200).json({
+        ok: true,
+        ignored: true,
+        reason: 'missing_token_and_not_member_update',
+      })
     }
 
     if (!authorPage) {
-      await sendTelegramMessage([
-        '⚠️ <b>Telegram link failed</b>',
-        '',
-        'Reason: This connect token is invalid or expired.',
-        '',
-        'Please return to Author Store settings and tap <b>Connect Telegram Group</b> again.',
-      ].join('\n'), {
-        chat_id: String(chat.id),
-      }).catch((sendError) => {
-        console.error('TELEGRAM DEBUG SEND FAILED:', sendError)
+      console.log('TELEGRAM LINK FAILED:', {
+        reason: 'invalid_or_expired_token',
+        chat_id: chat.id,
+        text,
       })
 
-      return res.status(200).json({ ok: true, linked: false, reason: 'invalid_or_expired_token' })
+      return res.status(200).json({
+        ok: true,
+        linked: false,
+        reason: 'invalid_or_expired_token',
+      })
     }
 
     if (authorPage.telegram_chat_id) {
-      await sendTelegramMessage([
-        '⚠️ <b>Telegram link failed</b>',
-        '',
-        'Reason: This Author Page is already linked to a Telegram group.',
-        '',
-        'Please unlink the current group first, then connect again.',
-      ].join('\n'), {
-        chat_id: String(chat.id),
-      }).catch((sendError) => {
-        console.error('TELEGRAM DEBUG SEND FAILED:', sendError)
+      console.log('TELEGRAM LINK FAILED:', {
+        reason: 'already_linked',
+        author_page_id: authorPage.id,
+        existing_chat_id: authorPage.telegram_chat_id,
+        new_chat_id: chat.id,
       })
 
-      return res.status(200).json({ ok: true, linked: false, reason: 'already_linked' })
+      return res.status(200).json({
+        ok: true,
+        linked: false,
+        reason: 'already_linked',
+      })
     }
 
     const { error: updateError } = await supabase
@@ -363,31 +418,36 @@ export async function handleAuthorStoreTelegramWebhook(req, res) {
       })
       .eq('id', authorPage.id)
 
-    if (updateError) {
+    if (updateError) throw updateError
+
+    console.log('TELEGRAM GROUP LINKED:', {
+      author_page_id: authorPage.id,
+      chat_id: chat.id,
+      chat_title: chat.title,
+    })
+
+    try {
       await sendTelegramMessage([
-        '❌ <b>Telegram link failed</b>',
+        '🎉 <b>Congratulations!</b>',
         '',
-        'Reason: Database error while saving Telegram group.',
+        `You’ve successfully linked <b>${html(authorPage.page_name || authorPage.page_username || 'your Author Page')}</b> to this Telegram group.`,
         '',
-        `<code>${html(updateError.message || 'Unknown update error')}</code>`,
+        'Author Store order notifications will appear here.',
       ].join('\n'), {
         chat_id: String(chat.id),
-      }).catch((sendError) => {
-        console.error('TELEGRAM DEBUG SEND FAILED:', sendError)
       })
 
-      throw updateError
+      console.log('TELEGRAM CONGRATULATIONS SENT:', {
+        chat_id: chat.id,
+        chat_title: chat.title,
+      })
+    } catch (sendError) {
+      console.error('TELEGRAM CONGRATULATIONS SEND FAILED:', {
+        chat_id: chat.id,
+        chat_title: chat.title,
+        error: sendError.message,
+      })
     }
-
-    await sendTelegramMessage([
-      '🎉 <b>Congratulations!</b>',
-      '',
-      `You’ve successfully linked <b>${html(authorPage.page_name || authorPage.page_username || 'your Author Page')}</b> to this Telegram group.`,
-      '',
-      'Author Store order notifications will appear here.',
-    ].join('\n'), {
-      chat_id: String(chat.id),
-    })
 
     return res.status(200).json({ ok: true, linked: true })
   } catch (error) {
