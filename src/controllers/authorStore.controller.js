@@ -1510,24 +1510,29 @@ export async function createAuthorStoreOrder(req, res) {
       }
 
       const quantity = Math.max(1, cleanInteger(item.quantity, 1))
-      const unitPrice = Number(product.sale_price || product.original_price || 0)
+‌      const unitPrice = Number(product.sale_price || product.original_price || 0)
+      const itemTotal = Number((unitPrice * quantity).toFixed(2))
+      const itemIncome = calculateAuthorStoreIncome(itemTotal)
 
-      orderItems.push({
-        product_id: product.id,
-        product_title: product.title || '',
-        product_type: product.product_type || 'book',
-        cover_url: product.cover_url || '',
-        quantity,
-        unit_price: unitPrice,
-        total_price: unitPrice * quantity,
-      })
+orderItems.push({
+  product_id: product.id,
+  product_title: product.title || '',
+  product_type: product.product_type || 'book',
+  cover_url: product.cover_url || '',
+  quantity,
+  unit_price: unitPrice,
+  total_price: itemTotal,
+  platform_fee_rate: itemIncome.platform_fee_rate,
+  platform_fee_usd: itemIncome.platform_fee_usd,
+  author_income_usd: itemIncome.author_income_usd,
+})
     }
 
-    const subtotal = orderItems.reduce((sum, item) => sum + item.total_price, 0)
+    const subtotal = Number(orderItems.reduce((sum, item) => sum + Number(item.total_price || 0), 0).toFixed(2))
     const deliveryFee = cleanNumber(req.body.delivery_fee ?? req.body.deliveryFee, 0)
-    const totalAmount = subtotal + deliveryFee
+    const totalAmount = Number((subtotal + deliveryFee).toFixed(2))
+    const income = calculateAuthorStoreIncome(subtotal)
     const orderNumber = `AS-${Date.now()}-${Math.floor(Math.random() * 9000 + 1000)}`
-
     const { data: order, error: orderError } = await supabase
       .from('author_store_orders')
       .insert({
@@ -1538,13 +1543,20 @@ export async function createAuthorStoreOrder(req, res) {
         buyer_phone: cleanText(req.body.buyer_phone || req.body.buyerPhone),
         buyer_email: cleanText(req.body.buyer_email || req.body.buyerEmail),
         delivery_address: cleanText(req.body.delivery_address || req.body.deliveryAddress),
-        subtotal: subtotal,
-        delivery_fee: deliveryFee,
-        total_amount: totalAmount,
-        payment_status: 'pending',
-        order_status: 'pending',
-        note: cleanText(req.body.note),
-        updated_at: new Date().toISOString(),
+       subtotal,
+delivery_fee: deliveryFee,
+total_amount: totalAmount,
+subtotal_usd: subtotal,
+delivery_fee_usd: deliveryFee,
+total_usd: totalAmount,
+product_subtotal_usd: subtotal,
+platform_fee_rate: income.platform_fee_rate,
+platform_fee_usd: income.platform_fee_usd,
+author_income_usd: income.author_income_usd,
+payment_status: 'pending',
+order_status: 'pending',
+note: cleanText(req.body.note),
+updated_at: new Date().toISOString(),
       })
       .select()
       .single()
