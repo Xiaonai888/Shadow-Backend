@@ -1688,13 +1688,17 @@ if (Number(customCount || 0) >= 5) {
   return res.status(400).json({ ok: false, message: 'You can create up to 5 custom categories only.' })
 }
 
-    const { data: lastCategory, error: lastError } = await supabase
-      .from('author_store_categories')
-      .select('sort_order')
-      .eq('author_page_id', authorPage.id)
-      .order('sort_order', { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    const { count: customCount, error: customCountError } = await supabase
+  .from('author_store_categories')
+  .select('id', { count: 'exact', head: true })
+  .eq('author_page_id', authorPage.id)
+  .eq('is_default', false)
+
+if (customCountError) throw customCountError
+
+if (Number(customCount || 0) >= 5) {
+  return res.status(400).json({ ok: false, message: 'You can create up to 5 custom categories only.' })
+}
 
     if (lastError) throw lastError
 
