@@ -1974,6 +1974,7 @@ export async function getAdminAuthorStoreOrders(req, res) {
     const page = Math.max(Number(req.query.page || 1), 1)
     const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 100)
     const status = String(req.query.status || 'under_review').trim()
+    const type = String(req.query.type || 'all').trim().toLowerCase()
     const q = String(req.query.q || '').trim()
     const from = (page - 1) * limit
     const to = from + limit - 1
@@ -1982,7 +1983,7 @@ export async function getAdminAuthorStoreOrders(req, res) {
 
     let query = supabase
       .from('author_store_orders')
-      .select('*', { count: 'exact' })
+      .select('*, items:author_store_order_items(*)', { count: 'exact' })
       .gte('created_at', adminHistoryWindowStart)
 
     if (status === 'all') {
@@ -1996,7 +1997,7 @@ export async function getAdminAuthorStoreOrders(req, res) {
     }
 
     if (q) {
-      query = query.or(`order_id.ilike.%${q}%,order_number.ilike.%${q}%,aba_transaction_id.ilike.%${q}%`)
+      query = query.or(`order_id.ilike.%${q}%,order_number.ilike.%${q}%,aba_transaction_id.ilike.%${q}%,buyer_name.ilike.%${q}%,buyer_phone.ilike.%${q}%`)
     }
 
     const { data, error, count } = await query
@@ -2005,12 +2006,29 @@ export async function getAdminAuthorStoreOrders(req, res) {
 
     if (error) throw error
 
+    const allOrders = (data || []).map(publicAuthorPaymentOrder)
+
+    const filteredOrders = allOrders.filter((order) => {
+      if (type === 'all') return true
+
+      const items = Array.isArray(order.items) ? order.items : []
+      const hasPdf = items.some((item) => String(item.product_type || '').toLowerCase() === 'pdf')
+      const hasBook = items.some((item) => String(item.product_type || '').toLowerCase() === 'book')
+
+      if (type === 'pdf') return hasPdf
+      if (type === 'book') return hasBook
+
+      return true
+    })
+
     return res.status(200).json({
       ok: true,
-      orders: (data || []).map(publicAuthorPaymentOrder),
+      type,
+      orders: filteredOrders,
       page,
       limit,
       total: count || 0,
+      shown: filteredOrders.length,
       total_pages: Math.max(Math.ceil((count || 0) / limit), 1),
       has_next: to + 1 < (count || 0),
       has_prev: page > 1,
