@@ -23,6 +23,7 @@ import {
   getMyAuthorStoreTelegramSettings,
   createMyAuthorStoreTelegramConnectLink,
   unlinkMyAuthorStoreTelegramGroup,
+  handleAuthorStoreTelegramWebhook,
 } from '../controllers/authorStore.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
@@ -32,6 +33,7 @@ const router = express.Router()
 router.get('/me/products', requireUser, getMyAuthorStoreProducts)
 router.get('/me/categories', requireUser, getMyAuthorStoreCategories)
 router.get('/me/delivery-settings', requireUser, getMyAuthorStoreDeliverySettings)
+router.post('/telegram/webhook', handleAuthorStoreTelegramWebhook)
 router.get('/me/telegram-settings', requireUser, getMyAuthorStoreTelegramSettings)
 router.post('/me/telegram-settings/connect-link', requireUser, createMyAuthorStoreTelegramConnectLink)
 router.post('/me/telegram-settings/unlink', requireUser, unlinkMyAuthorStoreTelegramGroup)
