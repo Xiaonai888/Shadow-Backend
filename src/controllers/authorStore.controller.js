@@ -110,24 +110,36 @@ async function getMyAuthorPage(userId) {
   return data
 }
 
-async function createUniqueTelegramLinkCode() {
+
+
+async function createUniqueTelegramLinkToken() {
   const now = new Date().toISOString()
 
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const code = String(Math.floor(1000 + Math.random() * 9000))
+    const token = crypto.randomBytes(12).toString('hex')
 
     const { data, error } = await supabase
       .from('author_pages')
       .select('id')
-      .eq('telegram_link_code', code)
+      .eq('telegram_link_token', token)
       .gt('telegram_link_expires_at', now)
       .maybeSingle()
 
     if (error) throw error
-    if (!data) return code
+    if (!data) return token
   }
 
-  throw new Error('Failed to generate Telegram link code')
+  throw new Error('Failed to generate Telegram link token')
+}
+
+function publicAuthorStoreTelegramSettings(authorPage) {
+  return {
+    bot_username: process.env.TELEGRAM_BOT_USERNAME || '',
+    chat_id: authorPage.telegram_chat_id || '',
+    chat_title: authorPage.telegram_chat_title || '',
+    linked_at: authorPage.telegram_linked_at || null,
+    is_linked: Boolean(authorPage.telegram_chat_id),
+  }
 }
 
 export async function getMyAuthorStoreDeliverySettings(req, res) {
@@ -216,176 +228,6 @@ export async function updateMyAuthorStoreDeliverySettings(req, res) {
   } catch (error) {
     console.error('UPDATE MY AUTHOR STORE DELIVERY SETTINGS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to update delivery settings', error: error.message })
-  }
-}
-
-export async function getMyAuthorStoreTelegramSettings(req, res) {
-  try {
-    const userId = req.user?.user_id
-
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
-    }
-
-    const authorPage = await getMyAuthorPage(userId)
-
-    if (!authorPage) {
-      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
-    }
-
-    return res.status(200).json({
-      ok: true,
-      telegram_settings: {
-        bot_username: authorPage.telegram_bot_username || '',
-        chat_id: authorPage.telegram_chat_id || '',
-      },
-    })
-  } catch (error) {
-    console.error('GET MY AUTHOR STORE TELEGRAM SETTINGS ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load Telegram settings', error: error.message })
-  }
-}
-
-export async function updateMyAuthorStoreTelegramSettings(req, res) {
-  try {
-    const userId = req.user?.user_id
-    const botUsername = cleanText(req.body.bot_username || req.body.botUsername || '')
-    const chatId = cleanText(req.body.chat_id || req.body.chatId || '')
-
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
-    }
-
-    const authorPage = await getMyAuthorPage(userId)
-
-    if (!authorPage) {
-      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
-    }
-
-    const { data, error } = await supabase
-      .from('author_pages')
-      .update({
-        telegram_bot_username: botUsername,
-        telegram_chat_id: chatId,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', authorPage.id)
-      .eq('user_id', userId)
-      .select('telegram_bot_username, telegram_chat_id')
-      .single()
-
-    if (error) throw error
-
-    return res.status(200).json({
-      ok: true,
-      message: 'Telegram settings saved',
-      telegram_settings: {
-        bot_username: data.telegram_bot_username || '',
-        chat_id: data.telegram_chat_id || '',
-      },
-    })
-  } catch (error) {
-    console.error('UPDATE MY AUTHOR STORE TELEGRAM SETTINGS ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to save Telegram settings', error: error.message })
-  }
-}
-
-export async function createMyAuthorStoreTelegramLinkCode(req, res) {
-  try {
-    const userId = req.user?.user_id
-
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
-    }
-
-    const authorPage = await getMyAuthorPage(userId)
-
-    if (!authorPage) {
-      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
-    }
-
-    const code = await createUniqueTelegramLinkCode()
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString()
-
-    const { data, error } = await supabase
-      .from('author_pages')
-      .update({
-        telegram_link_code: code,
-        telegram_link_expires_at: expiresAt,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', authorPage.id)
-      .eq('user_id', userId)
-      .select('id, page_name, page_username, telegram_chat_id, telegram_chat_title, telegram_link_code, telegram_link_expires_at, telegram_linked_at')
-      .single()
-
-    if (error) throw error
-
-    return res.status(200).json({
-      ok: true,
-      message: 'Telegram link code created',
-      telegram_settings: {
-        page_name: data.page_name || '',
-        page_username: data.page_username || '',
-        chat_id: data.telegram_chat_id || '',
-        chat_title: data.telegram_chat_title || '',
-        linked_at: data.telegram_linked_at || null,
-        link_code: data.telegram_link_code || '',
-        expires_at: data.telegram_link_expires_at || null,
-        bot_username: process.env.TELEGRAM_BOT_USERNAME || '',
-      },
-    })
-  } catch (error) {
-    console.error('CREATE AUTHOR STORE TELEGRAM LINK CODE ERROR:', error)
-    return res.status(500).json({
-      ok: false,
-      message: error.message || 'Failed to create Telegram link code',
-    })
-  }
-}
-
-
-export async function testMyAuthorStoreTelegramSettings(req, res) {
-  try {
-    const userId = req.user?.user_id
-
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
-    }
-
-    const authorPage = await getMyAuthorPage(userId)
-
-    if (!authorPage) {
-      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
-    }
-
-    if (!authorPage.telegram_chat_id) {
-      return res.status(400).json({ ok: false, message: 'Telegram group chat ID is missing' })
-    }
-
-    const message = [
-      '🧪 <b>AUTHOR STORE BOT TEST</b>',
-      '',
-      `📄 Page: <b>${html(authorPage.page_name || 'Author Page')}</b>`,
-      authorPage.page_username ? `🔗 Username: @${html(authorPage.page_username)}` : '',
-      '',
-      '✅ If you see this message, your Telegram bot is connected.',
-    ].filter(Boolean).join('\n')
-
-    await sendTelegramMessage(message, {
-      chat_id: authorPage.telegram_chat_id,
-    })
-
-    return res.status(200).json({
-      ok: true,
-      message: 'Test message sent to Telegram group',
-    })
-  } catch (error) {
-    console.error('TEST AUTHOR STORE TELEGRAM SETTINGS ERROR:', error)
-    return res.status(500).json({
-      ok: false,
-      message: error.message || 'Failed to send Telegram test message',
-    })
   }
 }
 
@@ -2098,5 +1940,142 @@ export async function reorderMyAuthorStoreCategories(req, res) {
   } catch (error) {
     console.error('REORDER MY AUTHOR STORE CATEGORIES ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to reorder store categories', error: error.message })
+  }
+}
+
+export async function getMyAuthorStoreTelegramSettings(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      telegram_settings: publicAuthorStoreTelegramSettings(authorPage),
+    })
+  } catch (error) {
+    console.error('GET MY AUTHOR STORE TELEGRAM SETTINGS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to load Telegram settings',
+    })
+  }
+}
+
+export async function createMyAuthorStoreTelegramConnectLink(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    if (authorPage.telegram_chat_id) {
+      return res.status(409).json({
+        ok: false,
+        message: 'Telegram group is already linked. Please unlink the current group before connecting a new one.',
+      })
+    }
+
+    const botUsername = String(process.env.TELEGRAM_BOT_USERNAME || '').replace(/^@+/, '').trim()
+
+    if (!botUsername) {
+      return res.status(500).json({
+        ok: false,
+        message: 'TELEGRAM_BOT_USERNAME is not configured',
+      })
+    }
+
+    const token = await createUniqueTelegramLinkToken()
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString()
+
+    const { data, error } = await supabase
+      .from('author_pages')
+      .update({
+        telegram_link_token: token,
+        telegram_link_expires_at: expiresAt,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', authorPage.id)
+      .eq('user_id', userId)
+      .select('telegram_chat_id, telegram_chat_title, telegram_linked_at')
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Telegram connect link created',
+      telegram_connect: {
+        connect_url: `https://t.me/${botUsername}?startgroup=${token}`,
+        expires_at: expiresAt,
+      },
+      telegram_settings: publicAuthorStoreTelegramSettings(data || {}),
+    })
+  } catch (error) {
+    console.error('CREATE AUTHOR STORE TELEGRAM CONNECT LINK ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to create Telegram connect link',
+    })
+  }
+}
+
+export async function unlinkMyAuthorStoreTelegramGroup(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_pages')
+      .update({
+        telegram_chat_id: null,
+        telegram_chat_title: null,
+        telegram_link_token: null,
+        telegram_link_expires_at: null,
+        telegram_linked_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', authorPage.id)
+      .eq('user_id', userId)
+      .select('telegram_chat_id, telegram_chat_title, telegram_linked_at')
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Telegram group unlinked',
+      telegram_settings: publicAuthorStoreTelegramSettings(data || {}),
+    })
+  } catch (error) {
+    console.error('UNLINK AUTHOR STORE TELEGRAM GROUP ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to unlink Telegram group',
+    })
   }
 }
