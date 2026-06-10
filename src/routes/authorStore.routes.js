@@ -24,6 +24,9 @@ import {
   updateMyAuthorStoreTelegramSettings,
   testMyAuthorStoreTelegramSettings,
   createMyAuthorStoreTelegramLinkCode,
+  createMyAuthorStoreTelegramConnectLink,
+  getMyAuthorStoreTelegramSettings,
+  unlinkMyAuthorStoreTelegramGroup,
 } from '../controllers/authorStore.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
@@ -33,11 +36,11 @@ const router = express.Router()
 router.get('/me/products', requireUser, getMyAuthorStoreProducts)
 router.get('/me/categories', requireUser, getMyAuthorStoreCategories)
 router.get('/me/delivery-settings', requireUser, getMyAuthorStoreDeliverySettings)
+router.get('/me/telegram-settings', requireUser, getMyAuthorStoreTelegramSettings)
+router.post('/me/telegram-settings/connect-link', requireUser, createMyAuthorStoreTelegramConnectLink)
+router.post('/me/telegram-settings/unlink', requireUser, unlinkMyAuthorStoreTelegramGroup)
 router.put('/me/delivery-settings', requireUser, updateMyAuthorStoreDeliverySettings)
 router.get('/me/telegram-settings', requireUser, getMyAuthorStoreTelegramSettings)
-router.put('/me/telegram-settings', requireUser, updateMyAuthorStoreTelegramSettings)
-router.post('/me/telegram-settings/connect-code', requireUser, createMyAuthorStoreTelegramLinkCode)
-router.post('/me/telegram-settings/test', requireUser, testMyAuthorStoreTelegramSettings)
 router.post('/me/categories', requireUser, createMyAuthorStoreCategory)
 router.patch('/me/categories/reorder', requireUser, reorderMyAuthorStoreCategories)
 router.patch('/me/categories/:categoryId', requireUser, updateMyAuthorStoreCategory)
