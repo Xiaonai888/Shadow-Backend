@@ -22,7 +22,6 @@ import {
   updateMyAuthorStoreProduct,
   getMyAuthorStoreTelegramSettings,
   createMyAuthorStoreTelegramConnectLink,
-  getMyAuthorStoreTelegramSettings,
   unlinkMyAuthorStoreTelegramGroup,
 } from '../controllers/authorStore.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
