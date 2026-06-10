@@ -244,9 +244,6 @@ function isTelegramGroup(chat) {
   return chat?.type === 'group' || chat?.type === 'supergroup'
 }
 
-  throw lastError || new Error('Telegram send failed')
-}
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
