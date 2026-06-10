@@ -267,8 +267,6 @@ async function sendTelegramMessageWithRetry(text, options = {}) {
     }
   }
 
-  throw lastError || new Error('Telegram send failed')
-}
 
 export async function handleAuthorStoreTelegramWebhook(req, res) {
   try {
