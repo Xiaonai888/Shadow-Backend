@@ -1348,6 +1348,12 @@ currency: order.currency || 'USD',
     expires_at: order.expires_at,
     paid_at: order.paid_at,
     updated_at: order.updated_at,
+    pdf_unlock_status: order.pdf_unlock_status || 'pending',
+pdf_unlocked_at: order.pdf_unlocked_at || null,
+pdf_unlock_count: Number(order.pdf_unlock_count || 0),
+telegram_status: order.telegram_status || 'pending',
+telegram_sent_at: order.telegram_sent_at || null,
+telegram_error: order.telegram_error || '',
   }
 }
 
