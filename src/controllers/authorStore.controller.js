@@ -244,29 +244,6 @@ function isTelegramGroup(chat) {
   return chat?.type === 'group' || chat?.type === 'supergroup'
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function sendTelegramMessageWithRetry(text, options = {}) {
-  const delays = [1500, 3000, 5000]
-  let lastError = null
-
-  for (let index = 0; index < delays.length; index += 1) {
-    await sleep(delays[index])
-
-    try {
-      return await sendTelegramMessage(text, options)
-    } catch (error) {
-      lastError = error
-      console.error('TELEGRAM SEND RETRY FAILED:', {
-        attempt: index + 1,
-        chat_id: options.chat_id,
-        error: error.message,
-      })
-    }
-  }
-
   throw lastError || new Error('Telegram send failed')
 }
 
