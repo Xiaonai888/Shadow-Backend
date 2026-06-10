@@ -256,7 +256,7 @@ async function sendTelegramMessageWithRetry(text, options = {}) {
     await sleep(delays[index])
 
     try {
-      return await sendTelegramMessage(text, options)
+      return await sendAuthorStoreTelegramMessage(text, options)
     } catch (error) {
       lastError = error
       console.error('TELEGRAM SEND RETRY FAILED:', {
