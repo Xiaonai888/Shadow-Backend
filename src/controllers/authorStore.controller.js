@@ -1825,6 +1825,15 @@ if (Number(customCount || 0) >= 5) {
   return res.status(400).json({ ok: false, message: 'You can create up to 5 custom categories only.' })
 }
 
+
+const { data: lastCategory, error: lastError } = await supabase
+  .from('author_store_categories')
+  .select('sort_order')
+  .eq('author_page_id', authorPage.id)
+  .order('sort_order', { ascending: false })
+  .limit(1)
+  .maybeSingle()
+    
     if (lastError) throw lastError
 
     const nextSortOrder = Number(lastCategory?.sort_order || 0) + 1
