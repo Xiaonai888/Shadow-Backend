@@ -304,15 +304,15 @@ export async function handleAuthorStoreTelegramWebhook(req, res) {
 
     if (updateError) throw updateError
 
-    await sendTelegramMessage([
-      '🎉 <b>Congratulations!</b>',
-      '',
-      `You’ve successfully linked <b>${html(authorPage.page_name || authorPage.page_username || 'your Author Page')}</b> to this Telegram group.`,
-      '',
-      'Author Store order notifications will appear here.',
-    ].join('\n'), {
-      chat_id: String(chat.id),
-    }).catch(() => {})
+   await sendTelegramMessage([
+  '🎉 <b>Congratulations!</b>',
+  '',
+  `You’ve successfully linked <b>${html(authorPage.page_name || authorPage.page_username || 'your Author Page')}</b> to this Telegram group.`,
+  '',
+  'Author Store order notifications will appear here.',
+].join('\n'), {
+  chat_id: String(chat.id),
+})
 
     return res.status(200).json({ ok: true, linked: true })
   } catch (error) {
