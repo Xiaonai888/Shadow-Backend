@@ -3,6 +3,7 @@ import { deductShadowMallOrderStock } from './shadowMallOrders.controller.js'
 import {
   deductAuthorStoreOrderStock,
   unlockAuthorStorePdfDownloads,
+  sendAuthorStoreBookOrderTelegram,
 } from './authorStore.controller.js'
 import {
   answerCallbackQuery,
@@ -442,59 +443,111 @@ async function sendAuthorStoreOrderReport(order) {
 }
 
 async function updateAuthorStoreOrderFromTelegram(orderId, status) {
+  const now = new Date().toISOString()
+
+  const updatePayload = {
+    status,
+    order_status: status,
+    updated_at: now,
+  }
+
+  if (status === 'confirmed') {
+    updatePayload.payment_status = 'paid'
+    updatePayload.confirmed_at = now
+  }
+
+  if (status === 'cancelled') {
+    updatePayload.admin_note = 'Cancelled from Telegram quick action.'
+  }
+
   const { data, error } = await supabase
     .from('author_store_orders')
-    .update({
-      status,
-      order_status: status,
-      updated_at: new Date().toISOString(),
-    })
+    .update(updatePayload)
     .or(`order_id.eq.${orderId},order_number.eq.${orderId}`)
-    .select('*')
+    .select('*, items:author_store_order_items(*)')
     .single()
 
   if (error) throw error
-  return data
-}
 
-function authorPdfCompletedMessage(order, authorPage) {
-  const buyer = order.buyer_profile || {}
-  const items = Array.isArray(order.items) ? order.items : []
+  if (status !== 'confirmed') {
+    return data
+  }
 
-  const pdfLines = items.slice(0, 8).map((item) => {
-    return `- ${html(item.title || item.product_title || 'PDF')} x${html(item.quantity || 1)}`
-  })
+  const items = Array.isArray(data.items) ? data.items : []
+  const hasPdf = items.some((item) => String(item.product_type || '').toLowerCase() === 'pdf')
+  const hasBook = items.some((item) => String(item.product_type || '').toLowerCase() === 'book')
 
-  return [
-    '📄 <b>AUTHOR PDF SOLD</b>',
-    '',
-    `📄 Page: <b>${html(authorPage?.page_name || 'Author Page')}</b>`,
-    authorPage?.page_username ? `🔗 Username: @${html(authorPage.page_username)}` : '',
-    '',
-    `📦 Order ID: <code>${html(order.order_id || order.order_number)}</code>`,
-    `💵 Amount: <b>${html(money(order.total_usd || order.total_amount))}</b>`,
-    order.aba_transaction_id ? `🧾 Trx ID: <code>${html(order.aba_transaction_id)}</code>` : '',
-    '',
-    `👤 Buyer: <b>${html(buyer.name || order.buyer_name || order.buyer_id)}</b>`,
-    buyer.phone_number || order.buyer_phone ? `📞 Phone: <code>${html(buyer.phone_number || order.buyer_phone)}</code>` : '',
-    '',
-    '<b>PDF:</b>',
-    ...pdfLines,
-    '',
-    'Status: <b>Completed</b>',
-    'PDF unlocked in Reader Library Downloads.',
-  ].filter(Boolean).join('\n')
-}
+  let pdfUnlockStatus = data.pdf_unlock_status || 'pending'
+  let pdfUnlockedAt = data.pdf_unlocked_at || null
+  let pdfUnlockCount = Number(data.pdf_unlock_count || 0)
 
-async function sendAuthorPdfCompletedReport(order) {
-  const chatId = process.env.TELEGRAM_AUTHOR_STORE_CHAT_ID
-  if (!chatId) return { ok: false, skipped: true }
+  let telegramStatus = data.telegram_status || 'pending'
+  let telegramSentAt = data.telegram_sent_at || null
+  let telegramError = data.telegram_error || ''
 
-  const authorPage = await getAuthorPageForStoreOrder(order)
+  if (hasPdf) {
+    try {
+      const pdfUnlocks = await unlockAuthorStorePdfDownloads(data)
+      pdfUnlockStatus = pdfUnlocks.length ? 'unlocked' : 'failed'
+      pdfUnlockedAt = pdfUnlocks.length ? now : null
+      pdfUnlockCount = pdfUnlocks.length
+    } catch (unlockError) {
+      pdfUnlockStatus = 'failed'
+      pdfUnlockedAt = null
+      pdfUnlockCount = 0
+    }
+  } else {
+    pdfUnlockStatus = 'not_pdf'
+    pdfUnlockedAt = null
+    pdfUnlockCount = 0
+  }
 
-  return sendTelegramMessage(authorPdfCompletedMessage(order, authorPage), {
-    chat_id: chatId,
-  })
+  if (hasBook) {
+    try {
+      const telegramResult = await sendAuthorStoreBookOrderTelegram(data)
+
+      if (telegramResult.sent) {
+        telegramStatus = 'sent'
+        telegramSentAt = now
+        telegramError = ''
+      } else if (telegramResult.reason === 'telegram_not_linked') {
+        telegramStatus = 'not_linked'
+        telegramSentAt = null
+        telegramError = 'Author Telegram group is not linked.'
+      } else {
+        telegramStatus = 'failed'
+        telegramSentAt = null
+        telegramError = telegramResult.reason || 'Telegram was not sent.'
+      }
+    } catch (telegramSendError) {
+      telegramStatus = 'failed'
+      telegramSentAt = null
+      telegramError = telegramSendError.message || 'Telegram send failed.'
+    }
+  } else {
+    telegramStatus = 'not_book'
+    telegramSentAt = null
+    telegramError = ''
+  }
+
+  const { data: finalOrder, error: finalError } = await supabase
+    .from('author_store_orders')
+    .update({
+      pdf_unlock_status: pdfUnlockStatus,
+      pdf_unlocked_at: pdfUnlockedAt,
+      pdf_unlock_count: pdfUnlockCount,
+      telegram_status: telegramStatus,
+      telegram_sent_at: telegramSentAt,
+      telegram_error: telegramError,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', data.id)
+    .select('*, items:author_store_order_items(*)')
+    .single()
+
+  if (finalError) throw finalError
+
+  return finalOrder
 }
 
 async function releaseMatchedOrder(payment, telegramPayment) {
@@ -760,6 +813,9 @@ if (action && action.startsWith('author_')) {
     author_confirm: 'confirmed',
     author_preparing: 'preparing',
     author_cancel: 'cancelled',
+
+    author_order_confirm: 'confirmed',
+    author_order_cancel: 'cancelled',
   }
 
   const nextStatus = statusMap[action]
@@ -787,28 +843,6 @@ if (action && action.startsWith('author_')) {
 
   return
 }
-  
-
-  if (!paymentId || !['pay_ok', 'pay_no'].includes(action)) {
-    await answerCallbackQuery(callbackQuery.id, 'Invalid action.', true)
-    return
-  }
-
-  const result = action === 'pay_ok'
-    ? await approvePaymentFromTelegram(paymentId)
-    : await rejectPaymentFromTelegram(paymentId)
-
-  await answerCallbackQuery(
-    callbackQuery.id,
-    result.status === 'approved' ? 'Approved.' : result.status === 'already' ? 'Already approved.' : result.status === 'rejected' ? 'Rejected.' : 'Done.',
-    result.status === 'blocked'
-  )
-
-  if (chatId && messageId) {
-    await editTelegramMessage(chatId, messageId, result.text)
-  }
-}
-
 async function processAbaMessage(parsed, message) {
   const chatId = message.chat?.id
   const messageId = message.message_id
