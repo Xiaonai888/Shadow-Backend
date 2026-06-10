@@ -1,6 +1,6 @@
 import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
-import { html, sendTelegramMessage } from '../services/telegram.service.js'
+import { html, sendAuthorStoreTelegramMessage } from '../services/telegram.service.js'
 
 const PRODUCT_TYPES = new Set(['book', 'pdf'])
 const PRODUCT_STATUSES = new Set(['draft', 'active', 'hidden'])
