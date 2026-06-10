@@ -109,44 +109,26 @@ async function getMyAuthorPage(userId) {
   return data
 }
 
-try {
-  const orderId = String(req.params.orderId || '').trim()
-
-  if (orderId) {
-    await supabase
-      .from('author_store_orders')
-      .update({
-        telegram_status: 'failed',
-        telegram_error: error.message || 'Failed to resend Telegram notification',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('order_id', orderId)
-  }
-} catch {}
-
 async function createUniqueTelegramLinkToken() {
- const now = new Date().toISOString()
+  const now = new Date().toISOString()
 
-const { data: updatedOrder, error: updateError } = await supabase
-  .from('author_store_orders')
-  .update({
-    telegram_status: 'sent',
-    telegram_sent_at: now,
-    telegram_error: '',
-    updated_at: now,
-  })
-  .eq('id', order.id)
-  .select('*, items:author_store_order_items(*)')
-  .single()
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const token = crypto.randomBytes(12).toString('hex')
 
-if (updateError) throw updateError
+    const { data, error } = await supabase
+      .from('author_pages')
+      .select('id')
+      .eq('telegram_link_token', token)
+      .gt('telegram_link_expires_at', now)
+      .maybeSingle()
 
-return res.status(200).json({
-  ok: true,
-  message: 'Telegram notification resent.',
-  telegram_result: result,
-  order: publicAuthorPaymentOrder(updatedOrder),
-})
+    if (error) throw error
+    if (!data) return token
+  }
+
+  throw new Error('Failed to generate Telegram link token')
+}
+
 
 export async function getMyAuthorStoreDeliverySettings(req, res) {
   try {
