@@ -155,7 +155,9 @@ async function uploadAuthorImageToR2({ authorPage, userId, file, folderKey }) {
     mimeType: file.mimetype,
     fileSize: file.size,
     uploadedBy: userId,
-    sourceTable: folderKey === 'author_store_cover' ? 'author_store_products' : 'author_page_posts',
+    sourceTable: ['author_store_cover', 'author_store_pdf'].includes(folderKey)
+  ? 'author_store_products'
+  : 'author_page_posts',
     sourceId: null,
     ownerLabel: authorPage.page_name || authorPage.page_username || null,
   })
