@@ -130,6 +130,41 @@ async function createUniqueTelegramLinkToken() {
 }
 
 
+const AUTHOR_WITHDRAWAL_RETENTION_MONTHS = Number(process.env.AUTHOR_WITHDRAWAL_RETENTION_MONTHS || 12)
+const AUTHOR_WITHDRAWAL_COMPLETED_STATUSES = ['paid', 'rejected', 'cancelled']
+
+function getAuthorWithdrawalRetentionCutoff() {
+  const months = Number.isFinite(AUTHOR_WITHDRAWAL_RETENTION_MONTHS)
+    ? Math.max(1, AUTHOR_WITHDRAWAL_RETENTION_MONTHS)
+    : 12
+
+  const date = new Date()
+  date.setMonth(date.getMonth() - months)
+  return date.toISOString()
+}
+
+async function archiveExpiredAuthorStoreWithdrawals() {
+  const now = new Date().toISOString()
+  const cutoff = getAuthorWithdrawalRetentionCutoff()
+
+  const { error } = await supabase
+    .from('author_store_withdrawal_requests')
+    .update({
+      archived_at: now,
+      deleted_at: now,
+      paid_proof_url: '',
+      paid_proof_file_name: '',
+      updated_at: now,
+    })
+    .in('status', AUTHOR_WITHDRAWAL_COMPLETED_STATUSES)
+    .is('deleted_at', null)
+    .lt('created_at', cutoff)
+
+  if (error) {
+    console.error('ARCHIVE EXPIRED AUTHOR STORE WITHDRAWALS ERROR:', error)
+  }
+}
+
 export async function getMyAuthorStoreDeliverySettings(req, res) {
   try {
     const userId = req.user?.user_id
@@ -757,6 +792,8 @@ export async function createMyAuthorStoreWithdrawal(req, res) {
       return res.status(403).json({ ok: false, message: 'Please create an author page first' })
     }
 
+    await archiveExpiredAuthorStoreWithdrawals()
+
     const { data: orders, error: ordersError } = await supabase
       .from('author_store_orders')
       .select('payment_status, author_income_usd')
@@ -850,6 +887,7 @@ export async function getAdminAuthorStoreWithdrawals(req, res) {
     const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 100)
     const status = String(req.query.status || 'in_review').trim()
     const q = String(req.query.q || '').trim().toLowerCase()
+    await archiveExpiredAuthorStoreWithdrawals()
 
     let query = supabase
       .from('author_store_withdrawal_requests')
@@ -857,13 +895,15 @@ export async function getAdminAuthorStoreWithdrawals(req, res) {
       .order('created_at', { ascending: false })
       .limit(1000)
 
-    if (status === 'all') {
-      query = query.is('deleted_at', null)
-    } else if (['in_review', 'approved', 'rejected', 'paid', 'cancelled', 'archived'].includes(status)) {
-      query = query.eq('status', status).is('deleted_at', null)
-    } else {
-      query = query.eq('status', 'in_review').is('deleted_at', null)
-    }
+  if (status === 'archived') {
+  query = query.not('deleted_at', 'is', null)
+} else if (status === 'all') {
+  query = query.is('deleted_at', null)
+} else if (['in_review', 'approved', 'rejected', 'paid', 'cancelled'].includes(status)) {
+  query = query.eq('status', status).is('deleted_at', null)
+} else {
+  query = query.eq('status', 'in_review').is('deleted_at', null)
+}
 
     const { data: withdrawals, error } = await query
 
@@ -922,8 +962,9 @@ export async function getAdminAuthorStoreWithdrawals(req, res) {
         reviewed_at: item.reviewed_at || null,
         reviewed_by: item.reviewed_by || '',
         archived_at: item.archived_at || null,
-        created_at: item.created_at,
-        updated_at: item.updated_at,
+deleted_at: item.deleted_at || null,
+created_at: item.created_at,
+updated_at: item.updated_at,
       }
     })
 
@@ -957,25 +998,23 @@ export async function getAdminAuthorStoreWithdrawals(req, res) {
     const to = from + limit
     const pagedWithdrawals = filteredWithdrawals.slice(from, to)
 
-    return res.status(200).json({
-      ok: true,
-      withdrawals: pagedWithdrawals,
-      page,
-      limit,
-      total,
-      shown: pagedWithdrawals.length,
-      total_pages: Math.max(Math.ceil(total / limit), 1),
-      has_next: to < total,
-      has_prev: page > 1,
-    })
-  } catch (error) {
-    console.error('GET ADMIN AUTHOR STORE WITHDRAWALS ERROR:', error)
-    return res.status(500).json({
-      ok: false,
-      message: error.message || 'Failed to load withdrawal requests',
-    })
-  }
-}
+    const visibleWithdrawals = (withdrawals || []).filter((item) => !item.deleted_at)
+
+   const visibleWithdrawals = (withdrawals || []).filter((item) => !item.deleted_at)
+
+return res.status(200).json({
+  ok: true,
+  summary: {
+    available_balance: availableBalance,
+    pending_balance: Number(pendingBalance.toFixed(2)),
+    gross_sales: Number(grossSales.toFixed(2)),
+    platform_fee: Number(platformFee.toFixed(2)),
+    paid_out: Number(paidOut.toFixed(2)),
+    total_orders: paidOrders.length,
+  },
+  payment_method: paymentMethod || null,
+  withdrawals: visibleWithdrawals,
+})
 
 
 async function sendAuthorStoreWithdrawalStatusAlert(withdrawal, nextStatus) {
