@@ -85,6 +85,8 @@ function safeFileExt(filename = '', mimetype = '') {
   const cleaned = String(ext || '').toLowerCase().replace(/[^a-z0-9]/g, '')
 
   if (cleaned) return cleaned
+  if (mimetype === 'application/pdf') return 'pdf'
+  if (cleaned) return cleaned
   if (mimetype === 'image/webp') return 'webp'
   if (mimetype === 'image/png') return 'png'
   if (mimetype === 'image/jpeg') return 'jpg'
