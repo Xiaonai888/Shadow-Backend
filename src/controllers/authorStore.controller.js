@@ -785,6 +785,140 @@ export async function createMyAuthorStoreWithdrawal(req, res) {
   }
 }
 
+export async function getAdminAuthorStoreWithdrawals(req, res) {
+  try {
+    const page = Math.max(Number(req.query.page || 1), 1)
+    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 100)
+    const status = String(req.query.status || 'in_review').trim()
+    const q = String(req.query.q || '').trim().toLowerCase()
+
+    let query = supabase
+      .from('author_store_withdrawal_requests')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(1000)
+
+    if (status === 'all') {
+      query = query.is('deleted_at', null)
+    } else if (['in_review', 'approved', 'rejected', 'paid', 'cancelled', 'archived'].includes(status)) {
+      query = query.eq('status', status).is('deleted_at', null)
+    } else {
+      query = query.eq('status', 'in_review').is('deleted_at', null)
+    }
+
+    const { data: withdrawals, error } = await query
+
+    if (error) throw error
+
+    const authorPageIds = [
+      ...new Set((withdrawals || []).map((item) => item.author_page_id).filter(Boolean)),
+    ]
+
+    const userIds = [
+      ...new Set((withdrawals || []).map((item) => item.user_id).filter(Boolean)),
+    ]
+
+    const { data: authorPages, error: authorPagesError } = authorPageIds.length
+      ? await supabase
+          .from('author_pages')
+          .select('id, page_name, page_username, user_id')
+          .in('id', authorPageIds)
+      : { data: [], error: null }
+
+    if (authorPagesError) throw authorPagesError
+
+    const { data: users, error: usersError } = userIds.length
+      ? await supabase
+          .from('users')
+          .select('id, name, username, email')
+          .in('id', userIds)
+      : { data: [], error: null }
+
+    if (usersError) throw usersError
+
+    const authorPageMap = new Map((authorPages || []).map((pageItem) => [String(pageItem.id), pageItem]))
+    const userMap = new Map((users || []).map((user) => [String(user.id), user]))
+
+    const mappedWithdrawals = (withdrawals || []).map((item) => {
+      const authorPage = authorPageMap.get(String(item.author_page_id)) || null
+      const user = userMap.get(String(item.user_id)) || null
+
+      return {
+        id: item.id,
+        author_page_id: item.author_page_id,
+        user_id: item.user_id,
+        author_page: authorPage,
+        author_user: user,
+        amount_usd: Number(item.amount_usd || 0),
+        status: item.status || 'in_review',
+        payment_method_id: item.payment_method_id || '',
+        payment_method_snapshot: item.payment_method_snapshot || null,
+        admin_note: item.admin_note || '',
+        reject_reason: item.reject_reason || '',
+        paid_amount_usd: Number(item.paid_amount_usd || 0),
+        paid_at: item.paid_at || null,
+        paid_transaction_id: item.paid_transaction_id || '',
+        paid_proof_url: item.paid_proof_url || '',
+        paid_proof_file_name: item.paid_proof_file_name || '',
+        reviewed_at: item.reviewed_at || null,
+        reviewed_by: item.reviewed_by || '',
+        archived_at: item.archived_at || null,
+        created_at: item.created_at,
+        updated_at: item.updated_at,
+      }
+    })
+
+    const filteredWithdrawals = q
+      ? mappedWithdrawals.filter((item) => {
+          const searchText = [
+            item.id,
+            item.status,
+            item.amount_usd,
+            item.author_page?.page_name,
+            item.author_page?.page_username,
+            item.author_user?.name,
+            item.author_user?.username,
+            item.author_user?.email,
+            item.payment_method_snapshot?.type,
+            item.payment_method_snapshot?.bank_name,
+            item.payment_method_snapshot?.account_name,
+            item.payment_method_snapshot?.account_number,
+            item.paid_transaction_id,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase()
+
+          return searchText.includes(q)
+        })
+      : mappedWithdrawals
+
+    const total = filteredWithdrawals.length
+    const from = (page - 1) * limit
+    const to = from + limit
+    const pagedWithdrawals = filteredWithdrawals.slice(from, to)
+
+    return res.status(200).json({
+      ok: true,
+      withdrawals: pagedWithdrawals,
+      page,
+      limit,
+      total,
+      shown: pagedWithdrawals.length,
+      total_pages: Math.max(Math.ceil(total / limit), 1),
+      has_next: to < total,
+      has_prev: page > 1,
+    })
+  } catch (error) {
+    console.error('GET ADMIN AUTHOR STORE WITHDRAWALS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to load withdrawal requests',
+    })
+  }
+}
+
+
 export async function getMyAuthorStoreProducts(req, res) {
   try {
     const userId = req.user?.user_id
