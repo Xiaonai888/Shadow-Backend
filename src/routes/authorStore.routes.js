@@ -26,6 +26,7 @@ import {
   updateMyAuthorStoreCategory,
   updateMyAuthorStoreDeliverySettings,
   updateMyAuthorStoreProduct,
+  getAdminAuthorStoreWithdrawals,
   createMyAuthorStoreTelegramConnectLink,
 } from '../controllers/authorStore.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
@@ -51,6 +52,7 @@ router.get('/me/income', requireUser, getMyAuthorStoreIncome)
 router.post('/me/withdrawals', requireUser, createMyAuthorStoreWithdrawal)
 router.get('/admin/orders', requireAdmin, getAdminAuthorStoreOrders)
 router.patch('/admin/orders/:orderId/status', requireAdmin, updateAdminAuthorStoreOrderStatus)
+router.get('/admin/withdrawals', requireAdmin, getAdminAuthorStoreWithdrawals)
 router.post('/orders', createAuthorStoreOrder)
 router.post('/orders/create-payment', requireUser, createAuthorStoreOrderPayment)
 router.get('/orders/my', requireUser, getMyAuthorStoreBuyerOrders)
