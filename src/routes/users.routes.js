@@ -11,9 +11,8 @@ import {
   requestPasswordReset,
   resetPassword,
   unfollowUser,
+  updatePaymentProfile,
   updateUserAvatar,
-  updateUserProfile,
-   updatePaymentProfile,
   updateUserProfile,
 } from '../controllers/users.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
@@ -63,6 +62,6 @@ router.get('/:username/followers', requireUser, getUserFollowers)
 router.get('/:username/following', requireUser, getUserFollowing)
 router.post('/:username/follow', requireUser, followUser)
 router.delete('/:username/follow', requireUser, unfollowUser)
-router.put('/payment-profile', requireUser, updatePaymentProfile)
+
 
 export default router
