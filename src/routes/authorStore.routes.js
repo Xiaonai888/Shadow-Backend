@@ -58,7 +58,6 @@ router.patch('/admin/withdrawals/:withdrawalId/status', requireAdmin, updateAdmi
 router.post('/orders', createAuthorStoreOrder)
 router.post('/orders/create-payment', requireUser, createAuthorStoreOrderPayment)
 router.get('/orders/my', requireUser, getMyAuthorStoreBuyerOrders)
-router.get('/downloads/my', requireUser, getMyAuthorStoreReaderDownloads)
 router.get('/orders/status/:orderId', requireUser, getAuthorStoreOrderStatus)
 router.post('/orders/callback', handleAuthorStoreAbaCallback)
 router.put('/me/products/:productId', requireUser, updateMyAuthorStoreProduct)
