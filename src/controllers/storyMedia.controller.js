@@ -19,6 +19,7 @@ const ALLOWED_FOLDERS = {
 const R2_FOLDERS = {
   author_post_image: 'author-posts/images',
   author_store_cover: 'author-store/covers',
+  author_store_pdf: 'author-store/pdfs',
   author_page_cover: 'author-page/covers',
   author_page_slide: 'author-page/slides',
   author_page_avatar: 'author-page/avatars',
