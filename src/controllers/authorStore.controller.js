@@ -688,6 +688,56 @@ export async function getMyAuthorStoreIncome(req, res) {
   }
 }
 
+async function sendAuthorStoreWithdrawalAdminAlert(withdrawal, authorPage, paymentMethod) {
+  const chatId = process.env.TELEGRAM_WITHDRAWAL_ADMIN_CHAT_ID || process.env.TELEGRAM_ADMIN_CHAT_ID
+
+  if (!chatId) {
+    return { sent: false, reason: 'withdrawal_admin_chat_id_not_configured' }
+  }
+
+  const method = paymentMethod || withdrawal.payment_method_snapshot || {}
+  const amount = Number(withdrawal.amount_usd || 0).toFixed(2)
+
+  const paymentLines = [
+    method.type ? `Type: ${html(method.type)}` : '',
+    method.bank_name ? `Bank: ${html(method.bank_name)}` : '',
+    method.account_name ? `Account name: ${html(method.account_name)}` : '',
+    method.account_number ? `Account number: <code>${html(method.account_number)}</code>` : '',
+    method.phone_number ? `Phone: <code>${html(method.phone_number)}</code>` : '',
+  ].filter(Boolean)
+
+  const text = [
+    '💸 <b>New Author Withdrawal Request</b>',
+    '',
+    `<b>Author Page:</b> ${html(authorPage?.page_name || authorPage?.page_username || 'Author Page')}`,
+    authorPage?.page_username ? `<b>Username:</b> @${html(authorPage.page_username)}` : '',
+    `<b>Withdrawal ID:</b> <code>${html(withdrawal.id)}</code>`,
+    `<b>Amount:</b> $${html(amount)}`,
+    `<b>Status:</b> ${html(withdrawal.status || 'in_review')}`,
+    '',
+    '<b>Payment Method</b>',
+    ...(paymentLines.length ? paymentLines : ['No payment method detail']),
+    '',
+    'Admin, please review this withdrawal request.',
+  ].filter(Boolean).join('\n')
+
+  await sendTelegramMessage(text, {
+    chat_id: chatId,
+    reply_markup: {
+      inline_keyboard: [
+        [
+          {
+            text: '🔎 Open Withdraw Page',
+            url: 'https://admin.shadowerabook.site/withdraw',
+          },
+        ],
+      ],
+    },
+  })
+
+  return { sent: true }
+}
+
 export async function createMyAuthorStoreWithdrawal(req, res) {
   try {
     const userId = req.user?.user_id
@@ -770,11 +820,20 @@ export async function createMyAuthorStoreWithdrawal(req, res) {
 
     if (error) throw error
 
-    return res.status(201).json({
-      ok: true,
-      message: 'Withdrawal request submitted',
-      withdrawal: data,
-    })
+try {
+  await sendAuthorStoreWithdrawalAdminAlert(data, authorPage, paymentMethod)
+} catch (notifyError) {
+  console.error('AUTHOR STORE WITHDRAWAL ADMIN ALERT FAILED:', {
+    withdrawal_id: data.id,
+    error: notifyError.message,
+  })
+}
+
+return res.status(201).json({
+  ok: true,
+  message: 'Withdrawal request submitted',
+  withdrawal: data,
+})
   } catch (error) {
     console.error('CREATE MY AUTHOR STORE WITHDRAWAL ERROR:', error)
     return res.status(500).json({
