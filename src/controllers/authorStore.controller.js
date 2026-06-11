@@ -999,21 +999,25 @@ updated_at: item.updated_at,
     const to = from + limit
     const pagedWithdrawals = filteredWithdrawals.slice(from, to)
 
-   const visibleWithdrawals = (withdrawals || []).filter((item) => !item.deleted_at)
-
-return res.status(200).json({
-  ok: true,
-  summary: {
-    available_balance: availableBalance,
-    pending_balance: Number(pendingBalance.toFixed(2)),
-    gross_sales: Number(grossSales.toFixed(2)),
-    platform_fee: Number(platformFee.toFixed(2)),
-    paid_out: Number(paidOut.toFixed(2)),
-    total_orders: paidOrders.length,
-  },
-  payment_method: paymentMethod || null,
-  withdrawals: visibleWithdrawals,
-})
+    return res.status(200).json({
+      ok: true,
+      withdrawals: pagedWithdrawals,
+      page,
+      limit,
+      total,
+      shown: pagedWithdrawals.length,
+      total_pages: Math.max(Math.ceil(total / limit), 1),
+      has_next: to < total,
+      has_prev: page > 1,
+    })
+  } catch (error) {
+    console.error('GET ADMIN AUTHOR STORE WITHDRAWALS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to load withdrawal requests',
+    })
+  }
+}
 
 
 async function sendAuthorStoreWithdrawalStatusAlert(withdrawal, nextStatus) {
