@@ -96,6 +96,36 @@ function publicProduct(product) {
   }
 }
 
+export async function getMyAuthorStoreReaderDownloads(req, res) {
+  try {
+    const userId = req.user?.user_id || req.user?.id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_store_reader_downloads')
+      .select('*')
+      .eq('buyer_id', userId)
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      downloads: data || [],
+    })
+  } catch (error) {
+    console.error('GET MY AUTHOR STORE READER DOWNLOADS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load downloads',
+      error: error.message,
+    })
+  }
+}
+
 async function getMyAuthorPage(userId) {
   const { data, error } = await supabase
     .from('author_pages')
