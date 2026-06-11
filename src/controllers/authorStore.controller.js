@@ -1003,6 +1003,7 @@ async function sendAuthorStoreWithdrawalStatusAlert(withdrawal, nextStatus) {
     `<b>Status:</b> ${html(nextStatus)}`,
     withdrawal.paid_amount_usd ? `<b>Paid amount:</b> $${html(Number(withdrawal.paid_amount_usd || 0).toFixed(2))}` : '',
     withdrawal.paid_transaction_id ? `<b>Transaction ID:</b> <code>${html(withdrawal.paid_transaction_id)}</code>` : '',
+    withdrawal.paid_proof_url ? `<b>Payment proof:</b> ${html(withdrawal.paid_proof_url)}` : '',
     withdrawal.reject_reason ? `<b>Reject reason:</b> ${html(withdrawal.reject_reason)}` : '',
     withdrawal.admin_note ? `<b>Admin note:</b> ${html(withdrawal.admin_note)}` : '',
     '',
@@ -1039,6 +1040,8 @@ export async function updateAdminAuthorStoreWithdrawalStatus(req, res) {
     const rejectReason = cleanText(req.body.reject_reason || req.body.rejectReason)
     const paidTransactionId = cleanText(req.body.paid_transaction_id || req.body.paidTransactionId)
     const paidAmountUsd = Number(req.body.paid_amount_usd || req.body.paidAmountUsd || 0)
+    const paidProofUrl = cleanText(req.body.paid_proof_url || req.body.paidProofUrl)
+const paidProofFileName = cleanText(req.body.paid_proof_file_name || req.body.paidProofFileName)
     const adminId = req.admin?.id || req.admin?.admin_id || req.user?.id || req.user?.user_id || ''
 
     const allowedStatuses = ['approved', 'rejected', 'paid', 'cancelled']
@@ -1054,6 +1057,10 @@ export async function updateAdminAuthorStoreWithdrawalStatus(req, res) {
     if (nextStatus === 'rejected' && !rejectReason) {
       return res.status(400).json({ ok: false, message: 'Reject reason is required' })
     }
+
+    if (nextStatus === 'paid' && !paidProofUrl) {
+  return res.status(400).json({ ok: false, message: 'Payment proof URL is required' })
+}
 
     const { data: currentWithdrawal, error: currentError } = await supabase
       .from('author_store_withdrawal_requests')
@@ -1098,12 +1105,14 @@ export async function updateAdminAuthorStoreWithdrawalStatus(req, res) {
     }
 
     if (nextStatus === 'paid') {
-      payload.paid_at = now
-      payload.paid_amount_usd = Number.isFinite(paidAmountUsd) && paidAmountUsd > 0
-        ? paidAmountUsd
-        : Number(currentWithdrawal.amount_usd || 0)
-      payload.paid_transaction_id = paidTransactionId
-    }
+  payload.paid_at = now
+  payload.paid_amount_usd = Number.isFinite(paidAmountUsd) && paidAmountUsd > 0
+    ? paidAmountUsd
+    : Number(currentWithdrawal.amount_usd || 0)
+  payload.paid_transaction_id = paidTransactionId
+  payload.paid_proof_url = paidProofUrl
+  payload.paid_proof_file_name = paidProofFileName
+}
 
     const { data: updatedWithdrawal, error: updateError } = await supabase
       .from('author_store_withdrawal_requests')
