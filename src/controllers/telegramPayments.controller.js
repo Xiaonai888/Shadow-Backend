@@ -803,6 +803,7 @@ async function rejectPaymentFromTelegram(paymentId) {
   }
 }
 
+
 async function handleCallbackQuery(callbackQuery) {
   const data = String(callbackQuery?.data || '')
   const userId = callbackQuery?.from?.id
@@ -886,6 +887,8 @@ async function handleCallbackQuery(callbackQuery) {
 
     return
   }
+
+
 
   if (!paymentId || !['pay_ok', 'pay_no'].includes(action)) {
     await answerCallbackQuery(callbackQuery.id, 'Invalid action.', true)
