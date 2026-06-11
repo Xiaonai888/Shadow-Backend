@@ -885,6 +885,7 @@ async function handleCallbackQuery(callbackQuery) {
     reply_markup: authorStoreOrderKeyboard(updatedOrder.order_id || updatedOrder.order_number),
   }
 )
+    }
 
     return
   }
