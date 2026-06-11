@@ -111,6 +111,7 @@ function createUserToken(user) {
       type: 'reader',
       user_id: user.id,
       email: user.email,
+      payment_account_name: user.payment_account_name || '',
       username: user.username,
       role: user.role,
       is_author: Boolean(user.is_author),
@@ -702,6 +703,52 @@ export async function updateUserProfile(req, res) {
         message: 'Unauthorized',
       })
     }
+
+    export async function updatePaymentProfile(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const paymentAccountName = String(req.body.payment_account_name || '').trim().toUpperCase()
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!paymentAccountName || paymentAccountName.length < 2) {
+      return res.status(400).json({ ok: false, message: 'Payment account name is required' })
+    }
+
+    if (paymentAccountName.length > 80) {
+      return res.status(400).json({ ok: false, message: 'Payment account name must be 80 characters or less' })
+    }
+
+    const { data, error } = await supabase
+      .from('users')
+      .update({
+        payment_account_name: paymentAccountName,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', userId)
+      .eq('is_active', true)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Payment profile saved',
+      user: publicUser(data),
+    })
+  } catch (error) {
+    console.error('UPDATE PAYMENT PROFILE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to save payment profile',
+      error: error.message,
+    })
+  }
+}
 
     const name = String(req.body.name || '').trim()
     const bio = String(req.body.bio || '').trim()
