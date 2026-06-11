@@ -7,7 +7,9 @@ import {
 } from './authorStore.controller.js'
 import {
   answerCallbackQuery,
+  answerAuthorStoreCallbackQuery,
   editTelegramMessage,
+  editAuthorStoreTelegramMessage,
   html,
   replyTelegram,
   reviewKeyboard,
@@ -865,25 +867,24 @@ async function handleCallbackQuery(callbackQuery) {
     const nextStatus = statusMap[action]
 
     if (!orderId || !nextStatus) {
-      await answerCallbackQuery(callbackQuery.id, 'Invalid author store order action.', true)
+      await answerAuthorStoreCallbackQuery(callbackQuery.id, 'Invalid author store order action.', true)
       return
     }
 
     const updatedOrder = await updateAuthorStoreOrderFromTelegram(orderId, nextStatus)
     const authorPage = await getAuthorPageForStoreOrder(updatedOrder)
 
-    await answerCallbackQuery(callbackQuery.id, `Author Store order updated to ${nextStatus}.`, false)
+    await answerAuthorStoreCallbackQuery(callbackQuery.id, `Author Store order updated to ${nextStatus}.`, false)
 
     if (chatId && messageId) {
-      await editTelegramMessage(
-        chatId,
-        messageId,
-        authorStoreOrderUnderReviewMessage(updatedOrder, authorPage),
-        {
-          reply_markup: authorStoreOrderKeyboard(updatedOrder.order_id || updatedOrder.order_number),
-        }
-      )
-    }
+      await editAuthorStoreTelegramMessage(
+  chatId,
+  messageId,
+  authorStoreOrderUnderReviewMessage(updatedOrder, authorPage),
+  {
+    reply_markup: authorStoreOrderKeyboard(updatedOrder.order_id || updatedOrder.order_number),
+  }
+)
 
     return
   }
