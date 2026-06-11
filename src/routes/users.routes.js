@@ -13,7 +13,8 @@ import {
   unfollowUser,
   updateUserAvatar,
   updateUserProfile,
-  updatePaymentProfile,
+   updatePaymentProfile,
+  updateUserProfile,
 } from '../controllers/users.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { verifyTurnstile } from '../middleware/turnstile.middleware.js'
@@ -56,7 +57,7 @@ router.post('/reset-password', readerPasswordResetLimit, resetPassword)
 router.get('/me', requireUser, getCurrentUser)
 router.get('/suggestions', requireUser, getUserSuggestions)
 router.put('/avatar', requireUser, updateUserAvatar)
-router.put('/profile', requireUser, updateUserProfile)
+router.put('/payment-profile', requireUser, updatePaymentProfile)
 router.get('/:username/profile', requireUser, getPublicUserProfile)
 router.get('/:username/followers', requireUser, getUserFollowers)
 router.get('/:username/following', requireUser, getUserFollowing)
