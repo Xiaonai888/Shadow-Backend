@@ -444,6 +444,7 @@ async function sendAuthorStoreOrderReport(order) {
   chat_id: chatId,
   reply_markup: authorStoreOrderKeyboard(order.order_id || order.order_number),
 })
+}
 
 function authorPdfCompletedMessage(order, authorPage) {
   const buyer = order.buyer_profile || {}
