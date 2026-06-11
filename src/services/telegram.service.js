@@ -100,8 +100,16 @@ export async function answerCallbackQuery(callbackQueryId, text, showAlert = fal
   })
 }
 
-export async function editTelegramMessage(chatId, messageId, text, options = {}) {
-  return callTelegram('editMessageText', {
+export async function answerAuthorStoreCallbackQuery(callbackQueryId, text, showAlert = false) {
+  return callAuthorStoreTelegram('answerCallbackQuery', {
+    callback_query_id: callbackQueryId,
+    text,
+    show_alert: showAlert,
+  })
+}
+
+export async function editAuthorStoreTelegramMessage(chatId, messageId, text, options = {}) {
+  return callAuthorStoreTelegram('editMessageText', {
     chat_id: chatId,
     message_id: messageId,
     text,
