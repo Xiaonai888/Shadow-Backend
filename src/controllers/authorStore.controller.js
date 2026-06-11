@@ -785,88 +785,6 @@ export async function createMyAuthorStoreWithdrawal(req, res) {
   }
 }
 
-export async function getMyAuthorStoreIncome(req, res) {
-  try {
-    const userId = req.user?.user_id
-
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
-    }
-
-    const authorPage = await getMyAuthorPage(userId)
-
-    if (!authorPage) {
-      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
-    }
-
-    const { data: orders, error: ordersError } = await supabase
-      .from('author_store_orders')
-      .select('id, payment_status, product_subtotal_usd, platform_fee_usd, author_income_usd')
-      .eq('author_page_id', authorPage.id)
-
-    if (ordersError) throw ordersError
-
-    const paidOrders = (orders || []).filter((order) => order.payment_status === 'paid')
-
-    const grossSales = paidOrders.reduce(
-      (sum, order) => sum + Number(order.product_subtotal_usd || 0),
-      0
-    )
-
-    const platformFee = paidOrders.reduce(
-      (sum, order) => sum + Number(order.platform_fee_usd || 0),
-      0
-    )
-
-    const authorIncome = paidOrders.reduce(
-      (sum, order) => sum + Number(order.author_income_usd || 0),
-      0
-    )
-
-    const { data: withdrawals, error: withdrawalsError } = await supabase
-      .from('author_store_withdrawal_requests')
-      .select('*')
-      .eq('author_page_id', authorPage.id)
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-
-    if (withdrawalsError) throw withdrawalsError
-
-    const paidOut = (withdrawals || [])
-      .filter((item) => item.status === 'paid')
-      .reduce((sum, item) => sum + Number(item.amount_usd || 0), 0)
-
-    const pendingBalance = (withdrawals || [])
-      .filter((item) => item.status === 'in_review' || item.status === 'approved')
-      .reduce((sum, item) => sum + Number(item.amount_usd || 0), 0)
-
-    const availableBalance = Math.max(
-      0,
-      Number((authorIncome - paidOut - pendingBalance).toFixed(2))
-    )
-
-    return res.status(200).json({
-      ok: true,
-      summary: {
-        available_balance: availableBalance,
-        pending_balance: Number(pendingBalance.toFixed(2)),
-        gross_sales: Number(grossSales.toFixed(2)),
-        platform_fee: Number(platformFee.toFixed(2)),
-        paid_out: Number(paidOut.toFixed(2)),
-        total_orders: paidOrders.length,
-      },
-      withdrawals: withdrawals || [],
-    })
-  } catch (error) {
-    console.error('GET MY AUTHOR STORE INCOME ERROR:', error)
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load Author Store income',
-      error: error.message,
-    })
-  }
-}
-
 export async function getMyAuthorStoreProducts(req, res) {
   try {
     const userId = req.user?.user_id
@@ -1203,7 +1121,7 @@ function calculateAuthorStoreIncome(amount) {
     author_income_usd: authorIncome,
   }
 }
-const AUTHOR_STORE_ADMIN_STATUSES = ['under_review', 'confirmed', 'preparing', 'shipped', 'completed', 'cancelled', 'rejected']
+const AUTHOR_STORE_ADMIN_STATUSES = ['under_review', 'confirmed', 'preparing', 'shipped', 'completed', 'cancelled', 'rejected', 'amount_mismatch']
 
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
@@ -1918,7 +1836,7 @@ export async function createAuthorStoreOrder(req, res) {
       }
 
       const quantity = Math.max(1, cleanInteger(item.quantity, 1))
-‌      const unitPrice = Number(product.sale_price || product.original_price || 0)
+      const unitPrice = Number(product.sale_price || product.original_price || 0)
       const itemTotal = Number((unitPrice * quantity).toFixed(2))
       const itemIncome = calculateAuthorStoreIncome(itemTotal)
 
