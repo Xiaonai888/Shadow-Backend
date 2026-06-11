@@ -207,8 +207,7 @@ if (!isPdfUpload && !req.file.mimetype?.startsWith('image/')) {
     message: 'Only image files are allowed',
   })
 }
-    
-    const requestedFolder = String(req.body.folder || req.query.folder || '').trim()
+  
 
     if (R2_FOLDERS[requestedFolder]) {
   const missingR2EnvKeys = getMissingR2EnvKeys()
