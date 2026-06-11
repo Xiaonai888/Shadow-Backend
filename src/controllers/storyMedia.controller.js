@@ -187,13 +187,23 @@ export async function uploadStoryImage(req, res) {
       })
     }
 
-    if (!req.file.mimetype?.startsWith('image/')) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Only image files are allowed',
-      })
-    }
+    const requestedFolder = String(req.body.folder || req.query.folder || '').trim()
+const isPdfUpload = requestedFolder === 'author_store_pdf'
 
+if (isPdfUpload && req.file.mimetype !== 'application/pdf') {
+  return res.status(400).json({
+    ok: false,
+    message: 'Only PDF files are allowed',
+  })
+}
+
+if (!isPdfUpload && !req.file.mimetype?.startsWith('image/')) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Only image files are allowed',
+  })
+}
+    
     const requestedFolder = String(req.body.folder || req.query.folder || '').trim()
 
     if (R2_FOLDERS[requestedFolder]) {
