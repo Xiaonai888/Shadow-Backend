@@ -978,6 +978,166 @@ export async function getAdminAuthorStoreWithdrawals(req, res) {
 }
 
 
+async function sendAuthorStoreWithdrawalStatusAlert(withdrawal, nextStatus) {
+  const chatId = process.env.TELEGRAM_WITHDRAWAL_ADMIN_CHAT_ID || process.env.TELEGRAM_ADMIN_CHAT_ID
+
+  if (!chatId) {
+    return { sent: false, reason: 'withdrawal_admin_chat_id_not_configured' }
+  }
+
+  const statusTitleMap = {
+    approved: '✅ Withdrawal Approved',
+    rejected: '❌ Withdrawal Rejected',
+    paid: '💵 Withdrawal Paid',
+    cancelled: '🚫 Withdrawal Cancelled',
+  }
+
+  const method = withdrawal.payment_method_snapshot || {}
+  const amount = Number(withdrawal.amount_usd || 0).toFixed(2)
+
+  const text = [
+    statusTitleMap[nextStatus] || '💸 Withdrawal Updated',
+    '',
+    `<b>Withdrawal ID:</b> <code>${html(withdrawal.id)}</code>`,
+    `<b>Amount:</b> $${html(amount)}`,
+    `<b>Status:</b> ${html(nextStatus)}`,
+    withdrawal.paid_amount_usd ? `<b>Paid amount:</b> $${html(Number(withdrawal.paid_amount_usd || 0).toFixed(2))}` : '',
+    withdrawal.paid_transaction_id ? `<b>Transaction ID:</b> <code>${html(withdrawal.paid_transaction_id)}</code>` : '',
+    withdrawal.reject_reason ? `<b>Reject reason:</b> ${html(withdrawal.reject_reason)}` : '',
+    withdrawal.admin_note ? `<b>Admin note:</b> ${html(withdrawal.admin_note)}` : '',
+    '',
+    '<b>Payment Method</b>',
+    method.type ? `Type: ${html(method.type)}` : '',
+    method.bank_name ? `Bank: ${html(method.bank_name)}` : '',
+    method.account_name ? `Account name: ${html(method.account_name)}` : '',
+    method.account_number ? `Account number: <code>${html(method.account_number)}</code>` : '',
+    method.phone_number ? `Phone: <code>${html(method.phone_number)}</code>` : '',
+  ].filter(Boolean).join('\n')
+
+  await sendTelegramMessage(text, {
+    chat_id: chatId,
+    reply_markup: {
+      inline_keyboard: [
+        [
+          {
+            text: '🔎 Open Withdraw Page',
+            url: 'https://admin.shadowerabook.site/withdraw',
+          },
+        ],
+      ],
+    },
+  })
+
+  return { sent: true }
+}
+
+export async function updateAdminAuthorStoreWithdrawalStatus(req, res) {
+  try {
+    const withdrawalId = req.params.withdrawalId
+    const nextStatus = String(req.body.status || '').trim()
+    const adminNote = cleanText(req.body.admin_note || req.body.adminNote)
+    const rejectReason = cleanText(req.body.reject_reason || req.body.rejectReason)
+    const paidTransactionId = cleanText(req.body.paid_transaction_id || req.body.paidTransactionId)
+    const paidAmountUsd = Number(req.body.paid_amount_usd || req.body.paidAmountUsd || 0)
+    const adminId = req.admin?.id || req.admin?.admin_id || req.user?.id || req.user?.user_id || ''
+
+    const allowedStatuses = ['approved', 'rejected', 'paid', 'cancelled']
+
+    if (!withdrawalId) {
+      return res.status(400).json({ ok: false, message: 'Withdrawal ID is required' })
+    }
+
+    if (!allowedStatuses.includes(nextStatus)) {
+      return res.status(400).json({ ok: false, message: 'Invalid withdrawal status' })
+    }
+
+    if (nextStatus === 'rejected' && !rejectReason) {
+      return res.status(400).json({ ok: false, message: 'Reject reason is required' })
+    }
+
+    const { data: currentWithdrawal, error: currentError } = await supabase
+      .from('author_store_withdrawal_requests')
+      .select('*')
+      .eq('id', withdrawalId)
+      .is('deleted_at', null)
+      .maybeSingle()
+
+    if (currentError) throw currentError
+
+    if (!currentWithdrawal) {
+      return res.status(404).json({ ok: false, message: 'Withdrawal request not found' })
+    }
+
+    if (currentWithdrawal.status === 'paid') {
+      return res.status(400).json({ ok: false, message: 'This withdrawal is already paid' })
+    }
+
+    if (currentWithdrawal.status === 'rejected') {
+      return res.status(400).json({ ok: false, message: 'This withdrawal is already rejected' })
+    }
+
+    if (nextStatus === 'paid' && !['approved', 'in_review'].includes(currentWithdrawal.status)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Only approved or in-review withdrawals can be marked as paid',
+      })
+    }
+
+    const now = new Date().toISOString()
+
+    const payload = {
+      status: nextStatus,
+      admin_note: adminNote,
+      reviewed_at: now,
+      reviewed_by: adminId ? String(adminId) : '',
+      updated_at: now,
+    }
+
+    if (nextStatus === 'rejected') {
+      payload.reject_reason = rejectReason
+    }
+
+    if (nextStatus === 'paid') {
+      payload.paid_at = now
+      payload.paid_amount_usd = Number.isFinite(paidAmountUsd) && paidAmountUsd > 0
+        ? paidAmountUsd
+        : Number(currentWithdrawal.amount_usd || 0)
+      payload.paid_transaction_id = paidTransactionId
+    }
+
+    const { data: updatedWithdrawal, error: updateError } = await supabase
+      .from('author_store_withdrawal_requests')
+      .update(payload)
+      .eq('id', withdrawalId)
+      .select('*')
+      .single()
+
+    if (updateError) throw updateError
+
+    try {
+      await sendAuthorStoreWithdrawalStatusAlert(updatedWithdrawal, nextStatus)
+    } catch (notifyError) {
+      console.error('AUTHOR STORE WITHDRAWAL STATUS ALERT FAILED:', {
+        withdrawal_id: updatedWithdrawal.id,
+        status: nextStatus,
+        error: notifyError.message,
+      })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: `Withdrawal updated to ${nextStatus}`,
+      withdrawal: updatedWithdrawal,
+    })
+  } catch (error) {
+    console.error('UPDATE ADMIN AUTHOR STORE WITHDRAWAL STATUS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to update withdrawal request',
+    })
+  }
+}
+
 export async function getMyAuthorStoreProducts(req, res) {
   try {
     const userId = req.user?.user_id
