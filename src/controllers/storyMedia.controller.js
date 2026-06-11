@@ -262,9 +262,11 @@ if (!isPdfUpload && !req.file.mimetype?.startsWith('image/')) {
   pdf_url: isPdfUpload ? uploaded.publicUrl : '',
   pdfUrl: isPdfUpload ? uploaded.publicUrl : '',
 
-  asset: uploaded.asset,
+    asset: uploaded.asset,
   storage: uploaded.quota,
 })
+    }
+
     const folder = safeFolder(requestedFolder)
     const storagePath = makeStoragePath({
       folder,
