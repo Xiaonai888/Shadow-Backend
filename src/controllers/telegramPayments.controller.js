@@ -839,10 +839,11 @@ if (action && action.startsWith('author_')) {
         reply_markup: authorStoreOrderKeyboard(updatedOrder.order_id || updatedOrder.order_number),
       }
     )
-  }
-
-  return
+ return
 }
+
+}
+
 async function processAbaMessage(parsed, message) {
   const chatId = message.chat?.id
   const messageId = message.message_id
