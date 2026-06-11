@@ -28,6 +28,7 @@ import {
   updateMyAuthorStoreProduct,
   getAdminAuthorStoreWithdrawals,
   createMyAuthorStoreTelegramConnectLink,
+  updateAdminAuthorStoreWithdrawalStatus,
 } from '../controllers/authorStore.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
@@ -53,6 +54,7 @@ router.post('/me/withdrawals', requireUser, createMyAuthorStoreWithdrawal)
 router.get('/admin/orders', requireAdmin, getAdminAuthorStoreOrders)
 router.patch('/admin/orders/:orderId/status', requireAdmin, updateAdminAuthorStoreOrderStatus)
 router.get('/admin/withdrawals', requireAdmin, getAdminAuthorStoreWithdrawals)
+router.patch('/admin/withdrawals/:withdrawalId/status', requireAdmin, updateAdminAuthorStoreWithdrawalStatus)
 router.post('/orders', createAuthorStoreOrder)
 router.post('/orders/create-payment', requireUser, createAuthorStoreOrderPayment)
 router.get('/orders/my', requireUser, getMyAuthorStoreBuyerOrders)
