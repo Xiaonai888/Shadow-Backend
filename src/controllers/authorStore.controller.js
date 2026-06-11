@@ -999,8 +999,6 @@ updated_at: item.updated_at,
     const to = from + limit
     const pagedWithdrawals = filteredWithdrawals.slice(from, to)
 
-    const visibleWithdrawals = (withdrawals || []).filter((item) => !item.deleted_at)
-
    const visibleWithdrawals = (withdrawals || []).filter((item) => !item.deleted_at)
 
 return res.status(200).json({
