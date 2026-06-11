@@ -711,7 +711,7 @@ export async function getMyAuthorStoreIncome(req, res) {
         total_orders: paidOrders.length,
       },
       payment_method: paymentMethod || null,
-      withdrawals: withdrawals || [],
+      withdrawals: (withdrawals || []).filter((item) => !item.deleted_at),
     })
   } catch (error) {
     console.error('GET MY AUTHOR STORE INCOME ERROR:', error)
