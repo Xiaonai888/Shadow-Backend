@@ -244,18 +244,24 @@ if (!isPdfUpload && !req.file.mimetype?.startsWith('image/')) {
       })
 
       return res.status(201).json({
-        ok: true,
-        message: 'Image uploaded successfully',
-        bucket: getR2BucketName(),
-        folder: R2_FOLDERS[requestedFolder],
-        path: uploaded.filePath,
-        image_url: uploaded.publicUrl,
-        imageUrl: uploaded.publicUrl,
-        asset: uploaded.asset,
-        storage: uploaded.quota,
-      })
-    }
+  ok: true,
+  message: isPdfUpload ? 'PDF uploaded successfully' : 'Image uploaded successfully',
+  bucket: getR2BucketName(),
+  folder: R2_FOLDERS[requestedFolder],
+  path: uploaded.filePath,
 
+  file_url: uploaded.publicUrl,
+  fileUrl: uploaded.publicUrl,
+
+  image_url: uploaded.publicUrl,
+  imageUrl: uploaded.publicUrl,
+
+  pdf_url: isPdfUpload ? uploaded.publicUrl : '',
+  pdfUrl: isPdfUpload ? uploaded.publicUrl : '',
+
+  asset: uploaded.asset,
+  storage: uploaded.quota,
+})
     const folder = safeFolder(requestedFolder)
     const storagePath = makeStoragePath({
       folder,
