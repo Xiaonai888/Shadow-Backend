@@ -756,33 +756,23 @@ async function sendAuthorStoreWithdrawalAdminAlert(withdrawal, authorPage, payme
     'Admin, please review this withdrawal request.',
   ].filter(Boolean).join('\n')
 
-  await sendTelegramMessage(text, {
+   await sendTelegramMessage(text, {
     chat_id: chatId,
     reply_markup: {
-  inline_keyboard: [
-    [
-      {
-        text: '✅ Approve',
-        callback_data: `withdraw_approve:${withdrawal.id}`,
-      },
-    ],
-    [
-      {
-        text: '❌ Reject / 💵 Mark Paid in Admin',
-        url: 'https://admin.shadowerabook.site/withdraw',
-      },
-    ],
-    [
-      {
-        text: '🔎 Open Withdraw Page',
-        url: 'https://admin.shadowerabook.site/withdraw',
-      },
-    ],
-  ],
-},
+      inline_keyboard: [
+        [
+          {
+            text: '🔎 Open Withdraw Page',
+            url: 'https://admin.shadowerabook.site/withdraw',
+          },
+        ],
+      ],
+    },
+  })
 
   return { sent: true }
 }
+
 
 export async function createMyAuthorStoreWithdrawal(req, res) {
   try {
