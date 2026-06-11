@@ -12,8 +12,8 @@ import {
   replyTelegram,
   reviewKeyboard,
   sendTelegramMessage,
+  sendAuthorStoreTelegramMessage,
 } from '../services/telegram.service.js'
-
 function normalizeName(value) {
   return String(value || '')
     .toUpperCase()
@@ -440,11 +440,10 @@ async function sendAuthorStoreOrderReport(order) {
 
   const authorPage = await getAuthorPageForStoreOrder(order)
 
-  return sendTelegramMessage(authorStoreOrderUnderReviewMessage(order, authorPage), {
-    chat_id: chatId,
-    reply_markup: authorStoreOrderKeyboard(order.order_id || order.order_number),
-  })
-}
+  return sendAuthorStoreTelegramMessage(authorStoreOrderUnderReviewMessage(order, authorPage), {
+  chat_id: chatId,
+  reply_markup: authorStoreOrderKeyboard(order.order_id || order.order_number),
+})
 
 function authorPdfCompletedMessage(order, authorPage) {
   const buyer = order.buyer_profile || {}
