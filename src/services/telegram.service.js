@@ -92,6 +92,17 @@ export async function replyTelegram(chatId, messageId, text, options = {}) {
   })
 }
 
+export async function editTelegramMessage(chatId, messageId, text, options = {}) {
+  return callTelegram('editMessageText', {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    parse_mode: 'HTML',
+    disable_web_page_preview: false,
+    reply_markup: options.reply_markup,
+  })
+}
+
 export async function answerCallbackQuery(callbackQueryId, text, showAlert = false) {
   return callTelegram('answerCallbackQuery', {
     callback_query_id: callbackQueryId,
