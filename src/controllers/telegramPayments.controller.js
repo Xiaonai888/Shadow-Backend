@@ -169,7 +169,7 @@ async function findMatchingAuthorStoreOrders(parsed) {
 
   const { data, error } = await supabase
     .from('author_store_orders')
-    .select('*')
+    .select('*, items:author_store_order_items(*)')
     .eq('status', 'waiting_payment')
     .eq('total_usd', parsed.amount)
     .gte('created_at', start)
@@ -180,8 +180,12 @@ async function findMatchingAuthorStoreOrders(parsed) {
   return data || []
 }
 
+function getOrderItems(order) {
+  return Array.isArray(order?.items) ? order.items : []
+}
+
 function isAuthorPdfOrder(order) {
-  const items = Array.isArray(order?.items) ? order.items : []
+  const items = getOrderItems(order)
 
   if (!items.length) return false
 
@@ -328,7 +332,7 @@ async function markAuthorStoreOrderUnderReview(order, telegramPayment, parsed) {
     })
     .eq('id', order.id)
     .eq('status', 'waiting_payment')
-    .select('*')
+    .select('*, items:author_store_order_items(*)')
     .single()
 
   if (error) throw error
@@ -374,7 +378,7 @@ async function markAuthorPdfOrderCompleted(order, telegramPayment, parsed) {
     })
     .eq('id', order.id)
     .eq('status', 'waiting_payment')
-    .select('*')
+    .select('*, items:author_store_order_items(*)')
     .single()
 
   if (error) throw error
@@ -384,7 +388,7 @@ async function markAuthorPdfOrderCompleted(order, telegramPayment, parsed) {
 function authorStoreOrderUnderReviewMessage(order, authorPage) {
   const buyer = order.buyer_profile || {}
   const delivery = order.delivery_company || {}
-  const items = Array.isArray(order.items) ? order.items : []
+  const items = getOrderItems(order)
 
   const bookLines = items.slice(0, 8).map((item) => {
     return `- ${html(item.title || item.product_title || 'Book')} x${html(item.quantity || 1)}`
@@ -431,7 +435,7 @@ function authorStoreOrderKeyboard(orderId) {
 }
 
 async function sendAuthorStoreOrderReport(order) {
-  const chatId = process.env.TELEGRAM_AUTHOR_STORE_CHAT_ID
+  const chatId = process.env.TELEGRAM_AUTHOR_STORE_ADMIN_CHAT_ID || process.env.TELEGRAM_AUTHOR_STORE_CHAT_ID || process.env.TELEGRAM_ADMIN_CHAT_ID
   if (!chatId) return { ok: false, skipped: true }
 
   const authorPage = await getAuthorPageForStoreOrder(order)
@@ -439,6 +443,46 @@ async function sendAuthorStoreOrderReport(order) {
   return sendTelegramMessage(authorStoreOrderUnderReviewMessage(order, authorPage), {
     chat_id: chatId,
     reply_markup: authorStoreOrderKeyboard(order.order_id || order.order_number),
+  })
+}
+
+function authorPdfCompletedMessage(order, authorPage) {
+  const buyer = order.buyer_profile || {}
+  const items = getOrderItems(order)
+
+  const pdfLines = items.slice(0, 8).map((item) => {
+    return `- ${html(item.title || item.product_title || 'PDF')} x${html(item.quantity || 1)}`
+  })
+
+  return [
+    '📄 <b>AUTHOR PDF SOLD</b>',
+    '',
+    `📄 Page: <b>${html(authorPage?.page_name || 'Author Page')}</b>`,
+    authorPage?.page_username ? `🔗 Username: @${html(authorPage.page_username)}` : '',
+    '',
+    `📦 Order ID: <code>${html(order.order_id || order.order_number)}</code>`,
+    `💵 Amount: <b>${html(money(order.total_usd || order.total_amount))}</b>`,
+    order.aba_transaction_id ? `🧾 Trx ID: <code>${html(order.aba_transaction_id)}</code>` : '',
+    '',
+    `👤 Buyer: <b>${html(buyer.name || order.buyer_name || order.buyer_id)}</b>`,
+    buyer.phone_number || order.buyer_phone ? `📞 Phone: <code>${html(buyer.phone_number || order.buyer_phone)}</code>` : '',
+    '',
+    '<b>PDF:</b>',
+    ...pdfLines,
+    '',
+    'Status: <b>Completed</b>',
+    'PDF unlocked in Reader Library Downloads.',
+  ].filter(Boolean).join('\n')
+}
+
+async function sendAuthorPdfCompletedReport(order) {
+  const chatId = process.env.TELEGRAM_AUTHOR_STORE_ADMIN_CHAT_ID || process.env.TELEGRAM_AUTHOR_STORE_CHAT_ID || process.env.TELEGRAM_ADMIN_CHAT_ID
+  if (!chatId) return { ok: false, skipped: true }
+
+  const authorPage = await getAuthorPageForStoreOrder(order)
+
+  return sendTelegramMessage(authorPdfCompletedMessage(order, authorPage), {
+    chat_id: chatId,
   })
 }
 
@@ -773,75 +817,94 @@ async function handleCallbackQuery(callbackQuery) {
   const [action, paymentId] = data.split(':')
 
   if (action && action.startsWith('mall_')) {
-  const orderId = paymentId
+    const orderId = paymentId
 
-  const statusMap = {
-    mall_confirm: 'confirmed',
-    mall_preparing: 'preparing',
-    mall_cancel: 'cancelled',
-  }
+    const statusMap = {
+      mall_confirm: 'confirmed',
+      mall_preparing: 'preparing',
+      mall_cancel: 'cancelled',
+    }
 
-  const nextStatus = statusMap[action]
+    const nextStatus = statusMap[action]
 
-  if (!orderId || !nextStatus) {
-    await answerCallbackQuery(callbackQuery.id, 'Invalid order action.', true)
+    if (!orderId || !nextStatus) {
+      await answerCallbackQuery(callbackQuery.id, 'Invalid order action.', true)
+      return
+    }
+
+    const updatedOrder = await updateShadowMallOrderFromTelegram(orderId, nextStatus)
+
+    await answerCallbackQuery(callbackQuery.id, `Order updated to ${nextStatus}.`, false)
+
+    if (chatId && messageId) {
+      await editTelegramMessage(
+        chatId,
+        messageId,
+        mallOrderUnderReviewMessage(updatedOrder),
+        {
+          reply_markup: shadowMallOrderKeyboard(updatedOrder.order_id),
+        }
+      )
+    }
+
     return
   }
 
-  const updatedOrder = await updateShadowMallOrderFromTelegram(orderId, nextStatus)
+  if (action && action.startsWith('author_')) {
+    const orderId = paymentId
 
-  await answerCallbackQuery(callbackQuery.id, `Order updated to ${nextStatus}.`, false)
+    const statusMap = {
+      author_confirm: 'confirmed',
+      author_preparing: 'preparing',
+      author_cancel: 'cancelled',
+      author_order_confirm: 'confirmed',
+      author_order_cancel: 'cancelled',
+    }
 
-  if (chatId && messageId) {
-    await editTelegramMessage(
-      chatId,
-      messageId,
-      mallOrderUnderReviewMessage(updatedOrder),
-      {
-        reply_markup: shadowMallOrderKeyboard(updatedOrder.order_id),
-      }
-    )
-  }
+    const nextStatus = statusMap[action]
 
-  return
-}
+    if (!orderId || !nextStatus) {
+      await answerCallbackQuery(callbackQuery.id, 'Invalid author store order action.', true)
+      return
+    }
 
-if (action && action.startsWith('author_')) {
-  const orderId = paymentId
+    const updatedOrder = await updateAuthorStoreOrderFromTelegram(orderId, nextStatus)
+    const authorPage = await getAuthorPageForStoreOrder(updatedOrder)
 
-  const statusMap = {
-    author_confirm: 'confirmed',
-    author_preparing: 'preparing',
-    author_cancel: 'cancelled',
+    await answerCallbackQuery(callbackQuery.id, `Author Store order updated to ${nextStatus}.`, false)
 
-    author_order_confirm: 'confirmed',
-    author_order_cancel: 'cancelled',
-  }
+    if (chatId && messageId) {
+      await editTelegramMessage(
+        chatId,
+        messageId,
+        authorStoreOrderUnderReviewMessage(updatedOrder, authorPage),
+        {
+          reply_markup: authorStoreOrderKeyboard(updatedOrder.order_id || updatedOrder.order_number),
+        }
+      )
+    }
 
-  const nextStatus = statusMap[action]
-
-  if (!orderId || !nextStatus) {
-    await answerCallbackQuery(callbackQuery.id, 'Invalid author store order action.', true)
     return
   }
 
-  const updatedOrder = await updateAuthorStoreOrderFromTelegram(orderId, nextStatus)
-  const authorPage = await getAuthorPageForStoreOrder(updatedOrder)
+  if (!paymentId || !['pay_ok', 'pay_no'].includes(action)) {
+    await answerCallbackQuery(callbackQuery.id, 'Invalid action.', true)
+    return
+  }
 
-  await answerCallbackQuery(callbackQuery.id, `Author Store order updated to ${nextStatus}.`, false)
+  const result = action === 'pay_ok'
+    ? await approvePaymentFromTelegram(paymentId)
+    : await rejectPaymentFromTelegram(paymentId)
+
+  await answerCallbackQuery(
+    callbackQuery.id,
+    result.status === 'approved' ? 'Approved.' : result.status === 'already' ? 'Already approved.' : result.status === 'rejected' ? 'Rejected.' : 'Done.',
+    result.status === 'blocked'
+  )
 
   if (chatId && messageId) {
-    await editTelegramMessage(
-      chatId,
-      messageId,
-      authorStoreOrderUnderReviewMessage(updatedOrder, authorPage),
-      {
-        reply_markup: authorStoreOrderKeyboard(updatedOrder.order_id || updatedOrder.order_number),
-      }
-    )
- return
-}
-
+    await editTelegramMessage(chatId, messageId, result.text)
+  }
 }
 
 async function processAbaMessage(parsed, message) {
