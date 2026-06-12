@@ -32,6 +32,27 @@ function cleanInteger(value, fallback = 0) {
   return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : fallback
 }
 
+function cleanGalleryImages(value) {
+  const images = Array.isArray(value) ? value : []
+
+  return images
+    .map((item) => {
+      if (typeof item === 'string') {
+        return {
+          url: item.trim(),
+          name: '',
+        }
+      }
+
+      return {
+        url: cleanText(item?.url || item?.image_url || item?.imageUrl),
+        name: cleanText(item?.name || item?.file_name || item?.fileName),
+      }
+    })
+    .filter((item) => item.url)
+    .slice(0, 5)
+}
+
 const DEFAULT_AUTHOR_STORE_DELIVERY_SETTINGS = [
   {
     company_key: 'jnt',
@@ -100,6 +121,7 @@ function publicProduct(product) {
     access_rule: product.access_rule || '',
     created_at: product.created_at,
     updated_at: product.updated_at,
+    gallery_images: cleanGalleryImages(product.gallery_images),
   }
 }
 
@@ -1363,7 +1385,8 @@ export async function createMyAuthorStoreProduct(req, res) {
       sale_price: cleanNumber(req.body.sale_price ?? req.body.salePrice, 0),
       status,
       cover_url: coverUrl,
-      stock_quantity: cleanInteger(req.body.stock_quantity ?? req.body.stockQuantity ?? req.body.stock, 0),
+gallery_images: cleanGalleryImages(req.body.gallery_images || req.body.galleryImages),
+stock_quantity: cleanInteger(req.body.stock_quantity ?? req.body.stockQuantity ?? req.body.stock, 0),
       paper_type: cleanText(req.body.paper_type || req.body.paperType),
       book_condition: bookCondition,
       quality_percent: bookCondition === 'Second Hand' ? qualityPercent : null,
@@ -1453,7 +1476,8 @@ export async function updateMyAuthorStoreProduct(req, res) {
       sale_price: cleanNumber(req.body.sale_price ?? req.body.salePrice, 0),
       status,
       cover_url: coverUrl,
-      stock_quantity: cleanInteger(req.body.stock_quantity ?? req.body.stockQuantity ?? req.body.stock, 0),
+gallery_images: cleanGalleryImages(req.body.gallery_images || req.body.galleryImages),
+stock_quantity: cleanInteger(req.body.stock_quantity ?? req.body.stockQuantity ?? req.body.stock, 0),
       paper_type: cleanText(req.body.paper_type || req.body.paperType),
       book_condition: bookCondition,
       quality_percent: bookCondition === 'Second Hand' ? qualityPercent : null,
