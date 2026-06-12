@@ -92,6 +92,41 @@ export async function getAuthorPagePosts(req, res) {
   }
 }
 
+export async function getAuthorPostById(req, res) {
+  try {
+    const postId = req.params.postId
+
+    if (!postId) {
+      return res.status(400).json({ ok: false, message: 'Post ID is required' })
+    }
+
+    const { data: post, error } = await supabase
+      .from('author_page_posts')
+      .select('*, author_page:author_pages(id, page_name, page_username, avatar_url)')
+      .eq('id', postId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!post) {
+      return res.status(404).json({ ok: false, message: 'Post not found' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      post: {
+        ...publicAuthorPost(post),
+        author_page: post.author_page || null,
+      },
+    })
+  } catch (error) {
+    console.error('GET AUTHOR POST BY ID ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load author post', error: error.message })
+  }
+}
+
+
 export async function createMyAuthorPost(req, res) {
   try {
     const userId = req.user?.user_id
