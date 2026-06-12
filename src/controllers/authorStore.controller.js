@@ -327,6 +327,10 @@ async function sendTelegramMessageWithRetry(text, options = {}) {
 export async function handleAuthorStoreTelegramWebhook(req, res) {
   try {
     const update = req.body || {}
+    if (update.callback_query) {
+  await handleCallbackQuery(update.callback_query)
+  return res.status(200).json({ ok: true })
+}
 
     console.log('AUTHOR STORE TELEGRAM WEBHOOK RECEIVED:', JSON.stringify(update))
 
