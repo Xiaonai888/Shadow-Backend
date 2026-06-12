@@ -2189,6 +2189,9 @@ export async function getMyAuthorStoreOrders(req, res) {
     const userId = req.user?.user_id
     const page = Math.max(Number(req.query.page || 1), 1)
     const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 100)
+    const type = String(req.query.type || 'all').trim().toLowerCase()
+    const prepareStatus = String(req.query.prepare_status || 'all').trim().toLowerCase()
+    const q = String(req.query.q || '').trim().toLowerCase()
 
     if (!userId) {
       return res.status(401).json({ ok: false, message: 'Unauthorized' })
@@ -2211,7 +2214,7 @@ export async function getMyAuthorStoreOrders(req, res) {
     const safeOrders = (orders || []).map(publicOrder)
 
     const approvedOrders = safeOrders.filter((order) => {
-      const status = String(order.order_status || '').toLowerCase()
+      const status = String(order.order_status || order.status || '').toLowerCase()
       const paymentStatus = String(order.payment_status || '').toLowerCase()
 
       return (
@@ -2222,6 +2225,54 @@ export async function getMyAuthorStoreOrders(req, res) {
         status === 'completed'
       )
     })
+
+    const typeFilteredOrders = approvedOrders.filter((order) => {
+      if (type === 'all') return true
+
+      const items = Array.isArray(order.items) ? order.items : []
+      const hasBook = items.some((item) => String(item.product_type || '').toLowerCase() === 'book')
+      const hasPdf = items.some((item) => String(item.product_type || '').toLowerCase() === 'pdf')
+
+      if (type === 'book') return hasBook
+      if (type === 'pdf') return hasPdf
+
+      return true
+    })
+
+    const prepareFilteredOrders = typeFilteredOrders.filter((order) => {
+      const status = String(order.author_prepare_status || 'to_prepare').toLowerCase()
+
+      if (prepareStatus === 'all') return true
+      if (prepareStatus === 'to_prepare') return status !== 'preparing'
+      if (prepareStatus === 'preparing') return status === 'preparing'
+
+      return true
+    })
+
+    const searchFilteredOrders = q
+      ? prepareFilteredOrders.filter((order) => {
+          const items = Array.isArray(order.items) ? order.items : []
+          const searchText = [
+            order.id,
+            order.order_id,
+            order.order_number,
+            order.aba_transaction_id,
+            order.buyer_name,
+            order.buyer_phone,
+            order.buyer_email,
+            ...items.map((item) => [
+              item.product_title,
+              item.title,
+              item.product_type,
+            ].join(' ')),
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase()
+
+          return searchText.includes(q)
+        })
+      : prepareFilteredOrders
 
     const grossRevenue = approvedOrders.reduce(
       (sum, order) => sum + Number(order.product_subtotal_usd || order.subtotal || 0),
@@ -2238,17 +2289,19 @@ export async function getMyAuthorStoreOrders(req, res) {
       0
     )
 
-    const total = approvedOrders.length
+    const total = searchFilteredOrders.length
     const from = (page - 1) * limit
     const to = from + limit
-    const pagedOrders = approvedOrders.slice(from, to)
+    const pagedOrders = searchFilteredOrders.slice(from, to)
     const totalPages = Math.max(Math.ceil(total / limit), 1)
 
     return res.status(200).json({
       ok: true,
+      type,
+      prepare_status: prepareStatus,
       summary: {
-        orders_count: total,
-        total_orders: total,
+        orders_count: approvedOrders.length,
+        total_orders: approvedOrders.length,
         revenue: Number(authorIncome.toFixed(2)),
         gross_revenue: Number(grossRevenue.toFixed(2)),
         platform_fee: Number(platformFee.toFixed(2)),
@@ -2274,6 +2327,7 @@ export async function getMyAuthorStoreOrders(req, res) {
     return res.status(500).json({ ok: false, message: 'Failed to load store orders', error: error.message })
   }
 }
+
 
 export async function createAuthorStoreOrder(req, res) {
   try {
