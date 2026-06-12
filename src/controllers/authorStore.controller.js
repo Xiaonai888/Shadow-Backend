@@ -3,6 +3,7 @@ import { supabase } from '../config/supabase.js'
 import { html, sendTelegramMessage, sendAuthorStoreTelegramMessage } from '../services/telegram.service.js'
 const PRODUCT_TYPES = new Set(['book', 'pdf'])
 const PRODUCT_STATUSES = new Set(['draft', 'active', 'hidden'])
+import { handleCallbackQuery } from './telegramPayments.controller.js'
 
 function normalizePageUsername(username) {
   return String(username || '')
