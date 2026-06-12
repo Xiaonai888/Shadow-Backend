@@ -424,13 +424,10 @@ function authorStoreOrderKeyboard(orderId) {
   return {
     inline_keyboard: [
       [
-        { text: '✅ Confirm Order', callback_data: `author_confirm:${orderId}` },
+        { text: '✅ Approve Payment', callback_data: `author_confirm:${orderId}` },
       ],
       [
-        { text: '📦 Mark Preparing', callback_data: `author_preparing:${orderId}` },
-      ],
-      [
-        { text: '❌ Cancel', callback_data: `author_cancel:${orderId}` },
+        { text: '❌ Reject Order', callback_data: `author_cancel:${orderId}` },
       ],
     ],
   }
