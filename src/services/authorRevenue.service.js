@@ -293,13 +293,14 @@ export async function createAuthorEarningsFromDiamondUnlock({ transactions = [] 
     const metadata = transaction.metadata || {}
     const netPaidDiamonds = numberValue(transaction.amount)
     const originalDiamonds = getPerEpisodeOriginalDiamonds(transaction, metadata)
-    const authorEarnedDiamonds = netPaidDiamonds * (shareContext.share_percent / 100)
-    const platformEarnedDiamonds = Math.max(0, netPaidDiamonds - authorEarnedDiamonds)
+    const authorSharePercent = 100
+const authorEarnedDiamonds = netPaidDiamonds
+const platformEarnedDiamonds = 0
     const authorGrossUsd = authorEarnedDiamonds * numberValue(settings.diamond_to_usd_rate)
-    const withholdingEnabled = Boolean(settings.withholding_enabled)
-    const withholdingPercent = withholdingEnabled ? percentValue(settings.withholding_percent) : 0
-    const withholdingAmountUsd = authorGrossUsd * (withholdingPercent / 100)
-    const authorNetPayoutUsd = Math.max(0, authorGrossUsd - withholdingAmountUsd)
+    const withholdingEnabled = false
+const withholdingPercent = 0
+const withholdingAmountUsd = 0
+const authorNetPayoutUsd = authorGrossUsd
 
     rows.push({
       author_id: authorPage.id,
@@ -314,7 +315,7 @@ export async function createAuthorEarningsFromDiamondUnlock({ transactions = [] 
       original_diamonds: originalDiamonds,
       discount_percent: percentValue(metadata.discount_percent),
       net_paid_diamonds: netPaidDiamonds,
-      author_share_percent: shareContext.share_percent,
+      author_share_percent: authorSharePercent,
       share_source: shareContext.share_source,
       quest_stage_number: shareContext.quest_stage_number,
       lifetime_boost_id: shareContext.lifetime_boost_id,
