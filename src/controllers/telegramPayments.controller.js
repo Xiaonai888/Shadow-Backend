@@ -369,10 +369,10 @@ async function markAuthorPdfOrderCompleted(order, telegramPayment, parsed) {
 
   const { data, error } = await supabase
     .from('author_store_orders')
-    .update({
-      status: 'completed',
-      order_status: 'completed',
-      payment_status: 'paid',
+.update({
+  status: 'under_review',
+  order_status: 'under_review',
+  payment_status: 'paid',
       aba_transaction_id: telegramPayment.trx_id,
       callback_payload: payload,
       paid_at: parsed.transaction_time || new Date().toISOString(),
