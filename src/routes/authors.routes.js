@@ -15,6 +15,7 @@ import {
   createAuthorPostComment,
   createMyAuthorPost,
   getAuthorPagePosts,
+  getAuthorPostById,
   getAuthorPostComments,
   setMyAuthorPostPinned,
   setMyAuthorPostReaction,
@@ -24,7 +25,6 @@ import {
   getMyAuthorPaymentMethods,
   getMyAuthorQuest,
   saveMyAuthorPaymentMethod,
-  getAuthorPostById,
 } from '../controllers/authorRevenue.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
