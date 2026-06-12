@@ -2177,6 +2177,8 @@ author_income_usd: Number(item.author_income_usd || 0),
 export async function getMyAuthorStoreOrders(req, res) {
   try {
     const userId = req.user?.user_id
+    const page = Math.max(Number(req.query.page || 1), 1)
+    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 100)
 
     if (!userId) {
       return res.status(401).json({ ok: false, message: 'Unauthorized' })
@@ -2197,27 +2199,65 @@ export async function getMyAuthorStoreOrders(req, res) {
     if (error) throw error
 
     const safeOrders = (orders || []).map(publicOrder)
-    const grossRevenue = safeOrders
-  .filter((order) => order.payment_status === 'paid')
-  .reduce((sum, order) => sum + Number(order.product_subtotal_usd || order.subtotal || 0), 0)
 
-const platformFee = safeOrders
-  .filter((order) => order.payment_status === 'paid')
-  .reduce((sum, order) => sum + Number(order.platform_fee_usd || 0), 0)
+    const approvedOrders = safeOrders.filter((order) => {
+      const status = String(order.order_status || '').toLowerCase()
+      const paymentStatus = String(order.payment_status || '').toLowerCase()
 
-const authorIncome = safeOrders
-  .filter((order) => order.payment_status === 'paid')
-  .reduce((sum, order) => sum + Number(order.author_income_usd || 0), 0)
+      return (
+        paymentStatus === 'paid' ||
+        status === 'confirmed' ||
+        status === 'preparing' ||
+        status === 'shipped' ||
+        status === 'completed'
+      )
+    })
+
+    const grossRevenue = approvedOrders.reduce(
+      (sum, order) => sum + Number(order.product_subtotal_usd || order.subtotal || 0),
+      0
+    )
+
+    const platformFee = approvedOrders.reduce(
+      (sum, order) => sum + Number(order.platform_fee_usd || 0),
+      0
+    )
+
+    const authorIncome = approvedOrders.reduce(
+      (sum, order) => sum + Number(order.author_income_usd || 0),
+      0
+    )
+
+    const total = approvedOrders.length
+    const from = (page - 1) * limit
+    const to = from + limit
+    const pagedOrders = approvedOrders.slice(from, to)
+    const totalPages = Math.max(Math.ceil(total / limit), 1)
 
     return res.status(200).json({
       ok: true,
       summary: {
-  orders_count: safeOrders.length,
-  revenue: authorIncome,
-  gross_revenue: grossRevenue,
-  platform_fee: platformFee,
-  author_income: authorIncome,
-},
+        orders_count: total,
+        total_orders: total,
+        revenue: Number(authorIncome.toFixed(2)),
+        gross_revenue: Number(grossRevenue.toFixed(2)),
+        platform_fee: Number(platformFee.toFixed(2)),
+        author_income: Number(authorIncome.toFixed(2)),
+      },
+      orders: pagedOrders,
+      pagination: {
+        page,
+        limit,
+        total,
+        total_pages: totalPages,
+        has_next: to < total,
+        has_prev: page > 1,
+      },
+      page,
+      limit,
+      total,
+      shown: pagedOrders.length,
+      total_pages: totalPages,
     })
   } catch (error) {
     console.error('GET MY AUTHOR STORE ORDERS ERROR:', error)
