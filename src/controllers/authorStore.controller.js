@@ -2438,13 +2438,13 @@ export async function getMyAuthorStoreOrders(req, res) {
       ok: true,
       order: publicOrder(updatedOrder),
     })
-  } catch (error) {
-    console.error('MARK MY AUTHOR STORE ORDER PREPARING ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to mark order preparing', error: error.message })
+   } catch (error) {
+    console.error('GET MY AUTHOR STORE ORDERS ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load store orders', error: error.message })
   }
 }
 
-    const typeFilteredOrders = approvedOrders.filter((order) => {
+export async function markMyAuthorStoreOrderPreparing(req, res) {
       if (type === 'all') return true
 
       const items = Array.isArray(order.items) ? order.items : []
