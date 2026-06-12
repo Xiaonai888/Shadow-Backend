@@ -1138,9 +1138,9 @@ async function processAbaMessage(parsed, message) {
     await replyTelegram(chatId, messageId, needReviewText)
 
     try {
-      await sendTelegramMessage(needReviewText, {
-        chat_id: process.env.TELEGRAM_SHADOW_MALL_CHAT_ID,
-      })
+      await sendAuthorStoreTelegramMessage(needReviewText, {
+  chat_id: process.env.TELEGRAM_AUTHOR_STORE_ADMIN_CHAT_ID || process.env.TELEGRAM_AUTHOR_STORE_CHAT_ID,
+})
     } catch (error) {
       console.error('SEND SHADOW MALL NEED REVIEW ERROR:', error)
     }
