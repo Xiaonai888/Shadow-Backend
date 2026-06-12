@@ -803,7 +803,7 @@ async function rejectPaymentFromTelegram(paymentId) {
 }
 
 
-async function handleCallbackQuery(callbackQuery) {
+export async function handleCallbackQuery(callbackQuery) {
   const data = String(callbackQuery?.data || '')
   const userId = callbackQuery?.from?.id
   const chatId = callbackQuery?.message?.chat?.id
