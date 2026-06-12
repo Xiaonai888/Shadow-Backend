@@ -1,6 +1,12 @@
 import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
-import { html, sendTelegramMessage, sendAuthorStoreTelegramMessage } from '../services/telegram.service.js'
+import {
+  answerAuthorStoreCallbackQuery,
+  editAuthorStoreTelegramMessage,
+  html,
+  sendTelegramMessage,
+  sendAuthorStoreTelegramMessage,
+} from '../services/telegram.service.js'
 const PRODUCT_TYPES = new Set(['book', 'pdf'])
 const PRODUCT_STATUSES = new Set(['draft', 'active', 'hidden'])
 import { handleCallbackQuery } from './telegramPayments.controller.js'
@@ -328,6 +334,13 @@ export async function handleAuthorStoreTelegramWebhook(req, res) {
   try {
     const update = req.body || {}
     if (update.callback_query) {
+  const callbackData = String(update.callback_query?.data || '')
+
+  if (callbackData.startsWith('author_prepare_mark:') || callbackData.startsWith('author_prepare_done:')) {
+    await handleAuthorStorePrepareCallback(update.callback_query)
+    return res.status(200).json({ ok: true })
+  }
+
   await handleCallbackQuery(update.callback_query)
   return res.status(200).json({ ok: true })
 }
@@ -1985,6 +1998,153 @@ export async function unlockAuthorStorePdfDownloads(order) {
   return data || []
 }
 
+function getAuthorStoreOrderPublicId(order) {
+  return String(order?.order_id || order?.order_number || order?.id || '').trim()
+}
+
+function authorStoreBookOrderKeyboard(order) {
+  const orderId = getAuthorStoreOrderPublicId(order)
+  const preparing = String(order?.author_prepare_status || '').toLowerCase() === 'preparing'
+
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: preparing ? '✅ Preparing ✓' : '📦 Mark Preparing',
+          callback_data: preparing ? `author_prepare_done:${orderId}` : `author_prepare_mark:${orderId}`,
+        },
+      ],
+    ],
+  }
+}
+
+function buildAuthorStoreBookOrderTelegramMessage(order, authorPage) {
+  const items = Array.isArray(order?.items) ? order.items : []
+  const bookItems = items.filter((item) => String(item.product_type || item.type || '').toLowerCase() === 'book')
+  const buyerProfile = order.buyer_profile || {}
+  const buyerName = buyerProfile.name || buyerProfile.buyer_name || order.buyer_name || 'Reader'
+  const buyerPhone = buyerProfile.phone_number || buyerProfile.buyer_phone || order.buyer_phone || '-'
+  const buyerAddress = buyerProfile.delivery_address || order.delivery_address || '-'
+  const preparing = String(order.author_prepare_status || '').toLowerCase() === 'preparing'
+
+  const productLines = bookItems.map((item, index) => {
+    const title = item.product_title || item.title || 'Book'
+    const quantity = Number(item.quantity || 1)
+    const total = Number(item.total_price || item.total_usd || 0).toFixed(2)
+
+    return `${index + 1}. ${html(title)} × ${quantity} — $${total}`
+  })
+
+  return [
+    '📚 <b>New Author Store Book Order</b>',
+    '',
+    `Author Page: <b>${html(authorPage.page_name || authorPage.page_username || 'Author Page')}</b>`,
+    `Order ID: <code>${html(getAuthorStoreOrderPublicId(order))}</code>`,
+    preparing ? 'Status: <b>Preparing ✓</b>' : '',
+    '',
+    '<b>Products</b>',
+    ...productLines,
+    '',
+    '<b>Reader</b>',
+    `Name: ${html(buyerName)}`,
+    `Phone: ${html(buyerPhone)}`,
+    `Address: ${html(buyerAddress)}`,
+    '',
+    '<b>Payment</b>',
+    `Product subtotal: $${Number(order.product_subtotal_usd || order.subtotal_usd || 0).toFixed(2)}`,
+    `Delivery fee: $${Number(order.delivery_fee_usd || 0).toFixed(2)}`,
+    `Total paid: $${Number(order.total_usd || order.total_amount || 0).toFixed(2)}`,
+    `Author income: $${Number(order.author_income_usd || 0).toFixed(2)}`,
+    '',
+    preparing ? 'This order has been marked as preparing.' : 'Please prepare this book order for delivery.',
+  ].filter(Boolean).join('\n')
+}
+
+async function markAuthorStoreOrderPreparingFromTelegram(orderId, chatId) {
+  const { data: order, error: orderError } = await supabase
+    .from('author_store_orders')
+    .select('*, items:author_store_order_items(*)')
+    .or(`id.eq.${orderId},order_id.eq.${orderId},order_number.eq.${orderId}`)
+    .maybeSingle()
+
+  if (orderError) throw orderError
+  if (!order) throw new Error('Order not found')
+
+  const { data: authorPage, error: authorPageError } = await supabase
+    .from('author_pages')
+    .select('id, page_name, page_username, telegram_chat_id')
+    .eq('id', order.author_page_id)
+    .maybeSingle()
+
+  if (authorPageError) throw authorPageError
+  if (!authorPage) throw new Error('Author page not found')
+
+  if (String(authorPage.telegram_chat_id || '') !== String(chatId || '')) {
+    throw new Error('This Telegram group is not linked to this author page')
+  }
+
+  const status = String(order.order_status || order.status || '').toLowerCase()
+  const paymentStatus = String(order.payment_status || '').toLowerCase()
+  const approved =
+    paymentStatus === 'paid' ||
+    status === 'confirmed' ||
+    status === 'preparing' ||
+    status === 'shipped' ||
+    status === 'completed'
+
+  if (!approved) {
+    throw new Error('Only approved orders can be marked preparing')
+  }
+
+  const { data: updatedOrder, error: updateError } = await supabase
+    .from('author_store_orders')
+    .update({
+      author_prepare_status: 'preparing',
+      author_prepared_at: new Date().toISOString(),
+      author_prepared_source: 'telegram',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', order.id)
+    .select('*, items:author_store_order_items(*)')
+    .single()
+
+  if (updateError) throw updateError
+
+  return { order: updatedOrder, authorPage }
+}
+
+async function handleAuthorStorePrepareCallback(callbackQuery) {
+  const data = String(callbackQuery?.data || '')
+  const [action, orderId] = data.split(':')
+  const chatId = callbackQuery?.message?.chat?.id
+  const messageId = callbackQuery?.message?.message_id
+
+  if (action === 'author_prepare_done') {
+    await answerAuthorStoreCallbackQuery(callbackQuery.id, 'Already marked preparing.', false)
+    return
+  }
+
+  if (!orderId || action !== 'author_prepare_mark') {
+    await answerAuthorStoreCallbackQuery(callbackQuery.id, 'Invalid order action.', true)
+    return
+  }
+
+  const result = await markAuthorStoreOrderPreparingFromTelegram(orderId, chatId)
+
+  await answerAuthorStoreCallbackQuery(callbackQuery.id, 'Marked preparing.', false)
+
+  if (chatId && messageId) {
+    await editAuthorStoreTelegramMessage(
+      chatId,
+      messageId,
+      buildAuthorStoreBookOrderTelegramMessage(result.order, result.authorPage),
+      {
+        reply_markup: authorStoreBookOrderKeyboard(result.order),
+      }
+    )
+  }
+}
+
 export async function sendAuthorStoreBookOrderTelegram(order) {
   const items = Array.isArray(order?.items) ? order.items : []
   const bookItems = items.filter((item) => {
@@ -2008,44 +2168,9 @@ export async function sendAuthorStoreBookOrderTelegram(order) {
     return { sent: false, reason: 'telegram_not_linked' }
   }
 
-  const buyerProfile = order.buyer_profile || {}
-  const buyerName = buyerProfile.name || buyerProfile.buyer_name || order.buyer_name || 'Reader'
-  const buyerPhone = buyerProfile.phone_number || buyerProfile.buyer_phone || order.buyer_phone || '-'
-  const buyerAddress = buyerProfile.delivery_address || order.delivery_address || '-'
-
-  const productLines = bookItems.map((item, index) => {
-    const title = item.product_title || item.title || 'Book'
-    const quantity = Number(item.quantity || 1)
-    const total = Number(item.total_price || item.total_usd || 0).toFixed(2)
-
-    return `${index + 1}. ${html(title)} × ${quantity} — $${total}`
-  })
-
-  const message = [
-    '📚 <b>New Author Store Book Order</b>',
-    '',
-    `Author Page: <b>${html(authorPage.page_name || authorPage.page_username || 'Author Page')}</b>`,
-    `Order ID: <code>${html(order.order_id || order.order_number || order.id)}</code>`,
-    '',
-    '<b>Products</b>',
-    ...productLines,
-    '',
-    '<b>Reader</b>',
-    `Name: ${html(buyerName)}`,
-    `Phone: ${html(buyerPhone)}`,
-    `Address: ${html(buyerAddress)}`,
-    '',
-    '<b>Payment</b>',
-    `Product subtotal: $${Number(order.product_subtotal_usd || order.subtotal_usd || 0).toFixed(2)}`,
-    `Delivery fee: $${Number(order.delivery_fee_usd || 0).toFixed(2)}`,
-    `Total paid: $${Number(order.total_usd || 0).toFixed(2)}`,
-    `Author income: $${Number(order.author_income_usd || 0).toFixed(2)}`,
-    '',
-    'Please prepare this book order for delivery.',
-  ].join('\n')
-
-  await sendTelegramMessageWithRetry(message, {
+  await sendTelegramMessageWithRetry(buildAuthorStoreBookOrderTelegramMessage(order, authorPage), {
     chat_id: String(authorPage.telegram_chat_id),
+    reply_markup: authorStoreBookOrderKeyboard(order),
   })
 
   return { sent: true }
