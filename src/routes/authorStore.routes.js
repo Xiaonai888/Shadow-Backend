@@ -50,6 +50,7 @@ router.patch('/me/categories/reorder', requireUser, reorderMyAuthorStoreCategori
 router.patch('/me/categories/:categoryId', requireUser, updateMyAuthorStoreCategory)
 router.delete('/me/categories/:categoryId', requireUser, deleteMyAuthorStoreCategory)
 router.post('/me/products', requireUser, createMyAuthorStoreProduct)
+router.get('/me/orders', requireUser, getMyAuthorStoreOrders)
 router.patch('/me/orders/:orderId/preparing', requireUser, markMyAuthorStoreOrderPreparing)
 router.get('/me/income', requireUser, getMyAuthorStoreIncome)
 router.post('/me/withdrawals', requireUser, createMyAuthorStoreWithdrawal)
