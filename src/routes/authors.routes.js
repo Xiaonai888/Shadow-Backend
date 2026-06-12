@@ -24,6 +24,7 @@ import {
   getMyAuthorPaymentMethods,
   getMyAuthorQuest,
   saveMyAuthorPaymentMethod,
+  getAuthorPostById,
 } from '../controllers/authorRevenue.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
@@ -56,6 +57,7 @@ router.put('/me', requireUser, updateMyAuthorPage)
 router.get('/page/:pageUsername/posts', getAuthorPagePosts)
 router.post('/me/posts', requireUser, createMyAuthorPost)
 router.post('/me/posts/:postId/react', requireUser, setMyAuthorPostReaction)
+router.get('/page/posts/:postId', getAuthorPostById)
 router.get('/page/posts/:postId/comments', getAuthorPostComments)
 router.post('/me/posts/:postId/comments', requireUser, createAuthorPostComment)
 
