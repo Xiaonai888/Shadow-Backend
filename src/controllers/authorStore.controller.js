@@ -2333,6 +2333,7 @@ function publicOrder(order) {
   }
 }
 
+
 export async function getMyAuthorStoreOrders(req, res) {
   try {
     const userId = req.user?.user_id
@@ -2375,76 +2376,7 @@ export async function getMyAuthorStoreOrders(req, res) {
       )
     })
 
-    export async function markMyAuthorStoreOrderPreparing(req, res) {
-  try {
-    const userId = req.user?.user_id
-    const orderId = String(req.params.orderId || '').trim()
-
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
-    }
-
-    if (!orderId) {
-      return res.status(400).json({ ok: false, message: 'Order ID is required' })
-    }
-
-    const authorPage = await getMyAuthorPage(userId)
-
-    if (!authorPage) {
-      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
-    }
-
-    const { data: order, error: orderError } = await supabase
-      .from('author_store_orders')
-      .select('*, items:author_store_order_items(*)')
-      .eq('author_page_id', authorPage.id)
-      .or(`id.eq.${orderId},order_id.eq.${orderId},order_number.eq.${orderId}`)
-      .maybeSingle()
-
-    if (orderError) throw orderError
-
-    if (!order) {
-      return res.status(404).json({ ok: false, message: 'Order not found' })
-    }
-
-    const status = String(order.order_status || order.status || '').toLowerCase()
-    const paymentStatus = String(order.payment_status || '').toLowerCase()
-    const approved =
-      paymentStatus === 'paid' ||
-      status === 'confirmed' ||
-      status === 'preparing' ||
-      status === 'shipped' ||
-      status === 'completed'
-
-    if (!approved) {
-      return res.status(400).json({ ok: false, message: 'Only approved orders can be marked preparing' })
-    }
-
-    const { data: updatedOrder, error: updateError } = await supabase
-      .from('author_store_orders')
-      .update({
-        author_prepare_status: 'preparing',
-        author_prepared_at: new Date().toISOString(),
-        author_prepared_source: 'web',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', order.id)
-      .select('*, items:author_store_order_items(*)')
-      .single()
-
-    if (updateError) throw updateError
-
-    return res.status(200).json({
-      ok: true,
-      order: publicOrder(updatedOrder),
-    })
-   } catch (error) {
-    console.error('GET MY AUTHOR STORE ORDERS ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load store orders', error: error.message })
-  }
-}
-
-export async function markMyAuthorStoreOrderPreparing(req, res) {
+    const typeFilteredOrders = approvedOrders.filter((order) => {
       if (type === 'all') return true
 
       const items = Array.isArray(order.items) ? order.items : []
@@ -2543,6 +2475,75 @@ export async function markMyAuthorStoreOrderPreparing(req, res) {
   } catch (error) {
     console.error('GET MY AUTHOR STORE ORDERS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load store orders', error: error.message })
+  }
+}
+
+export async function markMyAuthorStoreOrderPreparing(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const orderId = String(req.params.orderId || '').trim()
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!orderId) {
+      return res.status(400).json({ ok: false, message: 'Order ID is required' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    const { data: order, error: orderError } = await supabase
+      .from('author_store_orders')
+      .select('*, items:author_store_order_items(*)')
+      .eq('author_page_id', authorPage.id)
+      .or(`id.eq.${orderId},order_id.eq.${orderId},order_number.eq.${orderId}`)
+      .maybeSingle()
+
+    if (orderError) throw orderError
+
+    if (!order) {
+      return res.status(404).json({ ok: false, message: 'Order not found' })
+    }
+
+    const status = String(order.order_status || order.status || '').toLowerCase()
+    const paymentStatus = String(order.payment_status || '').toLowerCase()
+    const approved =
+      paymentStatus === 'paid' ||
+      status === 'confirmed' ||
+      status === 'preparing' ||
+      status === 'shipped' ||
+      status === 'completed'
+
+    if (!approved) {
+      return res.status(400).json({ ok: false, message: 'Only approved orders can be marked preparing' })
+    }
+
+    const { data: updatedOrder, error: updateError } = await supabase
+      .from('author_store_orders')
+      .update({
+        author_prepare_status: 'preparing',
+        author_prepared_at: new Date().toISOString(),
+        author_prepared_source: 'web',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', order.id)
+      .select('*, items:author_store_order_items(*)')
+      .single()
+
+    if (updateError) throw updateError
+
+    return res.status(200).json({
+      ok: true,
+      order: publicOrder(updatedOrder),
+    })
+  } catch (error) {
+    console.error('MARK MY AUTHOR STORE ORDER PREPARING ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to mark order preparing', error: error.message })
   }
 }
 
