@@ -155,6 +155,213 @@ export async function getMyAuthorStoreReaderDownloads(req, res) {
   }
 }
 
+function isPaidAuthorStoreOrder(order) {
+  const paymentStatus = String(order?.payment_status || '').toLowerCase()
+  const status = String(order?.status || order?.order_status || '').toLowerCase()
+
+  return paymentStatus === 'paid' || ['confirmed', 'preparing', 'shipped', 'completed'].includes(status)
+}
+
+function summarizeAuthorStoreProducts(products) {
+  return {
+    total_products: products.length,
+    pdf_count: products.filter((product) => product.product_type === 'pdf').length,
+    book_count: products.filter((product) => product.product_type === 'book').length,
+    active_products: products.filter((product) => product.status === 'active').length,
+    hidden_products: products.filter((product) => product.status === 'hidden').length,
+    draft_products: products.filter((product) => product.status === 'draft').length,
+  }
+}
+
+function summarizeAuthorStoreOrders(orders) {
+  const paidOrders = orders.filter(isPaidAuthorStoreOrder)
+
+  return {
+    total_orders: orders.length,
+    paid_orders: paidOrders.length,
+    gross_sales_usd: Number(paidOrders.reduce((sum, order) => sum + Number(order.product_subtotal_usd || order.total_amount_usd || order.total_usd || 0), 0).toFixed(2)),
+    author_income_usd: Number(paidOrders.reduce((sum, order) => sum + Number(order.author_income_usd || 0), 0).toFixed(2)),
+  }
+}
+
+function buildAdminAuthorStore(authorPage, user, products, orders) {
+  return {
+    author_page: {
+      id: authorPage.id,
+      user_id: authorPage.user_id,
+      page_name: authorPage.page_name || '',
+      page_username: authorPage.page_username || '',
+      status: authorPage.status || '',
+      avatar_url: authorPage.avatar_url || authorPage.profile_image_url || authorPage.logo_url || '',
+      telegram_chat_id: authorPage.telegram_chat_id || '',
+      telegram_chat_title: authorPage.telegram_chat_title || '',
+      created_at: authorPage.created_at,
+      updated_at: authorPage.updated_at,
+    },
+    author_user: user || null,
+    ...summarizeAuthorStoreProducts(products),
+    ...summarizeAuthorStoreOrders(orders),
+  }
+}
+
+export async function getAdminAuthorStoreStores(req, res) {
+  try {
+    const page = Math.max(Number(req.query.page || 1), 1)
+    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 100)
+    const q = String(req.query.q || '').trim().toLowerCase()
+
+    const { data: authorPages, error: authorPagesError } = await supabase
+      .from('author_pages')
+      .select('*')
+      .order('updated_at', { ascending: false })
+      .limit(1000)
+
+    if (authorPagesError) throw authorPagesError
+
+    const authorPageIds = [...new Set((authorPages || []).map((item) => item.id).filter(Boolean))]
+    const userIds = [...new Set((authorPages || []).map((item) => item.user_id).filter(Boolean))]
+
+    const { data: products, error: productsError } = authorPageIds.length
+      ? await supabase.from('author_store_products').select('*').in('author_page_id', authorPageIds).order('created_at', { ascending: false }).limit(10000)
+      : { data: [], error: null }
+
+    if (productsError) throw productsError
+
+    const { data: orders, error: ordersError } = authorPageIds.length
+      ? await supabase.from('author_store_orders').select('*').in('author_page_id', authorPageIds).order('created_at', { ascending: false }).limit(10000)
+      : { data: [], error: null }
+
+    if (ordersError) throw ordersError
+
+    const { data: users, error: usersError } = userIds.length
+      ? await supabase.from('users').select('id, name, username, email').in('id', userIds)
+      : { data: [], error: null }
+
+    if (usersError) throw usersError
+
+    const userMap = new Map((users || []).map((user) => [String(user.id), user]))
+    const productsByPage = new Map()
+    const ordersByPage = new Map()
+
+    for (const product of products || []) {
+      const key = String(product.author_page_id)
+      productsByPage.set(key, [...(productsByPage.get(key) || []), product])
+    }
+
+    for (const order of orders || []) {
+      const key = String(order.author_page_id)
+      ordersByPage.set(key, [...(ordersByPage.get(key) || []), order])
+    }
+
+    const stores = (authorPages || []).map((authorPage) => {
+      const key = String(authorPage.id)
+      return buildAdminAuthorStore(
+        authorPage,
+        userMap.get(String(authorPage.user_id)) || null,
+        productsByPage.get(key) || [],
+        ordersByPage.get(key) || []
+      )
+    })
+
+    const filteredStores = q
+      ? stores.filter((store) => {
+          const text = [
+            store.author_page.id,
+            store.author_page.page_name,
+            store.author_page.page_username,
+            store.author_page.status,
+            store.author_user?.name,
+            store.author_user?.username,
+            store.author_user?.email,
+          ].filter(Boolean).join(' ').toLowerCase()
+
+          return text.includes(q)
+        })
+      : stores
+
+    const total = filteredStores.length
+    const from = (page - 1) * limit
+    const to = from + limit
+    const pagedStores = filteredStores.slice(from, to)
+
+    return res.status(200).json({
+      ok: true,
+      stores: pagedStores,
+      page,
+      limit,
+      total,
+      shown: pagedStores.length,
+      total_pages: Math.max(Math.ceil(total / limit), 1),
+      has_next: to < total,
+      has_prev: page > 1,
+    })
+  } catch (error) {
+    console.error('GET ADMIN AUTHOR STORES ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to load author stores',
+    })
+  }
+}
+
+export async function getAdminAuthorStoreStoreDetails(req, res) {
+  try {
+    const authorPageId = req.params.authorPageId
+
+    if (!authorPageId) {
+      return res.status(400).json({ ok: false, message: 'Author Page ID is required' })
+    }
+
+    const { data: authorPage, error: authorPageError } = await supabase
+      .from('author_pages')
+      .select('*')
+      .eq('id', authorPageId)
+      .maybeSingle()
+
+    if (authorPageError) throw authorPageError
+
+    if (!authorPage) {
+      return res.status(404).json({ ok: false, message: 'Author Page not found' })
+    }
+
+    const { data: user, error: userError } = authorPage.user_id
+      ? await supabase.from('users').select('id, name, username, email').eq('id', authorPage.user_id).maybeSingle()
+      : { data: null, error: null }
+
+    if (userError) throw userError
+
+    const { data: products, error: productsError } = await supabase
+      .from('author_store_products')
+      .select('*')
+      .eq('author_page_id', authorPageId)
+      .order('created_at', { ascending: false })
+
+    if (productsError) throw productsError
+
+    const { data: orders, error: ordersError } = await supabase
+      .from('author_store_orders')
+      .select('*')
+      .eq('author_page_id', authorPageId)
+      .order('created_at', { ascending: false })
+      .limit(1000)
+
+    if (ordersError) throw ordersError
+
+    return res.status(200).json({
+      ok: true,
+      store: buildAdminAuthorStore(authorPage, user || null, products || [], orders || []),
+      products: (products || []).map(publicProduct),
+      orders: orders || [],
+    })
+  } catch (error) {
+    console.error('GET ADMIN AUTHOR STORE DETAILS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to load author store details',
+    })
+  }
+}
+
 async function getMyAuthorPage(userId) {
   const { data, error } = await supabase
     .from('author_pages')
