@@ -297,6 +297,95 @@ export async function getTopAuthorPages(req, res) {
   }
 }
 
+export async function getAuthorPageFollowers(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const pageUsername = normalizePageUsername(req.params.pageUsername)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!pageUsername) {
+      return res.status(400).json({ ok: false, message: 'Page username is required' })
+    }
+
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('id, user_id, page_name, page_username')
+      .eq('page_username', pageUsername)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (pageError) throw pageError
+
+    if (!authorPage) {
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
+    }
+
+    if (String(authorPage.user_id) !== String(userId)) {
+      return res.status(403).json({
+        ok: false,
+        message: 'Only page owner can view followers',
+      })
+    }
+
+    const { data: followRows, error: followError } = await supabase
+      .from('author_page_follows')
+      .select('follower_user_id, created_at')
+      .eq('author_page_id', authorPage.id)
+      .order('created_at', { ascending: false })
+
+    if (followError) throw followError
+
+    const followerIds = [...new Set((followRows || []).map((item) => item.follower_user_id).filter(Boolean))]
+
+    if (!followerIds.length) {
+      return res.status(200).json({
+        ok: true,
+        followers: [],
+      })
+    }
+
+    const { data: users, error: usersError } = await supabase
+      .from('users')
+      .select('id, name, username, avatar_url')
+      .in('id', followerIds)
+
+    if (usersError) throw usersError
+
+    const usersById = new Map((users || []).map((user) => [user.id, user]))
+
+    const followers = (followRows || [])
+      .map((item) => {
+        const user = usersById.get(item.follower_user_id)
+
+        if (!user) return null
+
+        return {
+          id: user.id,
+          name: user.name || 'Reader',
+          username: user.username || '',
+          avatar_url: user.avatar_url || '',
+          followed_at: item.created_at,
+        }
+      })
+      .filter(Boolean)
+
+    return res.status(200).json({
+      ok: true,
+      followers,
+    })
+  } catch (error) {
+    console.error('GET AUTHOR PAGE FOLLOWERS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load followers',
+      error: error.message,
+    })
+  }
+}
+
 export async function followAuthorPage(req, res) {
   try {
     const userId = req.user?.user_id
