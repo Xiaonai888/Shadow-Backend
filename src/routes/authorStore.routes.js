@@ -31,6 +31,8 @@ getPublicAuthorStoreProducts,
   createMyAuthorStoreTelegramConnectLink,
   updateAdminAuthorStoreWithdrawalStatus,
   markMyAuthorStoreOrderPreparing,
+  getAdminAuthorStoreStores,
+  getAdminAuthorStoreStoreDetails,
 } from '../controllers/authorStore.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
@@ -68,6 +70,8 @@ router.put('/me/products/:productId', requireUser, updateMyAuthorStoreProduct)
 router.delete('/me/products/:productId', requireUser, deleteMyAuthorStoreProduct)
 router.get('/page/:pageUsername/products', getPublicAuthorStoreProducts)
 router.post('/admin/orders/:orderId/resend-telegram', requireAdmin, resendAdminAuthorStoreOrderTelegram)
+router.get('/admin/stores', requireAdmin, getAdminAuthorStoreStores)
+router.get('/admin/stores/:authorPageId', requireAdmin, getAdminAuthorStoreStoreDetails)
 
 
 export default router
