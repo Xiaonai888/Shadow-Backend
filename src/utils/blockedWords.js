@@ -1,5 +1,22 @@
 import { supabase } from '../config/supabase.js'
 
+const ADULT_CATEGORY_KEYS = [
+  'adult',
+  'sexual',
+  'sex',
+  'porn',
+  'nsfw',
+  'erotic',
+  'obscene',
+  'profanity',
+  'vulgar',
+  'explicit',
+  'អាសអាភាស',
+  'ផ្លូវភេទ',
+  'កាម',
+  'ពាក្យជេរ',
+]
+
 const SAFE_KHMER_CONTEXT_PHRASES = [
   'ក្តោបក្តាប់',
   'ក្តោបក្តាប់ទ្រព្យសម្បត្តិ',
@@ -21,39 +38,16 @@ const SAFE_KHMER_CONTEXT_PHRASES = [
   'តួអង្គ',
 ]
 
-const FICTION_CONTEXT_HINTS = [
-  'រឿង',
-  'ប្រលោមលោក',
-  'សាច់រឿង',
-  'តួអង្គ',
-  'ភាគ',
-  'ជំពូក',
-  'ម៉ាហ្វៀ',
-  'ត្រកូល',
-  'អាណាចក្រ',
-  'អ្នកប្រុស',
-  'នាង',
-  'គេ',
-  'លោក',
-]
-
-const DIRECT_THREAT_HINTS = [
-  'ខ្ញុំនឹង',
-  'យើងនឹង',
-  'អញនឹង',
-  'ទៅសម្លាប់',
-  'សម្លាប់អ្នក',
-  'បាញ់អ្នក',
-  'គំរាម',
-  'ធ្វើឱ្យអ្នក',
-]
-
 function cleanText(value) {
   return String(value || '').trim()
 }
 
 function normalizeContent(value) {
   return cleanText(value).normalize('NFC').toLowerCase().replace(/\s+/g, ' ')
+}
+
+function normalizeCategory(value) {
+  return normalizeContent(value).replace(/[_-]+/g, ' ')
 }
 
 function hasKhmer(value) {
@@ -64,29 +58,17 @@ function khmerBaseLength(value) {
   return (String(value || '').match(/[\u1780-\u17A2\u17A5-\u17B3]/g) || []).length
 }
 
-function normalizeCategory(value) {
-  return normalizeContent(value).replace(/[_-]+/g, ' ')
-}
-
-function isViolenceCategory(item) {
+function shouldCheckCategory(item) {
   const category = normalizeCategory(item?.category)
-  return category.includes('violence') || category.includes('violent') || category.includes('weapon')
+  return ADULT_CATEGORY_KEYS.some((key) => category.includes(normalizeContent(key)))
 }
 
-function isDirectThreatContext(context) {
-  return DIRECT_THREAT_HINTS.some((phrase) => context.includes(normalizeContent(phrase)))
-}
-
-function isFictionContext(context) {
-  return FICTION_CONTEXT_HINTS.some((phrase) => context.includes(normalizeContent(phrase)))
+function shouldSkipShortKhmerWord(word) {
+  return hasKhmer(word) && khmerBaseLength(word) < 3
 }
 
 function isSafeKhmerContext(context) {
   return SAFE_KHMER_CONTEXT_PHRASES.some((phrase) => context.includes(normalizeContent(phrase)))
-}
-
-function shouldSkipShortKhmerWord(word) {
-  return hasKhmer(word) && khmerBaseLength(word) < 2
 }
 
 function escapeRegExp(value) {
@@ -94,19 +76,18 @@ function escapeRegExp(value) {
 }
 
 function getContext(text, start, end) {
-  const from = Math.max(0, start - 70)
-  const to = Math.min(text.length, end + 70)
+  const from = Math.max(0, start - 80)
+  const to = Math.min(text.length, end + 80)
   return text.slice(from, to).trim()
 }
 
-function shouldIgnoreMatch(context, word, item) {
+function shouldIgnoreMatch(context, word) {
   if (shouldSkipShortKhmerWord(word)) return true
   if (hasKhmer(word) && isSafeKhmerContext(context)) return true
-  if (isViolenceCategory(item) && isFictionContext(context) && !isDirectThreatContext(context)) return true
   return false
 }
 
-function findKhmerMatches(text, word, item) {
+function findKhmerMatches(text, word) {
   const matches = []
   let index = 0
 
@@ -117,7 +98,7 @@ function findKhmerMatches(text, word, item) {
     const endIndex = foundIndex + word.length
     const context = getContext(text, foundIndex, endIndex)
 
-    if (!shouldIgnoreMatch(context, word, item)) {
+    if (!shouldIgnoreMatch(context, word)) {
       matches.push(context)
     }
 
@@ -127,7 +108,7 @@ function findKhmerMatches(text, word, item) {
   return matches
 }
 
-function findLatinMatches(text, word, item) {
+function findLatinMatches(text, word) {
   const matches = []
   const pattern = new RegExp(`(^|[^a-z0-9])${escapeRegExp(word)}(?=$|[^a-z0-9])`, 'gi')
 
@@ -137,7 +118,7 @@ function findLatinMatches(text, word, item) {
     const end = start + word.length
     const context = getContext(text, start, end)
 
-    if (!shouldIgnoreMatch(context, word, item)) {
+    if (!shouldIgnoreMatch(context, word)) {
       matches.push(context)
     }
   }
@@ -145,10 +126,10 @@ function findLatinMatches(text, word, item) {
   return matches
 }
 
-function findMatchesWithContext(text, word, item) {
+function findMatchesWithContext(text, word) {
   if (!text || !word) return []
-  if (hasKhmer(word)) return findKhmerMatches(text, word, item)
-  return findLatinMatches(text, word, item)
+  if (hasKhmer(word)) return findKhmerMatches(text, word)
+  return findLatinMatches(text, word)
 }
 
 export async function findBlockedWordsInContent(fields = []) {
@@ -169,9 +150,10 @@ export async function findBlockedWordsInContent(fields = []) {
   if (error) throw error
 
   return (data || [])
+    .filter(shouldCheckCategory)
     .map((item) => {
       const blockedWord = normalizeContent(item.normalized_word || item.word)
-      const contexts = findMatchesWithContext(text, blockedWord, item)
+      const contexts = findMatchesWithContext(text, blockedWord)
 
       return {
         id: item.id,
@@ -189,7 +171,7 @@ export function blockedWordsWarningPayload(matches = []) {
   return {
     ok: false,
     code: 'BLOCKED_WORDS_FOUND',
-    message: 'Your content contains restricted words that may be related to adult, violent, or unsafe content. Please remove or edit these words before publishing.',
+    message: 'Your content contains restricted adult or profane words. Please remove or edit these words before publishing.',
     blocked_words_found: matches,
   }
 }
