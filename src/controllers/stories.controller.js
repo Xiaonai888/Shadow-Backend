@@ -596,13 +596,12 @@ export async function createEpisode(req, res) {
       })
     }
 
-    if (title.length < 2) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Episode title must be at least 2 characters',
-      })
-    }
-
+    if (status !== 'draft' && title.length < 2) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Episode title must be at least 2 characters',
+  })
+}
     if (!content.trim()) {
       return res.status(400).json({
         ok: false,
@@ -826,12 +825,12 @@ export async function updateEpisode(req, res) {
       })
     }
 
-    if (title.length < 2) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Episode title must be at least 2 characters',
-      })
-    }
+    if (status !== 'draft' && title.length < 2) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Episode title must be at least 2 characters',
+  })
+}
 
     if (!content.trim()) {
       return res.status(400).json({
