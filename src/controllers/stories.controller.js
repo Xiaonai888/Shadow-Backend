@@ -602,12 +602,13 @@ export async function createEpisode(req, res) {
     message: 'Episode title must be at least 2 characters',
   })
 }
-    if (!content.trim()) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Episode content is required',
-      })
-    }
+    
+  if (status !== 'draft' && !content.trim()) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Episode content is required',
+  })
+}
 
     if (status !== 'draft' && characterCount < MIN_EPISODE_CHARACTERS) {
   return res.status(400).json({
