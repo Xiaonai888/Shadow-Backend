@@ -948,6 +948,13 @@ export async function updateEpisodeStatus(req, res) {
     }
 
     if (['published', 'scheduled'].includes(status)) {
+  if (Number(episode.character_count || 0) < MIN_EPISODE_CHARACTERS) {
+    return res.status(400).json({
+      ok: false,
+      message: `Episode needs at least ${MIN_EPISODE_CHARACTERS} characters before publishing`,
+    })
+  }
+
   const blockedMatches = await findBlockedWordsInContent([
     { label: 'Story Title', value: story.title },
     { label: 'Story Description', value: story.description },
