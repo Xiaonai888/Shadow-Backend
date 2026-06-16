@@ -37,6 +37,7 @@ import adminReaderMailsRoutes from './src/routes/adminReaderMails.routes.js'
 import authorMediaRoutes from './src/routes/authorMedia.routes.js'
 import authorStoreRoutes from './src/routes/authorStore.routes.js'
 import adminIncomeRoutes from './src/routes/adminIncome.routes.js'
+import visitorAnalyticsRoutes from './src/routes/visitorAnalytics.routes.js'
 
 
 
@@ -115,6 +116,7 @@ app.use('/api/admin/mails', adminReaderMailsRoutes)
 app.use('/api/authors/media', authorMediaRoutes)
 app.use('/api/author-store', authorStoreRoutes)
 app.use('/api/admin/income', adminIncomeRoutes)
+app.use('/api/visitors', visitorAnalyticsRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
