@@ -12,6 +12,7 @@ import {
   updateEpisode,
   updateEpisodeStatus,
   updateStory,
+  moveEpisodeToTrash,
 } from '../controllers/stories.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
@@ -30,5 +31,6 @@ router.get('/:storyId/episodes', requireUser, getStoryEpisodes)
 router.get('/:storyId/episodes/:episodeId', requireUser, getEpisodeById)
 router.put('/:storyId/episodes/:episodeId', requireUser, updateEpisode)
 router.patch('/:storyId/episodes/:episodeId/status', requireUser, updateEpisodeStatus)
+router.delete('/:storyId/episodes/:episodeId', requireUser, moveEpisodeToTrash)
 
 export default router
