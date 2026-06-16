@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import { supabase } from '../config/supabase.js'
 
 function toPositiveInt(value, fallback, max) {
@@ -9,6 +10,15 @@ function toPositiveInt(value, fallback, max) {
 function getMonthStartIso() {
   const now = new Date()
   return new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
+}
+
+function getDayStartIso() {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()
+}
+
+function getActiveStartIso() {
+  return new Date(Date.now() - 10 * 60 * 1000).toISOString()
 }
 
 function cleanSearch(value) {
@@ -67,6 +77,31 @@ function formatAuthor(page, userMap, storyCountMap) {
     status: page.status || (user.is_active === false ? 'inactive' : 'active'),
     joined_at: page.created_at,
     updated_at: page.updated_at,
+  }
+}
+
+function formatVisitor(visitor) {
+  return {
+    id: visitor.id,
+    visitor_id: visitor.visitor_id || '',
+    session_id: visitor.session_id || '',
+    ip_address: visitor.ip_address || '',
+    device_type: visitor.device_type || 'Unknown',
+    browser: visitor.browser || 'Unknown',
+    operating_system: visitor.operating_system || 'Unknown',
+    country_code: visitor.country_code || '',
+    cf_ray: visitor.cf_ray || '',
+    is_suspected_bot: Boolean(visitor.is_suspected_bot),
+    bot_reason: visitor.bot_reason || '',
+    page_views: Number(visitor.page_views || 0),
+    first_path: visitor.first_path || '/',
+    last_path: visitor.last_path || '/',
+    referrer: visitor.referrer || '',
+    user_agent: visitor.user_agent || '',
+    first_seen_at: visitor.first_seen_at,
+    last_seen_at: visitor.last_seen_at,
+    created_at: visitor.created_at,
+    updated_at: visitor.updated_at,
   }
 }
 
@@ -195,5 +230,107 @@ export async function getAdminCommunityAuthors(req, res) {
   } catch (error) {
     console.error('ADMIN COMMUNITY AUTHORS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load authors', error: error.message })
+  }
+}
+
+export async function getAdminCommunityVisitorOverview(req, res) {
+  try {
+    const { data: overviewRows, error: overviewError } = await supabase.rpc('get_anonymous_visitor_overview')
+
+    if (overviewError) throw overviewError
+
+    const overview = Array.isArray(overviewRows) ? overviewRows[0] || {} : overviewRows || {}
+
+    const { count: suspectedBots, error: botCountError } = await supabase
+      .from('anonymous_visitor_sessions')
+      .select('id', { count: 'exact', head: true })
+      .eq('is_suspected_bot', true)
+
+    if (botCountError) throw botCountError
+
+    return res.status(200).json({
+      ok: true,
+      summary: {
+        total_unique_visitors: Number(overview.total_unique_visitors || 0),
+        total_sessions: Number(overview.total_sessions || 0),
+        visitors_today: Number(overview.visitors_today || 0),
+        visitors_this_month: Number(overview.visitors_this_month || 0),
+        active_last_10_minutes: Number(overview.active_last_10_minutes || 0),
+        total_page_views: Number(overview.total_page_views || 0),
+        suspected_bots: suspectedBots || 0,
+      },
+    })
+  } catch (error) {
+    console.error('ADMIN COMMUNITY VISITOR OVERVIEW ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load visitor overview',
+      error: error.message,
+    })
+  }
+}
+
+export async function getAdminCommunityVisitors(req, res) {
+  try {
+    const page = toPositiveInt(req.query.page, 1, 100000)
+    const limit = toPositiveInt(req.query.limit, 20, 100)
+    const q = cleanSearch(req.query.q)
+    const filter = String(req.query.filter || 'all').trim().toLowerCase()
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    let query = supabase
+      .from('anonymous_visitor_sessions')
+      .select(
+        'id, visitor_id, session_id, ip_address, device_type, browser, operating_system, country_code, cf_ray, is_suspected_bot, bot_reason, page_views, first_path, last_path, referrer, user_agent, first_seen_at, last_seen_at, created_at, updated_at',
+        { count: 'exact' }
+      )
+      .order('last_seen_at', { ascending: false })
+      .range(from, to)
+
+    if (q) {
+      if (isIP(q)) {
+        query = query.eq('ip_address', q)
+      } else {
+        query = query.or(
+          `visitor_id.ilike.%${q}%,session_id.ilike.%${q}%,device_type.ilike.%${q}%,browser.ilike.%${q}%,operating_system.ilike.%${q}%,country_code.ilike.%${q}%,cf_ray.ilike.%${q}%`
+        )
+      }
+    }
+
+    if (filter === 'active') {
+      query = query.gte('last_seen_at', getActiveStartIso())
+    } else if (filter === 'today') {
+      query = query.gte('first_seen_at', getDayStartIso())
+    } else if (filter === 'bots') {
+      query = query.eq('is_suspected_bot', true)
+    } else if (filter === 'humans') {
+      query = query.eq('is_suspected_bot', false)
+    }
+
+    const { data, error, count } = await query
+
+    if (error) throw error
+
+    const total = count || 0
+    const totalPages = Math.max(1, Math.ceil(total / limit))
+
+    return res.status(200).json({
+      ok: true,
+      visitors: (data || []).map(formatVisitor),
+      page,
+      limit,
+      total,
+      total_pages: totalPages,
+      has_next: page < totalPages,
+      has_prev: page > 1,
+    })
+  } catch (error) {
+    console.error('ADMIN COMMUNITY VISITORS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load visitors',
+      error: error.message,
+    })
   }
 }
