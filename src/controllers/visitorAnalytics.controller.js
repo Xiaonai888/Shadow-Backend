@@ -69,18 +69,35 @@ function isRateLimited(key) {
   return current.count > maxRequests
 }
 
+function debugErrorPayload(error) {
+  return {
+    details: cleanText(error?.message, 1000),
+    code: cleanText(error?.code, 120),
+    hint: cleanText(error?.hint, 500),
+  }
+}
+
 export async function trackAnonymousVisitor(req, res) {
+  const debugEnabled = req.body?.debug === true
+
   try {
     const visitorId = cleanText(req.body?.visitor_id, 160)
     const sessionId = cleanText(req.body?.session_id, 160)
 
     if (!/^[A-Za-z0-9._:-]{8,160}$/.test(visitorId) || !/^[A-Za-z0-9._:-]{8,160}$/.test(sessionId)) {
-      return res.status(400).json({ ok: false, message: 'Invalid visitor or session ID' })
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid visitor or session ID',
+      })
     }
 
     const ipAddress = getClientIp(req)
+
     if (isRateLimited(ipAddress || visitorId)) {
-      return res.status(429).json({ ok: false, message: 'Too many tracking requests' })
+      return res.status(429).json({
+        ok: false,
+        message: 'Too many tracking requests',
+      })
     }
 
     const now = new Date().toISOString()
@@ -142,9 +159,18 @@ export async function trackAnonymousVisitor(req, res) {
       if (error) throw error
     }
 
-    return res.status(200).json({ ok: true })
+    return res.status(200).json({
+      ok: true,
+      visitor_id: visitorId,
+      session_id: sessionId,
+    })
   } catch (error) {
     console.error('VISITOR TRACKING ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to track visitor' })
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to track visitor',
+      ...(debugEnabled ? debugErrorPayload(error) : {}),
+    })
   }
 }
