@@ -1041,6 +1041,70 @@ export async function updateEpisodeStatus(req, res) {
   }
 }
 
+export async function moveEpisodeToTrash(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId, episodeId } = req.params
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const story = await getOwnedStory({ storyId, userId })
+
+    if (!story) {
+      return res.status(404).json({ ok: false, message: 'Story not found' })
+    }
+
+    const episode = await getOwnedEpisode({ storyId, episodeId, userId })
+
+    if (!episode) {
+      return res.status(404).json({ ok: false, message: 'Episode not found' })
+    }
+
+    if (episode.status === 'published') {
+      return res.status(400).json({
+        ok: false,
+        message: 'Published episodes must be moved to draft before delete',
+      })
+    }
+
+    const now = new Date().toISOString()
+    const deleteExpiresAt = addDays(new Date(), AUTHOR_TRASH_DAYS).toISOString()
+
+    const { data: deletedEpisode, error } = await supabase
+      .from('episodes')
+      .update({
+        deleted_at: now,
+        delete_expires_at: deleteExpiresAt,
+        updated_at: now,
+      })
+      .eq('id', episodeId)
+      .eq('story_id', storyId)
+      .eq('user_id', userId)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    const totalEpisodes = await updateStoryEpisodeCount(storyId)
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Episode moved to trash',
+      episode: publicEpisode(deletedEpisode),
+      total_episodes: totalEpisodes,
+    })
+  } catch (error) {
+    console.error('MOVE EPISODE TO TRASH ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to delete episode',
+      error: error.message,
+    })
+  }
+}
+
 export async function getStoryTrash(req, res) {
   try {
     const userId = req.user?.user_id
