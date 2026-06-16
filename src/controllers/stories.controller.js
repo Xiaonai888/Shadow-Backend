@@ -347,7 +347,10 @@ export async function createStory(req, res) {
     const description = cleanNullableText(req.body.description)
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
     const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
-    const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
+const landscapeThumbnailUrl = cleanNullableText(
+  req.body.landscape_thumbnail_url || req.body.landscapeThumbnailUrl
+)
+const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
     const slides = Array.isArray(req.body.slides) ? req.body.slides.slice(0, 5) : []
 
     const payloadError = validateStoryPayload({ title, storyLanguage, mainGenre, description })
@@ -372,6 +375,7 @@ export async function createStory(req, res) {
         description,
         is_adult: isAdult,
         cover_url: coverUrl,
+        landscape_thumbnail_url: landscapeThumbnailUrl,
         update_days: updateDays,
         status: 'draft',
       })
@@ -427,7 +431,10 @@ export async function updateStory(req, res) {
     const description = cleanNullableText(req.body.description)
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
     const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
-    const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
+const landscapeThumbnailUrl = cleanNullableText(
+  req.body.landscape_thumbnail_url || req.body.landscapeThumbnailUrl
+)
+const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
     const slides = Array.isArray(req.body.slides) ? req.body.slides.slice(0, 5) : []
 
     const payloadError = validateStoryPayload({ title, storyLanguage, mainGenre, description })
@@ -450,6 +457,7 @@ export async function updateStory(req, res) {
         description,
         is_adult: isAdult,
         cover_url: coverUrl,
+        landscape_thumbnail_url: landscapeThumbnailUrl,
         update_days: updateDays,
         updated_at: new Date().toISOString(),
       })
