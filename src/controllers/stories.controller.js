@@ -840,12 +840,12 @@ export async function updateEpisode(req, res) {
       })
     }
 
-    if (characterCount < MIN_EPISODE_CHARACTERS) {
-      return res.status(400).json({
-        ok: false,
-        message: `Episode needs at least ${MIN_EPISODE_CHARACTERS} characters`,
-      })
-    }
+    if (status !== 'draft' && characterCount < MIN_EPISODE_CHARACTERS) {
+  return res.status(400).json({
+    ok: false,
+    message: `Episode needs at least ${MIN_EPISODE_CHARACTERS} characters`,
+  })
+}
 
     if (characterCount > MAX_EPISODE_CHARACTERS) {
       return res.status(400).json({
