@@ -177,9 +177,10 @@ function publicStoryListItem(story, accessSummary = null) {
 
   return {
     id: story.id,
-    author_id: story.author_id,
-    user_id: story.user_id,
-    title: story.title,
+author_id: story.author_id,
+user_id: story.user_id,
+author_page: publicAuthorPage(story.author_page),
+title: story.title,
     story_language: story.story_language,
     main_genre: story.main_genre,
     story_status: story.story_status || 'New',
