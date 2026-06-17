@@ -93,6 +93,13 @@ function formatVisitor(visitor) {
     cf_ray: visitor.cf_ray || '',
     is_suspected_bot: Boolean(visitor.is_suspected_bot),
     bot_reason: visitor.bot_reason || '',
+    bot_score: Number(visitor.bot_score || 0),
+    risk_level: visitor.risk_level || 'normal',
+    bot_signals: Array.isArray(visitor.bot_signals) ? visitor.bot_signals : [],
+    webdriver_detected: Boolean(visitor.webdriver_detected),
+    event_count: Number(visitor.event_count || 0),
+    rapid_repeat_count: Number(visitor.rapid_repeat_count || 0),
+    last_event_at: visitor.last_event_at,
     page_views: Number(visitor.page_views || 0),
     first_path: visitor.first_path || '/',
     last_path: visitor.last_path || '/',
@@ -103,6 +110,16 @@ function formatVisitor(visitor) {
     created_at: visitor.created_at,
     updated_at: visitor.updated_at,
   }
+}
+
+async function countVisitorRows(column, value) {
+  const { count, error } = await supabase
+    .from('anonymous_visitor_sessions')
+    .select('id', { count: 'exact', head: true })
+    .eq(column, value)
+
+  if (error) throw error
+  return count || 0
 }
 
 export async function getAdminCommunityOverview(req, res) {
@@ -241,12 +258,21 @@ export async function getAdminCommunityVisitorOverview(req, res) {
 
     const overview = Array.isArray(overviewRows) ? overviewRows[0] || {} : overviewRows || {}
 
-    const { count: suspectedBots, error: botCountError } = await supabase
-      .from('anonymous_visitor_sessions')
-      .select('id', { count: 'exact', head: true })
-      .eq('is_suspected_bot', true)
-
-    if (botCountError) throw botCountError
+    const [
+      suspectedBots,
+      normalRisk,
+      lowRisk,
+      suspiciousRisk,
+      likelyBotRisk,
+      highRisk,
+    ] = await Promise.all([
+      countVisitorRows('is_suspected_bot', true),
+      countVisitorRows('risk_level', 'normal'),
+      countVisitorRows('risk_level', 'low_risk'),
+      countVisitorRows('risk_level', 'suspicious'),
+      countVisitorRows('risk_level', 'likely_bot'),
+      countVisitorRows('risk_level', 'high_risk'),
+    ])
 
     return res.status(200).json({
       ok: true,
@@ -257,7 +283,12 @@ export async function getAdminCommunityVisitorOverview(req, res) {
         visitors_this_month: Number(overview.visitors_this_month || 0),
         active_last_10_minutes: Number(overview.active_last_10_minutes || 0),
         total_page_views: Number(overview.total_page_views || 0),
-        suspected_bots: suspectedBots || 0,
+        suspected_bots: suspectedBots,
+        normal_risk: normalRisk,
+        low_risk: lowRisk,
+        suspicious_risk: suspiciousRisk,
+        likely_bot_risk: likelyBotRisk,
+        high_risk: highRisk,
       },
     })
   } catch (error) {
@@ -282,7 +313,7 @@ export async function getAdminCommunityVisitors(req, res) {
     let query = supabase
       .from('anonymous_visitor_sessions')
       .select(
-        'id, visitor_id, session_id, ip_address, device_type, browser, operating_system, country_code, cf_ray, is_suspected_bot, bot_reason, page_views, first_path, last_path, referrer, user_agent, first_seen_at, last_seen_at, created_at, updated_at',
+        'id, visitor_id, session_id, ip_address, device_type, browser, operating_system, country_code, cf_ray, is_suspected_bot, bot_reason, bot_score, risk_level, bot_signals, webdriver_detected, event_count, rapid_repeat_count, last_event_at, page_views, first_path, last_path, referrer, user_agent, first_seen_at, last_seen_at, created_at, updated_at',
         { count: 'exact' }
       )
       .order('last_seen_at', { ascending: false })
@@ -293,7 +324,7 @@ export async function getAdminCommunityVisitors(req, res) {
         query = query.eq('ip_address', q)
       } else {
         query = query.or(
-          `visitor_id.ilike.%${q}%,session_id.ilike.%${q}%,device_type.ilike.%${q}%,browser.ilike.%${q}%,operating_system.ilike.%${q}%,country_code.ilike.%${q}%,cf_ray.ilike.%${q}%`
+          `visitor_id.ilike.%${q}%,session_id.ilike.%${q}%,device_type.ilike.%${q}%,browser.ilike.%${q}%,operating_system.ilike.%${q}%,country_code.ilike.%${q}%,cf_ray.ilike.%${q}%,risk_level.ilike.%${q}%,bot_reason.ilike.%${q}%`
         )
       }
     }
@@ -306,6 +337,16 @@ export async function getAdminCommunityVisitors(req, res) {
       query = query.eq('is_suspected_bot', true)
     } else if (filter === 'humans') {
       query = query.eq('is_suspected_bot', false)
+    } else if (filter === 'normal') {
+      query = query.eq('risk_level', 'normal')
+    } else if (filter === 'low_risk') {
+      query = query.eq('risk_level', 'low_risk')
+    } else if (filter === 'suspicious') {
+      query = query.eq('risk_level', 'suspicious')
+    } else if (filter === 'likely_bot') {
+      query = query.eq('risk_level', 'likely_bot')
+    } else if (filter === 'high_risk') {
+      query = query.eq('risk_level', 'high_risk')
     }
 
     const { data, error, count } = await query
