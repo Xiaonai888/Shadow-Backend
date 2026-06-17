@@ -51,8 +51,9 @@ function publicStory(story, slides = [], authorPage = null, rankByViews = null) 
   return {
     id: story.id,
     author_id: story.author_id,
-    user_id: story.user_id,
-    title: story.title,
+user_id: story.user_id,
+author_page: publicAuthorPage(story.author_page),
+title: story.title,
     story_language: story.story_language,
     main_genre: story.main_genre,
     story_status: story.story_status || 'New',
@@ -694,13 +695,45 @@ export async function getPublicStories(req, res) {
 
     const { data, error } = await query
 
-    if (error) throw error
+if (error) throw error
 
-   const accessSummaries = await getStoryAccessSummaries((data || []).map((story) => story.id))
+const authorIds = [
+  ...new Set((data || []).map((story) => story.author_id).filter(Boolean)),
+]
+
+let authorPages = []
+
+if (authorIds.length) {
+  const { data: authorPageRows, error: authorPagesError } = await supabase
+    .from('author_pages')
+    .select('*')
+    .in('id', authorIds)
+
+  if (authorPagesError) throw authorPagesError
+
+  authorPages = authorPageRows || []
+}
+
+const authorPageMap = new Map(
+  authorPages.map((page) => [String(page.id), page])
+)
+
+const accessSummaries = await getStoryAccessSummaries(
+  (data || []).map((story) => story.id)
+)
 
 return res.status(200).json({
   ok: true,
-  stories: (data || []).map((story) => publicStoryListItem(story, accessSummaries.get(story.id))),
+  stories: (data || []).map((story) =>
+    publicStoryListItem(
+      {
+        ...story,
+        author_page:
+          authorPageMap.get(String(story.author_id)) || null,
+      },
+      accessSummaries.get(story.id)
+    )
+  ),
 })
   } catch (error) {
     console.error('GET PUBLIC STORIES ERROR:', error)
