@@ -6,21 +6,30 @@ function cleanText(value, maxLength = 500) {
   return String(value || '').trim().slice(0, maxLength)
 }
 
-function normalizeIp(value) {
-  const raw = cleanText(value, 100)
-    .split(',')[0]
+function normalizeSingleIp(value) {
+  const raw = cleanText(value, 150)
     .trim()
     .replace(/^::ffff:/, '')
 
   return isIP(raw) ? raw : ''
 }
 
+function getForwardedIp(value) {
+  const candidates = String(value || '')
+    .split(',')
+    .map((item) => normalizeSingleIp(item))
+    .filter(Boolean)
+
+  // Use the last valid forwarded address. This is safer when the proxy
+  // appends its observed client address to an existing header.
+  return candidates.at(-1) || ''
+}
+
 function getClientIp(req) {
-  return normalizeIp(
-    req.headers['cf-connecting-ip']
-      || req.headers['x-forwarded-for']
-      || req.socket?.remoteAddress
-      || ''
+  return (
+    getForwardedIp(req.headers['x-forwarded-for'])
+    || normalizeSingleIp(req.socket?.remoteAddress)
+    || ''
   )
 }
 
@@ -63,12 +72,20 @@ function buildGuardIdentity(req) {
   const visitorId = getVisitorId(req)
   const ipAddress = getClientIp(req)
 
+  /*
+   * Identity priority:
+   * 1. Logged-in account: stable and not shared between users.
+   * 2. Anonymous IP: cannot be changed like a client-controlled visitor ID.
+   * 3. Visitor ID: fallback only when the proxy did not provide an IP.
+   *
+   * Visitor ID is still stored as metadata for investigation.
+   */
   const guardKey = accountId
     ? `account:${accountId}`
-    : visitorId
-      ? `visitor:${visitorId}`
-      : ipAddress
-        ? `ip:${ipAddress}`
+    : ipAddress
+      ? `ip:${ipAddress}`
+      : visitorId
+        ? `visitor:${visitorId}`
         : ''
 
   return {
