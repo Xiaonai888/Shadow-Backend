@@ -25,7 +25,8 @@ function publicAuthorPage(page) {
     avatar_url: page.avatar_url,
     cover_url: page.cover_url,
     slide_urls: Array.isArray(page.slide_urls) ? page.slide_urls : [],
-    status: page.status,
+profile_details: page.profile_details || {},
+status: page.status,
     total_stories: page.total_stories,
     total_followers: page.total_followers,
     created_at: page.created_at,
@@ -746,6 +747,12 @@ export async function updateMyAuthorPage(req, res) {
     const pageName = String(req.body.page_name || req.body.pageName || '').trim()
     const pageUsername = normalizePageUsername(req.body.page_username || req.body.pageUsername)
     const bio = String(req.body.bio || '').trim()
+    const profileDetails =
+    req.body.profile_details &&
+    typeof req.body.profile_details === 'object' &&
+    !Array.isArray(req.body.profile_details)
+    ? req.body.profile_details
+    : null
 
     if (!pageName || !pageUsername) {
       return res.status(400).json({ ok: false, message: 'Page name and page username are required' })
@@ -795,7 +802,11 @@ export async function updateMyAuthorPage(req, res) {
         page_username: pageUsername,
         page_slug: pageUsername,
         bio,
-        updated_at: new Date().toISOString(),
+        bio,
+...(profileDetails
+  ? { profile_details: { ...(currentPage.profile_details || {}), ...profileDetails } }
+  : {}),
+updated_at: new Date().toISOString(),
       })
       .eq('user_id', userId)
       .select()
