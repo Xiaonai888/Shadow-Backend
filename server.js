@@ -38,8 +38,7 @@ import authorMediaRoutes from './src/routes/authorMedia.routes.js'
 import authorStoreRoutes from './src/routes/authorStore.routes.js'
 import adminIncomeRoutes from './src/routes/adminIncome.routes.js'
 import visitorAnalyticsRoutes from './src/routes/visitorAnalytics.routes.js'
-
-
+import { createSpamGuard } from './src/middleware/spamGuard.middleware.js'
 
 dotenv.config()
 
@@ -69,7 +68,14 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Admin-Name', 'X-Admin-Actor', 'X-Admin-Id'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Admin-Name',
+    'X-Admin-Actor',
+    'X-Admin-Id',
+    'X-Shadow-Visitor-Id',
+  ],
 }
 
 app.use(cors(corsOptions))
@@ -78,15 +84,42 @@ app.options('*', cors(corsOptions))
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
+const visitorTrackingSpamGuard = createSpamGuard({
+  scope: 'visitor_tracking',
+  threshold: 60,
+  windowSeconds: 60,
+})
+
+const accountAccessSpamGuard = createSpamGuard({
+  scope: 'account_access',
+  threshold: 120,
+  windowSeconds: 60,
+})
+
+const readerActionSpamGuard = createSpamGuard({
+  scope: 'reader_actions',
+  threshold: 120,
+  windowSeconds: 60,
+})
+
+const paymentSpamGuard = createSpamGuard({
+  scope: 'payment_actions',
+  threshold: 30,
+  windowSeconds: 60,
+  skipPaths: [
+    '/api/purchase/aba/callback*',
+  ],
+})
+
 app.get('/', (req, res) => {
   res.status(200).json({ ok: true, message: 'Shadow Backend API is running' })
 })
 
 app.use('/health', healthRoutes)
-app.use('/api/auth', authRoutes)
+app.use('/api/auth', accountAccessSpamGuard, authRoutes)
 app.use('/api/slides', slidesRoutes)
 app.use('/api/books', booksRoutes)
-app.use('/api/users', usersRoutes)
+app.use('/api/users', accountAccessSpamGuard, usersRoutes)
 app.use('/api/authors', authorsRoutes)
 app.use('/api/stories', storiesRoutes)
 app.use('/api/story-media', storyMediaRoutes)
@@ -96,27 +129,27 @@ app.use('/api/admin/comments', adminCommentsRoutes)
 app.use('/api/admin/purchases', adminPurchasesRoutes)
 app.use('/api/admin/activity-logs', adminActivityRoutes)
 app.use('/api/genres', genresRoutes)
-app.use('/api/comments', commentsRoutes)
-app.use('/api/reactions', reactionsRoutes)
-app.use('/api/reader', libraryRoutes)
-app.use('/api/purchase', purchaseRoutes)
+app.use('/api/comments', readerActionSpamGuard, commentsRoutes)
+app.use('/api/reactions', readerActionSpamGuard, reactionsRoutes)
+app.use('/api/reader', readerActionSpamGuard, libraryRoutes)
+app.use('/api/purchase', paymentSpamGuard, purchaseRoutes)
 app.use('/api/telegram', telegramRoutes)
-app.use('/api/unlocks', unlocksRoutes)
-app.use('/api/shadow-mall', shadowMallProductsRoutes)
+app.use('/api/unlocks', paymentSpamGuard, unlocksRoutes)
+app.use('/api/shadow-mall', readerActionSpamGuard, shadowMallProductsRoutes)
 app.use('/api/admin/community', adminCommunityRoutes)
-app.use('/api/tasks', tasksRoutes)
-app.use('/api/notifications', notificationsRoutes)
+app.use('/api/tasks', readerActionSpamGuard, tasksRoutes)
+app.use('/api/notifications', readerActionSpamGuard, notificationsRoutes)
 app.use('/api/admin/notifications', adminNotificationsRoutes)
-app.use('/api/mails', readerMailsRoutes)
+app.use('/api/mails', readerActionSpamGuard, readerMailsRoutes)
 app.use('/api/admin/stories', adminStoriesRoutes)
 app.use('/api/admin/ranking', adminRankingRoutes)
 app.use('/api/advertisements', advertisementsRoutes)
 app.use('/api/admin/block-list', adminBlockListRoutes)
 app.use('/api/admin/mails', adminReaderMailsRoutes)
-app.use('/api/authors/media', authorMediaRoutes)
-app.use('/api/author-store', authorStoreRoutes)
+app.use('/api/authors/media', readerActionSpamGuard, authorMediaRoutes)
+app.use('/api/author-store', readerActionSpamGuard, authorStoreRoutes)
 app.use('/api/admin/income', adminIncomeRoutes)
-app.use('/api/visitors', visitorAnalyticsRoutes)
+app.use('/api/visitors', visitorTrackingSpamGuard, visitorAnalyticsRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
