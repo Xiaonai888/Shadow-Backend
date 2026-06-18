@@ -768,6 +768,7 @@ export async function getPublicShadowExclusiveStories(req, res) {
 
     if (genre) query = query.eq('main_genre', genre)
     if (language) query = query.eq('story_language', language)
+    if (storyStatus) query = query.ilike('story_status', storyStatus)
     if (storyStatus) query = query.eq('story_status', storyStatus)
     if (authorId) query = query.eq('author_id', authorId)
     query = applyStorySort(query, sort)
