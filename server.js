@@ -103,6 +103,14 @@ const readerActionSpamGuard = createSpamGuard({
   windowSeconds: 60,
 })
 
+const authorActionSpamGuard = (req, res, next) => {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    return readerActionSpamGuard(req, res, next)
+  }
+  return next()
+}
+
+
 const paymentSpamGuard = createSpamGuard({
   scope: 'payment_actions',
   threshold: 30,
@@ -122,6 +130,7 @@ app.use('/api/slides', slidesRoutes)
 app.use('/api/books', booksRoutes)
 app.use('/api/users', accountAccessSpamGuard, usersRoutes)
 app.use('/api/authors', authorsRoutes)
+app.use('/api/authors', authorActionSpamGuard, authorsRoutes)
 app.use('/api/stories', storiesRoutes)
 app.use('/api/story-media', storyMediaRoutes)
 app.use('/api/public', publicStoriesRoutes)
