@@ -66,11 +66,17 @@ function formatEvent(row) {
   }
 }
 
-async function countRows(builder) {
-  const { count, error } = await builder.select('id', {
-    count: 'exact',
-    head: true,
-  })
+async function countRows(table, applyFilters = (query) => query) {
+  let query = supabase
+    .from(table)
+    .select('id', {
+      count: 'exact',
+      head: true,
+    })
+
+  query = applyFilters(query)
+
+  const { count, error } = await query
 
   if (error) throw error
   return count || 0
@@ -92,44 +98,42 @@ export async function getAdminSpamGuardOverview(req, res) {
       readerActionCooldowns,
       paymentCooldowns,
     ] = await Promise.all([
-      countRows(supabase.from('spam_guard_state')),
+      countRows('spam_guard_state'),
       countRows(
-        supabase
-          .from('spam_guard_state')
-          .gt('cooldown_until', now)
+        'spam_guard_state',
+        (query) => query.gt('cooldown_until', now)
       ),
       countRows(
-        supabase
-          .from('spam_guard_events')
+        'spam_guard_events',
+        (query) => query
           .eq('action', 'cooldown_started')
           .gte('occurred_at', dayStart.toISOString())
       ),
       countRows(
-        supabase
-          .from('spam_guard_state')
-          .gte('spam_score', 90)
+        'spam_guard_state',
+        (query) => query.gte('spam_score', 90)
       ),
       countRows(
-        supabase
-          .from('spam_guard_state')
+        'spam_guard_state',
+        (query) => query
           .eq('scope', 'visitor_tracking')
           .gt('cooldown_until', now)
       ),
       countRows(
-        supabase
-          .from('spam_guard_state')
+        'spam_guard_state',
+        (query) => query
           .eq('scope', 'account_access')
           .gt('cooldown_until', now)
       ),
       countRows(
-        supabase
-          .from('spam_guard_state')
+        'spam_guard_state',
+        (query) => query
           .eq('scope', 'reader_actions')
           .gt('cooldown_until', now)
       ),
       countRows(
-        supabase
-          .from('spam_guard_state')
+        'spam_guard_state',
+        (query) => query
           .eq('scope', 'payment_actions')
           .gt('cooldown_until', now)
       ),
