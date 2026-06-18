@@ -25,6 +25,7 @@ import { startTelegramUserListener } from './src/listeners/telegramUserListener.
 import unlocksRoutes from './src/routes/unlocks.routes.js'
 import shadowMallProductsRoutes from './src/routes/shadowMallProducts.routes.js'
 import adminCommunityRoutes from './src/routes/adminCommunity.routes.js'
+import adminSpamGuardRoutes from './src/routes/adminSpamGuard.routes.js'
 import tasksRoutes from './src/routes/tasks.routes.js'
 import adminStoriesRoutes from './src/routes/adminStories.routes.js'
 import adminRankingRoutes from './src/routes/adminRanking.routes.js'
@@ -137,6 +138,7 @@ app.use('/api/telegram', telegramRoutes)
 app.use('/api/unlocks', paymentSpamGuard, unlocksRoutes)
 app.use('/api/shadow-mall', readerActionSpamGuard, shadowMallProductsRoutes)
 app.use('/api/admin/community', adminCommunityRoutes)
+app.use('/api/admin/spam-guard', adminSpamGuardRoutes)
 app.use('/api/tasks', readerActionSpamGuard, tasksRoutes)
 app.use('/api/notifications', readerActionSpamGuard, notificationsRoutes)
 app.use('/api/admin/notifications', adminNotificationsRoutes)
