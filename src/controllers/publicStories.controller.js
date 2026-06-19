@@ -315,9 +315,43 @@ function normalizeSearch(value) {
   return String(value || '').trim().replace(/[%_]/g, '\\$&')
 }
 
+function isDiscoverMoreSort(sort) {
+  return ['discover_more', 'discover-more', 'discover', 'hidden_gems', 'hidden-gems'].includes(String(sort || '').trim().toLowerCase())
+}
+
+function getWeekSeed(date = new Date()) {
+  const start = Date.UTC(date.getUTCFullYear(), 0, 1)
+  const today = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+
+  return Math.floor((today - start) / (7 * 24 * 60 * 60 * 1000))
+}
+
+function getRotationScore(story, seed) {
+  const text = `${story.id}-${seed}`
+  let hash = 0
+
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) % 1000000007
+  }
+
+  return hash
+}
+
+function pickDiscoverMoreStories(stories, limit) {
+  const seed = getWeekSeed()
+
+  return [...stories]
+    .sort((a, b) => getRotationScore(a, seed) - getRotationScore(b, seed))
+    .slice(0, limit)
+}
+
 function applyStorySort(query, sort) {
   if (sort === 'weekly_top' || sort === 'weekly' || sort === 'trending') {
     return query.order('total_views', { ascending: false }).order('updated_at', { ascending: false })
+  }
+
+    if (isDiscoverMoreSort(sort)) {
+    return query.order('total_views', { ascending: true }).order('updated_at', { ascending: false })
   }
 
   if (sort === 'popular') {
@@ -671,6 +705,7 @@ export async function getPublicStories(req, res) {
     const genre = String(req.query.genre || '').trim()
     const language = String(req.query.language || '').trim()
     const sort = String(req.query.sort || 'latest').trim()
+    const queryLimit = isDiscoverMoreSort(sort) ? Math.min(Math.max(limit * 8, 24), 48) : limit
     const authorId = String(req.query.authorId || req.query.author_id || '').trim()
     const exclude = String(req.query.exclude || req.query.excludeId || req.query.exclude_id || '').trim()
     const search = normalizeSearch(req.query.q || req.query.search || req.query.keyword)
@@ -681,7 +716,7 @@ export async function getPublicStories(req, res) {
   .eq('status', 'published')
   .is('deleted_at', null)
   .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false')
-  .limit(limit)
+  .limit(queryLimit)
 
     if (genre) query = query.eq('main_genre', genre)
     if (language) query = query.eq('story_language', language)
@@ -696,46 +731,47 @@ export async function getPublicStories(req, res) {
 
     const { data, error } = await query
 
-if (error) throw error
+    if (error) throw error
 
-const authorIds = [
-  ...new Set((data || []).map((story) => story.author_id).filter(Boolean)),
-]
+    const stories = isDiscoverMoreSort(sort) ? pickDiscoverMoreStories(data || [], limit) : data || []
+    const authorIds = [
+      ...new Set(stories.map((story) => story.author_id).filter(Boolean)),
+    ]
 
-let authorPages = []
+    let authorPages = []
 
-if (authorIds.length) {
-  const { data: authorPageRows, error: authorPagesError } = await supabase
-    .from('author_pages')
-    .select('*')
-    .in('id', authorIds)
+    if (authorIds.length) {
+      const { data: authorPageRows, error: authorPagesError } = await supabase
+        .from('author_pages')
+        .select('*')
+        .in('id', authorIds)
 
-  if (authorPagesError) throw authorPagesError
+      if (authorPagesError) throw authorPagesError
 
-  authorPages = authorPageRows || []
-}
+      authorPages = authorPageRows || []
+    }
 
-const authorPageMap = new Map(
-  authorPages.map((page) => [String(page.id), page])
-)
-
-const accessSummaries = await getStoryAccessSummaries(
-  (data || []).map((story) => story.id)
-)
-
-return res.status(200).json({
-  ok: true,
-  stories: (data || []).map((story) =>
-    publicStoryListItem(
-      {
-        ...story,
-        author_page:
-          authorPageMap.get(String(story.author_id)) || null,
-      },
-      accessSummaries.get(story.id)
+    const authorPageMap = new Map(
+      authorPages.map((page) => [String(page.id), page])
     )
-  ),
-})
+
+    const accessSummaries = await getStoryAccessSummaries(
+      stories.map((story) => story.id)
+    )
+
+    return res.status(200).json({
+      ok: true,
+      stories: stories.map((story) =>
+        publicStoryListItem(
+          {
+            ...story,
+            author_page:
+              authorPageMap.get(String(story.author_id)) || null,
+          },
+          accessSummaries.get(story.id)
+        )
+      ),
+    })
   } catch (error) {
     console.error('GET PUBLIC STORIES ERROR:', error)
 
