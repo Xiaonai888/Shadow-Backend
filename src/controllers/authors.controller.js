@@ -387,6 +387,210 @@ export async function getAuthorPageFollowers(req, res) {
   }
 }
 
+export async function getAuthorPageReviews(req, res) {
+  try {
+    const pageUsername = normalizePageUsername(req.params.pageUsername)
+    const userId = getOptionalUserId(req)
+
+    if (!pageUsername) {
+      return res.status(400).json({ ok: false, message: 'Page username is required' })
+    }
+
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('id, user_id, page_name, page_username')
+      .eq('page_username', pageUsername)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (pageError) throw pageError
+
+    if (!authorPage) {
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
+    }
+
+    const { data: reviewRows, error: reviewError } = await supabase
+      .from('author_page_reviews')
+      .select('id, reviewer_user_id, is_recommended, review_text, status, created_at, updated_at')
+      .eq('author_page_id', authorPage.id)
+      .eq('status', 'active')
+      .order('created_at', { ascending: false })
+      .limit(50)
+
+    if (reviewError) throw reviewError
+
+    const reviewerIds = [...new Set((reviewRows || []).map((item) => item.reviewer_user_id).filter(Boolean))]
+    let usersById = new Map()
+
+    if (reviewerIds.length) {
+      const { data: users, error: usersError } = await supabase
+        .from('users')
+        .select('id, name, username, avatar_url')
+        .in('id', reviewerIds)
+
+      if (usersError) throw usersError
+      usersById = new Map((users || []).map((user) => [user.id, user]))
+    }
+
+    const reviews = (reviewRows || []).map((item) => {
+      const user = usersById.get(item.reviewer_user_id) || {}
+
+      return {
+        id: item.id,
+        reviewer_user_id: item.reviewer_user_id,
+        reviewer_name: user.name || 'Reader',
+        reviewer_username: user.username || '',
+        reviewer_avatar_url: user.avatar_url || '',
+        is_recommended: item.is_recommended,
+        review_text: item.review_text || '',
+        created_at: item.created_at,
+        updated_at: item.updated_at,
+        is_mine: userId ? String(item.reviewer_user_id) === String(userId) : false,
+      }
+    })
+
+    const totalCount = reviews.length
+    const recommendCount = reviews.filter((item) => item.is_recommended).length
+    const recommendPercent = totalCount ? Math.round((recommendCount / totalCount) * 100) : 0
+    const myReview = userId ? reviews.find((item) => item.is_mine) || null : null
+
+    return res.status(200).json({
+      ok: true,
+      summary: {
+        total_count: totalCount,
+        recommend_count: recommendCount,
+        recommend_percent: recommendPercent,
+      },
+      reviews,
+      my_review: myReview,
+    })
+  } catch (error) {
+    console.error('GET AUTHOR PAGE REVIEWS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load reviews',
+      error: error.message,
+    })
+  }
+}
+
+export async function upsertMyAuthorPageReview(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const pageUsername = normalizePageUsername(req.params.pageUsername)
+    const isRecommended = req.body.is_recommended !== false
+    const reviewText = String(req.body.review_text || '').trim().slice(0, 1000)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!pageUsername) {
+      return res.status(400).json({ ok: false, message: 'Page username is required' })
+    }
+
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('id, user_id, page_name, page_username')
+      .eq('page_username', pageUsername)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (pageError) throw pageError
+
+    if (!authorPage) {
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
+    }
+
+    if (String(authorPage.user_id) === String(userId)) {
+      return res.status(400).json({ ok: false, message: 'You cannot review your own author page' })
+    }
+
+    const { data: review, error: reviewError } = await supabase
+      .from('author_page_reviews')
+      .upsert(
+        {
+          author_page_id: authorPage.id,
+          reviewer_user_id: userId,
+          is_recommended: isRecommended,
+          review_text: reviewText,
+          status: 'active',
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'author_page_id,reviewer_user_id' }
+      )
+      .select('id, reviewer_user_id, is_recommended, review_text, status, created_at, updated_at')
+      .single()
+
+    if (reviewError) throw reviewError
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Review saved',
+      review,
+    })
+  } catch (error) {
+    console.error('UPSERT AUTHOR PAGE REVIEW ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to save review',
+      error: error.message,
+    })
+  }
+}
+
+export async function deleteMyAuthorPageReview(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const pageUsername = normalizePageUsername(req.params.pageUsername)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!pageUsername) {
+      return res.status(400).json({ ok: false, message: 'Page username is required' })
+    }
+
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('id')
+      .eq('page_username', pageUsername)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (pageError) throw pageError
+
+    if (!authorPage) {
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
+    }
+
+    const { error: reviewError } = await supabase
+      .from('author_page_reviews')
+      .update({
+        status: 'deleted',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('author_page_id', authorPage.id)
+      .eq('reviewer_user_id', userId)
+
+    if (reviewError) throw reviewError
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Review removed',
+    })
+  } catch (error) {
+    console.error('DELETE AUTHOR PAGE REVIEW ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to remove review',
+      error: error.message,
+    })
+  }
+}
+
+
 export async function followAuthorPage(req, res) {
   try {
     const userId = req.user?.user_id
