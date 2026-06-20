@@ -2253,43 +2253,54 @@ function buildAuthorStoreBookOrderTelegramMessage(order, authorPage) {
   const items = Array.isArray(order?.items) ? order.items : []
   const bookItems = items.filter((item) => String(item.product_type || item.type || '').toLowerCase() === 'book')
   const buyerProfile = order.buyer_profile || {}
-  const buyerName = buyerProfile.name || buyerProfile.buyer_name || order.buyer_name || 'Reader'
-  const buyerPhone = buyerProfile.phone_number || buyerProfile.buyer_phone || order.buyer_phone || '-'
-  const buyerAddress = buyerProfile.delivery_address || order.delivery_address || '-'
+  const delivery = order.delivery_company || {}
+  const buyerName = cleanText(buyerProfile.name || buyerProfile.buyer_name || order.buyer_name || 'Reader')
+  const buyerPhone = cleanText(buyerProfile.phone_number || buyerProfile.buyer_phone || order.buyer_phone)
+  const buyerTelegram = cleanText(buyerProfile.telegram_username || buyerProfile.telegram || order.buyer_telegram)
+  const buyerFacebook = cleanText(buyerProfile.facebook_link || buyerProfile.facebook_url || order.buyer_facebook)
+  const buyerAddress = cleanText(buyerProfile.delivery_address || order.delivery_address)
+  const deliveryName = cleanText(delivery.shortName || delivery.short_name || delivery.name || delivery.company_name)
+  const trxId = cleanText(order.aba_transaction_id || order.trx_id)
+  const pageName = cleanText(authorPage.page_name || authorPage.page_username || 'Author Page')
+  const pageUsername = cleanText(authorPage.page_username)
   const preparing = String(order.author_prepare_status || '').toLowerCase() === 'preparing'
 
-  const productLines = bookItems.map((item, index) => {
-    const title = item.product_title || item.title || 'Book'
+  const bookLines = bookItems.map((item) => {
+    const title = cleanText(item.product_title || item.title || 'Book')
     const quantity = Number(item.quantity || 1)
-    const total = Number(item.total_price || item.total_usd || 0).toFixed(2)
-
-    return `${index + 1}. ${html(title)} × ${quantity} — $${total}`
+    return `- ${html(title)} x${html(quantity)}`
   })
 
   return [
-    '📚 <b>New Author Store Book Order</b>',
+    preparing ? '✅ <b>AUTHOR STORE ORDER PREPARING</b>' : '✍️ <b>AUTHOR STORE ORDER APPROVED</b>',
     '',
-    `Author Page: <b>${html(authorPage.page_name || authorPage.page_username || 'Author Page')}</b>`,
-    `Order ID: <code>${html(getAuthorStoreOrderPublicId(order))}</code>`,
-    preparing ? 'Status: <b>Preparing ✓</b>' : '',
+    `📄 Page: <b>${html(pageName)}</b>`,
+    pageUsername ? `🔗 Username: @${html(pageUsername)}` : '',
     '',
-    '<b>Products</b>',
-    ...productLines,
+    `📦 Order ID: <code>${html(getAuthorStoreOrderPublicId(order))}</code>`,
+    `💵 Amount: <b>$${html(formatUsd(order.total_usd || order.total_amount))}</b>`,
+    trxId ? `🧾 Trx ID: <code>${html(trxId)}</code>` : '',
     '',
-    '<b>Reader</b>',
-    `Name: ${html(buyerName)}`,
-    `Phone: ${html(buyerPhone)}`,
-    `Address: ${html(buyerAddress)}`,
+    `👤 Buyer: <b>${html(buyerName)}</b>`,
+    buyerPhone ? `📞 Phone: <code>${html(buyerPhone)}</code>` : '',
+    buyerTelegram ? `💬 Telegram: ${html(buyerTelegram)}` : '',
+    buyerFacebook ? `🔗 Facebook: ${html(buyerFacebook)}` : '',
+    buyerAddress ? `📍 Address: ${html(buyerAddress)}` : '',
+    deliveryName ? `🚚 Delivery: <b>${html(deliveryName)}</b>` : '',
     '',
-    '<b>Payment</b>',
-    `Product subtotal: $${Number(order.product_subtotal_usd || order.subtotal_usd || 0).toFixed(2)}`,
-    `Delivery fee: $${Number(order.delivery_fee_usd || 0).toFixed(2)}`,
-    `Total paid: $${Number(order.total_usd || order.total_amount || 0).toFixed(2)}`,
-    `Author income: $${Number(order.author_income_usd || 0).toFixed(2)}`,
+    '<b>Books:</b>',
+    ...bookLines,
+    '',
+    '<b>Payment:</b>',
+    `Product subtotal: $${html(formatUsd(order.product_subtotal_usd || order.subtotal_usd))}`,
+    Number(order.delivery_fee_usd || 0) > 0 ? `Delivery fee: $${html(formatUsd(order.delivery_fee_usd))}` : '',
+    `Total paid: $${html(formatUsd(order.total_usd || order.total_amount))}`,
+    `Author income: $${html(formatUsd(order.author_income_usd))}`,
     '',
     preparing ? 'This order has been marked as preparing.' : 'Please prepare this book order for delivery.',
   ].filter(Boolean).join('\n')
 }
+
 
 async function markAuthorStoreOrderPreparingFromTelegram(orderId, chatId) {
   const { data: order, error: orderError } = await supabase
