@@ -4,6 +4,9 @@ import {
   createAuthorPage,
   followAuthorPage,
   getAuthorPageFollowers,
+  getAuthorPageReviews,
+  upsertMyAuthorPageReview,
+  deleteMyAuthorPageReview,
   getFollowedAuthorPages,
   getMyAuthorPage,
   getPublicAuthorPage,
@@ -48,6 +51,9 @@ router.patch('/me/page-notifications/:id/read', requireUser, markMyAuthorPageNot
 router.get('/following', requireUser, getFollowedAuthorPages)
 router.get('/top', getTopAuthorPages)
 router.get('/page/:pageUsername/followers', requireUser, getAuthorPageFollowers)
+router.get('/page/:pageUsername/reviews', getAuthorPageReviews)
+router.put('/page/:pageUsername/reviews/me', requireUser, upsertMyAuthorPageReview)
+router.delete('/page/:pageUsername/reviews/me', requireUser, deleteMyAuthorPageReview)
 router.get('/page/:pageUsername', getPublicAuthorPage)
 router.post('/page/:pageUsername/follow', requireUser, followAuthorPage)
 router.delete('/page/:pageUsername/follow', requireUser, unfollowAuthorPage)
