@@ -701,7 +701,7 @@ async function getApprovedExclusiveStory(storyId) {
 
 export async function getPublicStories(req, res) {
   try {
-    const limit = normalizeLimit(req.query.limit, 10, 48)
+    const limit = normalizeLimit(req.query.limit, 10, 100)
     const genre = String(req.query.genre || '').trim()
     const language = String(req.query.language || '').trim()
     const sort = String(req.query.sort || 'latest').trim()
