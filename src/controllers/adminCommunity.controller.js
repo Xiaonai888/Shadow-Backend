@@ -57,9 +57,13 @@ function formatReader(user) {
     username: user.username || '',
     email: user.email || '',
     avatar_url: user.avatar_url || '',
+    date_of_birth: user.date_of_birth || null,
+    gender: user.gender || '',
+    custom_gender: user.custom_gender || '',
     status: user.is_active === false ? 'inactive' : 'active',
     is_author: Boolean(user.is_author),
     joined_at: user.created_at,
+    
   }
 }
 
@@ -146,7 +150,7 @@ export async function getAdminCommunityReaders(req, res) {
 
     let query = supabase
       .from('users')
-      .select('id, name, username, email, avatar_url, is_active, is_author, created_at', { count: 'exact' })
+      .select('id, name, username, email, avatar_url, date_of_birth, gender, custom_gender, is_active, is_author, created_at', { count: 'exact' })
       .order('created_at', { ascending: false })
       .range(from, to)
 
