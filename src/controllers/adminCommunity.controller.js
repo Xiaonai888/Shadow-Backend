@@ -160,15 +160,43 @@ export async function getAdminCommunityReaders(req, res) {
 
     const { data, error, count } = await query
 
-    if (error) throw error
+if (error) throw error
 
-    const total = count || 0
-    const totalPages = Math.max(1, Math.ceil(total / limit))
+let genderQuery = supabase
+  .from('users')
+  .select('gender, custom_gender')
+
+if (q) {
+  genderQuery = genderQuery.or(`name.ilike.%${q}%,username.ilike.%${q}%,email.ilike.%${q}%`)
+}
+
+const { data: genderRows, error: genderError } = await genderQuery
+
+if (genderError) throw genderError
+
+const genderSummary = (genderRows || []).reduce(
+  (summary, user) => {
+    const gender = String(user.gender || '').toLowerCase()
+
+    if (gender === 'female') summary.female += 1
+    else if (gender === 'male') summary.male += 1
+    else if (gender === 'custom') summary.custom += 1
+    else summary.not_provided += 1
+
+    summary.total += 1
+    return summary
+  },
+  { total: 0, female: 0, male: 0, custom: 0, not_provided: 0 }
+)
+
+const total = count || 0
+const totalPages = Math.max(1, Math.ceil(total / limit))
 
     return res.status(200).json({
       ok: true,
       readers: (data || []).map(formatReader),
-      page,
+gender_summary: genderSummary,
+page,
       limit,
       total,
       total_pages: totalPages,
