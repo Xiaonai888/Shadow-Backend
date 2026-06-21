@@ -355,9 +355,9 @@ export async function updateShadowMallProduct(req, res) {
     if (req.body.old_price_usd !== undefined) payload.old_price_usd = req.body.old_price_usd === '' || req.body.old_price_usd === null ? null : toNumber(req.body.old_price_usd, 0)
     if (req.body.stock_quantity !== undefined) {
   payload.stock_quantity = toNumber(req.body.stock_quantity, 0)
-  if (payload.stock_quantity > 0 && payload.stock_status !== 'pre_order') {
-    payload.stock_status = 'in_stock'
-    payload.sold_out_at = null
+  if (payload.stock_status !== 'pre_order') {
+    payload.stock_status = payload.stock_quantity > 0 ? 'in_stock' : 'sold_out'
+    payload.sold_out_at = payload.stock_quantity > 0 ? null : new Date().toISOString()
   }
 }
     if (req.body.page_count !== undefined) payload.page_count = toNumber(req.body.page_count, 0)
