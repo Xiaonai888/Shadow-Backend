@@ -32,6 +32,10 @@ function cleanInteger(value, fallback = 0) {
   return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : fallback
 }
 
+function isSoldOutSystemCategory(value) {
+  return cleanText(value).toLowerCase() === 'sold out'
+}
+
 function cleanGalleryImages(value) {
   const images = Array.isArray(value) ? value : []
 
@@ -110,6 +114,14 @@ function publicProduct(product) {
     status: product.status || 'draft',
     cover_url: product.cover_url || '',
     stock_quantity: Number(product.stock_quantity || 0),
+    stock_status:
+      product.product_type === 'pdf'
+        ? 'digital'
+        : product.pre_order
+          ? 'pre_order'
+          : Number(product.stock_quantity || 0) > 0
+            ? 'in_stock'
+            : 'sold_out',
     paper_type: product.paper_type || '',
     book_condition: product.book_condition || 'New',
     quality_percent: product.quality_percent,
@@ -1571,6 +1583,16 @@ export async function createMyAuthorStoreProduct(req, res) {
       return res.status(400).json({ ok: false, message: 'Product cover is required' })
     }
 
+    const category = cleanText(req.body.category, 'New Release') || 'New Release'
+
+
+    if (isSoldOutSystemCategory(category)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Sold out is automatic. Please choose the original category.',
+      })
+    }
+
     const bookCondition = cleanText(req.body.book_condition || req.body.bookCondition || 'New')
     const qualityPercentRaw = req.body.quality_percent ?? req.body.qualityPercent ?? null
     const qualityPercent = qualityPercentRaw === null || qualityPercentRaw === ''
@@ -1586,7 +1608,7 @@ export async function createMyAuthorStoreProduct(req, res) {
       user_id: userId,
       product_type: productType,
       title,
-      category: cleanText(req.body.category, 'New Release') || 'New Release',
+      category,
       description: cleanText(req.body.description),
       original_price: cleanNumber(req.body.original_price ?? req.body.originalPrice, 0),
       sale_price: cleanNumber(req.body.sale_price ?? req.body.salePrice, 0),
@@ -1605,7 +1627,6 @@ stock_quantity: cleanInteger(req.body.stock_quantity ?? req.body.stockQuantity ?
       access_rule: cleanText(req.body.access_rule || req.body.accessRule),
       updated_at: new Date().toISOString(),
     }
-
     const { data, error } = await supabase
       .from('author_store_products')
       .insert(payload)
@@ -1663,6 +1684,16 @@ export async function updateMyAuthorStoreProduct(req, res) {
       return res.status(400).json({ ok: false, message: 'Product cover is required' })
     }
 
+    const category = cleanText(req.body.category, 'New Release') || 'New Release'
+
+
+    if (isSoldOutSystemCategory(category)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Sold out is automatic. Please choose the original category.',
+      })
+    }
+
     const bookCondition = cleanText(req.body.book_condition || req.body.bookCondition || 'New')
     const qualityPercentRaw = req.body.quality_percent ?? req.body.qualityPercent ?? null
     const qualityPercent = qualityPercentRaw === null || qualityPercentRaw === ''
@@ -1677,7 +1708,7 @@ export async function updateMyAuthorStoreProduct(req, res) {
     const payload = {
       product_type: productType,
       title,
-      category: cleanText(req.body.category, 'New Release') || 'New Release',
+      category,
       description: cleanText(req.body.description),
       original_price: cleanNumber(req.body.original_price ?? req.body.originalPrice, 0),
       sale_price: cleanNumber(req.body.sale_price ?? req.body.salePrice, 0),
@@ -2096,13 +2127,14 @@ async function buildAuthorStoreOrderItems(cartItems) {
       throw new Error('Please checkout one author store at a time')
     }
 
+    const productType = String(product.product_type || 'book').toLowerCase()
     const quantityAvailable = Number(product.stock_quantity || 0)
 
-    if (!product.pre_order && quantityAvailable <= 0) {
+    if (productType === 'book' && !product.pre_order && quantityAvailable <= 0) {
       throw new Error(`${product.title} is sold out`)
     }
 
-    if (!product.pre_order && quantityAvailable > 0 && item.quantity > quantityAvailable) {
+    if (productType === 'book' && !product.pre_order && item.quantity > quantityAvailable) {
       throw new Error(`${product.title} has only ${quantityAvailable} in stock`)
     }
 
@@ -2160,9 +2192,7 @@ export async function deductAuthorStoreOrderStock(order) {
       updated_at: new Date().toISOString(),
     }
 
-    if (nextQuantity <= 0) {
-      payload.status = 'hidden'
-    }
+ 
 
     const { error: updateError } = await supabase
       .from('author_store_products')
@@ -2816,6 +2846,17 @@ export async function createAuthorStoreOrder(req, res) {
       }
 
       const quantity = Math.max(1, cleanInteger(item.quantity, 1))
+      const productType = String(product.product_type || 'book').toLowerCase()
+      const quantityAvailable = Number(product.stock_quantity || 0)
+
+      if (productType === 'book' && !product.pre_order && quantityAvailable <= 0) {
+        return res.status(400).json({ ok: false, message: `${product.title} is sold out` })
+      }
+
+      if (productType === 'book' && !product.pre_order && quantity > quantityAvailable) {
+        return res.status(400).json({ ok: false, message: `${product.title} has only ${quantityAvailable} in stock` })
+      }
+
       const unitPrice = Number(product.sale_price || product.original_price || 0)
       const itemTotal = Number((unitPrice * quantity).toFixed(2))
       const itemIncome = calculateAuthorStoreIncome(itemTotal)
@@ -3446,7 +3487,7 @@ export async function handleAuthorStoreAbaCallback(req, res) {
       })
       .eq('id', order.id)
       .eq('status', 'waiting_payment')
-      .select('*')
+      .select('*, items:author_store_order_items(*)')
       .single()
 
     if (updateError) throw updateError
