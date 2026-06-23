@@ -300,12 +300,23 @@ export async function getTopAuthorPages(req, res) {
 
 export async function getAuthorPageFollowers(req, res) {
   try {
-    const userId = req.user?.user_id
+    const currentUserId = getOptionalUserId(req)
     const pageUsername = normalizePageUsername(req.params.pageUsername)
+    const sectionValue = String(req.query.section || 'all').trim().toLowerCase()
+    const section = ['all', 'top', 'mutual'].includes(sectionValue) ? sectionValue : 'all'
 
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
-    }
+    const rawLimit = Number(req.query.limit || 30)
+    const rawOffset = Number(req.query.offset || 0)
+
+    const limit = Math.min(
+      30,
+      Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 30)
+    )
+
+    const offset = Math.max(
+      0,
+      Number.isFinite(rawOffset) ? Math.floor(rawOffset) : 0
+    )
 
     if (!pageUsername) {
       return res.status(400).json({ ok: false, message: 'Page username is required' })
@@ -313,7 +324,7 @@ export async function getAuthorPageFollowers(req, res) {
 
     const { data: authorPage, error: pageError } = await supabase
       .from('author_pages')
-      .select('id, user_id, page_name, page_username')
+      .select('id, user_id, page_name, page_username, total_followers')
       .eq('page_username', pageUsername)
       .eq('status', 'active')
       .maybeSingle()
@@ -324,61 +335,140 @@ export async function getAuthorPageFollowers(req, res) {
       return res.status(404).json({ ok: false, message: 'Author page not found' })
     }
 
-    if (String(authorPage.user_id) !== String(userId)) {
-      return res.status(403).json({
-        ok: false,
-        message: 'Only page owner can view followers',
-      })
+    const isOwner = Boolean(
+      currentUserId && String(authorPage.user_id) === String(currentUserId)
+    )
+
+    const { count: totalFollowers, error: countError } = await supabase
+      .from('author_page_follows')
+      .select('id', { count: 'exact', head: true })
+      .eq('author_page_id', authorPage.id)
+
+    if (countError) throw countError
+
+    async function buildFollowerItems(followRows = []) {
+      const followerIds = [
+        ...new Set(followRows.map((item) => item.follower_user_id).filter(Boolean)),
+      ]
+
+      if (!followerIds.length) return []
+
+      const { data: users, error: usersError } = await supabase
+        .from('users')
+        .select('id, name, username, avatar_url')
+        .in('id', followerIds)
+
+      if (usersError) throw usersError
+
+      const usersById = new Map((users || []).map((user) => [user.id, user]))
+      const followingUserIds = new Set()
+
+      if (currentUserId) {
+        const { data: userFollows, error: userFollowsError } = await supabase
+          .from('user_follows')
+          .select('following_user_id')
+          .eq('follower_user_id', currentUserId)
+          .in('following_user_id', followerIds)
+
+        if (userFollowsError) throw userFollowsError
+
+        for (const item of userFollows || []) {
+          followingUserIds.add(item.following_user_id)
+        }
+      }
+
+      return followRows
+        .map((item) => {
+          const user = usersById.get(item.follower_user_id)
+
+          if (!user) return null
+
+          return {
+            id: user.id,
+            name: user.name || 'Reader',
+            username: user.username || '',
+            avatar_url: user.avatar_url || '',
+            followed_at: item.created_at,
+            is_me: currentUserId ? String(user.id) === String(currentUserId) : false,
+            is_following: followingUserIds.has(user.id),
+          }
+        })
+        .filter(Boolean)
     }
 
-    const { data: followRows, error: followError } = await supabase
+    let query = supabase
       .from('author_page_follows')
-      .select('follower_user_id, created_at')
+      .select('follower_user_id, created_at', { count: 'exact' })
       .eq('author_page_id', authorPage.id)
+
+    if (section === 'mutual') {
+      if (!currentUserId) {
+        return res.status(200).json({
+          ok: true,
+          section,
+          is_owner: isOwner,
+          total_followers: Number(totalFollowers || 0),
+          total_count: 0,
+          limit,
+          offset,
+          has_more: false,
+          followers: [],
+        })
+      }
+
+      const { data: myFollowingRows, error: myFollowingError } = await supabase
+        .from('user_follows')
+        .select('following_user_id')
+        .eq('follower_user_id', currentUserId)
+
+      if (myFollowingError) throw myFollowingError
+
+      const myFollowingIds = [
+        ...new Set((myFollowingRows || []).map((item) => item.following_user_id).filter(Boolean)),
+      ]
+
+      if (!myFollowingIds.length) {
+        return res.status(200).json({
+          ok: true,
+          section,
+          is_owner: isOwner,
+          total_followers: Number(totalFollowers || 0),
+          total_count: 0,
+          limit,
+          offset,
+          has_more: false,
+          followers: [],
+        })
+      }
+
+      query = query.in('follower_user_id', myFollowingIds)
+    }
+
+    const { data: followRows, count: sectionCount, error: followError } = await query
       .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1)
 
     if (followError) throw followError
 
-    const followerIds = [...new Set((followRows || []).map((item) => item.follower_user_id).filter(Boolean))]
-
-    if (!followerIds.length) {
-      return res.status(200).json({
-        ok: true,
-        followers: [],
-      })
-    }
-
-    const { data: users, error: usersError } = await supabase
-      .from('users')
-      .select('id, name, username, avatar_url')
-      .in('id', followerIds)
-
-    if (usersError) throw usersError
-
-    const usersById = new Map((users || []).map((user) => [user.id, user]))
-
-    const followers = (followRows || [])
-      .map((item) => {
-        const user = usersById.get(item.follower_user_id)
-
-        if (!user) return null
-
-        return {
-          id: user.id,
-          name: user.name || 'Reader',
-          username: user.username || '',
-          avatar_url: user.avatar_url || '',
-          followed_at: item.created_at,
-        }
-      })
-      .filter(Boolean)
+    const followers = await buildFollowerItems(followRows || [])
+    const totalCount = section === 'mutual'
+      ? Number(sectionCount || 0)
+      : Number(totalFollowers || 0)
 
     return res.status(200).json({
       ok: true,
+      section,
+      is_owner: isOwner,
+      total_followers: Number(totalFollowers || 0),
+      total_count: totalCount,
+      limit,
+      offset,
+      has_more: offset + followers.length < totalCount,
       followers,
     })
   } catch (error) {
     console.error('GET AUTHOR PAGE FOLLOWERS ERROR:', error)
+
     return res.status(500).json({
       ok: false,
       message: 'Failed to load followers',
