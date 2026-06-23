@@ -4,6 +4,7 @@ import {
   unlockEpisodeWithDiamonds,
   unlockEpisodePackageWithDiamonds,
   unlockEpisodeWithGems,
+  unlockEpisodeWithVoucher,
 } from '../controllers/unlocks.controller.js'
 import { getPlatformUnlockRules } from '../controllers/unlockRules.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
