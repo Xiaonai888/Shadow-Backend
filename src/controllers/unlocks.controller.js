@@ -166,7 +166,16 @@ function getGemMonthlyStoryLimit(rules, tier) {
   return getRuleNumber(rules, 'standard_gem_monthly_story_limit')
 }
 
-function getEpisodeAvailableForGemAt(episode, rules) {
+function getEpisodeAvailableForGemAt(episode, rules, tier = 'standard') {
+  if (tier === 'premium') {
+    return {
+      available: true,
+      available_at: null,
+      wait_seconds: 0,
+      reason: 'premium',
+    }
+  }
+
   const waitDays = getRuleNumber(rules, 'gem_new_episode_wait_days')
   const publishedAt = episode?.published_at || episode?.created_at
 
@@ -175,6 +184,7 @@ function getEpisodeAvailableForGemAt(episode, rules) {
       available: true,
       available_at: null,
       wait_seconds: 0,
+      reason: 'no_wait_required',
     }
   }
 
@@ -186,6 +196,7 @@ function getEpisodeAvailableForGemAt(episode, rules) {
     available: waitSeconds <= 0,
     available_at: new Date(availableAtMs).toISOString(),
     wait_seconds: waitSeconds,
+    reason: waitSeconds <= 0 ? 'wait_finished' : 'wait_required',
   }
 }
 
@@ -411,7 +422,7 @@ async function getUnlockStatusPayload({ userId, storyId, episodeId, tier = 'stan
     storyId,
     fromEpisodeNumber: episode.episode_number,
   })
-  const gemWait = getEpisodeAvailableForGemAt(episode, rules)
+  const gemWait = getEpisodeAvailableForGemAt(episode, rules, tier)
   const gemLimits = await getGemLimitStatus({ userId, storyId, tier, rules })
 
   return {
