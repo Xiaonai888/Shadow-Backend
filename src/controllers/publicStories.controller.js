@@ -167,16 +167,7 @@ function isEpisodeFreeForReader(episode, story, now = Date.now()) {
   return isFreeEpisode(episode) || isAutoFreeOldEpisodeForStory(episode, story, now)
 }
 
-function isFreeEpisode(episode, now = Date.now()) {
-  const episodeNumber = Number(episode?.episode_number || 0)
-  const publishedTime = getEpisodePublishedTime(episode)
 
-  if (episodeNumber <= 1) return true
-  if (!episode?.is_locked) return true
-  if (!publishedTime) return false
-
-  return now - publishedTime >= WAIT_FREE_MS
-}
 
 async function getStoryAccessSummaries(storyIds = []) {
   const ids = [...new Set(storyIds.filter(Boolean))]
