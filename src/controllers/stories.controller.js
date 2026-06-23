@@ -14,6 +14,26 @@ function cleanText(value) {
   return String(value || '').trim()
 }
 
+function cleanBoolean(value, fallback = false) {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value === 1
+
+  const text = String(value ?? '').trim().toLowerCase()
+
+  if (['true', '1', 'yes', 'on'].includes(text)) return true
+  if (['false', '0', 'no', 'off'].includes(text)) return false
+
+  return fallback
+}
+
+function cleanPositiveInteger(value, fallback, max = 365) {
+  const number = Number(value)
+
+  if (!Number.isFinite(number) || number <= 0) return fallback
+
+  return Math.min(Math.floor(number), max)
+}
+
 function addDays(date, days) {
   const nextDate = new Date(date)
   nextDate.setDate(nextDate.getDate() + days)
@@ -99,6 +119,10 @@ function publicStory(story, slides = []) {
 landscape_thumbnail_url: story.landscape_thumbnail_url || null,
 status: story.status,
     update_days: story.update_days || [],
+    auto_free_old_episodes_enabled: Boolean(story.auto_free_old_episodes_enabled),
+    auto_free_after_days: Number(story.auto_free_after_days || 30),
+    auto_free_max_episodes: Number(story.auto_free_max_episodes || 5),
+    auto_free_max_percent: Number(story.auto_free_max_percent || 10),
     total_episodes: story.total_episodes,
     total_views: story.total_views,
     total_likes: story.total_likes,
@@ -352,7 +376,26 @@ const landscapeThumbnailUrl = cleanNullableText(
   req.body.landscape_thumbnail_url || req.body.landscapeThumbnailUrl
 )
 const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
-    const slides = Array.isArray(req.body.slides) ? req.body.slides.slice(0, 5) : []
+const autoFreeOldEpisodesEnabled = cleanBoolean(
+  req.body.auto_free_old_episodes_enabled ?? req.body.autoFreeOldEpisodesEnabled,
+  false
+)
+const autoFreeAfterDays = cleanPositiveInteger(
+  req.body.auto_free_after_days ?? req.body.autoFreeAfterDays,
+  30,
+  365
+)
+const autoFreeMaxEpisodes = cleanPositiveInteger(
+  req.body.auto_free_max_episodes ?? req.body.autoFreeMaxEpisodes,
+  5,
+  100
+)
+const autoFreeMaxPercent = cleanPositiveInteger(
+  req.body.auto_free_max_percent ?? req.body.autoFreeMaxPercent,
+  10,
+  100
+)
+const slides = Array.isArray(req.body.slides) ? req.body.slides.slice(0, 5) : []
 
     const payloadError = validateStoryPayload({ title, storyLanguage, mainGenre, description })
 
@@ -378,6 +421,10 @@ const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
         cover_url: coverUrl,
         landscape_thumbnail_url: landscapeThumbnailUrl,
         update_days: updateDays,
+        auto_free_old_episodes_enabled: autoFreeOldEpisodesEnabled,
+        auto_free_after_days: autoFreeAfterDays,
+        auto_free_max_episodes: autoFreeMaxEpisodes,
+        auto_free_max_percent: autoFreeMaxPercent,
         status: 'draft',
       })
       .select()
@@ -436,7 +483,26 @@ const landscapeThumbnailUrl = cleanNullableText(
   req.body.landscape_thumbnail_url || req.body.landscapeThumbnailUrl
 )
 const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
-    const slides = Array.isArray(req.body.slides) ? req.body.slides.slice(0, 5) : []
+const autoFreeOldEpisodesEnabled = cleanBoolean(
+  req.body.auto_free_old_episodes_enabled ?? req.body.autoFreeOldEpisodesEnabled,
+  Boolean(oldStory.auto_free_old_episodes_enabled)
+)
+const autoFreeAfterDays = cleanPositiveInteger(
+  req.body.auto_free_after_days ?? req.body.autoFreeAfterDays,
+  Number(oldStory.auto_free_after_days || 30),
+  365
+)
+const autoFreeMaxEpisodes = cleanPositiveInteger(
+  req.body.auto_free_max_episodes ?? req.body.autoFreeMaxEpisodes,
+  Number(oldStory.auto_free_max_episodes || 5),
+  100
+)
+const autoFreeMaxPercent = cleanPositiveInteger(
+  req.body.auto_free_max_percent ?? req.body.autoFreeMaxPercent,
+  Number(oldStory.auto_free_max_percent || 10),
+  100
+)
+const slides = Array.isArray(req.body.slides) ? req.body.slides.slice(0, 5) : []
 
     const payloadError = validateStoryPayload({ title, storyLanguage, mainGenre, description })
 
@@ -460,6 +526,10 @@ const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
         cover_url: coverUrl,
         landscape_thumbnail_url: landscapeThumbnailUrl,
         update_days: updateDays,
+        auto_free_old_episodes_enabled: autoFreeOldEpisodesEnabled,
+        auto_free_after_days: autoFreeAfterDays,
+        auto_free_max_episodes: autoFreeMaxEpisodes,
+        auto_free_max_percent: autoFreeMaxPercent,
         updated_at: new Date().toISOString(),
       })
       .eq('id', storyId)
