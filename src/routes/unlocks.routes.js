@@ -16,5 +16,7 @@ router.get('/stories/:storyId/episodes/:episodeId/status', requireUser, getEpiso
 router.post('/stories/:storyId/episodes/:episodeId/diamond', requireUser, unlockEpisodeWithDiamonds)
 router.post('/stories/:storyId/episodes/:episodeId/package', requireUser, unlockEpisodePackageWithDiamonds)
 router.post('/stories/:storyId/episodes/:episodeId/gem', requireUser, unlockEpisodeWithGems)
+router.post('/stories/:storyId/episodes/:episodeId/voucher', requireUser, unlockEpisodeWithVoucher)
+
 
 export default router
