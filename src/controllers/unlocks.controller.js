@@ -155,6 +155,7 @@ function getReaderTier(req) {
 function getEpisodeAdPolicy({ tier, unlock, freeEpisode }) {
   if (tier === 'premium') return { show_read_ad: false, reason: 'premium' }
   if (unlock?.unlock_type === 'diamond') return { show_read_ad: false, reason: 'diamond_unlock' }
+  if (unlock?.unlock_type === 'ad') return { show_read_ad: false, reason: 'ad_unlock' }
   if (unlock?.unlock_type === 'gem' || unlock?.unlock_type === 'coin') return { show_read_ad: true, reason: 'coin_unlock' }
   if (freeEpisode) return { show_read_ad: true, reason: 'free_episode' }
   return { show_read_ad: true, reason: 'free_access' }
@@ -716,6 +717,16 @@ voucher_access: {
   available_at: payload.gemWait.available_at,
   wait_seconds: payload.gemWait.wait_seconds,
 },
+
+      ad_access: {
+  currency: 'ad',
+  amount: 1,
+  access_days: getRuleNumber(payload.rules, 'gem_access_days'),
+  access_type: 'temporary',
+  available: payload.gemWait.available,
+  available_at: payload.gemWait.available_at,
+  wait_seconds: payload.gemWait.wait_seconds,
+},
       
       package_options: payload.packageOptions,
       story_unlock_rules: {
@@ -1164,6 +1175,81 @@ export async function unlockEpisodeWithStoryCard(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to unlock episode with Story Card',
+      error: error.message,
+    })
+  }
+}
+
+export async function unlockEpisodeWithAd(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId, episodeId } = req.params
+    const tier = getReaderTier(req)
+
+    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId, tier })
+
+    if (payload.notFound) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Episode not found',
+      })
+    }
+
+    if (payload.freeEpisode || payload.unlocked) {
+      return res.status(200).json({
+        ok: true,
+        message: 'Episode already unlocked',
+        unlocked: true,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    if (!payload.gemWait.available) {
+      return res.status(403).json({
+        ok: false,
+        code: 'AD_WAIT_REQUIRED',
+        message: 'This episode is newly released. Watch Ad unlock is not available yet.',
+        available_at: payload.gemWait.available_at,
+        wait_seconds: payload.gemWait.wait_seconds,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    const accessDays = getRuleNumber(payload.rules, 'gem_access_days')
+    const expiresAt = new Date(Date.now() + accessDays * 24 * 60 * 60 * 1000).toISOString()
+
+    const unlocks = await createUnlocksAndTransactions({
+      userId,
+      storyId,
+      episodes: [payload.episode],
+      unlockType: 'ad',
+      unlockScope: 'single',
+      accessType: 'temporary',
+      expiresAt,
+      diamondSpent: 0,
+      transactionCurrency: 'ad',
+      transactionAmount: 1,
+      metadata: {
+        access_days: accessDays,
+        reader_tier: tier,
+      },
+    })
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Episode unlocked with Ad',
+      unlocked: true,
+      access_type: 'temporary',
+      expires_at: expiresAt,
+      unlocked_episode_ids: unlocks.map((unlock) => unlock.episode_id),
+      wallet: publicWallet(payload.wallet),
+    })
+  } catch (error) {
+    console.error('UNLOCK EPISODE WITH AD ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to unlock episode with Ad',
       error: error.message,
     })
   }
