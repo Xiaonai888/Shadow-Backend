@@ -205,6 +205,22 @@ function getRuleNumber(rules, key) {
   return Number(rules?.[key] ?? FALLBACK_RULES[key])
 }
 
+function normalizeStoryCardType(value) {
+  const type = String(value || 'simple').trim().toLowerCase()
+
+  if (type === 'special') return 'special'
+
+  return 'simple'
+}
+
+function getStoryCardCost(rules, cardType = 'simple') {
+  if (cardType === 'special') {
+    return getRuleNumber(rules, 'special_story_card_cost_per_episode')
+  }
+
+  return getRuleNumber(rules, 'simple_story_card_cost_per_episode')
+}
+
 function getGemDailyLimit(rules, tier) {
   if (tier === 'premium') return getRuleNumber(rules, 'premium_gem_daily_limit')
   if (tier === 'vip') return getRuleNumber(rules, 'vip_gem_daily_limit')
@@ -549,6 +565,23 @@ async function updateVoucherBalance({ userId, wallet, amount }) {
   return data
 }
 
+async function updateStoryCardBalance({ userId, wallet, amount }) {
+  const nextStoryCardBalance = Number(wallet.story_card_balance || 0) - Number(amount || 0)
+
+  const { data, error } = await supabase
+    .from('user_wallets')
+    .update({
+      story_card_balance: nextStoryCardBalance,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('user_id', userId)
+    .select()
+    .single()
+
+  if (error) throw error
+  return data
+}
+
 async function createUnlocksAndTransactions({ userId, storyId, episodes, unlockType, unlockScope, accessType, expiresAt, diamondSpent, transactionCurrency, transactionAmount, metadata }) {
   if (!episodes.length) return []
 
@@ -672,6 +705,18 @@ voucher_access: {
   available_at: payload.gemWait.available_at,
   wait_seconds: payload.gemWait.wait_seconds,
 },
+
+      story_card_access: {
+  currency: 'story_card',
+  amount: getStoryCardCost(payload.rules, 'simple'),
+  simple_amount: getStoryCardCost(payload.rules, 'simple'),
+  special_amount: getStoryCardCost(payload.rules, 'special'),
+  access_type: 'permanent',
+  available: payload.gemWait.available,
+  available_at: payload.gemWait.available_at,
+  wait_seconds: payload.gemWait.wait_seconds,
+},
+      
       package_options: payload.packageOptions,
       story_unlock_rules: {
         completed: isStoryCompleted(payload.story),
@@ -1026,6 +1071,99 @@ export async function unlockEpisodeWithVoucher(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to unlock episode with Voucher',
+      error: error.message,
+    })
+  }
+}
+
+export async function unlockEpisodeWithStoryCard(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId, episodeId } = req.params
+    const tier = getReaderTier(req)
+    const cardType = normalizeStoryCardType(req.body.card_type || req.body.cardType)
+
+    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId, tier })
+
+    if (payload.notFound) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Episode not found',
+      })
+    }
+
+    if (payload.freeEpisode || payload.unlocked) {
+      return res.status(200).json({
+        ok: true,
+        message: 'Episode already unlocked',
+        unlocked: true,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    if (!payload.gemWait.available) {
+      return res.status(403).json({
+        ok: false,
+        code: 'STORY_CARD_WAIT_REQUIRED',
+        message: 'This episode is newly released. Story Card unlock is not available yet.',
+        available_at: payload.gemWait.available_at,
+        wait_seconds: payload.gemWait.wait_seconds,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    const storyCardPrice = getStoryCardCost(payload.rules, cardType)
+
+    if (Number(payload.wallet.story_card_balance || 0) < storyCardPrice) {
+      return res.status(402).json({
+        ok: false,
+        code: 'INSUFFICIENT_STORY_CARDS',
+        message: 'Not enough Story Cards',
+        need: storyCardPrice - Number(payload.wallet.story_card_balance || 0),
+        price: storyCardPrice,
+        card_type: cardType,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    const updatedWallet = await updateStoryCardBalance({
+      userId,
+      wallet: payload.wallet,
+      amount: storyCardPrice,
+    })
+
+    const unlocks = await createUnlocksAndTransactions({
+      userId,
+      storyId,
+      episodes: [payload.episode],
+      unlockType: 'story_card',
+      unlockScope: 'single',
+      accessType: 'permanent',
+      expiresAt: null,
+      diamondSpent: 0,
+      transactionCurrency: 'story_card',
+      transactionAmount: storyCardPrice,
+      metadata: {
+        reader_tier: tier,
+        card_type: cardType,
+      },
+    })
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Episode unlocked with Story Card',
+      unlocked: true,
+      access_type: 'permanent',
+      card_type: cardType,
+      unlocked_episode_ids: unlocks.map((unlock) => unlock.episode_id),
+      wallet: publicWallet(updatedWallet),
+    })
+  } catch (error) {
+    console.error('UNLOCK EPISODE WITH STORY CARD ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to unlock episode with Story Card',
       error: error.message,
     })
   }
