@@ -292,8 +292,48 @@ function isFirstEpisode(episode) {
   return Number(episode?.episode_number || 0) <= 1
 }
 
-function isEpisodeFreeForReader(episode) {
-  return !episode?.is_locked || isFirstEpisode(episode)
+function getPositiveInteger(value, fallback, max = 365) {
+  const number = Number(value)
+
+  if (!Number.isFinite(number) || number <= 0) return fallback
+
+  return Math.min(Math.floor(number), max)
+}
+
+function getAutoFreeOldEpisodeLimit(story) {
+  const totalEpisodes = Number(story?.total_episodes || 0)
+  const maxEpisodes = getPositiveInteger(story?.auto_free_max_episodes, 5, 100)
+  const maxPercent = getPositiveInteger(story?.auto_free_max_percent, 10, 100)
+  const percentLimit = Math.ceil(totalEpisodes * (maxPercent / 100))
+
+  return Math.max(0, Math.min(maxEpisodes, percentLimit))
+}
+
+function isAutoFreeOldEpisodeForStory(episode, story, now = Date.now()) {
+  if (!story?.auto_free_old_episodes_enabled) return false
+  if (!episode?.is_locked) return false
+
+  const episodeNumber = Number(episode?.episode_number || 0)
+
+  if (episodeNumber <= 1) return false
+
+  const limit = getAutoFreeOldEpisodeLimit(story)
+
+  if (limit <= 0) return false
+  if (episodeNumber > limit + 1) return false
+
+  const publishedTime = getEpisodePublishedTime(episode)
+
+  if (!publishedTime) return false
+
+  const freeAfterDays = getPositiveInteger(story?.auto_free_after_days, 30, 365)
+  const freeAfterMs = freeAfterDays * 24 * 60 * 60 * 1000
+
+  return now - publishedTime >= freeAfterMs
+}
+
+function isEpisodeFreeForReader(episode, story, now = Date.now()) {
+  return !episode?.is_locked || isFirstEpisode(episode) || isAutoFreeOldEpisodeForStory(episode, story, now)
 }
 
 function getFreeFirstEpisodeLimit(rules, tier) {
@@ -1004,7 +1044,7 @@ export async function getPublicEpisodeById(req, res) {
 
     const user = getOptionalUser(req)
     const userId = user?.user_id || ''
-    const freeEpisode = isEpisodeFreeForReader(episode)
+    const freeEpisode = isEpisodeFreeForReader(episode, story)
     const activeUnlock = await hasActiveEpisodeUnlock({ userId, episodeId })
 
     if (isFirstEpisode(episode)) {
