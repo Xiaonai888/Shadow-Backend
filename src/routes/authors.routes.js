@@ -50,7 +50,7 @@ router.patch('/me/page-notifications/read-all', requireUser, markAllMyAuthorPage
 router.patch('/me/page-notifications/:id/read', requireUser, markMyAuthorPageNotificationRead)
 router.get('/following', requireUser, getFollowedAuthorPages)
 router.get('/top', getTopAuthorPages)
-router.get('/page/:pageUsername/followers', requireUser, getAuthorPageFollowers)
+router.get('/page/:pageUsername/followers', getAuthorPageFollowers)
 router.get('/page/:pageUsername/reviews', getAuthorPageReviews)
 router.put('/page/:pageUsername/reviews/me', requireUser, upsertMyAuthorPageReview)
 router.delete('/page/:pageUsername/reviews/me', requireUser, deleteMyAuthorPageReview)
