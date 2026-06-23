@@ -532,6 +532,23 @@ async function updateGemBalance({ userId, wallet, amount }) {
   return data
 }
 
+async function updateVoucherBalance({ userId, wallet, amount }) {
+  const nextVoucherBalance = Number(wallet.voucher_balance || 0) - Number(amount || 0)
+
+  const { data, error } = await supabase
+    .from('user_wallets')
+    .update({
+      voucher_balance: nextVoucherBalance,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('user_id', userId)
+    .select()
+    .single()
+
+  if (error) throw error
+  return data
+}
+
 async function createUnlocksAndTransactions({ userId, storyId, episodes, unlockType, unlockScope, accessType, expiresAt, diamondSpent, transactionCurrency, transactionAmount, metadata }) {
   if (!episodes.length) return []
 
@@ -646,6 +663,14 @@ coin_access: {
   available_at: payload.gemWait.available_at,
   wait_seconds: payload.gemWait.wait_seconds,
   limit_status: payload.gemLimits,
+},
+voucher_access: {
+  currency: 'voucher',
+  amount: getRuleNumber(payload.rules, 'voucher_cost_per_episode'),
+  access_type: 'permanent',
+  available: payload.gemWait.available,
+  available_at: payload.gemWait.available_at,
+  wait_seconds: payload.gemWait.wait_seconds,
 },
       package_options: payload.packageOptions,
       story_unlock_rules: {
@@ -911,6 +936,96 @@ export async function unlockEpisodeWithGems(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to unlock episode with Coins',
+      error: error.message,
+    })
+  }
+}
+
+
+export async function unlockEpisodeWithVoucher(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId, episodeId } = req.params
+    const tier = getReaderTier(req)
+
+    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId, tier })
+
+    if (payload.notFound) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Episode not found',
+      })
+    }
+
+    if (payload.freeEpisode || payload.unlocked) {
+      return res.status(200).json({
+        ok: true,
+        message: 'Episode already unlocked',
+        unlocked: true,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    if (!payload.gemWait.available) {
+      return res.status(403).json({
+        ok: false,
+        code: 'VOUCHER_WAIT_REQUIRED',
+        message: 'This episode is newly released. Voucher unlock is not available yet.',
+        available_at: payload.gemWait.available_at,
+        wait_seconds: payload.gemWait.wait_seconds,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    const voucherPrice = getRuleNumber(payload.rules, 'voucher_cost_per_episode')
+
+    if (Number(payload.wallet.voucher_balance || 0) < voucherPrice) {
+      return res.status(402).json({
+        ok: false,
+        code: 'INSUFFICIENT_VOUCHERS',
+        message: 'Not enough Vouchers',
+        need: voucherPrice - Number(payload.wallet.voucher_balance || 0),
+        price: voucherPrice,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    const updatedWallet = await updateVoucherBalance({
+      userId,
+      wallet: payload.wallet,
+      amount: voucherPrice,
+    })
+
+    const unlocks = await createUnlocksAndTransactions({
+      userId,
+      storyId,
+      episodes: [payload.episode],
+      unlockType: 'voucher',
+      unlockScope: 'single',
+      accessType: 'permanent',
+      expiresAt: null,
+      diamondSpent: 0,
+      transactionCurrency: 'voucher',
+      transactionAmount: voucherPrice,
+      metadata: {
+        reader_tier: tier,
+      },
+    })
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Episode unlocked with Voucher',
+      unlocked: true,
+      access_type: 'permanent',
+      unlocked_episode_ids: unlocks.map((unlock) => unlock.episode_id),
+      wallet: publicWallet(updatedWallet),
+    })
+  } catch (error) {
+    console.error('UNLOCK EPISODE WITH VOUCHER ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to unlock episode with Voucher',
       error: error.message,
     })
   }
