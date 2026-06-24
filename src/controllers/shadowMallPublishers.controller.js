@@ -1,7 +1,5 @@
 import { supabase } from '../config/supabase.js'
-
-const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'media'
-
+import { uploadFileToR2 } from '../services/r2Storage.service.js'
 function normalizePublisher(publisher) {
   return {
     id: publisher.id,
@@ -42,28 +40,7 @@ function cleanProductIds(value) {
 }
 
 async function uploadPublisherLogo(file) {
-  if (!file) return ''
-
-  const originalName = file.originalname || 'publisher-logo'
-  const fileExt = originalName.includes('.') ? originalName.split('.').pop() : 'jpg'
-  const safeExt = fileExt.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
-  const fileName = `shadow-mall/publishers/${Date.now()}-${Math.random().toString(36).slice(2)}.${safeExt}`
-
-  const { error: uploadError } = await supabase.storage
-    .from(BUCKET)
-    .upload(fileName, file.buffer, {
-      contentType: file.mimetype,
-      cacheControl: '3600',
-      upsert: false,
-    })
-
-  if (uploadError) throw uploadError
-
-  const { data: publicUrlData } = supabase.storage
-    .from(BUCKET)
-    .getPublicUrl(fileName)
-
-  return publicUrlData.publicUrl
+  return uploadFileToR2(file, 'shadow-mall/publishers')
 }
 
 async function getPublisherById(id) {
