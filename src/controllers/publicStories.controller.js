@@ -254,8 +254,10 @@ status: story.status,
   }
 }
 
-function publicEpisodeListItem(episode) {
+function publicEpisodeListItem(episode, story = null) {
   if (!episode) return null
+
+  const freeForReader = story ? isEpisodeFreeForReader(episode, story) : isFreeEpisode(episode)
 
   return {
     id: episode.id,
@@ -263,7 +265,7 @@ function publicEpisodeListItem(episode) {
     title: episode.title,
     cover_url: episode.cover_url,
     is_adult: episode.is_adult,
-    is_locked: Boolean(episode.is_locked),
+    is_locked: !freeForReader,
     unlock_methods: episode.unlock_methods || [],
     status: episode.status,
     episode_number: episode.episode_number,
@@ -993,7 +995,7 @@ export async function getPublicStoryEpisodes(req, res) {
 
     return res.status(200).json({
       ok: true,
-      episodes: (data || []).map(publicEpisodeListItem),
+      episodes: (data || []).map((episode) => publicEpisodeListItem(episode, story)),
     })
   } catch (error) {
     console.error('GET PUBLIC STORY EPISODES ERROR:', error)
@@ -1064,7 +1066,7 @@ export async function getPublicEpisodeById(req, res) {
           locked: true,
           story: publicStory(story),
           episode: {
-            ...publicEpisodeListItem(episode),
+            ...publicEpisodeListItem(episode, story),
             content: '',
           },
           free_first_episode: {
@@ -1100,7 +1102,7 @@ export async function getPublicEpisodeById(req, res) {
         locked: true,
         story: publicStory(story),
         episode: {
-          ...publicEpisodeListItem(episode),
+          ...publicEpisodeListItem(episode, story),
           content: '',
         },
       })
