@@ -1,6 +1,5 @@
 import { supabase } from '../config/supabase.js'
-
-const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'media'
+import { uploadFileToR2 } from '../services/r2Storage.service.js'
 const allowedPlacements = ['splash', 'opening', 'freeUnlock']
 const allowedFrequencies = ['once_per_session', 'once_per_day', 'every_visit', 'every_unlock']
 
@@ -62,25 +61,7 @@ async function createAdvertisementLog(req, payload) {
 }
 
 async function uploadAdvertisementImage(file, placement) {
-  if (!file) return ''
-
-  const originalName = file.originalname || 'advertisement-image'
-  const fileExt = originalName.includes('.') ? originalName.split('.').pop() : 'jpg'
-  const safeExt = fileExt.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
-  const fileName = `advertisements/${placement}-${Date.now()}-${Math.random().toString(36).slice(2)}.${safeExt}`
-
-  const { error: uploadError } = await supabase.storage
-    .from(BUCKET)
-    .upload(fileName, file.buffer, {
-      contentType: file.mimetype,
-      cacheControl: '3600',
-      upsert: false,
-    })
-
-  if (uploadError) throw uploadError
-
-  const { data } = supabase.storage.from(BUCKET).getPublicUrl(fileName)
-  return data.publicUrl
+  return uploadFileToR2(file, `advertisements/${placement}`)
 }
 
 export async function getPublicAdvertisement(req, res) {
