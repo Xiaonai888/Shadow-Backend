@@ -1,7 +1,5 @@
 import { supabase } from '../config/supabase.js'
-
-const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'media'
-
+import { uploadFileToR2 } from '../services/r2Storage.service.js'
 function toNumber(value, fallback = 0) {
   const number = Number(value)
   return Number.isFinite(number) ? number : fallback
@@ -75,28 +73,7 @@ function normalizeStockStatus(value) {
 }
 
 async function uploadShadowMallImage(file, folder = 'products') {
-  if (!file) return null
-
-  const originalName = file.originalname || 'shadow-mall-image'
-  const fileExt = originalName.includes('.') ? originalName.split('.').pop() : 'jpg'
-  const safeExt = fileExt.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
-  const fileName = `shadow-mall/${folder}/${Date.now()}-${Math.random().toString(36).slice(2)}.${safeExt}`
-
-  const { error: uploadError } = await supabase.storage
-    .from(BUCKET)
-    .upload(fileName, file.buffer, {
-      contentType: file.mimetype,
-      cacheControl: '3600',
-      upsert: false,
-    })
-
-  if (uploadError) throw uploadError
-
-  const { data: publicUrlData } = supabase.storage
-    .from(BUCKET)
-    .getPublicUrl(fileName)
-
-  return publicUrlData.publicUrl
+  return uploadFileToR2(file, `shadow-mall/${folder}`)
 }
 
 function getUploadedFile(req, name) {
