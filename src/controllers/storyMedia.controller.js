@@ -1,5 +1,6 @@
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { supabase } from '../config/supabase.js'
+import { uploadFileToR2 } from '../services/r2Storage.service.js'
 import {
   assertAuthorStorageAvailable,
   getAuthorStorageQuota,
@@ -267,29 +268,17 @@ if (!isPdfUpload && !req.file.mimetype?.startsWith('image/')) {
 })
     }
 
-    const folder = safeFolder(requestedFolder)
-    const storagePath = makeStoragePath({
-      folder,
-      userId,
-      file: req.file,
-    })
-
-    const { error } = await supabase.storage
-      .from(BUCKET)
-      .upload(storagePath, req.file.buffer, {
-        contentType: req.file.mimetype,
-        cacheControl: '3600',
-        upsert: false,
-      })
-
-    if (error) throw error
-
-    const imageUrl = getPublicUrl(storagePath)
+const folder = safeFolder(requestedFolder)
+const imageUrl = await uploadFileToR2(req.file, `${folder}/${userId}`)
+const publicBaseUrl = String(process.env.R2_PUBLIC_URL || '').replace(/\/+$/, '')
+const storagePath = publicBaseUrl && imageUrl.startsWith(`${publicBaseUrl}/`)
+  ? imageUrl.slice(publicBaseUrl.length + 1)
+  : imageUrl
 
     return res.status(201).json({
       ok: true,
       message: 'Image uploaded successfully',
-      bucket: BUCKET,
+      bucket: process.env.R2_BUCKET_NAME,
       path: storagePath,
       image_url: imageUrl,
       imageUrl,
