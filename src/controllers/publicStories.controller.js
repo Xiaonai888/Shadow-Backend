@@ -276,8 +276,11 @@ function publicEpisodeListItem(episode, story = null) {
   }
 }
 
-function publicEpisode(episode) {
+function publicEpisode(episode, story = null, unlocked = false) {
   if (!episode) return null
+
+  const freeForReader = story ? isEpisodeFreeForReader(episode, story) : isFreeEpisode(episode)
+  const accessible = Boolean(unlocked || freeForReader)
 
   return {
     id: episode.id,
@@ -286,7 +289,7 @@ function publicEpisode(episode) {
     cover_url: episode.cover_url,
     content: episode.content,
     is_adult: episode.is_adult,
-    is_locked: Boolean(episode.is_locked),
+    is_locked: !accessible,
     unlock_methods: episode.unlock_methods || [],
     status: episode.status,
     episode_number: episode.episode_number,
@@ -1052,39 +1055,19 @@ export async function getPublicEpisodeById(req, res) {
     const activeUnlock = await hasActiveEpisodeUnlock({ userId, episodeId })
 
     if (isFirstEpisode(episode)) {
-      const freeAccess = await checkAndSaveFreeFirstEpisodeAccess({
-        user,
-        storyId,
-        episode,
-      })
-
-      if (!freeAccess.ok) {
-        return res.status(freeAccess.status || 403).json({
-          ok: false,
-          code: freeAccess.code,
-          message: freeAccess.message,
-          locked: true,
-          story: publicStory(story),
-          episode: {
-            ...publicEpisodeListItem(episode, story),
-            content: '',
-          },
-          free_first_episode: {
-            limit: freeAccess.limit,
-            used: freeAccess.used,
-            remaining: freeAccess.remaining,
-            tier: freeAccess.tier,
-            month_key: freeAccess.month_key,
-          },
-        })
-      }
-
       return res.status(200).json({
         ok: true,
         locked: false,
         story: publicStory(story),
-        episode: publicEpisode(episode),
-        free_first_episode: freeAccess,
+        episode: publicEpisode(episode, story, true),
+        free_first_episode: {
+          counted: false,
+          limit: 'unlimited',
+          used: null,
+          remaining: 'unlimited',
+          tier: getReaderTier(user),
+          month_key: getMonthKey(),
+        },
         view: {
           counted: false,
           reason: 'qualified_view_required',
@@ -1112,7 +1095,7 @@ export async function getPublicEpisodeById(req, res) {
       ok: true,
       locked: false,
       story: publicStory(story),
-      episode: publicEpisode(episode),
+      episode: publicEpisode(episode, story, unlocked),
       view: {
         counted: false,
         reason: 'qualified_view_required',
@@ -1175,7 +1158,7 @@ export async function countQualifiedEpisodeView(req, res) {
       })
     }
 
-    const freeEpisode = isEpisodeFreeForReader(episode)
+    const freeEpisode = isEpisodeFreeForReader(episode, story)
     const activeUnlock = await hasActiveEpisodeUnlock({
       userId: user.user_id,
       episodeId,
