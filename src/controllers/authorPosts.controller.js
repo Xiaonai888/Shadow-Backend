@@ -31,6 +31,7 @@ function publicAuthorPost(post) {
     like_count: Number(post.like_count || 0),
     comment_count: Number(post.comment_count || 0),
     echo_count: Number(post.echo_count || 0),
+    reaction_summary: Array.isArray(post.reaction_summary) ? post.reaction_summary.slice(0, 3) : [],
     created_at: post.created_at,
     updated_at: post.updated_at,
   }
@@ -47,6 +48,42 @@ function getUtcDayRange(date = new Date()) {
     start: start.toISOString(),
     end: end.toISOString(),
   }
+}
+
+function buildReactionSummaryMap(reactions = []) {
+  const reactionOrder = ['love', 'haha', 'wow', 'sad', 'angry', 'support', 'touched']
+  const reactionRank = new Map(reactionOrder.map((type, index) => [type, index]))
+  const countsByPost = new Map()
+
+  for (const item of reactions || []) {
+    const postId = item?.post_id
+    const reactionType = String(item?.reaction_type || '').trim().toLowerCase()
+
+    if (!postId || !reactionType) continue
+
+    if (!countsByPost.has(postId)) {
+      countsByPost.set(postId, new Map())
+    }
+
+    const postCounts = countsByPost.get(postId)
+    postCounts.set(reactionType, Number(postCounts.get(reactionType) || 0) + 1)
+  }
+
+  const summaryByPost = new Map()
+
+  for (const [postId, counts] of countsByPost.entries()) {
+    const summary = [...counts.entries()]
+      .map(([type, count]) => ({ type, count }))
+      .sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count
+        return Number(reactionRank.get(a.type) ?? 99) - Number(reactionRank.get(b.type) ?? 99)
+      })
+      .slice(0, 3)
+
+    summaryByPost.set(postId, summary)
+  }
+
+  return summaryByPost
 }
 
 export async function getAuthorPagePosts(req, res) {
@@ -82,10 +119,29 @@ export async function getAuthorPagePosts(req, res) {
 
     if (postsError) throw postsError
 
-    return res.status(200).json({
-      ok: true,
-      posts: (posts || []).map(publicAuthorPost),
+    const postIds = (posts || []).map((post) => post.id).filter(Boolean)
+let reactionSummaryByPost = new Map()
+
+if (postIds.length) {
+  const { data: reactionRows, error: reactionSummaryError } = await supabase
+    .from('author_page_post_reactions')
+    .select('post_id, reaction_type')
+    .in('post_id', postIds)
+
+  if (reactionSummaryError) throw reactionSummaryError
+
+  reactionSummaryByPost = buildReactionSummaryMap(reactionRows || [])
+}
+
+return res.status(200).json({
+  ok: true,
+  posts: (posts || []).map((post) =>
+    publicAuthorPost({
+      ...post,
+      reaction_summary: reactionSummaryByPost.get(post.id) || [],
     })
+  ),
+})
   } catch (error) {
     console.error('GET AUTHOR PAGE POSTS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load author posts', error: error.message })
@@ -385,14 +441,15 @@ export async function setMyAuthorPostReaction(req, res) {
       if (insertReactionError) throw insertReactionError
     }
 
-    const { count, error: countError } = await supabase
-      .from('author_page_post_reactions')
-      .select('id', { count: 'exact', head: true })
-      .eq('post_id', postId)
+    const { data: reactionRows, error: reactionSummaryError } = await supabase
+  .from('author_page_post_reactions')
+  .select('post_id, reaction_type')
+  .eq('post_id', postId)
 
-    if (countError) throw countError
+if (reactionSummaryError) throw reactionSummaryError
 
-    const nextLikeCount = Number(count || 0)
+const reactionSummary = buildReactionSummaryMap(reactionRows || []).get(postId) || []
+const nextLikeCount = Number((reactionRows || []).length)
 
     const { data: updatedPost, error: updatePostError } = await supabase
       .from('author_page_posts')
@@ -407,12 +464,16 @@ export async function setMyAuthorPostReaction(req, res) {
     if (updatePostError) throw updatePostError
 
     return res.status(200).json({
-      ok: true,
-      reacted,
-      reaction_type: nextReactionType,
-      like_count: nextLikeCount,
-      post: publicAuthorPost(updatedPost),
-    })
+  ok: true,
+  reacted,
+  reaction_type: nextReactionType,
+  like_count: nextLikeCount,
+  reaction_summary: reactionSummary,
+  post: publicAuthorPost({
+    ...updatedPost,
+    reaction_summary: reactionSummary,
+  }),
+})
   } catch (error) {
     console.error('SET MY AUTHOR POST REACTION ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to update post reaction', error: error.message })
