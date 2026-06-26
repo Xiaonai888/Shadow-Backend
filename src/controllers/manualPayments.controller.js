@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
+import { uploadFileToR2 } from '../services/r2Storage.service.js'
 
 const PACKAGES = [
   { package_usd: 1, diamonds: 100, bonus_gems: 0 },
@@ -83,11 +84,8 @@ async function uploadProofImage({ userId, orderId, file }) {
   const allowedTypes = ['image/jpeg', 'image/png', 'image/webp']
   if (!file) return ''
   if (!allowedTypes.includes(file.mimetype)) throw new Error('Only JPG, PNG, or WEBP proof images are allowed')
-  const filePath = `${userId}/${orderId}-${Date.now()}.${getFileExt(file)}`
-  const { error } = await supabase.storage.from(PROOF_BUCKET).upload(filePath, file.buffer, { contentType: file.mimetype, upsert: false })
-  if (error) throw error
-  const { data } = supabase.storage.from(PROOF_BUCKET).getPublicUrl(filePath)
-  return data.publicUrl || ''
+
+  return uploadFileToR2(file, `payment-proofs/${userId}/${orderId}`)
 }
 
 async function cleanOldWaitingPayments(userId) {
