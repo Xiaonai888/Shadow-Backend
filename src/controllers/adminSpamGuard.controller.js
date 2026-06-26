@@ -1,387 +1,227 @@
 import { isIP } from 'node:net'
+import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 
-function toPositiveInt(value, fallback, max) {
-  const parsed = Number.parseInt(String(value || ''), 10)
-  if (!Number.isFinite(parsed) || parsed < 1) return fallback
-  return Math.min(parsed, max)
+function cleanText(value, maxLength = 500) {
+  return String(value || '').trim().slice(0, maxLength)
 }
 
-function cleanSearch(value) {
-  return String(value || '')
+function normalizeSingleIp(value) {
+  const raw = cleanText(value, 150)
     .trim()
-    .replace(/[%_,()]/g, ' ')
-    .slice(0, 120)
+    .replace(/^::ffff:/, '')
+
+  return isIP(raw) ? raw : ''
 }
 
-function formatState(row) {
+function getForwardedIp(value) {
+  const candidates = String(value || '')
+    .split(',')
+    .map((item) => normalizeSingleIp(item))
+    .filter(Boolean)
+
+  return candidates.at(-1) || ''
+}
+
+function getClientIp(req) {
+  return (
+    getForwardedIp(req.headers['x-forwarded-for'])
+    || normalizeSingleIp(req.socket?.remoteAddress)
+    || ''
+  )
+}
+
+function readBearerAccountId(req) {
+  try {
+    const authHeader = cleanText(req.headers.authorization, 5000)
+    const token = authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7)
+      : ''
+
+    if (!token || !process.env.JWT_SECRET) return ''
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET)
+
+    return cleanText(
+      decoded?.user_id
+        || decoded?.admin_id
+        || decoded?.id
+        || decoded?.sub,
+      200
+    )
+  } catch {
+    return ''
+  }
+}
+
+function getVisitorId(req) {
+  return cleanText(
+    req.headers['x-shadow-visitor-id']
+      || req.headers['x-visitor-id']
+      || req.body?.visitor_id
+      || req.query?.visitor_id,
+    200
+  )
+}
+
+function buildGuardIdentity(req) {
+  const accountId = cleanText(req.user?.user_id, 200)
+    || readBearerAccountId(req)
+  const visitorId = getVisitorId(req)
+  const ipAddress = getClientIp(req)
+
+  const guardKey = accountId
+    ? `account:${accountId}`
+    : ipAddress
+      ? `ip:${ipAddress}`
+      : visitorId
+        ? `visitor:${visitorId}`
+        : ''
+
   return {
-    id: row.id,
-    guard_key: row.guard_key || '',
-    scope: row.scope || 'global',
-    ip_address: row.ip_address || '',
-    visitor_id: row.visitor_id || '',
-    account_id: row.account_id || '',
-    request_count: Number(row.request_count || 0),
-    offense_count: Number(row.offense_count || 0),
-    spam_score: Number(row.spam_score || 0),
-    cooldown_until: row.cooldown_until,
-    is_in_cooldown: Boolean(
-      row.cooldown_until
-      && new Date(row.cooldown_until).getTime() > Date.now()
-    ),
-    last_reason: row.last_reason || '',
-    last_endpoint: row.last_endpoint || '',
-    last_method: row.last_method || '',
-    window_started_at: row.window_started_at,
-    first_seen_at: row.first_seen_at,
-    last_seen_at: row.last_seen_at,
-    last_offense_at: row.last_offense_at,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
+    guardKey,
+    accountId,
+    visitorId,
+    ipAddress,
   }
 }
 
-function formatEvent(row) {
-  return {
-    id: row.id,
-    state_id: row.state_id,
-    guard_key: row.guard_key || '',
-    scope: row.scope || 'global',
-    ip_address: row.ip_address || '',
-    visitor_id: row.visitor_id || '',
-    account_id: row.account_id || '',
-    endpoint: row.endpoint || '',
-    method: row.method || '',
-    action: row.action || '',
-    reason: row.reason || '',
-    request_count: Number(row.request_count || 0),
-    window_seconds: Number(row.window_seconds || 0),
-    offense_count: Number(row.offense_count || 0),
-    spam_score: Number(row.spam_score || 0),
-    cooldown_until: row.cooldown_until,
-    metadata: row.metadata || {},
-    occurred_at: row.occurred_at,
-    created_at: row.created_at,
-  }
+function shouldSkipPath(path, skipPaths) {
+  return skipPaths.some((item) => (
+    item.endsWith('*')
+      ? path.startsWith(item.slice(0, -1))
+      : path === item
+  ))
 }
 
-async function countRows(table, applyFilters = (query) => query) {
-  let query = supabase
-    .from(table)
-    .select('id', {
-      count: 'exact',
-      head: true,
-    })
-
-  query = applyFilters(query)
-
-  const { count, error } = await query
-
-  if (error) throw error
-  return count || 0
+function normalizeResult(data) {
+  if (Array.isArray(data)) return data[0] || null
+  return data || null
 }
 
-export async function getAdminSpamGuardOverview(req, res) {
-  try {
-    const now = new Date().toISOString()
-    const dayStart = new Date()
-    dayStart.setHours(0, 0, 0, 0)
+function resolveBlockStatus(result) {
+  const status = cleanText(result?.block_status, 80)
 
-    const [
-      totalTracked,
-      activeCooldowns,
-      offendersToday,
-      highSpamScore,
-      visitorTrackingCooldowns,
-      accountAccessCooldowns,
-      readerActionCooldowns,
-      paymentCooldowns,
-    ] = await Promise.all([
-      countRows('spam_guard_state'),
-      countRows(
-        'spam_guard_state',
-        (query) => query.gt('cooldown_until', now)
-      ),
-      countRows(
-        'spam_guard_events',
-        (query) => query
-          .eq('action', 'cooldown_started')
-          .gte('occurred_at', dayStart.toISOString())
-      ),
-      countRows(
-        'spam_guard_state',
-        (query) => query.gte('spam_score', 90)
-      ),
-      countRows(
-        'spam_guard_state',
-        (query) => query
-          .eq('scope', 'visitor_tracking')
-          .gt('cooldown_until', now)
-      ),
-      countRows(
-        'spam_guard_state',
-        (query) => query
-          .eq('scope', 'account_access')
-          .gt('cooldown_until', now)
-      ),
-      countRows(
-        'spam_guard_state',
-        (query) => query
-          .eq('scope', 'reader_actions')
-          .gt('cooldown_until', now)
-      ),
-      countRows(
-        'spam_guard_state',
-        (query) => query
-          .eq('scope', 'payment_actions')
-          .gt('cooldown_until', now)
-      ),
-    ])
-
-    return res.status(200).json({
-      ok: true,
-      summary: {
-        total_tracked: totalTracked,
-        active_cooldowns: activeCooldowns,
-        offenses_today: offendersToday,
-        high_spam_score: highSpamScore,
-        visitor_tracking_cooldowns: visitorTrackingCooldowns,
-        account_access_cooldowns: accountAccessCooldowns,
-        reader_action_cooldowns: readerActionCooldowns,
-        payment_cooldowns: paymentCooldowns,
-      },
-    })
-  } catch (error) {
-    console.error('ADMIN SPAM GUARD OVERVIEW ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load spam guard overview',
-      error: error.message,
-    })
-  }
+  if (status) return status
+  if (result?.is_permanent_blocked) return 'permanent_block'
+  if (result?.quarantine_until) return 'seven_day_quarantine'
+  if (result?.cooldown_until) return 'temporary_cooldown'
+  return 'allowed'
 }
 
-export async function getAdminSpamGuardStates(req, res) {
-  try {
-    const page = toPositiveInt(req.query.page, 1, 100000)
-    const limit = toPositiveInt(req.query.limit, 20, 100)
-    const filter = String(req.query.filter || 'all').trim().toLowerCase()
-    const scope = String(req.query.scope || '').trim().toLowerCase()
-    const q = cleanSearch(req.query.q)
-    const from = (page - 1) * limit
-    const to = from + limit - 1
-    const now = new Date().toISOString()
+function buildBlockCode(blockStatus) {
+  if (blockStatus === 'permanent_block') return 'PERMANENT_BLOCK'
+  if (blockStatus === 'seven_day_quarantine') return 'SEVEN_DAY_QUARANTINE'
+  return 'TEMPORARY_COOLDOWN'
+}
 
-    let query = supabase
-      .from('spam_guard_state')
-      .select(
-        'id, guard_key, scope, ip_address, visitor_id, account_id, window_started_at, request_count, offense_count, cooldown_until, spam_score, last_reason, last_endpoint, last_method, first_seen_at, last_seen_at, last_offense_at, created_at, updated_at',
-        { count: 'exact' }
-      )
-      .order('updated_at', { ascending: false })
-      .range(from, to)
+function buildBlockMessage(blockStatus) {
+  if (blockStatus === 'permanent_block') return 'This identity has been permanently blocked.'
+  if (blockStatus === 'seven_day_quarantine') return 'This identity is quarantined for repeated spam.'
+  return 'Too many requests. Please wait before trying again.'
+}
 
-    if (scope) query = query.eq('scope', scope)
+function buildHeaderStatus(blockStatus) {
+  if (blockStatus === 'permanent_block') return 'permanent-block'
+  if (blockStatus === 'seven_day_quarantine') return 'seven-day-quarantine'
+  return 'temporary-cooldown'
+}
 
-    if (filter === 'cooldown') {
-      query = query.gt('cooldown_until', now)
-    } else if (filter === 'released') {
-      query = query.or(`cooldown_until.is.null,cooldown_until.lte.${now}`)
-    } else if (filter === 'high_score') {
-      query = query.gte('spam_score', 90)
-    } else if (filter === 'repeat_offender') {
-      query = query.gte('offense_count', 2)
-    }
+export function createSpamGuard({
+  scope = 'global',
+  threshold = 120,
+  windowSeconds = 60,
+  skipPaths = [],
+  failOpen = true,
+} = {}) {
+  const safeScope = cleanText(scope, 80) || 'global'
+  const safeThreshold = Math.max(1, Number(threshold) || 120)
+  const safeWindowSeconds = Math.max(1, Number(windowSeconds) || 60)
 
-    if (q) {
-      if (isIP(q)) {
-        query = query.eq('ip_address', q)
-      } else {
-        query = query.or(
-          `guard_key.ilike.%${q}%,scope.ilike.%${q}%,visitor_id.ilike.%${q}%,account_id.ilike.%${q}%,last_endpoint.ilike.%${q}%,last_reason.ilike.%${q}%`
-        )
+  return async function spamGuardMiddleware(req, res, next) {
+    if (req.method === 'OPTIONS') return next()
+
+    const requestPath = cleanText(req.originalUrl || req.url || '/', 500)
+
+    if (shouldSkipPath(requestPath, skipPaths)) return next()
+
+    const identity = buildGuardIdentity(req)
+
+    if (!identity.guardKey) return next()
+
+    try {
+      const { data, error } = await supabase.rpc('evaluate_spam_guard', {
+        p_guard_key: identity.guardKey,
+        p_scope: safeScope,
+        p_ip_address: identity.ipAddress || null,
+        p_visitor_id: identity.visitorId || null,
+        p_account_id: identity.accountId || null,
+        p_endpoint: requestPath,
+        p_method: req.method,
+        p_threshold: safeThreshold,
+        p_window_seconds: safeWindowSeconds,
+      })
+
+      if (error) throw error
+
+      const result = normalizeResult(data)
+
+      if (!result) return next()
+
+      const blockStatus = resolveBlockStatus(result)
+
+      req.spamGuard = {
+        scope: safeScope,
+        guard_key: identity.guardKey,
+        request_count: Number(result.request_count || 0),
+        offense_count: Number(result.offense_count || 0),
+        spam_score: Number(result.spam_score || 0),
+        cooldown_until: result.cooldown_until || null,
+        quarantine_until: result.quarantine_until || null,
+        block_status: blockStatus,
+        is_permanent_blocked: Boolean(result.is_permanent_blocked),
       }
-    }
 
-    const { data, error, count } = await query
+      if (result.allowed !== false) return next()
 
-    if (error) throw error
-
-    const total = count || 0
-    const totalPages = Math.max(1, Math.ceil(total / limit))
-
-    return res.status(200).json({
-      ok: true,
-      states: (data || []).map(formatState),
-      page,
-      limit,
-      total,
-      total_pages: totalPages,
-      has_next: page < totalPages,
-      has_prev: page > 1,
-    })
-  } catch (error) {
-    console.error('ADMIN SPAM GUARD STATES ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load spam guard states',
-      error: error.message,
-    })
-  }
-}
-
-export async function getAdminSpamGuardEvents(req, res) {
-  try {
-    const page = toPositiveInt(req.query.page, 1, 100000)
-    const limit = toPositiveInt(req.query.limit, 20, 100)
-    const scope = String(req.query.scope || '').trim().toLowerCase()
-    const action = String(req.query.action || '').trim().toLowerCase()
-    const q = cleanSearch(req.query.q)
-    const from = (page - 1) * limit
-    const to = from + limit - 1
-
-    let query = supabase
-      .from('spam_guard_events')
-      .select(
-        'id, state_id, guard_key, scope, ip_address, visitor_id, account_id, endpoint, method, action, reason, request_count, window_seconds, offense_count, spam_score, cooldown_until, metadata, occurred_at, created_at',
-        { count: 'exact' }
+      const retryAfter = Math.max(
+        0,
+        Number(result.retry_after_seconds || 0)
       )
-      .order('occurred_at', { ascending: false })
-      .range(from, to)
+      const statusCode = blockStatus === 'permanent_block' ? 403 : 429
 
-    if (scope) query = query.eq('scope', scope)
-    if (action) query = query.eq('action', action)
+      if (retryAfter > 0) res.setHeader('Retry-After', String(retryAfter))
+      res.setHeader('X-Spam-Guard', buildHeaderStatus(blockStatus))
+      res.setHeader('X-Spam-Guard-Scope', safeScope)
 
-    if (q) {
-      if (isIP(q)) {
-        query = query.eq('ip_address', q)
-      } else {
-        query = query.or(
-          `guard_key.ilike.%${q}%,scope.ilike.%${q}%,visitor_id.ilike.%${q}%,account_id.ilike.%${q}%,endpoint.ilike.%${q}%,reason.ilike.%${q}%,action.ilike.%${q}%`
-        )
-      }
-    }
-
-    const { data, error, count } = await query
-
-    if (error) throw error
-
-    const total = count || 0
-    const totalPages = Math.max(1, Math.ceil(total / limit))
-
-    return res.status(200).json({
-      ok: true,
-      events: (data || []).map(formatEvent),
-      page,
-      limit,
-      total,
-      total_pages: totalPages,
-      has_next: page < totalPages,
-      has_prev: page > 1,
-    })
-  } catch (error) {
-    console.error('ADMIN SPAM GUARD EVENTS ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load spam guard events',
-      error: error.message,
-    })
-  }
-}
-
-export async function releaseAdminSpamGuardCooldown(req, res) {
-  try {
-    const stateId = String(req.params.stateId || '').trim()
-
-    if (!/^[0-9a-f-]{36}$/i.test(stateId)) {
-      return res.status(400).json({
+      return res.status(statusCode).json({
         ok: false,
-        message: 'Invalid spam guard state ID',
+        code: buildBlockCode(blockStatus),
+        message: buildBlockMessage(blockStatus),
+        scope: safeScope,
+        block_status: blockStatus,
+        retry_after_seconds: retryAfter,
+        cooldown_until: result.cooldown_until || null,
+        quarantine_until: result.quarantine_until || null,
+        permanent_blocked_at: result.permanent_blocked_at || null,
+        offense_count: Number(result.offense_count || 0),
+        spam_score: Number(result.spam_score || 0),
+        reason: result.reason || 'Request blocked by Spam Guard',
       })
-    }
+    } catch (error) {
+      console.error('SPAM GUARD ERROR:', {
+        scope: safeScope,
+        path: requestPath,
+        message: error?.message || error,
+      })
 
-    const { data: existing, error: findError } = await supabase
-      .from('spam_guard_state')
-      .select('*')
-      .eq('id', stateId)
-      .maybeSingle()
+      if (failOpen) return next()
 
-    if (findError) throw findError
-
-    if (!existing) {
-      return res.status(404).json({
+      return res.status(503).json({
         ok: false,
-        message: 'Spam guard state not found',
+        code: 'SPAM_GUARD_UNAVAILABLE',
+        message: 'Request protection is temporarily unavailable.',
       })
     }
-
-    const now = new Date().toISOString()
-    const adminName = String(
-      req.admin?.name
-      || req.admin?.username
-      || req.admin?.email
-      || 'Admin'
-    ).slice(0, 160)
-
-    const { data: updated, error: updateError } = await supabase
-      .from('spam_guard_state')
-      .update({
-        cooldown_until: null,
-        request_count: 0,
-        window_started_at: now,
-        last_reason: `Cooldown released manually by ${adminName}`,
-        updated_at: now,
-      })
-      .eq('id', stateId)
-      .select()
-      .single()
-
-    if (updateError) throw updateError
-
-    const { error: eventError } = await supabase
-      .from('spam_guard_events')
-      .insert({
-        state_id: existing.id,
-        guard_key: existing.guard_key,
-        scope: existing.scope,
-        ip_address: existing.ip_address,
-        visitor_id: existing.visitor_id,
-        account_id: existing.account_id,
-        endpoint: existing.last_endpoint || '',
-        method: existing.last_method || '',
-        action: 'cooldown_released',
-        reason: `Released manually by ${adminName}`,
-        request_count: Number(existing.request_count || 0),
-        window_seconds: 0,
-        offense_count: Number(existing.offense_count || 0),
-        spam_score: Number(existing.spam_score || 0),
-        cooldown_until: null,
-        metadata: {
-          released_by: adminName,
-          previous_cooldown_until: existing.cooldown_until,
-        },
-        occurred_at: now,
-        created_at: now,
-      })
-
-    if (eventError) throw eventError
-
-    return res.status(200).json({
-      ok: true,
-      message: 'Temporary cooldown released',
-      state: formatState(updated),
-    })
-  } catch (error) {
-    console.error('ADMIN SPAM GUARD RELEASE ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to release temporary cooldown',
-      error: error.message,
-    })
   }
 }
