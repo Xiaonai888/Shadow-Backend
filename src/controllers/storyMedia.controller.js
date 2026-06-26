@@ -21,6 +21,7 @@ const R2_FOLDERS = {
   author_post_image: 'author-posts/images',
   author_store_cover: 'author-store/covers',
   author_store_pdf: 'author-store/pdfs',
+  author_store_gallery: 'author-store/gallery',
   author_page_cover: 'author-page/covers',
   author_page_slide: 'author-page/slides',
   author_page_avatar: 'author-page/avatars',
@@ -156,7 +157,7 @@ async function uploadAuthorImageToR2({ authorPage, userId, file, folderKey }) {
     mimeType: file.mimetype,
     fileSize: file.size,
     uploadedBy: userId,
-    sourceTable: ['author_store_cover', 'author_store_pdf'].includes(folderKey)
+    sourceTable: ['author_store_cover', 'author_store_pdf', 'author_store_gallery'].includes(folderKey)
   ? 'author_store_products'
   : 'author_page_posts',
     sourceId: null,
