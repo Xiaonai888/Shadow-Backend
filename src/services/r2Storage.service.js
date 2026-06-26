@@ -1,4 +1,5 @@
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
+import sharp from 'sharp'
 
 let r2Client = null
 
@@ -71,6 +72,31 @@ export async function uploadFileToR2(file, folder = 'uploads') {
     Key: fileName,
     Body: file.buffer,
     ContentType: file.mimetype,
+    CacheControl: 'public, max-age=31536000, immutable',
+  }))
+
+  return `${getR2PublicUrl()}/${fileName}`
+}
+
+export async function uploadImageToR2AsWebP(file, folder = 'uploads', options = {}) {
+  if (!file) return null
+
+  const safeFolder = String(folder || 'uploads').replace(/^\/+|\/+$/g, '')
+  const fileName = `${safeFolder}/${Date.now()}-${Math.random().toString(36).slice(2)}.webp`
+  const width = Number(options.width || 1600)
+  const quality = Number(options.quality || 82)
+
+  const buffer = await sharp(file.buffer)
+    .rotate()
+    .resize({ width, withoutEnlargement: true })
+    .webp({ quality })
+    .toBuffer()
+
+  await getR2Client().send(new PutObjectCommand({
+    Bucket: getR2BucketName(),
+    Key: fileName,
+    Body: buffer,
+    ContentType: 'image/webp',
     CacheControl: 'public, max-age=31536000, immutable',
   }))
 
