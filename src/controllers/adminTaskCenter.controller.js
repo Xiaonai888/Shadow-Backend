@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
-import { uploadFileToR2 } from '../services/r2Storage.service.js'
+import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
+
 
 const SETTING_KEY = 'main'
 
@@ -85,7 +86,7 @@ export async function updateAdminTaskCenterCover(req, res) {
       return res.status(400).json({ ok: false, message: 'Only WebP, JPG, or PNG cover images are allowed' })
     }
 
-    const coverUrl = await uploadFileToR2(req.file, 'task-center/covers')
+    const coverUrl = await uploadImageToR2AsWebP(req.file, 'task-center/covers', { width: 1600, quality: 82 })
     const now = new Date().toISOString()
 
     const { data, error } = await supabase
