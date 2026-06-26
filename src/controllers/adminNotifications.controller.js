@@ -1,5 +1,5 @@
 import { supabase } from '../config/supabase.js'
-const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'media'
+import { uploadFileToR2 } from '../services/r2Storage.service.js'
 
 function normalizeText(value) {
   return String(value || '').trim()
@@ -210,28 +210,11 @@ export async function uploadAdminNotificationImage(req, res) {
       return res.status(400).json({ ok: false, message: 'Only image files are allowed' })
     }
 
-    const originalName = req.file.originalname || 'notification-image'
-    const fileExt = originalName.includes('.') ? originalName.split('.').pop() : 'jpg'
-    const safeExt = fileExt.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
-    const fileName = `notifications/${Date.now()}-${Math.random().toString(36).slice(2)}.${safeExt}`
-
-    const { error: uploadError } = await supabase.storage
-      .from(BUCKET)
-      .upload(fileName, req.file.buffer, {
-        contentType: req.file.mimetype,
-        cacheControl: '3600',
-        upsert: false,
-      })
-
-    if (uploadError) throw uploadError
-
-    const { data: publicUrlData } = supabase.storage
-      .from(BUCKET)
-      .getPublicUrl(fileName)
+    const imageUrl = await uploadFileToR2(req.file, 'notifications')
 
     return res.status(201).json({
       ok: true,
-      image_url: publicUrlData.publicUrl,
+      image_url: imageUrl,
     })
   } catch (error) {
     console.error('UPLOAD NOTIFICATION IMAGE ERROR:', error)
