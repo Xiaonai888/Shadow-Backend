@@ -1,6 +1,11 @@
 import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
+import {
+  checkAdminLoginAllowed,
+  recordAdminLoginFailure,
+  recordAdminLoginSuccess,
+} from '../services/adminGuard.service.js'
 
 const MAX_LOGIN_ATTEMPTS = 5
 
@@ -243,16 +248,19 @@ export async function adminLogin(req, res) {
       })
     }
 
-    const clientKey = getClientKey(req, email)
-    const attemptState = getAttemptState(clientKey)
+    const guardCheck = await checkAdminLoginAllowed({ req, email })
 
-    if (attemptState.isLocked) {
+    if (guardCheck.allowed === false) {
+      res.setHeader('Retry-After', String(guardCheck.retry_after_seconds || 60))
+
       return res.status(429).json({
         ok: false,
-        message: `Too many failed login attempts. Please try again in ${formatRemainingTime(attemptState.remainingMs)}.`,
+        code: guardCheck.code || 'ADMIN_LOGIN_BLOCKED',
+        message: guardCheck.message || 'Admin login is temporarily blocked.',
         locked: true,
-        remainingMs: attemptState.remainingMs,
-        lockLevel: attemptState.lockLevel,
+        block_status: guardCheck.status || 'temporary_block',
+        blocked_until: guardCheck.blocked_until || null,
+        retry_after_seconds: guardCheck.retry_after_seconds || 60,
       })
     }
 
@@ -266,26 +274,42 @@ export async function adminLogin(req, res) {
     const admin = Array.isArray(data) ? data[0] : null
 
     if (!admin) {
-      const failed = recordFailedLogin(clientKey)
+      const failed = await recordAdminLoginFailure({
+        req,
+        email,
+        reason: 'Invalid admin email or password',
+      })
 
       if (failed.locked) {
+        res.setHeader('Retry-After', String(failed.retry_after_seconds || 60))
+
         return res.status(429).json({
           ok: false,
-          message: `Too many failed login attempts. Please try again in ${formatRemainingTime(failed.remainingMs)}.`,
+          code: failed.code,
+          message: failed.message,
           locked: true,
-          remainingMs: failed.remainingMs,
-          lockLevel: failed.lockLevel,
+          block_status: failed.block_status,
+          blocked_until: failed.blocked_until,
+          retry_after_seconds: failed.retry_after_seconds,
+          failed_count: failed.failed_count,
         })
       }
 
       return res.status(401).json({
         ok: false,
-        message: `Email or password is incorrect. ${failed.attemptsLeft} attempt${failed.attemptsLeft > 1 ? 's' : ''} left before temporary lock.`,
+        code: 'ADMIN_LOGIN_FAILED',
+        message: failed.message || 'Email or password is incorrect.',
         attemptsLeft: failed.attemptsLeft,
+        failed_count: failed.failed_count,
       })
     }
 
-    clearFailedLogin(clientKey)
+    const adminGuard = await recordAdminLoginSuccess({
+      req,
+      res,
+      email,
+      admin,
+    })
 
     const token = createToken(admin)
 
@@ -299,6 +323,7 @@ export async function adminLogin(req, res) {
         role: admin.role,
         password_changed_at: admin.password_changed_at,
       },
+      admin_guard: adminGuard,
     })
   } catch (error) {
     console.error('ADMIN LOGIN ERROR:', error)
