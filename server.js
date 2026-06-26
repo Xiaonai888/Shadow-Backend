@@ -40,6 +40,7 @@ import authorStoreRoutes from './src/routes/authorStore.routes.js'
 import adminIncomeRoutes from './src/routes/adminIncome.routes.js'
 import visitorAnalyticsRoutes from './src/routes/visitorAnalytics.routes.js'
 import { createSpamGuard } from './src/middleware/spamGuard.middleware.js'
+import adminTaskCenterRoutes from './src/routes/adminTaskCenter.routes.js'
 
 dotenv.config()
 
@@ -160,6 +161,7 @@ app.use('/api/authors/media', readerActionSpamGuard, authorMediaRoutes)
 app.use('/api/author-store', readerActionSpamGuard, authorStoreRoutes)
 app.use('/api/admin/income', adminIncomeRoutes)
 app.use('/api/visitors', visitorTrackingSpamGuard, visitorAnalyticsRoutes)
+app.use('/api/task-center', adminTaskCenterRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
