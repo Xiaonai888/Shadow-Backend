@@ -42,6 +42,7 @@ import visitorAnalyticsRoutes from './src/routes/visitorAnalytics.routes.js'
 import { createSpamGuard } from './src/middleware/spamGuard.middleware.js'
 import adminTaskCenterRoutes from './src/routes/adminTaskCenter.routes.js'
 import adminLoginGuardRoutes from './src/routes/adminLoginGuard.routes.js'
+import adminDeviceAccessRoutes from './src/routes/adminDeviceAccess.routes.js'
 
 dotenv.config()
 
@@ -164,6 +165,7 @@ app.use('/api/admin/income', adminIncomeRoutes)
 app.use('/api/visitors', visitorTrackingSpamGuard, visitorAnalyticsRoutes)
 app.use('/api/task-center', adminTaskCenterRoutes)
 app.use('/api/admin/login-guard', adminLoginGuardRoutes)
+app.use('/api/admin/device-access', adminDeviceAccessRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
