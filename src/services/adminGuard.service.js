@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import { isIP } from 'node:net'
 import { supabase } from '../config/supabase.js'
+import { createAdminSecurityAlert, getAdminRequestCountry } from './adminSecurityAlerts.service.js'
 
 const ADMIN_DEVICE_COOKIE = 'shadow_admin_device'
 const TRUSTED_DEVICE_DAYS = 90
@@ -91,15 +92,13 @@ function resolveBlock(failedCount, isTrusted) {
   const count = Number(failedCount || 0)
 
   if (isTrusted) {
-    if (count >= 16) return { status: 'seven_day_block', type: 'seven_day', seconds: 7 * 24 * 60 * 60, level: 4 }
-    if (count >= 12) return { status: 'day_block', type: 'day', seconds: 24 * 60 * 60, level: 3 }
-    if (count >= 8) return { status: 'one_hour_block', type: 'one_hour', seconds: 60 * 60, level: 2 }
+    if (count >= 20) return { status: 'day_block', type: 'day', seconds: 24 * 60 * 60, level: 3 }
+    if (count >= 10) return { status: 'one_hour_block', type: 'one_hour', seconds: 60 * 60, level: 2 }
     if (count >= 5) return { status: 'temporary_block', type: 'temporary', seconds: 15 * 60, level: 1 }
     return null
   }
 
-  if (count >= 10) return { status: 'seven_day_block', type: 'seven_day', seconds: 7 * 24 * 60 * 60, level: 4 }
-  if (count >= 8) return { status: 'day_block', type: 'day', seconds: 24 * 60 * 60, level: 3 }
+  if (count >= 10) return { status: 'day_block', type: 'day', seconds: 24 * 60 * 60, level: 3 }
   if (count >= 5) return { status: 'one_hour_block', type: 'one_hour', seconds: 60 * 60, level: 2 }
   if (count >= 3) return { status: 'temporary_block', type: 'temporary', seconds: 15 * 60, level: 1 }
 
@@ -107,14 +106,14 @@ function resolveBlock(failedCount, isTrusted) {
 }
 
 function blockCode(status) {
-  if (status === 'seven_day_block') return 'ADMIN_SEVEN_DAY_BLOCK'
   if (status === 'permanent_block') return 'ADMIN_PERMANENT_BLOCK'
   return 'ADMIN_TEMPORARY_BLOCK'
 }
 
 function blockMessage(status, retryAfterSeconds) {
   if (status === 'permanent_block') return 'This admin login identity is permanently blocked.'
-  if (status === 'seven_day_block') return 'Admin login is blocked for 7 days because of repeated failed attempts.'
+  if (status === 'day_block') return 'Admin login is blocked for 24 hours because of repeated failed attempts.'
+  if (status === 'one_hour_block') return 'Admin login is blocked for 1 hour because of repeated failed attempts.'
   return `Too many failed admin login attempts. Please try again in ${Math.ceil(Number(retryAfterSeconds || 60) / 60)} minute(s).`
 }
 
@@ -187,6 +186,7 @@ async function buildContext(req, email = '') {
   const deviceTokenHash = deviceToken ? hashToken(deviceToken) : ''
   const deviceId = deviceToken ? createDeviceId(deviceToken) : ''
   const attemptedEmail = normalizeEmail(email)
+  const country = getAdminRequestCountry(req)
   const guardKey = `ip:${ipAddress}`
   const ctx = {
     guardKey,
@@ -196,6 +196,8 @@ async function buildContext(req, email = '') {
     deviceTokenHash,
     deviceId,
     attemptedEmail,
+    countryCode: country.country_code,
+    countryName: country.country_name,
     trustedDevice: null,
     trustedIp: null,
     isTrusted: false,
@@ -231,6 +233,8 @@ async function ensureState(ctx) {
     device_id: ctx.deviceId,
     attempted_email: ctx.attemptedEmail,
     user_agent: ctx.userAgent,
+    country_code: ctx.countryCode,
+    country_name: ctx.countryName,
     block_status: 'allowed',
     first_seen_at: now,
     created_at: now,
@@ -267,6 +271,8 @@ async function insertEvent(state, ctx, payload) {
       admin_id: payload.admin_id || '',
       admin_email: payload.admin_email || '',
       user_agent: ctx.userAgent,
+      country_code: ctx.countryCode || '',
+      country_name: ctx.countryName || '',
       action: payload.action || 'login_attempt',
       result: payload.result || 'failed',
       reason: payload.reason || '',
@@ -298,6 +304,28 @@ async function updateState(id, payload) {
   return data
 }
 
+async function alertBlockedAttempt(req, ctx, state, payload = {}) {
+  await createAdminSecurityAlert({
+    req,
+    email: ctx.attemptedEmail,
+    deviceId: ctx.deviceId || null,
+    alertType: payload.alertType || 'admin_login_blocked',
+    severity: payload.severity || 'high',
+    title: payload.title || 'Blocked admin login attempt',
+    message: payload.message || state?.last_reason || 'A blocked admin login attempt was detected.',
+    metadata: {
+      guard_key: ctx.guardKey,
+      block_status: payload.block_status || state?.block_status || '',
+      blocked_until: payload.blocked_until || state?.blocked_until || null,
+      failed_count: Number(payload.failed_count || state?.failed_count || 0),
+      trusted_device: Boolean(ctx.trustedDevice),
+      trusted_ip: Boolean(ctx.trustedIp),
+      country_code: ctx.countryCode,
+      country_name: ctx.countryName,
+    },
+  })
+}
+
 export async function checkAdminLoginAllowed({ req, email }) {
   try {
     const ctx = await buildContext(req, email)
@@ -310,6 +338,14 @@ export async function checkAdminLoginAllowed({ req, email }) {
         reason: state.permanent_block_reason || 'Permanent admin login block',
         block_status: 'permanent_block',
         blocked_until: null,
+      })
+
+      await alertBlockedAttempt(req, ctx, state, {
+        alertType: 'admin_login_permanent_block_hit',
+        severity: 'critical',
+        title: 'Permanently blocked admin login tried again',
+        message: state.permanent_block_reason || 'A permanently blocked identity tried to access admin login.',
+        block_status: 'permanent_block',
       })
 
       return {
@@ -332,6 +368,13 @@ export async function checkAdminLoginAllowed({ req, email }) {
         reason: state.last_reason || 'Admin login block active',
         block_status: state.block_status || 'temporary_block',
         blocked_until: state.blocked_until,
+      })
+
+      await alertBlockedAttempt(req, ctx, state, {
+        alertType: 'admin_login_block_active_hit',
+        severity: 'high',
+        title: 'Blocked admin IP tried again',
+        message: state.last_reason || 'An already blocked admin login identity tried again.',
       })
 
       return {
@@ -374,6 +417,8 @@ export async function recordAdminLoginFailure({ req, email, reason = 'Invalid ad
       device_id: ctx.deviceId,
       attempted_email: ctx.attemptedEmail,
       user_agent: ctx.userAgent,
+      country_code: ctx.countryCode,
+      country_name: ctx.countryName,
       failed_count: nextFailedCount,
       block_level: blockLevel,
       block_status: status,
@@ -396,6 +441,30 @@ export async function recordAdminLoginFailure({ req, email, reason = 'Invalid ad
       metadata: {
         trusted_device: Boolean(ctx.trustedDevice),
         trusted_ip: Boolean(ctx.trustedIp),
+        country_code: ctx.countryCode,
+        country_name: ctx.countryName,
+      },
+    })
+
+    await createAdminSecurityAlert({
+      req,
+      email: ctx.attemptedEmail,
+      deviceId: ctx.deviceId || null,
+      alertType: block ? 'admin_login_auto_blocked' : 'admin_login_failed',
+      severity: block ? (block.level >= 3 ? 'critical' : 'high') : (nextFailedCount >= 2 ? 'medium' : 'low'),
+      title: block ? 'Admin login auto blocked' : 'Failed admin login attempt',
+      message: block
+        ? updated.last_reason
+        : `Failed admin login attempt for ${ctx.attemptedEmail || 'unknown admin email'}`,
+      metadata: {
+        guard_key: ctx.guardKey,
+        failed_count: nextFailedCount,
+        block_status: status,
+        blocked_until: blockedUntil,
+        trusted_device: Boolean(ctx.trustedDevice),
+        trusted_ip: Boolean(ctx.trustedIp),
+        country_code: ctx.countryCode,
+        country_name: ctx.countryName,
       },
     })
 
@@ -469,6 +538,8 @@ export async function recordAdminLoginSuccess({ req, res, email, admin }) {
       admin_id: admin?.id || '',
       admin_email: admin?.email || normalizeEmail(email),
       user_agent: ctx.userAgent,
+      country_code: ctx.countryCode,
+      country_name: ctx.countryName,
       failed_count: 0,
       success_count: Number(state.success_count || 0) + 1,
       block_status: 'allowed',
@@ -497,6 +568,8 @@ export async function recordAdminLoginSuccess({ req, res, email, admin }) {
       admin_email: admin?.email || normalizeEmail(email),
       metadata: {
         trusted_device_created: !ctx.trustedDevice,
+        country_code: ctx.countryCode,
+        country_name: ctx.countryName,
       },
     })
 
@@ -520,6 +593,8 @@ export async function writeAdminGuardEventFromController(state, payload = {}) {
     deviceId: state.device_id || '',
     attemptedEmail: state.attempted_email || '',
     userAgent: state.user_agent || '',
+    countryCode: state.country_code || '',
+    countryName: state.country_name || '',
     trustedDevice: null,
     trustedIp: null,
     isTrusted: false,
