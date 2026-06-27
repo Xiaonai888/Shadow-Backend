@@ -1,6 +1,8 @@
 import { supabase } from '../config/supabase.js'
 
 const MAIL_RETENTION_DAYS = 365
+const REMINDER_MAIL_RETENTION_DAYS = 7
+const DAILY_CHECKIN_REMINDER_PREFIX = 'daily_checkin_reminder_'
 
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
@@ -9,6 +11,35 @@ function getUserId(req) {
 function normalizeMailType(value) {
   const type = String(value || '').trim().toLowerCase()
   return ['admin', 'reward', 'system', 'coupon', 'event', 'payment'].includes(type) ? type : 'admin'
+}
+
+function getPhnomPenhDateKey(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Phnom_Penh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+
+  const year = parts.find((part) => part.type === 'year')?.value
+  const month = parts.find((part) => part.type === 'month')?.value
+  const day = parts.find((part) => part.type === 'day')?.value
+
+  return `${year}-${month}-${day}`
+}
+
+function getPhnomPenhTimeParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Phnom_Penh',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+
+  return {
+    hour: Number(parts.find((part) => part.type === 'hour')?.value || 0),
+    minute: Number(parts.find((part) => part.type === 'minute')?.value || 0),
+  }
 }
 
 function publicMail(item) {
@@ -126,6 +157,192 @@ async function applyReward(userId, mail) {
   return wallet
 }
 
+export async function getDailyCheckInReminder(req, res) {
+  try {
+    const userId = getUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const { data, error } = await supabase
+      .from('reader_daily_checkin_reminders')
+      .select('enabled')
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      enabled: Boolean(data?.enabled),
+    })
+  } catch (error) {
+    console.error('GET DAILY CHECKIN REMINDER ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load reminder setting',
+      error: error.message,
+    })
+  }
+}
+
+export async function updateDailyCheckInReminder(req, res) {
+  try {
+    const userId = getUserId(req)
+    const enabled = Boolean(req.body?.enabled)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const { data, error } = await supabase
+      .from('reader_daily_checkin_reminders')
+      .upsert(
+        {
+          user_id: userId,
+          enabled,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' }
+      )
+      .select('enabled')
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      enabled: Boolean(data.enabled),
+    })
+  } catch (error) {
+    console.error('UPDATE DAILY CHECKIN REMINDER ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update reminder setting',
+      error: error.message,
+    })
+  }
+}
+
+export async function sendDailyCheckInReminderMails() {
+  const now = new Date()
+  const time = getPhnomPenhTimeParts(now)
+
+  if (time.hour !== 7) {
+    return { ok: true, skipped: true, reason: 'Not 7 AM Cambodia time' }
+  }
+
+  const todayKey = getPhnomPenhDateKey(now)
+  const referenceId = `${DAILY_CHECKIN_REMINDER_PREFIX}${todayKey}`
+
+  const cleanupCutoffDate = new Date()
+  cleanupCutoffDate.setDate(cleanupCutoffDate.getDate() - REMINDER_MAIL_RETENTION_DAYS)
+
+  await supabase
+    .from('reader_mails')
+    .update({ deleted_at: now.toISOString() })
+    .is('deleted_at', null)
+    .ilike('reference_id', `${DAILY_CHECKIN_REMINDER_PREFIX}%`)
+    .lt('created_at', cleanupCutoffDate.toISOString())
+
+  const { data: settings, error: settingsError } = await supabase
+    .from('reader_daily_checkin_reminders')
+    .select('user_id')
+    .eq('enabled', true)
+    .limit(1000)
+
+  if (settingsError) throw settingsError
+
+  let created = 0
+  let skippedClaimed = 0
+  let skippedDuplicate = 0
+
+  for (const setting of settings || []) {
+    const userId = setting.user_id
+
+    const { data: checkIn, error: checkInError } = await supabase
+      .from('reader_checkins')
+      .select('last_claim_date')
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (checkInError) {
+      console.error('DAILY CHECKIN REMINDER CHECKIN ERROR:', checkInError)
+      continue
+    }
+
+    if (checkIn?.last_claim_date === todayKey) {
+      skippedClaimed += 1
+      continue
+    }
+
+    const { data: existingMail, error: existingMailError } = await supabase
+      .from('reader_mails')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('reference_id', referenceId)
+      .is('deleted_at', null)
+      .maybeSingle()
+
+    if (existingMailError) {
+      console.error('DAILY CHECKIN REMINDER DUPLICATE CHECK ERROR:', existingMailError)
+      continue
+    }
+
+    if (existingMail) {
+      skippedDuplicate += 1
+      continue
+    }
+
+    const mail = await createReaderMail({
+      userId,
+      senderType: 'system',
+      mailType: 'system',
+      title: 'Daily check-in reminder',
+      message: 'Your daily coin reward is ready.',
+      detail: 'Open Task Center and tap today’s reward to keep your check-in streak active.',
+      link: '/tasks',
+      referenceId,
+    })
+
+    if (mail) created += 1
+  }
+
+  return {
+    ok: true,
+    date: todayKey,
+    created,
+    skipped_claimed: skippedClaimed,
+    skipped_duplicate: skippedDuplicate,
+  }
+}
+
+export async function runDailyCheckInReminderMails(req, res) {
+  try {
+    const secret = String(req.headers['x-cron-secret'] || req.query.secret || '')
+    const expectedSecret = String(process.env.CRON_SECRET || '')
+
+    if (expectedSecret && secret !== expectedSecret) {
+      return res.status(403).json({ ok: false, message: 'Forbidden' })
+    }
+
+    const result = await sendDailyCheckInReminderMails()
+
+    return res.status(200).json(result)
+  } catch (error) {
+    console.error('RUN DAILY CHECKIN REMINDER MAILS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to send daily check-in reminder mails',
+      error: error.message,
+    })
+  }
+}
+
 export async function getMyMails(req, res) {
   try {
     const userId = getUserId(req)
@@ -219,6 +436,21 @@ export async function getMyMailUnreadCount(req, res) {
     })
   }
 }
+
+  const reminderCutoffDate = new Date()
+  reminderCutoffDate.setDate(reminderCutoffDate.getDate() - REMINDER_MAIL_RETENTION_DAYS)
+
+  const { error: reminderCleanupError } = await supabase
+    .from('reader_mails')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('user_id', userId)
+    .is('deleted_at', null)
+    .ilike('reference_id', `${DAILY_CHECKIN_REMINDER_PREFIX}%`)
+    .lt('created_at', reminderCutoffDate.toISOString())
+
+  if (reminderCleanupError) {
+    console.error('CLEANUP DAILY CHECKIN REMINDER MAILS ERROR:', reminderCleanupError)
+  }
 
 export async function markMailAsRead(req, res) {
   try {
