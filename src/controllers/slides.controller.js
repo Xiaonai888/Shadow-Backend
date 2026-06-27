@@ -95,6 +95,7 @@ function getChangedFields(oldSlide, newSlide, imageReplaced = false) {
 
   if ((oldSlide?.title || '') !== (newSlide?.title || '')) changed.push('title')
   if ((oldSlide?.subtitle || '') !== (newSlide?.subtitle || '')) changed.push('subtitle')
+  if ((oldSlide?.genre_label || '') !== (newSlide?.genre_label || '')) changed.push('genre')
   if ((oldSlide?.link_url || '') !== (newSlide?.link_url || '')) changed.push('link')
   if (Number(oldSlide?.order_index) !== Number(newSlide?.order_index)) changed.push('order')
   if (Boolean(oldSlide?.is_active) !== Boolean(newSlide?.is_active)) changed.push('visibility')
@@ -247,13 +248,14 @@ export async function createSlide(req, res) {
     const actor = getActor(req)
 
     const {
-      section_key = 'home_top_slider',
-      title = '',
-      subtitle = '',
-      link_url = '',
-      order_index = 0,
-      is_active = 'true',
-    } = req.body
+  section_key = 'home_top_slider',
+  title = '',
+  subtitle = '',
+  genre_label = '',
+  link_url = '',
+  order_index = 0,
+  is_active = 'true',
+} = req.body
 
     if (!req.file) {
       return res.status(400).json({
@@ -270,6 +272,7 @@ export async function createSlide(req, res) {
         section_key,
         title,
         subtitle,
+        genre_label,
         image_url: imageUrl,
         link_url,
         order_index: toNumber(order_index),
@@ -318,7 +321,7 @@ export async function updateSlide(req, res) {
       updated_at: new Date().toISOString(),
     }
 
-    const allowedFields = ['section_key', 'title', 'subtitle', 'link_url']
+    const allowedFields = ['section_key', 'title', 'subtitle', 'genre_label', 'link_url']
 
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
