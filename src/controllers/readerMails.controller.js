@@ -77,18 +77,35 @@ function buildCounts(items) {
 async function cleanupOldMails(userId) {
   if (!userId) return
 
+  const now = new Date().toISOString()
+
   const cutoffDate = new Date()
   cutoffDate.setDate(cutoffDate.getDate() - MAIL_RETENTION_DAYS)
 
   const { error } = await supabase
     .from('reader_mails')
-    .update({ deleted_at: new Date().toISOString() })
+    .update({ deleted_at: now })
     .eq('user_id', userId)
     .is('deleted_at', null)
     .lt('created_at', cutoffDate.toISOString())
 
   if (error) {
     console.error('CLEANUP OLD READER MAILS ERROR:', error)
+  }
+
+  const reminderCutoffDate = new Date()
+  reminderCutoffDate.setDate(reminderCutoffDate.getDate() - REMINDER_MAIL_RETENTION_DAYS)
+
+  const { error: reminderCleanupError } = await supabase
+    .from('reader_mails')
+    .update({ deleted_at: now })
+    .eq('user_id', userId)
+    .is('deleted_at', null)
+    .ilike('reference_id', `${DAILY_CHECKIN_REMINDER_PREFIX}%`)
+    .lt('created_at', reminderCutoffDate.toISOString())
+
+  if (reminderCleanupError) {
+    console.error('CLEANUP DAILY CHECKIN REMINDER MAILS ERROR:', reminderCleanupError)
   }
 }
 
@@ -232,8 +249,8 @@ export async function sendDailyCheckInReminderMails() {
   const time = getPhnomPenhTimeParts(now)
 
   if (time.hour !== 9) {
-  return { ok: true, skipped: true, reason: 'Not 9 AM Cambodia time' }
-}
+    return { ok: true, skipped: true, reason: 'Not 9 AM Cambodia time' }
+  }
 
   const todayKey = getPhnomPenhDateKey(now)
   const referenceId = `${DAILY_CHECKIN_REMINDER_PREFIX}${todayKey}`
@@ -436,21 +453,6 @@ export async function getMyMailUnreadCount(req, res) {
     })
   }
 }
-
-  const reminderCutoffDate = new Date()
-  reminderCutoffDate.setDate(reminderCutoffDate.getDate() - REMINDER_MAIL_RETENTION_DAYS)
-
-  const { error: reminderCleanupError } = await supabase
-    .from('reader_mails')
-    .update({ deleted_at: new Date().toISOString() })
-    .eq('user_id', userId)
-    .is('deleted_at', null)
-    .ilike('reference_id', `${DAILY_CHECKIN_REMINDER_PREFIX}%`)
-    .lt('created_at', reminderCutoffDate.toISOString())
-
-  if (reminderCleanupError) {
-    console.error('CLEANUP DAILY CHECKIN REMINDER MAILS ERROR:', reminderCleanupError)
-  }
 
 export async function markMailAsRead(req, res) {
   try {
