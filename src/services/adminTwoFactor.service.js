@@ -17,6 +17,10 @@ function cleanText(value, maxLength = 500) {
   return String(value || '').trim().slice(0, maxLength)
 }
 
+function isValidUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''))
+}
+
 function normalizeEmail(value) {
   return cleanText(value, 320).toLowerCase()
 }
@@ -372,6 +376,14 @@ export async function verifyAdminAuthenticatorSetup({ admin, req, challengeId, c
   const { adminEmail } = getAdminIdentity(admin)
   const cleanChallengeId = cleanText(challengeId, 80)
   const now = new Date().toISOString()
+
+  if (!isValidUuid(cleanChallengeId)) {
+  return {
+    ok: false,
+    status: 400,
+    message: 'Invalid 2FA challenge ID',
+  }
+}
 
   const { data: challenge, error } = await supabase
     .from('admin_two_factor_challenges')
