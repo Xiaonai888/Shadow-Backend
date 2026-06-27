@@ -10,6 +10,9 @@ const DAILY_REWARDS = [
   { day: 7, gems: 0, coins: 0, vouchers: 1, story_cards: 0, gift: true },
 ]
 
+const CHEST_COOLDOWN_MS = 4 * 60 * 60 * 1000
+const CHEST_MAX_STORAGE = 2
+
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
 }
@@ -50,6 +53,16 @@ function getRandomGiftCoins() {
   if (chance < 0.95) return 800
 
   return 1000
+}
+
+function getRandomChestCoins() {
+  const chance = Math.random()
+
+  if (chance < 0.55) return 30
+  if (chance < 0.85) return 50
+  if (chance < 0.97) return 80
+
+  return 100
 }
 
 function publicWallet(wallet) {
@@ -95,6 +108,49 @@ function publicHistoryItem(item) {
     amount_vouchers: Number(item.amount_vouchers || 0),
     story_cards: Number(item.story_cards || 0),
     created_at: item.created_at,
+  }
+}
+
+function publicRewardChest(row) {
+  const now = new Date()
+  const storedChests = Math.min(CHEST_MAX_STORAGE, Math.max(0, Number(row?.stored_chests || 0)))
+  const lastRefillAt = row?.last_refill_at ? new Date(row.last_refill_at) : now
+
+  if (storedChests >= CHEST_MAX_STORAGE) {
+    return {
+      available_chests: CHEST_MAX_STORAGE,
+      max_chests: CHEST_MAX_STORAGE,
+      is_full: true,
+      next_chest_at: null,
+      ms_until_next: 0,
+      effective_last_refill_at: now.toISOString(),
+    }
+  }
+
+  const elapsedMs = Math.max(0, now.getTime() - lastRefillAt.getTime())
+  const gained = Math.floor(elapsedMs / CHEST_COOLDOWN_MS)
+  const availableChests = Math.min(CHEST_MAX_STORAGE, storedChests + gained)
+
+  let effectiveLastRefillMs = lastRefillAt.getTime()
+
+  if (gained > 0) {
+    effectiveLastRefillMs =
+      availableChests >= CHEST_MAX_STORAGE
+        ? now.getTime()
+        : lastRefillAt.getTime() + gained * CHEST_COOLDOWN_MS
+  }
+
+  const isFull = availableChests >= CHEST_MAX_STORAGE
+  const nextChestAt = isFull ? null : new Date(effectiveLastRefillMs + CHEST_COOLDOWN_MS)
+  const msUntilNext = nextChestAt ? Math.max(0, nextChestAt.getTime() - now.getTime()) : 0
+
+  return {
+    available_chests: availableChests,
+    max_chests: CHEST_MAX_STORAGE,
+    is_full: isFull,
+    next_chest_at: nextChestAt ? nextChestAt.toISOString() : null,
+    ms_until_next: msUntilNext,
+    effective_last_refill_at: new Date(effectiveLastRefillMs).toISOString(),
   }
 }
 
@@ -146,6 +202,34 @@ async function getCheckInRow(userId) {
   if (error) throw error
 
   return data || null
+}
+
+async function getOrCreateRewardChest(userId) {
+  const { data: existingChest, error: existingError } = await supabase
+    .from('reader_reward_chests')
+    .select('*')
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (existingError) throw existingError
+  if (existingChest) return existingChest
+
+  const now = new Date().toISOString()
+
+  const { data, error } = await supabase
+    .from('reader_reward_chests')
+    .insert({
+      user_id: userId,
+      stored_chests: 0,
+      last_refill_at: now,
+      updated_at: now,
+    })
+    .select('*')
+    .single()
+
+  if (error) throw error
+
+  return data
 }
 
 async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
@@ -311,6 +395,125 @@ export async function claimTaskCheckIn(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to claim check-in',
+      error: error.message,
+    })
+  }
+}
+
+export async function getRewardChest(req, res) {
+  try {
+    const userId = getUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
+    const chest = await getOrCreateRewardChest(userId)
+
+    return res.status(200).json({
+      ok: true,
+      chest: publicRewardChest(chest),
+    })
+  } catch (error) {
+    console.error('GET REWARD CHEST ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load reward chest',
+      error: error.message,
+    })
+  }
+}
+
+export async function claimRewardChest(req, res) {
+  try {
+    const userId = getUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
+    const chest = await getOrCreateRewardChest(userId)
+    const chestStatus = publicRewardChest(chest)
+
+    if (Number(chestStatus.available_chests || 0) < 1) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Chest is not ready yet',
+        chest: chestStatus,
+      })
+    }
+
+    const now = new Date().toISOString()
+    const rewardCoins = getRandomChestCoins()
+    const remainingChests = Math.max(0, Number(chestStatus.available_chests || 0) - 1)
+    const nextLastRefillAt = chestStatus.is_full ? now : chestStatus.effective_last_refill_at || now
+
+    const wallet = await getOrCreateWallet(userId)
+    const nextCoinBalance = Number(wallet.gem_balance || 0) + rewardCoins
+
+    const { data: updatedWallet, error: walletError } = await supabase
+      .from('user_wallets')
+      .update({
+        gem_balance: nextCoinBalance,
+        updated_at: now,
+      })
+      .eq('user_id', userId)
+      .select('*')
+      .single()
+
+    if (walletError) throw walletError
+
+    const { data: updatedChest, error: chestError } = await supabase
+      .from('reader_reward_chests')
+      .update({
+        stored_chests: remainingChests,
+        last_refill_at: nextLastRefillAt,
+        updated_at: now,
+      })
+      .eq('user_id', userId)
+      .select('*')
+      .single()
+
+    if (chestError) throw chestError
+
+    const { data: historyItem, error: historyError } = await supabase
+      .from('reader_reward_history')
+      .insert({
+        user_id: userId,
+        source_key: 'reward_chest',
+        source_title: 'Reward Chest',
+        amount_gems: rewardCoins,
+        amount_vouchers: 0,
+        story_cards: 0,
+        metadata: {
+          coins: rewardCoins,
+          chest_cooldown_hours: 4,
+          remaining_chests: remainingChests,
+        },
+      })
+      .select('*')
+      .single()
+
+    if (historyError) throw historyError
+
+    return res.status(200).json({
+      ok: true,
+      wallet: publicWallet(updatedWallet),
+      chest: publicRewardChest(updatedChest),
+      reward: {
+        coins: rewardCoins,
+        gems: rewardCoins,
+      },
+      history_item: historyItem ? publicHistoryItem(historyItem) : null,
+      message: 'Reward chest claimed',
+    })
+  } catch (error) {
+    console.error('CLAIM REWARD CHEST ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to claim reward chest',
       error: error.message,
     })
   }
