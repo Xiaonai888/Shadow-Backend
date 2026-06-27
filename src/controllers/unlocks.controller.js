@@ -902,25 +902,30 @@ export async function unlockEpisodeWithGems(req, res) {
     }
 
     if (!payload.gemWait.available) {
-      return res.status(403).json({
-        ok: false,
-        code: 'GEM_WAIT_REQUIRED',
-        message: 'This episode is newly released. Free access with Gems is not available yet.',
-        available_at: payload.gemWait.available_at,
-        wait_seconds: payload.gemWait.wait_seconds,
-        gem_access: {
-          amount: getRuleNumber(payload.rules, 'gem_per_episode'),
-          access_days: getRuleNumber(payload.rules, 'gem_access_days'),
-        },
-        wallet: publicWallet(payload.wallet),
-      })
-    }
+  return res.status(403).json({
+    ok: false,
+    code: 'COIN_WAIT_REQUIRED',
+    legacy_code: 'GEM_WAIT_REQUIRED',
+    message: 'This episode is newly released. Coin access will be available after 7 days from release.',
+    available_at: payload.gemWait.available_at,
+    wait_seconds: payload.gemWait.wait_seconds,
+    coin_access: {
+      amount: getRuleNumber(payload.rules, 'gem_per_episode'),
+      access_days: getRuleNumber(payload.rules, 'gem_access_days'),
+    },
+    gem_access: {
+      amount: getRuleNumber(payload.rules, 'gem_per_episode'),
+      access_days: getRuleNumber(payload.rules, 'gem_access_days'),
+    },
+    wallet: publicWallet(payload.wallet),
+  })
+}
 
     if (!payload.gemLimits.daily.allowed) {
       return res.status(403).json({
         ok: false,
         code: 'GEM_DAILY_LIMIT_REACHED',
-        message: `You reached your daily Gem unlock limit for ${tier} readers.`,
+        message: `You reached your daily Coin unlock limit for ${tier} readers.`,
         limit_status: payload.gemLimits,
         wallet: publicWallet(payload.wallet),
       })
@@ -930,7 +935,7 @@ export async function unlockEpisodeWithGems(req, res) {
       return res.status(403).json({
         ok: false,
         code: 'GEM_MONTHLY_STORY_LIMIT_REACHED',
-        message: `You reached your monthly Gem unlock limit for this story.`,
+        message: `You reached your monthly Coin unlock limit for this story.`,
         limit_status: payload.gemLimits,
         wallet: publicWallet(payload.wallet),
       })
