@@ -6,6 +6,7 @@ import {
   recordAdminLoginFailure,
   recordAdminLoginSuccess,
 } from '../services/adminGuard.service.js'
+import { registerAdminDeviceSession } from '../services/adminDeviceAccess.service.js'
 
 const MAX_LOGIN_ATTEMPTS = 5
 
@@ -24,7 +25,6 @@ const RESET_REQUEST_24_HOUR_MS = 24 * 60 * 60 * 1000
 const RESET_REQUEST_15_MIN_LIMIT = 3
 const RESET_REQUEST_24_HOUR_LIMIT = 10
 const adminResetRequestAttempts = new Map()
-
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase()
@@ -174,13 +174,18 @@ function clearFailedLogin(key) {
   loginAttempts.delete(key)
 }
 
-function createToken(admin) {
+function createToken(admin, deviceAccess) {
   return jwt.sign(
     {
       role: admin?.role || 'admin',
       actor: admin?.name || admin?.email || 'Admin',
       email: admin?.email || '',
       admin_id: admin?.id || '',
+      password_changed_at: admin?.password_changed_at || '',
+      session_id: deviceAccess?.session_id || '',
+      device_id: deviceAccess?.device_id || '',
+      jwt_id: deviceAccess?.jwt_id || '',
+      jti: deviceAccess?.jwt_id || '',
     },
     process.env.JWT_SECRET,
     {
@@ -304,6 +309,22 @@ export async function adminLogin(req, res) {
       })
     }
 
+    const deviceAccess = await registerAdminDeviceSession({
+      req,
+      res,
+      admin,
+    })
+
+    if (!deviceAccess.allowed) {
+      return res.status(403).json({
+        ok: false,
+        code: deviceAccess.code || 'ADMIN_DEVICE_ACCESS_DENIED',
+        message: deviceAccess.message || 'This admin device is not allowed.',
+        active_devices: deviceAccess.active_devices || 0,
+        max_devices: deviceAccess.max_devices || 2,
+      })
+    }
+
     const adminGuard = await recordAdminLoginSuccess({
       req,
       res,
@@ -311,7 +332,7 @@ export async function adminLogin(req, res) {
       admin,
     })
 
-    const token = createToken(admin)
+    const token = createToken(admin, deviceAccess)
 
     return res.status(200).json({
       ok: true,
@@ -324,6 +345,13 @@ export async function adminLogin(req, res) {
         password_changed_at: admin.password_changed_at,
       },
       admin_guard: adminGuard,
+      admin_device_access: {
+        device_id: deviceAccess.device_id,
+        session_id: deviceAccess.session_id,
+        active_devices: deviceAccess.active_devices,
+        max_devices: deviceAccess.max_devices,
+        device_label: deviceAccess.device_label,
+      },
     })
   } catch (error) {
     console.error('ADMIN LOGIN ERROR:', error)
@@ -593,6 +621,7 @@ export async function checkAdmin(req, res) {
     })
   }
 }
+
 export async function changeAdminPassword(req, res) {
   try {
     const {
