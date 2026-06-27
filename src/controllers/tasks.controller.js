@@ -1,13 +1,13 @@
 import { supabase } from '../config/supabase.js'
 
 const DAILY_REWARDS = [
-  { day: 1, gems: 50, coins: 50, story_cards: 0 },
-  { day: 2, gems: 100, coins: 100, story_cards: 0 },
-  { day: 3, gems: 150, coins: 150, story_cards: 0 },
-  { day: 4, gems: 200, coins: 200, story_cards: 0 },
-  { day: 5, gems: 250, coins: 250, story_cards: 0 },
-  { day: 6, gems: 300, coins: 300, story_cards: 0 },
-  { day: 7, gems: 500, coins: 500, story_cards: 1 },
+  { day: 1, coins: 50, vouchers: 0, gift: false },
+  { day: 2, coins: 100, vouchers: 0, gift: false },
+  { day: 3, coins: 150, vouchers: 0, gift: false },
+  { day: 4, coins: 200, vouchers: 0, gift: false },
+  { day: 5, coins: 250, vouchers: 0, gift: false },
+  { day: 6, coins: 300, vouchers: 0, gift: false },
+  { day: 7, coins: 0, vouchers: 1, gift: true },
 ]
 
 function getUserId(req) {
@@ -39,6 +39,16 @@ function addDays(dateKey, days) {
 function isPremiumRole(role) {
   const value = String(role || '').trim().toLowerCase()
 
+  function getRandomGiftCoins() {
+  const chance = Math.random()
+
+  if (chance < 0.55) return 500
+  if (chance < 0.80) return 600
+  if (chance < 0.95) return 800
+
+  return 1000
+}
+
   return value === 'premium' || value === 'vip'
 }
 
@@ -49,6 +59,7 @@ function publicWallet(wallet) {
     diamond_balance: Number(wallet?.diamond_balance || 0),
     gem_balance: coinBalance,
     coin_balance: coinBalance,
+    voucher_balance: Number(wallet?.voucher_balance || 0),
   }
 }
 
@@ -111,7 +122,7 @@ async function getOrCreateWallet(userId) {
 
   const { data, error } = await supabase
     .from('user_wallets')
-    .insert({ user_id: userId, diamond_balance: 0, gem_balance: 0 })
+    .insert({ user_id: userId, diamond_balance: 0, gem_balance: 0, voucher_balance: 0 })
     .select('*')
     .single()
 
@@ -176,12 +187,18 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
 
   if (checkInError) throw checkInError
 
-  const nextGemBalance = Number(wallet.gem_balance || 0) + Number(reward.gems || 0)
+    const isGiftReward = Boolean(reward.gift || Number(reward.vouchers || 0) > 0)
+  const rewardCoins = isGiftReward ? getRandomGiftCoins() : Number(reward.coins || 0)
+  const rewardVouchers = isGiftReward ? 1 : Number(reward.vouchers || 0)
+
+  const nextGemBalance = Number(wallet.gem_balance || 0) + rewardCoins
+  const nextVoucherBalance = Number(wallet.voucher_balance || 0) + rewardVouchers
 
   const { data: updatedWallet, error: walletError } = await supabase
     .from('user_wallets')
     .update({
       gem_balance: nextGemBalance,
+      voucher_balance: nextVoucherBalance,
       updated_at: now,
     })
     .eq('user_id', userId)
@@ -190,18 +207,34 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
 
   if (walletError) throw walletError
 
+  const claimedReward = {
+    ...reward,
+    gems: rewardCoins,
+    coins: rewardCoins,
+    vouchers: rewardVouchers,
+    gift: isGiftReward,
+  }
+
   const { data: historyItem, error: historyError } = await supabase
     .from('reader_reward_history')
     .insert({
       user_id: userId,
       source_key: sourceKey,
-      source_title: sourceKey === 'premium_auto_claim' ? 'Premium Auto Claim' : 'Daily Bonus',
-      amount_gems: Number(reward.gems || 0),
-      story_cards: Number(reward.story_cards || 0),
-      metadata: {
-        day: currentDay,
-        streak_count: nextStreak,
-      },
+      source_title: isGiftReward
+  ? 'Daily Gift'
+  : sourceKey === 'premium_auto_claim'
+    ? 'Premium Auto Claim'
+    : 'Daily Check-in',
+amount_gems: rewardCoins,
+amount_vouchers: rewardVouchers,
+story_cards: 0,
+metadata: {
+  day: currentDay,
+  streak_count: nextStreak,
+  gift: isGiftReward,
+  coins: rewardCoins,
+  vouchers: rewardVouchers,
+},
     })
     .select('*')
     .single()
@@ -212,7 +245,7 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
     already_claimed: false,
     wallet: updatedWallet,
     check_in: savedCheckIn,
-    reward,
+    reward: claimedReward,
     history_item: historyItem,
   }
 }
