@@ -1,7 +1,7 @@
-
 import jwt from 'jsonwebtoken'
+import { validateAdminSession } from '../services/adminDeviceAccess.service.js'
 
-export function requireAdmin(req, res, next) {
+export async function requireAdmin(req, res, next) {
   try {
     const authHeader = req.headers.authorization || ''
     const token = authHeader.startsWith('Bearer ')
@@ -23,17 +23,32 @@ export function requireAdmin(req, res, next) {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET)
-const role = String(decoded.role || '').trim().toLowerCase()
-const allowedRoles = ['owner', 'admin']
+    const role = String(decoded.role || '').trim().toLowerCase()
+    const allowedRoles = ['owner', 'admin']
 
-if (!allowedRoles.includes(role)) {
-  return res.status(403).json({
-    ok: false,
-    message: `Owner or admin access only. Current role: ${decoded.role || 'missing'}`,
-  })
-}
+    if (!allowedRoles.includes(role)) {
+      return res.status(403).json({
+        ok: false,
+        message: `Owner or admin access only. Current role: ${decoded.role || 'missing'}`,
+      })
+    }
 
-    req.admin = decoded
+    const sessionCheck = await validateAdminSession({ decoded, req })
+
+    if (!sessionCheck.ok) {
+      return res.status(sessionCheck.status || 401).json({
+        ok: false,
+        code: sessionCheck.code || 'ADMIN_SESSION_INVALID',
+        message: sessionCheck.message || 'Admin session is invalid. Please login again.',
+      })
+    }
+
+    req.admin = {
+      ...decoded,
+      session: sessionCheck.session,
+      device: sessionCheck.device,
+    }
+
     next()
   } catch (error) {
     return res.status(401).json({
