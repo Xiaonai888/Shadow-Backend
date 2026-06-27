@@ -1,9 +1,62 @@
 import express from 'express'
 import { supabase } from '../config/supabase.js'
 import { getAdminActor, logAdminActivity } from '../services/adminActivity.service.js'
+import multer from 'multer'
+import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 
 const router = express.Router()
 const MAX_FEATURED_TABS = 12
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 8 * 1024 * 1024,
+  },
+})
+
+async function uploadGenreBanner(req, res) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Image file is required. Use form field name: image',
+      })
+    }
+
+    if (!req.file.mimetype?.startsWith('image/')) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Only image files are allowed',
+      })
+    }
+
+    const bannerType = String(req.body.type || req.query.type || 'desktop').trim().toLowerCase()
+    const isMobile = bannerType === 'mobile'
+    const folder = isMobile ? 'genre-banners/mobile' : 'genre-banners/desktop'
+    const width = isMobile ? 1280 : 1920
+
+    const imageUrl = await uploadImageToR2AsWebP(req.file, folder, {
+      width,
+      quality: 84,
+    })
+
+    return res.status(201).json({
+      ok: true,
+      message: 'Genre banner uploaded successfully',
+      type: isMobile ? 'mobile' : 'desktop',
+      image_url: imageUrl,
+      imageUrl,
+    })
+  } catch (error) {
+    console.error('UPLOAD GENRE BANNER ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      code: error.code || 'GENRE_BANNER_UPLOAD_FAILED',
+      message: error.message || 'Failed to upload genre banner',
+    })
+  }
+}
 
 function slugify(value) {
   return String(value || '')
@@ -363,6 +416,7 @@ async function updateFeaturedGenreTabs(req, res) {
 router.get('/', getGenres)
 router.get('/featured-tabs', getFeaturedGenreTabs)
 router.get('/admin/records', getAdminGenres)
+router.post('/admin/upload-banner', upload.single('image'), uploadGenreBanner)
 router.post('/admin/records', createGenre)
 router.put('/admin/records/:id', updateGenre)
 router.delete('/admin/records/:id', deleteGenre)
