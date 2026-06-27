@@ -7,17 +7,11 @@ import {
   recordAdminLoginSuccess,
 } from '../services/adminGuard.service.js'
 import { registerAdminDeviceSession } from '../services/adminDeviceAccess.service.js'
-
-const MAX_LOGIN_ATTEMPTS = 5
-
-const LOCK_DURATIONS = [
-  15 * 60 * 1000,
-  60 * 60 * 1000,
-  6 * 60 * 60 * 1000,
-  24 * 60 * 60 * 1000,
-]
-
-const loginAttempts = new Map()
+import {
+  createAdminLoginTwoFactorChallenge,
+  shouldRequireAdminTwoFactor,
+  verifyAdminLoginTwoFactorChallenge,
+} from '../services/adminTwoFactor.service.js'
 
 const RESET_REQUEST_COOLDOWN_MS = 60 * 1000
 const RESET_REQUEST_15_MIN_MS = 15 * 60 * 1000
@@ -32,15 +26,6 @@ function normalizeEmail(email) {
 
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-}
-
-function getClientKey(req, email) {
-  const ip =
-    req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
-    req.socket?.remoteAddress ||
-    'unknown-ip'
-
-  return `${ip}:${String(email || '').toLowerCase().trim()}`
 }
 
 function getAdminResetRequestKey(req, email) {
@@ -76,102 +61,6 @@ function checkAdminResetRequestLimit(key) {
 
   adminResetRequestAttempts.set(key, [...recent, now])
   return true
-}
-
-function getLockDuration(lockLevel) {
-  const index = Math.min(lockLevel - 1, LOCK_DURATIONS.length - 1)
-  return LOCK_DURATIONS[index]
-}
-
-function formatRemainingTime(ms) {
-  const totalSeconds = Math.ceil(ms / 1000)
-
-  if (totalSeconds < 60) {
-    return `${totalSeconds} second${totalSeconds > 1 ? 's' : ''}`
-  }
-
-  const totalMinutes = Math.ceil(ms / 60000)
-
-  if (totalMinutes >= 1440) {
-    const days = Math.ceil(totalMinutes / 1440)
-    return `${days} day${days > 1 ? 's' : ''}`
-  }
-
-  if (totalMinutes >= 60) {
-    const hours = Math.ceil(totalMinutes / 60)
-    return `${hours} hour${hours > 1 ? 's' : ''}`
-  }
-
-  return `${totalMinutes} minute${totalMinutes > 1 ? 's' : ''}`
-}
-
-function getAttemptState(key) {
-  const now = Date.now()
-
-  const current = loginAttempts.get(key) || {
-    count: 0,
-    lockLevel: 0,
-    lockedUntil: 0,
-  }
-
-  const remainingMs = Math.max(0, current.lockedUntil - now)
-
-  if (remainingMs > 0) {
-    return {
-      ...current,
-      isLocked: true,
-      remainingMs,
-    }
-  }
-
-  return {
-    ...current,
-    lockedUntil: 0,
-    isLocked: false,
-    remainingMs: 0,
-  }
-}
-
-function recordFailedLogin(key) {
-  const now = Date.now()
-  const current = getAttemptState(key)
-
-  const nextCount = current.count + 1
-
-  if (nextCount >= MAX_LOGIN_ATTEMPTS) {
-    const nextLockLevel = current.lockLevel + 1
-    const lockDuration = getLockDuration(nextLockLevel)
-
-    loginAttempts.set(key, {
-      count: 0,
-      lockLevel: nextLockLevel,
-      lockedUntil: now + lockDuration,
-    })
-
-    return {
-      locked: true,
-      remainingMs: lockDuration,
-      attemptsLeft: 0,
-      lockLevel: nextLockLevel,
-    }
-  }
-
-  loginAttempts.set(key, {
-    count: nextCount,
-    lockLevel: current.lockLevel,
-    lockedUntil: 0,
-  })
-
-  return {
-    locked: false,
-    remainingMs: 0,
-    attemptsLeft: MAX_LOGIN_ATTEMPTS - nextCount,
-    lockLevel: current.lockLevel,
-  }
-}
-
-function clearFailedLogin(key) {
-  loginAttempts.delete(key)
 }
 
 function createToken(admin, deviceAccess) {
@@ -242,6 +131,57 @@ async function sendAdminPasswordResetEmail({ to, otp }) {
   return true
 }
 
+async function issueAdminLogin({ req, res, email, admin, twoFactorMethod = '' }) {
+  const deviceAccess = await registerAdminDeviceSession({
+    req,
+    res,
+    admin,
+  })
+
+  if (!deviceAccess.allowed) {
+    return res.status(403).json({
+      ok: false,
+      code: deviceAccess.code || 'ADMIN_DEVICE_ACCESS_DENIED',
+      message: deviceAccess.message || 'This admin device is not allowed.',
+      active_devices: deviceAccess.active_devices || 0,
+      max_devices: deviceAccess.max_devices || 2,
+    })
+  }
+
+  const adminGuard = await recordAdminLoginSuccess({
+    req,
+    res,
+    email,
+    admin,
+  })
+
+  const token = createToken(admin, deviceAccess)
+
+  return res.status(200).json({
+    ok: true,
+    token,
+    admin: {
+      id: admin.id,
+      email: admin.email,
+      name: admin.name,
+      role: admin.role,
+      password_changed_at: admin.password_changed_at,
+    },
+    two_factor: {
+      verified: Boolean(twoFactorMethod),
+      method: twoFactorMethod,
+    },
+    admin_guard: adminGuard,
+    admin_device_access: {
+      device_id: deviceAccess.device_id,
+      session_id: deviceAccess.session_id,
+      active_devices: deviceAccess.active_devices,
+      max_devices: deviceAccess.max_devices,
+      device_label: deviceAccess.device_label,
+    },
+  })
+}
+
 export async function adminLogin(req, res) {
   try {
     const { email = '', password = '' } = req.body
@@ -309,49 +249,33 @@ export async function adminLogin(req, res) {
       })
     }
 
-    const deviceAccess = await registerAdminDeviceSession({
-      req,
-      res,
-      admin,
-    })
+    const twoFactorRequired = await shouldRequireAdminTwoFactor({ admin })
 
-    if (!deviceAccess.allowed) {
-      return res.status(403).json({
-        ok: false,
-        code: deviceAccess.code || 'ADMIN_DEVICE_ACCESS_DENIED',
-        message: deviceAccess.message || 'This admin device is not allowed.',
-        active_devices: deviceAccess.active_devices || 0,
-        max_devices: deviceAccess.max_devices || 2,
+    if (twoFactorRequired) {
+      const challenge = await createAdminLoginTwoFactorChallenge({
+        admin,
+        req,
+      })
+
+      return res.status(200).json({
+        ok: true,
+        two_factor_required: true,
+        challenge_id: challenge.challenge_id,
+        expires_at: challenge.expires_at,
+        methods: challenge.methods,
+        admin: {
+          email: admin.email,
+          name: admin.name,
+        },
+        message: 'Two-factor authentication required',
       })
     }
 
-    const adminGuard = await recordAdminLoginSuccess({
+    return issueAdminLogin({
       req,
       res,
       email,
       admin,
-    })
-
-    const token = createToken(admin, deviceAccess)
-
-    return res.status(200).json({
-      ok: true,
-      token,
-      admin: {
-        id: admin.id,
-        email: admin.email,
-        name: admin.name,
-        role: admin.role,
-        password_changed_at: admin.password_changed_at,
-      },
-      admin_guard: adminGuard,
-      admin_device_access: {
-        device_id: deviceAccess.device_id,
-        session_id: deviceAccess.session_id,
-        active_devices: deviceAccess.active_devices,
-        max_devices: deviceAccess.max_devices,
-        device_label: deviceAccess.device_label,
-      },
     })
   } catch (error) {
     console.error('ADMIN LOGIN ERROR:', error)
@@ -359,6 +283,42 @@ export async function adminLogin(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Admin login failed',
+    })
+  }
+}
+
+export async function adminLoginTwoFactorVerify(req, res) {
+  try {
+    if (!process.env.JWT_SECRET) {
+      return res.status(500).json({
+        ok: false,
+        message: 'JWT_SECRET is missing',
+      })
+    }
+
+    const result = await verifyAdminLoginTwoFactorChallenge({
+      req,
+      challengeId: req.body?.challengeId || req.body?.challenge_id || '',
+      code: req.body?.code || '',
+    })
+
+    if (!result.ok) {
+      return res.status(result.status || 400).json(result)
+    }
+
+    return issueAdminLogin({
+      req,
+      res,
+      email: result.admin.email,
+      admin: result.admin,
+      twoFactorMethod: result.method,
+    })
+  } catch (error) {
+    console.error('ADMIN LOGIN 2FA VERIFY ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Admin 2FA verification failed',
     })
   }
 }
