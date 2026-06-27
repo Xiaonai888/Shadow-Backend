@@ -633,3 +633,235 @@ export async function listAdminTwoFactorEvents({ admin, limit = 30 }) {
 
   return data || []
 }
+
+async function findAdminForTwoFactorChallenge(challenge) {
+  let query = supabase
+    .from('admin_users')
+    .select('id, email, name, role, password_changed_at')
+    .limit(1)
+
+  if (challenge.admin_id) {
+    query = query.eq('id', challenge.admin_id)
+  } else {
+    query = query.eq('email', challenge.admin_email)
+  }
+
+  const { data, error } = await query.maybeSingle()
+
+  if (error) throw error
+
+  return data || null
+}
+
+export async function shouldRequireAdminTwoFactor({ admin }) {
+  const settings = await getSettings(admin)
+
+  return Boolean(settings.authenticator_enabled)
+}
+
+export async function createAdminLoginTwoFactorChallenge({ admin, req }) {
+  const { adminId, adminEmail } = getAdminIdentity(admin)
+  const country = getAdminRequestCountry(req)
+  const now = new Date()
+  const expiresAt = new Date(now.getTime() + 5 * 60 * 1000).toISOString()
+
+  await supabase
+    .from('admin_two_factor_challenges')
+    .update({
+      status: 'cancelled',
+      updated_at: now.toISOString(),
+    })
+    .eq('admin_email', adminEmail)
+    .eq('purpose', 'login')
+    .eq('status', 'pending')
+
+  const { data, error } = await supabase
+    .from('admin_two_factor_challenges')
+    .insert({
+      admin_id: adminId,
+      admin_email: adminEmail,
+      challenge_type: 'authenticator',
+      purpose: 'login',
+      status: 'pending',
+      ip_address: getAdminSecurityClientIp(req),
+      user_agent: getUserAgent(req),
+      country_code: country.country_code,
+      country_name: country.country_name,
+      max_attempts: 5,
+      expires_at: expiresAt,
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+
+  await insertTwoFactorEvent({
+    admin,
+    req,
+    eventType: 'login_two_factor_required',
+    result: 'pending',
+    reason: 'Password accepted and 2FA required',
+  })
+
+  return {
+    challenge_id: data.id,
+    expires_at: expiresAt,
+    methods: ['authenticator', 'recovery_code'],
+  }
+}
+
+export async function verifyAdminLoginTwoFactorChallenge({ req, challengeId, code }) {
+  const cleanChallengeId = cleanText(challengeId, 80)
+  const now = new Date().toISOString()
+
+  const { data: challenge, error } = await supabase
+    .from('admin_two_factor_challenges')
+    .select('*')
+    .eq('id', cleanChallengeId)
+    .eq('purpose', 'login')
+    .eq('status', 'pending')
+    .maybeSingle()
+
+  if (error) throw error
+
+  if (!challenge) {
+    return {
+      ok: false,
+      status: 404,
+      message: '2FA challenge not found or already used',
+    }
+  }
+
+  const admin = await findAdminForTwoFactorChallenge(challenge)
+
+  if (!admin) {
+    await supabase
+      .from('admin_two_factor_challenges')
+      .update({
+        status: 'failed',
+        updated_at: now,
+      })
+      .eq('id', challenge.id)
+
+    return {
+      ok: false,
+      status: 404,
+      message: 'Admin account not found',
+    }
+  }
+
+  if (new Date(challenge.expires_at).getTime() <= Date.now()) {
+    await supabase
+      .from('admin_two_factor_challenges')
+      .update({
+        status: 'expired',
+        updated_at: now,
+      })
+      .eq('id', challenge.id)
+
+    await createAdminSecurityAlert({
+      req,
+      admin,
+      alertType: 'two_factor_login_expired',
+      severity: 'medium',
+      title: 'Admin 2FA login challenge expired',
+      message: 'An admin 2FA login challenge expired before verification.',
+      metadata: {
+        challenge_id: challenge.id,
+      },
+    })
+
+    return {
+      ok: false,
+      status: 400,
+      message: '2FA challenge expired. Please login again.',
+    }
+  }
+
+  const verified = await verifyAdminTwoFactorCode({
+    admin,
+    code,
+    allowRecovery: true,
+  })
+  const attemptCount = Number(challenge.attempt_count || 0) + 1
+
+  if (!verified.ok) {
+    const failedStatus = attemptCount >= Number(challenge.max_attempts || 5) ? 'failed' : 'pending'
+
+    await supabase
+      .from('admin_two_factor_challenges')
+      .update({
+        attempt_count: attemptCount,
+        status: failedStatus,
+        updated_at: now,
+      })
+      .eq('id', challenge.id)
+
+    await createAdminSecurityAlert({
+      req,
+      admin,
+      alertType: failedStatus === 'failed' ? 'two_factor_login_failed_locked' : 'two_factor_login_failed',
+      severity: attemptCount >= 3 ? 'high' : 'medium',
+      title: failedStatus === 'failed' ? 'Admin 2FA login failed too many times' : 'Admin 2FA login failed',
+      message: 'A wrong 2FA code was entered during admin login.',
+      metadata: {
+        challenge_id: challenge.id,
+        attempt_count: attemptCount,
+        max_attempts: Number(challenge.max_attempts || 5),
+      },
+    })
+
+    await insertTwoFactorEvent({
+      admin,
+      req,
+      eventType: failedStatus === 'failed' ? 'login_two_factor_failed_locked' : 'login_two_factor_failed',
+      result: 'failed',
+      reason: 'Wrong 2FA code during login',
+      metadata: {
+        challenge_id: challenge.id,
+        attempt_count: attemptCount,
+      },
+    })
+
+    return {
+      ok: false,
+      status: 400,
+      message: failedStatus === 'failed' ? 'Too many wrong 2FA attempts. Please login again.' : '2FA code is incorrect',
+      attempts_left: Math.max(0, Number(challenge.max_attempts || 5) - attemptCount),
+    }
+  }
+
+  await supabase
+    .from('admin_two_factor_challenges')
+    .update({
+      status: 'verified',
+      verified_at: now,
+      updated_at: now,
+    })
+    .eq('id', challenge.id)
+
+  await updateSettings(admin, {
+    last_verified_at: now,
+  })
+
+  await insertTwoFactorEvent({
+    admin,
+    req,
+    eventType: 'login_two_factor_verified',
+    result: 'success',
+    reason: 'Admin 2FA login verified',
+    metadata: {
+      challenge_id: challenge.id,
+      method: verified.method,
+    },
+  })
+
+  return {
+    ok: true,
+    admin,
+    method: verified.method,
+  }
+}
+
