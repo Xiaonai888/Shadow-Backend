@@ -42,6 +42,39 @@ function countryNameFromCode(countryCode) {
   return code
 }
 
+function getAdminIdentity(admin = {}) {
+  return {
+    adminId: admin?.admin_id || admin?.id || '',
+    adminEmail: normalizeEmail(admin?.email || ''),
+  }
+}
+
+function buildAdminAlertsQuery(admin = {}) {
+  const { adminId, adminEmail } = getAdminIdentity(admin)
+  let query = supabase.from('admin_security_alerts').select('*')
+
+  if (adminId && adminEmail) {
+    query = query.or(`admin_id.eq.${adminId},admin_email.eq.${adminEmail}`)
+  } else if (adminId) {
+    query = query.eq('admin_id', adminId)
+  } else {
+    query = query.eq('admin_email', adminEmail)
+  }
+
+  return query
+}
+
+function summarizeAlerts(alerts = []) {
+  return {
+    total: alerts.length,
+    unread: alerts.filter((alert) => !alert.is_read).length,
+    critical: alerts.filter((alert) => alert.severity === 'critical').length,
+    high: alerts.filter((alert) => alert.severity === 'high').length,
+    medium: alerts.filter((alert) => alert.severity === 'medium').length,
+    low: alerts.filter((alert) => alert.severity === 'low').length,
+  }
+}
+
 export function getAdminSecurityClientIp(req) {
   return (
     getForwardedIp(req.headers['cf-connecting-ip'])
@@ -126,5 +159,103 @@ export async function createAdminSecurityAlert({
   } catch (error) {
     console.error('ADMIN SECURITY ALERT ERROR:', error)
     return false
+  }
+}
+
+export async function listAdminSecurityAlerts({
+  admin,
+  limit = 100,
+  severity = '',
+  readStatus = '',
+}) {
+  const safeLimit = Math.min(Math.max(Number(limit || 100), 1), 200)
+  let query = buildAdminAlertsQuery(admin)
+    .order('created_at', { ascending: false })
+    .limit(safeLimit)
+
+  if (severity) query = query.eq('severity', cleanText(severity, 30).toLowerCase())
+  if (readStatus === 'unread') query = query.eq('is_read', false)
+  if (readStatus === 'read') query = query.eq('is_read', true)
+
+  const { data, error } = await query
+
+  if (error) throw error
+
+  const alerts = data || []
+
+  return {
+    alerts,
+    summary: summarizeAlerts(alerts),
+  }
+}
+
+export async function markAdminSecurityAlertReadById({ admin, alertId }) {
+  const cleanAlertId = cleanText(alertId, 80)
+
+  if (!cleanAlertId) {
+    return {
+      ok: false,
+      status: 400,
+      message: 'Alert ID is required',
+    }
+  }
+
+  let query = buildAdminAlertsQuery(admin).eq('id', cleanAlertId)
+
+  const { data: existing, error: existingError } = await query.maybeSingle()
+
+  if (existingError) throw existingError
+
+  if (!existing) {
+    return {
+      ok: false,
+      status: 404,
+      message: 'Security alert not found',
+    }
+  }
+
+  const { data, error } = await supabase
+    .from('admin_security_alerts')
+    .update({
+      is_read: true,
+      read_at: new Date().toISOString(),
+    })
+    .eq('id', cleanAlertId)
+    .select()
+    .single()
+
+  if (error) throw error
+
+  return {
+    ok: true,
+    alert: data,
+  }
+}
+
+export async function markAllAdminSecurityAlertsRead({ admin }) {
+  const { adminId, adminEmail } = getAdminIdentity(admin)
+  let query = supabase
+    .from('admin_security_alerts')
+    .update({
+      is_read: true,
+      read_at: new Date().toISOString(),
+    })
+    .eq('is_read', false)
+
+  if (adminId && adminEmail) {
+    query = query.or(`admin_id.eq.${adminId},admin_email.eq.${adminEmail}`)
+  } else if (adminId) {
+    query = query.eq('admin_id', adminId)
+  } else {
+    query = query.eq('admin_email', adminEmail)
+  }
+
+  const { data, error } = await query.select('id')
+
+  if (error) throw error
+
+  return {
+    ok: true,
+    updated_count: Array.isArray(data) ? data.length : 0,
   }
 }
