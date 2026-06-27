@@ -231,9 +231,9 @@ export async function sendDailyCheckInReminderMails() {
   const now = new Date()
   const time = getPhnomPenhTimeParts(now)
 
-  if (time.hour !== 7) {
-    return { ok: true, skipped: true, reason: 'Not 7 AM Cambodia time' }
-  }
+  if (time.hour !== 9) {
+  return { ok: true, skipped: true, reason: 'Not 9 AM Cambodia time' }
+}
 
   const todayKey = getPhnomPenhDateKey(now)
   const referenceId = `${DAILY_CHECKIN_REMINDER_PREFIX}${todayKey}`
