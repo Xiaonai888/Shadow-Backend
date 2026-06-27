@@ -1,4 +1,10 @@
 import {
+  listAdminSecurityAlerts,
+  markAdminSecurityAlertReadById,
+  markAllAdminSecurityAlertsRead,
+} from '../services/adminSecurityAlerts.service.js'
+
+import {
   emergencyResetAdminDevices,
   listAdminDeviceEvents,
   listAdminDevices,
@@ -191,3 +197,95 @@ export async function emergencyResetDevices(req, res) {
     })
   }
 }
+
+function formatSecurityAlert(alert) {
+  return {
+    id: alert.id,
+    admin_id: alert.admin_id || '',
+    admin_email: alert.admin_email || '',
+    device_id: alert.device_id || '',
+    session_id: alert.session_id || '',
+    alert_type: alert.alert_type || '',
+    severity: alert.severity || 'medium',
+    title: alert.title || '',
+    message: alert.message || '',
+    ip_address: alert.ip_address || '',
+    user_agent: alert.user_agent || '',
+    country_code: alert.country_code || '',
+    country_name: alert.country_name || '',
+    is_read: Boolean(alert.is_read),
+    read_at: alert.read_at,
+    metadata: alert.metadata || {},
+    created_at: alert.created_at,
+  }
+}
+
+export async function getAdminSecurityAlerts(req, res) {
+  try {
+    const result = await listAdminSecurityAlerts({
+      admin: req.admin,
+      limit: req.query.limit || 100,
+      severity: req.query.severity || '',
+      readStatus: req.query.status || '',
+    })
+
+    return res.status(200).json({
+      ok: true,
+      summary: result.summary,
+      alerts: result.alerts.map(formatSecurityAlert),
+    })
+  } catch (error) {
+    console.error('ADMIN SECURITY ALERTS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load admin security alerts',
+      error: error.message,
+    })
+  }
+}
+
+export async function markAdminSecurityAlertRead(req, res) {
+  try {
+    const result = await markAdminSecurityAlertReadById({
+      admin: req.admin,
+      alertId: req.params.alertId,
+    })
+
+    if (!result.ok) {
+      return res.status(result.status || 400).json(result)
+    }
+
+    return res.status(200).json({
+      ok: true,
+      alert: formatSecurityAlert(result.alert),
+    })
+  } catch (error) {
+    console.error('ADMIN SECURITY ALERT READ ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to mark security alert as read',
+      error: error.message,
+    })
+  }
+}
+
+export async function markAllAdminSecurityAlertsReadController(req, res) {
+  try {
+    const result = await markAllAdminSecurityAlertsRead({
+      admin: req.admin,
+    })
+
+    return res.status(200).json(result)
+  } catch (error) {
+    console.error('ADMIN SECURITY ALERTS READ ALL ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to mark all security alerts as read',
+      error: error.message,
+    })
+  }
+}
+
