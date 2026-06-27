@@ -96,6 +96,33 @@ function getPositiveInteger(value, fallback, max = 365) {
   return Math.min(Math.floor(number), max)
 }
 
+function formatWaitDuration(seconds) {
+  const total = Math.max(0, Number(seconds || 0))
+  const days = Math.floor(total / 86400)
+  const hours = Math.floor((total % 86400) / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+
+  if (days > 0) return `${days} days ${hours} hours`
+  if (hours > 0) return `${hours} hours ${minutes} minutes`
+  return `${minutes} minutes`
+}
+
+function formatUnlockDateTime(value) {
+  const date = value ? new Date(value) : null
+
+  if (!date || Number.isNaN(date.getTime())) return ''
+
+  return date.toLocaleString('en-US', {
+    timeZone: 'Asia/Phnom_Penh',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  })
+}
+
 function getEpisodePublishedTime(episode) {
   const value = episode?.published_at || episode?.created_at
   const time = value ? new Date(value).getTime() : 0
@@ -902,11 +929,14 @@ export async function unlockEpisodeWithGems(req, res) {
     }
 
     if (!payload.gemWait.available) {
+  const waitText = formatWaitDuration(payload.gemWait.wait_seconds)
+  const unlockDateText = formatUnlockDateTime(payload.gemWait.available_at)
+
   return res.status(403).json({
     ok: false,
     code: 'COIN_WAIT_REQUIRED',
     legacy_code: 'GEM_WAIT_REQUIRED',
-    message: 'This episode is newly released. Coin access will be available after 7 days from release.',
+    message: `This episode is newly released. Coin access will be available in ${waitText}.${unlockDateText ? ` Unlocks on ${unlockDateText}.` : ''}`,
     available_at: payload.gemWait.available_at,
     wait_seconds: payload.gemWait.wait_seconds,
     coin_access: {
