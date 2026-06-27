@@ -124,6 +124,8 @@ async function createGenre(req, res) {
     const slug = slugify(req.body.slug || name)
     const sortOrder = toNumber(req.body.sort_order, 0)
     const isActive = toBoolean(req.body.is_active, true)
+    const bannerImageUrl = String(req.body.banner_image_url || '').trim()
+    const mobileBannerImageUrl = String(req.body.mobile_banner_image_url || '').trim()
 
     if (!name) return res.status(400).json({ ok: false, message: 'Genre name is required' })
     if (!slug) return res.status(400).json({ ok: false, message: 'Genre slug is required' })
@@ -162,6 +164,8 @@ async function updateGenre(req, res) {
     const slug = req.body.slug === undefined ? oldGenre.slug : slugify(req.body.slug || name)
     const sortOrder = req.body.sort_order === undefined ? oldGenre.sort_order : toNumber(req.body.sort_order, oldGenre.sort_order)
     const isActive = req.body.is_active === undefined ? oldGenre.is_active : toBoolean(req.body.is_active, oldGenre.is_active)
+    const bannerImageUrl = req.body.banner_image_url === undefined ? oldGenre.banner_image_url : String(req.body.banner_image_url || '').trim()
+const mobileBannerImageUrl = req.body.mobile_banner_image_url === undefined ? oldGenre.mobile_banner_image_url : String(req.body.mobile_banner_image_url || '').trim()
 
     if (!name || !slug) return res.status(400).json({ ok: false, message: 'Genre name and slug are required' })
 
