@@ -1,13 +1,13 @@
 import { supabase } from '../config/supabase.js'
 
 const DAILY_REWARDS = [
-  { day: 1, coins: 50, vouchers: 0, gift: false },
-  { day: 2, coins: 100, vouchers: 0, gift: false },
-  { day: 3, coins: 150, vouchers: 0, gift: false },
-  { day: 4, coins: 200, vouchers: 0, gift: false },
-  { day: 5, coins: 250, vouchers: 0, gift: false },
-  { day: 6, coins: 300, vouchers: 0, gift: false },
-  { day: 7, coins: 0, vouchers: 1, gift: true },
+  { day: 1, gems: 50, coins: 50, vouchers: 0, story_cards: 0, gift: false },
+  { day: 2, gems: 100, coins: 100, vouchers: 0, story_cards: 0, gift: false },
+  { day: 3, gems: 150, coins: 150, vouchers: 0, story_cards: 0, gift: false },
+  { day: 4, gems: 200, coins: 200, vouchers: 0, story_cards: 0, gift: false },
+  { day: 5, gems: 250, coins: 250, vouchers: 0, story_cards: 0, gift: false },
+  { day: 6, gems: 300, coins: 300, vouchers: 0, story_cards: 0, gift: false },
+  { day: 7, gems: 0, coins: 0, vouchers: 1, story_cards: 0, gift: true },
 ]
 
 function getUserId(req) {
@@ -39,17 +39,17 @@ function addDays(dateKey, days) {
 function isPremiumRole(role) {
   const value = String(role || '').trim().toLowerCase()
 
-  function getRandomGiftCoins() {
+  return value === 'premium' || value === 'vip'
+}
+
+function getRandomGiftCoins() {
   const chance = Math.random()
 
   if (chance < 0.55) return 500
-  if (chance < 0.80) return 600
+  if (chance < 0.8) return 600
   if (chance < 0.95) return 800
 
   return 1000
-}
-
-  return value === 'premium' || value === 'vip'
 }
 
 function publicWallet(wallet) {
@@ -122,7 +122,12 @@ async function getOrCreateWallet(userId) {
 
   const { data, error } = await supabase
     .from('user_wallets')
-    .insert({ user_id: userId, diamond_balance: 0, gem_balance: 0, voucher_balance: 0 })
+    .insert({
+      user_id: userId,
+      diamond_balance: 0,
+      gem_balance: 0,
+      voucher_balance: 0,
+    })
     .select('*')
     .single()
 
@@ -166,6 +171,9 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
   const currentDay = ((nextStreak - 1) % 7) + 1
   const reward = DAILY_REWARDS.find((item) => item.day === currentDay) || DAILY_REWARDS[0]
   const now = new Date().toISOString()
+  const isGiftReward = Boolean(reward.gift || Number(reward.vouchers || 0) > 0)
+  const rewardCoins = isGiftReward ? getRandomGiftCoins() : Number(reward.coins || reward.gems || 0)
+  const rewardVouchers = isGiftReward ? 1 : Number(reward.vouchers || 0)
 
   const { data: savedCheckIn, error: checkInError } = await supabase
     .from('reader_checkins')
@@ -186,10 +194,6 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
     .single()
 
   if (checkInError) throw checkInError
-
-    const isGiftReward = Boolean(reward.gift || Number(reward.vouchers || 0) > 0)
-  const rewardCoins = isGiftReward ? getRandomGiftCoins() : Number(reward.coins || 0)
-  const rewardVouchers = isGiftReward ? 1 : Number(reward.vouchers || 0)
 
   const nextGemBalance = Number(wallet.gem_balance || 0) + rewardCoins
   const nextVoucherBalance = Number(wallet.voucher_balance || 0) + rewardVouchers
@@ -212,6 +216,7 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
     gems: rewardCoins,
     coins: rewardCoins,
     vouchers: rewardVouchers,
+    story_cards: 0,
     gift: isGiftReward,
   }
 
@@ -221,20 +226,20 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
       user_id: userId,
       source_key: sourceKey,
       source_title: isGiftReward
-  ? 'Daily Gift'
-  : sourceKey === 'premium_auto_claim'
-    ? 'Premium Auto Claim'
-    : 'Daily Check-in',
-amount_gems: rewardCoins,
-amount_vouchers: rewardVouchers,
-story_cards: 0,
-metadata: {
-  day: currentDay,
-  streak_count: nextStreak,
-  gift: isGiftReward,
-  coins: rewardCoins,
-  vouchers: rewardVouchers,
-},
+        ? 'Daily Gift'
+        : sourceKey === 'premium_auto_claim'
+          ? 'Premium Auto Claim'
+          : 'Daily Check-in',
+      amount_gems: rewardCoins,
+      amount_vouchers: rewardVouchers,
+      story_cards: 0,
+      metadata: {
+        day: currentDay,
+        streak_count: nextStreak,
+        gift: isGiftReward,
+        coins: rewardCoins,
+        vouchers: rewardVouchers,
+      },
     })
     .select('*')
     .single()
@@ -294,7 +299,11 @@ export async function claimTaskCheckIn(req, res) {
       check_in: publicCheckIn(result.check_in, isPremium),
       reward: result.reward,
       history_item: result.history_item ? publicHistoryItem(result.history_item) : null,
-      message: result.already_claimed ? 'Already claimed today' : 'Daily bonus claimed',
+      message: result.already_claimed
+        ? 'Already claimed today'
+        : result.reward?.gift
+          ? 'Daily gift claimed'
+          : 'Daily check-in claimed',
     })
   } catch (error) {
     console.error('CLAIM TASK CHECK IN ERROR:', error)
