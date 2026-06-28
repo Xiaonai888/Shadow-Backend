@@ -364,14 +364,16 @@ export async function startAdminAuthenticatorSetup({ admin, req }) {
     reason: 'Authenticator setup started',
   })
 
-  return {
-    challenge_id: data.id,
-    manual_key: secret,
-    otpauth_url: buildOtpAuthUrl({ adminEmail, secret }),
-    expires_at: expiresAt,
-  }
-}
+  const settings = await getSettings(admin)
 
+return {
+  challenge_id: data.id,
+  expires_at: expiresAt,
+  methods: settings.email_otp_enabled
+    ? ['authenticator', 'recovery_code', 'email_code']
+    : ['authenticator', 'recovery_code'],
+}
+  
 export async function verifyAdminAuthenticatorSetup({ admin, req, challengeId, code }) {
   const { adminEmail } = getAdminIdentity(admin)
   const cleanChallengeId = cleanText(challengeId, 80)
@@ -792,11 +794,23 @@ export async function verifyAdminLoginTwoFactorChallenge({ req, challengeId, cod
     }
   }
 
-  const verified = await verifyAdminTwoFactorCode({
+  let verified = { ok: false, method: '' }
+
+if (challenge.challenge_type === 'email_otp' && challenge.code_hash) {
+  const emailOtpHash = hashCode(admin.email, code)
+  if (timingSafeEqualText(challenge.code_hash, emailOtpHash)) {
+    verified = { ok: true, method: 'email_otp' }
+  }
+}
+
+if (!verified.ok) {
+  verified = await verifyAdminTwoFactorCode({
     admin,
     code,
     allowRecovery: true,
   })
+}
+  
   const attemptCount = Number(challenge.attempt_count || 0) + 1
 
   if (!verified.ok) {
@@ -876,4 +890,194 @@ export async function verifyAdminLoginTwoFactorChallenge({ req, challengeId, cod
     method: verified.method,
   }
 }
+
+function createEmailOtp() {
+  return String(crypto.randomInt(100000, 1000000))
+}
+
+async function sendAdminTwoFactorEmail({ to, otp }) {
+  const apiKey = String(process.env.RESEND_API_KEY || '').trim()
+  const from = String(process.env.ADMIN_RESET_FROM_EMAIL || process.env.RESET_FROM_EMAIL || 'Shadow Admin <onboarding@resend.dev>').trim()
+
+  if (!apiKey) return false
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from,
+      to,
+      subject: 'Your Shadow Admin login code',
+      html: `
+        <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111827">
+          <h2>Shadow Admin email verification code</h2>
+          <p>Use this code to continue your admin login.</p>
+          <div style="font-size:32px;font-weight:800;letter-spacing:8px;background:#eef2ff;border-radius:14px;padding:18px 22px;display:inline-block">${otp}</div>
+          <p>This code expires in 5 minutes.</p>
+          <p>If you did not request this, secure your admin account immediately.</p>
+        </div>
+      `,
+      text: `Your Shadow Admin login code is ${otp}. This code expires in 5 minutes.`,
+    }),
+  })
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(text || 'Failed to send admin email code')
+  }
+
+  return true
+}
+
+export async function enableAdminEmailOtp({ admin, req, code }) {
+  const verified = await verifyAdminTwoFactorCode({ admin, code, allowRecovery: true })
+
+  if (!verified.ok) {
+    await createAdminSecurityAlert({
+      req,
+      admin,
+      alertType: 'email_otp_enable_failed',
+      severity: 'high',
+      title: 'Failed email code enable attempt',
+      message: 'A wrong 2FA code was used while trying to enable email code backup.',
+    })
+
+    return { ok: false, status: 400, message: '2FA code is incorrect' }
+  }
+
+  const updated = await updateSettings(admin, {
+    email_otp_enabled: true,
+    last_changed_at: new Date().toISOString(),
+  })
+
+  await insertTwoFactorEvent({
+    admin,
+    req,
+    eventType: 'email_otp_enabled',
+    result: 'success',
+    reason: 'Email code backup enabled',
+  })
+
+  return {
+    ok: true,
+    status: formatStatus(updated, await countRecoveryCodes(admin)),
+  }
+}
+
+export async function disableAdminEmailOtp({ admin, req, code }) {
+  const verified = await verifyAdminTwoFactorCode({ admin, code, allowRecovery: true })
+
+  if (!verified.ok) {
+    await createAdminSecurityAlert({
+      req,
+      admin,
+      alertType: 'email_otp_disable_failed',
+      severity: 'high',
+      title: 'Failed email code disable attempt',
+      message: 'A wrong 2FA code was used while trying to disable email code backup.',
+    })
+
+    return { ok: false, status: 400, message: '2FA code is incorrect' }
+  }
+
+  const updated = await updateSettings(admin, {
+    email_otp_enabled: false,
+    last_changed_at: new Date().toISOString(),
+  })
+
+  await insertTwoFactorEvent({
+    admin,
+    req,
+    eventType: 'email_otp_disabled',
+    result: 'success',
+    reason: 'Email code backup disabled',
+  })
+
+  return {
+    ok: true,
+    status: formatStatus(updated, await countRecoveryCodes(admin)),
+  }
+}
+
+export async function sendAdminLoginEmailOtp({ req, challengeId }) {
+  const cleanChallengeId = cleanText(challengeId, 80)
+
+  if (!isValidUuid(cleanChallengeId)) {
+    return { ok: false, status: 400, message: 'Invalid 2FA challenge ID' }
+  }
+
+  const { data: challenge, error } = await supabase
+    .from('admin_two_factor_challenges')
+    .select('*')
+    .eq('id', cleanChallengeId)
+    .eq('purpose', 'login')
+    .eq('status', 'pending')
+    .maybeSingle()
+
+  if (error) throw error
+
+  if (!challenge) {
+    return { ok: false, status: 404, message: '2FA challenge not found or already used' }
+  }
+
+  if (new Date(challenge.expires_at).getTime() <= Date.now()) {
+    await supabase
+      .from('admin_two_factor_challenges')
+      .update({ status: 'expired', updated_at: new Date().toISOString() })
+      .eq('id', challenge.id)
+
+    return { ok: false, status: 400, message: '2FA challenge expired. Please login again.' }
+  }
+
+  const admin = await findAdminForTwoFactorChallenge(challenge)
+
+  if (!admin) {
+    return { ok: false, status: 404, message: 'Admin account not found' }
+  }
+
+  const settings = await getSettings(admin)
+
+  if (!settings.email_otp_enabled) {
+    return { ok: false, status: 400, message: 'Email code backup is not enabled for this admin account' }
+  }
+
+  const otp = createEmailOtp()
+  const otpHash = hashCode(admin.email, otp)
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
+  const emailSent = await sendAdminTwoFactorEmail({ to: admin.email, otp })
+
+  await supabase
+    .from('admin_two_factor_challenges')
+    .update({
+      challenge_type: 'email_otp',
+      code_hash: otpHash,
+      expires_at: expiresAt,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', challenge.id)
+
+  await insertTwoFactorEvent({
+    admin,
+    req,
+    eventType: 'login_email_otp_sent',
+    result: emailSent ? 'success' : 'failed',
+    reason: emailSent ? 'Email login code sent' : 'Email provider not configured',
+    metadata: { challenge_id: challenge.id },
+  })
+
+  if (!emailSent) {
+    return { ok: false, status: 500, message: 'Email provider is not configured' }
+  }
+
+  return {
+    ok: true,
+    email_sent: true,
+    expires_at: expiresAt,
+    message: 'Email code sent',
+  }
+}
+
 
