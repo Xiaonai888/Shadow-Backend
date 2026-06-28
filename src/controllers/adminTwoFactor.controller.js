@@ -1,13 +1,14 @@
 import {
   disableAdminEmailOtp,
-‌  enableAdminEmailOtp,
   disableAdminTwoFactor,
+  enableAdminEmailOtp,
   getAdminTwoFactorStatus,
   listAdminTwoFactorEvents,
   regenerateAdminRecoveryCodes,
   startAdminAuthenticatorSetup,
   verifyAdminAuthenticatorSetup,
 } from '../services/adminTwoFactor.service.js'
+
 
 function formatEvent(event) {
   return {
