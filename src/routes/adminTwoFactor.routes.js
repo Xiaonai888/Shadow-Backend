@@ -2,15 +2,14 @@ import express from 'express'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
   disableEmailOtp,
-‌  enableEmailOtp,
   disableTwoFactor,
+  enableEmailOtp,
   getTwoFactorEvents,
   getTwoFactorStatus,
   regenerateRecoveryCodes,
   startAuthenticatorSetup,
   verifyAuthenticatorSetup,
 } from '../controllers/adminTwoFactor.controller.js'
-
 const router = express.Router()
 
 router.use(requireAdmin)
