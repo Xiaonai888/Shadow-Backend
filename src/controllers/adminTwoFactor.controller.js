@@ -161,3 +161,48 @@ export async function getTwoFactorEvents(req, res) {
     })
   }
 }
+
+export async function enableEmailOtp(req, res) {
+  try {
+    const result = await enableAdminEmailOtp({
+      admin: req.admin,
+      req,
+      code: req.body?.code || '',
+    })
+
+    if (!result.ok) return res.status(result.status || 400).json(result)
+
+    return res.status(200).json(result)
+  } catch (error) {
+    console.error('ADMIN EMAIL OTP ENABLE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to enable email code backup',
+      error: error.message,
+    })
+  }
+}
+
+export async function disableEmailOtp(req, res) {
+  try {
+    const result = await disableAdminEmailOtp({
+      admin: req.admin,
+      req,
+      code: req.body?.code || '',
+    })
+
+    if (!result.ok) return res.status(result.status || 400).json(result)
+
+    return res.status(200).json(result)
+  } catch (error) {
+    console.error('ADMIN EMAIL OTP DISABLE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to disable email code backup',
+      error: error.message,
+    })
+  }
+}
+
