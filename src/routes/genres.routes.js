@@ -185,7 +185,14 @@ async function createGenre(req, res) {
 
     const { data, error } = await supabase
       .from('genres')
-      .insert({ name, slug, sort_order: sortOrder, is_active: isActive })
+      .insert({
+  name,
+  slug,
+  sort_order: sortOrder,
+  is_active: isActive,
+  banner_image_url: bannerImageUrl,
+  mobile_banner_image_url: mobileBannerImageUrl,
+})
       .select()
       .single()
 
@@ -225,12 +232,14 @@ const mobileBannerImageUrl = req.body.mobile_banner_image_url === undefined ? ol
     const { data, error } = await supabase
       .from('genres')
       .update({
-        name,
-        slug,
-        sort_order: sortOrder,
-        is_active: isActive,
-        updated_at: new Date().toISOString(),
-      })
+  name,
+  slug,
+  sort_order: sortOrder,
+  is_active: isActive,
+  banner_image_url: bannerImageUrl,
+  mobile_banner_image_url: mobileBannerImageUrl,
+  updated_at: new Date().toISOString(),
+})
       .eq('id', id)
       .select()
       .single()
