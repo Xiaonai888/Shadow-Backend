@@ -737,15 +737,108 @@ export async function updateUserProfile(req, res) {
       })
     }
 
+    const { data: currentUser, error: currentUserError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (currentUserError) throw currentUserError
+
+    if (!currentUser) {
+      return res.status(404).json({
+        ok: false,
+        message: 'User not found',
+      })
+    }
+
+    const username =
+      req.body.username === undefined
+        ? currentUser.username
+        : normalizeUsername(req.body.username)
+
+    if (!username) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Username is required',
+      })
+    }
+
+    if (username.length < 3) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Username must be at least 3 characters',
+      })
+    }
+
+    if (!/^[a-z0-9_]+$/.test(username)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Username can only use letters, numbers, and underscore',
+      })
+    }
+
+    const now = new Date()
+    const nowIso = now.toISOString()
+    const isNameChanged = name !== String(currentUser.name || '').trim()
+    const isUsernameChanged = username !== currentUser.username
+
+    if (isNameChanged && currentUser.name_changed_at) {
+      const nextNameChangeAt = new Date(currentUser.name_changed_at).getTime() + 14 * 24 * 60 * 60 * 1000
+
+      if (now.getTime() < nextNameChangeAt) {
+        return res.status(429).json({
+          ok: false,
+          message: 'Display name can only be changed once every 2 weeks',
+        })
+      }
+    }
+
+    if (isUsernameChanged && currentUser.username_changed_at) {
+      const nextUsernameChangeAt = new Date(currentUser.username_changed_at).getTime() + 7 * 24 * 60 * 60 * 1000
+
+      if (now.getTime() < nextUsernameChangeAt) {
+        return res.status(429).json({
+          ok: false,
+          message: 'Username can only be changed once every 1 week',
+        })
+      }
+    }
+
+    if (isUsernameChanged) {
+      const { data: existingUser, error: existingUserError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('username', username)
+        .neq('id', userId)
+        .maybeSingle()
+
+      if (existingUserError) throw existingUserError
+
+      if (existingUser) {
+        return res.status(409).json({
+          ok: false,
+          message: 'Username already exists',
+        })
+      }
+    }
+
+    const updatePayload = {
+      name,
+      username,
+      bio,
+      work,
+      location,
+      updated_at: nowIso,
+    }
+
+    if (isNameChanged) updatePayload.name_changed_at = nowIso
+    if (isUsernameChanged) updatePayload.username_changed_at = nowIso
+
     const { data, error } = await supabase
       .from('users')
-      .update({
-        name,
-        bio,
-        work,
-        location,
-        updated_at: new Date().toISOString(),
-      })
+      .update(updatePayload)
       .eq('id', userId)
       .eq('is_active', true)
       .select()
@@ -757,6 +850,7 @@ export async function updateUserProfile(req, res) {
       ok: true,
       message: 'Profile updated',
       user: publicUser(data),
+      token: isUsernameChanged ? createUserToken(data) : undefined,
     })
   } catch (error) {
     console.error('UPDATE USER PROFILE ERROR:', error)
@@ -768,6 +862,7 @@ export async function updateUserProfile(req, res) {
     })
   }
 }
+
 
 export async function updatePaymentProfile(req, res) {
   try {
