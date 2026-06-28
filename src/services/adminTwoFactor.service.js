@@ -373,7 +373,8 @@ return {
     ? ['authenticator', 'recovery_code', 'email_code']
     : ['authenticator', 'recovery_code'],
 }
-  
+}
+
 export async function verifyAdminAuthenticatorSetup({ admin, req, challengeId, code }) {
   const { adminEmail } = getAdminIdentity(admin)
   const cleanChallengeId = cleanText(challengeId, 80)
