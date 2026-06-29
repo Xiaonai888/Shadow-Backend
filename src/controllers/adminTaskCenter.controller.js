@@ -9,6 +9,16 @@ function publicSettings(row) {
     cover_url: row?.cover_url || '',
     cover_updated_at: row?.cover_updated_at || null,
     updated_at: row?.updated_at || null,
+    reading_task: {
+      is_active: Boolean(row?.reading_task_active),
+      title: row?.reading_task_title || 'Read 30 minutes',
+      subtitle: row?.reading_task_subtitle || 'Keep reading longer to earn more coins.',
+      reward_coins: Number(row?.reading_task_reward_coins || 60),
+      target_minutes: Number(row?.reading_task_target_minutes || 30),
+      story_link: row?.reading_task_story_link || '',
+      button_text: row?.reading_task_button_text || 'Go',
+      updated_at: row?.reading_task_updated_at || null,
+    },
   }
 }
 
@@ -57,6 +67,20 @@ export async function getPublicTaskCenterSettings(req, res) {
   }
 }
 
+function cleanText(value, fallback = '', maxLength = 300) {
+  const text = String(value ?? '').trim()
+
+  return (text || fallback).slice(0, maxLength)
+}
+
+function cleanNumber(value, fallback = 0, min = 0, max = 999999) {
+  const number = Number(value)
+
+  if (!Number.isFinite(number)) return fallback
+
+  return Math.min(max, Math.max(min, Math.floor(number)))
+}
+
 export async function getAdminTaskCenterSettings(req, res) {
   try {
     const row = await getSettingsRow()
@@ -71,6 +95,48 @@ export async function getAdminTaskCenterSettings(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to load task center settings',
+      error: error.message,
+    })
+  }
+}
+
+export async function updateAdminReadingTask(req, res) {
+  try {
+    await getSettingsRow()
+
+    const now = new Date().toISOString()
+
+    const payload = {
+      reading_task_active: Boolean(req.body?.is_active),
+      reading_task_title: cleanText(req.body?.title, 'Read 30 minutes', 120),
+      reading_task_subtitle: cleanText(req.body?.subtitle, 'Keep reading longer to earn more coins.', 240),
+      reading_task_reward_coins: cleanNumber(req.body?.reward_coins, 60, 0, 100000),
+      reading_task_target_minutes: cleanNumber(req.body?.target_minutes, 30, 1, 300),
+      reading_task_story_link: cleanText(req.body?.story_link, '', 500),
+      reading_task_button_text: cleanText(req.body?.button_text, 'Go', 30),
+      reading_task_updated_at: now,
+      updated_at: now,
+    }
+
+    const { data, error } = await supabase
+      .from('task_center_settings')
+      .update(payload)
+      .eq('setting_key', SETTING_KEY)
+      .select('*')
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      settings: publicSettings(data),
+    })
+  } catch (error) {
+    console.error('UPDATE ADMIN READING TASK ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update reading task',
       error: error.message,
     })
   }
