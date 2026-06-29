@@ -2,6 +2,11 @@ import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import {
+  createAdminSecurityAlert,
+  getAdminRequestCountry,
+  getAdminSecurityClientIp,
+} from '../services/adminSecurityAlerts.service.js'
+import {
   checkAdminLoginAllowed,
   recordAdminLoginFailure,
   recordAdminLoginSuccess,
@@ -12,6 +17,7 @@ import {
   sendAdminLoginEmailOtp,
   shouldRequireAdminTwoFactor,
   verifyAdminLoginTwoFactorChallenge,
+  verifyAdminTwoFactorCode,
 } from '../services/adminTwoFactor.service.js'
 import {
   shouldRequireAdminPasskeyPin,
@@ -19,6 +25,9 @@ import {
 } from '../services/adminPasskeyPin.service.js'
 
 const PASSKEY_LOGIN_TOKEN_EXPIRES_IN = '5m'
+const PASSKEY_PIN_RESET_EXPIRES_MINUTES = 10
+const PASSKEY_PIN_RESET_MAX_ATTEMPTS = 5
+const PASSKEY_PIN_HASH_ITERATIONS = 120000
 const RESET_REQUEST_COOLDOWN_MS = 60 * 1000
 const RESET_REQUEST_15_MIN_MS = 15 * 60 * 1000
 const RESET_REQUEST_24_HOUR_MS = 24 * 60 * 60 * 1000
@@ -172,6 +181,386 @@ function hashAdminResetOtp(email, otp) {
     .createHash('sha256')
     .update(`${normalizeEmail(email)}:${String(otp || '').trim()}`)
     .digest('hex')
+}
+
+function isValidUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''))
+}
+
+function isValidPasskeyPin(pin) {
+  return /^\d{6}$/.test(String(pin || '').trim())
+}
+
+function timingSafeEqualText(left, right) {
+  const a = Buffer.from(String(left || ''))
+  const b = Buffer.from(String(right || ''))
+
+  if (a.length !== b.length) return false
+
+  return crypto.timingSafeEqual(a, b)
+}
+
+function getAuthUserAgent(req) {
+  return String(req.headers['user-agent'] || '').trim().slice(0, 1000)
+}
+
+function hashPasskeyPin({ adminEmail, pin, salt = crypto.randomBytes(16).toString('hex') }) {
+  const hash = crypto
+    .pbkdf2Sync(`${normalizeEmail(adminEmail)}:${String(pin || '').trim()}`, salt, PASSKEY_PIN_HASH_ITERATIONS, 32, 'sha256')
+    .toString('hex')
+
+  return `pbkdf2_sha256$${PASSKEY_PIN_HASH_ITERATIONS}$${salt}$${hash}`
+}
+
+function formatPasskeyResetStatus(settings) {
+  return {
+    is_enabled: Boolean(settings?.is_enabled),
+    failed_count: Number(settings?.failed_count || 0),
+    locked_until: settings?.locked_until || null,
+    last_verified_at: settings?.last_verified_at || null,
+    last_changed_at: settings?.last_changed_at || null,
+    disabled_at: settings?.disabled_at || null,
+  }
+}
+
+async function insertPasskeyPinResetEvent({ admin, req, eventType, result = 'success', reason = '', metadata = {} }) {
+  const country = getAdminRequestCountry(req)
+
+  const { error } = await supabase
+    .from('admin_passkey_pin_events')
+    .insert({
+      admin_id: admin?.id || '',
+      admin_email: normalizeEmail(admin?.email || ''),
+      event_type: eventType,
+      result,
+      reason,
+      ip_address: getAdminSecurityClientIp(req),
+      user_agent: getAuthUserAgent(req),
+      country_code: country.country_code,
+      country_name: country.country_name,
+      metadata,
+      created_at: new Date().toISOString(),
+    })
+
+  if (error) console.error('PASSKEY PIN RESET EVENT ERROR:', error)
+}
+
+async function sendAdminPasskeyPinResetEmail({ to, otp }) {
+  const apiKey = String(process.env.RESEND_API_KEY || '').trim()
+  const from = String(process.env.ADMIN_RESET_FROM_EMAIL || process.env.RESET_FROM_EMAIL || 'Shadow Admin <onboarding@resend.dev>').trim()
+
+  if (!apiKey) return false
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from,
+      to,
+      subject: 'Your Shadow Admin Passkey PIN reset code',
+      html: `
+        <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111827">
+          <h2>Passkey PIN reset code</h2>
+          <p>Use this 6-digit code to reset your Shadow Admin Passkey PIN.</p>
+          <div style="font-size:32px;font-weight:800;letter-spacing:8px;background:#eef2ff;border-radius:14px;padding:18px 22px;display:inline-block">${otp}</div>
+          <p>This code expires in 10 minutes.</p>
+          <p>If you did not request this, secure your admin account immediately.</p>
+        </div>
+      `,
+      text: `Your Shadow Admin Passkey PIN reset code is ${otp}. This code expires in 10 minutes.`,
+    }),
+  })
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(text || 'Failed to send Passkey PIN reset code')
+  }
+
+  return true
+}
+
+async function createPasskeyPinResetChallenge({ admin, req }) {
+  const adminEmail = normalizeEmail(admin?.email || '')
+  const now = new Date()
+  const expiresAt = new Date(now.getTime() + PASSKEY_PIN_RESET_EXPIRES_MINUTES * 60 * 1000).toISOString()
+  const otp = createAdminResetOtp()
+  const country = getAdminRequestCountry(req)
+
+  await supabase
+    .from('admin_passkey_pin_challenges')
+    .update({
+      status: 'cancelled',
+      updated_at: now.toISOString(),
+    })
+    .eq('admin_email', adminEmail)
+    .eq('purpose', 'passkey_pin_reset')
+    .eq('status', 'pending')
+
+  const { data, error } = await supabase
+    .from('admin_passkey_pin_challenges')
+    .insert({
+      admin_id: admin?.id || '',
+      admin_email: adminEmail,
+      challenge_type: 'email_otp',
+      purpose: 'passkey_pin_reset',
+      status: 'pending',
+      code_hash: hashAdminResetOtp(adminEmail, otp),
+      attempt_count: 0,
+      max_attempts: PASSKEY_PIN_RESET_MAX_ATTEMPTS,
+      ip_address: getAdminSecurityClientIp(req),
+      user_agent: getAuthUserAgent(req),
+      country_code: country.country_code,
+      country_name: country.country_name,
+      expires_at: expiresAt,
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+
+  const emailSent = await sendAdminPasskeyPinResetEmail({
+    to: adminEmail,
+    otp,
+  })
+
+  await insertPasskeyPinResetEvent({
+    admin,
+    req,
+    eventType: 'passkey_pin_reset_email_sent',
+    result: 'pending',
+    reason: 'Passkey PIN reset email code sent',
+    metadata: {
+      challenge_id: data.id,
+      email_sent: emailSent,
+    },
+  })
+
+  return {
+    challenge_id: data.id,
+    expires_at: expiresAt,
+    email_sent: emailSent,
+  }
+}
+
+async function verifyPasskeyPinResetChallenge({ admin, req, challengeId, emailCode }) {
+  const cleanChallengeId = String(challengeId || '').trim()
+  const cleanCode = String(emailCode || '').trim()
+  const adminEmail = normalizeEmail(admin?.email || '')
+  const now = new Date().toISOString()
+
+  if (!isValidUuid(cleanChallengeId)) {
+    return {
+      ok: false,
+      status: 400,
+      message: 'Invalid reset challenge ID',
+    }
+  }
+
+  if (!/^\d{6}$/.test(cleanCode)) {
+    return {
+      ok: false,
+      status: 400,
+      message: 'A valid 6-digit email code is required',
+    }
+  }
+
+  const { data: challenge, error } = await supabase
+    .from('admin_passkey_pin_challenges')
+    .select('*')
+    .eq('id', cleanChallengeId)
+    .eq('purpose', 'passkey_pin_reset')
+    .eq('status', 'pending')
+    .maybeSingle()
+
+  if (error) throw error
+
+  if (!challenge) {
+    return {
+      ok: false,
+      status: 404,
+      message: 'Reset challenge not found or already used',
+    }
+  }
+
+  if (normalizeEmail(challenge.admin_email) !== adminEmail) {
+    return {
+      ok: false,
+      status: 403,
+      message: 'Reset challenge does not match this admin',
+    }
+  }
+
+  if (new Date(challenge.expires_at).getTime() <= Date.now()) {
+    await supabase
+      .from('admin_passkey_pin_challenges')
+      .update({
+        status: 'expired',
+        updated_at: now,
+      })
+      .eq('id', challenge.id)
+
+    return {
+      ok: false,
+      status: 400,
+      message: 'Reset code expired. Please request a new code.',
+    }
+  }
+
+  const attemptCount = Number(challenge.attempt_count || 0) + 1
+  const expectedHash = hashAdminResetOtp(adminEmail, cleanCode)
+
+  if (!timingSafeEqualText(challenge.code_hash, expectedHash)) {
+    const failedStatus = attemptCount >= Number(challenge.max_attempts || PASSKEY_PIN_RESET_MAX_ATTEMPTS) ? 'failed' : 'pending'
+
+    await supabase
+      .from('admin_passkey_pin_challenges')
+      .update({
+        attempt_count: attemptCount,
+        status: failedStatus,
+        updated_at: now,
+      })
+      .eq('id', challenge.id)
+
+    await createAdminSecurityAlert({
+      req,
+      admin,
+      alertType: failedStatus === 'failed' ? 'passkey_pin_reset_email_failed_locked' : 'passkey_pin_reset_email_failed',
+      severity: attemptCount >= 3 ? 'high' : 'medium',
+      title: failedStatus === 'failed' ? 'Passkey PIN reset failed too many times' : 'Wrong Passkey PIN reset email code',
+      message: 'A wrong email code was entered while resetting admin Passkey PIN.',
+      metadata: {
+        challenge_id: challenge.id,
+        attempt_count: attemptCount,
+      },
+    })
+
+    return {
+      ok: false,
+      status: 400,
+      message: failedStatus === 'failed' ? 'Too many wrong email code attempts. Please login again.' : 'Email code is incorrect',
+      attempts_left: Math.max(0, Number(challenge.max_attempts || PASSKEY_PIN_RESET_MAX_ATTEMPTS) - attemptCount),
+    }
+  }
+
+  return {
+    ok: true,
+    challenge,
+  }
+}
+
+async function resetAdminPasskeyPinWithBackupProof({ admin, req, newPin, confirmPin, twoFactorCode }) {
+  const cleanPin = String(newPin || '').trim()
+  const cleanConfirmPin = String(confirmPin || '').trim()
+  const cleanTwoFactorCode = String(twoFactorCode || '').trim()
+  const adminEmail = normalizeEmail(admin?.email || '')
+
+  if (!isValidPasskeyPin(cleanPin)) {
+    return {
+      ok: false,
+      status: 400,
+      message: 'New Passkey PIN must be exactly 6 digits',
+    }
+  }
+
+  if (cleanPin !== cleanConfirmPin) {
+    return {
+      ok: false,
+      status: 400,
+      message: 'New Passkey PIN and confirm PIN do not match',
+    }
+  }
+
+  if (!cleanTwoFactorCode) {
+    return {
+      ok: false,
+      status: 400,
+      message: '2FA code is required',
+    }
+  }
+
+  const twoFactor = await verifyAdminTwoFactorCode({
+    admin,
+    code: cleanTwoFactorCode,
+    allowRecovery: true,
+  })
+
+  if (!twoFactor.ok) {
+    await createAdminSecurityAlert({
+      req,
+      admin,
+      alertType: 'passkey_pin_reset_two_factor_failed',
+      severity: 'high',
+      title: 'Failed Passkey PIN reset 2FA check',
+      message: 'A wrong 2FA code was used while resetting admin Passkey PIN.',
+    })
+
+    return {
+      ok: false,
+      status: 400,
+      message: '2FA code is incorrect',
+    }
+  }
+
+  const now = new Date().toISOString()
+
+  const { data, error } = await supabase
+    .from('admin_passkey_pin_settings')
+    .upsert({
+      admin_id: admin?.id || '',
+      admin_email: adminEmail,
+      pin_hash: hashPasskeyPin({
+        adminEmail,
+        pin: cleanPin,
+      }),
+      is_enabled: true,
+      failed_count: 0,
+      locked_until: null,
+      disabled_at: null,
+      last_changed_at: now,
+      updated_at: now,
+    }, { onConflict: 'admin_email' })
+    .select()
+    .single()
+
+  if (error) throw error
+
+  await insertPasskeyPinResetEvent({
+    admin,
+    req,
+    eventType: 'passkey_pin_reset',
+    result: 'success',
+    reason: 'Admin Passkey PIN reset with email code and 2FA',
+    metadata: {
+      two_factor_method: twoFactor.method,
+    },
+  })
+
+  await createAdminSecurityAlert({
+    req,
+    admin,
+    alertType: 'passkey_pin_reset',
+    severity: 'high',
+    title: 'Admin Passkey PIN reset',
+    message: 'Admin Passkey PIN was reset using email code and 2FA.',
+    metadata: {
+      two_factor_method: twoFactor.method,
+    },
+  })
+
+  return {
+    ok: true,
+    message: 'Passkey PIN reset successfully',
+    status: formatPasskeyResetStatus(data),
+    two_factor: {
+      verified: true,
+      method: twoFactor.method,
+    },
+  }
 }
 
 async function sendAdminPasswordResetEmail({ to, otp }) {
@@ -485,6 +874,135 @@ export async function adminLoginPasskeyPinVerify(req, res) {
     })
   }
 }
+
+
+export async function adminLoginPasskeyPinResetEmailSend(req, res) {
+  try {
+    const passkeyToken = req.body?.passkeyToken || req.body?.passkey_token || req.body?.passkey_challenge || ''
+    const payload = verifyPasskeyLoginToken(passkeyToken)
+
+    if (!payload) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Passkey PIN login challenge is invalid or expired',
+      })
+    }
+
+    const admin = await getAdminForPasskeyLoginToken(payload)
+
+    if (!admin) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Admin account not found',
+      })
+    }
+
+    const passkeyRequired = await shouldRequireAdminPasskeyPin({ admin })
+
+    if (!passkeyRequired) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Admin Passkey PIN is not enabled',
+      })
+    }
+
+    const challenge = await createPasskeyPinResetChallenge({
+      admin,
+      req,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      reset_challenge_id: challenge.challenge_id,
+      expires_at: challenge.expires_at,
+      email_sent: challenge.email_sent,
+      message: 'Passkey PIN reset code sent to admin email',
+    })
+  } catch (error) {
+    console.error('ADMIN LOGIN PASSKEY PIN RESET EMAIL ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to send Passkey PIN reset email code',
+    })
+  }
+}
+
+export async function adminLoginPasskeyPinResetConfirm(req, res) {
+  try {
+    const passkeyToken = req.body?.passkeyToken || req.body?.passkey_token || req.body?.passkey_challenge || ''
+    const resetChallengeId = req.body?.resetChallengeId || req.body?.reset_challenge_id || ''
+    const emailCode = req.body?.emailCode || req.body?.email_code || ''
+    const twoFactorCode = req.body?.twoFactorCode || req.body?.two_factor_code || ''
+    const newPin = req.body?.newPin || req.body?.new_pin || ''
+    const confirmPin = req.body?.confirmPin || req.body?.confirm_pin || ''
+
+    const payload = verifyPasskeyLoginToken(passkeyToken)
+
+    if (!payload) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Passkey PIN login challenge is invalid or expired',
+      })
+    }
+
+    const admin = await getAdminForPasskeyLoginToken(payload)
+
+    if (!admin) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Admin account not found',
+      })
+    }
+
+    const emailVerified = await verifyPasskeyPinResetChallenge({
+      admin,
+      req,
+      challengeId: resetChallengeId,
+      emailCode,
+    })
+
+    if (!emailVerified.ok) {
+      return res.status(emailVerified.status || 400).json(emailVerified)
+    }
+
+    const resetResult = await resetAdminPasskeyPinWithBackupProof({
+      admin,
+      req,
+      newPin,
+      confirmPin,
+      twoFactorCode,
+    })
+
+    if (!resetResult.ok) {
+      return res.status(resetResult.status || 400).json(resetResult)
+    }
+
+    const now = new Date().toISOString()
+
+    await supabase
+      .from('admin_passkey_pin_challenges')
+      .update({
+        status: 'verified',
+        verified_at: now,
+        updated_at: now,
+      })
+      .eq('id', emailVerified.challenge.id)
+
+    return res.status(200).json({
+      ...resetResult,
+      email_verified: true,
+    })
+  } catch (error) {
+    console.error('ADMIN LOGIN PASSKEY PIN RESET CONFIRM ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to reset Passkey PIN',
+    })
+  }
+}
+
 
 export async function adminForgotPassword(req, res) {
   try {
