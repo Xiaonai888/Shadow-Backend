@@ -44,6 +44,7 @@ import adminTaskCenterRoutes from './src/routes/adminTaskCenter.routes.js'
 import adminLoginGuardRoutes from './src/routes/adminLoginGuard.routes.js'
 import adminDeviceAccessRoutes from './src/routes/adminDeviceAccess.routes.js'
 import adminTwoFactorRoutes from './src/routes/adminTwoFactor.routes.js'
+import adminPasskeyPinRoutes from './src/routes/adminPasskeyPin.routes.js'
 import contentVersionsRoutes from './src/routes/contentVersions.routes.js'
 
 dotenv.config()
@@ -169,6 +170,7 @@ app.use('/api/task-center', adminTaskCenterRoutes)
 app.use('/api/admin/login-guard', adminLoginGuardRoutes)
 app.use('/api/admin/device-access', adminDeviceAccessRoutes)
 app.use('/api/admin/two-factor', adminTwoFactorRoutes)
+app.use('/api/admin/passkey-pin', adminPasskeyPinRoutes)
 app.use('/api/public', contentVersionsRoutes)
 
 app.use((req, res) => {
