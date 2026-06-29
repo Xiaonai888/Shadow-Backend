@@ -8,6 +8,8 @@ import {
   adminResetPassword,
   checkAdmin,
   changeAdminPassword,
+  adminLoginPasskeyPinResetConfirm,
+  adminLoginPasskeyPinResetEmailSend,
 } from '../controllers/auth.controller.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { verifyTurnstile } from '../middleware/turnstile.middleware.js'
@@ -44,5 +46,7 @@ router.post('/admin-forgot-password', adminResetRequestLimit, verifyTurnstile, a
 router.post('/admin-reset-password', adminResetConfirmLimit, verifyTurnstile, adminResetPassword)
 router.get('/me', requireAdmin, checkAdmin)
 router.patch('/change-password', requireAdmin, changeAdminPassword)
+router.post('/login/passkey-pin/reset/email/send', adminLoginLimit, adminLoginPasskeyPinResetEmailSend)
+router.post('/login/passkey-pin/reset/confirm', adminLoginLimit, adminLoginPasskeyPinResetConfirm)
 
 export default router
