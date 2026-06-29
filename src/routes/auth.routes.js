@@ -4,6 +4,7 @@ import {
   adminLogin,
   adminLoginTwoFactorEmailSend,
   adminLoginTwoFactorVerify,
+  adminLoginPasskeyPinVerify,
   adminResetPassword,
   checkAdmin,
   changeAdminPassword,
@@ -37,6 +38,7 @@ const adminResetConfirmLimit = createRateLimit({
 
 router.post('/login', adminLoginLimit, verifyTurnstile, adminLogin)
 router.post('/login/2fa/verify', adminLoginLimit, adminLoginTwoFactorVerify)
+router.post('/login/passkey-pin/verify', adminLoginLimit, adminLoginPasskeyPinVerify)
 router.post('/login/2fa/email/send', adminLoginLimit, adminLoginTwoFactorEmailSend)
 router.post('/admin-forgot-password', adminResetRequestLimit, verifyTurnstile, adminForgotPassword)
 router.post('/admin-reset-password', adminResetConfirmLimit, verifyTurnstile, adminResetPassword)
