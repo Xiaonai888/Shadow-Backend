@@ -1,5 +1,6 @@
 import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { supabase } from '../config/supabase.js'
+import { bumpContentVersions } from '../services/contentVersion.service.js'
 
 const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'media'
 const LOG_RETENTION_DAYS = 90
@@ -479,3 +480,4 @@ export async function getSlideActivityLogs(req, res) {
     })
   }
 }
+await bumpContentVersions(['home', 'slides'])
