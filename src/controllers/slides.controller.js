@@ -249,14 +249,14 @@ export async function createSlide(req, res) {
     const actor = getActor(req)
 
     const {
-  section_key = 'home_top_slider',
-  title = '',
-  subtitle = '',
-  genre_label = '',
-  link_url = '',
-  order_index = 0,
-  is_active = 'true',
-} = req.body
+      section_key = 'home_top_slider',
+      title = '',
+      subtitle = '',
+      genre_label = '',
+      link_url = '',
+      order_index = 0,
+      is_active = 'true',
+    } = req.body
 
     if (!req.file) {
       return res.status(400).json({
@@ -290,6 +290,8 @@ export async function createSlide(req, res) {
       slide: data,
       details: `Created Slide ${data.order_index}`,
     })
+
+    await bumpContentVersions(['home', 'slides'])
 
     res.status(201).json({
       ok: true,
@@ -367,6 +369,8 @@ export async function updateSlide(req, res) {
       details: makeUpdateMessage(data, changedFields),
     })
 
+    await bumpContentVersions(['home', 'slides'])
+
     res.status(200).json({
       ok: true,
       slide: data,
@@ -409,6 +413,8 @@ export async function deleteSlide(req, res) {
       slide: existingSlide,
       details: `Deleted Slide ${existingSlide?.order_index}`,
     })
+
+    await bumpContentVersions(['home', 'slides'])
 
     res.status(200).json({
       ok: true,
@@ -480,4 +486,3 @@ export async function getSlideActivityLogs(req, res) {
     })
   }
 }
-await bumpContentVersions(['home', 'slides'])
