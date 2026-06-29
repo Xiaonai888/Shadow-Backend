@@ -4,6 +4,7 @@ import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
   getPublicTaskCenterSettings,
   getAdminTaskCenterSettings,
+  updateAdminReadingTask,
   updateAdminTaskCenterCover,
 } from '../controllers/adminTaskCenter.controller.js'
 
@@ -18,6 +19,7 @@ const upload = multer({
 
 router.get('/public', getPublicTaskCenterSettings)
 router.get('/admin', requireAdmin, getAdminTaskCenterSettings)
+router.put('/admin/reading-task', requireAdmin, updateAdminReadingTask)
 router.put('/admin/cover', requireAdmin, upload.single('cover'), updateAdminTaskCenterCover)
 
 export default router
