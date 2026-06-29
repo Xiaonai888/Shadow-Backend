@@ -9,6 +9,7 @@ import {
 import { registerAdminDeviceSession } from '../services/adminDeviceAccess.service.js'
 import {
   createAdminLoginTwoFactorChallenge,
+  sendAdminLoginEmailOtp,
   shouldRequireAdminTwoFactor,
   verifyAdminLoginTwoFactorChallenge,
 } from '../services/adminTwoFactor.service.js'
