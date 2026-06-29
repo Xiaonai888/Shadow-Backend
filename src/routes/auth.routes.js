@@ -2,6 +2,7 @@ import express from 'express'
 import {
   adminForgotPassword,
   adminLogin,
+  adminLoginTwoFactorEmailSend,
   adminLoginTwoFactorVerify,
   adminResetPassword,
   checkAdmin,
@@ -36,6 +37,7 @@ const adminResetConfirmLimit = createRateLimit({
 
 router.post('/login', adminLoginLimit, verifyTurnstile, adminLogin)
 router.post('/login/2fa/verify', adminLoginLimit, adminLoginTwoFactorVerify)
+router.post('/login/2fa/email/send', adminLoginLimit, adminLoginTwoFactorEmailSend)
 router.post('/admin-forgot-password', adminResetRequestLimit, verifyTurnstile, adminForgotPassword)
 router.post('/admin-reset-password', adminResetConfirmLimit, verifyTurnstile, adminResetPassword)
 router.get('/me', requireAdmin, checkAdmin)
