@@ -13,6 +13,17 @@ const DAILY_REWARDS = [
 const CHEST_COOLDOWN_MS = 4 * 60 * 60 * 1000
 const CHEST_MAX_STORAGE = 2
 
+const READING_REWARD_MILESTONES = [
+  { seconds: 60, minutes: 1, coins: 5 },
+  { seconds: 300, minutes: 5, coins: 5 },
+  { seconds: 600, minutes: 10, coins: 10 },
+  { seconds: 1200, minutes: 20, coins: 15 },
+  { seconds: 1800, minutes: 30, coins: 15 },
+]
+
+const MAX_READING_REWARD_SECONDS = 1800
+const MAX_READING_EVENT_SECONDS = 60
+
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
 }
@@ -127,6 +138,47 @@ function publicRewardChest(row) {
     }
   }
 
+  function cleanUuid(value) {
+  const text = String(value || '').trim()
+
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)
+    ? text
+    : null
+}
+
+function publicReadingReward(row) {
+  const todayKey = getPhnomPenhDateKey()
+  const activeSeconds = Math.min(MAX_READING_REWARD_SECONDS, Math.max(0, Number(row?.active_seconds || 0)))
+  const claimedMilestones = Array.isArray(row?.claimed_milestones)
+    ? row.claimed_milestones.map(Number)
+    : []
+
+  const milestones = READING_REWARD_MILESTONES.map((item) => {
+    const claimed = claimedMilestones.includes(item.seconds)
+    const completed = activeSeconds >= item.seconds
+
+    return {
+      ...item,
+      completed,
+      claimed,
+      claimable: completed && !claimed,
+    }
+  })
+
+  return {
+    reward_date: row?.reward_date || todayKey,
+    active_seconds: activeSeconds,
+    active_minutes: Math.floor(activeSeconds / 60),
+    target_seconds: MAX_READING_REWARD_SECONDS,
+    target_minutes: 30,
+    claimed_milestones: claimedMilestones,
+    milestones,
+    claimable_coins: milestones.filter((item) => item.claimable).reduce((sum, item) => sum + item.coins, 0),
+    total_earned_coins: milestones.filter((item) => item.claimed).reduce((sum, item) => sum + item.coins, 0),
+    done_today: activeSeconds >= MAX_READING_REWARD_SECONDS && milestones.every((item) => item.claimed),
+  }
+}
+
   const elapsedMs = Math.max(0, now.getTime() - lastRefillAt.getTime())
   const gained = Math.floor(elapsedMs / CHEST_COOLDOWN_MS)
   const availableChests = Math.min(CHEST_MAX_STORAGE, storedChests + gained)
@@ -222,6 +274,39 @@ async function getOrCreateRewardChest(userId) {
       user_id: userId,
       stored_chests: 0,
       last_refill_at: now,
+      updated_at: now,
+    })
+    .select('*')
+    .single()
+
+  if (error) throw error
+
+  return data
+}
+
+
+async function getOrCreateReadingReward(userId) {
+  const todayKey = getPhnomPenhDateKey()
+
+  const { data: existingReward, error: existingError } = await supabase
+    .from('reader_reading_rewards')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('reward_date', todayKey)
+    .maybeSingle()
+
+  if (existingError) throw existingError
+  if (existingReward) return existingReward
+
+  const now = new Date().toISOString()
+
+  const { data, error } = await supabase
+    .from('reader_reading_rewards')
+    .insert({
+      user_id: userId,
+      reward_date: todayKey,
+      active_seconds: 0,
+      claimed_milestones: [],
       updated_at: now,
     })
     .select('*')
@@ -514,6 +599,187 @@ export async function claimRewardChest(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to claim reward chest',
+      error: error.message,
+    })
+  }
+}
+
+export async function getReadingReward(req, res) {
+  try {
+    const userId = getUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
+    const reward = await getOrCreateReadingReward(userId)
+
+    return res.status(200).json({
+      ok: true,
+      reading_reward: publicReadingReward(reward),
+    })
+  } catch (error) {
+    console.error('GET READING REWARD ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load reading reward',
+      error: error.message,
+    })
+  }
+}
+
+export async function trackReadingRewardProgress(req, res) {
+  try {
+    const userId = getUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
+    const reward = await getOrCreateReadingReward(userId)
+    const currentSeconds = Math.min(MAX_READING_REWARD_SECONDS, Math.max(0, Number(reward.active_seconds || 0)))
+    const requestedSeconds = Math.floor(Number(req.body?.seconds || req.body?.seconds_added || 0))
+    const secondsToAdd = Math.min(MAX_READING_EVENT_SECONDS, Math.max(0, requestedSeconds))
+    const nextSeconds = Math.min(MAX_READING_REWARD_SECONDS, currentSeconds + secondsToAdd)
+    const actualSecondsAdded = Math.max(0, nextSeconds - currentSeconds)
+    const now = new Date().toISOString()
+
+    let updatedReward = reward
+
+    if (actualSecondsAdded > 0) {
+      const { data, error } = await supabase
+        .from('reader_reading_rewards')
+        .update({
+          active_seconds: nextSeconds,
+          updated_at: now,
+        })
+        .eq('id', reward.id)
+        .select('*')
+        .single()
+
+      if (error) throw error
+      updatedReward = data
+
+      await supabase
+        .from('reader_reading_reward_events')
+        .insert({
+          user_id: userId,
+          reward_date: reward.reward_date,
+          story_id: cleanUuid(req.body?.story_id),
+          episode_id: cleanUuid(req.body?.episode_id),
+          seconds_added: actualSecondsAdded,
+          active_seconds_after: nextSeconds,
+          event_type: 'heartbeat',
+        })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      reading_reward: publicReadingReward(updatedReward),
+    })
+  } catch (error) {
+    console.error('TRACK READING REWARD ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to track reading reward',
+      error: error.message,
+    })
+  }
+}
+
+export async function claimReadingReward(req, res) {
+  try {
+    const userId = getUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
+    const reward = await getOrCreateReadingReward(userId)
+    const publicReward = publicReadingReward(reward)
+    const claimableMilestones = publicReward.milestones.filter((item) => item.claimable)
+    const rewardCoins = claimableMilestones.reduce((sum, item) => sum + item.coins, 0)
+
+    if (rewardCoins <= 0) {
+      return res.status(400).json({
+        ok: false,
+        message: 'No reading reward available to claim',
+        reading_reward: publicReward,
+      })
+    }
+
+    const wallet = await getOrCreateWallet(userId)
+    const now = new Date().toISOString()
+    const nextClaimedMilestones = [
+      ...new Set([
+        ...publicReward.claimed_milestones,
+        ...claimableMilestones.map((item) => item.seconds),
+      ]),
+    ].sort((a, b) => a - b)
+
+    const { data: updatedReward, error: rewardError } = await supabase
+      .from('reader_reading_rewards')
+      .update({
+        claimed_milestones: nextClaimedMilestones,
+        updated_at: now,
+      })
+      .eq('id', reward.id)
+      .select('*')
+      .single()
+
+    if (rewardError) throw rewardError
+
+    const { data: updatedWallet, error: walletError } = await supabase
+      .from('user_wallets')
+      .update({
+        gem_balance: Number(wallet.gem_balance || 0) + rewardCoins,
+        updated_at: now,
+      })
+      .eq('user_id', userId)
+      .select('*')
+      .single()
+
+    if (walletError) throw walletError
+
+    const { data: historyItem, error: historyError } = await supabase
+      .from('reader_reward_history')
+      .insert({
+        user_id: userId,
+        source_key: 'reading_time_bonus',
+        source_title: 'Read & Earn',
+        amount_gems: rewardCoins,
+        amount_vouchers: 0,
+        story_cards: 0,
+        metadata: {
+          coins: rewardCoins,
+          active_seconds: publicReward.active_seconds,
+          claimed_milestones: claimableMilestones.map((item) => item.minutes),
+        },
+      })
+      .select('*')
+      .single()
+
+    if (historyError) throw historyError
+
+    return res.status(200).json({
+      ok: true,
+      wallet: publicWallet(updatedWallet),
+      reading_reward: publicReadingReward(updatedReward),
+      reward: {
+        coins: rewardCoins,
+        gems: rewardCoins,
+      },
+      history_item: historyItem ? publicHistoryItem(historyItem) : null,
+      message: 'Reading reward claimed',
+    })
+  } catch (error) {
+    console.error('CLAIM READING REWARD ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to claim reading reward',
       error: error.message,
     })
   }
