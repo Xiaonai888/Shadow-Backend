@@ -645,24 +645,3 @@ export async function changeAdminPassword(req, res) {
   }
 }
 
-export async function adminLoginTwoFactorEmailSend(req, res) {
-  try {
-    const result = await sendAdminLoginEmailOtp({
-      req,
-      challengeId: req.body?.challengeId || req.body?.challenge_id || '',
-    })
-
-    if (!result.ok) {
-      return res.status(result.status || 400).json(result)
-    }
-
-    return res.status(200).json(result)
-  } catch (error) {
-    console.error('ADMIN LOGIN 2FA EMAIL SEND ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to send admin email code',
-    })
-  }
-}
