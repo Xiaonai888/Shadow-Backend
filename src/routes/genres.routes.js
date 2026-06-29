@@ -1,8 +1,9 @@
 import express from 'express'
+import multer from 'multer'
 import { supabase } from '../config/supabase.js'
 import { getAdminActor, logAdminActivity } from '../services/adminActivity.service.js'
-import multer from 'multer'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
+import { bumpContentVersions } from '../services/contentVersion.service.js'
 
 const router = express.Router()
 const MAX_FEATURED_TABS = 12
@@ -13,6 +14,14 @@ const upload = multer({
     fileSize: 8 * 1024 * 1024,
   },
 })
+
+async function notifyContentChange(keys) {
+  try {
+    await bumpContentVersions(keys)
+  } catch (error) {
+    console.warn('BUMP CONTENT VERSION WARNING:', error.message)
+  }
+}
 
 async function uploadGenreBanner(req, res) {
   try {
@@ -113,10 +122,14 @@ async function getGenreById(id) {
 
 function genreChanges(oldGenre, nextGenre) {
   const changed = []
+
   if ((oldGenre?.name || '') !== (nextGenre?.name || '')) changed.push('name')
   if ((oldGenre?.slug || '') !== (nextGenre?.slug || '')) changed.push('slug')
   if (Number(oldGenre?.sort_order) !== Number(nextGenre?.sort_order)) changed.push('sort order')
   if (Boolean(oldGenre?.is_active) !== Boolean(nextGenre?.is_active)) changed.push('visibility')
+  if ((oldGenre?.banner_image_url || '') !== (nextGenre?.banner_image_url || '')) changed.push('desktop banner')
+  if ((oldGenre?.mobile_banner_image_url || '') !== (nextGenre?.mobile_banner_image_url || '')) changed.push('mobile banner')
+
   return changed.length ? changed.join(', ') : 'no visible changes'
 }
 
@@ -186,13 +199,13 @@ async function createGenre(req, res) {
     const { data, error } = await supabase
       .from('genres')
       .insert({
-  name,
-  slug,
-  sort_order: sortOrder,
-  is_active: isActive,
-  banner_image_url: bannerImageUrl,
-  mobile_banner_image_url: mobileBannerImageUrl,
-})
+        name,
+        slug,
+        sort_order: sortOrder,
+        is_active: isActive,
+        banner_image_url: bannerImageUrl,
+        mobile_banner_image_url: mobileBannerImageUrl,
+      })
       .select()
       .single()
 
@@ -206,6 +219,8 @@ async function createGenre(req, res) {
       actor,
       details: `${actor} created genre "${data.name}".`,
     })
+
+    await notifyContentChange(['home', 'genres', 'stories'])
 
     res.status(201).json({ ok: true, genre: data })
   } catch (error) {
@@ -225,21 +240,21 @@ async function updateGenre(req, res) {
     const sortOrder = req.body.sort_order === undefined ? oldGenre.sort_order : toNumber(req.body.sort_order, oldGenre.sort_order)
     const isActive = req.body.is_active === undefined ? oldGenre.is_active : toBoolean(req.body.is_active, oldGenre.is_active)
     const bannerImageUrl = req.body.banner_image_url === undefined ? oldGenre.banner_image_url : String(req.body.banner_image_url || '').trim()
-const mobileBannerImageUrl = req.body.mobile_banner_image_url === undefined ? oldGenre.mobile_banner_image_url : String(req.body.mobile_banner_image_url || '').trim()
+    const mobileBannerImageUrl = req.body.mobile_banner_image_url === undefined ? oldGenre.mobile_banner_image_url : String(req.body.mobile_banner_image_url || '').trim()
 
     if (!name || !slug) return res.status(400).json({ ok: false, message: 'Genre name and slug are required' })
 
     const { data, error } = await supabase
       .from('genres')
       .update({
-  name,
-  slug,
-  sort_order: sortOrder,
-  is_active: isActive,
-  banner_image_url: bannerImageUrl,
-  mobile_banner_image_url: mobileBannerImageUrl,
-  updated_at: new Date().toISOString(),
-})
+        name,
+        slug,
+        sort_order: sortOrder,
+        is_active: isActive,
+        banner_image_url: bannerImageUrl,
+        mobile_banner_image_url: mobileBannerImageUrl,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', id)
       .select()
       .single()
@@ -267,6 +282,8 @@ const mobileBannerImageUrl = req.body.mobile_banner_image_url === undefined ? ol
       actor,
       details: `${actor} updated genre "${data.name}": ${changed}.`,
     })
+
+    await notifyContentChange(['home', 'genres', 'stories'])
 
     res.status(200).json({ ok: true, genre: data })
   } catch (error) {
@@ -304,6 +321,8 @@ async function deleteGenre(req, res) {
       actor,
       details: `${actor} deleted genre "${genre.name}".`,
     })
+
+    await notifyContentChange(['home', 'genres', 'stories'])
 
     res.status(200).json({ ok: true, deleted_id: id })
   } catch (error) {
@@ -414,6 +433,8 @@ async function updateFeaturedGenreTabs(req, res) {
       actor,
       details: `${actor} updated featured genre tabs: ${orderedGenres.map((genre) => genre.name).join(', ') || 'Today only'}.`,
     })
+
+    await notifyContentChange(['home', 'genres'])
 
     res.status(200).json({ ok: true, max_tabs: MAX_FEATURED_TABS, tabs: tabs || [] })
   } catch (error) {
