@@ -13,7 +13,12 @@ import {
   shouldRequireAdminTwoFactor,
   verifyAdminLoginTwoFactorChallenge,
 } from '../services/adminTwoFactor.service.js'
+import {
+  shouldRequireAdminPasskeyPin,
+  verifyAdminPasskeyPinForLogin,
+} from '../services/adminPasskeyPin.service.js'
 
+const PASSKEY_LOGIN_TOKEN_EXPIRES_IN = '5m'
 const RESET_REQUEST_COOLDOWN_MS = 60 * 1000
 const RESET_REQUEST_15_MIN_MS = 15 * 60 * 1000
 const RESET_REQUEST_24_HOUR_MS = 24 * 60 * 60 * 1000
@@ -84,6 +89,80 @@ function createToken(admin, deviceAccess) {
   )
 }
 
+function createPasskeyLoginToken({ admin, twoFactorMethod = '' }) {
+  return jwt.sign(
+    {
+      stage: 'admin_passkey_pin_login',
+      admin_id: admin?.id || '',
+      email: admin?.email || '',
+      two_factor_method: twoFactorMethod || '',
+    },
+    process.env.JWT_SECRET,
+    {
+      expiresIn: PASSKEY_LOGIN_TOKEN_EXPIRES_IN,
+    }
+  )
+}
+
+function verifyPasskeyLoginToken(token) {
+  try {
+    const payload = jwt.verify(String(token || ''), process.env.JWT_SECRET)
+
+    if (payload?.stage !== 'admin_passkey_pin_login') return null
+
+    return payload
+  } catch {
+    return null
+  }
+}
+
+async function getAdminForPasskeyLoginToken(payload) {
+  const adminId = String(payload?.admin_id || '').trim()
+  const adminEmail = normalizeEmail(payload?.email)
+
+  if (!adminId && !adminEmail) return null
+
+  let query = supabase
+    .from('admin_users')
+    .select('id, email, name, role, password_changed_at')
+    .limit(1)
+
+  if (adminId) query = query.eq('id', adminId)
+  else query = query.eq('email', adminEmail)
+
+  const { data, error } = await query.maybeSingle()
+
+  if (error) throw error
+  if (!data) return null
+  if (adminEmail && normalizeEmail(data.email) !== adminEmail) return null
+
+  return data
+}
+
+function sendPasskeyPinRequired({ res, admin, twoFactorMethod = '' }) {
+  const passkeyToken = createPasskeyLoginToken({ admin, twoFactorMethod })
+
+  return res.status(200).json({
+    ok: true,
+    passkey_pin_required: true,
+    passkey_token: passkeyToken,
+    passkey_challenge: {
+      type: 'jwt',
+      token: passkeyToken,
+      expires_in_seconds: 300,
+    },
+    admin: {
+      email: admin.email,
+      name: admin.name,
+    },
+    two_factor: {
+      verified: Boolean(twoFactorMethod),
+      method: twoFactorMethod,
+    },
+    message: 'Admin Passkey PIN required',
+  })
+}
+
 function createAdminResetOtp() {
   return String(crypto.randomInt(100000, 1000000))
 }
@@ -132,7 +211,7 @@ async function sendAdminPasswordResetEmail({ to, otp }) {
   return true
 }
 
-async function issueAdminLogin({ req, res, email, admin, twoFactorMethod = '' }) {
+async function issueAdminLogin({ req, res, email, admin, twoFactorMethod = '', passkeyPinVerified = false }) {
   const deviceAccess = await registerAdminDeviceSession({
     req,
     res,
@@ -171,6 +250,9 @@ async function issueAdminLogin({ req, res, email, admin, twoFactorMethod = '' })
     two_factor: {
       verified: Boolean(twoFactorMethod),
       method: twoFactorMethod,
+    },
+    passkey_pin: {
+      verified: Boolean(passkeyPinVerified),
     },
     admin_guard: adminGuard,
     admin_device_access: {
@@ -272,6 +354,15 @@ export async function adminLogin(req, res) {
       })
     }
 
+    const passkeyRequired = await shouldRequireAdminPasskeyPin({ admin })
+
+    if (passkeyRequired) {
+      return sendPasskeyPinRequired({
+        res,
+        admin,
+      })
+    }
+
     return issueAdminLogin({
       req,
       res,
@@ -307,6 +398,16 @@ export async function adminLoginTwoFactorVerify(req, res) {
       return res.status(result.status || 400).json(result)
     }
 
+    const passkeyRequired = await shouldRequireAdminPasskeyPin({ admin: result.admin })
+
+    if (passkeyRequired) {
+      return sendPasskeyPinRequired({
+        res,
+        admin: result.admin,
+        twoFactorMethod: result.method,
+      })
+    }
+
     return issueAdminLogin({
       req,
       res,
@@ -320,6 +421,67 @@ export async function adminLoginTwoFactorVerify(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Admin 2FA verification failed',
+    })
+  }
+}
+
+export async function adminLoginPasskeyPinVerify(req, res) {
+  try {
+    if (!process.env.JWT_SECRET) {
+      return res.status(500).json({
+        ok: false,
+        message: 'JWT_SECRET is missing',
+      })
+    }
+
+    const passkeyToken = req.body?.passkeyToken || req.body?.passkey_token || req.body?.passkey_challenge || ''
+    const pin = req.body?.pin || ''
+    const payload = verifyPasskeyLoginToken(passkeyToken)
+
+    if (!payload) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Passkey PIN login challenge is invalid or expired',
+      })
+    }
+
+    const admin = await getAdminForPasskeyLoginToken(payload)
+
+    if (!admin) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Admin account not found',
+      })
+    }
+
+    const passkeyRequired = await shouldRequireAdminPasskeyPin({ admin })
+
+    if (passkeyRequired) {
+      const verified = await verifyAdminPasskeyPinForLogin({
+        admin,
+        req,
+        pin,
+      })
+
+      if (!verified.ok) {
+        return res.status(verified.status || 400).json(verified)
+      }
+    }
+
+    return issueAdminLogin({
+      req,
+      res,
+      email: admin.email,
+      admin,
+      twoFactorMethod: payload.two_factor_method || '',
+      passkeyPinVerified: passkeyRequired,
+    })
+  } catch (error) {
+    console.error('ADMIN LOGIN PASSKEY PIN VERIFY ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Admin Passkey PIN verification failed',
     })
   }
 }
