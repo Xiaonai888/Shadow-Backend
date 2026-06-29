@@ -44,24 +44,28 @@ function countryNameFromCode(countryCode) {
 
 function getAdminIdentity(admin = {}) {
   return {
-    adminId: admin?.admin_id || admin?.id || '',
+    adminId: cleanText(admin?.admin_id || admin?.id || '', 120),
     adminEmail: normalizeEmail(admin?.email || ''),
   }
 }
 
-function buildAdminAlertsQuery(admin = {}) {
+function applyAdminAlertOwnerFilter(query, admin = {}) {
   const { adminId, adminEmail } = getAdminIdentity(admin)
-  let query = supabase.from('admin_security_alerts').select('*')
 
   if (adminId && adminEmail) {
-    query = query.or(`admin_id.eq.${adminId},admin_email.eq.${adminEmail}`)
-  } else if (adminId) {
-    query = query.eq('admin_id', adminId)
-  } else {
-    query = query.eq('admin_email', adminEmail)
+    return query.or(`admin_id.eq.${adminId},admin_email.eq.${adminEmail}`)
   }
 
-  return query
+  if (adminId) return query.eq('admin_id', adminId)
+
+  return query.eq('admin_email', adminEmail)
+}
+
+function buildAdminAlertsQuery(admin = {}) {
+  return applyAdminAlertOwnerFilter(
+    supabase.from('admin_security_alerts').select('*'),
+    admin
+  )
 }
 
 function summarizeAlerts(alerts = []) {
@@ -142,6 +146,7 @@ export async function createAdminSecurityAlert({
         country_code: country.country_code,
         country_name: country.country_name,
         is_read: false,
+        read_at: null,
         metadata: {
           ...metadata,
           country_code: country.country_code,
@@ -200,9 +205,14 @@ export async function markAdminSecurityAlertReadById({ admin, alertId }) {
     }
   }
 
-  let query = buildAdminAlertsQuery(admin).eq('id', cleanAlertId)
+  let existingQuery = supabase
+    .from('admin_security_alerts')
+    .select('id')
+    .eq('id', cleanAlertId)
 
-  const { data: existing, error: existingError } = await query.maybeSingle()
+  existingQuery = applyAdminAlertOwnerFilter(existingQuery, admin)
+
+  const { data: existing, error: existingError } = await existingQuery.maybeSingle()
 
   if (existingError) throw existingError
 
@@ -214,11 +224,13 @@ export async function markAdminSecurityAlertReadById({ admin, alertId }) {
     }
   }
 
+  const now = new Date().toISOString()
+
   const { data, error } = await supabase
     .from('admin_security_alerts')
     .update({
       is_read: true,
-      read_at: new Date().toISOString(),
+      read_at: now,
     })
     .eq('id', cleanAlertId)
     .select()
@@ -233,29 +245,41 @@ export async function markAdminSecurityAlertReadById({ admin, alertId }) {
 }
 
 export async function markAllAdminSecurityAlertsRead({ admin }) {
-  const { adminId, adminEmail } = getAdminIdentity(admin)
-  let query = supabase
+  let selectQuery = supabase
+    .from('admin_security_alerts')
+    .select('id')
+    .eq('is_read', false)
+
+  selectQuery = applyAdminAlertOwnerFilter(selectQuery, admin)
+
+  const { data: unreadAlerts, error: selectError } = await selectQuery
+
+  if (selectError) throw selectError
+
+  const ids = (unreadAlerts || [])
+    .map((alert) => alert.id)
+    .filter(Boolean)
+
+  if (!ids.length) {
+    return {
+      ok: true,
+      updated_count: 0,
+    }
+  }
+
+  const { data, error } = await supabase
     .from('admin_security_alerts')
     .update({
       is_read: true,
       read_at: new Date().toISOString(),
     })
-    .eq('is_read', false)
-
-  if (adminId && adminEmail) {
-    query = query.or(`admin_id.eq.${adminId},admin_email.eq.${adminEmail}`)
-  } else if (adminId) {
-    query = query.eq('admin_id', adminId)
-  } else {
-    query = query.eq('admin_email', adminEmail)
-  }
-
-  const { data, error } = await query.select('id')
+    .in('id', ids)
+    .select('id')
 
   if (error) throw error
 
   return {
     ok: true,
-    updated_count: Array.isArray(data) ? data.length : 0,
+    updated_count: Array.isArray(data) ? data.length : ids.length,
   }
 }
