@@ -4,6 +4,10 @@ import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
   getPublicTaskCenterSettings,
   getAdminTaskCenterSettings,
+  getAdminReadingMissions,
+  createAdminReadingMission,
+  updateAdminReadingMission,
+  deleteAdminReadingMission,
   updateAdminReadingTask,
   updateAdminTaskCenterCover,
 } from '../controllers/adminTaskCenter.controller.js'
@@ -19,6 +23,10 @@ const upload = multer({
 
 router.get('/public', getPublicTaskCenterSettings)
 router.get('/admin', requireAdmin, getAdminTaskCenterSettings)
+router.get('/admin/reading-missions', requireAdmin, getAdminReadingMissions)
+router.post('/admin/reading-missions', requireAdmin, createAdminReadingMission)
+router.put('/admin/reading-missions/:missionId', requireAdmin, updateAdminReadingMission)
+router.delete('/admin/reading-missions/:missionId', requireAdmin, deleteAdminReadingMission)
 router.put('/admin/reading-task', requireAdmin, updateAdminReadingTask)
 router.put('/admin/cover', requireAdmin, upload.single('cover'), updateAdminTaskCenterCover)
 
