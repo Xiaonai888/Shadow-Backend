@@ -425,6 +425,130 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
   }
 }
 
+function cleanTaskUuid(value) {
+  const text = String(value || '').trim()
+
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)
+    ? text
+    : null
+}
+
+function getMissionTargetSeconds(mission) {
+  return Math.max(60, Number(mission?.target_minutes || 1) * 60)
+}
+
+function missionMatchesStory(mission, storyId) {
+  const link = String(mission?.story_link || '').trim()
+  const cleanStoryId = String(storyId || '').trim()
+
+  if (!link || !cleanStoryId) return false
+
+  return link.includes(cleanStoryId)
+}
+
+function publicReadingMissionProgress(mission, progressRow = null) {
+  const targetSeconds = getMissionTargetSeconds(mission)
+  const activeSeconds = Math.min(targetSeconds, Math.max(0, Number(progressRow?.active_seconds || 0)))
+  const completed = Boolean(progressRow?.completed_at) || activeSeconds >= targetSeconds
+  const claimed = Boolean(progressRow?.claimed_at)
+
+  return {
+    id: mission.id,
+    is_active: Boolean(mission.is_active),
+    title: mission.title,
+    subtitle: mission.subtitle,
+    reward_coins: Number(mission.reward_coins || 0),
+    target_minutes: Number(mission.target_minutes || 1),
+    target_seconds: targetSeconds,
+    story_link: mission.story_link || '',
+    button_text: mission.button_text || 'Go',
+    sort_order: Number(mission.sort_order || 0),
+    active_seconds: activeSeconds,
+    active_minutes: Math.floor(activeSeconds / 60),
+    progress_percent: targetSeconds > 0 ? Math.min(100, Math.round((activeSeconds / targetSeconds) * 100)) : 0,
+    completed,
+    claimed,
+    claimable: completed && !claimed,
+    completed_at: progressRow?.completed_at || null,
+    claimed_at: progressRow?.claimed_at || null,
+  }
+}
+
+async function getActiveReadingMission(missionId) {
+  const { data, error } = await supabase
+    .from('task_center_reading_missions')
+    .select('*')
+    .eq('id', missionId)
+    .eq('is_active', true)
+    .maybeSingle()
+
+  if (error) throw error
+
+  return data || null
+}
+
+async function getOrCreateReadingMissionProgress(userId, mission, storyId = null) {
+  const { data: existingProgress, error: existingError } = await supabase
+    .from('reader_reading_mission_progress')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('mission_id', mission.id)
+    .maybeSingle()
+
+  if (existingError) throw existingError
+  if (existingProgress) return existingProgress
+
+  const now = new Date().toISOString()
+
+  const { data, error } = await supabase
+    .from('reader_reading_mission_progress')
+    .insert({
+      user_id: userId,
+      mission_id: mission.id,
+      story_id: storyId,
+      active_seconds: 0,
+      created_at: now,
+      updated_at: now,
+    })
+    .select('*')
+    .single()
+
+  if (error) throw error
+
+  return data
+}
+
+async function getReaderReadingMissions(userId) {
+  const { data: missions, error: missionsError } = await supabase
+    .from('task_center_reading_missions')
+    .select('*')
+    .eq('is_active', true)
+    .order('sort_order', { ascending: true })
+    .order('created_at', { ascending: false })
+    .limit(2)
+
+  if (missionsError) throw missionsError
+
+  const missionList = missions || []
+
+  const missionProgress = await Promise.all(
+    missionList.map(async (mission) => {
+      const { data, error } = await supabase
+        .from('reader_reading_mission_progress')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('mission_id', mission.id)
+        .maybeSingle()
+
+      if (error) throw error
+
+      return publicReadingMissionProgress(mission, data || null)
+    })
+  )
+
+  return missionProgress
+}
+
 export async function getTaskCheckIn(req, res) {
   try {
     const userId = getUserId(req)
@@ -781,6 +905,238 @@ export async function claimReadingReward(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to claim reading reward',
+      error: error.message,
+    })
+  }
+}
+
+export async function getReadingMissions(req, res) {
+  try {
+    const userId = getUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
+    const missions = await getReaderReadingMissions(userId)
+
+    return res.status(200).json({
+      ok: true,
+      missions,
+    })
+  } catch (error) {
+    console.error('GET READING MISSIONS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load reading missions',
+      error: error.message,
+    })
+  }
+}
+
+export async function getReadingMission(req, res) {
+  try {
+    const userId = getUserId(req)
+    const missionId = String(req.params.missionId || '').trim()
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
+    const mission = await getActiveReadingMission(missionId)
+
+    if (!mission) {
+      return res.status(404).json({ ok: false, message: 'Reading mission not found' })
+    }
+
+    const progress = await getOrCreateReadingMissionProgress(userId, mission)
+
+    return res.status(200).json({
+      ok: true,
+      mission: publicReadingMissionProgress(mission, progress),
+    })
+  } catch (error) {
+    console.error('GET READING MISSION ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load reading mission',
+      error: error.message,
+    })
+  }
+}
+
+export async function trackReadingMissionProgress(req, res) {
+  try {
+    const userId = getUserId(req)
+    const missionId = String(req.params.missionId || '').trim()
+    const storyId = cleanTaskUuid(req.body?.story_id)
+    const requestedSeconds = Math.floor(Number(req.body?.seconds || req.body?.seconds_added || 0))
+    const secondsToAdd = Math.min(30, Math.max(0, requestedSeconds))
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
+    const mission = await getActiveReadingMission(missionId)
+
+    if (!mission) {
+      return res.status(404).json({ ok: false, message: 'Reading mission not found' })
+    }
+
+    if (!missionMatchesStory(mission, storyId)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'This story does not match the reading mission',
+      })
+    }
+
+    const progress = await getOrCreateReadingMissionProgress(userId, mission, storyId)
+    const targetSeconds = getMissionTargetSeconds(mission)
+    const currentSeconds = Math.min(targetSeconds, Math.max(0, Number(progress.active_seconds || 0)))
+    const nextSeconds = Math.min(targetSeconds, currentSeconds + secondsToAdd)
+    const actualSecondsAdded = Math.max(0, nextSeconds - currentSeconds)
+    const now = new Date().toISOString()
+    const completedAt = progress.completed_at || (nextSeconds >= targetSeconds ? now : null)
+
+    let updatedProgress = progress
+
+    if (actualSecondsAdded > 0) {
+      const { data, error } = await supabase
+        .from('reader_reading_mission_progress')
+        .update({
+          story_id: storyId,
+          active_seconds: nextSeconds,
+          completed_at: completedAt,
+          updated_at: now,
+        })
+        .eq('id', progress.id)
+        .select('*')
+        .single()
+
+      if (error) throw error
+
+      updatedProgress = data
+    }
+
+    return res.status(200).json({
+      ok: true,
+      mission: publicReadingMissionProgress(mission, updatedProgress),
+    })
+  } catch (error) {
+    console.error('TRACK READING MISSION PROGRESS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to track reading mission progress',
+      error: error.message,
+    })
+  }
+}
+
+export async function claimReadingMissionReward(req, res) {
+  try {
+    const userId = getUserId(req)
+    const missionId = String(req.params.missionId || '').trim()
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
+    const mission = await getActiveReadingMission(missionId)
+
+    if (!mission) {
+      return res.status(404).json({ ok: false, message: 'Reading mission not found' })
+    }
+
+    const progress = await getOrCreateReadingMissionProgress(userId, mission)
+    const publicProgress = publicReadingMissionProgress(mission, progress)
+
+    if (publicProgress.claimed) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Reading mission already claimed',
+        mission: publicProgress,
+      })
+    }
+
+    if (!publicProgress.completed) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Reading mission is not completed yet',
+        mission: publicProgress,
+      })
+    }
+
+    const rewardCoins = Number(mission.reward_coins || 0)
+    const wallet = await getOrCreateWallet(userId)
+    const now = new Date().toISOString()
+
+    const { data: updatedWallet, error: walletError } = await supabase
+      .from('user_wallets')
+      .update({
+        gem_balance: Number(wallet.gem_balance || 0) + rewardCoins,
+        updated_at: now,
+      })
+      .eq('user_id', userId)
+      .select('*')
+      .single()
+
+    if (walletError) throw walletError
+
+    const { data: updatedProgress, error: progressError } = await supabase
+      .from('reader_reading_mission_progress')
+      .update({
+        claimed_at: now,
+        updated_at: now,
+      })
+      .eq('id', progress.id)
+      .select('*')
+      .single()
+
+    if (progressError) throw progressError
+
+    const { data: historyItem, error: historyError } = await supabase
+      .from('reader_reward_history')
+      .insert({
+        user_id: userId,
+        source_key: 'reading_mission',
+        source_title: mission.title || 'Reading Mission',
+        amount_gems: rewardCoins,
+        amount_vouchers: 0,
+        story_cards: 0,
+        metadata: {
+          mission_id: mission.id,
+          story_link: mission.story_link,
+          target_minutes: Number(mission.target_minutes || 0),
+          active_seconds: publicProgress.active_seconds,
+          coins: rewardCoins,
+        },
+      })
+      .select('*')
+      .single()
+
+    if (historyError) throw historyError
+
+    return res.status(200).json({
+      ok: true,
+      wallet: publicWallet(updatedWallet),
+      mission: publicReadingMissionProgress(mission, updatedProgress),
+      missions: await getReaderReadingMissions(userId),
+      reward: {
+        coins: rewardCoins,
+        gems: rewardCoins,
+      },
+      history_item: historyItem ? publicHistoryItem(historyItem) : null,
+      message: 'Reading mission reward claimed',
+    })
+  } catch (error) {
+    console.error('CLAIM READING MISSION REWARD ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to claim reading mission reward',
       error: error.message,
     })
   }
