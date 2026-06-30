@@ -517,6 +517,21 @@ export async function shouldRequireAdminPasskeyPin({ admin }) {
   return Boolean(settings.is_enabled && settings.pin_hash)
 }
 
+export async function getAdminPasskeyPinLoginState({ admin }) {
+  const settings = await getSettings(admin)
+  const required = Boolean(settings.is_enabled && settings.pin_hash)
+  const locked = required && Boolean(isLocked(settings))
+
+  return {
+    required,
+    locked,
+    locked_until: locked ? settings.locked_until : null,
+    retry_after_seconds: locked ? lockSeconds(settings) : 0,
+    failed_count: Number(settings.failed_count || 0),
+    status: formatStatus(settings),
+  }
+}
+
 export async function verifyAdminPasskeyPinForLogin({ admin, req, pin }) {
   return verifyAdminPasskeyPin({
     admin,
