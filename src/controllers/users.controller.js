@@ -13,6 +13,13 @@ function normalizeUsername(username) {
     .toLowerCase()
 }
 
+const PROFILE_LINK_TYPES = ['website', 'facebook', 'instagram', 'telegram', 'tiktok', 'youtube', 'x', 'link']
+
+function normalizeProfileLinks(value) {
+  const links = Array.isArray(value) ? value : []
+  return links.slice(0, 5).map((item) => ({ type: String(item?.type || 'link').trim().toLowerCase(), url: String(item?.url || '').trim() })).filter((item) => PROFILE_LINK_TYPES.includes(item.type) && /^https?:\/\/\S+$/i.test(item.url))
+}
+
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 }
@@ -133,6 +140,7 @@ function publicUser(user) {
     bio: user.bio || '',
     work: user.work || '',
     location: user.location || '',
+    social_links: Array.isArray(user.social_links) ? user.social_links : [],
     date_of_birth: user.date_of_birth,
     gender: user.gender,
     custom_gender: user.custom_gender,
@@ -316,6 +324,7 @@ export async function registerUser(req, res) {
         bio: '',
         work: '',
         location: '',
+        social_links: [],
         role: 'reader',
         is_author: false,
         is_active: true,
@@ -708,6 +717,7 @@ export async function updateUserProfile(req, res) {
     const bio = String(req.body.bio || '').trim()
     const work = String(req.body.work || '').trim()
     const location = String(req.body.location || '').trim()
+    const socialLinks = normalizeProfileLinks(req.body.social_links || req.body.socialLinks)
 
     if (!name) {
       return res.status(400).json({
@@ -830,6 +840,7 @@ export async function updateUserProfile(req, res) {
       bio,
       work,
       location,
+      social_links: socialLinks,
       updated_at: nowIso,
     }
 
