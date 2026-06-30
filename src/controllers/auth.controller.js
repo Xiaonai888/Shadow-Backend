@@ -2,9 +2,10 @@ import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import {
-  createAdminSecurityAlert,
-  getAdminRequestCountry,
-  getAdminSecurityClientIp,
+  getAdminPasskeyPinLoginState,
+  shouldRequireAdminPasskeyPin,
+  verifyAdminPasskeyPinForLogin,
+} from '../services/adminPasskeyPin.service.js'
 } from '../services/adminSecurityAlerts.service.js'
 import {
   checkAdminLoginAllowed,
@@ -148,8 +149,9 @@ async function getAdminForPasskeyLoginToken(payload) {
   return data
 }
 
-function sendPasskeyPinRequired({ res, admin, twoFactorMethod = '' }) {
+function sendPasskeyPinRequired({ res, admin, twoFactorMethod = '', passkeyState = null }) {
   const passkeyToken = createPasskeyLoginToken({ admin, twoFactorMethod })
+  const locked = Boolean(passkeyState?.locked)
 
   return res.status(200).json({
     ok: true,
@@ -160,6 +162,13 @@ function sendPasskeyPinRequired({ res, admin, twoFactorMethod = '' }) {
       token: passkeyToken,
       expires_in_seconds: 300,
     },
+    passkey_pin: {
+      required: true,
+      locked,
+      locked_until: locked ? passkeyState?.locked_until || null : null,
+      retry_after_seconds: locked ? Number(passkeyState?.retry_after_seconds || 0) : 0,
+      failed_count: Number(passkeyState?.failed_count || 0),
+    },
     admin: {
       email: admin.email,
       name: admin.name,
@@ -168,7 +177,7 @@ function sendPasskeyPinRequired({ res, admin, twoFactorMethod = '' }) {
       verified: Boolean(twoFactorMethod),
       method: twoFactorMethod,
     },
-    message: 'Admin Passkey PIN required',
+    message: locked ? 'Admin Passkey PIN is temporarily locked' : 'Admin Passkey PIN required',
   })
 }
 
@@ -743,14 +752,15 @@ export async function adminLogin(req, res) {
       })
     }
 
-    const passkeyRequired = await shouldRequireAdminPasskeyPin({ admin })
+    const passkeyState = await getAdminPasskeyPinLoginState({ admin })
 
-    if (passkeyRequired) {
-      return sendPasskeyPinRequired({
-        res,
-        admin,
-      })
-    }
+if (passkeyState.required) {
+  return sendPasskeyPinRequired({
+    res,
+    admin,
+    passkeyState,
+  })
+}
 
     return issueAdminLogin({
       req,
@@ -787,15 +797,16 @@ export async function adminLoginTwoFactorVerify(req, res) {
       return res.status(result.status || 400).json(result)
     }
 
-    const passkeyRequired = await shouldRequireAdminPasskeyPin({ admin: result.admin })
+    const passkeyState = await getAdminPasskeyPinLoginState({ admin: result.admin })
 
-    if (passkeyRequired) {
-      return sendPasskeyPinRequired({
-        res,
-        admin: result.admin,
-        twoFactorMethod: result.method,
-      })
-    }
+if (passkeyState.required) {
+  return sendPasskeyPinRequired({
+    res,
+    admin: result.admin,
+    twoFactorMethod: result.method,
+    passkeyState,
+  })
+}
 
     return issueAdminLogin({
       req,
