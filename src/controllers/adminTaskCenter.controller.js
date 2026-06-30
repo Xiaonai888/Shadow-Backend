@@ -185,3 +185,73 @@ export async function updateAdminTaskCenterCover(req, res) {
     })
   }
 }
+
+export async function getAdminReadingMissions(req, res) {
+  try {
+    return res.status(200).json({
+      ok: true,
+      missions: [],
+    })
+  } catch (error) {
+    console.error('GET ADMIN READING MISSIONS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load reading missions',
+      error: error.message,
+    })
+  }
+}
+
+export async function createAdminReadingMission(req, res) {
+  try {
+    return res.status(200).json({
+      ok: true,
+      mission: null,
+      message: 'Reading missions are not configured yet',
+    })
+  } catch (error) {
+    console.error('CREATE ADMIN READING MISSION ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to create reading mission',
+      error: error.message,
+    })
+  }
+}
+
+export async function updateAdminReadingMission(req, res) {
+  try {
+    return res.status(200).json({
+      ok: true,
+      mission: null,
+      message: 'Reading missions are not configured yet',
+    })
+  } catch (error) {
+    console.error('UPDATE ADMIN READING MISSION ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update reading mission',
+      error: error.message,
+    })
+  }
+}
+
+export async function deleteAdminReadingMission(req, res) {
+  try {
+    return res.status(200).json({
+      ok: true,
+      message: 'Reading missions are not configured yet',
+    })
+  } catch (error) {
+    console.error('DELETE ADMIN READING MISSION ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to delete reading mission',
+      error: error.message,
+    })
+  }
+}
