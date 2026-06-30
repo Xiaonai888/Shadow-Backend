@@ -1116,6 +1116,7 @@ function publicFollowUser(user, isFollowing = false, isFollowedBy = false) {
     work: user.work || '',
     location: user.location || '',
     is_author: Boolean(user.is_author),
+    is_premium: Boolean(user.is_premium),
     is_following: Boolean(isFollowing),
     is_followed_by: Boolean(isFollowedBy),
     can_follow_back: Boolean(isFollowedBy && !isFollowing),
