@@ -97,8 +97,8 @@ function publicCheckIn(row, isPremium = false) {
   const nextDay = activeStreak ? (lastCurrentDay % 7) + 1 : 1
   const currentDay = claimedToday ? lastCurrentDay || 1 : nextDay || 1
 
-  return {
-    streak_count: activeStreak ? Number(row?.streak_count || 0) : 0,
+    return {
+    streak_count: activeStreak ? currentDay : 0,
     current_day: currentDay,
     claimed_today: claimedToday,
     last_claim_date: lastClaimDate || null,
@@ -336,8 +336,9 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
   }
 
   const continueStreak = existingCheckIn?.last_claim_date === yesterdayKey
-  const nextStreak = continueStreak ? Number(existingCheckIn?.streak_count || 0) + 1 : 1
-  const currentDay = ((nextStreak - 1) % 7) + 1
+  const previousDay = Number(existingCheckIn?.current_day || 0)
+  const currentDay = continueStreak ? (previousDay % 7) + 1 : 1
+  const nextStreak = currentDay
   const reward = DAILY_REWARDS.find((item) => item.day === currentDay) || DAILY_REWARDS[0]
   const now = new Date().toISOString()
   const isGiftReward = Boolean(reward.gift || Number(reward.vouchers || 0) > 0)
