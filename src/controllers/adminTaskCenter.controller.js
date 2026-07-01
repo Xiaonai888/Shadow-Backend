@@ -51,10 +51,16 @@ function isAllowedCover(file) {
 export async function getPublicTaskCenterSettings(req, res) {
   try {
     const row = await getSettingsRow()
+    const readingMissions = await getPublicReadingMissions()
 
     return res.status(200).json({
       ok: true,
-      settings: publicSettings(row),
+      settings: {
+        ...publicSettings(row),
+        reading_missions: readingMissions,
+      },
+      reading_missions: readingMissions,
+      missions: readingMissions,
     })
   } catch (error) {
     console.error('GET PUBLIC TASK CENTER SETTINGS ERROR:', error)
@@ -394,19 +400,3 @@ export async function deleteAdminReadingMission(req, res) {
   }
 }
 
-export async function deleteAdminReadingMission(req, res) {
-  try {
-    return res.status(200).json({
-      ok: true,
-      message: 'Reading missions are not configured yet',
-    })
-  } catch (error) {
-    console.error('DELETE ADMIN READING MISSION ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to delete reading mission',
-      error: error.message,
-    })
-  }
-}
