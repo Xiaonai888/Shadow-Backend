@@ -1874,7 +1874,6 @@ const AUTHOR_STORE_PROMO_FREE_LIMITS = {
   pdf: 100,
 }
 const AUTHOR_STORE_PROMO_COUNT_STATUSES = new Set([
-  'under_review',
   'confirmed',
   'preparing',
   'shipped',
@@ -1898,33 +1897,27 @@ function calculateAuthorStoreIncome(amount) {
 }
 
 function isPromoCountableAuthorStoreOrder(order) {
-  const status = String(order?.status || order?.order_status || '').toLowerCase()
-  const paymentStatus = String(order?.payment_status || '').toLowerCase()
+  const status = String(order?.order_status || order?.status || '').toLowerCase()
 
-  if (paymentStatus === 'paid') return true
-  if (AUTHOR_STORE_PROMO_COUNT_STATUSES.has(status)) return true
-
-  if (status === 'waiting_payment' && order?.expires_at) {
-    return new Date(order.expires_at).getTime() > Date.now()
-  }
-
-  return false
+  return AUTHOR_STORE_PROMO_COUNT_STATUSES.has(status)
 }
 
-async function getAuthorStorePromoUsedQuantities(authorPageId) {
+async function getAuthorStorePromoUsedQuantities(authorPageId, options = {}) {
   const used = { book: 0, pdf: 0 }
+  const excludeOrderId = options.excludeOrderId ? String(options.excludeOrderId) : ''
 
   if (!authorPageId) return used
 
   const { data, error } = await supabase
     .from('author_store_orders')
-    .select('status, order_status, payment_status, expires_at, items:author_store_order_items(product_type, quantity)')
+    .select('id, status, order_status, payment_status, expires_at, items:author_store_order_items(product_type, quantity)')
     .eq('author_page_id', authorPageId)
     .limit(10000)
 
   if (error) throw error
 
   ;(data || []).forEach((order) => {
+    if (excludeOrderId && String(order.id) === excludeOrderId) return
     if (!isPromoCountableAuthorStoreOrder(order)) return
 
     ;(order.items || []).forEach((item) => {
@@ -1978,6 +1971,71 @@ function sumAuthorStoreIncomeItems(orderItems) {
     platform_fee_usd: platformFee,
     author_income_usd: Number((subtotal - platformFee).toFixed(2)),
   }
+}
+
+async function recalculateAuthorStoreConfirmedOrderIncome(order) {
+  const items = Array.isArray(order?.items) ? order.items : []
+
+  if (!order?.id || !order?.author_page_id || !items.length) return order
+
+  const promoUsedQuantities = await getAuthorStorePromoUsedQuantities(order.author_page_id, {
+    excludeOrderId: order.id,
+  })
+
+  const promoItems = applyAuthorStorePromoIncome(
+    items.map((item) => ({
+      ...item,
+      title: item.product_title || item.title || '',
+      unit_price_usd: Number(item.unit_price_usd || item.unit_price || 0),
+      total_usd: Number(item.total_usd || item.total_price || 0),
+    })),
+    promoUsedQuantities
+  ).map((item) => ({
+    ...item,
+    unit_price: item.unit_price_usd,
+    total_price: item.total_usd,
+  }))
+
+  const subtotal = Number(promoItems.reduce((sum, item) => sum + Number(item.total_price || 0), 0).toFixed(2))
+  const income = sumAuthorStoreIncomeItems(promoItems)
+
+  for (const item of promoItems) {
+    if (!item.id) continue
+
+    const { error } = await supabase
+      .from('author_store_order_items')
+      .update({
+        product_type: item.product_type,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        total_price: item.total_price,
+        platform_fee_rate: item.platform_fee_rate,
+        platform_fee_usd: item.platform_fee_usd,
+        author_income_usd: item.author_income_usd,
+      })
+      .eq('id', item.id)
+
+    if (error) throw error
+  }
+
+  const { data, error } = await supabase
+    .from('author_store_orders')
+    .update({
+      subtotal,
+      subtotal_usd: subtotal,
+      product_subtotal_usd: subtotal,
+      platform_fee_rate: income.platform_fee_rate,
+      platform_fee_usd: income.platform_fee_usd,
+      author_income_usd: income.author_income_usd,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', order.id)
+    .select('*, items:author_store_order_items(*)')
+    .single()
+
+  if (error) throw error
+
+  return data
 }
 
 const AUTHOR_STORE_ADMIN_STATUSES = ['under_review', 'confirmed', 'preparing', 'shipped', 'completed', 'cancelled', 'rejected', 'amount_mismatch']
@@ -3409,7 +3467,7 @@ export async function getAdminAuthorStoreOrders(req, res) {
 export async function updateAdminAuthorStoreOrderStatus(req, res) {
   try {
     const orderId = String(req.params.orderId || '').trim()
-    const status = String(req.body.status || '').trim()
+    const status = String(req.body.status || '').trim().toLowerCase()
     const adminNote = req.body.admin_note || req.body.adminNote || null
 
     if (!orderId) {
@@ -3452,13 +3510,14 @@ export async function updateAdminAuthorStoreOrderStatus(req, res) {
     let telegramError = data.telegram_error || ''
 
     if (status === 'confirmed') {
-      const items = Array.isArray(data.items) ? data.items : []
+      const confirmedOrder = await recalculateAuthorStoreConfirmedOrderIncome(data)
+      const items = Array.isArray(confirmedOrder.items) ? confirmedOrder.items : []
       const hasPdf = items.some((item) => String(item.product_type || '').toLowerCase() === 'pdf')
       const hasBook = items.some((item) => String(item.product_type || '').toLowerCase() === 'book')
 
       if (hasPdf) {
         try {
-          const pdfUnlocks = await unlockAuthorStorePdfDownloads(data)
+          const pdfUnlocks = await unlockAuthorStorePdfDownloads(confirmedOrder)
           pdfUnlockStatus = pdfUnlocks.length ? 'unlocked' : 'failed'
           pdfUnlockedAt = pdfUnlocks.length ? now : null
           pdfUnlockCount = pdfUnlocks.length
@@ -3475,8 +3534,7 @@ export async function updateAdminAuthorStoreOrderStatus(req, res) {
 
       if (hasBook) {
         try {
-          const telegramResult = await sendAuthorStoreBookOrderTelegram(data)
-
+          const telegramResult = await sendAuthorStoreBookOrderTelegram(confirmedOrder)
           if (telegramResult.sent) {
             telegramStatus = 'sent'
             telegramSentAt = now
@@ -3512,7 +3570,7 @@ export async function updateAdminAuthorStoreOrderStatus(req, res) {
           telegram_error: telegramError,
           updated_at: new Date().toISOString(),
         })
-        .eq('id', data.id)
+        .eq('id', confirmedOrder.id)
         .select('*, items:author_store_order_items(*)')
         .single()
 
