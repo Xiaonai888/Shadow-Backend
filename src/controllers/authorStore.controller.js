@@ -443,6 +443,52 @@ async function archiveExpiredAuthorStoreWithdrawals() {
   }
 }
 
+export async function getMyAuthorStorePromotion(req, res) {
+  try {
+    const userId = req.user?.user_id || req.user?.id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+
+    const used = await getAuthorStorePromoUsedQuantities(authorPage.id)
+    const bookLimit = AUTHOR_STORE_PROMO_FREE_LIMITS.book
+    const pdfLimit = AUTHOR_STORE_PROMO_FREE_LIMITS.pdf
+    const bookUsed = Math.min(Number(used.book || 0), bookLimit)
+    const pdfUsed = Math.min(Number(used.pdf || 0), pdfLimit)
+
+    return res.status(200).json({
+      ok: true,
+      promotion: {
+        title: '0% Service Fee Promotion',
+        text: `🎉 0% Service Fee Promotion\nBook ${bookUsed}/${bookLimit} • PDF ${pdfUsed}/${pdfLimit}`,
+        book: {
+          used: bookUsed,
+          limit: bookLimit,
+          remaining: Math.max(0, bookLimit - bookUsed),
+        },
+        pdf: {
+          used: pdfUsed,
+          limit: pdfLimit,
+          remaining: Math.max(0, pdfLimit - pdfUsed),
+        },
+      },
+    })
+  } catch (error) {
+    console.error('GET MY AUTHOR STORE PROMOTION ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to load Author Store promotion',
+    })
+  }
+}
+
 export async function getMyAuthorStoreDeliverySettings(req, res) {
   try {
     const userId = req.user?.user_id
