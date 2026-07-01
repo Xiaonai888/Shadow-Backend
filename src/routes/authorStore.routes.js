@@ -15,9 +15,10 @@ import {
   getMyAuthorStoreIncome,
   getMyAuthorStoreOrders,
   getMyAuthorStoreProducts,
-getMyAuthorStoreReaderDownloads,
-getMyAuthorStoreTelegramSettings,
-getPublicAuthorStoreProducts,
+  getMyAuthorStorePromotion,
+  getMyAuthorStoreReaderDownloads,
+  getMyAuthorStoreTelegramSettings,
+  getPublicAuthorStoreProducts,
   handleAuthorStoreAbaCallback,
   handleAuthorStoreTelegramWebhook,
   reorderMyAuthorStoreCategories,
@@ -40,6 +41,7 @@ import { requireAdmin } from '../middleware/auth.middleware.js'
 const router = express.Router()
 
 router.get('/me/products', requireUser, getMyAuthorStoreProducts)
+router.get('/me/promotion', requireUser, getMyAuthorStorePromotion)
 router.get('/me/categories', requireUser, getMyAuthorStoreCategories)
 router.get('/me/delivery-settings', requireUser, getMyAuthorStoreDeliverySettings)
 router.post('/telegram/webhook', handleAuthorStoreTelegramWebhook)
