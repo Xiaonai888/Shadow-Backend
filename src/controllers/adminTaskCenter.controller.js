@@ -1,8 +1,34 @@
+import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 
 
 const SETTING_KEY = 'main'
+
+
+function buildTaskCenterVersion(settingsRow, missionRows = []) {
+  const payload = {
+    cover_url: settingsRow?.cover_url || '',
+    cover_updated_at: settingsRow?.cover_updated_at || null,
+    settings_updated_at: settingsRow?.updated_at || null,
+    reading_task_updated_at: settingsRow?.reading_task_updated_at || null,
+    missions: (missionRows || []).map((row) => ({
+      id: row.id,
+      is_active: Boolean(row.is_active),
+      title: row.title || '',
+      subtitle: row.subtitle || '',
+      reward_coins: Number(row.reward_coins || 0),
+      target_minutes: Number(row.target_minutes || 0),
+      story_link: row.story_link || '',
+      button_text: row.button_text || '',
+      sort_order: Number(row.sort_order || 0),
+      created_at: row.created_at || null,
+      updated_at: row.updated_at || null,
+    })),
+  }
+
+  return crypto.createHash('sha1').update(JSON.stringify(payload)).digest('hex')
+}
 
 function publicSettings(row) {
   return {
@@ -47,6 +73,46 @@ async function getSettingsRow() {
 function isAllowedCover(file) {
   return ['image/webp', 'image/jpeg', 'image/png'].includes(file?.mimetype)
 }
+
+
+export async function getPublicTaskCenterVersion(req, res) {
+  try {
+    const [settingsResult, missionsResult] = await Promise.all([
+      supabase
+        .from('task_center_settings')
+        .select('cover_url, cover_updated_at, updated_at, reading_task_updated_at')
+        .eq('setting_key', SETTING_KEY)
+        .maybeSingle(),
+
+      supabase
+        .from('task_center_reading_missions')
+        .select('id, is_active, title, subtitle, reward_coins, target_minutes, story_link, button_text, sort_order, created_at, updated_at')
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: false })
+        .limit(2),
+    ])
+
+    if (settingsResult.error) throw settingsResult.error
+    if (missionsResult.error) throw missionsResult.error
+
+    const version = buildTaskCenterVersion(settingsResult.data || null, missionsResult.data || [])
+
+    return res.status(200).json({
+      ok: true,
+      version,
+      mission_count: Array.isArray(missionsResult.data) ? missionsResult.data.length : 0,
+    })
+  } catch (error) {
+    console.error('GET PUBLIC TASK CENTER VERSION ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load task center version',
+      error: error.message,
+    })
+  }
+}
+
 
 export async function getPublicTaskCenterSettings(req, res) {
   try {
