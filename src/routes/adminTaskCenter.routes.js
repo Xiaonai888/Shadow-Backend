@@ -2,6 +2,7 @@ import express from 'express'
 import multer from 'multer'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
+  getPublicTaskCenterVersion,
   getPublicTaskCenterSettings,
   getAdminTaskCenterSettings,
   getAdminReadingMissions,
@@ -21,6 +22,7 @@ const upload = multer({
   },
 })
 
+router.get('/public/version', getPublicTaskCenterVersion)
 router.get('/public', getPublicTaskCenterSettings)
 router.get('/admin', requireAdmin, getAdminTaskCenterSettings)
 router.get('/admin/reading-missions', requireAdmin, getAdminReadingMissions)
