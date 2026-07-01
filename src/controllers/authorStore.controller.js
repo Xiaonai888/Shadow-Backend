@@ -1823,6 +1823,21 @@ const PAYWAY_HASH_ORDER = [
 
 const AUTHOR_STORE_DELIVERY_FEE_USD = 2
 const AUTHOR_STORE_PLATFORM_FEE_RATE = 0.10
+const AUTHOR_STORE_PROMO_FREE_LIMITS = {
+  book: 50,
+  pdf: 100,
+}
+const AUTHOR_STORE_PROMO_COUNT_STATUSES = new Set([
+  'under_review',
+  'confirmed',
+  'preparing',
+  'shipped',
+  'completed',
+])
+
+function normalizeAuthorStoreProductType(value) {
+  return String(value || 'book').toLowerCase() === 'pdf' ? 'pdf' : 'book'
+}
 
 function calculateAuthorStoreIncome(amount) {
   const gross = Number(amount || 0)
@@ -1835,6 +1850,90 @@ function calculateAuthorStoreIncome(amount) {
     author_income_usd: authorIncome,
   }
 }
+
+function isPromoCountableAuthorStoreOrder(order) {
+  const status = String(order?.status || order?.order_status || '').toLowerCase()
+  const paymentStatus = String(order?.payment_status || '').toLowerCase()
+
+  if (paymentStatus === 'paid') return true
+  if (AUTHOR_STORE_PROMO_COUNT_STATUSES.has(status)) return true
+
+  if (status === 'waiting_payment' && order?.expires_at) {
+    return new Date(order.expires_at).getTime() > Date.now()
+  }
+
+  return false
+}
+
+async function getAuthorStorePromoUsedQuantities(authorPageId) {
+  const used = { book: 0, pdf: 0 }
+
+  if (!authorPageId) return used
+
+  const { data, error } = await supabase
+    .from('author_store_orders')
+    .select('status, order_status, payment_status, expires_at, items:author_store_order_items(product_type, quantity)')
+    .eq('author_page_id', authorPageId)
+    .limit(10000)
+
+  if (error) throw error
+
+  ;(data || []).forEach((order) => {
+    if (!isPromoCountableAuthorStoreOrder(order)) return
+
+    ;(order.items || []).forEach((item) => {
+      const type = normalizeAuthorStoreProductType(item.product_type)
+      used[type] += Math.max(1, Number(item.quantity || 1))
+    })
+  })
+
+  return used
+}
+
+function applyAuthorStorePromoIncome(orderItems, usedQuantities) {
+  const runningUsed = {
+    book: Number(usedQuantities?.book || 0),
+    pdf: Number(usedQuantities?.pdf || 0),
+  }
+
+  return orderItems.map((item) => {
+    const type = normalizeAuthorStoreProductType(item.product_type)
+    const quantity = Math.max(1, Number(item.quantity || 1))
+    const unitPrice = Number(item.unit_price_usd || item.unit_price || 0)
+    const totalUsd = Number((unitPrice * quantity).toFixed(2))
+    const freeLimit = Number(AUTHOR_STORE_PROMO_FREE_LIMITS[type] || 0)
+    const freeRemaining = Math.max(0, freeLimit - runningUsed[type])
+    const freeQuantity = Math.min(quantity, freeRemaining)
+    const paidQuantity = Math.max(0, quantity - freeQuantity)
+    const feeBaseUsd = Number((unitPrice * paidQuantity).toFixed(2))
+    const income = calculateAuthorStoreIncome(feeBaseUsd)
+
+    runningUsed[type] += quantity
+
+    return {
+      ...item,
+      product_type: type,
+      quantity,
+      unit_price_usd: unitPrice,
+      total_usd: totalUsd,
+      platform_fee_rate: AUTHOR_STORE_PLATFORM_FEE_RATE,
+      platform_fee_usd: income.platform_fee_usd,
+      author_income_usd: Number((totalUsd - income.platform_fee_usd).toFixed(2)),
+    }
+  })
+}
+
+function sumAuthorStoreIncomeItems(orderItems) {
+  const subtotal = Number(orderItems.reduce((sum, item) => sum + Number(item.total_usd || item.total_price || 0), 0).toFixed(2))
+  const platformFee = Number(orderItems.reduce((sum, item) => sum + Number(item.platform_fee_usd || 0), 0).toFixed(2))
+
+  return {
+    platform_fee_rate: AUTHOR_STORE_PLATFORM_FEE_RATE,
+    platform_fee_usd: platformFee,
+    author_income_usd: Number((subtotal - platformFee).toFixed(2)),
+  }
+}
+
 const AUTHOR_STORE_ADMIN_STATUSES = ['under_review', 'confirmed', 'preparing', 'shipped', 'completed', 'cancelled', 'rejected', 'amount_mismatch']
 
 function getUserId(req) {
@@ -2942,11 +3041,15 @@ export async function createAuthorStoreOrderPayment(req, res) {
       return res.status(400).json({ ok: false, message: 'Buyer profile is required before payment' })
     }
 
-    const { authorPageId, orderItems } = await buildAuthorStoreOrderItems(req.body.items)
+    const builtOrder = await buildAuthorStoreOrderItems(req.body.items)
+    const authorPageId = builtOrder.authorPageId
+    let orderItems = builtOrder.orderItems
+    const promoUsedQuantities = await getAuthorStorePromoUsedQuantities(authorPageId)
+    orderItems = applyAuthorStorePromoIncome(orderItems, promoUsedQuantities)
     const subtotal = Number(orderItems.reduce((total, item) => total + item.total_usd, 0).toFixed(2))
     const deliveryFee = AUTHOR_STORE_DELIVERY_FEE_USD
     const total = Number((subtotal + deliveryFee).toFixed(2))
-    const income = calculateAuthorStoreIncome(subtotal)
+    const income = sumAuthorStoreIncomeItems(orderItems)
 
     const deliveryCompany = req.body.delivery_company || {
       key: 'jnt',
