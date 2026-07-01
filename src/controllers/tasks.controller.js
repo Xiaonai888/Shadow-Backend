@@ -215,7 +215,8 @@ function missionMatchesStory(mission, storyId) {
   const link = String(mission?.story_link || '').trim()
   const cleanStoryId = String(storyId || '').trim()
 
-  if (!link || !cleanStoryId) return false
+  if (!cleanStoryId) return false
+  if (!link) return true
 
   return link.includes(cleanStoryId)
 }
