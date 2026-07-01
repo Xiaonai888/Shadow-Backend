@@ -3020,11 +3020,26 @@ orderItems.push({
 })
     }
 
-    const subtotal = Number(orderItems.reduce((sum, item) => sum + Number(item.total_price || 0), 0).toFixed(2))
-    const deliveryFee = cleanNumber(req.body.delivery_fee ?? req.body.deliveryFee, 0)
-    const totalAmount = Number((subtotal + deliveryFee).toFixed(2))
-    const income = calculateAuthorStoreIncome(subtotal)
-    const orderNumber = `AS-${Date.now()}-${Math.floor(Math.random() * 9000 + 1000)}`
+    const promoUsedQuantities = await getAuthorStorePromoUsedQuantities(authorPage.id)
+const promoOrderItems = applyAuthorStorePromoIncome(
+  orderItems.map((item) => ({
+    ...item,
+    title: item.product_title || item.title || '',
+    unit_price_usd: item.unit_price,
+    total_usd: item.total_price,
+  })),
+  promoUsedQuantities
+).map((item) => ({
+  ...item,
+  unit_price: item.unit_price_usd,
+  total_price: item.total_usd,
+}))
+
+const subtotal = Number(promoOrderItems.reduce((sum, item) => sum + Number(item.total_price || 0), 0).toFixed(2))
+const deliveryFee = cleanNumber(req.body.delivery_fee ?? req.body.deliveryFee, 0)
+const totalAmount = Number((subtotal + deliveryFee).toFixed(2))
+const income = sumAuthorStoreIncomeItems(promoOrderItems)
+const orderNumber = `AS-${Date.now()}-${Math.floor(Math.random() * 9000 + 1000)}`
     const { data: order, error: orderError } = await supabase
       .from('author_store_orders')
       .insert({
@@ -3056,9 +3071,9 @@ updated_at: new Date().toISOString(),
     if (orderError) throw orderError
 
     const { data: createdItems, error: itemsError } = await supabase
-      .from('author_store_order_items')
-      .insert(orderItems.map((item) => ({ ...item, order_id: order.id })))
-      .select()
+  .from('author_store_order_items')
+  .insert(promoOrderItems.map((item) => ({ ...item, order_id: order.id })))
+  .select()
 
     if (itemsError) throw itemsError
 
