@@ -23,6 +23,7 @@ const READING_REWARD_MILESTONES = [
 
 const MAX_READING_REWARD_SECONDS = 1800
 const MAX_READING_EVENT_SECONDS = 60
+const MAX_MISSION_EVENT_SECONDS = 30
 
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
@@ -54,6 +55,14 @@ function isPremiumRole(role) {
   const value = String(role || '').trim().toLowerCase()
 
   return value === 'premium' || value === 'vip'
+}
+
+function cleanUuid(value) {
+  const text = String(value || '').trim()
+
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)
+    ? text
+    : null
 }
 
 function getRandomGiftCoins() {
@@ -97,7 +106,7 @@ function publicCheckIn(row, isPremium = false) {
   const nextDay = activeStreak ? (lastCurrentDay % 7) + 1 : 1
   const currentDay = claimedToday ? lastCurrentDay || 1 : nextDay || 1
 
-    return {
+  return {
     streak_count: activeStreak ? currentDay : 0,
     current_day: currentDay,
     claimed_today: claimedToday,
@@ -138,12 +147,31 @@ function publicRewardChest(row) {
     }
   }
 
-  function cleanUuid(value) {
-  const text = String(value || '').trim()
+  const elapsedMs = Math.max(0, now.getTime() - lastRefillAt.getTime())
+  const gained = Math.floor(elapsedMs / CHEST_COOLDOWN_MS)
+  const availableChests = Math.min(CHEST_MAX_STORAGE, storedChests + gained)
 
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)
-    ? text
-    : null
+  let effectiveLastRefillMs = lastRefillAt.getTime()
+
+  if (gained > 0) {
+    effectiveLastRefillMs =
+      availableChests >= CHEST_MAX_STORAGE
+        ? now.getTime()
+        : lastRefillAt.getTime() + gained * CHEST_COOLDOWN_MS
+  }
+
+  const isFull = availableChests >= CHEST_MAX_STORAGE
+  const nextChestAt = isFull ? null : new Date(effectiveLastRefillMs + CHEST_COOLDOWN_MS)
+  const msUntilNext = nextChestAt ? Math.max(0, nextChestAt.getTime() - now.getTime()) : 0
+
+  return {
+    available_chests: availableChests,
+    max_chests: CHEST_MAX_STORAGE,
+    is_full: isFull,
+    next_chest_at: nextChestAt ? nextChestAt.toISOString() : null,
+    ms_until_next: msUntilNext,
+    effective_last_refill_at: new Date(effectiveLastRefillMs).toISOString(),
+  }
 }
 
 function publicReadingReward(row) {
@@ -179,30 +207,44 @@ function publicReadingReward(row) {
   }
 }
 
-  const elapsedMs = Math.max(0, now.getTime() - lastRefillAt.getTime())
-  const gained = Math.floor(elapsedMs / CHEST_COOLDOWN_MS)
-  const availableChests = Math.min(CHEST_MAX_STORAGE, storedChests + gained)
+function getMissionTargetSeconds(mission) {
+  return Math.max(60, Number(mission?.target_minutes || 1) * 60)
+}
 
-  let effectiveLastRefillMs = lastRefillAt.getTime()
+function missionMatchesStory(mission, storyId) {
+  const link = String(mission?.story_link || '').trim()
+  const cleanStoryId = String(storyId || '').trim()
 
-  if (gained > 0) {
-    effectiveLastRefillMs =
-      availableChests >= CHEST_MAX_STORAGE
-        ? now.getTime()
-        : lastRefillAt.getTime() + gained * CHEST_COOLDOWN_MS
-  }
+  if (!link || !cleanStoryId) return false
 
-  const isFull = availableChests >= CHEST_MAX_STORAGE
-  const nextChestAt = isFull ? null : new Date(effectiveLastRefillMs + CHEST_COOLDOWN_MS)
-  const msUntilNext = nextChestAt ? Math.max(0, nextChestAt.getTime() - now.getTime()) : 0
+  return link.includes(cleanStoryId)
+}
+
+function publicReadingMissionProgress(mission, progressRow = null) {
+  const targetSeconds = getMissionTargetSeconds(mission)
+  const activeSeconds = Math.min(targetSeconds, Math.max(0, Number(progressRow?.active_seconds || 0)))
+  const completed = Boolean(progressRow?.completed_at) || activeSeconds >= targetSeconds
+  const claimed = Boolean(progressRow?.claimed_at)
 
   return {
-    available_chests: availableChests,
-    max_chests: CHEST_MAX_STORAGE,
-    is_full: isFull,
-    next_chest_at: nextChestAt ? nextChestAt.toISOString() : null,
-    ms_until_next: msUntilNext,
-    effective_last_refill_at: new Date(effectiveLastRefillMs).toISOString(),
+    id: mission.id,
+    is_active: Boolean(mission.is_active),
+    title: mission.title,
+    subtitle: mission.subtitle,
+    reward_coins: Number(mission.reward_coins || 0),
+    target_minutes: Number(mission.target_minutes || 1),
+    target_seconds: targetSeconds,
+    story_link: mission.story_link || '',
+    button_text: mission.button_text || 'Go',
+    sort_order: Number(mission.sort_order || 0),
+    active_seconds: activeSeconds,
+    active_minutes: Math.floor(activeSeconds / 60),
+    progress_percent: targetSeconds > 0 ? Math.min(100, Math.round((activeSeconds / targetSeconds) * 100)) : 0,
+    completed,
+    claimed,
+    claimable: completed && !claimed,
+    completed_at: progressRow?.completed_at || null,
+    claimed_at: progressRow?.claimed_at || null,
   }
 }
 
@@ -284,7 +326,6 @@ async function getOrCreateRewardChest(userId) {
   return data
 }
 
-
 async function getOrCreateReadingReward(userId) {
   const todayKey = getPhnomPenhDateKey()
 
@@ -315,6 +356,79 @@ async function getOrCreateReadingReward(userId) {
   if (error) throw error
 
   return data
+}
+
+async function getActiveReadingMission(missionId) {
+  const { data, error } = await supabase
+    .from('task_center_reading_missions')
+    .select('*')
+    .eq('id', missionId)
+    .eq('is_active', true)
+    .maybeSingle()
+
+  if (error) throw error
+
+  return data || null
+}
+
+async function getOrCreateReadingMissionProgress(userId, mission, storyId = null) {
+  const { data: existingProgress, error: existingError } = await supabase
+    .from('reader_reading_mission_progress')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('mission_id', mission.id)
+    .maybeSingle()
+
+  if (existingError) throw existingError
+  if (existingProgress) return existingProgress
+
+  const now = new Date().toISOString()
+
+  const { data, error } = await supabase
+    .from('reader_reading_mission_progress')
+    .insert({
+      user_id: userId,
+      mission_id: mission.id,
+      story_id: storyId,
+      active_seconds: 0,
+      created_at: now,
+      updated_at: now,
+    })
+    .select('*')
+    .single()
+
+  if (error) throw error
+
+  return data
+}
+
+async function getReaderReadingMissions(userId) {
+  const { data: missions, error: missionsError } = await supabase
+    .from('task_center_reading_missions')
+    .select('*')
+    .eq('is_active', true)
+    .order('sort_order', { ascending: true })
+    .order('created_at', { ascending: false })
+    .limit(2)
+
+  if (missionsError) throw missionsError
+
+  const missionList = missions || []
+
+  return Promise.all(
+    missionList.map(async (mission) => {
+      const { data, error } = await supabase
+        .from('reader_reading_mission_progress')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('mission_id', mission.id)
+        .maybeSingle()
+
+      if (error) throw error
+
+      return publicReadingMissionProgress(mission, data || null)
+    })
+  )
 }
 
 async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
@@ -425,133 +539,14 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
   }
 }
 
-function cleanTaskUuid(value) {
-  const text = String(value || '').trim()
-
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)
-    ? text
-    : null
-}
-
-function getMissionTargetSeconds(mission) {
-  return Math.max(60, Number(mission?.target_minutes || 1) * 60)
-}
-
-function missionMatchesStory(mission, storyId) {
-  const link = String(mission?.story_link || '').trim()
-  const cleanStoryId = String(storyId || '').trim()
-
-  if (!link || !cleanStoryId) return false
-
-  return link.includes(cleanStoryId)
-}
-
-function publicReadingMissionProgress(mission, progressRow = null) {
-  const targetSeconds = getMissionTargetSeconds(mission)
-  const activeSeconds = Math.min(targetSeconds, Math.max(0, Number(progressRow?.active_seconds || 0)))
-  const completed = Boolean(progressRow?.completed_at) || activeSeconds >= targetSeconds
-  const claimed = Boolean(progressRow?.claimed_at)
-
-  return {
-    id: mission.id,
-    is_active: Boolean(mission.is_active),
-    title: mission.title,
-    subtitle: mission.subtitle,
-    reward_coins: Number(mission.reward_coins || 0),
-    target_minutes: Number(mission.target_minutes || 1),
-    target_seconds: targetSeconds,
-    story_link: mission.story_link || '',
-    button_text: mission.button_text || 'Go',
-    sort_order: Number(mission.sort_order || 0),
-    active_seconds: activeSeconds,
-    active_minutes: Math.floor(activeSeconds / 60),
-    progress_percent: targetSeconds > 0 ? Math.min(100, Math.round((activeSeconds / targetSeconds) * 100)) : 0,
-    completed,
-    claimed,
-    claimable: completed && !claimed,
-    completed_at: progressRow?.completed_at || null,
-    claimed_at: progressRow?.claimed_at || null,
-  }
-}
-
-async function getActiveReadingMission(missionId) {
-  const { data, error } = await supabase
-    .from('task_center_reading_missions')
-    .select('*')
-    .eq('id', missionId)
-    .eq('is_active', true)
-    .maybeSingle()
-
-  if (error) throw error
-
-  return data || null
-}
-
-async function getOrCreateReadingMissionProgress(userId, mission, storyId = null) {
-  const { data: existingProgress, error: existingError } = await supabase
-    .from('reader_reading_mission_progress')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('mission_id', mission.id)
-    .maybeSingle()
-
-  if (existingError) throw existingError
-  if (existingProgress) return existingProgress
-
-  const now = new Date().toISOString()
-
-  const { data, error } = await supabase
-    .from('reader_reading_mission_progress')
-    .insert({
-      user_id: userId,
-      mission_id: mission.id,
-      story_id: storyId,
-      active_seconds: 0,
-      created_at: now,
-      updated_at: now,
-    })
-    .select('*')
-    .single()
-
-  if (error) throw error
-
-  return data
-}
-
-async function getReaderReadingMissions(userId) {
-  const { data: missions, error: missionsError } = await supabase
-    .from('task_center_reading_missions')
-    .select('*')
-    .eq('is_active', true)
-    .order('sort_order', { ascending: true })
-    .order('created_at', { ascending: false })
-    .limit(2)
-
-  if (missionsError) throw missionsError
-
-  const missionList = missions || []
-
-  const missionProgress = await Promise.all(
-    missionList.map(async (mission) => {
-      const { data, error } = await supabase
-        .from('reader_reading_mission_progress')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('mission_id', mission.id)
-        .maybeSingle()
-
-      if (error) throw error
-
-      return publicReadingMissionProgress(mission, data || null)
-    })
-  )
-
-  return missionProgress
-}
-
 export async function getTaskCheckIn(req, res) {
   try {
     const userId = getUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
     const user = await getUserProfile(userId)
     const isPremium = isPremiumRole(user?.role)
     let wallet = await getOrCreateWallet(userId)
@@ -582,6 +577,11 @@ export async function getTaskCheckIn(req, res) {
 export async function claimTaskCheckIn(req, res) {
   try {
     const userId = getUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
     const user = await getUserProfile(userId)
     const isPremium = isPremiumRole(user?.role)
     const result = await claimCheckInReward(userId, 'daily_bonus')
@@ -971,9 +971,9 @@ export async function trackReadingMissionProgress(req, res) {
   try {
     const userId = getUserId(req)
     const missionId = String(req.params.missionId || '').trim()
-    const storyId = cleanTaskUuid(req.body?.story_id)
+    const storyId = cleanUuid(req.body?.story_id)
     const requestedSeconds = Math.floor(Number(req.body?.seconds || req.body?.seconds_added || 0))
-    const secondsToAdd = Math.min(30, Math.max(0, requestedSeconds))
+    const secondsToAdd = Math.min(MAX_MISSION_EVENT_SECONDS, Math.max(0, requestedSeconds))
 
     if (!userId) {
       return res.status(401).json({ ok: false, message: 'User is required' })
@@ -1145,6 +1145,11 @@ export async function claimReadingMissionReward(req, res) {
 export async function getTaskHistory(req, res) {
   try {
     const userId = getUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
     const { data, error } = await supabase
       .from('reader_reward_history')
       .select('*')
