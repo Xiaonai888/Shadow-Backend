@@ -81,13 +81,76 @@ function cleanNumber(value, fallback = 0, min = 0, max = 999999) {
   return Math.min(max, Math.max(min, Math.floor(number)))
 }
 
+function cleanMissionId(value) {
+  const text = String(value || '').trim()
+
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)
+    ? text
+    : null
+}
+
+function publicReadingMission(row) {
+  return {
+    id: row.id,
+    is_active: Boolean(row.is_active),
+    title: row.title || 'Read 2 minutes',
+    subtitle: row.subtitle || 'Keep reading longer to earn more coins.',
+    reward_coins: Number(row.reward_coins || 0),
+    target_minutes: Number(row.target_minutes || 1),
+    story_link: row.story_link || '',
+    button_text: row.button_text || 'Go',
+    sort_order: Number(row.sort_order || 0),
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null,
+  }
+}
+
+function buildReadingMissionPayload(body = {}, index = 0) {
+  return {
+    is_active: Boolean(body.is_active),
+    title: cleanText(body.title, 'Read 2 minutes', 120),
+    subtitle: cleanText(body.subtitle, 'Keep reading longer to earn more coins.', 240),
+    reward_coins: cleanNumber(body.reward_coins, 5, 0, 100000),
+    target_minutes: cleanNumber(body.target_minutes, 2, 1, 300),
+    story_link: cleanText(body.story_link, '', 500),
+    button_text: cleanText(body.button_text, 'Go', 30),
+    sort_order: cleanNumber(body.sort_order, index, 0, 999),
+    updated_at: new Date().toISOString(),
+  }
+}
+
+async function getReadingMissionRows() {
+  const { data, error } = await supabase
+    .from('task_center_reading_missions')
+    .select('*')
+    .order('sort_order', { ascending: true })
+    .order('created_at', { ascending: false })
+    .limit(2)
+
+  if (error) throw error
+
+  return data || []
+}
+
+async function getPublicReadingMissions() {
+  const rows = await getReadingMissionRows()
+
+  return rows.map(publicReadingMission)
+}
+
 export async function getAdminTaskCenterSettings(req, res) {
   try {
     const row = await getSettingsRow()
+    const readingMissions = await getPublicReadingMissions()
 
     return res.status(200).json({
       ok: true,
-      settings: publicSettings(row),
+      settings: {
+        ...publicSettings(row),
+        reading_missions: readingMissions,
+      },
+      reading_missions: readingMissions,
+      missions: readingMissions,
     })
   } catch (error) {
     console.error('GET ADMIN TASK CENTER SETTINGS ERROR:', error)
@@ -188,9 +251,12 @@ export async function updateAdminTaskCenterCover(req, res) {
 
 export async function getAdminReadingMissions(req, res) {
   try {
+    const readingMissions = await getPublicReadingMissions()
+
     return res.status(200).json({
       ok: true,
-      missions: [],
+      reading_missions: readingMissions,
+      missions: readingMissions,
     })
   } catch (error) {
     console.error('GET ADMIN READING MISSIONS ERROR:', error)
@@ -205,10 +271,38 @@ export async function getAdminReadingMissions(req, res) {
 
 export async function createAdminReadingMission(req, res) {
   try {
+    const existingRows = await getReadingMissionRows()
+
+    if (existingRows.length >= 2) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Only 2 reading missions are allowed',
+      })
+    }
+
+    const payload = buildReadingMissionPayload(req.body, existingRows.length)
+    const now = new Date().toISOString()
+
+    const { data, error } = await supabase
+      .from('task_center_reading_missions')
+      .insert({
+        ...payload,
+        created_at: now,
+        updated_at: now,
+      })
+      .select('*')
+      .single()
+
+    if (error) throw error
+
+    const readingMissions = await getPublicReadingMissions()
+
     return res.status(200).json({
       ok: true,
-      mission: null,
-      message: 'Reading missions are not configured yet',
+      mission: publicReadingMission(data),
+      reading_missions: readingMissions,
+      missions: readingMissions,
+      message: 'Reading mission created',
     })
   } catch (error) {
     console.error('CREATE ADMIN READING MISSION ERROR:', error)
@@ -223,10 +317,34 @@ export async function createAdminReadingMission(req, res) {
 
 export async function updateAdminReadingMission(req, res) {
   try {
+    const missionId = cleanMissionId(req.params.missionId)
+
+    if (!missionId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid reading mission id',
+      })
+    }
+
+    const payload = buildReadingMissionPayload(req.body, 0)
+
+    const { data, error } = await supabase
+      .from('task_center_reading_missions')
+      .update(payload)
+      .eq('id', missionId)
+      .select('*')
+      .single()
+
+    if (error) throw error
+
+    const readingMissions = await getPublicReadingMissions()
+
     return res.status(200).json({
       ok: true,
-      mission: null,
-      message: 'Reading missions are not configured yet',
+      mission: publicReadingMission(data),
+      reading_missions: readingMissions,
+      missions: readingMissions,
+      message: 'Reading mission updated',
     })
   } catch (error) {
     console.error('UPDATE ADMIN READING MISSION ERROR:', error)
@@ -234,6 +352,43 @@ export async function updateAdminReadingMission(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to update reading mission',
+      error: error.message,
+    })
+  }
+}
+
+export async function deleteAdminReadingMission(req, res) {
+  try {
+    const missionId = cleanMissionId(req.params.missionId)
+
+    if (!missionId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid reading mission id',
+      })
+    }
+
+    const { error } = await supabase
+      .from('task_center_reading_missions')
+      .delete()
+      .eq('id', missionId)
+
+    if (error) throw error
+
+    const readingMissions = await getPublicReadingMissions()
+
+    return res.status(200).json({
+      ok: true,
+      reading_missions: readingMissions,
+      missions: readingMissions,
+      message: 'Reading mission deleted',
+    })
+  } catch (error) {
+    console.error('DELETE ADMIN READING MISSION ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to delete reading mission',
       error: error.message,
     })
   }
