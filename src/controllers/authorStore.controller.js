@@ -31,6 +31,22 @@ function cleanInteger(value, fallback = 0) {
   const number = Number(value)
   return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : fallback
 }
+function cleanBoolean(value, fallback = false) {
+  if (typeof value === 'boolean') return value
+
+  if (typeof value === 'number') {
+    return value === 1
+  }
+
+  if (typeof value === 'string') {
+    const text = value.trim().toLowerCase()
+
+    if (['true', '1', 'yes', 'on'].includes(text)) return true
+    if (['false', '0', 'no', 'off', ''].includes(text)) return false
+  }
+
+  return fallback
+}
 
 function isSoldOutSystemCategory(value) {
   return cleanText(value).toLowerCase() === 'sold out'
