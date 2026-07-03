@@ -47,6 +47,7 @@ function publicComment(comment, likedIds = new Set()) {
   return {
     id: comment.id,
     story_id: comment.story_id,
+    episode_id: comment.episode_id || null,
     user_id: comment.user_id,
     parent_id: comment.parent_id,
     text: comment.text,
@@ -66,6 +67,18 @@ async function getStory(storyId) {
     .from('stories')
     .select('id, user_id, author_id, status, total_comments')
     .eq('id', storyId)
+    .maybeSingle()
+
+  if (error) throw error
+
+  return data
+}
+
+async function getEpisode(episodeId) {
+  const { data, error } = await supabase
+    .from('episodes')
+    .select('id, story_id')
+    .eq('id', episodeId)
     .maybeSingle()
 
   if (error) throw error
@@ -280,6 +293,97 @@ export async function getStoryComments(req, res) {
   }
 }
 
+export async function getEpisodeComments(req, res) {
+  try {
+    const episodeId = String(req.params.episodeId || '').trim()
+    const page = Math.max(1, Number(req.query.page || 1))
+    const limit = Math.min(30, Math.max(5, Number(req.query.limit || 20)))
+    const sort = String(req.query.sort || 'newest').trim().toLowerCase()
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+    const userId = getRequestUserId(req)
+
+    const episode = await getEpisode(episodeId)
+
+    if (!episode) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Episode not found',
+      })
+    }
+
+    let query = supabase
+      .from('comments')
+      .select('*, user:users(id, name, username, avatar_url, role)', { count: 'exact' })
+      .eq('story_id', episode.story_id)
+      .eq('episode_id', episodeId)
+      .eq('is_hidden', false)
+      .is('parent_id', null)
+      .range(from, to)
+
+    if (sort === 'top') {
+      query = query
+        .order('is_pinned', { ascending: false })
+        .order('likes', { ascending: false })
+        .order('created_at', { ascending: false })
+    } else if (sort === 'oldest') {
+      query = query
+        .order('is_pinned', { ascending: false })
+        .order('created_at', { ascending: true })
+    } else {
+      query = query
+        .order('is_pinned', { ascending: false })
+        .order('created_at', { ascending: false })
+    }
+
+    const { data, error, count } = await query
+
+    if (error) throw error
+
+    const parentIds = (data || []).map((comment) => comment.id)
+    let replies = []
+
+    if (parentIds.length) {
+      const { data: replyData, error: replyError } = await supabase
+        .from('comments')
+        .select('*, user:users(id, name, username, avatar_url, role)')
+        .eq('story_id', episode.story_id)
+        .eq('episode_id', episodeId)
+        .eq('is_hidden', false)
+        .in('parent_id', parentIds)
+        .order('created_at', { ascending: true })
+
+      if (replyError) throw replyError
+
+      replies = replyData || []
+    }
+
+    const allIds = [...parentIds, ...replies.map((reply) => reply.id)]
+    const likedIds = await getLikedIds(allIds, userId)
+    const publicParents = (data || []).map((comment) => publicComment(comment, likedIds))
+    const publicReplies = replies.map((reply) => publicComment(reply, likedIds))
+    const comments = attachReplies(publicParents, publicReplies)
+    const total = Number(count || 0)
+
+    return res.status(200).json({
+      ok: true,
+      comments,
+      page,
+      limit,
+      total,
+      has_more: page * limit < total,
+    })
+  } catch (error) {
+    console.error('GET EPISODE COMMENTS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load episode comments',
+      error: error.message,
+    })
+  }
+}
+
 export async function createStoryComment(req, res) {
   try {
     const storyId = String(req.params.storyId || '').trim()
@@ -367,6 +471,112 @@ export async function createStoryComment(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to create comment',
+      error: error.message,
+    })
+  }
+}
+
+export async function createEpisodeComment(req, res) {
+  try {
+    const episodeId = String(req.params.episodeId || '').trim()
+    const userId = req.user?.user_id
+    const text = normalizeText(req.body.text)
+    const parentId = String(req.body.parent_id || req.body.parentId || '').trim() || null
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const readerCommentBlock = await getActiveReaderCommentBlock(userId)
+
+    if (readerCommentBlock) {
+      return res.status(403).json(readerCommentBlockedPayload(readerCommentBlock))
+    }
+
+    if (!text) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment text is required',
+      })
+    }
+
+    const episode = await getEpisode(episodeId)
+
+    if (!episode) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Episode not found',
+      })
+    }
+
+    const story = await getStory(episode.story_id)
+
+    if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    const banned = await isBannedFromStory(episode.story_id, userId)
+
+    if (banned) {
+      return res.status(403).json({
+        ok: false,
+        message: 'You cannot comment on this story',
+      })
+    }
+
+    if (parentId) {
+      const parent = await getComment(parentId)
+
+      if (
+        !parent ||
+        String(parent.story_id) !== String(episode.story_id) ||
+        String(parent.episode_id || '') !== String(episodeId)
+      ) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Parent comment is not valid',
+        })
+      }
+    }
+
+    const { data, error } = await supabase
+      .from('comments')
+      .insert({
+        story_id: episode.story_id,
+        episode_id: episodeId,
+        user_id: userId,
+        parent_id: parentId,
+        text,
+      })
+      .select('*, user:users(id, name, username, avatar_url, role)')
+      .single()
+
+    if (error) throw error
+
+    await supabase
+      .from('stories')
+      .update({
+        total_comments: Number(story.total_comments || 0) + 1,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', episode.story_id)
+
+    return res.status(201).json({
+      ok: true,
+      comment: publicComment(data),
+    })
+  } catch (error) {
+    console.error('CREATE EPISODE COMMENT ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to create episode comment',
       error: error.message,
     })
   }
