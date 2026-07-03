@@ -1,5 +1,8 @@
 import express from 'express'
 import {
+
+  createEpisodeComment,
+  getEpisodeComments,
   createStoryComment,
   getMyCommentActivities,
   getStoryComments,
@@ -11,6 +14,8 @@ import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
 
+router.get('/episode/:episodeId', getEpisodeComments)
+router.post('/episode/:episodeId', requireUser, createEpisodeComment)
 router.get('/me/activities', requireUser, getMyCommentActivities)
 router.get('/story/:storyId', getStoryComments)
 router.post('/story/:storyId', requireUser, createStoryComment)
