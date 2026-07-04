@@ -46,6 +46,7 @@ import adminDeviceAccessRoutes from './src/routes/adminDeviceAccess.routes.js'
 import adminTwoFactorRoutes from './src/routes/adminTwoFactor.routes.js'
 import adminPasskeyPinRoutes from './src/routes/adminPasskeyPin.routes.js'
 import contentVersionsRoutes from './src/routes/contentVersions.routes.js'
+import giftsRoutes from './src/routes/gifts.routes.js'
 
 dotenv.config()
 
@@ -172,6 +173,7 @@ app.use('/api/admin/device-access', adminDeviceAccessRoutes)
 app.use('/api/admin/two-factor', adminTwoFactorRoutes)
 app.use('/api/admin/passkey-pin', adminPasskeyPinRoutes)
 app.use('/api/public', contentVersionsRoutes)
+app.use('/api/gifts', readerActionSpamGuard, giftsRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
