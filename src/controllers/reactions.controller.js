@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 
 function normalizeReactionType(value) {
   const reactionType = String(value || 'love').trim().toLowerCase()
@@ -23,7 +24,7 @@ function getOptionalReader(req) {
 async function getStory(storyId) {
   const { data, error } = await supabase
     .from('stories')
-    .select('id, total_likes')
+    .select('id, author_id, user_id, total_likes')
     .eq('id', storyId)
     .maybeSingle()
 
@@ -254,6 +255,16 @@ export async function toggleStoryReaction(req, res) {
     if (insertError) throw insertError
 
     const totalLikes = await syncStoryTotalLikes(storyId)
+
+    const isOwner =
+      String(story.user_id || '') === String(userId)
+
+    if (!isOwner && story.author_id) {
+      await incrementAuthorPageAnalytics(
+        story.author_id,
+        'interactions'
+      )
+    }
 
     return res.status(200).json({
       ok: true,
