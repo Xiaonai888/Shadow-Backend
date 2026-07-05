@@ -103,6 +103,94 @@ export async function getStoryReactionStatus(req, res) {
   }
 }
 
+export async function getEpisodeReactions(req, res) {
+  try {
+    const episodeId = String(req.params.episodeId || '').trim()
+    const page = Math.max(1, Number(req.query.page || 1))
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit || 100)))
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    const { data: episode, error: episodeError } = await supabase
+      .from('episodes')
+      .select('id, story_id, title')
+      .eq('id', episodeId)
+      .maybeSingle()
+
+    if (episodeError) throw episodeError
+
+    if (!episode) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Episode not found',
+      })
+    }
+
+    const { data: countRows, error: countError } = await supabase
+      .from('story_reactions')
+      .select('reaction_type')
+      .eq('episode_id', episodeId)
+
+    if (countError) throw countError
+
+    const counts = (countRows || []).reduce((result, item) => {
+      const type = String(item.reaction_type || 'love').toLowerCase()
+      result[type] = Number(result[type] || 0) + 1
+      return result
+    }, {})
+
+    const { data, error, count } = await supabase
+      .from('story_reactions')
+      .select(
+        'id, user_id, reaction_type, created_at, user:users(id, name, username, avatar_url)',
+        { count: 'exact' }
+      )
+      .eq('episode_id', episodeId)
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (error) throw error
+
+    const reactions = (data || []).map((item) => {
+      const user = Array.isArray(item.user) ? item.user[0] : item.user
+
+      return {
+        id: item.id,
+        reaction_type: item.reaction_type || 'love',
+        created_at: item.created_at,
+        user: {
+          id: user?.id || item.user_id,
+          name: user?.name || user?.username || 'Reader',
+          username: user?.username || '',
+          avatar_url: user?.avatar_url || '',
+        },
+      }
+    })
+
+    const total = Number(count || 0)
+
+    return res.status(200).json({
+      ok: true,
+      episode: {
+        id: episode.id,
+        story_id: episode.story_id,
+        title: episode.title || '',
+      },
+      total,
+      counts,
+      page,
+      limit,
+      has_more: to + 1 < total,
+      reactions,
+    })
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to load episode reactions',
+    })
+  }
+}
+
 export async function toggleStoryReaction(req, res) {
   try {
     const storyId = req.params.storyId
