@@ -1,3 +1,4 @@
+import { getMyAuthorDashboard } from '../controllers/authorDashboard.controller.js'
 import express from 'express'
 import {
   updateMyAuthorPage,
@@ -41,6 +42,7 @@ import {
 
 const router = express.Router()
 
+router.get('/me/dashboard', requireUser, getMyAuthorDashboard)
 router.get('/me', requireUser, getMyAuthorPage)
 router.get('/me/quest', requireUser, getMyAuthorQuest)
 router.get('/me/income', requireUser, getMyAuthorIncome)
