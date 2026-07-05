@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
+import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 
 function normalizePageUsername(username) {
   return String(username || '')
@@ -188,7 +189,10 @@ export async function getPublicAuthorPage(req, res) {
     const userId = getOptionalUserId(req)
 
     if (!pageUsername) {
-      return res.status(400).json({ ok: false, message: 'Page username is required' })
+      return res.status(400).json({
+        ok: false,
+        message: 'Page username is required',
+      })
     }
 
     const { data, error } = await supabase
@@ -201,27 +205,45 @@ export async function getPublicAuthorPage(req, res) {
     if (error) throw error
 
     if (!data) {
-      return res.status(404).json({ ok: false, message: 'Author page not found' })
+      return res.status(404).json({
+        ok: false,
+        message: 'Author page not found',
+      })
     }
 
     const [isFollowing, works] = await Promise.all([
-  getFollowStatus(data.id, userId),
-  getAuthorPageWorks(data.id),
-])
+      getFollowStatus(data.id, userId),
+      getAuthorPageWorks(data.id),
+    ])
 
-return res.status(200).json({
-  ok: true,
-  author_page: publicAuthorPage({
-    ...data,
-    total_stories: works.length,
-  }),
-  is_following: isFollowing,
-  total_followers: Number(data.total_followers || 0),
-  works,
-})
+    const isOwner =
+      Boolean(userId) && String(data.user_id) === String(userId)
+
+    if (!isOwner) {
+      await incrementAuthorPageAnalytics(
+        data.id,
+        'page_views'
+      )
+    }
+
+    return res.status(200).json({
+      ok: true,
+      author_page: publicAuthorPage({
+        ...data,
+        total_stories: works.length,
+      }),
+      is_following: isFollowing,
+      total_followers: Number(data.total_followers || 0),
+      works,
+    })
   } catch (error) {
     console.error('GET PUBLIC AUTHOR PAGE ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to fetch author page', error: error.message })
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to fetch author page',
+      error: error.message,
+    })
   }
 }
 
@@ -684,34 +706,54 @@ export async function deleteMyAuthorPageReview(req, res) {
 export async function followAuthorPage(req, res) {
   try {
     const userId = req.user?.user_id
-    const pageUsername = normalizePageUsername(req.params.pageUsername)
+    const pageUsername = normalizePageUsername(
+      req.params.pageUsername
+    )
 
     if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
     }
 
     if (!pageUsername) {
-      return res.status(400).json({ ok: false, message: 'Page username is required' })
+      return res.status(400).json({
+        ok: false,
+        message: 'Page username is required',
+      })
     }
 
-    const { data: authorPage, error: pageError } = await supabase
-      .from('author_pages')
-      .select('*')
-      .eq('page_username', pageUsername)
-      .eq('status', 'active')
-      .maybeSingle()
+    const { data: authorPage, error: pageError } =
+      await supabase
+        .from('author_pages')
+        .select('*')
+        .eq('page_username', pageUsername)
+        .eq('status', 'active')
+        .maybeSingle()
 
     if (pageError) throw pageError
 
     if (!authorPage) {
-      return res.status(404).json({ ok: false, message: 'Author page not found' })
+      return res.status(404).json({
+        ok: false,
+        message: 'Author page not found',
+      })
     }
 
-    if (authorPage.user_id === userId) {
-      return res.status(400).json({ ok: false, message: 'You cannot follow your own author page' })
+    if (String(authorPage.user_id) === String(userId)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'You cannot follow your own author page',
+      })
     }
 
-    const alreadyFollowing = await getFollowStatus(authorPage.id, userId)
+    const alreadyFollowing = await getFollowStatus(
+      authorPage.id,
+      userId
+    )
+
+    let followCreated = false
 
     if (!alreadyFollowing) {
       const { error: followError } = await supabase
@@ -721,21 +763,41 @@ export async function followAuthorPage(req, res) {
           follower_user_id: userId,
         })
 
-      if (followError && followError.code !== '23505') throw followError
+      if (followError && followError.code !== '23505') {
+        throw followError
+      }
+
+      followCreated = !followError
     }
 
-    const updatedPage = await syncAuthorFollowerCount(authorPage.id)
+    if (followCreated) {
+      await incrementAuthorPageAnalytics(
+        authorPage.id,
+        'new_followers'
+      )
+    }
+
+    const updatedPage = await syncAuthorFollowerCount(
+      authorPage.id
+    )
 
     return res.status(200).json({
       ok: true,
       message: 'Author page followed',
       author_page: publicAuthorPage(updatedPage),
       is_following: true,
-      total_followers: Number(updatedPage.total_followers || 0),
+      total_followers: Number(
+        updatedPage.total_followers || 0
+      ),
     })
   } catch (error) {
     console.error('FOLLOW AUTHOR PAGE ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to follow author page', error: error.message })
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to follow author page',
+      error: error.message,
+    })
   }
 }
 
