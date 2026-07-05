@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
+import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 
 const FALLBACK_UNLOCK_RULES = {
   standard_free_first_episode_monthly_limit: 10,
@@ -1275,15 +1276,22 @@ export async function countQualifiedEpisodeView(req, res) {
     }
 
     const viewResult = await recordEpisodeView({
-      userId: user.user_id,
-      storyId,
-      episodeId,
-    })
+  userId: user.user_id,
+  storyId,
+  episodeId,
+})
 
-    return res.status(200).json({
-      ok: true,
-      view: viewResult,
-    })
+if (viewResult.counted && story.author_id) {
+  await incrementAuthorPageAnalytics(
+    story.author_id,
+    'story_reads'
+  )
+}
+
+return res.status(200).json({
+  ok: true,
+  view: viewResult,
+})
   } catch (error) {
     console.error('COUNT QUALIFIED EPISODE VIEW ERROR:', error)
 
