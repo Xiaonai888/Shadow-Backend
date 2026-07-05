@@ -47,6 +47,7 @@ import adminTwoFactorRoutes from './src/routes/adminTwoFactor.routes.js'
 import adminPasskeyPinRoutes from './src/routes/adminPasskeyPin.routes.js'
 import contentVersionsRoutes from './src/routes/contentVersions.routes.js'
 import giftsRoutes from './src/routes/gifts.routes.js'
+import echoesRoutes from './src/routes/echoes.routes.js'
 
 dotenv.config()
 
@@ -147,6 +148,7 @@ app.use('/api/admin/activity-logs', adminActivityRoutes)
 app.use('/api/genres', genresRoutes)
 app.use('/api/comments', readerActionSpamGuard, commentsRoutes)
 app.use('/api/reactions', readerActionSpamGuard, reactionsRoutes)
+app.use('/api/echoes', readerActionSpamGuard, echoesRoutes)
 app.use('/api/reader', readerActionSpamGuard, libraryRoutes)
 app.use('/api/purchase', paymentSpamGuard, purchaseRoutes)
 app.use('/api/telegram', telegramRoutes)
