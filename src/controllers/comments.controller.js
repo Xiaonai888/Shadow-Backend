@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
+import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import { getActiveReaderCommentBlock, readerCommentBlockedPayload } from '../utils/readerCommentBlocks.js'
 
 function normalizeText(value) {
@@ -461,6 +462,22 @@ export async function createStoryComment(req, res) {
       })
       .eq('id', storyId)
 
+    const isOwner =
+  String(story.user_id || '') === String(userId)
+
+if (!isOwner && story.author_id) {
+  await Promise.all([
+    incrementAuthorPageAnalytics(
+      story.author_id,
+      'comments'
+    ),
+    incrementAuthorPageAnalytics(
+      story.author_id,
+      'interactions'
+    ),
+  ])
+}
+
     return res.status(201).json({
       ok: true,
       comment: publicComment(data),
@@ -566,6 +583,22 @@ export async function createEpisodeComment(req, res) {
         updated_at: new Date().toISOString(),
       })
       .eq('id', episode.story_id)
+
+    const isOwner =
+  String(story.user_id || '') === String(userId)
+
+if (!isOwner && story.author_id) {
+  await Promise.all([
+    incrementAuthorPageAnalytics(
+      story.author_id,
+      'comments'
+    ),
+    incrementAuthorPageAnalytics(
+      story.author_id,
+      'interactions'
+    ),
+  ])
+}
 
     return res.status(201).json({
       ok: true,
