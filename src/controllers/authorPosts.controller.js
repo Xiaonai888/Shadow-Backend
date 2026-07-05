@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 
 function normalizePageUsername(username) {
   return String(username || '')
@@ -369,19 +370,41 @@ export async function setMyAuthorPostReaction(req, res) {
   try {
     const userId = req.user?.user_id
     const postId = req.params.postId
-    const reactionType = String(req.body?.reaction_type || req.body?.reactionType || 'love').trim().toLowerCase()
-    const allowedReactions = new Set(['love', 'haha', 'wow', 'sad', 'angry', 'support', 'touched'])
+    const reactionType = String(
+      req.body?.reaction_type ||
+      req.body?.reactionType ||
+      'love'
+    ).trim().toLowerCase()
+
+    const allowedReactions = new Set([
+      'love',
+      'haha',
+      'wow',
+      'sad',
+      'angry',
+      'support',
+      'touched',
+    ])
 
     if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
     }
 
     if (!postId) {
-      return res.status(400).json({ ok: false, message: 'Post ID is required' })
+      return res.status(400).json({
+        ok: false,
+        message: 'Post ID is required',
+      })
     }
 
     if (!allowedReactions.has(reactionType)) {
-      return res.status(400).json({ ok: false, message: 'Invalid reaction type' })
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid reaction type',
+      })
     }
 
     const { data: post, error: postError } = await supabase
@@ -394,20 +417,25 @@ export async function setMyAuthorPostReaction(req, res) {
     if (postError) throw postError
 
     if (!post) {
-      return res.status(404).json({ ok: false, message: 'Post not found' })
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
     }
 
-    const { data: existingReaction, error: existingError } = await supabase
-      .from('author_page_post_reactions')
-      .select('id, reaction_type')
-      .eq('post_id', postId)
-      .eq('user_id', userId)
-      .maybeSingle()
+    const { data: existingReaction, error: existingError } =
+      await supabase
+        .from('author_page_post_reactions')
+        .select('id, reaction_type')
+        .eq('post_id', postId)
+        .eq('user_id', userId)
+        .maybeSingle()
 
     if (existingError) throw existingError
 
     let reacted = true
     let nextReactionType = reactionType
+    let interactionCreated = false
 
     if (existingReaction?.reaction_type === reactionType) {
       const { error: deleteError } = await supabase
@@ -439,44 +467,72 @@ export async function setMyAuthorPostReaction(req, res) {
         })
 
       if (insertReactionError) throw insertReactionError
+
+      interactionCreated = true
     }
 
-    const { data: reactionRows, error: reactionSummaryError } = await supabase
-  .from('author_page_post_reactions')
-  .select('post_id, reaction_type')
-  .eq('post_id', postId)
+    const { data: reactionRows, error: reactionSummaryError } =
+      await supabase
+        .from('author_page_post_reactions')
+        .select('post_id, reaction_type')
+        .eq('post_id', postId)
 
-if (reactionSummaryError) throw reactionSummaryError
+    if (reactionSummaryError) throw reactionSummaryError
 
-const reactionSummary = buildReactionSummaryMap(reactionRows || []).get(postId) || []
-const nextLikeCount = Number((reactionRows || []).length)
+    const reactionSummary =
+      buildReactionSummaryMap(reactionRows || []).get(postId) || []
 
-    const { data: updatedPost, error: updatePostError } = await supabase
-      .from('author_page_posts')
-      .update({
-        like_count: nextLikeCount,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', postId)
-      .select()
-      .single()
+    const nextLikeCount = Number((reactionRows || []).length)
+
+    const { data: updatedPost, error: updatePostError } =
+      await supabase
+        .from('author_page_posts')
+        .update({
+          like_count: nextLikeCount,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', postId)
+        .select()
+        .single()
 
     if (updatePostError) throw updatePostError
 
+    const isOwner =
+      String(post.user_id || '') === String(userId)
+
+    if (
+      interactionCreated &&
+      !isOwner &&
+      post.author_page_id
+    ) {
+      await incrementAuthorPageAnalytics(
+        post.author_page_id,
+        'interactions'
+      )
+    }
+
     return res.status(200).json({
-  ok: true,
-  reacted,
-  reaction_type: nextReactionType,
-  like_count: nextLikeCount,
-  reaction_summary: reactionSummary,
-  post: publicAuthorPost({
-    ...updatedPost,
-    reaction_summary: reactionSummary,
-  }),
-})
+      ok: true,
+      reacted,
+      reaction_type: nextReactionType,
+      like_count: nextLikeCount,
+      reaction_summary: reactionSummary,
+      post: publicAuthorPost({
+        ...updatedPost,
+        reaction_summary: reactionSummary,
+      }),
+    })
   } catch (error) {
-    console.error('SET MY AUTHOR POST REACTION ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to update post reaction', error: error.message })
+    console.error(
+      'SET MY AUTHOR POST REACTION ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update post reaction',
+      error: error.message,
+    })
   }
 }
 
@@ -562,24 +618,38 @@ export async function createAuthorPostComment(req, res) {
     const text = String(req.body.text || '').trim()
 
     if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
     }
 
     if (!postId) {
-      return res.status(400).json({ ok: false, message: 'Post ID is required' })
+      return res.status(400).json({
+        ok: false,
+        message: 'Post ID is required',
+      })
     }
 
     if (!text) {
-      return res.status(400).json({ ok: false, message: 'Comment text is required' })
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment text is required',
+      })
     }
 
     if (text.length > 1000) {
-      return res.status(400).json({ ok: false, message: 'Comment is too long' })
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment is too long',
+      })
     }
 
     const { data: post, error: postError } = await supabase
       .from('author_page_posts')
-      .select('id, status, comment_count')
+      .select(
+        'id, author_page_id, user_id, status, comment_count'
+      )
       .eq('id', postId)
       .eq('status', 'active')
       .maybeSingle()
@@ -587,24 +657,33 @@ export async function createAuthorPostComment(req, res) {
     if (postError) throw postError
 
     if (!post) {
-      return res.status(404).json({ ok: false, message: 'Post not found' })
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
     }
 
-    const { data: createdComment, error: createError } = await supabase
-      .from('author_page_post_comments')
-      .insert({
-        post_id: postId,
-        user_id: userId,
-        text,
-      })
-      .select('*, user:users(id, name, username, avatar_url, role)')
-      .single()
+    const { data: createdComment, error: createError } =
+      await supabase
+        .from('author_page_post_comments')
+        .insert({
+          post_id: postId,
+          user_id: userId,
+          text,
+        })
+        .select(
+          '*, user:users(id, name, username, avatar_url, role)'
+        )
+        .single()
 
     if (createError) throw createError
 
     const { count, error: countError } = await supabase
       .from('author_page_post_comments')
-      .select('id', { count: 'exact', head: true })
+      .select('id', {
+        count: 'exact',
+        head: true,
+      })
       .eq('post_id', postId)
       .eq('is_hidden', false)
 
@@ -622,13 +701,37 @@ export async function createAuthorPostComment(req, res) {
 
     if (updatePostError) throw updatePostError
 
+    const isOwner =
+      String(post.user_id || '') === String(userId)
+
+    if (!isOwner && post.author_page_id) {
+      await Promise.all([
+        incrementAuthorPageAnalytics(
+          post.author_page_id,
+          'comments'
+        ),
+        incrementAuthorPageAnalytics(
+          post.author_page_id,
+          'interactions'
+        ),
+      ])
+    }
+
     return res.status(201).json({
       ok: true,
       comment: publicAuthorPostComment(createdComment),
       comment_count: nextCommentCount,
     })
   } catch (error) {
-    console.error('CREATE AUTHOR POST COMMENT ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to create post comment', error: error.message })
+    console.error(
+      'CREATE AUTHOR POST COMMENT ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to create post comment',
+      error: error.message,
+    })
   }
 }
