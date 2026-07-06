@@ -48,6 +48,8 @@ import adminPasskeyPinRoutes from './src/routes/adminPasskeyPin.routes.js'
 import contentVersionsRoutes from './src/routes/contentVersions.routes.js'
 import giftsRoutes from './src/routes/gifts.routes.js'
 import echoesRoutes from './src/routes/echoes.routes.js'
+import authorStoriesRoutes from './src/routes/authorStories.routes.js'
+import { startAuthorStoriesCleanup } from './src/controllers/authorStories.controller.js'
 
 dotenv.config()
 
@@ -176,6 +178,7 @@ app.use('/api/admin/two-factor', adminTwoFactorRoutes)
 app.use('/api/admin/passkey-pin', adminPasskeyPinRoutes)
 app.use('/api/public', contentVersionsRoutes)
 app.use('/api/gifts', readerActionSpamGuard, giftsRoutes)
+app.use('/api/author-stories', readerActionSpamGuard, authorStoriesRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
@@ -190,6 +193,7 @@ const PORT = process.env.PORT || 5000
 
 app.listen(PORT, () => {
   console.log(`Shadow Backend running on port ${PORT}`)
+  startAuthorStoriesCleanup()
 
   if (process.env.ENABLE_TELEGRAM_USER_LISTENER === 'true') {
     startTelegramUserListener().catch((error) => {
