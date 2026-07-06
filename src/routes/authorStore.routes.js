@@ -1,4 +1,5 @@
 import express from 'express'
+import multer from 'multer'
 import {
   createAuthorStoreOrder,
   createAuthorStoreOrderPayment,
@@ -35,10 +36,37 @@ import {
   getAdminAuthorStoreStores,
   getAdminAuthorStoreStoreDetails,
 } from '../controllers/authorStore.controller.js'
+import {
+  uploadMyAuthorStorePrivatePdf,
+} from '../controllers/authorStorePdf.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 
 const router = express.Router()
+
+const privatePdfUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024,
+    files: 1,
+  },
+  fileFilter: (req, file, callback) => {
+    const mimeType = String(file?.mimetype || '').toLowerCase()
+    const originalName = String(file?.originalname || '').toLowerCase()
+
+    if (
+      mimeType !== 'application/pdf' ||
+      !originalName.endsWith('.pdf')
+    ) {
+      const error = new Error('Only PDF files are allowed')
+      error.statusCode = 400
+      callback(error)
+      return
+    }
+
+    callback(null, true)
+  },
+})
 
 router.get('/me/products', requireUser, getMyAuthorStoreProducts)
 router.get('/me/promotion', requireUser, getMyAuthorStorePromotion)
@@ -54,6 +82,12 @@ router.patch('/me/categories/reorder', requireUser, reorderMyAuthorStoreCategori
 router.patch('/me/categories/:categoryId', requireUser, updateMyAuthorStoreCategory)
 router.delete('/me/categories/:categoryId', requireUser, deleteMyAuthorStoreCategory)
 router.post('/me/products', requireUser, createMyAuthorStoreProduct)
+router.post(
+  '/me/pdfs/upload-private',
+  requireUser,
+  privatePdfUpload.single('pdf'),
+  uploadMyAuthorStorePrivatePdf
+)
 router.get('/me/orders', requireUser, getMyAuthorStoreOrders)
 router.patch('/me/orders/:orderId/preparing', requireUser, markMyAuthorStoreOrderPreparing)
 router.get('/me/income', requireUser, getMyAuthorStoreIncome)
@@ -74,6 +108,5 @@ router.get('/page/:pageUsername/products', getPublicAuthorStoreProducts)
 router.post('/admin/orders/:orderId/resend-telegram', requireAdmin, resendAdminAuthorStoreOrderTelegram)
 router.get('/admin/stores', requireAdmin, getAdminAuthorStoreStores)
 router.get('/admin/stores/:authorPageId', requireAdmin, getAdminAuthorStoreStoreDetails)
-
 
 export default router
