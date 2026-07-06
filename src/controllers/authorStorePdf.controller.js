@@ -32,6 +32,25 @@ function isPdfFile(file) {
   )
 }
 
+function cleanText(value, fallback = '') {
+  return String(value ?? fallback).trim()
+}
+
+function cleanInteger(value, fallback = 0) {
+  const number = Number(value)
+
+  if (!Number.isFinite(number)) return fallback
+
+  return Math.max(0, Math.floor(number))
+}
+
+function isOwnedPrivatePdfKey(storageKey, authorPageId) {
+  const key = cleanText(storageKey)
+  const prefix = `author-private-pdfs/${authorPageId}/`
+
+  return Boolean(key) && key.startsWith(prefix)
+}
+
 export async function uploadMyAuthorStorePrivatePdf(req, res) {
   let uploadedStorageKey = ''
 
@@ -128,6 +147,183 @@ export async function uploadMyAuthorStorePrivatePdf(req, res) {
       message: error.message || 'Failed to upload private PDF',
       quota: error.quota || null,
       requested_bytes: error.requested_bytes || null,
+    })
+  }
+}
+
+export async function attachMyAuthorStorePrivatePdf(req, res) {
+  try {
+    const userId = req.user?.user_id || req.user?.id
+    const productId = cleanText(req.params.productId)
+    const storageKey = cleanText(
+      req.body.pdf_storage_key ||
+      req.body.pdfStorageKey
+    )
+    const fileName = cleanText(
+      req.body.pdf_file_name ||
+      req.body.pdfFileName,
+      'document.pdf'
+    )
+    const mimeType = cleanText(
+      req.body.pdf_mime_type ||
+      req.body.pdfMimeType,
+      'application/pdf'
+    )
+    const fileSizeBytes = cleanInteger(
+      req.body.pdf_file_size_bytes ??
+      req.body.pdfFileSizeBytes,
+      0
+    )
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!productId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Product ID is required',
+      })
+    }
+
+    const authorPage = await getMyActiveAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({
+        ok: false,
+        message: 'Please create an active author page first',
+      })
+    }
+
+    if (!isOwnedPrivatePdfKey(storageKey, authorPage.id)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid private PDF storage key',
+      })
+    }
+
+    if (mimeType !== 'application/pdf') {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid PDF MIME type',
+      })
+    }
+
+    if (fileSizeBytes <= 0 || fileSizeBytes > 50 * 1024 * 1024) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid PDF file size',
+      })
+    }
+
+    const { data: product, error: productError } = await supabase
+      .from('author_store_products')
+      .select('id, product_type, pdf_storage_key')
+      .eq('id', productId)
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (productError) throw productError
+
+    if (!product) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Product not found',
+      })
+    }
+
+    if (String(product.product_type || '').toLowerCase() !== 'pdf') {
+      return res.status(400).json({
+        ok: false,
+        message: 'Private PDF can only be attached to a PDF product',
+      })
+    }
+
+    const { data: asset, error: assetError } = await supabase
+      .from('r2_assets')
+      .select('id, file_path, asset_status')
+      .eq('owner_type', 'author')
+      .eq('owner_id', authorPage.id)
+      .eq('file_path', storageKey)
+      .eq('asset_status', 'active')
+      .maybeSingle()
+
+    if (assetError) throw assetError
+
+    if (!asset) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Private PDF upload record not found',
+      })
+    }
+
+    const oldStorageKey = cleanText(product.pdf_storage_key)
+
+    const { data: updatedProduct, error: updateError } = await supabase
+      .from('author_store_products')
+      .update({
+        pdf_file_url: '',
+        pdf_storage_key: storageKey,
+        pdf_storage_provider: 'r2',
+        pdf_is_private: true,
+        pdf_mime_type: 'application/pdf',
+        pdf_file_size_bytes: fileSizeBytes,
+        pdf_file_name: fileName,
+        access_rule: 'Read online only',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', productId)
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .select('id, pdf_file_name, pdf_storage_provider, pdf_is_private, pdf_mime_type, pdf_file_size_bytes, access_rule')
+      .single()
+
+    if (updateError) throw updateError
+
+    const { error: assetLinkError } = await supabase
+      .from('r2_assets')
+      .update({
+        source_table: 'author_store_products',
+        source_id: productId,
+      })
+      .eq('id', asset.id)
+
+    if (assetLinkError) {
+      console.error('LINK PRIVATE PDF ASSET ERROR:', assetLinkError)
+    }
+
+    if (oldStorageKey && oldStorageKey !== storageKey) {
+      try {
+        await deletePrivatePdfFromR2(oldStorageKey)
+
+        await supabase
+          .from('r2_assets')
+          .update({
+            asset_status: 'deleted',
+          })
+          .eq('owner_type', 'author')
+          .eq('owner_id', authorPage.id)
+          .eq('file_path', oldStorageKey)
+      } catch (cleanupError) {
+        console.error('DELETE OLD PRIVATE PDF ERROR:', cleanupError)
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Private PDF attached to product',
+      product: updatedProduct,
+    })
+  } catch (error) {
+    console.error('ATTACH PRIVATE AUTHOR STORE PDF ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to attach private PDF',
     })
   }
 }
