@@ -13,6 +13,7 @@ import {
   getTaskHistory,
   trackReadingMissionProgress,
   trackReadingRewardProgress,
+  trackReadingSessionProgress,
 } from '../controllers/tasks.controller.js'
 
 const router = express.Router()
@@ -26,6 +27,8 @@ router.post('/reward-chest/claim', requireUser, claimRewardChest)
 router.get('/reading-reward', requireUser, getReadingReward)
 router.post('/reading-reward/progress', requireUser, trackReadingRewardProgress)
 router.post('/reading-reward/claim', requireUser, claimReadingReward)
+
+router.post('/reading-session/progress', requireUser, trackReadingSessionProgress)
 
 router.get('/reading-missions', requireUser, getReadingMissions)
 router.get('/reading-missions/:missionId', requireUser, getReadingMission)
