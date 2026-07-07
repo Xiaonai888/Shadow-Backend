@@ -439,7 +439,7 @@ async function getReaderReadingMissions(userId) {
     .eq('is_active', true)
     .order('sort_order', { ascending: true })
     .order('created_at', { ascending: false })
-    .limit(2)
+    .limit(20)
 
   if (missionsError) throw missionsError
 
