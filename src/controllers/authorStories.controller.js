@@ -1,4 +1,5 @@
 import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
+import sharp from 'sharp'
 import { supabase } from '../config/supabase.js'
 import {
   assertAuthorStorageAvailable,
@@ -13,7 +14,6 @@ const IMAGE_MIME_TYPES = new Set([
 
 const VIDEO_MIME_TYPES = new Set([
   'video/mp4',
-  'video/webm',
   'video/quicktime',
 ])
 
@@ -22,12 +22,13 @@ const EXTENSION_BY_MIME = {
   'image/png': 'png',
   'image/webp': 'webp',
   'video/mp4': 'mp4',
-  'video/webm': 'webm',
   'video/quicktime': 'mov',
 }
 
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024
-const MAX_VIDEO_BYTES = 50 * 1024 * 1024
+const MAX_IMAGE_INPUT_BYTES = 5 * 1024 * 1024
+const MAX_IMAGE_OUTPUT_BYTES = Math.floor(1.5 * 1024 * 1024)
+const MAX_VIDEO_BYTES = 30 * 1024 * 1024
+const MAX_VIDEO_DURATION_SECONDS = 60
 const STORY_DURATION_MS = 24 * 60 * 60 * 1000
 
 let r2Client = null
@@ -98,6 +99,96 @@ function normalizeBoolean(value, fallback = true) {
   return fallback
 }
 
+function readBox(buffer, offset, end) {
+  if (offset + 8 > end) return null
+
+  let size = buffer.readUInt32BE(offset)
+  const type = buffer.toString('ascii', offset + 4, offset + 8)
+  let headerSize = 8
+
+  if (size === 1) {
+    if (offset + 16 > end) return null
+
+    const largeSize = buffer.readBigUInt64BE(offset + 8)
+
+    if (largeSize > BigInt(Number.MAX_SAFE_INTEGER)) return null
+
+    size = Number(largeSize)
+    headerSize = 16
+  } else if (size === 0) {
+    size = end - offset
+  }
+
+  if (size < headerSize || offset + size > end) return null
+
+  return {
+    type,
+    start: offset,
+    end: offset + size,
+    payloadStart: offset + headerSize,
+  }
+}
+
+function findDirectChildBox(buffer, start, end, wantedType) {
+  let offset = start
+
+  while (offset + 8 <= end) {
+    const box = readBox(buffer, offset, end)
+
+    if (!box) return null
+    if (box.type === wantedType) return box
+
+    offset = box.end
+  }
+
+  return null
+}
+
+function readVideoDurationSeconds(buffer) {
+  const moov = findDirectChildBox(buffer, 0, buffer.length, 'moov')
+
+  if (!moov) return 0
+
+  const mvhd = findDirectChildBox(
+    buffer,
+    moov.payloadStart,
+    moov.end,
+    'mvhd'
+  )
+
+  if (!mvhd || mvhd.payloadStart + 20 > mvhd.end) return 0
+
+  const version = buffer.readUInt8(mvhd.payloadStart)
+
+  if (version === 0) {
+    const timescaleOffset = mvhd.payloadStart + 12
+    const durationOffset = mvhd.payloadStart + 16
+
+    if (durationOffset + 4 > mvhd.end) return 0
+
+    const timescale = buffer.readUInt32BE(timescaleOffset)
+    const duration = buffer.readUInt32BE(durationOffset)
+
+    return timescale > 0 ? duration / timescale : 0
+  }
+
+  if (version === 1) {
+    const timescaleOffset = mvhd.payloadStart + 20
+    const durationOffset = mvhd.payloadStart + 24
+
+    if (durationOffset + 8 > mvhd.end) return 0
+
+    const timescale = buffer.readUInt32BE(timescaleOffset)
+    const duration = buffer.readBigUInt64BE(durationOffset)
+
+    if (!timescale || duration > BigInt(Number.MAX_SAFE_INTEGER)) return 0
+
+    return Number(duration) / timescale
+  }
+
+  return 0
+}
+
 function validateMedia(file) {
   if (!file) {
     const error = new Error('Photo or video is required')
@@ -111,19 +202,42 @@ function validateMedia(file) {
   const isVideo = VIDEO_MIME_TYPES.has(mimeType)
 
   if (!isImage && !isVideo) {
-    const error = new Error('Only JPG, PNG, WebP, MP4, WebM, or MOV files are allowed')
+    const error = new Error('Only JPG, PNG, WebP, MP4, or MOV files are allowed')
     error.statusCode = 400
     error.code = 'STORY_MEDIA_TYPE_INVALID'
     throw error
   }
 
-  const maxBytes = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES
+  const maxBytes = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_INPUT_BYTES
 
   if (Number(file.size || 0) > maxBytes) {
-    const error = new Error(isVideo ? 'Video must be 50 MB or smaller' : 'Photo must be 10 MB or smaller')
+    const error = new Error(
+      isVideo
+        ? 'Video must be 30 MB or smaller'
+        : 'Photo must be 5 MB or smaller'
+    )
+
     error.statusCode = 413
     error.code = 'STORY_MEDIA_TOO_LARGE'
     throw error
+  }
+
+  if (isVideo) {
+    const duration = readVideoDurationSeconds(file.buffer)
+
+    if (!Number.isFinite(duration) || duration <= 0) {
+      const error = new Error('Could not read video duration')
+      error.statusCode = 400
+      error.code = 'STORY_VIDEO_DURATION_UNREADABLE'
+      throw error
+    }
+
+    if (duration > MAX_VIDEO_DURATION_SECONDS) {
+      const error = new Error('Video must be 60 seconds or shorter')
+      error.statusCode = 400
+      error.code = 'STORY_VIDEO_TOO_LONG'
+      throw error
+    }
   }
 
   return isVideo ? 'video' : 'image'
@@ -132,6 +246,61 @@ function validateMedia(file) {
 function getSafeExtension(file) {
   const mimeType = String(file?.mimetype || '').trim().toLowerCase()
   return EXTENSION_BY_MIME[mimeType] || 'bin'
+}
+
+async function optimizeStoryImage(file) {
+  const attempts = [
+    { width: 1080, height: 1920, quality: 82 },
+    { width: 1080, height: 1920, quality: 74 },
+    { width: 900, height: 1600, quality: 76 },
+    { width: 900, height: 1600, quality: 68 },
+    { width: 720, height: 1280, quality: 72 },
+    { width: 720, height: 1280, quality: 62 },
+    { width: 540, height: 960, quality: 58 },
+  ]
+
+  for (const attempt of attempts) {
+    const buffer = await sharp(file.buffer, { failOn: 'none' })
+      .rotate()
+      .resize({
+        width: attempt.width,
+        height: attempt.height,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .webp({
+        quality: attempt.quality,
+        effort: 4,
+      })
+      .toBuffer()
+
+    if (buffer.length <= MAX_IMAGE_OUTPUT_BYTES) {
+      return {
+        buffer,
+        mimeType: 'image/webp',
+        extension: 'webp',
+        fileSize: buffer.length,
+      }
+    }
+  }
+
+  const error = new Error('Photo could not be optimized below 1.5 MB')
+  error.statusCode = 413
+  error.code = 'STORY_IMAGE_OPTIMIZE_FAILED'
+  throw error
+}
+
+async function prepareStoryMedia(file, mediaType) {
+  if (mediaType === 'image') {
+    return optimizeStoryImage(file)
+  }
+
+  return {
+    buffer: file.buffer,
+    mimeType: file.mimetype,
+    extension: getSafeExtension(file),
+    fileSize: Number(file.size || file.buffer?.length || 0),
+  }
 }
 
 async function getMyAuthorPage(userId) {
@@ -147,22 +316,26 @@ async function getMyAuthorPage(userId) {
   return data
 }
 
-async function uploadMedia(authorPageId, file, mediaType) {
-  const extension = getSafeExtension(file)
+async function uploadMedia(authorPageId, preparedMedia, mediaType) {
   const random = Math.random().toString(36).slice(2, 12)
-  const filePath = `author-stories/${authorPageId}/${mediaType}/${Date.now()}-${random}.${extension}`
+
+  const filePath =
+    `author-stories/${authorPageId}/${mediaType}/` +
+    `${Date.now()}-${random}.${preparedMedia.extension}`
 
   await getR2Client().send(new PutObjectCommand({
     Bucket: getR2BucketName(),
     Key: filePath,
-    Body: file.buffer,
-    ContentType: file.mimetype,
+    Body: preparedMedia.buffer,
+    ContentType: preparedMedia.mimeType,
     CacheControl: 'public, max-age=86400',
   }))
 
   return {
     filePath,
     publicUrl: `${getR2PublicUrl()}/${filePath}`,
+    mimeType: preparedMedia.mimeType,
+    fileSize: preparedMedia.fileSize,
   }
 }
 
@@ -318,9 +491,11 @@ export async function createMyAuthorStory(req, res) {
       })
     }
 
-    await assertAuthorStorageAvailable(authorPage.id, req.file.size)
+    const preparedMedia = await prepareStoryMedia(req.file, mediaType)
 
-    uploaded = await uploadMedia(authorPage.id, req.file, mediaType)
+await assertAuthorStorageAvailable(authorPage.id, preparedMedia.fileSize)
+
+uploaded = await uploadMedia(authorPage.id, preparedMedia, mediaType)
 
     const createdAt = new Date()
     const expiresAt = new Date(createdAt.getTime() + STORY_DURATION_MS)
@@ -333,8 +508,8 @@ export async function createMyAuthorStory(req, res) {
         media_type: mediaType,
         media_url: uploaded.publicUrl,
         media_path: uploaded.filePath,
-        mime_type: req.file.mimetype,
-        file_size: Number(req.file.size || 0),
+        mime_type: uploaded.mimeType,
+        file_size: uploaded.fileSize,
         caption,
         allow_messages: allowMessages,
         status: 'active',
@@ -355,8 +530,8 @@ export async function createMyAuthorStory(req, res) {
       fileName: uploaded.filePath.split('/').pop(),
       filePath: uploaded.filePath,
       publicUrl: uploaded.publicUrl,
-      mimeType: req.file.mimetype,
-      fileSize: req.file.size,
+      mimeType: uploaded.mimeType,
+      fileSize: uploaded.fileSize,
       uploadedBy: userId,
       sourceTable: 'author_page_stories',
       sourceId: createdStory.id,
