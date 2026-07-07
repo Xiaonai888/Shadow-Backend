@@ -1,7 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { cleanupExpiredAuthorStories } from './authorStories.controller.js'
 
-function publicStory(story) {
+function publicStory(story, hasViewed) {
   const expiresAt = story?.expires_at ? new Date(story.expires_at).getTime() : 0
 
   return {
@@ -13,6 +13,7 @@ function publicStory(story) {
     caption: story.caption || '',
     allow_messages: Boolean(story.allow_messages),
     view_count: Number(story.view_count || 0),
+    has_viewed: Boolean(hasViewed),
     created_at: story.created_at,
     expires_at: story.expires_at,
     remaining_seconds: expiresAt
@@ -46,6 +47,7 @@ export async function getAuthorStoriesFeed(req, res) {
 
     if (storiesError) throw storiesError
 
+    const storyIds = (stories || []).map((story) => story.id).filter(Boolean)
     const authorPageIds = [...new Set((stories || []).map((story) => story.author_page_id).filter(Boolean))]
 
     if (!authorPageIds.length) {
@@ -64,17 +66,30 @@ export async function getAuthorStoriesFeed(req, res) {
     if (pagesError) throw pagesError
 
     let followedPageIds = new Set()
+    let viewedStoryIds = new Set()
 
     if (userId) {
-      const { data: followRows, error: followError } = await supabase
-        .from('author_page_follows')
-        .select('author_page_id')
-        .eq('follower_user_id', userId)
-        .in('author_page_id', authorPageIds)
+      const [{ data: followRows, error: followError }, { data: viewRows, error: viewError }] =
+        await Promise.all([
+          supabase
+            .from('author_page_follows')
+            .select('author_page_id')
+            .eq('follower_user_id', userId)
+            .in('author_page_id', authorPageIds),
+          storyIds.length
+            ? supabase
+                .from('author_page_story_views')
+                .select('story_id')
+                .eq('viewer_user_id', userId)
+                .in('story_id', storyIds)
+            : Promise.resolve({ data: [], error: null }),
+        ])
 
       if (followError) throw followError
+      if (viewError) throw viewError
 
       followedPageIds = new Set((followRows || []).map((item) => item.author_page_id))
+      viewedStoryIds = new Set((viewRows || []).map((item) => item.story_id))
     }
 
     const pageById = new Map((authorPages || []).map((page) => [page.id, page]))
@@ -85,6 +100,9 @@ export async function getAuthorStoriesFeed(req, res) {
 
       if (!authorPage) continue
 
+      const isOwner = Boolean(userId && String(authorPage.user_id) === String(userId))
+      const hasViewed = isOwner || viewedStoryIds.has(story.id)
+
       if (!groupByPageId.has(authorPage.id)) {
         groupByPageId.set(authorPage.id, {
           author_page: {
@@ -93,25 +111,31 @@ export async function getAuthorStoriesFeed(req, res) {
             page_username: authorPage.page_username,
             avatar_url: authorPage.avatar_url || '',
           },
-          is_owner: Boolean(userId && String(authorPage.user_id) === String(userId)),
+          is_owner: isOwner,
           is_following: followedPageIds.has(authorPage.id),
           latest_created_at: story.created_at,
           stories: [],
         })
       }
 
-      groupByPageId.get(authorPage.id).stories.push(publicStory(story))
+      groupByPageId.get(authorPage.id).stories.push(publicStory(story, hasViewed))
     }
 
     const groups = [...groupByPageId.values()]
-      .map((group) => ({
-        ...group,
-        stories: [...group.stories].sort(
+      .map((group) => {
+        const sortedStories = [...group.stories].sort(
           (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-        ),
-      }))
+        )
+
+        return {
+          ...group,
+          stories: sortedStories,
+          has_unseen: sortedStories.some((story) => !story.has_viewed),
+        }
+      })
       .sort((a, b) => {
         if (a.is_owner !== b.is_owner) return a.is_owner ? -1 : 1
+        if (a.has_unseen !== b.has_unseen) return a.has_unseen ? -1 : 1
         if (a.is_following !== b.is_following) return a.is_following ? -1 : 1
         return latestTimestamp(b) - latestTimestamp(a)
       })
