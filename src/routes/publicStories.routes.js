@@ -1,4 +1,5 @@
 import express from 'express'
+import { getLatestPublicEpisodes } from '../controllers/latestEpisodes.controller.js'
 import {
   countQualifiedEpisodeView,
   getPublicEpisodeById,
@@ -19,5 +20,6 @@ router.get('/stories/:storyId', getPublicStoryById)
 router.get('/stories/:storyId/episodes', getPublicStoryEpisodes)
 router.get('/stories/:storyId/episodes/:episodeId', getPublicEpisodeById)
 router.post('/stories/:storyId/episodes/:episodeId/view', countQualifiedEpisodeView)
+router.get('/latest-episodes', getLatestPublicEpisodes)
 
 export default router
