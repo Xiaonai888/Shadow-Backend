@@ -60,6 +60,87 @@ function getSafeExtension(file) {
   return 'jpg'
 }
 
+function clampInteger(value, minimum, maximum, fallback) {
+  const parsed = Number(value)
+
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(maximum, Math.max(minimum, Math.round(parsed)))
+}
+
+function buildQualityLevels(startQuality, minQuality, step) {
+  const levels = []
+  let current = startQuality
+
+  while (current > minQuality) {
+    levels.push(current)
+    current -= step
+  }
+
+  levels.push(minQuality)
+  return [...new Set(levels)]
+}
+
+function buildResizeProfiles({
+  width,
+  height,
+  fallbackWidth,
+  fallbackHeight,
+  maxBytes,
+}) {
+  const profiles = [{ width, height }]
+
+  if (maxBytes > 0 && fallbackWidth > 0) {
+    profiles.push({
+      width: fallbackWidth,
+      height: fallbackHeight || (height ? Math.round((fallbackWidth * height) / width) : null),
+    })
+  }
+
+  if (maxBytes > 0 && height) {
+    const ratio = height / width
+
+    for (const nextWidth of [800, 640]) {
+      if (nextWidth < profiles[profiles.length - 1].width) {
+        profiles.push({
+          width: nextWidth,
+          height: Math.round(nextWidth * ratio),
+        })
+      }
+    }
+  }
+
+  return profiles.filter(
+    (profile, index, list) =>
+      index ===
+      list.findIndex(
+        (item) => item.width === profile.width && item.height === profile.height
+      )
+  )
+}
+
+async function createWebPBuffer(fileBuffer, profile, quality, fit) {
+  const resizeOptions = {
+    width: profile.width,
+    withoutEnlargement: true,
+  }
+
+  if (profile.height) {
+    resizeOptions.height = profile.height
+    resizeOptions.fit = fit
+    resizeOptions.position = 'centre'
+  }
+
+  return sharp(fileBuffer)
+    .rotate()
+    .resize(resizeOptions)
+    .webp({
+      quality,
+      effort: 4,
+      smartSubsample: true,
+    })
+    .toBuffer()
+}
+
 export async function uploadFileToR2(file, folder = 'uploads') {
   if (!file) return null
 
@@ -83,19 +164,69 @@ export async function uploadImageToR2AsWebP(file, folder = 'uploads', options = 
 
   const safeFolder = String(folder || 'uploads').replace(/^\/+|\/+$/g, '')
   const fileName = `${safeFolder}/${Date.now()}-${Math.random().toString(36).slice(2)}.webp`
-  const width = Number(options.width || 1600)
-  const quality = Number(options.quality || 82)
+  const width = clampInteger(options.width, 320, 4000, 1600)
+  const height = options.height
+    ? clampInteger(options.height, 180, 4000, 0)
+    : null
+  const quality = clampInteger(options.quality, 40, 100, 82)
+  const minQuality = clampInteger(options.minQuality, 40, quality, 58)
+  const qualityStep = clampInteger(options.qualityStep, 1, 20, 6)
+  const maxBytes = clampInteger(options.maxBytes, 0, 20 * 1024 * 1024, 0)
+  const fallbackWidth = options.fallbackWidth
+    ? clampInteger(options.fallbackWidth, 320, width, 0)
+    : 0
+  const fallbackHeight = options.fallbackHeight
+    ? clampInteger(options.fallbackHeight, 180, height || 4000, 0)
+    : null
+  const fit = options.fit === 'contain' ? 'contain' : 'cover'
+  const qualityLevels = maxBytes > 0
+    ? buildQualityLevels(quality, minQuality, qualityStep)
+    : [quality]
+  const profiles = buildResizeProfiles({
+    width,
+    height,
+    fallbackWidth,
+    fallbackHeight,
+    maxBytes,
+  })
 
-  const buffer = await sharp(file.buffer)
-    .rotate()
-    .resize({ width, withoutEnlargement: true })
-    .webp({ quality })
-    .toBuffer()
+  let buffer = null
+  let smallestBuffer = null
+
+  for (const profile of profiles) {
+    for (const currentQuality of qualityLevels) {
+      buffer = await createWebPBuffer(
+        file.buffer,
+        profile,
+        currentQuality,
+        fit
+      )
+
+      if (!smallestBuffer || buffer.length < smallestBuffer.length) {
+        smallestBuffer = buffer
+      }
+
+      if (!maxBytes || buffer.length <= maxBytes) {
+        smallestBuffer = buffer
+        break
+      }
+    }
+
+    if (!maxBytes || smallestBuffer.length <= maxBytes) break
+  }
+
+  if (maxBytes && smallestBuffer.length > maxBytes) {
+    const error = new Error(
+      `Unable to compress image below ${Math.round(maxBytes / 1024)} KB`
+    )
+    error.statusCode = 422
+    throw error
+  }
 
   await getR2Client().send(new PutObjectCommand({
     Bucket: getR2BucketName(),
     Key: fileName,
-    Body: buffer,
+    Body: smallestBuffer,
     ContentType: 'image/webp',
     CacheControl: 'public, max-age=31536000, immutable',
   }))
