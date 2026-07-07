@@ -8,15 +8,90 @@ import {
   testAuthorStoreSalesReportsSpreadsheet,
 } from '../services/authorStoreSalesReports.service.js'
 
-const ALLOWED_ORDER_STATUSES = new Set(['confirmed', 'preparing', 'shipped', 'completed'])
+const ACTIVE_ORDER_STATUSES = new Set(['confirmed', 'preparing', 'shipped', 'completed'])
+const FULL_REFUND_ORDER_STATUSES = new Set(['cancelled', 'refunded'])
+const FULL_REFUND_PAYMENT_STATUSES = new Set(['refunded'])
 const SYNC_BATCH_SIZE = 200
+const MAX_SYNC_ORDERS = 10000
+const TIME_ZONE_OFFSET_MINUTES = 420
 
 function cleanText(value) {
   return String(value ?? '').trim()
 }
 
+function cleanNumber(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : 0
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== null && value !== undefined && value !== '') ?? ''
+}
+
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || ''
+}
+
+function getOrderStatus(order) {
+  return cleanText(order?.order_status || order?.status).toLowerCase()
+}
+
+function getPaymentStatus(order) {
+  return cleanText(order?.payment_status).toLowerCase()
+}
+
+function getBuyerName(order) {
+  const profile =
+    order?.buyer_profile && typeof order.buyer_profile === 'object'
+      ? order.buyer_profile
+      : {}
+
+  return cleanText(
+    firstDefined(
+      order?.buyer_name,
+      order?.customer_name,
+      order?.reader_name,
+      profile?.name,
+      profile?.buyer_name,
+      profile?.full_name,
+      order?.buyer_email,
+      'Reader'
+    )
+  )
+}
+
+function getPaymentMethod(order) {
+  return cleanText(
+    firstDefined(
+      order?.payment_method,
+      order?.payment_method_name,
+      order?.pay_way,
+      order?.aba_transaction_id ? 'ABA PayWay' : ''
+    )
+  )
+}
+
+function toDate(value) {
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return new Date()
+  }
+
+  return date
+}
+
+function monthKey(value) {
+  const date = toDate(value)
+  const shifted = new Date(date.getTime() + TIME_ZONE_OFFSET_MINUTES * 60 * 1000)
+  const year = shifted.getUTCFullYear()
+  const month = String(shifted.getUTCMonth() + 1).padStart(2, '0')
+
+  return `${year}-${month}`
+}
+
+function currentMonthKey() {
+  return monthKey(new Date())
 }
 
 function publicIntegration(integration) {
@@ -27,7 +102,7 @@ function publicIntegration(integration) {
     author_page_id: integration.author_page_id,
     spreadsheet_id: integration.spreadsheet_id,
     spreadsheet_url: integration.spreadsheet_url,
-    sheet_name: integration.sheet_name || 'Orders',
+    sheet_name: integration.sheet_name || 'Monthly Summary',
     connection_status: integration.connection_status || 'pending',
     initial_sync_scope: integration.initial_sync_scope || 'this_month',
     last_tested_at: integration.last_tested_at || null,
@@ -62,67 +137,147 @@ async function getIntegration(authorPageId) {
   return data || null
 }
 
-function currentMonthStartIso() {
-  const offsetMinutes = Number(process.env.AUTHOR_STORE_TIMEZONE_OFFSET_MINUTES || 420)
-  const safeOffset = Number.isFinite(offsetMinutes) ? offsetMinutes : 420
-  const shiftedNow = new Date(Date.now() + safeOffset * 60 * 1000)
-  const localMonthStartAsUtc = Date.UTC(
-    shiftedNow.getUTCFullYear(),
-    shiftedNow.getUTCMonth(),
-    1,
-    0,
-    0,
-    0,
-    0
-  )
+async function getTrackingMap(spreadsheetId) {
+  const { data, error } = await supabase
+    .from('author_store_sales_report_sync_items')
+    .select('*')
+    .eq('spreadsheet_id', spreadsheetId)
+    .limit(10000)
 
-  return new Date(localMonthStartAsUtc - safeOffset * 60 * 1000).toISOString()
+  if (error) throw error
+
+  return new Map(
+    (data || []).map((item) => [cleanText(item.order_item_id), item])
+  )
 }
 
-function getOrderStatus(order) {
-  return cleanText(order?.order_status || order?.status).toLowerCase()
-}
-
-function getBuyerName(order) {
-  return cleanText(
-    order?.buyer_name ||
-      order?.buyer_profile?.name ||
-      order?.buyer_profile?.buyer_name ||
-      order?.buyer_email ||
-      'Reader'
+function calculateRefundedAuthorIncome(order, item, authorIncome) {
+  const explicitRefund = cleanNumber(
+    firstDefined(
+      item?.refunded_author_income,
+      item?.refunded_author_income_usd,
+      item?.author_refund,
+      item?.author_refund_usd,
+      order?.refunded_author_income,
+      order?.refunded_author_income_usd,
+      order?.author_refund_usd
+    )
   )
+  const paymentStatus = getPaymentStatus(order)
+  const orderStatus = getOrderStatus(order)
+
+  if (explicitRefund > 0) {
+    return Math.min(authorIncome, explicitRefund)
+  }
+
+  if (
+    FULL_REFUND_PAYMENT_STATUSES.has(paymentStatus) ||
+    FULL_REFUND_ORDER_STATUSES.has(orderStatus)
+  ) {
+    return authorIncome
+  }
+
+  return 0
 }
 
 function buildSheetRow(order, item) {
   const orderItemId = cleanText(item?.id)
-  const paymentStatus = cleanText(order?.payment_status).toLowerCase()
-  const orderStatus = getOrderStatus(order)
 
-  if (!orderItemId || paymentStatus !== 'paid' || !ALLOWED_ORDER_STATUSES.has(orderStatus)) {
-    return null
-  }
+  if (!orderItemId) return null
+
+  const quantity = Math.max(1, cleanNumber(item?.quantity || 1))
+  const unitPrice = cleanNumber(
+    firstDefined(item?.unit_price, item?.unit_price_usd)
+  )
+  const productSubtotal = cleanNumber(
+    firstDefined(item?.total_price, item?.total_usd, unitPrice * quantity)
+  )
+  const explicitDiscount = cleanNumber(
+    firstDefined(item?.discount, item?.discount_usd)
+  )
+  const calculatedDiscount = Math.max(
+    0,
+    Number((unitPrice * quantity - productSubtotal).toFixed(2))
+  )
+  const platformFee = cleanNumber(item?.platform_fee_usd)
+  const authorIncome = cleanNumber(
+    firstDefined(
+      item?.author_income_usd,
+      Number((productSubtotal - platformFee).toFixed(2))
+    )
+  )
+  const refundedAuthorIncome = calculateRefundedAuthorIncome(
+    order,
+    item,
+    authorIncome
+  )
+  const paidDate = firstDefined(order?.paid_at, order?.created_at)
+  const orderDate = firstDefined(order?.created_at, paidDate)
+  const paymentStatus = getPaymentStatus(order)
+  const orderStatus = getOrderStatus(order)
 
   const row = {
     order_item_id: orderItemId,
-    order_id: cleanText(order?.order_id || order?.order_number || order?.id),
-    order_date: order?.paid_at || order?.created_at || '',
-    product: cleanText(item?.product_title || item?.title || 'Product'),
-    product_type: cleanText(item?.product_type || item?.type || 'book').toLowerCase(),
-    quantity: Number(item?.quantity || 1),
-    unit_price: Number(item?.unit_price ?? item?.unit_price_usd ?? 0),
-    total: Number(item?.total_price ?? item?.total_usd ?? 0),
-    platform_fee: Number(item?.platform_fee_usd || 0),
-    author_income: Number(item?.author_income_usd || 0),
+    order_id: cleanText(
+      firstDefined(order?.order_id, order?.order_number, order?.id)
+    ),
+    paid_date: paidDate,
+    order_date: orderDate,
+    product_id: cleanText(item?.product_id),
+    product_name: cleanText(
+      firstDefined(item?.product_title, item?.title, 'Product')
+    ),
+    product_type: cleanText(
+      firstDefined(item?.product_type, item?.type, 'book')
+    ).toLowerCase(),
+    quantity,
+    unit_price: unitPrice,
+    discount: explicitDiscount || calculatedDiscount,
+    product_subtotal: productSubtotal,
+    delivery_fee: cleanNumber(
+      firstDefined(order?.delivery_fee_usd, order?.delivery_fee)
+    ),
+    total_paid: cleanNumber(
+      firstDefined(
+        order?.total_usd,
+        order?.total_amount,
+        order?.grand_total,
+        order?.subtotal_usd
+      )
+    ),
+    platform_fee: platformFee,
+    author_income: authorIncome,
+    refunded_author_income: refundedAuthorIncome,
+    net_author_income: Number(
+      Math.max(0, authorIncome - refundedAuthorIncome).toFixed(2)
+    ),
+    payment_method: getPaymentMethod(order),
     payment_status: paymentStatus,
     order_status: orderStatus,
-    buyer: getBuyerName(order),
-    updated_at: order?.updated_at || order?.paid_at || order?.created_at || '',
+    buyer_name: getBuyerName(order),
+    updated_at: firstDefined(
+      order?.updated_at,
+      item?.updated_at,
+      order?.paid_at,
+      order?.created_at
+    ),
   }
 
   return {
     ...row,
-    payload_hash: crypto.createHash('sha256').update(JSON.stringify(row)).digest('hex'),
+    month_name: monthKey(paidDate),
+    payload_hash: crypto
+      .createHash('sha256')
+      .update(JSON.stringify(row))
+      .digest('hex'),
   }
+}
+
+function isEligibleNewSale(order) {
+  return (
+    getPaymentStatus(order) === 'paid' &&
+    ACTIVE_ORDER_STATUSES.has(getOrderStatus(order))
+  )
 }
 
 function chunk(list, size = SYNC_BATCH_SIZE) {
@@ -133,28 +288,6 @@ function chunk(list, size = SYNC_BATCH_SIZE) {
   }
 
   return result
-}
-
-async function getAlreadySyncedIds(spreadsheetId, orderItemIds) {
-  const syncedIds = new Set()
-
-  for (const ids of chunk(orderItemIds)) {
-    const { data, error } = await supabase
-      .from('author_store_sales_report_sync_items')
-      .select('order_item_id, sync_status')
-      .eq('spreadsheet_id', spreadsheetId)
-      .in('order_item_id', ids)
-
-    if (error) throw error
-
-    for (const item of data || []) {
-      if (item.sync_status === 'synced') {
-        syncedIds.add(cleanText(item.order_item_id))
-      }
-    }
-  }
-
-  return syncedIds
 }
 
 async function updateIntegrationSyncState(integrationId, payload) {
@@ -169,32 +302,102 @@ async function updateIntegrationSyncState(integrationId, payload) {
   if (error) throw error
 }
 
-async function syncIntegration(integration, authorPageId) {
-  const monthStart = currentMonthStartIso()
-  const { data: orders, error: ordersError } = await supabase
+async function loadOrdersForSync(authorPageId) {
+  const { data, error } = await supabase
     .from('author_store_orders')
-    .select('*, order_items:author_store_order_items(*)')
+    .select('*, items:author_store_order_items(*)')
     .eq('author_page_id', authorPageId)
-    .eq('payment_status', 'paid')
-    .gte('created_at', monthStart)
-    .order('created_at', { ascending: true })
-    .limit(5000)
+    .order('updated_at', { ascending: true })
+    .limit(MAX_SYNC_ORDERS)
 
-  if (ordersError) throw ordersError
+  if (error) throw error
+  return data || []
+}
 
+function buildRowsForSync(orders, trackingMap) {
   const rows = []
+  const thisMonth = currentMonthKey()
 
-  for (const order of orders || []) {
-    const items = Array.isArray(order.order_items)
-      ? order.order_items
-      : Array.isArray(order.items)
-        ? order.items
+  for (const order of orders) {
+    const items = Array.isArray(order.items)
+      ? order.items
+      : Array.isArray(order.order_items)
+        ? order.order_items
         : []
 
     for (const item of items) {
+      const orderItemId = cleanText(item?.id)
+      const tracked = trackingMap.get(orderItemId) || null
       const row = buildSheetRow(order, item)
-      if (row) rows.push(row)
+
+      if (!row) continue
+
+      const newCurrentMonthSale =
+        !tracked &&
+        isEligibleNewSale(order) &&
+        row.month_name === thisMonth
+
+      if (!tracked && !newCurrentMonthSale) {
+        continue
+      }
+
+      if (
+        tracked &&
+        tracked.sync_status === 'synced' &&
+        cleanText(tracked.payload_hash) === row.payload_hash
+      ) {
+        continue
+      }
+
+      rows.push(row)
     }
+  }
+
+  return rows
+}
+
+async function markTrackingRows(integration, authorPageId, rows, status, errorMessage = null) {
+  if (!rows.length) return
+
+  const now = new Date().toISOString()
+  const payload = rows.map((row) => ({
+    integration_id: integration.id,
+    author_page_id: authorPageId,
+    spreadsheet_id: integration.spreadsheet_id,
+    order_id: row.order_id,
+    order_item_id: row.order_item_id,
+    sync_status: status,
+    sheet_name: row.month_name,
+    order_status: row.order_status,
+    payment_status: row.payment_status,
+    source_updated_at: row.updated_at || null,
+    payload_hash: row.payload_hash,
+    last_attempt_at: now,
+    synced_at: status === 'synced' ? now : null,
+    last_error: errorMessage,
+    updated_at: now,
+  }))
+
+  const { error } = await supabase
+    .from('author_store_sales_report_sync_items')
+    .upsert(payload, { onConflict: 'spreadsheet_id,order_item_id' })
+
+  if (error) throw error
+}
+
+async function syncIntegration(integration, authorPageId) {
+  const trackingMap = await getTrackingMap(integration.spreadsheet_id)
+  const orders = await loadOrdersForSync(authorPageId)
+  const rows = buildRowsForSync(orders, trackingMap)
+  const totals = {
+    found: rows.length,
+    attempted: rows.length,
+    appended: 0,
+    updated: 0,
+    moved: 0,
+    removed: 0,
+    duplicates: 0,
+    skipped: 0,
   }
 
   if (!rows.length) {
@@ -207,90 +410,51 @@ async function syncIntegration(integration, authorPageId) {
     })
 
     return {
-      scope: 'this_month',
-      found: 0,
-      attempted: 0,
-      appended: 0,
-      duplicates: 0,
-      skipped: 0,
+      scope: 'this_month_then_changes',
+      ...totals,
       last_synced_at: syncedAt,
     }
   }
 
-  const syncedIds = await getAlreadySyncedIds(
-    integration.spreadsheet_id,
-    rows.map((row) => row.order_item_id)
-  )
-  const pendingRows = rows.filter((row) => !syncedIds.has(row.order_item_id))
-  let appended = 0
-  let duplicates = rows.length - pendingRows.length
-  let skipped = 0
-
-  for (const batch of chunk(pendingRows)) {
-    const now = new Date().toISOString()
-    const trackingRows = batch.map((row) => ({
-      integration_id: integration.id,
-      author_page_id: authorPageId,
-      spreadsheet_id: integration.spreadsheet_id,
-      order_id: row.order_id,
-      order_item_id: row.order_item_id,
-      sync_status: 'syncing',
-      sheet_name: integration.sheet_name || 'Orders',
-      order_status: row.order_status,
-      payment_status: row.payment_status,
-      source_updated_at: row.updated_at || null,
-      payload_hash: row.payload_hash,
-      last_attempt_at: now,
-      last_error: null,
-      updated_at: now,
-    }))
-
-    const { error: trackingError } = await supabase
-      .from('author_store_sales_report_sync_items')
-      .upsert(trackingRows, { onConflict: 'spreadsheet_id,order_item_id' })
-
-    if (trackingError) throw trackingError
+  for (const batch of chunk(rows)) {
+    await markTrackingRows(
+      integration,
+      authorPageId,
+      batch,
+      'syncing'
+    )
 
     try {
       const result = await appendAuthorStoreSalesReportRows(
         integration.spreadsheet_id,
-        batch.map(({ payload_hash, ...row }) => row)
+        batch.map(({ month_name, payload_hash, ...row }) => row)
       )
 
-      appended += Number(result.appended || 0)
-      duplicates += Number(result.duplicates || 0)
-      skipped += Number(result.skipped || 0)
+      totals.appended += cleanNumber(result.appended)
+      totals.updated += cleanNumber(result.updated)
+      totals.moved += cleanNumber(result.moved)
+      totals.removed += cleanNumber(result.removed)
+      totals.duplicates += cleanNumber(result.duplicates)
+      totals.skipped += cleanNumber(result.skipped)
 
-      const syncedAt = new Date().toISOString()
-      const { error: syncedError } = await supabase
-        .from('author_store_sales_report_sync_items')
-        .update({
-          sync_status: 'synced',
-          synced_at: syncedAt,
-          last_error: null,
-          updated_at: syncedAt,
-        })
-        .eq('spreadsheet_id', integration.spreadsheet_id)
-        .in(
-          'order_item_id',
-          batch.map((row) => row.order_item_id)
-        )
-
-      if (syncedError) throw syncedError
+      await markTrackingRows(
+        integration,
+        authorPageId,
+        batch,
+        'synced'
+      )
     } catch (error) {
-      const failedAt = new Date().toISOString()
-      await supabase
-        .from('author_store_sales_report_sync_items')
-        .update({
-          sync_status: 'failed',
-          last_error: error.message,
-          updated_at: failedAt,
-        })
-        .eq('spreadsheet_id', integration.spreadsheet_id)
-        .in(
-          'order_item_id',
-          batch.map((row) => row.order_item_id)
+      try {
+        await markTrackingRows(
+          integration,
+          authorPageId,
+          batch,
+          'failed',
+          error.message
         )
+      } catch (trackingError) {
+        console.error('MARK SALES REPORT TRACKING FAILED:', trackingError)
+      }
 
       throw error
     }
@@ -305,12 +469,8 @@ async function syncIntegration(integration, authorPageId) {
   })
 
   return {
-    scope: 'this_month',
-    found: rows.length,
-    attempted: pendingRows.length,
-    appended,
-    duplicates,
-    skipped,
+    scope: 'this_month_then_changes',
+    ...totals,
     last_synced_at: syncedAt,
   }
 }
@@ -344,7 +504,10 @@ export async function getMyAuthorStoreSalesReports(req, res) {
     const authorPage = await getMyAuthorPage(userId)
 
     if (!authorPage) {
-      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+      return res.status(403).json({
+        ok: false,
+        message: 'Please create an author page first',
+      })
     }
 
     const integration = await getIntegration(authorPage.id)
@@ -382,7 +545,10 @@ export async function connectMyAuthorStoreSalesReports(req, res) {
     const authorPage = await getMyAuthorPage(userId)
 
     if (!authorPage) {
-      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+      return res.status(403).json({
+        ok: false,
+        message: 'Please create an author page first',
+      })
     }
 
     const spreadsheetUrl = cleanText(
@@ -391,7 +557,18 @@ export async function connectMyAuthorStoreSalesReports(req, res) {
         req.body?.google_sheet_url ||
         req.body?.googleSheetUrl
     )
-    const spreadsheetId = extractGoogleSpreadsheetId(spreadsheetUrl)
+
+    let spreadsheetId
+
+    try {
+      spreadsheetId = extractGoogleSpreadsheetId(spreadsheetUrl)
+    } catch (error) {
+      return res.status(400).json({
+        ok: false,
+        message: error.message || 'Invalid Google Sheet link',
+      })
+    }
+
     let testResult
 
     try {
@@ -399,10 +576,16 @@ export async function connectMyAuthorStoreSalesReports(req, res) {
     } catch (error) {
       return res.status(400).json({
         ok: false,
-        message: isSheetAccessError(error) ? sheetAccessMessage() : error.message,
+        message: isSheetAccessError(error)
+          ? sheetAccessMessage()
+          : error.message,
       })
     }
 
+    const currentIntegration = await getIntegration(authorPage.id)
+    const spreadsheetChanged =
+      currentIntegration?.spreadsheet_id &&
+      currentIntegration.spreadsheet_id !== spreadsheetId
     const now = new Date().toISOString()
     const { data, error } = await supabase
       .from('author_store_sales_report_integrations')
@@ -413,10 +596,15 @@ export async function connectMyAuthorStoreSalesReports(req, res) {
           spreadsheet_url:
             cleanText(testResult.spreadsheet_url) ||
             `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
-          sheet_name: cleanText(testResult.sheet_name) || 'Orders',
+          sheet_name:
+            cleanText(testResult.summary_sheet_name) ||
+            'Monthly Summary',
           connection_status: 'connected',
           initial_sync_scope: 'this_month',
           last_tested_at: now,
+          last_synced_at: spreadsheetChanged
+            ? null
+            : currentIntegration?.last_synced_at || null,
           last_sync_error: null,
           connected_at: now,
           updated_at: now,
@@ -453,10 +641,20 @@ export async function syncMyAuthorStoreSalesReports(req, res) {
       return res.status(401).json({ ok: false, message: 'Unauthorized' })
     }
 
+    if (!isAuthorStoreSalesReportsConfigured()) {
+      return res.status(503).json({
+        ok: false,
+        message: 'Sales Reports integration is not configured',
+      })
+    }
+
     const authorPage = await getMyAuthorPage(userId)
 
     if (!authorPage) {
-      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+      return res.status(403).json({
+        ok: false,
+        message: 'Please create an author page first',
+      })
     }
 
     integration = await getIntegration(authorPage.id)
@@ -485,7 +683,7 @@ export async function syncMyAuthorStoreSalesReports(req, res) {
           last_sync_error: error.message,
         })
       } catch (updateError) {
-        console.error('UPDATE SALES REPORTS SYNC ERROR STATE FAILED:', updateError)
+        console.error('UPDATE SALES REPORTS ERROR STATE FAILED:', updateError)
       }
     }
 
@@ -507,29 +705,40 @@ export async function disconnectMyAuthorStoreSalesReports(req, res) {
     const authorPage = await getMyAuthorPage(userId)
 
     if (!authorPage) {
-      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+      return res.status(403).json({
+        ok: false,
+        message: 'Please create an author page first',
+      })
     }
 
     const integration = await getIntegration(authorPage.id)
 
-    if (!integration) {
+    if (!integration || integration.connection_status === 'disconnected') {
       return res.status(200).json({
         ok: true,
         message: 'Google Sheet is already disconnected',
       })
     }
 
-    const { error } = await supabase
+    const now = new Date().toISOString()
+    const { data, error } = await supabase
       .from('author_store_sales_report_integrations')
-      .delete()
+      .update({
+        connection_status: 'disconnected',
+        last_sync_error: null,
+        updated_at: now,
+      })
       .eq('id', integration.id)
       .eq('author_page_id', authorPage.id)
+      .select('*')
+      .single()
 
     if (error) throw error
 
     return res.status(200).json({
       ok: true,
       message: 'Google Sheet disconnected',
+      sales_reports: publicIntegration(data),
     })
   } catch (error) {
     console.error('DISCONNECT MY AUTHOR STORE SALES REPORTS ERROR:', error)
