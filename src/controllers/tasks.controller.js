@@ -25,6 +25,35 @@ const MAX_READING_REWARD_SECONDS = 1800
 const MAX_READING_EVENT_SECONDS = 60
 const MAX_MISSION_EVENT_SECONDS = 30
 
+const readingSessionLocks = new Map()
+
+async function withReadingSessionLock(userId, callback) {
+  const previous = readingSessionLocks.get(userId) || Promise.resolve()
+  let releaseCurrent
+ 
+  const current = new Promise((resolve) => {
+    releaseCurrent = resolve
+  })
+
+  const queued = previous
+    .catch(() => {})
+    .then(() => current)
+
+  readingSessionLocks.set(userId, queued)
+  await previous.catch(() => {})
+
+  try {
+    return await callback()
+  } finally {
+    releaseCurrent()
+
+    if (readingSessionLocks.get(userId) === queued) {
+      readingSessionLocks.delete(userId)
+    }
+  }
+}
+
+
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
 }
@@ -1142,6 +1171,197 @@ export async function claimReadingMissionReward(req, res) {
     })
   }
 }
+
+
+export async function trackReadingSessionProgress(req, res) {
+  try {
+    const userId = getUserId(req)
+    const storyId = cleanUuid(req.body?.story_id)
+    const episodeId = cleanUuid(req.body?.episode_id)
+    const requestedSeconds = Math.floor(
+      Number(req.body?.seconds || req.body?.seconds_added || 0)
+    )
+    const secondsToAdd = Math.min(
+      MAX_MISSION_EVENT_SECONDS,
+      Math.max(0, requestedSeconds)
+    )
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'User is required',
+      })
+    }
+
+    if (!storyId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Valid story is required',
+      })
+    }
+
+    if (secondsToAdd <= 0) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Reading seconds must be greater than zero',
+      })
+    }
+
+    const result = await withReadingSessionLock(userId, async () => {
+      const now = new Date().toISOString()
+      const dailyReward = await getOrCreateReadingReward(userId)
+      const currentDailySeconds = Math.min(
+        MAX_READING_REWARD_SECONDS,
+        Math.max(0, Number(dailyReward.active_seconds || 0))
+      )
+      const nextDailySeconds = Math.min(
+        MAX_READING_REWARD_SECONDS,
+        currentDailySeconds + secondsToAdd
+      )
+      const actualDailySeconds = Math.max(
+        0,
+        nextDailySeconds - currentDailySeconds
+      )
+
+      let updatedDailyReward = dailyReward
+
+      if (actualDailySeconds > 0) {
+        const { data, error } = await supabase
+          .from('reader_reading_rewards')
+          .update({
+            active_seconds: nextDailySeconds,
+            updated_at: now,
+          })
+          .eq('id', dailyReward.id)
+          .select('*')
+          .single()
+
+        if (error) throw error
+
+        updatedDailyReward = data
+
+        const { error: eventError } = await supabase
+          .from('reader_reading_reward_events')
+          .insert({
+            user_id: userId,
+            reward_date: dailyReward.reward_date,
+            story_id: storyId,
+            episode_id: episodeId,
+            seconds_added: actualDailySeconds,
+            active_seconds_after: nextDailySeconds,
+            event_type: 'heartbeat',
+          })
+
+        if (eventError) throw eventError
+      }
+
+      const { data: missions, error: missionsError } = await supabase
+        .from('task_center_reading_missions')
+        .select('*')
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: false })
+        .limit(20)
+
+      if (missionsError) throw missionsError
+
+      const matchingMissions = (missions || []).filter((mission) =>
+        missionMatchesStory(mission, storyId)
+      )
+
+      const updatedMissions = []
+
+      for (const mission of matchingMissions) {
+        const progress = await getOrCreateReadingMissionProgress(
+          userId,
+          mission,
+          storyId
+        )
+
+        const targetSeconds = getMissionTargetSeconds(mission)
+        const currentSeconds = Math.min(
+          targetSeconds,
+          Math.max(0, Number(progress.active_seconds || 0))
+        )
+        const nextSeconds = Math.min(
+          targetSeconds,
+          currentSeconds + secondsToAdd
+        )
+        const actualSecondsAdded = Math.max(
+          0,
+          nextSeconds - currentSeconds
+        )
+        const completedAt =
+          progress.completed_at ||
+          (nextSeconds >= targetSeconds ? now : null)
+
+        let updatedProgress = progress
+
+        if (actualSecondsAdded > 0 && !progress.claimed_at) {
+          const { data, error } = await supabase
+            .from('reader_reading_mission_progress')
+            .update({
+              story_id: storyId,
+              active_seconds: nextSeconds,
+              completed_at: completedAt,
+              updated_at: now,
+            })
+            .eq('id', progress.id)
+            .select('*')
+            .single()
+
+          if (error) throw error
+
+          updatedProgress = data
+        }
+
+        updatedMissions.push(
+          publicReadingMissionProgress(mission, updatedProgress)
+        )
+      }
+
+      const readingReward = publicReadingReward(updatedDailyReward)
+      const claimableMissions = updatedMissions.filter(
+        (mission) => mission.claimable && !mission.claimed
+      )
+      const missionCoins = claimableMissions.reduce(
+        (total, mission) =>
+          total + Number(mission.reward_coins || 0),
+        0
+      )
+      const dailyCoins = Number(
+        readingReward.claimable_coins || 0
+      )
+
+      return {
+        reading_reward: readingReward,
+        missions: updatedMissions,
+        claimable: {
+          daily_coins: dailyCoins,
+          mission_ids: claimableMissions.map(
+            (mission) => mission.id
+          ),
+          mission_coins: missionCoins,
+          total_coins: dailyCoins + missionCoins,
+        },
+      }
+    })
+
+    return res.status(200).json({
+      ok: true,
+      ...result,
+    })
+  } catch (error) {
+    console.error('TRACK READING SESSION ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to track reading session',
+      error: error.message,
+    })
+  }
+}
+
 
 export async function getTaskHistory(req, res) {
   try {
