@@ -2,6 +2,7 @@ import express from 'express'
 import multer from 'multer'
 import { requireUser } from '../middleware/user.middleware.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
+import { createFastVideo } from '../controllers/fastVideos.controller.js'
 
 const router = express.Router()
 
@@ -66,6 +67,7 @@ router.post('/upload-thumbnail', requireUser, upload.single('thumbnail'), async 
   }
 })
 
+router.post('/videos', requireUser, createFastVideo)
 router.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
     return res.status(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({
