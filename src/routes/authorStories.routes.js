@@ -16,7 +16,7 @@ const router = express.Router()
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 50 * 1024 * 1024,
+    fileSize: 30 * 1024 * 1024,
     files: 1,
   },
 })
@@ -45,12 +45,12 @@ function uploadStoryMedia(req, res, next) {
     if (!error) return next()
 
     if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({
-        ok: false,
-        code: 'STORY_MEDIA_TOO_LARGE',
-        message: 'Story media must be 50 MB or smaller',
-      })
-    }
+  return res.status(413).json({
+    ok: false,
+    code: 'STORY_MEDIA_TOO_LARGE',
+    message: 'Story media must be 30 MB or smaller',
+  })
+}
 
     return res.status(400).json({
       ok: false,
