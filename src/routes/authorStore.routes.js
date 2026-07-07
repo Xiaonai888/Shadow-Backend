@@ -39,6 +39,12 @@ import {
 import {
   uploadMyAuthorStorePrivatePdf,
 } from '../controllers/authorStorePdf.controller.js'
+import {
+  connectMyAuthorStoreSalesReports,
+  disconnectMyAuthorStoreSalesReports,
+  getMyAuthorStoreSalesReports,
+  syncMyAuthorStoreSalesReports,
+} from '../controllers/authorStoreSalesReports.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 
@@ -76,6 +82,10 @@ router.post('/telegram/webhook', handleAuthorStoreTelegramWebhook)
 router.get('/me/telegram-settings', requireUser, getMyAuthorStoreTelegramSettings)
 router.post('/me/telegram-settings/connect-link', requireUser, createMyAuthorStoreTelegramConnectLink)
 router.post('/me/telegram-settings/unlink', requireUser, unlinkMyAuthorStoreTelegramGroup)
+router.get('/me/sales-reports', requireUser, getMyAuthorStoreSalesReports)
+router.post('/me/sales-reports/connect', requireUser, connectMyAuthorStoreSalesReports)
+router.post('/me/sales-reports/sync', requireUser, syncMyAuthorStoreSalesReports)
+router.delete('/me/sales-reports/disconnect', requireUser, disconnectMyAuthorStoreSalesReports)
 router.put('/me/delivery-settings', requireUser, updateMyAuthorStoreDeliverySettings)
 router.post('/me/categories', requireUser, createMyAuthorStoreCategory)
 router.patch('/me/categories/reorder', requireUser, reorderMyAuthorStoreCategories)
