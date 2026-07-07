@@ -15,7 +15,7 @@ const upload = multer({
     const allowedTypes = ['image/jpeg', 'image/png', 'image/webp']
 
     if (!allowedTypes.includes(file.mimetype)) {
-      const error = new Error('Thumbnail must be JPG, PNG, or WEBP')
+      const error = new Error('Thumbnail must be JPG, JPEG, PNG, or WEBP')
       error.statusCode = 400
       return callback(error)
     }
@@ -47,13 +47,20 @@ router.post('/upload-thumbnail', requireUser, upload.single('thumbnail'), async 
       `fast/thumbnails/${userId}`,
       {
         width: 1280,
-        quality: 84,
+        height: 720,
+        fit: 'cover',
+        quality: 82,
+        minQuality: 58,
+        qualityStep: 6,
+        maxBytes: 300 * 1024,
+        fallbackWidth: 960,
+        fallbackHeight: 540,
       }
     )
 
     return res.status(201).json({
       ok: true,
-      message: 'Thumbnail uploaded successfully',
+      message: 'Thumbnail uploaded and compressed successfully',
       thumbnail_url: thumbnailUrl,
       thumbnailUrl,
     })
@@ -68,6 +75,7 @@ router.post('/upload-thumbnail', requireUser, upload.single('thumbnail'), async 
 })
 
 router.post('/videos', requireUser, createFastVideo)
+
 router.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
     return res.status(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({
