@@ -8,6 +8,7 @@ import {
   getPublicAuthorStories,
 } from '../controllers/authorStories.controller.js'
 import { getAuthorStoriesFeed } from '../controllers/authorStoriesFeed.controller.js'
+import { recordAuthorStoryView } from '../controllers/authorStoryViews.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
@@ -63,6 +64,7 @@ router.get('/feed', optionalUser, getAuthorStoriesFeed)
 router.get('/me', requireUser, getMyAuthorStories)
 router.post('/me', requireUser, uploadStoryMedia, createMyAuthorStory)
 router.delete('/me/:storyId', requireUser, deleteMyAuthorStory)
+router.post('/:storyId/view', requireUser, recordAuthorStoryView)
 router.get('/page/:pageUsername', getPublicAuthorStories)
 
 export default router
