@@ -1,4 +1,5 @@
 import express from 'express'
+import jwt from 'jsonwebtoken'
 import multer from 'multer'
 import {
   createMyAuthorStory,
@@ -6,6 +7,7 @@ import {
   getMyAuthorStories,
   getPublicAuthorStories,
 } from '../controllers/authorStories.controller.js'
+import { getAuthorStoriesFeed } from '../controllers/authorStoriesFeed.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
@@ -17,6 +19,25 @@ const upload = multer({
     files: 1,
   },
 })
+
+function optionalUser(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization || ''
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
+
+    if (!token || !process.env.JWT_SECRET) return next()
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET)
+
+    if (decoded.type === 'reader') {
+      req.user = decoded
+    }
+
+    return next()
+  } catch {
+    return next()
+  }
+}
 
 function uploadStoryMedia(req, res, next) {
   upload.single('media')(req, res, (error) => {
@@ -38,6 +59,7 @@ function uploadStoryMedia(req, res, next) {
   })
 }
 
+router.get('/feed', optionalUser, getAuthorStoriesFeed)
 router.get('/me', requireUser, getMyAuthorStories)
 router.post('/me', requireUser, uploadStoryMedia, createMyAuthorStory)
 router.delete('/me/:storyId', requireUser, deleteMyAuthorStory)
