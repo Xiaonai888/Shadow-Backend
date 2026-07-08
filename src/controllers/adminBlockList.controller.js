@@ -137,10 +137,64 @@ export async function getBlockedWords(req, res) {
       total_pages: totalPages,
       has_next: page < totalPages,
       has_prev: page > 1,
+      global_total: Number(globalTotal || 0),
+      global_active_total: Number(globalActiveTotal || 0),
+      global_disabled_total: Math.max(
+        0,
+  Number(globalTotal || 0) - Number(globalActiveTotal || 0)
+),
     })
   } catch (error) {
     console.error('GET BLOCKED WORDS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load blocked words', error: error.message })
+  }
+}
+
+export async function updateAllBlockedWordsStatus(req, res) {
+  try {
+    if (typeof req.body.is_active !== 'boolean') {
+      return res.status(400).json({
+        ok: false,
+        message: 'is_active must be true or false',
+      })
+    }
+
+    const isActive = req.body.is_active
+    const actor = adminActor(req)
+
+    const { data, error } = await supabase
+      .from('blocked_words')
+      .update({
+        is_active: isActive,
+        updated_at: new Date().toISOString(),
+      })
+      .not('id', 'is', null)
+      .select('id')
+
+    if (error) throw error
+
+    await createBlockedWordRecord({
+      action: isActive ? 'ENABLE' : 'DISABLE',
+      word: 'All blocked words',
+      category: 'all',
+      severity: 'all',
+      actor,
+      details: `${isActive ? 'Enabled' : 'Disabled'} all blocked words`,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      is_active: isActive,
+      updated_count: data?.length || 0,
+    })
+  } catch (error) {
+    console.error('UPDATE ALL BLOCKED WORDS STATUS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update all blocked words',
+      error: error.message,
+    })
   }
 }
 
@@ -159,8 +213,24 @@ export async function getBlockedWordRecords(req, res) {
 
     if (error) throw error
 
-    const total = count || 0
-    const totalPages = Math.max(1, Math.ceil(total / limit))
+const [
+  { count: globalTotal, error: globalTotalError },
+  { count: globalActiveTotal, error: globalActiveError },
+] = await Promise.all([
+  supabase
+    .from('blocked_words')
+    .select('id', { count: 'exact', head: true }),
+  supabase
+    .from('blocked_words')
+    .select('id', { count: 'exact', head: true })
+    .eq('is_active', true),
+])
+
+if (globalTotalError) throw globalTotalError
+if (globalActiveError) throw globalActiveError
+
+const total = count || 0
+const totalPages = Math.max(1, Math.ceil(total / limit))
 
     return res.status(200).json({
       ok: true,
@@ -171,6 +241,12 @@ export async function getBlockedWordRecords(req, res) {
       total_pages: totalPages,
       has_next: page < totalPages,
       has_prev: page > 1,
+      global_total: Number(globalTotal || 0),
+      global_active_total: Number(globalActiveTotal || 0),
+      global_disabled_total: Math.max(
+        0,
+  Number(globalTotal || 0) - Number(globalActiveTotal || 0)
+),្
     })
   } catch (error) {
     console.error('GET BLOCKED WORD RECORDS ERROR:', error)
