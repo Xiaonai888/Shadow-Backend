@@ -125,8 +125,24 @@ export async function getBlockedWords(req, res) {
 
     if (error) throw error
 
-    const total = count || 0
-    const totalPages = Math.max(1, Math.ceil(total / limit))
+const [
+  { count: globalTotal, error: globalTotalError },
+  { count: globalActiveTotal, error: globalActiveError },
+] = await Promise.all([
+  supabase
+    .from('blocked_words')
+    .select('id', { count: 'exact', head: true }),
+  supabase
+    .from('blocked_words')
+    .select('id', { count: 'exact', head: true })
+    .eq('is_active', true),
+])
+
+if (globalTotalError) throw globalTotalError
+if (globalActiveError) throw globalActiveError
+
+const total = count || 0
+const totalPages = Math.max(1, Math.ceil(total / limit))
 
     return res.status(200).json({
       ok: true,
