@@ -366,8 +366,15 @@ export async function getAdminReport(req, res) {
 export async function updateAdminReport(req, res) {
   try {
     const reportId = cleanText(req.params.reportId)
-    const status = cleanText(req.body.status).toLowerCase()
-    const adminNote = cleanText(req.body.admin_note || req.body.adminNote)
+    const body = req.body || {}
+    const hasStatus = Object.prototype.hasOwnProperty.call(body, 'status')
+    const hasAdminNote =
+      Object.prototype.hasOwnProperty.call(body, 'admin_note') ||
+      Object.prototype.hasOwnProperty.call(body, 'adminNote')
+    const status = hasStatus ? cleanText(body.status).toLowerCase() : ''
+    const adminNote = hasAdminNote
+      ? cleanText(body.admin_note ?? body.adminNote)
+      : ''
 
     if (!isUuid(reportId)) {
       return res.status(400).json({
@@ -376,14 +383,21 @@ export async function updateAdminReport(req, res) {
       })
     }
 
-    if (!REPORT_STATUSES.has(status)) {
+    if (!hasStatus && !hasAdminNote) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Status or admin note is required',
+      })
+    }
+
+    if (hasStatus && !REPORT_STATUSES.has(status)) {
       return res.status(400).json({
         ok: false,
         message: 'Invalid report status',
       })
     }
 
-    if (adminNote.length > 2000) {
+    if (hasAdminNote && adminNote.length > 2000) {
       return res.status(400).json({
         ok: false,
         message: 'Admin note is too long',
@@ -408,12 +422,13 @@ export async function updateAdminReport(req, res) {
     const actor = adminActor(req)
     const now = new Date().toISOString()
     const updatePayload = {
-      status,
-      admin_note: adminNote,
       updated_at: now,
-      reviewed_by: status === 'pending' ? '' : actor,
-      reviewed_at: status === 'pending' ? null : now,
+      reviewed_by: actor,
+      reviewed_at: now,
     }
+
+    if (hasStatus) updatePayload.status = status
+    if (hasAdminNote) updatePayload.admin_note = adminNote
 
     const { data: updatedReport, error: updateError } = await supabase
       .from('content_reports')
@@ -424,20 +439,40 @@ export async function updateAdminReport(req, res) {
 
     if (updateError) throw updateError
 
+    const changes = []
+
+    if (hasStatus && existingReport.status !== status) {
+      changes.push(`status from ${existingReport.status} to ${status}`)
+    }
+
+    if (hasAdminNote) {
+      changes.push('admin note')
+    }
+
     await createActivityLog({
       req,
-      action: 'update_report',
+      action: hasStatus ? 'update_report_status' : 'update_report_note',
       report: updatedReport,
-      details: `${actor} changed report status from ${existingReport.status} to ${status}.`,
+      details: `${actor} updated ${changes.join(' and ') || 'the report'}.`,
     })
 
     const reporterMap = await fetchReporterMap([
       updatedReport.reporter_user_id,
     ])
 
+    let message = 'Report updated successfully'
+
+    if (hasAdminNote && !hasStatus) {
+      message = 'Admin note saved successfully'
+    } else if (hasStatus && !hasAdminNote) {
+      message = 'Report status updated successfully'
+    } else if (hasStatus && hasAdminNote) {
+      message = 'Report and admin note updated successfully'
+    }
+
     return res.status(200).json({
       ok: true,
-      message: 'Report updated successfully',
+      message,
       report: publicReport(
         updatedReport,
         reporterMap.get(String(updatedReport.reporter_user_id)) || null
