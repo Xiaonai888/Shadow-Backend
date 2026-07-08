@@ -52,6 +52,7 @@ import authorStoriesRoutes from './src/routes/authorStories.routes.js'
 import { startAuthorStoriesCleanup } from './src/controllers/authorStories.controller.js'
 import fastRoutes from './src/routes/fast.routes.js'
 import contentReportsRoutes from './src/routes/contentReports.routes.js'
+import adminReportsRoutes from './src/routes/adminReports.routes.js'
 
 dotenv.config()
 
@@ -183,6 +184,7 @@ app.use('/api/gifts', readerActionSpamGuard, giftsRoutes)
 app.use('/api/author-stories', readerActionSpamGuard, authorStoriesRoutes)
 app.use('/api/fast', readerActionSpamGuard, fastRoutes)
 app.use('/api/reports', readerActionSpamGuard, contentReportsRoutes)
+app.use('/api/admin/reports', adminReportsRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
