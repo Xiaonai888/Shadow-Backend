@@ -242,8 +242,14 @@ return res.status(200).json({
   has_next: page < totalPages,
   has_prev: page > 1,
 })
+  } catch (error) {
     console.error('GET BLOCKED WORD RECORDS ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load block word records', error: error.message })
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load block word records',
+      error: error.message,
+    })
   }
 }
 
