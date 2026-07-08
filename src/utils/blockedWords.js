@@ -1,6 +1,6 @@
 import { supabase } from '../config/supabase.js'
 
-const BLOCKED_WORDS_ENABLED = false
+
 const ADULT_CATEGORY_KEYS = [
   'adult',
   'sexual',
@@ -134,7 +134,6 @@ function findMatchesWithContext(text, word) {
 }
 
 export async function findBlockedWordsInContent(fields = []) {
-if (!BLOCKED_WORDS_ENABLED) return []
   const text = normalizeContent(
     fields
       .map((field) => field?.value || '')
