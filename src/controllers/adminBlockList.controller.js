@@ -229,42 +229,19 @@ export async function getBlockedWordRecords(req, res) {
 
     if (error) throw error
 
-const [
-  { count: globalTotal, error: globalTotalError },
-  { count: globalActiveTotal, error: globalActiveError },
-] = await Promise.all([
-  supabase
-    .from('blocked_words')
-    .select('id', { count: 'exact', head: true }),
-  supabase
-    .from('blocked_words')
-    .select('id', { count: 'exact', head: true })
-    .eq('is_active', true),
-])
-
-if (globalTotalError) throw globalTotalError
-if (globalActiveError) throw globalActiveError
-
 const total = count || 0
 const totalPages = Math.max(1, Math.ceil(total / limit))
 
-    return res.status(200).json({
-      ok: true,
-      records: (data || []).map(publicBlockedWordRecord),
-      page,
-      limit,
-      total,
-      total_pages: totalPages,
-      has_next: page < totalPages,
-      has_prev: page > 1,
-      global_total: Number(globalTotal || 0),
-      global_active_total: Number(globalActiveTotal || 0),
-      global_disabled_total: Math.max(
-        0,
-  Number(globalTotal || 0) - Number(globalActiveTotal || 0)
-),្
-    })
-  } catch (error) {
+return res.status(200).json({
+  ok: true,
+  records: (data || []).map(publicBlockedWordRecord),
+  page,
+  limit,
+  total,
+  total_pages: totalPages,
+  has_next: page < totalPages,
+  has_prev: page > 1,
+})
     console.error('GET BLOCKED WORD RECORDS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load block word records', error: error.message })
   }
