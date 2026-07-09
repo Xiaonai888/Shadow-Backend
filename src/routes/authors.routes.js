@@ -1,4 +1,5 @@
 import { getMyAuthorDashboard } from '../controllers/authorDashboard.controller.js'
+import { getFollowedAuthorPostsFeed } from '../controllers/followedAuthorPostsFeed.controller.js'
 import express from 'express'
 import {
   updateMyAuthorPage,
@@ -51,6 +52,7 @@ router.get('/me/page-notifications', requireUser, getMyAuthorPageNotifications)
 router.patch('/me/page-notifications/read-all', requireUser, markAllMyAuthorPageNotificationsRead)
 router.patch('/me/page-notifications/:id/read', requireUser, markMyAuthorPageNotificationRead)
 router.get('/following', requireUser, getFollowedAuthorPages)
+router.get('/following/posts/feed', requireUser, getFollowedAuthorPostsFeed)
 router.get('/top', getTopAuthorPages)
 router.get('/page/:pageUsername/followers', getAuthorPageFollowers)
 router.get('/page/:pageUsername/reviews', getAuthorPageReviews)
