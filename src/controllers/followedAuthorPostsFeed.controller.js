@@ -64,7 +64,7 @@ function compareNewest(first, second) {
   return String(second.id).localeCompare(String(first.id))
 }
 
-function buildFairOrder(posts) {
+function buildFairOrder(posts, firstBatchLimit = DEFAULT_LIMIT) {
   const groups = new Map()
 
   for (const post of [...posts].sort(compareNewest)) {
@@ -75,9 +75,29 @@ function buildFairOrder(posts) {
     groups.get(post.author_page_id).push(post)
   }
 
-  const ordered = []
+  if (groups.size <= 1) {
+    const orderedPosts = [...posts].sort(compareNewest)
+
+    return {
+      orderedPosts,
+      firstBatchSize: Math.min(firstBatchLimit, orderedPosts.length),
+    }
+  }
+
   const authorGroups = [...groups.values()]
-  let round = 0
+  const firstBatchCandidates = []
+  const laterPosts = []
+
+  for (let round = 0; round < 2; round += 1) {
+    const roundItems = authorGroups
+      .map((items) => items[round])
+      .filter(Boolean)
+      .sort(compareNewest)
+
+    firstBatchCandidates.push(...roundItems)
+  }
+
+  let round = 2
 
   while (true) {
     const roundItems = authorGroups
@@ -87,29 +107,17 @@ function buildFairOrder(posts) {
 
     if (!roundItems.length) break
 
-    ordered.push(...roundItems)
+    laterPosts.push(...roundItems)
     round += 1
   }
 
-  for (let index = 1; index < ordered.length; index += 1) {
-    if (ordered[index - 1].author_page_id !== ordered[index].author_page_id) {
-      continue
-    }
-
-    const swapIndex = ordered.findIndex(
-      (item, candidateIndex) =>
-        candidateIndex > index &&
-        item.author_page_id !== ordered[index - 1].author_page_id
-    )
-
-    if (swapIndex > index) {
-      const replacement = ordered[swapIndex]
-      ordered[swapIndex] = ordered[index]
-      ordered[index] = replacement
-    }
+  return {
+    orderedPosts: [...firstBatchCandidates, ...laterPosts],
+    firstBatchSize: Math.min(
+      firstBatchLimit,
+      firstBatchCandidates.length
+    ),
   }
-
-  return ordered
 }
 
 function buildReactionData(rows, userId) {
@@ -247,8 +255,17 @@ export async function getFollowedAuthorPostsFeed(req, res) {
 
     if (postsError) throw postsError
 
-    const fairPosts = buildFairOrder(postRows || [])
-    const selectedPosts = fairPosts.slice(offset, offset + limit)
+    const { orderedPosts, firstBatchSize } = buildFairOrder(
+  postRows || [],
+  limit
+)
+
+const pageSize = offset === 0 ? firstBatchSize : limit
+
+const selectedPosts = orderedPosts.slice(
+  offset,
+  offset + pageSize
+)
     const selectedPostIds = selectedPosts.map((post) => post.id)
 
     let reactionRows = []
@@ -284,7 +301,7 @@ export async function getFollowedAuthorPostsFeed(req, res) {
     }))
 
     const nextOffset = offset + posts.length
-    const hasMore = nextOffset < fairPosts.length
+    const hasMore = nextOffset < orderedPosts.length
 
     return res.status(200).json({
       ok: true,
