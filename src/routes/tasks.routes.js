@@ -14,6 +14,8 @@ import {
   trackReadingMissionProgress,
   trackReadingRewardProgress,
   trackReadingSessionProgress,
+  claimDailyVoteReward,
+  getDailyVoteReward,
 } from '../controllers/tasks.controller.js'
 
 const router = express.Router()
@@ -35,6 +37,8 @@ router.get('/reading-missions/:missionId', requireUser, getReadingMission)
 router.post('/reading-missions/:missionId/progress', requireUser, trackReadingMissionProgress)
 router.post('/reading-missions/:missionId/claim', requireUser, claimReadingMissionReward)
 
+router.get('/daily-vote-reward', requireUser, getDailyVoteReward)
+router.post('/daily-vote-reward/claim', requireUser, claimDailyVoteReward)
 router.get('/history', requireUser, getTaskHistory)
 
 export default router
