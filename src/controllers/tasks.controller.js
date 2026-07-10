@@ -121,6 +121,7 @@ function publicWallet(wallet) {
     diamond_balance: Number(wallet?.diamond_balance || 0),
     gem_balance: coinBalance,
     coin_balance: coinBalance,
+    vote_balance: Number(wallet?.vote_balance || 0),
     voucher_balance: Number(wallet?.voucher_balance || 0),
   }
 }
@@ -459,6 +460,69 @@ async function getReaderReadingMissions(userId) {
       return publicReadingMissionProgress(mission, data || null)
     })
   )
+}
+
+async function getDailyVoteRewardState(userId) {
+  const todayKey = getPhnomPenhDateKey()
+
+  const [
+    user,
+    wallet,
+    checkInRow,
+    readingRewardRow,
+    readingMissions,
+    claimResult,
+  ] = await Promise.all([
+    getUserProfile(userId),
+    getOrCreateWallet(userId),
+    getCheckInRow(userId),
+    getOrCreateReadingReward(userId),
+    getReaderReadingMissions(userId),
+    supabase
+      .from('reader_daily_vote_rewards')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('reward_date', todayKey)
+      .maybeSingle(),
+  ])
+
+  if (claimResult.error) throw claimResult.error
+
+  const isPremium = isPremiumRole(user?.role)
+  const checkInCompleted = publicCheckIn(checkInRow, isPremium).claimed_today
+  const readingReward = publicReadingReward(readingRewardRow)
+  const missionList = Array.isArray(readingMissions) ? readingMissions : []
+
+  const completedReadingMissions = missionList.filter(
+    (mission) => mission.completed
+  ).length
+
+  const dailyReadingCompleted =
+    Number(readingReward.active_seconds || 0) >=
+    Number(readingReward.target_seconds || 1800)
+
+  const totalMissions = missionList.length + 2
+
+  const completedMissions =
+    Number(checkInCompleted) +
+    completedReadingMissions +
+    Number(dailyReadingCompleted)
+
+  const claimed = Boolean(claimResult.data)
+  const rewardVotes = isPremium ? 2 : 1
+
+  return {
+    reward_date: todayKey,
+    completed_missions: completedMissions,
+    total_missions: totalMissions,
+    completed: completedMissions >= totalMissions,
+    claimed,
+    claimable: completedMissions >= totalMissions && !claimed,
+    reward_votes: rewardVotes,
+    is_premium: isPremium,
+    premium_multiplier: isPremium ? 2 : 1,
+    vote_balance: Number(wallet?.vote_balance || 0),
+  }
 }
 
 async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
@@ -1362,6 +1426,119 @@ export async function trackReadingSessionProgress(req, res) {
   }
 }
 
+export async function getDailyVoteReward(req, res) {
+  try {
+    const userId = getUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'User is required',
+      })
+    }
+
+    const dailyVoteReward = await getDailyVoteRewardState(userId)
+
+    return res.status(200).json({
+      ok: true,
+      daily_vote_reward: dailyVoteReward,
+    })
+  } catch (error) {
+    console.error('GET DAILY VOTE REWARD ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load daily vote reward',
+      error: error.message,
+    })
+  }
+}
+
+export async function claimDailyVoteReward(req, res) {
+  try {
+    const userId = getUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'User is required',
+      })
+    }
+
+    const currentState = await getDailyVoteRewardState(userId)
+
+    if (currentState.claimed) {
+      return res.status(200).json({
+        ok: true,
+        already_claimed: true,
+        daily_vote_reward: currentState,
+        message: 'Daily Vote reward already claimed',
+      })
+    }
+
+    if (!currentState.completed) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Complete all daily missions first',
+        daily_vote_reward: currentState,
+      })
+    }
+
+    const { error: claimError } = await supabase.rpc(
+      'claim_reader_daily_vote_reward',
+      {
+        p_user_id: userId,
+        p_reward_date: currentState.reward_date,
+        p_reward_votes: currentState.reward_votes,
+        p_is_premium: currentState.is_premium,
+      }
+    )
+
+    if (claimError) {
+      if (
+        String(claimError.message || '').includes(
+          'DAILY_VOTE_ALREADY_CLAIMED'
+        )
+      ) {
+        const alreadyClaimedState = await getDailyVoteRewardState(userId)
+
+        return res.status(200).json({
+          ok: true,
+          already_claimed: true,
+          daily_vote_reward: alreadyClaimedState,
+          message: 'Daily Vote reward already claimed',
+        })
+      }
+
+      throw claimError
+    }
+
+    const [wallet, dailyVoteReward] = await Promise.all([
+      getOrCreateWallet(userId),
+      getDailyVoteRewardState(userId),
+    ])
+
+    return res.status(200).json({
+      ok: true,
+      wallet: publicWallet(wallet),
+      reward: {
+        votes: currentState.reward_votes,
+      },
+      daily_vote_reward: dailyVoteReward,
+      message: `+${currentState.reward_votes} Vote${
+        currentState.reward_votes > 1 ? 's' : ''
+      } added`,
+    })
+  } catch (error) {
+    console.error('CLAIM DAILY VOTE REWARD ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to claim daily Vote reward',
+      error: error.message,
+    })
+  }
+}
 
 export async function getTaskHistory(req, res) {
   try {
