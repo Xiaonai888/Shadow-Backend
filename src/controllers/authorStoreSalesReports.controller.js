@@ -117,7 +117,9 @@ function publicIntegration(integration) {
 async function getMyAuthorPage(userId) {
   const { data, error } = await supabase
     .from('author_pages')
-    .select('id, user_id, page_name, page_username, status')
+    .select(
+  'id, user_id, page_name, page_username, avatar_url, profile_image_url, logo_url, status'
+)
     .eq('user_id', userId)
     .eq('status', 'active')
     .maybeSingle()
