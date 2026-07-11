@@ -673,7 +673,7 @@ export async function syncMyAuthorStoreSalesReports(req, res) {
       })
     }
 
-    const sync = await syncIntegration(integration, authorPage.id)
+    const sync = await syncIntegration(integration, authorPage)
 
     return res.status(200).json({
       ok: true,
