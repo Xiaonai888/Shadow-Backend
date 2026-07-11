@@ -387,7 +387,8 @@ async function markTrackingRows(integration, authorPageId, rows, status, errorMe
   if (error) throw error
 }
 
-async function syncIntegration(integration, authorPageId) {
+async function syncIntegration(integration, authorPage) {
+  const authorPageId = authorPage.id
   const trackingMap = await getTrackingMap(integration.spreadsheet_id)
   const orders = await loadOrdersForSync(authorPageId)
   const rows = buildRowsForSync(orders, trackingMap)
