@@ -564,16 +564,22 @@ function publicAuthorPostComment(comment) {
           avatar_url: '',
           role: 'reader',
         },
+    replies: Array.isArray(comment.replies)
+      ? comment.replies.map(publicAuthorPostComment)
+      : [],
   }
 }
 
 export async function getAuthorPostComments(req, res) {
   try {
-    const postId = req.params.postId
+    const postId = String(req.params.postId || '').trim()
     const limit = Math.min(30, Math.max(1, Number(req.query.limit || 20)))
 
     if (!postId) {
-      return res.status(400).json({ ok: false, message: 'Post ID is required' })
+      return res.status(400).json({
+        ok: false,
+        message: 'Post ID is required',
+      })
     }
 
     const { data: post, error: postError } = await supabase
@@ -586,10 +592,13 @@ export async function getAuthorPostComments(req, res) {
     if (postError) throw postError
 
     if (!post) {
-      return res.status(404).json({ ok: false, message: 'Post not found' })
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
     }
 
-    const { data: comments, error: commentsError } = await supabase
+    const { data: parentComments, error: commentsError } = await supabase
       .from('author_page_post_comments')
       .select('*, user:users(id, name, username, avatar_url, role)')
       .eq('post_id', postId)
@@ -601,21 +610,74 @@ export async function getAuthorPostComments(req, res) {
 
     if (commentsError) throw commentsError
 
+    const parentIds = (parentComments || [])
+      .map((comment) => comment.id)
+      .filter(Boolean)
+
+    let replies = []
+
+    if (parentIds.length) {
+      const { data: replyRows, error: repliesError } = await supabase
+        .from('author_page_post_comments')
+        .select('*, user:users(id, name, username, avatar_url, role)')
+        .eq('post_id', postId)
+        .eq('is_hidden', false)
+        .in('parent_id', parentIds)
+        .order('created_at', { ascending: true })
+
+      if (repliesError) throw repliesError
+      replies = replyRows || []
+    }
+
+    const repliesByParent = new Map()
+
+    for (const reply of replies) {
+      const key = String(reply.parent_id || '')
+      const current = repliesByParent.get(key) || []
+      current.push(reply)
+      repliesByParent.set(key, current)
+    }
+
+    const comments = (parentComments || []).map((comment) => ({
+      ...comment,
+      replies: repliesByParent.get(String(comment.id)) || [],
+    }))
+
+    const { count, error: countError } = await supabase
+      .from('author_page_post_comments')
+      .select('id', {
+        count: 'exact',
+        head: true,
+      })
+      .eq('post_id', postId)
+      .eq('is_hidden', false)
+
+    if (countError) throw countError
+
     return res.status(200).json({
       ok: true,
-      comments: (comments || []).map(publicAuthorPostComment),
+      comments: comments.map(publicAuthorPostComment),
+      total: Number(count || 0),
+      has_more: false,
     })
   } catch (error) {
     console.error('GET AUTHOR POST COMMENTS ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load post comments', error: error.message })
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load post comments',
+      error: error.message,
+    })
   }
 }
 
 export async function createAuthorPostComment(req, res) {
   try {
     const userId = req.user?.user_id
-    const postId = req.params.postId
+    const postId = String(req.params.postId || '').trim()
     const text = String(req.body.text || '').trim()
+    const parentId =
+      String(req.body.parent_id || req.body.parentId || '').trim() || null
 
     if (!userId) {
       return res.status(401).json({
@@ -647,9 +709,7 @@ export async function createAuthorPostComment(req, res) {
 
     const { data: post, error: postError } = await supabase
       .from('author_page_posts')
-      .select(
-        'id, author_page_id, user_id, status, comment_count'
-      )
+      .select('id, author_page_id, user_id, status, comment_count')
       .eq('id', postId)
       .eq('status', 'active')
       .maybeSingle()
@@ -663,18 +723,35 @@ export async function createAuthorPostComment(req, res) {
       })
     }
 
-    const { data: createdComment, error: createError } =
-      await supabase
+    if (parentId) {
+      const { data: parentComment, error: parentError } = await supabase
         .from('author_page_post_comments')
-        .insert({
-          post_id: postId,
-          user_id: userId,
-          text,
+        .select('id, post_id, parent_id, is_hidden')
+        .eq('id', parentId)
+        .eq('post_id', postId)
+        .eq('is_hidden', false)
+        .maybeSingle()
+
+      if (parentError) throw parentError
+
+      if (!parentComment || parentComment.parent_id) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Reply target is not valid',
         })
-        .select(
-          '*, user:users(id, name, username, avatar_url, role)'
-        )
-        .single()
+      }
+    }
+
+    const { data: createdComment, error: createError } = await supabase
+      .from('author_page_post_comments')
+      .insert({
+        post_id: postId,
+        user_id: userId,
+        parent_id: parentId,
+        text,
+      })
+      .select('*, user:users(id, name, username, avatar_url, role)')
+      .single()
 
     if (createError) throw createError
 
@@ -701,19 +778,12 @@ export async function createAuthorPostComment(req, res) {
 
     if (updatePostError) throw updatePostError
 
-    const isOwner =
-      String(post.user_id || '') === String(userId)
+    const isOwner = String(post.user_id || '') === String(userId)
 
     if (!isOwner && post.author_page_id) {
       await Promise.all([
-        incrementAuthorPageAnalytics(
-          post.author_page_id,
-          'comments'
-        ),
-        incrementAuthorPageAnalytics(
-          post.author_page_id,
-          'interactions'
-        ),
+        incrementAuthorPageAnalytics(post.author_page_id, 'comments'),
+        incrementAuthorPageAnalytics(post.author_page_id, 'interactions'),
       ])
     }
 
@@ -723,14 +793,192 @@ export async function createAuthorPostComment(req, res) {
       comment_count: nextCommentCount,
     })
   } catch (error) {
-    console.error(
-      'CREATE AUTHOR POST COMMENT ERROR:',
-      error
-    )
+    console.error('CREATE AUTHOR POST COMMENT ERROR:', error)
 
     return res.status(500).json({
       ok: false,
       message: 'Failed to create post comment',
+      error: error.message,
+    })
+  }
+}
+
+export async function updateOwnAuthorPostComment(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const commentId = String(req.params.commentId || '').trim()
+    const text = String(req.body.text || '').trim()
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!commentId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment ID is required',
+      })
+    }
+
+    if (!text) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment text is required',
+      })
+    }
+
+    if (text.length > 1000) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment is too long',
+      })
+    }
+
+    const { data: existingComment, error: findError } = await supabase
+      .from('author_page_post_comments')
+      .select('id, user_id')
+      .eq('id', commentId)
+      .maybeSingle()
+
+    if (findError) throw findError
+
+    if (!existingComment) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
+
+    if (String(existingComment.user_id) !== String(userId)) {
+      return res.status(403).json({
+        ok: false,
+        message: 'You can only edit your own comment',
+      })
+    }
+
+    const { data: updatedComment, error: updateError } = await supabase
+      .from('author_page_post_comments')
+      .update({
+        text,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', commentId)
+      .eq('user_id', userId)
+      .select('*, user:users(id, name, username, avatar_url, role)')
+      .single()
+
+    if (updateError) throw updateError
+
+    return res.status(200).json({
+      ok: true,
+      comment: publicAuthorPostComment(updatedComment),
+    })
+  } catch (error) {
+    console.error('UPDATE OWN AUTHOR POST COMMENT ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update comment',
+      error: error.message,
+    })
+  }
+}
+
+export async function deleteOwnAuthorPostComment(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const commentId = String(req.params.commentId || '').trim()
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!commentId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment ID is required',
+      })
+    }
+
+    const { data: existingComment, error: findError } = await supabase
+      .from('author_page_post_comments')
+      .select('id, post_id, user_id, parent_id')
+      .eq('id', commentId)
+      .maybeSingle()
+
+    if (findError) throw findError
+
+    if (!existingComment) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
+
+    if (String(existingComment.user_id) !== String(userId)) {
+      return res.status(403).json({
+        ok: false,
+        message: 'You can only delete your own comment',
+      })
+    }
+
+    if (!existingComment.parent_id) {
+      const { error: repliesDeleteError } = await supabase
+        .from('author_page_post_comments')
+        .delete()
+        .eq('parent_id', commentId)
+
+      if (repliesDeleteError) throw repliesDeleteError
+    }
+
+    const { error: deleteError } = await supabase
+      .from('author_page_post_comments')
+      .delete()
+      .eq('id', commentId)
+      .eq('user_id', userId)
+
+    if (deleteError) throw deleteError
+
+    const { count, error: countError } = await supabase
+      .from('author_page_post_comments')
+      .select('id', {
+        count: 'exact',
+        head: true,
+      })
+      .eq('post_id', existingComment.post_id)
+      .eq('is_hidden', false)
+
+    if (countError) throw countError
+
+    const nextCommentCount = Number(count || 0)
+
+    const { error: updatePostError } = await supabase
+      .from('author_page_posts')
+      .update({
+        comment_count: nextCommentCount,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', existingComment.post_id)
+
+    if (updatePostError) throw updatePostError
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Comment deleted',
+      comment_count: nextCommentCount,
+    })
+  } catch (error) {
+    console.error('DELETE OWN AUTHOR POST COMMENT ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to delete comment',
       error: error.message,
     })
   }
