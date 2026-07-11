@@ -1,6 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { uploadFileToR2 } from '../services/r2Storage.service.js'
-const allowedPlacements = ['splash', 'opening', 'freeUnlock']
+const allowedPlacements = ['splash', 'opening', 'freeUnlock', 'me']
 const allowedFrequencies = ['once_per_session', 'once_per_day', 'every_visit', 'every_unlock']
 
 function normalizeText(value) {
