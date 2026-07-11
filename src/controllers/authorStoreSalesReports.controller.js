@@ -40,11 +40,20 @@ function getPaymentStatus(order) {
   return cleanText(order?.payment_status).toLowerCase()
 }
 
+function getBuyerProfile(order) {
+  return order?.buyer_profile && typeof order.buyer_profile === 'object'
+    ? order.buyer_profile
+    : {}
+}
+
+function getDeliveryCompany(order) {
+  return order?.delivery_company && typeof order.delivery_company === 'object'
+    ? order.delivery_company
+    : {}
+}
+
 function getBuyerName(order) {
-  const profile =
-    order?.buyer_profile && typeof order.buyer_profile === 'object'
-      ? order.buyer_profile
-      : {}
+  const profile = getBuyerProfile(order)
 
   return cleanText(
     firstDefined(
@@ -60,15 +69,172 @@ function getBuyerName(order) {
   )
 }
 
+function getBuyerPhone(order) {
+  const profile = getBuyerProfile(order)
+
+  return cleanText(
+    firstDefined(
+      order?.buyer_phone,
+      order?.phone,
+      profile?.phone_number,
+      profile?.buyer_phone,
+      profile?.phone
+    )
+  )
+}
+
+function getBuyerEmail(order) {
+  const profile = getBuyerProfile(order)
+
+  return cleanText(
+    firstDefined(
+      order?.buyer_email,
+      order?.email,
+      profile?.email,
+      profile?.buyer_email
+    )
+  )
+}
+
+function getBuyerTelegram(order) {
+  const profile = getBuyerProfile(order)
+
+  return cleanText(
+    firstDefined(
+      order?.buyer_telegram,
+      order?.telegram_username,
+      profile?.telegram_username,
+      profile?.telegram,
+      profile?.buyer_telegram
+    )
+  )
+}
+
+function getBuyerFacebook(order) {
+  const profile = getBuyerProfile(order)
+
+  return cleanText(
+    firstDefined(
+      order?.buyer_facebook,
+      order?.facebook_link,
+      profile?.facebook_link,
+      profile?.facebook_url,
+      profile?.facebook
+    )
+  )
+}
+
+function getDeliveryAddress(order) {
+  const profile = getBuyerProfile(order)
+
+  return cleanText(
+    firstDefined(
+      order?.delivery_address,
+      order?.shipping_address,
+      profile?.delivery_address,
+      profile?.shipping_address,
+      profile?.address
+    )
+  )
+}
+
+function getDeliveryCompanyName(order) {
+  const delivery = getDeliveryCompany(order)
+
+  return cleanText(
+    firstDefined(
+      order?.delivery_company_name,
+      order?.delivery_method,
+      delivery?.shortName,
+      delivery?.short_name,
+      delivery?.company_name,
+      delivery?.name
+    )
+  )
+}
+
+function getDeliveryCompanyKey(order) {
+  const delivery = getDeliveryCompany(order)
+
+  return cleanText(
+    firstDefined(
+      order?.delivery_company_key,
+      delivery?.company_key,
+      delivery?.key,
+      delivery?.id
+    )
+  )
+}
+
+function getDeliveryTrackingNumber(order) {
+  return cleanText(
+    firstDefined(
+      order?.delivery_tracking_number,
+      order?.tracking_number,
+      order?.shipment_tracking_number
+    )
+  )
+}
+
+function getTransactionId(order) {
+  return cleanText(
+    firstDefined(
+      order?.aba_transaction_id,
+      order?.trx_id,
+      order?.transaction_id,
+      order?.payment_id,
+      order?.payment_reference
+    )
+  )
+}
+
+function getPaymentReference(order) {
+  return cleanText(
+    firstDefined(
+      order?.payment_reference,
+      order?.payment_ref,
+      order?.gateway_reference,
+      order?.aba_transaction_id,
+      order?.trx_id
+    )
+  )
+}
+
 function getPaymentMethod(order) {
   return cleanText(
     firstDefined(
       order?.payment_method,
       order?.payment_method_name,
       order?.pay_way,
+      order?.payment_gateway,
       order?.aba_transaction_id ? 'ABA PayWay' : ''
     )
   )
+}
+
+function getCurrency(order) {
+  return cleanText(firstDefined(order?.currency, order?.currency_code, 'USD')).toUpperCase()
+}
+
+function getOrderSource(order) {
+  return cleanText(
+    firstDefined(
+      order?.source,
+      order?.order_source,
+      order?.sales_channel,
+      'Shadow Author Store'
+    )
+  )
+}
+
+function getOrderNote(order) {
+  return cleanText(firstDefined(order?.note, order?.order_note, order?.buyer_note))
+}
+
+function getPrepareStatus(order) {
+  return cleanText(
+    firstDefined(order?.author_prepare_status, order?.prepare_status, 'to_prepare')
+  ).toLowerCase()
 }
 
 function toDate(value) {
@@ -117,9 +283,7 @@ function publicIntegration(integration) {
 async function getMyAuthorPage(userId) {
   const { data, error } = await supabase
     .from('author_pages')
-    .select(
-  'id, user_id, page_name, page_username, avatar_url, status'
-)
+    .select('id, user_id, page_name, page_username, avatar_url, status')
     .eq('user_id', userId)
     .eq('status', 'active')
     .maybeSingle()
@@ -153,6 +317,13 @@ async function getTrackingMap(spreadsheetId) {
   )
 }
 
+function isRevenueOrder(order) {
+  return (
+    getPaymentStatus(order) === 'paid' &&
+    ACTIVE_ORDER_STATUSES.has(getOrderStatus(order))
+  )
+}
+
 function calculateRefundedAuthorIncome(order, item, authorIncome) {
   const explicitRefund = cleanNumber(
     firstDefined(
@@ -182,49 +353,117 @@ function calculateRefundedAuthorIncome(order, item, authorIncome) {
   return 0
 }
 
-function buildSheetRow(order, item) {
+function buildSheetRow(order, item, lineIndex, itemCount) {
   const orderItemId = cleanText(item?.id)
 
   if (!orderItemId) return null
 
+  const isPrimaryItem = lineIndex === 0
   const quantity = Math.max(1, cleanNumber(item?.quantity || 1))
   const unitPrice = cleanNumber(
     firstDefined(item?.unit_price, item?.unit_price_usd)
+  )
+  const originalUnitPrice = cleanNumber(
+    firstDefined(
+      item?.original_unit_price,
+      item?.original_price,
+      item?.compare_at_price,
+      item?.compare_at_price_usd,
+      unitPrice
+    )
   )
   const productSubtotal = cleanNumber(
     firstDefined(item?.total_price, item?.total_usd, unitPrice * quantity)
   )
   const explicitDiscount = cleanNumber(
-    firstDefined(item?.discount, item?.discount_usd)
+    firstDefined(item?.discount, item?.discount_usd, item?.line_discount)
   )
   const calculatedDiscount = Math.max(
     0,
-    Number((unitPrice * quantity - productSubtotal).toFixed(2))
+    Number((originalUnitPrice * quantity - productSubtotal).toFixed(2))
   )
-  const platformFee = cleanNumber(item?.platform_fee_usd)
-  const authorIncome = cleanNumber(
+  const itemPlatformFee = cleanNumber(
+    firstDefined(item?.platform_fee_usd, item?.platform_fee)
+  )
+  const itemAuthorIncome = cleanNumber(
     firstDefined(
       item?.author_income_usd,
-      Number((productSubtotal - platformFee).toFixed(2))
+      item?.author_income,
+      Number((productSubtotal - itemPlatformFee).toFixed(2))
     )
   )
   const refundedAuthorIncome = calculateRefundedAuthorIncome(
     order,
     item,
-    authorIncome
+    itemAuthorIncome
   )
-  const paidDate = firstDefined(order?.paid_at, order?.created_at)
-  const orderDate = firstDefined(order?.created_at, paidDate)
+  const orderDate = firstDefined(order?.created_at, order?.order_date)
+  const paidDate = firstDefined(order?.paid_at, order?.payment_confirmed_at)
+  const reportingDate = paidDate || orderDate || new Date().toISOString()
   const paymentStatus = getPaymentStatus(order)
   const orderStatus = getOrderStatus(order)
+  const revenueOrder = isRevenueOrder(order)
+  const orderSubtotal = cleanNumber(
+    firstDefined(
+      order?.product_subtotal_usd,
+      order?.subtotal_usd,
+      order?.subtotal,
+      order?.product_subtotal
+    )
+  )
+  const orderDiscount = cleanNumber(
+    firstDefined(
+      order?.discount_usd,
+      order?.discount_amount,
+      order?.total_discount,
+      order?.discount
+    )
+  )
+  const deliveryFee = cleanNumber(
+    firstDefined(order?.delivery_fee_usd, order?.delivery_fee, order?.shipping_fee)
+  )
+  const totalPaid = cleanNumber(
+    firstDefined(
+      order?.total_usd,
+      order?.total_amount,
+      order?.grand_total,
+      order?.amount
+    )
+  )
+  const orderPlatformFee = cleanNumber(
+    firstDefined(order?.platform_fee_usd, order?.platform_fee)
+  )
+  const orderAuthorIncome = cleanNumber(
+    firstDefined(order?.author_income_usd, order?.author_income)
+  )
 
   const row = {
     order_item_id: orderItemId,
     order_id: cleanText(
       firstDefined(order?.order_id, order?.order_number, order?.id)
     ),
-    paid_date: paidDate,
-    order_date: orderDate,
+    transaction_id: getTransactionId(order),
+    payment_reference: getPaymentReference(order),
+    order_line_number: lineIndex + 1,
+    is_primary_item: isPrimaryItem,
+    order_item_count: itemCount,
+    paid_date: paidDate || '',
+    order_date: orderDate || '',
+    cancelled_at: firstDefined(order?.cancelled_at, order?.canceled_at),
+    refunded_at: firstDefined(order?.refunded_at, order?.refund_at),
+    prepared_at: firstDefined(order?.author_prepared_at, order?.prepared_at),
+    shipped_at: firstDefined(order?.shipped_at, order?.delivery_shipped_at),
+    completed_at: firstDefined(order?.completed_at, order?.delivered_at),
+    buyer_id: cleanText(firstDefined(order?.buyer_id, order?.user_id, order?.reader_id)),
+    buyer_name: getBuyerName(order),
+    buyer_phone: getBuyerPhone(order),
+    buyer_email: getBuyerEmail(order),
+    buyer_telegram: getBuyerTelegram(order),
+    buyer_facebook: getBuyerFacebook(order),
+    delivery_address: getDeliveryAddress(order),
+    delivery_company: getDeliveryCompanyName(order),
+    delivery_company_key: getDeliveryCompanyKey(order),
+    delivery_tracking_number: getDeliveryTrackingNumber(order),
     product_id: cleanText(item?.product_id),
     product_name: cleanText(
       firstDefined(item?.product_title, item?.title, 'Product')
@@ -232,31 +471,38 @@ function buildSheetRow(order, item) {
     product_type: cleanText(
       firstDefined(item?.product_type, item?.type, 'book')
     ).toLowerCase(),
+    product_cover_url: cleanText(
+      firstDefined(item?.cover_url, item?.product_cover_url, item?.image_url)
+    ),
+    product_sku: cleanText(firstDefined(item?.sku, item?.product_sku)),
     quantity,
+    original_unit_price: originalUnitPrice,
     unit_price: unitPrice,
     discount: explicitDiscount || calculatedDiscount,
     product_subtotal: productSubtotal,
-    delivery_fee: cleanNumber(
-      firstDefined(order?.delivery_fee_usd, order?.delivery_fee)
+    order_subtotal: isPrimaryItem ? orderSubtotal : '',
+    order_discount: isPrimaryItem ? orderDiscount : '',
+    delivery_fee: isPrimaryItem ? deliveryFee : '',
+    total_paid: isPrimaryItem ? totalPaid : '',
+    currency: getCurrency(order),
+    platform_fee_rate: cleanNumber(
+      firstDefined(item?.platform_fee_rate, order?.platform_fee_rate, 0.1)
     ),
-    total_paid: cleanNumber(
-      firstDefined(
-        order?.total_usd,
-        order?.total_amount,
-        order?.grand_total,
-        order?.subtotal_usd
-      )
-    ),
-    platform_fee: platformFee,
-    author_income: authorIncome,
+    item_platform_fee: itemPlatformFee,
+    order_platform_fee: isPrimaryItem ? orderPlatformFee : '',
+    item_author_income: itemAuthorIncome,
+    order_author_income: isPrimaryItem ? orderAuthorIncome : '',
     refunded_author_income: refundedAuthorIncome,
     net_author_income: Number(
-      Math.max(0, authorIncome - refundedAuthorIncome).toFixed(2)
+      Math.max(0, itemAuthorIncome - refundedAuthorIncome).toFixed(2)
     ),
     payment_method: getPaymentMethod(order),
     payment_status: paymentStatus,
     order_status: orderStatus,
-    buyer_name: getBuyerName(order),
+    prepare_status: getPrepareStatus(order),
+    is_revenue_order: revenueOrder,
+    order_source: getOrderSource(order),
+    note: getOrderNote(order),
     updated_at: firstDefined(
       order?.updated_at,
       item?.updated_at,
@@ -267,19 +513,12 @@ function buildSheetRow(order, item) {
 
   return {
     ...row,
-    month_name: monthKey(paidDate),
+    month_name: monthKey(reportingDate),
     payload_hash: crypto
       .createHash('sha256')
       .update(JSON.stringify(row))
       .digest('hex'),
   }
-}
-
-function isEligibleNewSale(order) {
-  return (
-    getPaymentStatus(order) === 'paid' &&
-    ACTIVE_ORDER_STATUSES.has(getOrderStatus(order))
-  )
 }
 
 function chunk(list, size = SYNC_BATCH_SIZE) {
@@ -327,19 +566,18 @@ function buildRowsForSync(orders, trackingMap) {
         ? order.order_items
         : []
 
-    for (const item of items) {
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index]
       const orderItemId = cleanText(item?.id)
       const tracked = trackingMap.get(orderItemId) || null
-      const row = buildSheetRow(order, item)
+      const row = buildSheetRow(order, item, index, items.length)
 
       if (!row) continue
 
-      const newCurrentMonthSale =
-        !tracked &&
-        isEligibleNewSale(order) &&
-        row.month_name === thisMonth
+      const newCurrentMonthOrder =
+        !tracked && row.month_name === thisMonth
 
-      if (!tracked && !newCurrentMonthSale) {
+      if (!tracked && !newCurrentMonthOrder) {
         continue
       }
 
@@ -357,6 +595,7 @@ function buildRowsForSync(orders, trackingMap) {
 
   return rows
 }
+
 
 async function markTrackingRows(integration, authorPageId, rows, status, errorMessage = null) {
   if (!rows.length) return
