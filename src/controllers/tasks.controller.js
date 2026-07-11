@@ -402,7 +402,13 @@ async function getActiveReadingMission(missionId) {
   return data || null
 }
 
-async function getOrCreateReadingMissionProgress(userId, mission, storyId = null) {
+async function getOrCreateReadingMissionProgress(
+  userId,
+  mission,
+  storyId = null
+) {
+  const todayKey = getPhnomPenhDateKey()
+
   const { data: existingProgress, error: existingError } = await supabase
     .from('reader_reading_mission_progress')
     .select('*')
@@ -411,7 +417,40 @@ async function getOrCreateReadingMissionProgress(userId, mission, storyId = null
     .maybeSingle()
 
   if (existingError) throw existingError
-  if (existingProgress) return existingProgress
+
+  if (existingProgress) {
+    const updatedDate = existingProgress.updated_at
+      ? new Date(existingProgress.updated_at)
+      : null
+
+    const progressDate =
+      updatedDate && !Number.isNaN(updatedDate.getTime())
+        ? getPhnomPenhDateKey(updatedDate)
+        : ''
+
+    if (progressDate === todayKey) {
+      return existingProgress
+    }
+
+    const now = new Date().toISOString()
+
+    const { data: resetProgress, error: resetError } = await supabase
+      .from('reader_reading_mission_progress')
+      .update({
+        story_id: storyId || null,
+        active_seconds: 0,
+        completed_at: null,
+        claimed_at: null,
+        updated_at: now,
+      })
+      .eq('id', existingProgress.id)
+      .select('*')
+      .single()
+
+    if (resetError) throw resetError
+
+    return resetProgress
+  }
 
   const now = new Date().toISOString()
 
@@ -420,8 +459,10 @@ async function getOrCreateReadingMissionProgress(userId, mission, storyId = null
     .insert({
       user_id: userId,
       mission_id: mission.id,
-      story_id: storyId,
+      story_id: storyId || null,
       active_seconds: 0,
+      completed_at: null,
+      claimed_at: null,
       created_at: now,
       updated_at: now,
     })
@@ -447,20 +488,15 @@ async function getReaderReadingMissions(userId) {
   const missionList = missions || []
 
   return Promise.all(
-    missionList.map(async (mission) => {
-      const { data, error } = await supabase
-        .from('reader_reading_mission_progress')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('mission_id', mission.id)
-        .maybeSingle()
+  missionList.map(async (mission) => {
+    const progress = await getOrCreateReadingMissionProgress(
+      userId,
+      mission
+    )
 
-      if (error) throw error
-
-      return publicReadingMissionProgress(mission, data || null)
-    })
-  )
-}
+    return publicReadingMissionProgress(mission, progress)
+  })
+)
 
 async function getDailyVoteRewardState(userId) {
   const todayKey = getPhnomPenhDateKey()
