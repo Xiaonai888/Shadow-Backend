@@ -429,9 +429,10 @@ async function syncIntegration(integration, authorPage) {
 
     try {
       const result = await appendAuthorStoreSalesReportRows(
-        integration.spreadsheet_id,
-        batch.map(({ month_name, payload_hash, ...row }) => row)
-      )
+  integration.spreadsheet_id,
+  batch.map(({ month_name, payload_hash, ...row }) => row),
+  authorPage
+)
 
       totals.appended += cleanNumber(result.appended)
       totals.updated += cleanNumber(result.updated)
