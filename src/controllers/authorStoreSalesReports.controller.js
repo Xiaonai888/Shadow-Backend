@@ -576,7 +576,10 @@ export async function connectMyAuthorStoreSalesReports(req, res) {
     let testResult
 
     try {
-      testResult = await testAuthorStoreSalesReportsSpreadsheet(spreadsheetId)
+      testResult = await testAuthorStoreSalesReportsSpreadsheet(
+  spreadsheetId,
+  authorPage
+)
     } catch (error) {
       return res.status(400).json({
         ok: false,
