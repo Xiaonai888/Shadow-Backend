@@ -11,6 +11,11 @@ import {
   updateShadowMallProduct,
 } from '../controllers/shadowMallProducts.controller.js'
 import {
+  getAdminShadowMallPromotion,
+  getPublicShadowMallPromotion,
+  updateAdminShadowMallPromotion,
+} from '../controllers/shadowMallPromotion.controller.js'
+import {
   getShadowMallBuyerProfile,
   saveShadowMallBuyerProfile,
 } from '../controllers/shadowMallBuyerProfiles.controller.js'
@@ -59,7 +64,16 @@ const shadowMallUploadFields = [
 ]
 
 router.get('/home', getShadowMallHome)
+router.get('/promotion', getPublicShadowMallPromotion)
 router.get('/products', getShadowMallProducts)
+
+router.get('/admin/promotion', requireAdmin, getAdminShadowMallPromotion)
+router.put(
+  '/admin/promotion',
+  requireAdmin,
+  upload.single('promotion_image'),
+  updateAdminShadowMallPromotion
+)
 
 router.get('/publishers', getShadowMallPublishers)
 router.get('/admin/publishers/logs', requireAdmin, getShadowMallPublisherLogs)
