@@ -488,15 +488,16 @@ async function getReaderReadingMissions(userId) {
   const missionList = missions || []
 
   return Promise.all(
-  missionList.map(async (mission) => {
-    const progress = await getOrCreateReadingMissionProgress(
-      userId,
-      mission
-    )
+    missionList.map(async (mission) => {
+      const progress = await getOrCreateReadingMissionProgress(
+        userId,
+        mission
+      )
 
-    return publicReadingMissionProgress(mission, progress)
-  })
-)
+      return publicReadingMissionProgress(mission, progress)
+    })
+  )
+}
 
 async function getDailyVoteRewardState(userId) {
   const todayKey = getPhnomPenhDateKey()
