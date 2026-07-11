@@ -14,6 +14,18 @@ function getConfig() {
   }
 }
 
+function buildAuthorPageMeta(authorPage = {}) {
+  return {
+    page_name: cleanText(authorPage.page_name) || 'Author Store',
+    page_username: cleanText(authorPage.page_username),
+    avatar_url: cleanText(
+      authorPage.avatar_url ||
+        authorPage.profile_image_url ||
+        authorPage.logo_url
+    ),
+  }
+}
+
 export function isAuthorStoreSalesReportsConfigured() {
   const config = getConfig()
   return Boolean(config.webAppUrl && config.appSecret)
@@ -104,15 +116,24 @@ async function callAppsScript(action, payload = {}) {
   }
 }
 
-export async function testAuthorStoreSalesReportsSpreadsheet(spreadsheetId) {
+export async function testAuthorStoreSalesReportsSpreadsheet(
+  spreadsheetId,
+  authorPage = {}
+) {
   return callAppsScript('connect', {
     spreadsheet_id: extractGoogleSpreadsheetId(spreadsheetId),
+    author_page: buildAuthorPageMeta(authorPage),
   })
 }
 
-export async function appendAuthorStoreSalesReportRows(spreadsheetId, rows) {
+export async function appendAuthorStoreSalesReportRows(
+  spreadsheetId,
+  rows,
+  authorPage = {}
+) {
   return callAppsScript('append_rows', {
     spreadsheet_id: extractGoogleSpreadsheetId(spreadsheetId),
     rows: Array.isArray(rows) ? rows : [],
+    author_page: buildAuthorPageMeta(authorPage),
   })
 }
