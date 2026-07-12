@@ -2,9 +2,15 @@ import { supabase } from '../config/supabase.js'
 import { uploadFileToR2 } from '../services/r2Storage.service.js'
 const allowedPlacements = ['splash', 'opening', 'freeUnlock', 'me']
 const allowedFrequencies = ['once_per_session', 'once_per_day', 'every_visit', 'every_unlock']
+const allowedBadges = ['', 'HOT', 'NEW', 'END', 'UP']
 
 function normalizeText(value) {
   return String(value || '').trim()
+}
+
+function normalizeBadge(value) {
+  const badge = normalizeText(value).toUpperCase()
+  return allowedBadges.includes(badge) ? badge : ''
 }
 
 function normalizeBoolean(value) {
@@ -22,6 +28,7 @@ function publicAd(item) {
     enabled: Boolean(item.enabled),
     image_url: item.image_url || '',
     link_url: item.link_url || '',
+    badge: item.badge || '',
     duration_seconds: Number(item.duration_seconds || 0),
     close_after_seconds: Number(item.close_after_seconds || 0),
     frequency: item.frequency || 'once_per_session',
@@ -74,7 +81,7 @@ export async function getPublicAdvertisement(req, res) {
 
     const { data, error } = await supabase
       .from('shadow_advertisements')
-      .select('placement, enabled, image_url, link_url, duration_seconds, close_after_seconds, frequency, updated_at')
+      .select('placement, enabled, image_url, link_url, badge, duration_seconds, close_after_seconds, frequency, updated_at')
       .eq('placement', placement)
       .eq('enabled', true)
       .maybeSingle()
@@ -188,6 +195,7 @@ export async function updateAdminAdvertisement(req, res) {
       enabled: normalizeBoolean(req.body.enabled),
       image_url: uploadedImageUrl || bodyImageUrl,
       link_url: normalizeText(req.body.link_url),
+      badge: normalizeBadge(req.body.badge),
       duration_seconds: normalizeNumber(req.body.duration_seconds, 5),
       close_after_seconds: normalizeNumber(req.body.close_after_seconds, 3),
       frequency,
