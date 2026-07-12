@@ -63,46 +63,149 @@ const shadowMallUploadFields = [
   { name: 'gallery_image_4', maxCount: 1 },
 ]
 
+const shadowMallPromotionUploadFields = [
+  { name: 'promotion_image', maxCount: 1 },
+  { name: 'profile_image', maxCount: 1 },
+]
+
 router.get('/home', getShadowMallHome)
 router.get('/promotion', getPublicShadowMallPromotion)
 router.get('/products', getShadowMallProducts)
 
-router.get('/admin/promotion', requireAdmin, getAdminShadowMallPromotion)
+router.get(
+  '/admin/promotion',
+  requireAdmin,
+  getAdminShadowMallPromotion
+)
 router.put(
   '/admin/promotion',
   requireAdmin,
-  upload.single('promotion_image'),
+  upload.fields(shadowMallPromotionUploadFields),
   updateAdminShadowMallPromotion
 )
 
 router.get('/publishers', getShadowMallPublishers)
-router.get('/admin/publishers/logs', requireAdmin, getShadowMallPublisherLogs)
-router.post('/admin/publishers', requireAdmin, upload.single('publisher_logo'), createShadowMallPublisher)
-router.put('/admin/publishers/:id', requireAdmin, upload.single('publisher_logo'), updateShadowMallPublisher)
-router.delete('/admin/publishers/:id', requireAdmin, deleteShadowMallPublisher)
-router.get('/admin/publishers/:id/products', requireAdmin, getShadowMallPublisherProducts)
-router.get('/admin/publishers/:id/auto-match', requireAdmin, autoMatchShadowMallPublisherProducts)
-router.post('/admin/publishers/:id/assign-products', requireAdmin, assignShadowMallPublisherProducts)
-router.post('/admin/publishers/:id/remove-products', requireAdmin, removeShadowMallPublisherProducts)
+router.get(
+  '/admin/publishers/logs',
+  requireAdmin,
+  getShadowMallPublisherLogs
+)
+router.post(
+  '/admin/publishers',
+  requireAdmin,
+  upload.single('publisher_logo'),
+  createShadowMallPublisher
+)
+router.put(
+  '/admin/publishers/:id',
+  requireAdmin,
+  upload.single('publisher_logo'),
+  updateShadowMallPublisher
+)
+router.delete(
+  '/admin/publishers/:id',
+  requireAdmin,
+  deleteShadowMallPublisher
+)
+router.get(
+  '/admin/publishers/:id/products',
+  requireAdmin,
+  getShadowMallPublisherProducts
+)
+router.get(
+  '/admin/publishers/:id/auto-match',
+  requireAdmin,
+  autoMatchShadowMallPublisherProducts
+)
+router.post(
+  '/admin/publishers/:id/assign-products',
+  requireAdmin,
+  assignShadowMallPublisherProducts
+)
+router.post(
+  '/admin/publishers/:id/remove-products',
+  requireAdmin,
+  removeShadowMallPublisherProducts
+)
 
-router.get('/buyer-profile', requireUser, getShadowMallBuyerProfile)
-router.put('/buyer-profile', requireUser, saveShadowMallBuyerProfile)
+router.get(
+  '/buyer-profile',
+  requireUser,
+  getShadowMallBuyerProfile
+)
+router.put(
+  '/buyer-profile',
+  requireUser,
+  saveShadowMallBuyerProfile
+)
 
-router.get('/wishlist', requireUser, getShadowMallWishlist)
-router.post('/wishlist/:productId', requireUser, addShadowMallWishlist)
-router.delete('/wishlist/:productId', requireUser, removeShadowMallWishlist)
+router.get(
+  '/wishlist',
+  requireUser,
+  getShadowMallWishlist
+)
+router.post(
+  '/wishlist/:productId',
+  requireUser,
+  addShadowMallWishlist
+)
+router.delete(
+  '/wishlist/:productId',
+  requireUser,
+  removeShadowMallWishlist
+)
 
-router.get('/admin/orders', requireAdmin, getAdminShadowMallOrders)
-router.patch('/admin/orders/:orderId/status', requireAdmin, updateAdminShadowMallOrderStatus)
+router.get(
+  '/admin/orders',
+  requireAdmin,
+  getAdminShadowMallOrders
+)
+router.patch(
+  '/admin/orders/:orderId/status',
+  requireAdmin,
+  updateAdminShadowMallOrderStatus
+)
 
-router.post('/orders/create-payment', requireUser, createShadowMallOrderPayment)
-router.get('/orders/my', requireUser, getMyShadowMallOrders)
-router.get('/orders/status/:orderId', requireUser, getShadowMallOrderStatus)
-router.post('/orders/callback', handleShadowMallAbaCallback)
+router.post(
+  '/orders/create-payment',
+  requireUser,
+  createShadowMallOrderPayment
+)
+router.get(
+  '/orders/my',
+  requireUser,
+  getMyShadowMallOrders
+)
+router.get(
+  '/orders/status/:orderId',
+  requireUser,
+  getShadowMallOrderStatus
+)
+router.post(
+  '/orders/callback',
+  handleShadowMallAbaCallback
+)
 
-router.get('/products/:id', getShadowMallProductById)
-router.post('/products', requireAdmin, upload.fields(shadowMallUploadFields), createShadowMallProduct)
-router.put('/products/:id', requireAdmin, upload.fields(shadowMallUploadFields), updateShadowMallProduct)
-router.delete('/products/:id', requireAdmin, deleteShadowMallProduct)
+router.get(
+  '/products/:id',
+  getShadowMallProductById
+)
+router.post(
+  '/products',
+  requireAdmin,
+  upload.fields(shadowMallUploadFields),
+  createShadowMallProduct
+)
+router.put(
+  '/products/:id',
+  requireAdmin,
+  upload.fields(shadowMallUploadFields),
+  updateShadowMallProduct
+)
+router.delete(
+  '/products/:id',
+  requireAdmin,
+  deleteShadowMallProduct
+)
 
 export default router
