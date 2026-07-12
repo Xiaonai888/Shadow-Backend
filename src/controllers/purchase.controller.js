@@ -124,6 +124,7 @@ function publicWallet(wallet) {
     diamond_balance: Number(wallet.diamond_balance || 0),
     gem_balance: coinBalance,
     coin_balance: coinBalance,
+    voucher_balance: Number(wallet.voucher_balance || 0),
     created_at: wallet.created_at,
     updated_at: wallet.updated_at,
   }
