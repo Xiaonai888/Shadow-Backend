@@ -1,4 +1,8 @@
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
+import {
+  DeleteObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3'
 import sharp from 'sharp'
 
 let r2Client = null
@@ -232,4 +236,33 @@ export async function uploadImageToR2AsWebP(file, folder = 'uploads', options = 
   }))
 
   return `${getR2PublicUrl()}/${fileName}`
+}
+
+export async function deleteR2ObjectByUrl(fileUrl) {
+  const value = String(fileUrl || '').trim()
+
+  if (!value) return false
+
+  const publicPrefix = `${getR2PublicUrl()}/`
+
+  if (!value.startsWith(publicPrefix)) {
+    return false
+  }
+
+  const key = decodeURIComponent(
+    value
+      .slice(publicPrefix.length)
+      .split('?')[0]
+  )
+
+  if (!key) return false
+
+  await getR2Client().send(
+    new DeleteObjectCommand({
+      Bucket: getR2BucketName(),
+      Key: key,
+    })
+  )
+
+  return true
 }
