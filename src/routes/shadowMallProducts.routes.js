@@ -11,9 +11,16 @@ import {
   updateShadowMallProduct,
 } from '../controllers/shadowMallProducts.controller.js'
 import {
+  createAdminShadowMallPromotion,
+  deleteAdminShadowMallPromotion,
   getAdminShadowMallPromotion,
+  getAdminShadowMallPromotionById,
+  getAdminShadowMallPromotions,
   getPublicShadowMallPromotion,
+  getPublicShadowMallPromotions,
+  reorderAdminShadowMallPromotions,
   updateAdminShadowMallPromotion,
+  updateAdminShadowMallPromotionById,
 } from '../controllers/shadowMallPromotion.controller.js'
 import {
   getShadowMallBuyerProfile,
@@ -70,6 +77,7 @@ const shadowMallPromotionUploadFields = [
 
 router.get('/home', getShadowMallHome)
 router.get('/promotion', getPublicShadowMallPromotion)
+router.get('/promotions', getPublicShadowMallPromotions)
 router.get('/products', getShadowMallProducts)
 
 router.get(
@@ -82,6 +90,39 @@ router.put(
   requireAdmin,
   upload.fields(shadowMallPromotionUploadFields),
   updateAdminShadowMallPromotion
+)
+
+router.get(
+  '/admin/promotions',
+  requireAdmin,
+  getAdminShadowMallPromotions
+)
+router.post(
+  '/admin/promotions',
+  requireAdmin,
+  upload.fields(shadowMallPromotionUploadFields),
+  createAdminShadowMallPromotion
+)
+router.patch(
+  '/admin/promotions/reorder',
+  requireAdmin,
+  reorderAdminShadowMallPromotions
+)
+router.get(
+  '/admin/promotions/:id',
+  requireAdmin,
+  getAdminShadowMallPromotionById
+)
+router.put(
+  '/admin/promotions/:id',
+  requireAdmin,
+  upload.fields(shadowMallPromotionUploadFields),
+  updateAdminShadowMallPromotionById
+)
+router.delete(
+  '/admin/promotions/:id',
+  requireAdmin,
+  deleteAdminShadowMallPromotion
 )
 
 router.get('/publishers', getShadowMallPublishers)
