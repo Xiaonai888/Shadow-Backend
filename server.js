@@ -53,6 +53,7 @@ import { startAuthorStoriesCleanup } from './src/controllers/authorStories.contr
 import fastRoutes from './src/routes/fast.routes.js'
 import contentReportsRoutes from './src/routes/contentReports.routes.js'
 import adminReportsRoutes from './src/routes/adminReports.routes.js'
+import savedPostsRoutes from './src/routes/savedPosts.routes.js'
 
 dotenv.config()
 
@@ -155,6 +156,7 @@ app.use('/api/comments', readerActionSpamGuard, commentsRoutes)
 app.use('/api/reactions', readerActionSpamGuard, reactionsRoutes)
 app.use('/api/echoes', readerActionSpamGuard, echoesRoutes)
 app.use('/api/reader', readerActionSpamGuard, libraryRoutes)
+app.use('/api/saved-posts', readerActionSpamGuard, savedPostsRoutes)
 app.use('/api/purchase', paymentSpamGuard, purchaseRoutes)
 app.use('/api/telegram', telegramRoutes)
 app.use('/api/unlocks', paymentSpamGuard, unlocksRoutes)
