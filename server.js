@@ -55,6 +55,7 @@ import contentReportsRoutes from './src/routes/contentReports.routes.js'
 import adminReportsRoutes from './src/routes/adminReports.routes.js'
 import savedPostsRoutes from './src/routes/savedPosts.routes.js'
 import helpCenterRoutes from './src/routes/helpCenter.routes.js'
+import supportRequestsRoutes from './src/routes/supportRequests.routes.js'
 
 dotenv.config()
 
@@ -159,6 +160,7 @@ app.use('/api/echoes', readerActionSpamGuard, echoesRoutes)
 app.use('/api/reader', readerActionSpamGuard, libraryRoutes)
 app.use('/api/saved-posts', readerActionSpamGuard, savedPostsRoutes)
 app.use('/api/help-center', helpCenterRoutes)
+app.use('/api/support', readerActionSpamGuard, supportRequestsRoutes)
 app.use('/api/purchase', paymentSpamGuard, purchaseRoutes)
 app.use('/api/telegram', telegramRoutes)
 app.use('/api/unlocks', paymentSpamGuard, unlocksRoutes)
