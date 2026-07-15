@@ -16,7 +16,7 @@ const router = express.Router()
 const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 2 * 1024 * 1024 },
   fileFilter(req, file, callback) {
     if (allowedTypes.has(file.mimetype)) return callback(null, true)
     const error = new Error('Only JPEG, PNG, WEBP, or GIF screenshots are allowed')
@@ -29,7 +29,7 @@ function uploadScreenshot(req, res, next) {
   upload.single('screenshot')(req, res, (error) => {
     if (!error) return next()
     const message = error.code === 'LIMIT_FILE_SIZE'
-      ? 'Screenshot must be 5 MB or smaller'
+      ? 'Screenshot must be 2 MB or smaller'
       : error.message || 'Invalid screenshot'
     return res.status(error.statusCode || 400).json({ ok: false, message })
   })
