@@ -40,6 +40,7 @@ function publicAuthorPost(post) {
 
 const AUTHOR_POSTS_DAILY_LIMIT = 5
 const AUTHOR_POST_IMAGES_LIMIT = 5
+const AUTHOR_POST_CONTENT_LIMIT = 10000
 
 function getUtcDayRange(date = new Date()) {
   const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0))
@@ -206,8 +207,11 @@ export async function createMyAuthorPost(req, res) {
       return res.status(400).json({ ok: false, message: 'Post content or photo is required' })
     }
 
-    if (content.length > 5000) {
-      return res.status(400).json({ ok: false, message: 'Post content is too long' })
+    if (content.length > AUTHOR_POST_CONTENT_LIMIT) {
+      return res.status(400).json({
+        ok: false,
+        message: `Post content must be ${AUTHOR_POST_CONTENT_LIMIT.toLocaleString()} characters or fewer`,
+      })
     }
 
     if (imageUrlsRaw.length > AUTHOR_POST_IMAGES_LIMIT) {
