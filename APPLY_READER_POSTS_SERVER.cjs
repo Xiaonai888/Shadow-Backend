@@ -1,43 +1,93 @@
-$ErrorActionPreference = "Stop"
+const fs = require('fs')
+const path = require('path')
 
-$path = Join-Path $PSScriptRoot "server.js"
+const root = process.cwd()
+const serverPath = path.join(root, 'server.js')
+const backupPath = path.join(
+  root,
+  'server.js.before-reader-posts.bak'
+)
 
-if (-not (Test-Path $path)) {
-  throw "server.js was not found in Shadow-Backend."
+const controllerPath = path.join(
+  root,
+  'src',
+  'controllers',
+  'readerPosts.controller.js'
+)
+
+const routesPath = path.join(
+  root,
+  'src',
+  'routes',
+  'readerPosts.routes.js'
+)
+
+function fail(message) {
+  console.error(`ERROR: ${message}`)
+  process.exit(1)
 }
 
-$content = Get-Content $path -Raw
+if (!fs.existsSync(serverPath)) {
+  fail('server.js was not found in the current Backend root.')
+}
 
-$importLine = "import readerPostsRoutes from './src/routes/readerPosts.routes.js'"
+if (!fs.existsSync(controllerPath)) {
+  fail('src/controllers/readerPosts.controller.js is missing.')
+}
 
-if ($content -notmatch [regex]::Escape($importLine)) {
-  $marker = "import savedPostsRoutes from './src/routes/savedPosts.routes.js'"
+if (!fs.existsSync(routesPath)) {
+  fail('src/routes/readerPosts.routes.js is missing.')
+}
 
-  if ($content -notmatch [regex]::Escape($marker)) {
-    throw "Could not find savedPostsRoutes import."
+let content = fs.readFileSync(serverPath, 'utf8')
+const original = content
+
+const importLine =
+  "import readerPostsRoutes from './src/routes/readerPosts.routes.js'"
+
+const importMarker =
+  "import savedPostsRoutes from './src/routes/savedPosts.routes.js'"
+
+if (!content.includes(importLine)) {
+  if (!content.includes(importMarker)) {
+    fail('Could not find the savedPostsRoutes import marker in server.js.')
   }
 
-  $content = $content.Replace(
-    $marker,
-    "$marker`r`n$importLine"
+  content = content.replace(
+    importMarker,
+    `${importMarker}\n${importLine}`
   )
 }
 
-$routeLine = "app.use('/api/reader-posts', readerActionSpamGuard, readerPostsRoutes)"
+const routeLine =
+  "app.use('/api/reader-posts', readerActionSpamGuard, readerPostsRoutes)"
 
-if ($content -notmatch [regex]::Escape($routeLine)) {
-  $marker = "app.use('/api/saved-posts', readerActionSpamGuard, savedPostsRoutes)"
+const routeMarker =
+  "app.use('/api/saved-posts', readerActionSpamGuard, savedPostsRoutes)"
 
-  if ($content -notmatch [regex]::Escape($marker)) {
-    throw "Could not find saved posts route."
+if (!content.includes(routeLine)) {
+  if (!content.includes(routeMarker)) {
+    fail('Could not find the saved-posts route marker in server.js.')
   }
 
-  $content = $content.Replace(
-    $marker,
-    "$marker`r`n$routeLine"
+  content = content.replace(
+    routeMarker,
+    `${routeMarker}\n${routeLine}`
   )
 }
 
-Set-Content -Path $path -Value $content -Encoding utf8
+if (content === original) {
+  console.log('Reader Posts route is already installed. No server.js changes were needed.')
+  process.exit(0)
+}
 
-Write-Host "Reader Posts route installed successfully."
+if (!fs.existsSync(backupPath)) {
+  fs.writeFileSync(backupPath, original, 'utf8')
+  console.log('Backup created: server.js.before-reader-posts.bak')
+}
+
+fs.writeFileSync(serverPath, content, 'utf8')
+
+console.log('server.js updated successfully.')
+console.log('Added readerPostsRoutes import.')
+console.log('Added /api/reader-posts route.')
