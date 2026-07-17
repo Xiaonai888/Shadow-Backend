@@ -494,6 +494,16 @@ if (!isOwner && story.author_id) {
   }
 }
 
+createAuthorStoryNotificationSafely({
+  authorId: story.author_id,
+  type: 'comment',
+  title: `${data.user?.name || data.user?.username || 'A reader'} commented on ${story.title || 'your story'}`,
+  message: text,
+  targetUrl: `/story/${storyId}`,
+  sourceKey: `story-comment:${data.id}`,
+  metadata: { story_id: storyId, comment_id: data.id, reader_id: userId },
+}),
+
 export async function createEpisodeComment(req, res) {
   try {
     const episodeId = String(req.params.episodeId || '').trim()
