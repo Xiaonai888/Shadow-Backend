@@ -49,6 +49,9 @@ import contentVersionsRoutes from './src/routes/contentVersions.routes.js'
 import giftsRoutes from './src/routes/gifts.routes.js'
 import echoesRoutes from './src/routes/echoes.routes.js'
 import authorStoriesRoutes from './src/routes/authorStories.routes.js'
+import readerStoriesRoutes from './src/routes/readerStories.routes.js'
+import discoverStoriesRoutes from './src/routes/discoverStories.routes.js'
+import { startReaderStoriesCleanup } from './src/controllers/readerStories.controller.js'
 import { startAuthorStoriesCleanup } from './src/controllers/authorStories.controller.js'
 import fastRoutes from './src/routes/fast.routes.js'
 import contentReportsRoutes from './src/routes/contentReports.routes.js'
@@ -189,6 +192,8 @@ app.use('/api/admin/passkey-pin', adminPasskeyPinRoutes)
 app.use('/api/public', contentVersionsRoutes)
 app.use('/api/gifts', readerActionSpamGuard, giftsRoutes)
 app.use('/api/author-stories', readerActionSpamGuard, authorStoriesRoutes)
+app.use('/api/reader-stories', readerActionSpamGuard, readerStoriesRoutes)
+app.use('/api/discover-stories', readerActionSpamGuard, discoverStoriesRoutes)
 app.use('/api/fast', readerActionSpamGuard, fastRoutes)
 app.use('/api/reports', readerActionSpamGuard, contentReportsRoutes)
 app.use('/api/admin/reports', adminReportsRoutes)
@@ -208,6 +213,7 @@ const PORT = process.env.PORT || 5000
 app.listen(PORT, () => {
   console.log(`Shadow Backend running on port ${PORT}`)
   startAuthorStoriesCleanup()
+  startReaderStoriesCleanup()
 
   if (process.env.ENABLE_TELEGRAM_USER_LISTENER === 'true') {
     startTelegramUserListener().catch((error) => {
