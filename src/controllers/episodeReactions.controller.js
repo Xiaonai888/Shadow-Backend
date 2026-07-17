@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
+import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 
 function normalizeReactionType(value) {
   const reactionType = String(value || 'love').trim().toLowerCase()
