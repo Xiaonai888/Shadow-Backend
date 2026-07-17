@@ -1,6 +1,6 @@
 import { supabase } from '../config/supabase.js'
 
-const MAX_POST_LENGTH = 1000
+const MAX_POST_LENGTH = 10000
 const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 30
 const FEED_SCAN_LIMIT = 120
