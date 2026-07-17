@@ -21,6 +21,7 @@ import {
   reorderAdminShadowMallPromotions,
   updateAdminShadowMallPromotion,
   updateAdminShadowMallPromotionById,
+  updateAdminShadowMallPromotionStatus,
 } from '../controllers/shadowMallPromotion.controller.js'
 import {
   getShadowMallBuyerProfile,
@@ -118,6 +119,11 @@ router.put(
   requireAdmin,
   upload.fields(shadowMallPromotionUploadFields),
   updateAdminShadowMallPromotionById
+)
+router.patch(
+  '/admin/promotions/:id/status',
+  requireAdmin,
+  updateAdminShadowMallPromotionStatus
 )
 router.delete(
   '/admin/promotions/:id',
