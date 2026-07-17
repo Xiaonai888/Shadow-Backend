@@ -14,6 +14,7 @@ const DEFAULT_PROMOTION = {
   profile_image_url: '',
   image_url: '',
   display_order: 1,
+  visibility_version: 1,
   is_active: true,
   like_count: 0,
   comment_count: 0,
@@ -55,6 +56,10 @@ function normalizePromotion(value) {
     image_url: promotion.image_url || '',
     display_order: toPositiveInteger(
       promotion.display_order,
+      1
+    ),
+    visibility_version: toPositiveInteger(
+      promotion.visibility_version,
       1
     ),
     is_active: Boolean(promotion.is_active),
@@ -302,7 +307,8 @@ async function preparePromotionImages(req, current = null) {
 function buildPromotionPayload(
   req,
   images,
-  displayOrder
+  displayOrder,
+  current = null
 ) {
   const title = String(req.body.title || '').trim()
 
@@ -314,7 +320,7 @@ function buildPromotionPayload(
     throw error
   }
 
-  return {
+  const payload = {
     sponsor:
       String(
         req.body.sponsor || 'Shadow Mall'
@@ -342,6 +348,42 @@ function buildPromotionPayload(
       true
     ),
     updated_at: new Date().toISOString(),
+  }
+
+  const currentVersion = toPositiveInteger(
+    current?.visibility_version,
+    1
+  )
+
+  const versionFields = [
+    'sponsor',
+    'title',
+    'description',
+    'button_text',
+    'link_url',
+    'profile_image_url',
+    'image_url',
+  ]
+
+  const contentChanged =
+    Boolean(current) &&
+    versionFields.some(
+      (field) =>
+        String(current?.[field] || '') !==
+        String(payload[field] || '')
+    )
+
+  const reactivated =
+    Boolean(current) &&
+    !Boolean(current.is_active) &&
+    Boolean(payload.is_active)
+
+  return {
+    ...payload,
+    visibility_version: current
+      ? currentVersion +
+        (contentChanged || reactivated ? 1 : 0)
+      : 1,
   }
 }
 
@@ -382,7 +424,8 @@ async function updatePromotionRecord(req, current) {
     const payload = buildPromotionPayload(
       req,
       images,
-      current.display_order || 1
+      current.display_order || 1,
+      current
     )
 
     const { data, error } = await supabase
@@ -593,6 +636,69 @@ export async function updateAdminShadowMallPromotionById(
         message:
           error.message ||
           'Failed to update Shadow Mall promotion',
+      })
+  }
+}
+
+
+export async function updateAdminShadowMallPromotionStatus(
+  req,
+  res
+) {
+  try {
+    const id = getPromotionId(req.params.id)
+    const current = await readPromotionById(id)
+
+    if (!current) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Promotion not found',
+      })
+    }
+
+    const nextActive = toBoolean(
+      req.body.is_active,
+      Boolean(current.is_active)
+    )
+    const currentVersion = toPositiveInteger(
+      current.visibility_version,
+      1
+    )
+    const reactivated =
+      !Boolean(current.is_active) && nextActive
+
+    const { data, error } = await supabase
+      .from('shadow_mall_ads')
+      .update({
+        is_active: nextActive,
+        visibility_version: reactivated
+          ? currentVersion + 1
+          : currentVersion,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .select('*')
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      promotion: normalizePromotion(data),
+    })
+  } catch (error) {
+    console.error(
+      'UPDATE SHADOW MALL AD STATUS ERROR:',
+      error
+    )
+
+    return res
+      .status(error.statusCode || 500)
+      .json({
+        ok: false,
+        message:
+          error.message ||
+          'Failed to update promotion status',
       })
   }
 }
