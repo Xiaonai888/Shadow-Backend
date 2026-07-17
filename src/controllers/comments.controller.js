@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import { getActiveReaderCommentBlock, readerCommentBlockedPayload } from '../utils/readerCommentBlocks.js'
+import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 
 function normalizeText(value) {
   return String(value || '').trim()
@@ -66,7 +67,7 @@ function publicComment(comment, likedIds = new Set()) {
 async function getStory(storyId) {
   const { data, error } = await supabase
     .from('stories')
-    .select('id, user_id, author_id, status, total_comments')
+    .select('id, user_id, author_id, title, status, total_comments')
     .eq('id', storyId)
     .maybeSingle()
 
