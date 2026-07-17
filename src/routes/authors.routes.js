@@ -1,6 +1,13 @@
 import { getMyAuthorDashboard } from '../controllers/authorDashboard.controller.js'
 import { getFollowedAuthorPostsFeed } from '../controllers/followedAuthorPostsFeed.controller.js'
 import express from 'express'
+
+import {
+  getMyAuthorStoryNotifications,
+  markAllMyAuthorStoryNotificationsRead,
+  markMyAuthorStoryNotificationRead,
+} from '../controllers/authorStoryNotifications.controller.js'
+
 import {
   updateMyAuthorPage,
   createAuthorPage,
@@ -51,6 +58,9 @@ router.get('/me/payment-methods', requireUser, getMyAuthorPaymentMethods)
 router.get('/me/page-notifications', requireUser, getMyAuthorPageNotifications)
 router.patch('/me/page-notifications/read-all', requireUser, markAllMyAuthorPageNotificationsRead)
 router.patch('/me/page-notifications/:id/read', requireUser, markMyAuthorPageNotificationRead)
+router.get('/me/story-notifications', requireUser, getMyAuthorStoryNotifications)
+router.patch('/me/story-notifications/read-all', requireUser, markAllMyAuthorStoryNotificationsRead)
+router.patch('/me/story-notifications/:id/read', requireUser, markMyAuthorStoryNotificationRead)
 router.get('/following', requireUser, getFollowedAuthorPages)
 router.get('/following/posts/feed', requireUser, getFollowedAuthorPostsFeed)
 router.get('/top', getTopAuthorPages)
