@@ -60,6 +60,7 @@ import savedPostsRoutes from './src/routes/savedPosts.routes.js'
 import helpCenterRoutes from './src/routes/helpCenter.routes.js'
 import supportRequestsRoutes from './src/routes/supportRequests.routes.js'
 import readerPostsRoutes from './src/routes/readerPosts.routes.js'
+import readingProgressRoutes from './src/routes/readingProgress.routes.js'
 
 dotenv.config()
 
@@ -198,6 +199,7 @@ app.use('/api/fast', readerActionSpamGuard, fastRoutes)
 app.use('/api/reports', readerActionSpamGuard, contentReportsRoutes)
 app.use('/api/admin/reports', adminReportsRoutes)
 app.use('/api/reader-posts', readerActionSpamGuard, readerPostsRoutes)
+app.use('/api/reading-progress', readerActionSpamGuard, readingProgressRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
