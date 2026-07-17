@@ -37,7 +37,7 @@ export async function createAuthorStoryNotification({
   const row = {
     author_id: cleanAuthorId,
     author_user_id: cleanAuthorUserId,
-    type: ['comment', 'income', 'gift', 'system'].includes(type) ? type : 'system',
+    type: ['comment', 'like', 'echo', 'unlock', 'income', 'gift', 'system'].includes(type) ? type : 'system',
     title: cleanTitle,
     message: cleanText(message),
     target_url: cleanText(targetUrl),
