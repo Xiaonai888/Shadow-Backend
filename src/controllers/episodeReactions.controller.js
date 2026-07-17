@@ -12,6 +12,35 @@ function getOptionalReader(req) {
   return user?.user_id ? user : null
 }
 
+async function getReaderProfileSafely(userId) {
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, name, username, avatar_url')
+      .eq('id', userId)
+      .maybeSingle()
+
+    if (error) throw error
+    return data || null
+  } catch (error) {
+    console.error('GET LIKE READER PROFILE ERROR:', error)
+    return null
+  }
+}
+
+async function deleteEpisodeLikeNotificationSafely(episodeId, userId) {
+  try {
+    const { error } = await supabase
+      .from('author_story_notifications')
+      .delete()
+      .eq('source_key', `episode-like:${episodeId}:${userId}`)
+
+    if (error) throw error
+  } catch (error) {
+    console.error('DELETE EPISODE LIKE NOTIFICATION ERROR:', error)
+  }
+}
+
 async function getEpisode(episodeId) {
   const { data, error } = await supabase
     .from('episodes')
@@ -212,7 +241,10 @@ export async function toggleEpisodeReaction(req, res) {
 
       if (deleteError) throw deleteError
 
-      const totalLikes = await syncEpisodeTotalLikes(episodeId)
+      const [totalLikes] = await Promise.all([
+        syncEpisodeTotalLikes(episodeId),
+        deleteEpisodeLikeNotificationSafely(episodeId, userId),
+      ])
 
       return res.status(200).json({
         ok: true,
@@ -223,7 +255,7 @@ export async function toggleEpisodeReaction(req, res) {
       })
     }
 
-    const { error: insertError } = await supabase
+    const { data: reaction, error: insertError } = await supabase
       .from('episode_reactions')
       .insert({
         user_id: userId,
@@ -231,6 +263,8 @@ export async function toggleEpisodeReaction(req, res) {
         episode_id: episodeId,
         reaction_type: reactionType,
       })
+      .select('id')
+      .single()
 
     if (insertError) throw insertError
 
@@ -238,10 +272,29 @@ export async function toggleEpisodeReaction(req, res) {
     const isOwner = String(episode.user_id || '') === String(userId)
 
     if (!isOwner && episode.author_id) {
-      await incrementAuthorPageAnalytics(
-        episode.author_id,
-        'interactions'
-      )
+      const reader = await getReaderProfileSafely(userId)
+      const readerName = reader?.name || reader?.username || 'A reader'
+
+      await Promise.all([
+        incrementAuthorPageAnalytics(episode.author_id, 'interactions'),
+        createAuthorStoryNotificationSafely({
+          authorId: episode.author_id,
+          type: 'like',
+          title: `${readerName} liked ${episode.title || 'your episode'}`,
+          targetUrl: `/story/${episode.story_id}/episode/${episodeId}`,
+          sourceKey: `episode-like:${episodeId}:${userId}`,
+          metadata: {
+            story_id: episode.story_id,
+            episode_id: episodeId,
+            reaction_id: reaction?.id || null,
+            reaction_type: reactionType,
+            reader_id: userId,
+            reader_name: readerName,
+            reader_username: reader?.username || '',
+            reader_avatar_url: reader?.avatar_url || '',
+          },
+        }),
+      ])
     }
 
     return res.status(200).json({
