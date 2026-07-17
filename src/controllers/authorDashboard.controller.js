@@ -4,6 +4,7 @@ const PERIOD_DAYS = {
   today: 1,
   '7d': 7,
   '28d': 28,
+  '30d': 30,
 }
 
 function safeNumber(value) {
@@ -246,8 +247,16 @@ export async function getMyAuthorDashboard(req, res) {
     const storyLikes = sumBy(stories, 'total_likes')
     const storyComments = sumBy(stories, 'total_comments')
     const episodes = sumBy(stories, 'total_episodes')
+    const topStories = [...stories]
+  .sort(
+    (a, b) =>
+      safeNumber(b.total_views) - safeNumber(a.total_views) ||
+      safeNumber(b.total_likes) - safeNumber(a.total_likes) ||
+      safeNumber(b.total_comments) - safeNumber(a.total_comments)
+  )
+  .slice(0, 5)
 
-    const periodTotals = series.reduce(
+const periodTotals = series.reduce(
       (totals, item) => ({
         page_views: totals.page_views + item.page_views,
         story_reads: totals.story_reads + item.story_reads,
@@ -291,6 +300,7 @@ export async function getMyAuthorDashboard(req, res) {
       },
       period_totals: periodTotals,
       analytics: series,
+      top_stories: topStories,
       latest_post: posts[0] || null,
       recent_comments: recentComments,
       notifications: notificationsResult.data || [],
