@@ -587,19 +587,26 @@ export async function createEpisodeComment(req, res) {
       })
       .eq('id', episode.story_id)
 
-    const isOwner =
-  String(story.user_id || '') === String(userId)
+   const isOwner = String(story.user_id || '') === String(userId)
 
 if (!isOwner && story.author_id) {
   await Promise.all([
-    incrementAuthorPageAnalytics(
-      story.author_id,
-      'comments'
-    ),
-    incrementAuthorPageAnalytics(
-      story.author_id,
-      'interactions'
-    ),
+    incrementAuthorPageAnalytics(story.author_id, 'comments'),
+    incrementAuthorPageAnalytics(story.author_id, 'interactions'),
+    createAuthorStoryNotificationSafely({
+      authorId: story.author_id,
+      type: 'comment',
+      title: `${data.user?.name || data.user?.username || 'A reader'} commented on ${story.title || 'your story'}`,
+      message: text,
+      targetUrl: `/story/${episode.story_id}/episode/${episodeId}`,
+      sourceKey: `episode-comment:${data.id}`,
+      metadata: {
+        story_id: episode.story_id,
+        episode_id: episodeId,
+        comment_id: data.id,
+        reader_id: userId,
+      },
+    }),
   ])
 }
 
