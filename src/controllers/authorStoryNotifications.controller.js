@@ -1,5 +1,15 @@
 import { supabase } from '../config/supabase.js'
 
+const NOTIFICATION_TYPES = new Set([
+  'comment',
+  'like',
+  'echo',
+  'unlock',
+  'income',
+  'gift',
+  'system',
+])
+
 function normalizeNotification(item) {
   return {
     id: item.id,
@@ -126,6 +136,156 @@ export async function markMyAuthorStoryNotificationRead(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to mark notification as read',
+      error: error.message,
+    })
+  }
+}
+
+export async function markMyAuthorStoryNotificationUnread(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const notificationId = String(req.params.id || '').trim()
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!notificationId) {
+      return res.status(400).json({ ok: false, message: 'Notification ID is required' })
+    }
+
+    const authorPage = await getAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Author access is required' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_story_notifications')
+      .update({
+        is_read: false,
+        read_at: null,
+      })
+      .eq('id', notificationId)
+      .eq('author_id', authorPage.id)
+      .select()
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({ ok: false, message: 'Notification not found' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      notification: normalizeNotification(data),
+    })
+  } catch (error) {
+    console.error('MARK AUTHOR STORY NOTIFICATION UNREAD ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to mark notification as unread',
+      error: error.message,
+    })
+  }
+}
+
+export async function deleteMyAuthorStoryNotification(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const notificationId = String(req.params.id || '').trim()
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!notificationId) {
+      return res.status(400).json({ ok: false, message: 'Notification ID is required' })
+    }
+
+    const authorPage = await getAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Author access is required' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_story_notifications')
+      .delete()
+      .eq('id', notificationId)
+      .eq('author_id', authorPage.id)
+      .select('id')
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({ ok: false, message: 'Notification not found' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      deleted_id: data.id,
+    })
+  } catch (error) {
+    console.error('DELETE AUTHOR STORY NOTIFICATION ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to delete notification',
+      error: error.message,
+    })
+  }
+}
+
+export async function updateMyAuthorStoryNotificationPreference(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const type = String(req.params.type || '').trim().toLowerCase()
+    const isEnabled = req.body?.is_enabled !== false
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!NOTIFICATION_TYPES.has(type)) {
+      return res.status(400).json({ ok: false, message: 'Notification type is not valid' })
+    }
+
+    const authorPage = await getAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Author access is required' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_story_notification_preferences')
+      .upsert(
+        {
+          author_id: authorPage.id,
+          author_user_id: userId,
+          type,
+          is_enabled: isEnabled,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: 'author_id,type',
+        }
+      )
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      preference: data,
+    })
+  } catch (error) {
+    console.error('UPDATE AUTHOR STORY NOTIFICATION PREFERENCE ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update notification preference',
       error: error.message,
     })
   }
