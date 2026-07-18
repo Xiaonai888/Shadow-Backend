@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { createAuthorEarningsFromDiamondUnlock } from '../services/authorRevenue.service.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 
 const FALLBACK_RULES = {
