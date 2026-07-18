@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
@@ -83,6 +84,38 @@ async function storyExists(storyId) {
   if (error) throw error
 
   return Boolean(data?.id)
+}
+
+async function getStoryContextSafely(storyId) {
+  try {
+    const { data, error } = await supabase
+      .from('stories')
+      .select('id, user_id, author_id, title')
+      .eq('id', storyId)
+      .maybeSingle()
+
+    if (error) throw error
+    return data || null
+  } catch (error) {
+    console.error('GET GIFT STORY CONTEXT ERROR:', error)
+    return null
+  }
+}
+
+async function getReaderProfileSafely(userId) {
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, name, username, avatar_url')
+      .eq('id', userId)
+      .maybeSingle()
+
+    if (error) throw error
+    return data || null
+  } catch (error) {
+    console.error('GET GIFT READER PROFILE ERROR:', error)
+    return null
+  }
 }
 
 export async function getGiftCatalog(req, res) {
@@ -206,10 +239,47 @@ export async function sendStoryGift(req, res) {
     }
 
     const result = Array.isArray(data) ? data[0] : data
+    const gift = result?.gift || null
+    const [story, reader] = await Promise.all([
+      getStoryContextSafely(storyId),
+      getReaderProfileSafely(userId),
+    ])
+
+    if (
+      story?.author_id &&
+      String(story.user_id || '') !== String(userId)
+    ) {
+      const readerName = reader?.name || reader?.username || 'A reader'
+      const giftName = gift?.name || gift?.gift_name || giftKey
+      const giftId = gift?.id || gift?.gift_id || `${storyId}:${userId}:${Date.now()}`
+
+      await createAuthorStoryNotificationSafely({
+        authorId: story.author_id,
+        type: 'gift',
+        title: `${readerName} sent ${quantity} × ${giftName}`,
+        message: `Gift received on ${story.title || 'your story'}`,
+        targetUrl: `/story/${storyId}`,
+        sourceKey: `story-gift:${giftId}`,
+        metadata: {
+          story_id: storyId,
+          gift_id: gift?.id || gift?.gift_id || null,
+          gift_key: giftKey,
+          gift_name: giftName,
+          quantity,
+          currency: gift?.currency || null,
+          price: Number(gift?.price || 0),
+          support_points: Number(gift?.support_points || 0),
+          reader_id: userId,
+          reader_name: readerName,
+          reader_username: reader?.username || '',
+          reader_avatar_url: reader?.avatar_url || '',
+        },
+      })
+    }
 
     return res.status(201).json({
       ok: true,
-      gift: result?.gift || null,
+      gift,
       wallet: result?.wallet || null,
     })
   } catch (error) {
