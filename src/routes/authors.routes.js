@@ -1,5 +1,6 @@
 import { getMyAuthorDashboard } from '../controllers/authorDashboard.controller.js'
 import { getFollowedAuthorPostsFeed } from '../controllers/followedAuthorPostsFeed.controller.js'
+import { getDiscoverAuthorSuggestions } from '../controllers/authorDiscovery.controller.js'
 import express from 'express'
 
 import {
@@ -68,6 +69,7 @@ router.delete('/me/story-notifications/:id', requireUser, deleteMyAuthorStoryNot
 router.put('/me/story-notification-preferences/:type', requireUser, updateMyAuthorStoryNotificationPreference)
 router.get('/following', requireUser, getFollowedAuthorPages)
 router.get('/following/posts/feed', requireUser, getFollowedAuthorPostsFeed)
+router.get('/discover', requireUser, getDiscoverAuthorSuggestions)
 router.get('/top', getTopAuthorPages)
 router.get('/page/:pageUsername/followers', getAuthorPageFollowers)
 router.get('/page/:pageUsername/reviews', getAuthorPageReviews)
