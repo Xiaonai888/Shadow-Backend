@@ -1,5 +1,15 @@
 import { supabase } from '../config/supabase.js'
 
+const NOTIFICATION_TYPES = new Set([
+  'comment',
+  'like',
+  'echo',
+  'unlock',
+  'income',
+  'gift',
+  'system',
+])
+
 function cleanText(value, fallback = '') {
   return String(value ?? fallback).trim()
 }
@@ -16,6 +26,7 @@ export async function createAuthorStoryNotification({
 }) {
   const cleanAuthorId = cleanText(authorId)
   const cleanTitle = cleanText(title)
+  const cleanType = NOTIFICATION_TYPES.has(type) ? type : 'system'
 
   if (!cleanAuthorId || !cleanTitle) return null
 
@@ -34,10 +45,20 @@ export async function createAuthorStoryNotification({
 
   if (!cleanAuthorUserId) return null
 
+  const { data: preference, error: preferenceError } = await supabase
+    .from('author_story_notification_preferences')
+    .select('is_enabled')
+    .eq('author_id', cleanAuthorId)
+    .eq('type', cleanType)
+    .maybeSingle()
+
+  if (preferenceError) throw preferenceError
+  if (preference?.is_enabled === false) return null
+
   const row = {
     author_id: cleanAuthorId,
     author_user_id: cleanAuthorUserId,
-    type: ['comment', 'like', 'echo', 'unlock', 'income', 'gift', 'system'].includes(type) ? type : 'system',
+    type: cleanType,
     title: cleanTitle,
     message: cleanText(message),
     target_url: cleanText(targetUrl),
