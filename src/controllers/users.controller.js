@@ -10,7 +10,10 @@ function normalizeUsername(username) {
   return String(username || '')
     .trim()
     .replace(/^@+/, '')
-    .toLowerCase()
+}
+
+function escapeLikePattern(value) {
+  return String(value || '').replace(/[\\%_]/g, '\\$&')
 }
 
 const PROFILE_LINK_TYPES = ['website', 'facebook', 'instagram', 'telegram', 'tiktok', 'youtube', 'x', 'link']
@@ -237,19 +240,19 @@ export async function registerUser(req, res) {
       })
     }
 
-    if (username.length < 3) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Username must be at least 3 characters',
-      })
-    }
+    if (username.length < 3 || username.length > 30) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Username must be 3–30 characters.',
+  })
+}
 
-    if (!/^[a-z0-9_]+$/.test(username)) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Username can only use letters, numbers, and underscore',
-      })
-    }
+if (!/^[A-Za-z0-9_]+$/.test(username)) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Username can only contain English letters, numbers, and underscores.',
+  })
+}
 
     if (password.length < 6) {
       return res.status(400).json({
@@ -288,25 +291,38 @@ export async function registerUser(req, res) {
       })
     }
 
-    const { data: existingUser, error: existingError } = await supabase
-      .from('users')
-      .select('id, email, username')
-      .or(`email.eq.${email},username.eq.${username}`)
-      .maybeSingle()
+    const [
+  { data: existingEmail, error: emailLookupError },
+  { data: existingUsername, error: usernameLookupError },
+] = await Promise.all([
+  supabase
+    .from('users')
+    .select('id')
+    .eq('email', email)
+    .maybeSingle(),
+  supabase
+    .from('users')
+    .select('id')
+    .ilike('username', escapeLikePattern(username))
+    .maybeSingle(),
+])
 
-    if (existingError) throw existingError
+if (emailLookupError) throw emailLookupError
+if (usernameLookupError) throw usernameLookupError
 
-    if (existingUser) {
-      const message =
-        existingUser.email === email
-          ? 'Email already exists'
-          : 'Username already exists'
+if (existingEmail) {
+  return res.status(409).json({
+    ok: false,
+    message: 'Email already exists',
+  })
+}
 
-      return res.status(409).json({
-        ok: false,
-        message,
-      })
-    }
+if (existingUsername) {
+  return res.status(409).json({
+    ok: false,
+    message: 'This username is already taken.',
+  })
+}
 
     const passwordHash = hashPassword(password)
 
@@ -775,19 +791,19 @@ export async function updateUserProfile(req, res) {
       })
     }
 
-    if (username.length < 3) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Username must be at least 3 characters',
-      })
-    }
+    if (username.length < 3 || username.length > 30) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Username must be 3–30 characters.',
+  })
+}
 
-    if (!/^[a-z0-9_]+$/.test(username)) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Username can only use letters, numbers, and underscore',
-      })
-    }
+if (!/^[A-Za-z0-9_]+$/.test(username)) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Username can only contain English letters, numbers, and underscores.',
+  })
+}
 
     const now = new Date()
     const nowIso = now.toISOString()
@@ -820,7 +836,7 @@ export async function updateUserProfile(req, res) {
       const { data: existingUser, error: existingUserError } = await supabase
         .from('users')
         .select('id')
-        .eq('username', username)
+        .ilike('username', escapeLikePattern(username))
         .neq('id', userId)
         .maybeSingle()
 
