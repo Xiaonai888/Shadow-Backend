@@ -464,6 +464,7 @@ export async function createStoryComment(req, res) {
       .eq('id', storyId)
 
     const isOwner = String(story.user_id || '') === String(userId)
+    const reader = publicUser(Array.isArray(data.user) ? data.user[0] : data.user)
 
     if (!isOwner && story.author_id) {
       await Promise.all([
@@ -472,11 +473,19 @@ export async function createStoryComment(req, res) {
         createAuthorStoryNotificationSafely({
           authorId: story.author_id,
           type: 'comment',
-          title: `${data.user?.name || data.user?.username || 'A reader'} commented on ${story.title || 'your story'}`,
+          title: `${reader.name} ${parentId ? 'replied on' : 'commented on'} ${story.title || 'your story'}`,
           message: text,
-          targetUrl: `/story/${storyId}`,
+          targetUrl: `/story/${storyId}?comment=${data.id}`,
           sourceKey: `story-comment:${data.id}`,
-          metadata: { story_id: storyId, comment_id: data.id, reader_id: userId },
+          metadata: {
+            story_id: storyId,
+            comment_id: data.id,
+            parent_id: parentId,
+            reader_id: userId,
+            reader_name: reader.name,
+            reader_username: reader.username,
+            reader_avatar_url: reader.avatar_url,
+          },
         }),
       ])
     }
@@ -587,28 +596,33 @@ export async function createEpisodeComment(req, res) {
       })
       .eq('id', episode.story_id)
 
-   const isOwner = String(story.user_id || '') === String(userId)
+    const isOwner = String(story.user_id || '') === String(userId)
+    const reader = publicUser(Array.isArray(data.user) ? data.user[0] : data.user)
 
-if (!isOwner && story.author_id) {
-  await Promise.all([
-    incrementAuthorPageAnalytics(story.author_id, 'comments'),
-    incrementAuthorPageAnalytics(story.author_id, 'interactions'),
-    createAuthorStoryNotificationSafely({
-      authorId: story.author_id,
-      type: 'comment',
-      title: `${data.user?.name || data.user?.username || 'A reader'} commented on ${story.title || 'your story'}`,
-      message: text,
-      targetUrl: `/story/${episode.story_id}/episode/${episodeId}`,
-      sourceKey: `episode-comment:${data.id}`,
-      metadata: {
-        story_id: episode.story_id,
-        episode_id: episodeId,
-        comment_id: data.id,
-        reader_id: userId,
-      },
-    }),
-  ])
-}
+    if (!isOwner && story.author_id) {
+      await Promise.all([
+        incrementAuthorPageAnalytics(story.author_id, 'comments'),
+        incrementAuthorPageAnalytics(story.author_id, 'interactions'),
+        createAuthorStoryNotificationSafely({
+          authorId: story.author_id,
+          type: 'comment',
+          title: `${reader.name} ${parentId ? 'replied on' : 'commented on'} ${story.title || 'your story'}`,
+          message: text,
+          targetUrl: `/story/${episode.story_id}/episode/${episodeId}?comment=${data.id}`,
+          sourceKey: `episode-comment:${data.id}`,
+          metadata: {
+            story_id: episode.story_id,
+            episode_id: episodeId,
+            comment_id: data.id,
+            parent_id: parentId,
+            reader_id: userId,
+            reader_name: reader.name,
+            reader_username: reader.username,
+            reader_avatar_url: reader.avatar_url,
+          },
+        }),
+      ])
+    }
 
     return res.status(201).json({
       ok: true,
