@@ -33,7 +33,10 @@ function normalizeUsername(value) {
   return String(value || '')
     .trim()
     .replace(/^@+/, '')
-    .toLowerCase()
+}
+
+function escapeLikePattern(value) {
+  return String(value || '').replace(/[\\%_]/g, '\\$&')
 }
 
 function getLimit(value) {
@@ -567,7 +570,7 @@ export async function getReaderPostsByUsername(
       .select(
         'id, name, username, avatar_url, is_active'
       )
-      .eq('username', username)
+      .ilike('username', escapeLikePattern(username))
       .eq('is_active', true)
       .maybeSingle()
 
