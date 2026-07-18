@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 
 const PAGE_SIZE_DEFAULT = 20
 const PAGE_SIZE_MAX = 100
@@ -27,6 +28,58 @@ function isUuid(value) {
 
 function adminActor(req) {
   return cleanText(req.admin?.email || req.admin?.username || req.admin?.admin_name || req.admin?.user_id || req.headers['x-admin-name'] || req.headers['x-admin-actor'] || 'Admin')
+}
+
+
+async function createStoryAdminNotificationSafely({
+  story,
+  action,
+  title,
+  message = '',
+  actor = '',
+}) {
+  if (!story?.id || !story?.author_id) return null
+
+  return createAuthorStoryNotificationSafely({
+    authorId: story.author_id,
+    type: 'system',
+    title,
+    message,
+    targetUrl: `/author/story/${story.id}/manage`,
+    sourceKey: `admin-story:${action}:${story.id}:${story.updated_at || Date.now()}`,
+    metadata: {
+      story_id: story.id,
+      action,
+      admin_visibility_status: story.admin_visibility_status || '',
+      admin_actor: actor,
+    },
+  })
+}
+
+async function createAuthorAdminNotificationSafely({
+  author,
+  action,
+  title,
+  message = '',
+  actor = '',
+}) {
+  if (!author?.id) return null
+
+  return createAuthorStoryNotificationSafely({
+    authorId: author.id,
+    authorUserId: author.user_id || '',
+    type: 'system',
+    title,
+    message,
+    targetUrl: '/author/dashboard',
+    sourceKey: `admin-author:${action}:${author.id}:${author.updated_at || Date.now()}`,
+    metadata: {
+      author_id: author.id,
+      action,
+      admin_status: author.admin_status || '',
+      admin_actor: actor,
+    },
+  })
 }
 
 function daysLeft(value) {
@@ -366,6 +419,22 @@ export async function updateStoryAdminVisibility(req, res) {
       admin_actor: actor,
     })
 
+    await createStoryAdminNotificationSafely({
+      story,
+      action: visibility === 'active' ? 'restriction_removed' : `story_${visibility}`,
+      title:
+        visibility === 'active'
+          ? `Admin restored ${story.title || 'your story'}`
+          : visibility === 'restricted'
+            ? `Admin restricted ${story.title || 'your story'}`
+            : `Admin disabled ${story.title || 'your story'}`,
+      message:
+        visibility === 'active'
+          ? note || 'Your story is active again.'
+          : reason,
+      actor,
+    })
+
     const authors = await fetchAuthors([story.author_id])
 
     return res.status(200).json({
@@ -422,6 +491,14 @@ export async function issueStoryWarning(req, res) {
       action: 'warning_issued',
       reason,
       admin_actor: actor,
+    })
+
+    await createStoryAdminNotificationSafely({
+      story,
+      action: 'warning_issued',
+      title: `Admin issued a warning for ${story.title || 'your story'}`,
+      message: reason,
+      actor,
     })
 
     const authors = await fetchAuthors([story.author_id])
@@ -491,6 +568,20 @@ export async function updateAuthorAdminStatus(req, res) {
       action: status === 'active' ? 'author_page_enabled' : 'author_page_disabled',
       reason: status === 'active' ? 'Author page enabled by admin' : reason,
       admin_actor: actor,
+    })
+
+    await createAuthorAdminNotificationSafely({
+      author,
+      action: status === 'active' ? 'author_page_enabled' : 'author_page_disabled',
+      title:
+        status === 'active'
+          ? 'Admin enabled your Author Page'
+          : 'Admin disabled your Author Page',
+      message:
+        status === 'active'
+          ? note || 'Your Author Page is active again.'
+          : reason,
+      actor,
     })
 
     return res.status(200).json({
