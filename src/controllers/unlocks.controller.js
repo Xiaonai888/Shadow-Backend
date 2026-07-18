@@ -1,5 +1,5 @@
 import { supabase } from '../config/supabase.js'
-import { createAuthorEarningsFromDiamondUnlock } from '../services/authorRevenue.service.js'
+import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 
 const FALLBACK_RULES = {
   diamond_per_episode: 10,
@@ -404,6 +404,22 @@ async function getActiveUnlock({ userId, episodeId }) {
   }
 
   return data
+}
+
+async function getReaderProfileSafely(userId) {
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, name, username, avatar_url')
+      .eq('id', userId)
+      .maybeSingle()
+
+    if (error) throw error
+    return data || null
+  } catch (error) {
+    console.error('GET UNLOCK READER PROFILE ERROR:', error)
+    return null
+  }
 }
 
 async function getActiveUnlockEpisodeIds({ userId, storyId }) {
@@ -883,6 +899,34 @@ export async function unlockEpisodePackageWithDiamonds(req, res) {
         reader_tier: tier,
       },
     })
+
+        const reader = await getReaderProfileSafely(userId)
+    const readerName = reader?.name || reader?.username || 'A reader'
+    const firstEpisode = episodesToUnlock[0]
+    const isOwner = String(payload.story.user_id || '') === String(userId)
+
+    if (!isOwner && payload.story.author_id && unlocks.length) {
+      await createAuthorStoryNotificationSafely({
+        authorId: payload.story.author_id,
+        type: 'unlock',
+        title: `${readerName} unlocked ${unlocks.length} episode${unlocks.length > 1 ? 's' : ''}`,
+        message: `${option.price} Diamonds spent on ${payload.story.title || 'your story'}`,
+        targetUrl: `/story/${storyId}/episode/${firstEpisode?.id || episodeId}`,
+        sourceKey: `diamond-unlock:${unlocks[0].id}`,
+        metadata: {
+          story_id: storyId,
+          episode_id: firstEpisode?.id || episodeId,
+          unlock_ids: unlocks.map((unlock) => unlock.id),
+          package_key: packageKey,
+          episode_count: unlocks.length,
+          diamond_amount: Number(option.price || 0),
+          reader_id: userId,
+          reader_name: readerName,
+          reader_username: reader?.username || '',
+          reader_avatar_url: reader?.avatar_url || '',
+        },
+      })
+    }
 
     return res.status(200).json({
       ok: true,
