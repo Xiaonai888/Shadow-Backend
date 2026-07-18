@@ -1,4 +1,6 @@
 import { supabase } from '../config/supabase.js'
+import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
+import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 
 const DESTINATIONS = new Set(['feed', 'shadow', 'reader', 'circle'])
 const AUDIENCES = new Set(['public', 'followers', 'close-readers', 'only-me'])
@@ -14,6 +16,22 @@ function normalizeChoice(value, allowed, fallback) {
 
 function getViewerId(req) {
   return req.user?.user_id || null
+}
+
+async function getReaderProfileSafely(userId) {
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, name, username, avatar_url')
+      .eq('id', userId)
+      .maybeSingle()
+
+    if (error) throw error
+    return data || null
+  } catch (error) {
+    console.error('GET ECHO READER PROFILE ERROR:', error)
+    return null
+  }
 }
 
 async function getEpisodeContext(episodeId) {
@@ -173,12 +191,45 @@ export async function createEpisodeEcho(req, res) {
 
     if (error) throw error
 
+    const reader = await getReaderProfileSafely(userId)
+    const readerName = reader?.name || reader?.username || 'A reader'
+    const isOwner = String(context.story.user_id || '') === String(userId)
+    const shouldNotify = !isOwner && Boolean(context.story.author_id) && audience !== 'only-me'
+
+    if (shouldNotify) {
+      await Promise.all([
+        incrementAuthorPageAnalytics(context.story.author_id, 'interactions'),
+        createAuthorStoryNotificationSafely({
+          authorId: context.story.author_id,
+          type: 'echo',
+          title: `${readerName} echoed ${context.episode.title || 'your episode'}`,
+          message: echoText,
+          targetUrl: `/story/${context.story.id}/episode/${context.episode.id}`,
+          sourceKey: `episode-echo:${data.id}`,
+          metadata: {
+            story_id: context.story.id,
+            episode_id: context.episode.id,
+            echo_id: data.id,
+            destination,
+            audience,
+            reader_id: userId,
+            reader_name: readerName,
+            reader_username: reader?.username || '',
+            reader_avatar_url: reader?.avatar_url || '',
+          },
+        }),
+      ])
+    }
+
     return res.status(201).json({
       ok: true,
       echo: {
         ...data,
         user: {
           id: userId,
+          name: readerName,
+          username: reader?.username || '',
+          avatar_url: reader?.avatar_url || '',
         },
       },
     })
