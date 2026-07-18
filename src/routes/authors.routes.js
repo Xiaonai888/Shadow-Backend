@@ -3,9 +3,12 @@ import { getFollowedAuthorPostsFeed } from '../controllers/followedAuthorPostsFe
 import express from 'express'
 
 import {
+  deleteMyAuthorStoryNotification,
   getMyAuthorStoryNotifications,
   markAllMyAuthorStoryNotificationsRead,
   markMyAuthorStoryNotificationRead,
+  markMyAuthorStoryNotificationUnread,
+  updateMyAuthorStoryNotificationPreference,
 } from '../controllers/authorStoryNotifications.controller.js'
 
 import {
@@ -47,7 +50,6 @@ import {
   markMyAuthorPageNotificationRead,
 } from '../controllers/authorPageNotifications.controller.js'
 
-
 const router = express.Router()
 
 router.get('/me/dashboard', requireUser, getMyAuthorDashboard)
@@ -61,6 +63,9 @@ router.patch('/me/page-notifications/:id/read', requireUser, markMyAuthorPageNot
 router.get('/me/story-notifications', requireUser, getMyAuthorStoryNotifications)
 router.patch('/me/story-notifications/read-all', requireUser, markAllMyAuthorStoryNotificationsRead)
 router.patch('/me/story-notifications/:id/read', requireUser, markMyAuthorStoryNotificationRead)
+router.patch('/me/story-notifications/:id/unread', requireUser, markMyAuthorStoryNotificationUnread)
+router.delete('/me/story-notifications/:id', requireUser, deleteMyAuthorStoryNotification)
+router.put('/me/story-notification-preferences/:type', requireUser, updateMyAuthorStoryNotificationPreference)
 router.get('/following', requireUser, getFollowedAuthorPages)
 router.get('/following/posts/feed', requireUser, getFollowedAuthorPostsFeed)
 router.get('/top', getTopAuthorPages)
@@ -82,6 +87,5 @@ router.post('/me/posts/:postId/react', requireUser, setMyAuthorPostReaction)
 router.get('/page/posts/:postId', getAuthorPostById)
 router.get('/page/posts/:postId/comments', getAuthorPostComments)
 router.post('/me/posts/:postId/comments', requireUser, createAuthorPostComment)
-
 
 export default router
