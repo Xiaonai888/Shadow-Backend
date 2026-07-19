@@ -31,11 +31,13 @@ import {
 import {
   createAuthorPostComment,
   createMyAuthorPost,
+  deleteOwnAuthorPostComment,
   getAuthorPagePosts,
   getAuthorPostById,
   getAuthorPostComments,
   setMyAuthorPostPinned,
   setMyAuthorPostReaction,
+  updateOwnAuthorPostComment,
 } from '../controllers/authorPosts.controller.js'
 import {
   getMyAuthorIncome,
@@ -89,5 +91,7 @@ router.post('/me/posts/:postId/react', requireUser, setMyAuthorPostReaction)
 router.get('/page/posts/:postId', getAuthorPostById)
 router.get('/page/posts/:postId/comments', getAuthorPostComments)
 router.post('/me/posts/:postId/comments', requireUser, createAuthorPostComment)
+router.patch('/me/post-comments/:commentId', requireUser, updateOwnAuthorPostComment)
+router.delete('/me/post-comments/:commentId', requireUser, deleteOwnAuthorPostComment)
 
 export default router
