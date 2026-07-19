@@ -8,6 +8,10 @@ import {
   updateMyReaderPost,
 } from '../controllers/readerPosts.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
+import {
+  getReaderPostReactionStatus,
+  setReaderPostReaction,
+} from '../controllers/readerPostReactions.controller.js'
 
 const router = express.Router()
 
@@ -16,6 +20,8 @@ router.get('/me', requireUser, getMyReaderPosts)
 router.post('/me', requireUser, createMyReaderPost)
 router.patch('/me/:postId', requireUser, updateMyReaderPost)
 router.delete('/me/:postId', requireUser, deleteMyReaderPost)
+router.get('/:postId/reaction', requireUser, getReaderPostReactionStatus)
+router.post('/:postId/reaction', requireUser, setReaderPostReaction)
 router.get(
   '/user/:username',
   requireUser,
