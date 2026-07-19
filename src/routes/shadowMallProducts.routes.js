@@ -24,6 +24,17 @@ import {
   updateAdminShadowMallPromotionStatus,
 } from '../controllers/shadowMallPromotion.controller.js'
 import {
+  createShadowMallPromotionComment,
+  createShadowMallPromotionEcho,
+  deleteOwnShadowMallPromotionComment,
+  getShadowMallPromotionComments,
+  getShadowMallPromotionEchoes,
+  getShadowMallPromotionReactionStatus,
+  setShadowMallPromotionReaction,
+  toggleShadowMallPromotionCommentLike,
+  updateOwnShadowMallPromotionComment,
+} from '../controllers/shadowMallPromotionSocial.controller.js'
+import {
   getShadowMallBuyerProfile,
   saveShadowMallBuyerProfile,
 } from '../controllers/shadowMallBuyerProfiles.controller.js'
@@ -80,6 +91,52 @@ router.get('/home', getShadowMallHome)
 router.get('/promotion', getPublicShadowMallPromotion)
 router.get('/promotions', getPublicShadowMallPromotions)
 router.get('/products', getShadowMallProducts)
+
+router.get(
+  '/promotions/:promotionId/reaction',
+  requireUser,
+  getShadowMallPromotionReactionStatus
+)
+router.post(
+  '/promotions/:promotionId/reaction',
+  requireUser,
+  setShadowMallPromotionReaction
+)
+router.get(
+  '/promotions/:promotionId/comments',
+  requireUser,
+  getShadowMallPromotionComments
+)
+router.post(
+  '/promotions/:promotionId/comments',
+  requireUser,
+  createShadowMallPromotionComment
+)
+router.patch(
+  '/promotion-comments/:commentId',
+  requireUser,
+  updateOwnShadowMallPromotionComment
+)
+router.delete(
+  '/promotion-comments/:commentId',
+  requireUser,
+  deleteOwnShadowMallPromotionComment
+)
+router.post(
+  '/promotion-comments/:commentId/like',
+  requireUser,
+  toggleShadowMallPromotionCommentLike
+)
+router.get(
+  '/promotions/:promotionId/echoes',
+  requireUser,
+  getShadowMallPromotionEchoes
+)
+router.post(
+  '/promotions/:promotionId/echoes',
+  requireUser,
+  createShadowMallPromotionEcho
+)
 
 router.get(
   '/admin/promotion',
