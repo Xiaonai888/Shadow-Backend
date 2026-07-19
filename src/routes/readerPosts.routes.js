@@ -18,6 +18,10 @@ import {
   toggleReaderPostCommentLike,
   updateOwnReaderPostComment,
 } from '../controllers/readerPostComments.controller.js'
+import {
+  createReaderPostEcho,
+  getReaderPostEchoes,
+} from '../controllers/readerPostEchoes.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
@@ -63,6 +67,17 @@ router.post(
   '/comments/:commentId/like',
   requireUser,
   toggleReaderPostCommentLike
+)
+
+router.get(
+  '/:postId/echoes',
+  requireUser,
+  getReaderPostEchoes
+)
+router.post(
+  '/:postId/echoes',
+  requireUser,
+  createReaderPostEcho
 )
 
 router.get(
