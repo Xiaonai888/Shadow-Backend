@@ -222,7 +222,7 @@ function isFreeEpisode(episode, firstVisibleEpisodeId = null) {
   const episodeNumber = Number(episode?.episode_number || 0)
 
   if (firstVisibleEpisodeId && episode?.id === firstVisibleEpisodeId) return true
-  if (episodeNumber <= 1) return true
+  if (episodeNumber <= 5) return true
   if (!episode?.is_locked) return true
 
   return false
