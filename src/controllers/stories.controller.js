@@ -711,7 +711,7 @@ export async function createEpisode(req, res) {
     }
 
     const episodeNumber = await getNextEpisodeNumber(storyId)
-    const defaultLocked = episodeNumber > 1
+    const defaultLocked = episodeNumber > 5
 
     const isLocked =
       typeof req.body.is_locked === 'boolean'
