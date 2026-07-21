@@ -185,7 +185,7 @@ function getAutoFreeVisibleEpisodeIds(visibleEpisodes = [], story, now = Date.no
 
   return new Set(
     orderedEpisodes
-      .slice(1)
+      .slice(5)
       .filter((episode) => isOldEnoughForAutoFree(episode, story, now))
       .slice(0, limit)
       .map((episode) => episode.id)
