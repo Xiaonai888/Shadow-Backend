@@ -108,9 +108,9 @@ function publicRuleGuidelines(rules) {
       body: `Standard ${rules.gem.monthly_story_limits.standard}/story/month, VIP ${rules.gem.monthly_story_limits.vip}/story/month, Premium ${rules.gem.monthly_story_limits.premium}/story/month.`,
     },
     {
-      title: 'Free First Episodes',
-      body: `Login required. Standard ${rules.free_first_episode.monthly_limits.standard}/month, VIP ${rules.free_first_episode.monthly_limits.vip}/month, Premium unlimited.`,
-    },
+  title: 'First 5 Episodes',
+  body: `Episodes 1–5 are free. Paid unlocks and author income start from Episode 6. Login required. Standard ${rules.free_first_episode.monthly_limits.standard} stories/month, VIP ${rules.free_first_episode.monthly_limits.vip} stories/month, Premium unlimited.`,
+},
     {
       title: 'Vouchers',
       body: `${rules.voucher.cost_per_episode} vouchers unlock 1 episode permanently in any story.`,
