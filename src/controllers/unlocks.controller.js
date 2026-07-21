@@ -146,12 +146,12 @@ function isAutoFreeOldEpisodeForStory(episode, story, now = Date.now()) {
 
   const episodeNumber = Number(episode?.episode_number || 0)
 
-  if (episodeNumber <= 1) return false
+  if (episodeNumber <= 5) return false
 
   const limit = getAutoFreeOldEpisodeLimit(story)
 
   if (limit <= 0) return false
-  if (episodeNumber > limit + 1) return false
+  if (episodeNumber > limit + 5) return false
 
   const publishedTime = getEpisodePublishedTime(episode)
 
