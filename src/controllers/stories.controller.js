@@ -4,6 +4,7 @@ import { blockedWordsWarningPayload, findBlockedWordsInContent } from '../utils/
 const ALLOWED_LANGUAGES = ['Khmer', 'English', 'Chinese', 'Japanese', 'Korean']
 const ALLOWED_UPDATE_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const ALLOWED_STORY_STATUSES = ['New', 'Ongoing', 'Completed']
+const ALLOWED_STORY_TYPES = ['novel', 'manga']
 const ALLOWED_STORY_TYPES = ['Novel', 'Chat Story']
 const ALLOWED_UNLOCK_METHODS = ['gem', 'voucher', 'story_card', 'free_item']
 const MIN_EPISODE_CHARACTERS = 1500
@@ -91,6 +92,11 @@ function cleanUpdateDays(value) {
 function cleanStoryStatus(value) {
   const status = cleanText(value || 'New')
   return ALLOWED_STORY_STATUSES.includes(status) ? status : 'New'
+}
+
+function cleanStoryType(value, fallback = 'novel') {
+  const type = cleanText(value || fallback).toLowerCase()
+  return ALLOWED_STORY_TYPES.includes(type) ? type : fallback
 }
 
 function cleanUnlockMethods(value) {
@@ -369,6 +375,7 @@ export async function createStory(req, res) {
     }
 
     const title = cleanText(req.body.title)
+    const storyType = cleanStoryType(req.body.story_type || req.body.storyType)
     const requestedStoryType = cleanText(req.body.story_type || req.body.storyType || 'Novel')
     const storyType = ALLOWED_STORY_TYPES.includes(requestedStoryType) ? requestedStoryType : 'Novel'
     const storyLanguage = cleanText(req.body.story_language || req.body.storyLanguage || 'Khmer')
@@ -417,6 +424,7 @@ const slides = Array.isArray(req.body.slides) ? req.body.slides.slice(0, 5) : []
       .insert({
         author_id: authorPage.id,
         user_id: userId,
+        story_type: storyType,
         title,
         story_type: storyType,
         story_language: storyLanguage,
@@ -479,6 +487,11 @@ export async function updateStory(req, res) {
     }
 
     const title = cleanText(req.body.title)
+const storyType = cleanStoryType(
+  req.body.story_type || req.body.storyType,
+  oldStory.story_type || 'novel'
+)
+const storyLanguage = cleanText(req.body.story_language || req.body.storyLanguage || oldStory.story_language || 'Khmer')
     const requestedStoryType = cleanText(req.body.story_type || req.body.storyType || oldStory.story_type || 'Novel')
     const storyType = ALLOWED_STORY_TYPES.includes(requestedStoryType) ? requestedStoryType : 'Novel'
     const storyLanguage = cleanText(req.body.story_language || req.body.storyLanguage || oldStory.story_language || 'Khmer')
