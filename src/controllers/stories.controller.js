@@ -890,11 +890,12 @@ export async function updateEpisode(req, res) {
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
     const status = cleanText(req.body.status || episode.status || 'draft')
     const isLocked =
-      typeof req.body.is_locked === 'boolean'
-        ? req.body.is_locked
-        : typeof req.body.isLocked === 'boolean'
-          ? req.body.isLocked
-          : Boolean(episode.is_locked)
+  Number(episode.episode_number || 0) > 5 &&
+  (typeof req.body.is_locked === 'boolean'
+    ? req.body.is_locked
+    : typeof req.body.isLocked === 'boolean'
+      ? req.body.isLocked
+      : Boolean(episode.is_locked))
     const unlockMethods = cleanUnlockMethods(req.body.unlock_methods || req.body.unlockMethods || episode.unlock_methods)
     const characterCount = content.length
     const wordCount = calculateWordCount(content)
