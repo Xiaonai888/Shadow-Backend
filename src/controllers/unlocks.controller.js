@@ -457,7 +457,7 @@ async function getAvailableLockedEpisodes({ userId, storyId, fromEpisodeNumber }
   if (error) throw error
 
   return (data || [])
-    .filter((episode) => Number(episode.episode_number || 0) > 1)
+    .filter((episode) => Number(episode.episode_number || 0) > 5)
     .filter((episode) => !unlockedIds.has(episode.id))
 }
 
