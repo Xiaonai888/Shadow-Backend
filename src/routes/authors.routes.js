@@ -40,6 +40,10 @@ import {
   updateOwnAuthorPostComment,
 } from '../controllers/authorPosts.controller.js'
 import {
+  createAuthorPostEcho,
+  getAuthorPostEchoes,
+} from '../controllers/authorPostEchoes.controller.js'
+import {
   getMyAuthorIncome,
   getMyAuthorPaymentMethods,
   getMyAuthorQuest,
@@ -93,5 +97,7 @@ router.get('/page/posts/:postId/comments', getAuthorPostComments)
 router.post('/me/posts/:postId/comments', requireUser, createAuthorPostComment)
 router.patch('/me/post-comments/:commentId', requireUser, updateOwnAuthorPostComment)
 router.delete('/me/post-comments/:commentId', requireUser, deleteOwnAuthorPostComment)
+router.get('/page/posts/:postId/echoes', requireUser, getAuthorPostEchoes)
+router.post('/page/posts/:postId/echoes', requireUser, createAuthorPostEcho)
 
 export default router
