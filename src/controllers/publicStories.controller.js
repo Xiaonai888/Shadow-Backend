@@ -430,7 +430,7 @@ function getMonthKey(date = new Date()) {
 }
 
 function isFirstEpisode(episode) {
-  return Number(episode?.episode_number || 0) <= 1
+  return Number(episode?.episode_number || 0) <= 5
 }
 
 
