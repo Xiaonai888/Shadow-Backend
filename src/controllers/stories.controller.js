@@ -5,7 +5,6 @@ const ALLOWED_LANGUAGES = ['Khmer', 'English', 'Chinese', 'Japanese', 'Korean']
 const ALLOWED_UPDATE_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const ALLOWED_STORY_STATUSES = ['New', 'Ongoing', 'Completed']
 const ALLOWED_STORY_TYPES = ['novel', 'manga']
-const ALLOWED_STORY_TYPES = ['Novel', 'Chat Story']
 const ALLOWED_UNLOCK_METHODS = ['gem', 'voucher', 'story_card', 'free_item']
 const MIN_EPISODE_CHARACTERS = 1500
 const MAX_EPISODE_CHARACTERS = 30000
@@ -116,7 +115,7 @@ function publicStory(story, slides = []) {
     author_id: story.author_id,
     user_id: story.user_id,
     title: story.title,
-    story_type: story.story_type || 'Novel',
+    story_type: story.story_type || 'novel',
     story_language: story.story_language,
     main_genre: story.main_genre,
     story_status: story.story_status || 'New',
@@ -376,8 +375,6 @@ export async function createStory(req, res) {
 
     const title = cleanText(req.body.title)
     const storyType = cleanStoryType(req.body.story_type || req.body.storyType)
-    const requestedStoryType = cleanText(req.body.story_type || req.body.storyType || 'Novel')
-    const storyType = ALLOWED_STORY_TYPES.includes(requestedStoryType) ? requestedStoryType : 'Novel'
     const storyLanguage = cleanText(req.body.story_language || req.body.storyLanguage || 'Khmer')
     const mainGenre = cleanText(req.body.main_genre || req.body.mainGenre)
     const storyStatus = cleanStoryStatus(req.body.story_status || req.body.storyStatus || 'New')
@@ -426,7 +423,6 @@ const slides = Array.isArray(req.body.slides) ? req.body.slides.slice(0, 5) : []
         user_id: userId,
         story_type: storyType,
         title,
-        story_type: storyType,
         story_language: storyLanguage,
         main_genre: mainGenre,
         story_status: storyStatus,
@@ -487,15 +483,22 @@ export async function updateStory(req, res) {
     }
 
     const title = cleanText(req.body.title)
-const storyType = cleanStoryType(
-  req.body.story_type || req.body.storyType,
-  oldStory.story_type || 'novel'
-)
-const storyLanguage = cleanText(req.body.story_language || req.body.storyLanguage || oldStory.story_language || 'Khmer')
-    const requestedStoryType = cleanText(req.body.story_type || req.body.storyType || oldStory.story_type || 'Novel')
-    const storyType = ALLOWED_STORY_TYPES.includes(requestedStoryType) ? requestedStoryType : 'Novel'
-    const storyLanguage = cleanText(req.body.story_language || req.body.storyLanguage || oldStory.story_language || 'Khmer')
-    const storyStatus = cleanStoryStatus(req.body.story_status || req.body.storyStatus || oldStory.story_status || 'New')
+    const storyType = cleanStoryType(
+      req.body.story_type || req.body.storyType,
+      oldStory.story_type || 'novel'
+    )
+    const storyLanguage = cleanText(
+      req.body.story_language ||
+      req.body.storyLanguage ||
+      oldStory.story_language ||
+      'Khmer'
+    )
+    const storyStatus = cleanStoryStatus(
+      req.body.story_status ||
+      req.body.storyStatus ||
+      oldStory.story_status ||
+      'New'
+    )
     const mainGenre = cleanText(req.body.main_genre || req.body.mainGenre)
     const tags = cleanTags(req.body.tags)
     const description = cleanNullableText(req.body.description)
