@@ -211,7 +211,7 @@ function isWaitFreeEpisode(episode, now = Date.now()) {
   const episodeNumber = Number(episode?.episode_number || 0)
   const publishedTime = getEpisodePublishedTime(episode)
 
-  if (episodeNumber <= 1) return false
+  if (episodeNumber <= 5) return false
   if (!episode?.is_locked) return false
   if (!publishedTime) return false
 
