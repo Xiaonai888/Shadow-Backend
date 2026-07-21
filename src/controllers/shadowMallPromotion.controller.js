@@ -16,6 +16,8 @@ const DEFAULT_PROMOTION = {
   display_order: 1,
   visibility_version: 1,
   is_active: true,
+  is_pinned: false,
+  pinned_at: null,
   like_count: 0,
   comment_count: 0,
   echo_count: 0,
@@ -63,6 +65,8 @@ function normalizePromotion(value) {
       1
     ),
     is_active: Boolean(promotion.is_active),
+    is_pinned: Boolean(promotion.is_pinned),
+    pinned_at: promotion.pinned_at || null,
     like_count: Number(promotion.like_count || 0),
     comment_count: Number(promotion.comment_count || 0),
     echo_count: Number(promotion.echo_count || 0),
@@ -133,6 +137,8 @@ async function readFirstPromotion(activeOnly = false) {
   let query = supabase
     .from('shadow_mall_ads')
     .select('*')
+    .order('is_pinned', { ascending: false })
+    .order('pinned_at', { ascending: true, nullsFirst: false })
     .order('display_order', { ascending: true })
     .order('created_at', { ascending: true })
     .limit(1)
@@ -155,6 +161,8 @@ async function readPromotions({
   let query = supabase
     .from('shadow_mall_ads')
     .select('*')
+    .order('is_pinned', { ascending: false })
+    .order('pinned_at', { ascending: true, nullsFirst: false })
     .order('display_order', { ascending: true })
     .order('created_at', { ascending: true })
     .limit(Math.min(toPositiveInteger(limit, 20), 100))
@@ -320,6 +328,12 @@ function buildPromotionPayload(
     throw error
   }
 
+
+  const isActive = toBoolean(
+    req.body.is_active,
+    current ? Boolean(current.is_active) : true
+  )
+
   const payload = {
     sponsor:
       String(
@@ -343,10 +357,13 @@ function buildPromotionPayload(
       req.body.display_order,
       displayOrder
     ),
-    is_active: toBoolean(
-      req.body.is_active,
-      true
-    ),
+    is_active: isActive,
+    is_pinned: isActive
+      ? Boolean(current?.is_pinned)
+      : false,
+    pinned_at: isActive
+      ? current?.pinned_at || null
+      : null,
     updated_at: new Date().toISOString(),
   }
 
@@ -660,21 +677,66 @@ export async function updateAdminShadowMallPromotionStatus(
       req.body.is_active,
       Boolean(current.is_active)
     )
+    const hasPinValue = Object.prototype.hasOwnProperty.call(
+      req.body,
+      'is_pinned'
+    )
+    const requestedPinned = hasPinValue
+      ? toBoolean(
+          req.body.is_pinned,
+          Boolean(current.is_pinned)
+        )
+      : Boolean(current.is_pinned)
+
+    if (hasPinValue && requestedPinned && !nextActive) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Activate the ad before pinning it',
+      })
+    }
+
+    const nextPinned = nextActive && requestedPinned
+
+    if (nextPinned && !Boolean(current.is_pinned)) {
+      const { count, error: countError } = await supabase
+        .from('shadow_mall_ads')
+        .select('id', { count: 'exact', head: true })
+        .eq('is_active', true)
+        .eq('is_pinned', true)
+        .neq('id', id)
+
+      if (countError) throw countError
+
+      if (Number(count || 0) >= 3) {
+        return res.status(409).json({
+          ok: false,
+          message: 'Maximum 3 pinned ads',
+        })
+      }
+    }
+
     const currentVersion = toPositiveInteger(
       current.visibility_version,
       1
     )
     const reactivated =
       !Boolean(current.is_active) && nextActive
+    const now = new Date().toISOString()
 
     const { data, error } = await supabase
       .from('shadow_mall_ads')
       .update({
         is_active: nextActive,
+        is_pinned: nextPinned,
+        pinned_at: nextPinned
+          ? current.is_pinned
+            ? current.pinned_at || now
+            : now
+          : null,
         visibility_version: reactivated
           ? currentVersion + 1
           : currentVersion,
-        updated_at: new Date().toISOString(),
+        updated_at: now,
       })
       .eq('id', id)
       .select('*')
