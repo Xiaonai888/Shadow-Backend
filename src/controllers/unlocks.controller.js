@@ -86,7 +86,7 @@ function isStoryCompleted(story) {
 }
 
 function isEpisodeFree(episode) {
-  return !episode?.is_locked || Number(episode?.episode_number || 0) <= 1
+  return !episode?.is_locked || Number(episode?.episode_number || 0) <= 5
 }
 
 function getPositiveInteger(value, fallback, max = 365) {
