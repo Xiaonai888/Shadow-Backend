@@ -714,11 +714,12 @@ export async function createEpisode(req, res) {
     const defaultLocked = episodeNumber > 5
 
     const isLocked =
-      typeof req.body.is_locked === 'boolean'
-        ? req.body.is_locked
-        : typeof req.body.isLocked === 'boolean'
-          ? req.body.isLocked
-          : defaultLocked
+  defaultLocked &&
+  (typeof req.body.is_locked === 'boolean'
+    ? req.body.is_locked
+    : typeof req.body.isLocked === 'boolean'
+      ? req.body.isLocked
+      : true)
 
     const unlockMethods = cleanUnlockMethods(req.body.unlock_methods || req.body.unlockMethods)
 
