@@ -67,7 +67,9 @@ function publicEpisode(episode, story, authorPage) {
       story.cover_url ||
       '',
     is_adult: Boolean(episode.is_adult || story.is_adult),
-    is_locked: Boolean(episode.is_locked),
+    is_locked:
+    Boolean(episode.is_locked) &&
+    Number(episode.episode_number || 0) > 5,
     unlock_methods: episode.unlock_methods || [],
     character_count: Number(episode.character_count || 0),
     total_views: Number(episode.total_views || 0),
