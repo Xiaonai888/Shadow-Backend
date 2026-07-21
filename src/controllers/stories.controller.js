@@ -152,7 +152,9 @@ function publicEpisode(episode) {
     cover_url: episode.cover_url,
     content: episode.content,
     is_adult: episode.is_adult,
-    is_locked: Boolean(episode.is_locked),
+    is_locked:
+    Number(episode.episode_number || 0) > 5 &&
+    Boolean(episode.is_locked),
     unlock_methods: episode.unlock_methods || [],
     status: episode.status,
     episode_number: episode.episode_number,
