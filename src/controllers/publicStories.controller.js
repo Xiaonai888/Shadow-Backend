@@ -648,7 +648,7 @@ async function checkAndSaveFreeFirstEpisodeAccess({ user, storyId, episode }) {
     return {
       ok: false,
       code: 'FREE_FIRST_EPISODE_MONTHLY_LIMIT_REACHED',
-      message: `You reached your monthly free first-episode limit for ${tier} readers.`,
+      message: `You reached your monthly free story-opening limit for ${tier} readers.`,
       status: 403,
       limit,
       used,
