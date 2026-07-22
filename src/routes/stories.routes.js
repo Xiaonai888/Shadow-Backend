@@ -14,6 +14,10 @@ import {
   updateStory,
   moveEpisodeToTrash,
 } from '../controllers/stories.controller.js'
+import {
+  getChatStoryCharacters,
+  saveChatStoryCharacters,
+} from '../controllers/chatStoryCharacters.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
@@ -21,6 +25,8 @@ const router = express.Router()
 router.post('/create', requireUser, createStory)
 router.get('/my', requireUser, getMyStories)
 router.get('/trash', requireUser, getStoryTrash)
+router.get('/:storyId/chat/characters', requireUser, getChatStoryCharacters)
+router.put('/:storyId/chat/characters', requireUser, saveChatStoryCharacters)
 router.get('/:storyId', requireUser, getStoryById)
 router.put('/:storyId', requireUser, updateStory)
 router.delete('/:storyId', requireUser, moveStoryToTrash)
