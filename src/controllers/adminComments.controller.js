@@ -1,4 +1,9 @@
 import { supabase } from '../config/supabase.js'
+import {
+  deleteStoryCommentToTrash,
+  getCommentTrashMessage,
+  getCommentTrashStatus,
+} from '../services/commentTrash.service.js'
 
 const DEFAULT_LIMIT = 50
 const MAX_LIMIT = 200
@@ -125,7 +130,7 @@ function buildActionDetails({ action, comment, actor, reason = '' }) {
 
   if (action === 'hide') return `${actor} hid a comment by ${userName} on "${storyTitle}". ${text}${reasonText}`
   if (action === 'unhide') return `${actor} unhid a comment by ${userName} on "${storyTitle}". ${text}${reasonText}`
-  if (action === 'delete') return `${actor} deleted a comment by ${userName} on "${storyTitle}". ${text}${reasonText}`
+  if (action === 'delete') return `${actor} moved a comment by ${userName} on "${storyTitle}" to trash.${reasonText}`
   if (action === 'ban') return `${actor} banned ${userName} from commenting on "${storyTitle}".${reasonText}`
   if (action === 'pin') return `${actor} pinned a comment by ${userName} on "${storyTitle}".`
   if (action === 'unpin') return `${actor} unpinned a comment by ${userName} on "${storyTitle}".`
@@ -159,6 +164,7 @@ async function getCommentById(commentId) {
     .from('comments')
     .select('*, user:users(id, name, username, avatar_url, role), story:stories(id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)')
     .eq('id', commentId)
+    .is('deleted_at', null)
     .maybeSingle()
 
   if (error) throw error
@@ -277,7 +283,9 @@ export async function getAdminStoryComments(req, res) {
       .from('comments')
       .select('*, user:users(id, name, username, avatar_url, role), story:stories(id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)')
       .eq('story_id', storyId)
+      .is('deleted_at', null)
       .order('is_pinned', { ascending: false })
+      .is('deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(limit)
 
@@ -357,13 +365,21 @@ export async function getAdminComments(req, res) {
 export async function moderateAdminComment(req, res) {
   try {
     const commentId = normalizeText(req.params.commentId)
-    const action = normalizeText(req.body.action).toLowerCase()
-    const reason = normalizeText(req.body.reason)
+    const action = normalizeText(req.body?.action).toLowerCase()
+    const reason = normalizeText(req.body?.reason)
+    const adminId = normalizeText(getAdminId(req))
 
     if (!commentId) {
       return res.status(400).json({
         ok: false,
         message: 'Comment id is required',
+      })
+    }
+
+    if (!adminId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Admin account id is missing',
       })
     }
 
@@ -377,19 +393,51 @@ export async function moderateAdminComment(req, res) {
     }
 
     if (action === 'delete') {
-      const { error } = await supabase
-        .from('comments')
-        .delete()
-        .eq('id', commentId)
+      const result = await deleteStoryCommentToTrash({
+        commentId,
+        actorType: 'admin',
+        actorId: adminId,
+        reason,
+      })
 
-      if (error) throw error
+      if (!result.ok) {
+        const status = getCommentTrashStatus(result)
 
-      await updateStoryCommentCount(oldComment.story_id, -1)
-      await createOwnerReport({ req, action, comment: oldComment, reason })
+        if (result.retry_after_seconds) {
+          res.setHeader(
+            'Retry-After',
+            String(result.retry_after_seconds)
+          )
+        }
+
+        return res.status(status).json({
+          ok: false,
+          code: result.code,
+          message: getCommentTrashMessage(result),
+          limit: result.limit ?? null,
+          used: result.used ?? null,
+          remaining: result.remaining ?? null,
+          retry_after_seconds:
+            result.retry_after_seconds ?? 0,
+        })
+      }
+
+      await createOwnerReport({
+        req,
+        action,
+        comment: oldComment,
+        reason,
+      })
 
       return res.status(200).json({
         ok: true,
-        message: 'Comment deleted',
+        message: 'Comment moved to trash',
+        comment_id: result.comment_id,
+        deleted_at: result.deleted_at,
+        delete_expires_at: result.delete_expires_at,
+        limit: result.limit ?? null,
+        used: result.used ?? null,
+        remaining: result.remaining ?? null,
       })
     }
 
@@ -399,7 +447,7 @@ export async function moderateAdminComment(req, res) {
         .upsert({
           story_id: oldComment.story_id,
           user_id: oldComment.user_id,
-          banned_by_user_id: getAdminId(req),
+          banned_by_user_id: adminId,
           reason,
         }, {
           onConflict: 'story_id,user_id',
@@ -407,7 +455,12 @@ export async function moderateAdminComment(req, res) {
 
       if (error) throw error
 
-      await createOwnerReport({ req, action, comment: oldComment, reason })
+      await createOwnerReport({
+        req,
+        action,
+        comment: oldComment,
+        reason,
+      })
 
       return res.status(200).json({
         ok: true,
@@ -437,12 +490,18 @@ export async function moderateAdminComment(req, res) {
       .from('comments')
       .update(updateData)
       .eq('id', commentId)
+      .is('deleted_at', null)
       .select('*, user:users(id, name, username, avatar_url, role), story:stories(id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)')
       .single()
 
     if (error) throw error
 
-    await createOwnerReport({ req, action, comment: data, reason })
+    await createOwnerReport({
+      req,
+      action,
+      comment: data,
+      reason,
+    })
 
     return res.status(200).json({
       ok: true,
@@ -458,6 +517,16 @@ export async function moderateAdminComment(req, res) {
     })
   }
 }
+
+export async function deleteAdminComment(req, res) {
+  req.body = {
+    ...(req.body || {}),
+    action: 'delete',
+  }
+
+  return moderateAdminComment(req, res)
+}
+
 
 export async function deleteAdminComment(req, res) {
   req.body.action = 'delete'
