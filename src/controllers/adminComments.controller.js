@@ -528,10 +528,7 @@ export async function deleteAdminComment(req, res) {
 }
 
 
-export async function deleteAdminComment(req, res) {
-  req.body.action = 'delete'
-  return moderateAdminComment(req, res)
-}
+
 
 export async function banAdminCommentUser(req, res) {
   req.body.action = 'ban'
