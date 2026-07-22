@@ -1,5 +1,10 @@
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
+import {
+  deleteAuthorPageCommentToTrash,
+  getCommentTrashMessage,
+  getCommentTrashStatus,
+} from '../services/commentTrash.service.js'
 
 function normalizePageUsername(username) {
   return String(username || '')
@@ -910,75 +915,90 @@ export async function deleteOwnAuthorPostComment(req, res) {
       })
     }
 
-    const { data: existingComment, error: findError } = await supabase
+    const { data: comment, error: commentError } = await supabase
       .from('author_page_post_comments')
-      .select('id, post_id, user_id, parent_id')
+      .select('id, post_id, user_id')
       .eq('id', commentId)
+      .is('deleted_at', null)
       .maybeSingle()
 
-    if (findError) throw findError
+    if (commentError) throw commentError
 
-    if (!existingComment) {
+    if (!comment) {
       return res.status(404).json({
         ok: false,
         message: 'Comment not found',
       })
     }
 
-    if (String(existingComment.user_id) !== String(userId)) {
+    const { data: post, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('id, user_id')
+      .eq('id', comment.post_id)
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Author Page post not found',
+      })
+    }
+
+    const ownsComment =
+      String(comment.user_id || '') === String(userId)
+    const ownsAuthorPage =
+      String(post.user_id || '') === String(userId)
+
+    if (!ownsComment && !ownsAuthorPage) {
       return res.status(403).json({
         ok: false,
-        message: 'You can only delete your own comment',
+        message: 'You cannot delete this comment',
       })
     }
 
-    if (!existingComment.parent_id) {
-      const { error: repliesDeleteError } = await supabase
-        .from('author_page_post_comments')
-        .delete()
-        .eq('parent_id', commentId)
+    const result = await deleteAuthorPageCommentToTrash({
+      commentId,
+      actorType: ownsComment ? 'reader' : 'author',
+      actorId: String(userId),
+      reason: String(req.body?.reason || '').trim(),
+    })
 
-      if (repliesDeleteError) throw repliesDeleteError
+    if (!result.ok) {
+      const status = getCommentTrashStatus(result)
+
+      if (result.retry_after_seconds) {
+        res.setHeader(
+          'Retry-After',
+          String(result.retry_after_seconds)
+        )
+      }
+
+      return res.status(status).json({
+        ok: false,
+        code: result.code,
+        message: getCommentTrashMessage(result),
+        limit: result.limit ?? null,
+        used: result.used ?? null,
+        remaining: result.remaining ?? null,
+        retry_after_seconds:
+          result.retry_after_seconds ?? 0,
+      })
     }
-
-    const { error: deleteError } = await supabase
-      .from('author_page_post_comments')
-      .delete()
-      .eq('id', commentId)
-      .eq('user_id', userId)
-
-    if (deleteError) throw deleteError
-
-    const { count, error: countError } = await supabase
-      .from('author_page_post_comments')
-      .select('id', {
-        count: 'exact',
-        head: true,
-      })
-      .eq('post_id', existingComment.post_id)
-      .eq('is_hidden', false)
-
-    if (countError) throw countError
-
-    const nextCommentCount = Number(count || 0)
-
-    const { error: updatePostError } = await supabase
-      .from('author_page_posts')
-      .update({
-        comment_count: nextCommentCount,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', existingComment.post_id)
-
-    if (updatePostError) throw updatePostError
 
     return res.status(200).json({
       ok: true,
-      message: 'Comment deleted',
-      comment_count: nextCommentCount,
+      message: 'Comment moved to trash',
+      comment_id: result.comment_id,
+      deleted_at: result.deleted_at,
+      delete_expires_at: result.delete_expires_at,
+      limit: result.limit ?? null,
+      used: result.used ?? null,
+      remaining: result.remaining ?? null,
     })
   } catch (error) {
-    console.error('DELETE OWN AUTHOR POST COMMENT ERROR:', error)
+    console.error('DELETE AUTHOR POST COMMENT ERROR:', error)
 
     return res.status(500).json({
       ok: false,
@@ -987,3 +1007,4 @@ export async function deleteOwnAuthorPostComment(req, res) {
     })
   }
 }
+
