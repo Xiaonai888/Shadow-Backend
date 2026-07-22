@@ -612,6 +612,7 @@ export async function getAuthorPostComments(req, res) {
       .select('*, user:users(id, name, username, avatar_url, role)')
       .eq('post_id', postId)
       .eq('is_hidden', false)
+      .is('deleted_at', null)
       .is('parent_id', null)
       .order('is_pinned', { ascending: false })
       .order('created_at', { ascending: false })
@@ -631,6 +632,7 @@ export async function getAuthorPostComments(req, res) {
         .select('*, user:users(id, name, username, avatar_url, role)')
         .eq('post_id', postId)
         .eq('is_hidden', false)
+        .is('deleted_at', null)
         .in('parent_id', parentIds)
         .order('created_at', { ascending: true })
 
@@ -660,6 +662,7 @@ export async function getAuthorPostComments(req, res) {
       })
       .eq('post_id', postId)
       .eq('is_hidden', false)
+      .is('deleted_at', null)
 
     if (countError) throw countError
 
@@ -739,6 +742,7 @@ export async function createAuthorPostComment(req, res) {
         .eq('id', parentId)
         .eq('post_id', postId)
         .eq('is_hidden', false)
+        .is('deleted_at', null)
         .maybeSingle()
 
       if (parentError) throw parentError
@@ -772,6 +776,7 @@ export async function createAuthorPostComment(req, res) {
       })
       .eq('post_id', postId)
       .eq('is_hidden', false)
+      .is('deleted_at', null)
 
     if (countError) throw countError
 
@@ -850,6 +855,7 @@ export async function updateOwnAuthorPostComment(req, res) {
       .from('author_page_post_comments')
       .select('id, user_id')
       .eq('id', commentId)
+      .is('deleted_at', null)
       .maybeSingle()
 
     if (findError) throw findError
@@ -876,6 +882,7 @@ export async function updateOwnAuthorPostComment(req, res) {
       })
       .eq('id', commentId)
       .eq('user_id', userId)
+      .is('deleted_at', null)
       .select('*, user:users(id, name, username, avatar_url, role)')
       .single()
 
