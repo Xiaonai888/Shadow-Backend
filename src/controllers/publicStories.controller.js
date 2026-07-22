@@ -677,6 +677,19 @@ async function checkAndSaveFreeFirstEpisodeAccess({ user, storyId, episode }) {
   }
 }
 
+const FAST_VIEW_COOLDOWN_MINUTES = 1
+const FAST_VIEW_DAILY_LIMIT = 20
+const VIEW_TIME_ZONE = 'Asia/Phnom_Penh'
+
+function getViewDateKey(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: VIEW_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date)
+}
+
 async function getViewCooldownHours() {
   const { data, error } = await supabase
     .from('platform_unlock_rules')
@@ -684,9 +697,9 @@ async function getViewCooldownHours() {
     .eq('id', 1)
     .maybeSingle()
 
-  if (error || !data) return 12
+  if (error || !data) return 3
 
-  return Number(data.view_count_cooldown_hours || 12)
+  return Number(data.view_count_cooldown_hours || 3)
 }
 
 async function recordEpisodeView({ userId, storyId, episodeId }) {
@@ -699,28 +712,57 @@ async function recordEpisodeView({ userId, storyId, episodeId }) {
 
   const cooldownHours = await getViewCooldownHours()
   const now = new Date()
-  const cooldownMs = cooldownHours * 60 * 60 * 1000
+  const nowMs = now.getTime()
+  const todayKey = getViewDateKey(now)
+  const fastCooldownMs = FAST_VIEW_COOLDOWN_MINUTES * 60 * 1000
+  const normalCooldownMs = cooldownHours * 60 * 60 * 1000
 
   const { data: oldLog, error: oldLogError } = await supabase
     .from('episode_view_logs')
-    .select('id, last_counted_at')
+    .select('id, last_counted_at, fast_view_date, fast_view_count, last_fast_counted_at')
     .eq('user_id', userId)
     .eq('episode_id', episodeId)
     .maybeSingle()
 
   if (oldLogError) throw oldLogError
 
-  if (oldLog?.last_counted_at) {
+  const sameFastDay = String(oldLog?.fast_view_date || '') === todayKey
+  const fastViewCount = sameFastDay
+    ? Math.max(0, Number(oldLog?.fast_view_count || 0))
+    : 0
+  const useFastView = fastViewCount < FAST_VIEW_DAILY_LIMIT
+
+  if (useFastView && sameFastDay && oldLog?.last_fast_counted_at) {
+    const lastFastCountedAt = new Date(oldLog.last_fast_counted_at).getTime()
+
+    if (nowMs - lastFastCountedAt < fastCooldownMs) {
+      return {
+        counted: false,
+        reason: 'fast_cooldown',
+        cooldown_minutes: FAST_VIEW_COOLDOWN_MINUTES,
+        fast_views_used: fastViewCount,
+        fast_views_remaining: FAST_VIEW_DAILY_LIMIT - fastViewCount,
+      }
+    }
+  }
+
+  if (!useFastView && oldLog?.last_counted_at) {
     const lastCountedAt = new Date(oldLog.last_counted_at).getTime()
 
-    if (now.getTime() - lastCountedAt < cooldownMs) {
+    if (nowMs - lastCountedAt < normalCooldownMs) {
       return {
         counted: false,
         reason: 'cooldown',
         cooldown_hours: cooldownHours,
+        fast_views_used: FAST_VIEW_DAILY_LIMIT,
+        fast_views_remaining: 0,
       }
     }
   }
+
+  const nextFastViewCount = useFastView
+    ? fastViewCount + 1
+    : fastViewCount
 
   const { error: upsertError } = await supabase
     .from('episode_view_logs')
@@ -730,6 +772,11 @@ async function recordEpisodeView({ userId, storyId, episodeId }) {
         story_id: storyId,
         episode_id: episodeId,
         last_counted_at: now.toISOString(),
+        fast_view_date: useFastView ? todayKey : oldLog?.fast_view_date || todayKey,
+        fast_view_count: nextFastViewCount,
+        last_fast_counted_at: useFastView
+          ? now.toISOString()
+          : oldLog?.last_fast_counted_at || null,
       },
       {
         onConflict: 'user_id,episode_id',
@@ -756,24 +803,28 @@ async function recordEpisodeView({ userId, storyId, episodeId }) {
       .from('stories')
       .update({
         total_views: Number(story?.total_views || 0) + 1,
-        updated_at: new Date().toISOString(),
+        updated_at: now.toISOString(),
       })
       .eq('id', storyId),
     supabase
       .from('episodes')
       .update({
         total_views: Number(episode?.total_views || 0) + 1,
-        updated_at: new Date().toISOString(),
+        updated_at: now.toISOString(),
       })
       .eq('id', episodeId),
   ])
 
   return {
     counted: true,
-    reason: 'counted',
-    cooldown_hours: cooldownHours,
+    reason: useFastView ? 'fast_counted' : 'counted',
+    cooldown_minutes: useFastView ? FAST_VIEW_COOLDOWN_MINUTES : null,
+    cooldown_hours: useFastView ? null : cooldownHours,
+    fast_views_used: nextFastViewCount,
+    fast_views_remaining: Math.max(0, FAST_VIEW_DAILY_LIMIT - nextFastViewCount),
   }
 }
+
 
 async function hasActiveEpisodeUnlock({ userId, episodeId }) {
   if (!userId || !episodeId) return false
