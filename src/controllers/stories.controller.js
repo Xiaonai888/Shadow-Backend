@@ -8,6 +8,8 @@ const ALLOWED_STORY_TYPES = ['novel', 'manga']
 const ALLOWED_UNLOCK_METHODS = ['gem', 'voucher', 'story_card', 'free_item']
 const MIN_EPISODE_CHARACTERS = 1500
 const MAX_EPISODE_CHARACTERS = 30000
+const MIN_MANGA_PAGES = 10
+const MAX_MANGA_PAGES = 100
 const AUTHOR_TRASH_DAYS = 30
 const ADMIN_ARCHIVE_DAYS = 90
 
@@ -98,6 +100,45 @@ function cleanStoryType(value, fallback = 'novel') {
   return ALLOWED_STORY_TYPES.includes(type) ? type : fallback
 }
 
+function cleanOptionalPositiveInteger(value) {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : null
+}
+
+function cleanEpisodePages(value) {
+  if (!Array.isArray(value)) return []
+
+  return value
+    .slice(0, MAX_MANGA_PAGES)
+    .map((page, index) => ({
+      image_url: cleanText(page?.image_url || page?.imageUrl),
+      storage_path: cleanNullableText(page?.storage_path || page?.storagePath),
+      sort_order: index,
+      width: cleanOptionalPositiveInteger(page?.width),
+      height: cleanOptionalPositiveInteger(page?.height),
+      file_size: cleanOptionalPositiveInteger(page?.file_size || page?.fileSize),
+      mime_type: cleanNullableText(page?.mime_type || page?.mimeType),
+    }))
+    .filter((page) => page.image_url)
+}
+
+function publicEpisodePage(page) {
+  return {
+    id: page.id,
+    episode_id: page.episode_id,
+    story_id: page.story_id,
+    image_url: page.image_url,
+    storage_path: page.storage_path || null,
+    sort_order: Number(page.sort_order || 0),
+    width: page.width || null,
+    height: page.height || null,
+    file_size: page.file_size || null,
+    mime_type: page.mime_type || null,
+    created_at: page.created_at,
+    updated_at: page.updated_at,
+  }
+}
+
 function cleanUnlockMethods(value) {
   if (!Array.isArray(value)) return []
 
@@ -147,21 +188,26 @@ status: story.status,
   }
 }
 
-function publicEpisode(episode) {
+function publicEpisode(episode, pages = [], storyType = 'novel') {
   if (!episode) return null
+
+  const safePages = Array.isArray(pages) ? pages.map(publicEpisodePage) : []
 
   return {
     id: episode.id,
     story_id: episode.story_id,
     author_id: episode.author_id,
     user_id: episode.user_id,
+    story_type: storyType === 'manga' ? 'manga' : 'novel',
     title: episode.title,
     cover_url: episode.cover_url,
     content: episode.content,
+    pages: safePages,
+    page_count: Number(episode.page_count ?? safePages.length ?? 0),
     is_adult: episode.is_adult,
     is_locked:
-    Number(episode.episode_number || 0) > 5 &&
-    Boolean(episode.is_locked),
+      Number(episode.episode_number || 0) > 5 &&
+      Boolean(episode.is_locked),
     unlock_methods: episode.unlock_methods || [],
     status: episode.status,
     episode_number: episode.episode_number,
@@ -221,6 +267,63 @@ async function getOwnedEpisode({ storyId, episodeId, userId, includeDeleted = fa
 
   if (error) throw error
   return data
+}
+
+async function getEpisodePages(episodeId) {
+  const { data, error } = await supabase
+    .from('episode_pages')
+    .select('*')
+    .eq('episode_id', episodeId)
+    .order('sort_order', { ascending: true })
+
+  if (error) throw error
+  return data || []
+}
+
+async function saveEpisodePages({ episodeId, storyId, pages }) {
+  const cleanPages = cleanEpisodePages(pages)
+  const now = new Date().toISOString()
+
+  if (!cleanPages.length) {
+    const { error } = await supabase
+      .from('episode_pages')
+      .delete()
+      .eq('episode_id', episodeId)
+
+    if (error) throw error
+    return []
+  }
+
+  const rows = cleanPages.map((page) => ({
+    episode_id: episodeId,
+    story_id: storyId,
+    image_url: page.image_url,
+    storage_path: page.storage_path,
+    sort_order: page.sort_order,
+    width: page.width,
+    height: page.height,
+    file_size: page.file_size,
+    mime_type: page.mime_type,
+    updated_at: now,
+  }))
+
+  const { error: upsertError } = await supabase
+    .from('episode_pages')
+    .upsert(rows, {
+      onConflict: 'episode_id,sort_order',
+    })
+
+  if (upsertError) throw upsertError
+
+  const { error: staleError } = await supabase
+    .from('episode_pages')
+    .delete()
+    .eq('episode_id', episodeId)
+    .gte('sort_order', rows.length)
+
+  if (staleError) throw staleError
+
+  return getEpisodePages(episodeId)
 }
 
 async function getNextEpisodeNumber(storyId) {
@@ -686,8 +789,14 @@ export async function createEpisode(req, res) {
       })
     }
 
+    const isManga = story.story_type === 'manga'
     const title = cleanText(req.body.title)
-    const content = String(req.body.content || '')
+    const content = isManga ? '' : String(req.body.content || '')
+    const pagesInput = isManga
+      ? req.body.pages || req.body.episode_pages || req.body.episodePages || []
+      : []
+    const pages = isManga ? cleanEpisodePages(pagesInput) : []
+    const pageCount = pages.length
     const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
     const status = cleanText(req.body.status || 'draft')
@@ -702,30 +811,9 @@ export async function createEpisode(req, res) {
     }
 
     if (status !== 'draft' && title.length < 2) {
-  return res.status(400).json({
-    ok: false,
-    message: 'Episode title must be at least 2 characters',
-  })
-}
-    
-  if (status !== 'draft' && !content.trim()) {
-  return res.status(400).json({
-    ok: false,
-    message: 'Episode content is required',
-  })
-}
-
-    if (status !== 'draft' && characterCount < MIN_EPISODE_CHARACTERS) {
-  return res.status(400).json({
-    ok: false,
-    message: `Episode needs at least ${MIN_EPISODE_CHARACTERS} characters`,
-  })
-}
-
-    if (characterCount > MAX_EPISODE_CHARACTERS) {
       return res.status(400).json({
         ok: false,
-        message: `Episode must be ${MAX_EPISODE_CHARACTERS} characters or less`,
+        message: 'Episode title must be at least 2 characters',
       })
     }
 
@@ -736,16 +824,52 @@ export async function createEpisode(req, res) {
       })
     }
 
+    if (isManga) {
+      if (Array.isArray(pagesInput) && pagesInput.length > MAX_MANGA_PAGES) {
+        return res.status(400).json({
+          ok: false,
+          message: `Manga episode must have ${MAX_MANGA_PAGES} pages or less`,
+        })
+      }
+
+      if (status !== 'draft' && pageCount < MIN_MANGA_PAGES) {
+        return res.status(400).json({
+          ok: false,
+          message: `Manga episode needs at least ${MIN_MANGA_PAGES} pages`,
+        })
+      }
+    } else {
+      if (status !== 'draft' && !content.trim()) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Episode content is required',
+        })
+      }
+
+      if (status !== 'draft' && characterCount < MIN_EPISODE_CHARACTERS) {
+        return res.status(400).json({
+          ok: false,
+          message: `Episode needs at least ${MIN_EPISODE_CHARACTERS} characters`,
+        })
+      }
+
+      if (characterCount > MAX_EPISODE_CHARACTERS) {
+        return res.status(400).json({
+          ok: false,
+          message: `Episode must be ${MAX_EPISODE_CHARACTERS} characters or less`,
+        })
+      }
+    }
+
     const episodeNumber = await getNextEpisodeNumber(storyId)
     const defaultLocked = episodeNumber > 5
-
     const isLocked =
-  defaultLocked &&
-  (typeof req.body.is_locked === 'boolean'
-    ? req.body.is_locked
-    : typeof req.body.isLocked === 'boolean'
-      ? req.body.isLocked
-      : true)
+      defaultLocked &&
+      (typeof req.body.is_locked === 'boolean'
+        ? req.body.is_locked
+        : typeof req.body.isLocked === 'boolean'
+          ? req.body.isLocked
+          : true)
 
     const unlockMethods = cleanUnlockMethods(req.body.unlock_methods || req.body.unlockMethods)
 
@@ -764,19 +888,40 @@ export async function createEpisode(req, res) {
         status,
         episode_number: episodeNumber,
         character_count: characterCount,
-word_count: wordCount,
+        word_count: wordCount,
+        page_count: pageCount,
       })
       .select()
       .single()
 
     if (episodeError) throw episodeError
 
+    let savedPages = []
+
+    try {
+      if (isManga) {
+        savedPages = await saveEpisodePages({
+          episodeId: episode.id,
+          storyId: story.id,
+          pages,
+        })
+      }
+    } catch (pageError) {
+      await supabase
+        .from('episodes')
+        .delete()
+        .eq('id', episode.id)
+        .eq('user_id', userId)
+
+      throw pageError
+    }
+
     const totalEpisodes = await updateStoryEpisodeCount(storyId)
 
     return res.status(201).json({
       ok: true,
-      message: 'Episode created successfully',
-      episode: publicEpisode(episode),
+      message: isManga ? 'Manga episode created successfully' : 'Episode created successfully',
+      episode: publicEpisode(episode, savedPages, story.story_type),
       total_episodes: totalEpisodes,
     })
   } catch (error) {
@@ -822,7 +967,10 @@ export async function getStoryEpisodes(req, res) {
 
     return res.status(200).json({
       ok: true,
-      episodes: (data || []).map(publicEpisode),
+      story_type: story.story_type || 'novel',
+      episodes: (data || []).map((episode) =>
+        publicEpisode(episode, [], story.story_type)
+      ),
     })
   } catch (error) {
     console.error('GET STORY EPISODES ERROR:', error)
@@ -865,9 +1013,14 @@ export async function getEpisodeById(req, res) {
       })
     }
 
+    const pages = story.story_type === 'manga'
+      ? await getEpisodePages(episodeId)
+      : []
+
     return res.status(200).json({
       ok: true,
-      episode: publicEpisode(episode),
+      story_type: story.story_type || 'novel',
+      episode: publicEpisode(episode, pages, story.story_type),
     })
   } catch (error) {
     console.error('GET EPISODE BY ID ERROR:', error)
@@ -910,19 +1063,39 @@ export async function updateEpisode(req, res) {
       })
     }
 
+    const isManga = story.story_type === 'manga'
+    const pagesPayload =
+      req.body.pages ??
+      req.body.episode_pages ??
+      req.body.episodePages
+    const hasPagesPayload = Array.isArray(pagesPayload)
+    const existingPages =
+      isManga && !hasPagesPayload
+        ? await getEpisodePages(episodeId)
+        : []
+    const pages = isManga
+      ? hasPagesPayload
+        ? cleanEpisodePages(pagesPayload)
+        : cleanEpisodePages(existingPages)
+      : []
+    const pageCount = pages.length
     const title = cleanText(req.body.title)
-    const content = String(req.body.content || '')
+    const content = isManga ? '' : String(req.body.content || '')
     const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
     const status = cleanText(req.body.status || episode.status || 'draft')
     const isLocked =
-  Number(episode.episode_number || 0) > 5 &&
-  (typeof req.body.is_locked === 'boolean'
-    ? req.body.is_locked
-    : typeof req.body.isLocked === 'boolean'
-      ? req.body.isLocked
-      : Boolean(episode.is_locked))
-    const unlockMethods = cleanUnlockMethods(req.body.unlock_methods || req.body.unlockMethods || episode.unlock_methods)
+      Number(episode.episode_number || 0) > 5 &&
+      (typeof req.body.is_locked === 'boolean'
+        ? req.body.is_locked
+        : typeof req.body.isLocked === 'boolean'
+          ? req.body.isLocked
+          : Boolean(episode.is_locked))
+    const unlockMethods = cleanUnlockMethods(
+      req.body.unlock_methods ||
+      req.body.unlockMethods ||
+      episode.unlock_methods
+    )
     const characterCount = content.length
     const wordCount = calculateWordCount(content)
 
@@ -934,30 +1107,9 @@ export async function updateEpisode(req, res) {
     }
 
     if (status !== 'draft' && title.length < 2) {
-  return res.status(400).json({
-    ok: false,
-    message: 'Episode title must be at least 2 characters',
-  })
-}
-
-    if (!content.trim()) {
       return res.status(400).json({
         ok: false,
-        message: 'Episode content is required',
-      })
-    }
-
-    if (status !== 'draft' && characterCount < MIN_EPISODE_CHARACTERS) {
-  return res.status(400).json({
-    ok: false,
-    message: `Episode needs at least ${MIN_EPISODE_CHARACTERS} characters`,
-  })
-}
-
-    if (characterCount > MAX_EPISODE_CHARACTERS) {
-      return res.status(400).json({
-        ok: false,
-        message: `Episode must be ${MAX_EPISODE_CHARACTERS} characters or less`,
+        message: 'Episode title must be at least 2 characters',
       })
     }
 
@@ -965,6 +1117,53 @@ export async function updateEpisode(req, res) {
       return res.status(400).json({
         ok: false,
         message: 'Invalid episode status',
+      })
+    }
+
+    if (isManga) {
+      if (hasPagesPayload && pagesPayload.length > MAX_MANGA_PAGES) {
+        return res.status(400).json({
+          ok: false,
+          message: `Manga episode must have ${MAX_MANGA_PAGES} pages or less`,
+        })
+      }
+
+      if (status !== 'draft' && pageCount < MIN_MANGA_PAGES) {
+        return res.status(400).json({
+          ok: false,
+          message: `Manga episode needs at least ${MIN_MANGA_PAGES} pages`,
+        })
+      }
+    } else {
+      if (!content.trim()) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Episode content is required',
+        })
+      }
+
+      if (status !== 'draft' && characterCount < MIN_EPISODE_CHARACTERS) {
+        return res.status(400).json({
+          ok: false,
+          message: `Episode needs at least ${MIN_EPISODE_CHARACTERS} characters`,
+        })
+      }
+
+      if (characterCount > MAX_EPISODE_CHARACTERS) {
+        return res.status(400).json({
+          ok: false,
+          message: `Episode must be ${MAX_EPISODE_CHARACTERS} characters or less`,
+        })
+      }
+    }
+
+    let savedPages = existingPages
+
+    if (isManga && hasPagesPayload) {
+      savedPages = await saveEpisodePages({
+        episodeId,
+        storyId,
+        pages,
       })
     }
 
@@ -977,7 +1176,8 @@ export async function updateEpisode(req, res) {
       unlock_methods: unlockMethods,
       status,
       character_count: characterCount,
-word_count: wordCount,
+      word_count: wordCount,
+      page_count: pageCount,
       updated_at: new Date().toISOString(),
     }
 
@@ -1001,8 +1201,8 @@ word_count: wordCount,
 
     return res.status(200).json({
       ok: true,
-      message: 'Episode updated successfully',
-      episode: publicEpisode(updatedEpisode),
+      message: isManga ? 'Manga episode updated successfully' : 'Episode updated successfully',
+      episode: publicEpisode(updatedEpisode, savedPages, story.story_type),
     })
   } catch (error) {
     console.error('UPDATE EPISODE ERROR:', error)
@@ -1045,6 +1245,8 @@ export async function updateEpisodeStatus(req, res) {
       })
     }
 
+    const isManga = story.story_type === 'manga'
+    const pages = isManga ? await getEpisodePages(episodeId) : []
     const status = cleanText(req.body.status)
 
     if (!['published', 'scheduled', 'draft'].includes(status)) {
@@ -1055,27 +1257,35 @@ export async function updateEpisodeStatus(req, res) {
     }
 
     if (['published', 'scheduled'].includes(status)) {
-  if (Number(episode.character_count || 0) < MIN_EPISODE_CHARACTERS) {
-    return res.status(400).json({
-      ok: false,
-      message: `Episode needs at least ${MIN_EPISODE_CHARACTERS} characters before publishing`,
-    })
-  }
+      if (isManga) {
+        if (pages.length < MIN_MANGA_PAGES || pages.length > MAX_MANGA_PAGES) {
+          return res.status(400).json({
+            ok: false,
+            message: `Manga episode needs ${MIN_MANGA_PAGES}-${MAX_MANGA_PAGES} pages before publishing`,
+          })
+        }
+      } else if (Number(episode.character_count || 0) < MIN_EPISODE_CHARACTERS) {
+        return res.status(400).json({
+          ok: false,
+          message: `Episode needs at least ${MIN_EPISODE_CHARACTERS} characters before publishing`,
+        })
+      }
 
-  const blockedMatches = await findBlockedWordsInContent([
-    { label: 'Story Title', value: story.title },
-    { label: 'Story Description', value: story.description },
-    { label: 'Episode Title', value: episode.title },
-    { label: 'Episode Content', value: episode.content },
-  ])
+      const blockedMatches = await findBlockedWordsInContent([
+        { label: 'Story Title', value: story.title },
+        { label: 'Story Description', value: story.description },
+        { label: 'Episode Title', value: episode.title },
+        { label: 'Episode Content', value: isManga ? '' : episode.content },
+      ])
 
-  if (blockedMatches.length) {
-    return res.status(422).json(blockedWordsWarningPayload(blockedMatches))
-  }
-}
+      if (blockedMatches.length) {
+        return res.status(422).json(blockedWordsWarningPayload(blockedMatches))
+      }
+    }
 
     const updatePayload = {
       status,
+      page_count: isManga ? pages.length : Number(episode.page_count || 0),
       updated_at: new Date().toISOString(),
     }
 
@@ -1135,7 +1345,7 @@ export async function updateEpisodeStatus(req, res) {
           : status === 'scheduled'
             ? 'Episode scheduled successfully'
             : 'Episode saved as draft',
-      episode: publicEpisode(updatedEpisode),
+      episode: publicEpisode(updatedEpisode, pages, story.story_type),
     })
   } catch (error) {
     console.error('UPDATE EPISODE STATUS ERROR:', error)
