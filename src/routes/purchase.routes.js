@@ -10,6 +10,10 @@ import {
   handleAbaCallback,
 } from '../controllers/purchase.controller.js'
 import {
+  getFirstTopupBonus,
+  openFirstTopupBonus,
+} from '../controllers/firstTopupBonus.controller.js'
+import {
   cancelManualPayment,
   createManualPayment,
   getManualPaymentStatus,
@@ -25,6 +29,8 @@ const upload = multer({
 router.get('/packages', getPurchasePackages)
 router.get('/wallet', requireUser, getMyWallet)
 router.get('/requests', requireUser, getMyPurchaseRequests)
+router.get('/first-topup-bonus', requireUser, getFirstTopupBonus)
+router.post('/first-topup-bonus/open', requireUser, openFirstTopupBonus)
 
 router.post('/manual/create', requireUser, createManualPayment)
 router.post('/manual/cancel/:orderId', requireUser, cancelManualPayment)
