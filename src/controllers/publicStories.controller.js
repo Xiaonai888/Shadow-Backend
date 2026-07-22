@@ -679,16 +679,6 @@ async function checkAndSaveFreeFirstEpisodeAccess({ user, storyId, episode }) {
 
 const FAST_VIEW_COOLDOWN_MINUTES = 1
 const FAST_VIEW_DAILY_LIMIT = 20
-const VIEW_TIME_ZONE = 'Asia/Phnom_Penh'
-
-function getViewDateKey(date = new Date()) {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: VIEW_TIME_ZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(date)
-}
 
 async function getViewCooldownHours() {
   const { data, error } = await supabase
@@ -700,6 +690,40 @@ async function getViewCooldownHours() {
   if (error || !data) return 3
 
   return Number(data.view_count_cooldown_hours || 3)
+}
+
+async function recordEpisodeView({
+  userId,
+  storyId,
+  episodeId,
+  mode = 'fast',
+}) {
+  if (!userId || !storyId || !episodeId) {
+    return {
+      counted: false,
+      reason: 'missing_user_or_episode',
+    }
+  }
+
+  const cooldownHours = await getViewCooldownHours()
+  const normalizedMode = mode === 'qualified' ? 'qualified' : 'fast'
+
+  const { data, error } = await supabase.rpc('record_episode_view_v2', {
+    p_user_id: userId,
+    p_story_id: storyId,
+    p_episode_id: episodeId,
+    p_mode: normalizedMode,
+    p_fast_cooldown_minutes: FAST_VIEW_COOLDOWN_MINUTES,
+    p_fast_daily_limit: FAST_VIEW_DAILY_LIMIT,
+    p_normal_cooldown_hours: cooldownHours,
+  })
+
+  if (error) throw error
+
+  return data || {
+    counted: false,
+    reason: 'view_result_missing',
+  }
 }
 
 async function recordEpisodeView({ userId, storyId, episodeId }) {
@@ -1330,6 +1354,7 @@ export async function countQualifiedEpisodeView(req, res) {
   userId: user.user_id,
   storyId,
   episodeId,
+  mode: req.body?.mode,
 })
 
 if (viewResult.counted && story.author_id) {
