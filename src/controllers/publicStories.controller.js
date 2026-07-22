@@ -55,7 +55,8 @@ function publicStory(story, slides = [], authorPage = null, rankByViews = null) 
 user_id: story.user_id,
 author_page: publicAuthorPage(story.author_page),
 title: story.title,
-    story_language: story.story_language,
+story_type: story.story_type || 'novel',
+story_language: story.story_language,
     main_genre: story.main_genre,
     story_status: story.story_status || 'New',
     tags: story.tags || [],
@@ -307,7 +308,8 @@ author_id: story.author_id,
 user_id: story.user_id,
 author_page: publicAuthorPage(story.author_page),
 title: story.title,
-    story_language: story.story_language,
+story_type: story.story_type || 'novel',
+story_language: story.story_language,
     main_genre: story.main_genre,
     story_status: story.story_status || 'New',
     tags: story.tags || [],
@@ -795,6 +797,7 @@ export async function getPublicStories(req, res) {
     const limit = normalizeLimit(req.query.limit, 10, 100)
     const genre = String(req.query.genre || '').trim()
     const language = String(req.query.language || '').trim()
+    const storyType = String(req.query.story_type || req.query.storyType || '').trim().toLowerCase()
     const sort = String(req.query.sort || 'latest').trim()
     const queryLimit = isDiscoverMoreSort(sort) ? Math.min(Math.max(limit * 8, 24), 48) : limit
     const authorId = String(req.query.authorId || req.query.author_id || '').trim()
@@ -811,6 +814,7 @@ export async function getPublicStories(req, res) {
 
     if (genre) query = query.eq('main_genre', genre)
     if (language) query = query.eq('story_language', language)
+    if (['novel', 'manga'].includes(storyType)) query = query.eq('story_type', storyType)
     if (authorId) query = query.eq('author_id', authorId)
     if (exclude) query = query.neq('id', exclude)
 
@@ -880,6 +884,7 @@ export async function getPublicShadowExclusiveStories(req, res) {
     const section = String(req.query.section || '').trim()
     const genre = String(req.query.genre || '').trim()
     const language = String(req.query.language || '').trim()
+    const storyType = String(req.query.story_type || req.query.storyType || '').trim().toLowerCase()
     const storyStatus = String(req.query.story_status || req.query.storyStatus || '').trim()
     const sort = String(req.query.sort || 'latest').trim()
     const authorId = String(req.query.authorId || req.query.author_id || '').trim()
@@ -894,7 +899,7 @@ export async function getPublicShadowExclusiveStories(req, res) {
       .limit(limit)
 
     if (genre) query = query.eq('main_genre', genre)
-    if (language) query = query.eq('story_language', language)
+    if (['novel', 'manga'].includes(storyType)) query = query.eq('story_type', storyType)
     if (storyStatus) query = query.eq('story_status', storyStatus)
     if (authorId) query = query.eq('author_id', authorId)
 
