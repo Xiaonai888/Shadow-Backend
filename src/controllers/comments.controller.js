@@ -3,6 +3,11 @@ import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import { getActiveReaderCommentBlock, readerCommentBlockedPayload } from '../utils/readerCommentBlocks.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
+import {
+  deleteStoryCommentToTrash,
+  getCommentTrashMessage,
+  getCommentTrashStatus,
+} from '../services/commentTrash.service.js'
 
 function normalizeText(value) {
   return String(value || '').trim()
@@ -93,6 +98,7 @@ async function getComment(commentId) {
     .from('comments')
     .select('*')
     .eq('id', commentId)
+    .is('deleted_at', null)
     .maybeSingle()
 
   if (error) throw error
@@ -105,6 +111,7 @@ async function getPublicComment(commentId, userId = null) {
     .from('comments')
     .select('*, user:users(id, name, username, avatar_url, role)')
     .eq('id', commentId)
+    .is('deleted_at', null)
     .maybeSingle()
 
   if (error) throw error
@@ -230,6 +237,7 @@ export async function getStoryComments(req, res) {
       .select('*, user:users(id, name, username, avatar_url, role)', { count: 'exact' })
       .eq('story_id', storyId)
       .eq('is_hidden', false)
+      .is('deleted_at', null)
       .is('parent_id', null)
       .range(from, to)
 
@@ -261,6 +269,7 @@ export async function getStoryComments(req, res) {
         .select('*, user:users(id, name, username, avatar_url, role)')
         .eq('story_id', storyId)
         .eq('is_hidden', false)
+        .is('deleted_at', null)
         .in('parent_id', parentIds)
         .order('created_at', { ascending: true })
 
@@ -320,6 +329,7 @@ export async function getEpisodeComments(req, res) {
       .eq('story_id', episode.story_id)
       .eq('episode_id', episodeId)
       .eq('is_hidden', false)
+      .is('deleted_at', null)
       .is('parent_id', null)
       .range(from, to)
 
@@ -352,6 +362,7 @@ export async function getEpisodeComments(req, res) {
         .eq('story_id', episode.story_id)
         .eq('episode_id', episodeId)
         .eq('is_hidden', false)
+        .is('deleted_at', null)
         .in('parent_id', parentIds)
         .order('created_at', { ascending: true })
 
@@ -707,6 +718,7 @@ export async function toggleCommentLike(req, res) {
         updated_at: new Date().toISOString(),
       })
       .eq('id', commentId)
+      .is('deleted_at', null)
 
     if (updateError) throw updateError
 
@@ -763,6 +775,7 @@ export async function updateOwnComment(req, res) {
         updated_at: new Date().toISOString(),
       })
       .eq('id', commentId)
+      .is('deleted_at', null)
       .select('*, user:users(id, name, username, avatar_url, role)')
       .single()
 
@@ -789,7 +802,7 @@ export async function moderateComment(req, res) {
   try {
     const commentId = String(req.params.commentId || '').trim()
     const userId = req.user?.user_id
-    const action = String(req.body.action || '').trim()
+    const action = String(req.body.action || '').trim().toLowerCase()
 
     const comment = await getComment(commentId)
 
@@ -801,32 +814,71 @@ export async function moderateComment(req, res) {
     }
 
     const permission = await canModerateStory(comment.story_id, userId)
+    const ownsComment =
+      comment.user_id &&
+      userId &&
+      String(comment.user_id) === String(userId)
+
+    if (action === 'delete') {
+      if (!ownsComment && !permission.ok) {
+        return res.status(403).json({
+          ok: false,
+          message: 'You cannot delete this comment',
+        })
+      }
+
+      const actorType = ownsComment
+        ? 'reader'
+        : permission.isAdmin
+          ? 'admin'
+          : 'author'
+
+      const result = await deleteStoryCommentToTrash({
+        commentId,
+        actorType,
+        actorId: String(userId),
+        reason: normalizeText(req.body.reason),
+      })
+
+      if (!result.ok) {
+        const status = getCommentTrashStatus(result)
+
+        if (result.retry_after_seconds) {
+          res.setHeader(
+            'Retry-After',
+            String(result.retry_after_seconds)
+          )
+        }
+
+        return res.status(status).json({
+          ok: false,
+          code: result.code,
+          message: getCommentTrashMessage(result),
+          limit: result.limit ?? null,
+          used: result.used ?? null,
+          remaining: result.remaining ?? null,
+          retry_after_seconds:
+            result.retry_after_seconds ?? 0,
+        })
+      }
+
+      return res.status(200).json({
+        ok: true,
+        message: 'Comment moved to trash',
+        comment_id: result.comment_id,
+        deleted_at: result.deleted_at,
+        delete_expires_at:
+          result.delete_expires_at,
+        limit: result.limit ?? null,
+        used: result.used ?? null,
+        remaining: result.remaining ?? null,
+      })
+    }
 
     if (!permission.ok) {
       return res.status(403).json({
         ok: false,
         message: 'You cannot moderate this comment',
-      })
-    }
-
-    if (action === 'delete') {
-      if (!permission.isAdmin) {
-        return res.status(403).json({
-          ok: false,
-          message: 'Only admin can delete comments',
-        })
-      }
-
-      const { error } = await supabase
-        .from('comments')
-        .delete()
-        .eq('id', commentId)
-
-      if (error) throw error
-
-      return res.status(200).json({
-        ok: true,
-        message: 'Comment deleted',
       })
     }
 
@@ -872,6 +924,7 @@ export async function moderateComment(req, res) {
       .from('comments')
       .update(updateData)
       .eq('id', commentId)
+      .is('deleted_at', null)
       .select('*, user:users(id, name, username, avatar_url, role)')
       .single()
 
@@ -893,6 +946,7 @@ export async function moderateComment(req, res) {
     })
   }
 }
+
 
 async function fetchStoryMap(storyIds) {
   const ids = [...new Set((storyIds || []).filter(Boolean))]
@@ -957,6 +1011,7 @@ export async function getMyCommentActivities(req, res) {
         .select('id')
         .eq('user_id', userId)
         .eq('is_hidden', false)
+        .is('deleted_at', null)
         .limit(300)
 
       if (parentError) throw parentError
@@ -970,6 +1025,7 @@ export async function getMyCommentActivities(req, res) {
           .in('parent_id', parentIds)
           .neq('user_id', userId)
           .eq('is_hidden', false)
+          .is('deleted_at', null)
           .order('created_at', { ascending: false })
           .limit(80)
 
@@ -987,6 +1043,7 @@ export async function getMyCommentActivities(req, res) {
           .ilike('text', `%@${username}%`)
           .neq('user_id', userId)
           .eq('is_hidden', false)
+          .is('deleted_at', null)
           .order('created_at', { ascending: false })
           .limit(80)
 
@@ -1000,6 +1057,7 @@ export async function getMyCommentActivities(req, res) {
         .select('id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at')
         .eq('user_id', userId)
         .eq('is_hidden', false)
+        .is('deleted_at', null)
         .order('created_at', { ascending: false })
         .limit(80)
 
@@ -1012,6 +1070,7 @@ export async function getMyCommentActivities(req, res) {
         .select('id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at')
         .eq('user_id', userId)
         .eq('is_hidden', false)
+        .is('deleted_at', null)
         .order('created_at', { ascending: false })
         .limit(80)
 
