@@ -355,6 +355,7 @@ function publicEpisodeListItem(episode, story = null, firstVisibleEpisodeId = nu
     unlock_methods: episode.unlock_methods || [],
     status: episode.status,
     episode_number: episode.episode_number,
+    page_count: Number(episode.page_count || 0),
     character_count: episode.character_count,
     published_at: episode.published_at,
     created_at: episode.created_at,
@@ -362,12 +363,40 @@ function publicEpisodeListItem(episode, story = null, firstVisibleEpisodeId = nu
   }
 }
 
+
+function publicEpisodePage(page) {
+  return {
+    id: page.id,
+    episode_id: page.episode_id,
+    story_id: page.story_id,
+    image_url: page.image_url,
+    sort_order: Number(page.sort_order || 0),
+    width: page.width || null,
+    height: page.height || null,
+    file_size: page.file_size || null,
+    mime_type: page.mime_type || null,
+  }
+}
+
+async function getPublicEpisodePages({ episodeId, storyId }) {
+  const { data, error } = await supabase
+    .from('episode_pages')
+    .select('id, episode_id, story_id, image_url, sort_order, width, height, file_size, mime_type')
+    .eq('episode_id', episodeId)
+    .eq('story_id', storyId)
+    .order('sort_order', { ascending: true })
+
+  if (error) throw error
+  return data || []
+}
+
 function publicEpisode(
   episode,
   story = null,
   unlocked = false,
   firstVisibleEpisodeId = null,
-  autoFreeEpisodeIds = new Set()
+  autoFreeEpisodeIds = new Set(),
+  pages = []
 ) {
   if (!episode) return null
 
@@ -387,6 +416,8 @@ function publicEpisode(
     unlock_methods: episode.unlock_methods || [],
     status: episode.status,
     episode_number: episode.episode_number,
+    page_count: Math.max(Number(episode.page_count || 0), pages.length),
+    pages: accessible ? pages.map(publicEpisodePage) : [],
     character_count: episode.character_count,
     published_at: episode.published_at,
     created_at: episode.created_at,
@@ -1044,7 +1075,7 @@ export async function getPublicStoryEpisodes(req, res) {
 
     const { data, error } = await supabase
       .from('episodes')
-      .select('id, story_id, title, cover_url, is_adult, is_locked, unlock_methods, status, episode_number, character_count, published_at, created_at, updated_at')
+      .select('id, story_id, title, cover_url, is_adult, is_locked, unlock_methods, status, episode_number, page_count, character_count, published_at, created_at, updated_at')
       .eq('story_id', storyId)
       .eq('status', 'published')
       .is('deleted_at', null)
@@ -1123,6 +1154,12 @@ export async function getPublicEpisodeById(req, res) {
     const freeEpisode = isEpisodeFreeForReader(episode, story, now, firstVisibleEpisodeId, autoFreeEpisodeIds)
     const activeUnlock = await hasActiveEpisodeUnlock({ userId, episodeId })
     const unlocked = freeEpisode || activeUnlock
+    const isManga =
+      String(story.story_type || 'novel').trim().toLowerCase() === 'manga'
+    const episodePages =
+      unlocked && isManga
+        ? await getPublicEpisodePages({ episodeId, storyId })
+        : []
 
     if (!unlocked) {
       return res.status(423).json({
@@ -1143,7 +1180,14 @@ export async function getPublicEpisodeById(req, res) {
       locked: false,
       first_visible_episode_id: firstVisibleEpisodeId,
       story: publicStory(story),
-      episode: publicEpisode(episode, story, unlocked, firstVisibleEpisodeId, autoFreeEpisodeIds),
+      episode: publicEpisode(
+        episode,
+        story,
+        unlocked,
+        firstVisibleEpisodeId,
+        autoFreeEpisodeIds,
+        episodePages
+      ),
       free_first_episode: firstVisibleEpisodeId && episode.id === firstVisibleEpisodeId
         ? {
             counted: false,
