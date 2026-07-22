@@ -15,6 +15,7 @@ const RECOVERY_ERROR_MESSAGES = {
   INVALID_RECOVERY_REQUEST: 'Invalid comment recovery request',
   COMMENT_NOT_FOUND: 'Comment not found',
   COMMENT_NOT_DELETED: 'Comment is not in trash',
+  COMMENT_RECOVERY_EXPIRED: 'Comment recovery period has expired',
   RECOVERY_NOT_ALLOWED: 'You cannot recover this comment',
 }
 
@@ -40,6 +41,7 @@ export function getCommentTrashStatus(result) {
     return 404
   }
 
+  if (code === 'COMMENT_RECOVERY_EXPIRED') return 410
   if (code === 'COMMENT_DELETE_LIMIT_REACHED') return 429
   if (code === 'DELETE_NOT_ALLOWED' || code === 'RECOVERY_NOT_ALLOWED') return 403
   if (code === 'COMMENT_ALREADY_DELETED' || code === 'COMMENT_NOT_DELETED') return 409
