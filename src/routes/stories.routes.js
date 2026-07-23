@@ -14,8 +14,10 @@ import {
   moveEpisodeToTrash,
 } from '../controllers/stories.controller.js'
 import {
+  getChatStoryCharacterProfile,
   getChatStoryCharacters,
   saveChatStoryCharacters,
+  updateChatStoryCharacterProfile,
 } from '../controllers/chatStoryCharacters.controller.js'
 import { getChatStoryAvatarGallery } from '../controllers/chatStoryAvatarGallery.controller.js'
 import {
@@ -33,6 +35,8 @@ router.get('/trash', requireUser, getStoryTrash)
 router.get('/chat/avatar-gallery', requireUser, getChatStoryAvatarGallery)
 router.get('/:storyId/chat/characters', requireUser, getChatStoryCharacters)
 router.put('/:storyId/chat/characters', requireUser, saveChatStoryCharacters)
+router.get('/:storyId/chat/characters/:characterId/profile', requireUser, getChatStoryCharacterProfile)
+router.patch('/:storyId/chat/characters/:characterId/profile', requireUser, updateChatStoryCharacterProfile)
 router.post('/:storyId/chat/episodes/save', requireUser, saveChatStoryEpisode)
 router.patch('/:storyId/chat/episodes/:episodeId/status', requireUser, updateChatStoryEpisodeStatus)
 router.get('/:storyId', requireUser, getStoryById)
