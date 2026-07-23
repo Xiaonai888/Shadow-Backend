@@ -35,6 +35,7 @@ import {
   getAuthorPagePosts,
   getAuthorPostById,
   getAuthorPostComments,
+  getAuthorPostReactions,
   setMyAuthorPostPinned,
   setMyAuthorPostReaction,
   updateOwnAuthorPostComment,
@@ -93,6 +94,7 @@ router.get('/page/:pageUsername/posts', getAuthorPagePosts)
 router.post('/me/posts', requireUser, createMyAuthorPost)
 router.post('/me/posts/:postId/react', requireUser, setMyAuthorPostReaction)
 router.get('/page/posts/:postId', getAuthorPostById)
+router.get('/page/posts/:postId/reactions', getAuthorPostReactions)
 router.get('/page/posts/:postId/comments', getAuthorPostComments)
 router.post('/me/posts/:postId/comments', requireUser, createAuthorPostComment)
 router.patch('/me/post-comments/:commentId', requireUser, updateOwnAuthorPostComment)
