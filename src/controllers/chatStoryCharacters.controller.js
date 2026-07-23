@@ -64,6 +64,7 @@ function normalizeCharacters(value, storyId, userId) {
     if (!ALLOWED_ROLE_GROUPS.includes(roleGroup)) return null
 
     const character = {
+      source_id: cleanNullableText(item?.id, 100),
       story_id: storyId,
       user_id: userId,
       role_group: roleGroup,
@@ -91,15 +92,11 @@ export async function getChatStoryCharacters(req, res) {
     const userId = req.user?.user_id
     const { storyId } = req.params
 
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
-    }
+    if (!userId) return res.status(401).json({ ok: false, message: 'Unauthorized' })
 
     const story = await getOwnedChatStory(storyId, userId)
 
-    if (!story) {
-      return res.status(404).json({ ok: false, message: 'Story not found' })
-    }
+    if (!story) return res.status(404).json({ ok: false, message: 'Story not found' })
 
     if (story.story_type !== 'chat_story') {
       return res.status(400).json({ ok: false, message: 'This story is not a Chat Story' })
@@ -115,13 +112,9 @@ export async function getChatStoryCharacters(req, res) {
 
     if (error) throw error
 
-    return res.status(200).json({
-      ok: true,
-      characters: data || [],
-    })
+    return res.status(200).json({ ok: true, characters: data || [] })
   } catch (error) {
     console.error('GET CHAT STORY CHARACTERS ERROR:', error)
-
     return res.status(500).json({
       ok: false,
       message: 'Failed to load Chat Story characters',
@@ -135,15 +128,11 @@ export async function getChatStoryCharacterProfile(req, res) {
     const userId = req.user?.user_id
     const { storyId, characterId } = req.params
 
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
-    }
+    if (!userId) return res.status(401).json({ ok: false, message: 'Unauthorized' })
 
     const story = await getOwnedChatStory(storyId, userId)
 
-    if (!story) {
-      return res.status(404).json({ ok: false, message: 'Story not found' })
-    }
+    if (!story) return res.status(404).json({ ok: false, message: 'Story not found' })
 
     if (story.story_type !== 'chat_story') {
       return res.status(400).json({ ok: false, message: 'This story is not a Chat Story' })
@@ -158,18 +147,11 @@ export async function getChatStoryCharacterProfile(req, res) {
       .maybeSingle()
 
     if (error) throw error
+    if (!data) return res.status(404).json({ ok: false, message: 'Character not found' })
 
-    if (!data) {
-      return res.status(404).json({ ok: false, message: 'Character not found' })
-    }
-
-    return res.status(200).json({
-      ok: true,
-      character: data,
-    })
+    return res.status(200).json({ ok: true, character: data })
   } catch (error) {
     console.error('GET CHAT STORY CHARACTER PROFILE ERROR:', error)
-
     return res.status(500).json({
       ok: false,
       message: 'Failed to load character profile',
@@ -183,15 +165,11 @@ export async function updateChatStoryCharacterProfile(req, res) {
     const userId = req.user?.user_id
     const { storyId, characterId } = req.params
 
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
-    }
+    if (!userId) return res.status(401).json({ ok: false, message: 'Unauthorized' })
 
     const story = await getOwnedChatStory(storyId, userId)
 
-    if (!story) {
-      return res.status(404).json({ ok: false, message: 'Story not found' })
-    }
+    if (!story) return res.status(404).json({ ok: false, message: 'Story not found' })
 
     if (story.story_type !== 'chat_story') {
       return res.status(400).json({ ok: false, message: 'This story is not a Chat Story' })
@@ -224,7 +202,6 @@ export async function updateChatStoryCharacterProfile(req, res) {
       personality: cleanNullableText(req.body.personality, 300),
       relationship: cleanNullableText(req.body.relationship, 300),
       bio: cleanNullableText(req.body.bio, 5000),
-      updated_at: new Date().toISOString(),
     }
 
     const { data, error } = await supabase
@@ -237,10 +214,7 @@ export async function updateChatStoryCharacterProfile(req, res) {
       .maybeSingle()
 
     if (error) throw error
-
-    if (!data) {
-      return res.status(404).json({ ok: false, message: 'Character not found' })
-    }
+    if (!data) return res.status(404).json({ ok: false, message: 'Character not found' })
 
     return res.status(200).json({
       ok: true,
@@ -249,7 +223,6 @@ export async function updateChatStoryCharacterProfile(req, res) {
     })
   } catch (error) {
     console.error('UPDATE CHAT STORY CHARACTER PROFILE ERROR:', error)
-
     return res.status(500).json({
       ok: false,
       message: 'Failed to update character profile',
@@ -264,23 +237,22 @@ export async function saveChatStoryCharacters(req, res) {
     const { storyId } = req.params
     const input = req.body.characters
 
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
-    }
+    if (!userId) return res.status(401).json({ ok: false, message: 'Unauthorized' })
 
     if (!Array.isArray(input)) {
       return res.status(400).json({ ok: false, message: 'Characters must be an array' })
     }
 
     if (input.length > MAX_CHARACTERS) {
-      return res.status(400).json({ ok: false, message: `Maximum ${MAX_CHARACTERS} characters allowed` })
+      return res.status(400).json({
+        ok: false,
+        message: `Maximum ${MAX_CHARACTERS} characters allowed`,
+      })
     }
 
     const story = await getOwnedChatStory(storyId, userId)
 
-    if (!story) {
-      return res.status(404).json({ ok: false, message: 'Story not found' })
-    }
+    if (!story) return res.status(404).json({ ok: false, message: 'Story not found' })
 
     if (story.story_type !== 'chat_story') {
       return res.status(400).json({ ok: false, message: 'This story is not a Chat Story' })
@@ -303,28 +275,63 @@ export async function saveChatStoryCharacters(req, res) {
       })
     }
 
-    const { error: deleteError } = await supabase
+    const { data: existingRows, error: existingError } = await supabase
       .from('chat_story_characters')
-      .delete()
+      .select('id')
       .eq('story_id', storyId)
       .eq('user_id', userId)
 
-    if (deleteError) throw deleteError
+    if (existingError) throw existingError
 
-    if (characters.length === 0) {
-      return res.status(200).json({
-        ok: true,
-        message: 'Characters saved successfully',
-        characters: [],
-      })
+    const existingIds = new Set((existingRows || []).map((row) => String(row.id)))
+    const retainedIds = characters
+      .map((character) => character.source_id)
+      .filter((id) => id && existingIds.has(String(id)))
+      .map(String)
+
+    const removedIds = [...existingIds].filter((id) => !retainedIds.includes(id))
+
+    if (removedIds.length) {
+      const { error: deleteError } = await supabase
+        .from('chat_story_characters')
+        .delete()
+        .in('id', removedIds)
+        .eq('story_id', storyId)
+        .eq('user_id', userId)
+
+      if (deleteError) throw deleteError
     }
 
-    const { data, error: insertError } = await supabase
-      .from('chat_story_characters')
-      .insert(characters)
-      .select()
+    for (const character of characters) {
+      const { source_id: sourceId, ...payload } = character
 
-    if (insertError) throw insertError
+      if (sourceId && existingIds.has(String(sourceId))) {
+        const { error } = await supabase
+          .from('chat_story_characters')
+          .update(payload)
+          .eq('id', sourceId)
+          .eq('story_id', storyId)
+          .eq('user_id', userId)
+
+        if (error) throw error
+      } else {
+        const { error } = await supabase
+          .from('chat_story_characters')
+          .insert(payload)
+
+        if (error) throw error
+      }
+    }
+
+    const { data, error } = await supabase
+      .from('chat_story_characters')
+      .select('*')
+      .eq('story_id', storyId)
+      .eq('user_id', userId)
+      .order('role_group', { ascending: true })
+      .order('sort_order', { ascending: true })
+
+    if (error) throw error
 
     return res.status(200).json({
       ok: true,
@@ -333,7 +340,6 @@ export async function saveChatStoryCharacters(req, res) {
     })
   } catch (error) {
     console.error('SAVE CHAT STORY CHARACTERS ERROR:', error)
-
     return res.status(500).json({
       ok: false,
       message: 'Failed to save Chat Story characters',
