@@ -2,9 +2,24 @@ import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 
+const EPISODE_REACTION_TYPES = new Set([
+  'love',
+  'haha',
+  'wow',
+  'sad',
+  'angry',
+  'support',
+  'touched',
+])
+
 function normalizeReactionType(value) {
-  const reactionType = String(value || 'love').trim().toLowerCase()
-  return reactionType === 'love' ? 'love' : 'love'
+  const reactionType = String(value || 'love')
+    .trim()
+    .toLowerCase()
+
+  return EPISODE_REACTION_TYPES.has(reactionType)
+    ? reactionType
+    : 'love'
 }
 
 function getOptionalReader(req) {
@@ -234,6 +249,31 @@ export async function toggleEpisodeReaction(req, res) {
     if (existingError) throw existingError
 
     if (existing) {
+      if (
+        String(existing.reaction_type || 'love') !==
+        reactionType
+      ) {
+        const { error: updateError } = await supabase
+          .from('episode_reactions')
+          .update({
+            reaction_type: reactionType,
+          })
+          .eq('id', existing.id)
+
+        if (updateError) throw updateError
+
+        const totalLikes =
+          await syncEpisodeTotalLikes(episodeId)
+
+        return res.status(200).json({
+          ok: true,
+          action: 'updated',
+          liked: true,
+          reaction_type: reactionType,
+          total_likes: totalLikes,
+        })
+      }
+
       const { error: deleteError } = await supabase
         .from('episode_reactions')
         .delete()
@@ -243,7 +283,10 @@ export async function toggleEpisodeReaction(req, res) {
 
       const [totalLikes] = await Promise.all([
         syncEpisodeTotalLikes(episodeId),
-        deleteEpisodeLikeNotificationSafely(episodeId, userId),
+        deleteEpisodeLikeNotificationSafely(
+          episodeId,
+          userId
+        ),
       ])
 
       return res.status(200).json({
