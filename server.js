@@ -62,6 +62,7 @@ import supportRequestsRoutes from './src/routes/supportRequests.routes.js'
 import readerPostsRoutes from './src/routes/readerPosts.routes.js'
 import readingProgressRoutes from './src/routes/readingProgress.routes.js'
 import shareProfileRoutes from './src/routes/shareProfile.routes.js'
+import adminChatStoryGalleryRoutes from './src/routes/adminChatStoryGallery.routes.js'
 
 dotenv.config()
 
@@ -178,6 +179,7 @@ app.use('/api/notifications', readerActionSpamGuard, notificationsRoutes)
 app.use('/api/admin/notifications', adminNotificationsRoutes)
 app.use('/api/mails', readerActionSpamGuard, readerMailsRoutes)
 app.use('/api/admin/stories', adminStoriesRoutes)
+app.use('/api/admin/chat-story-gallery', adminChatStoryGalleryRoutes)
 app.use('/api/admin/ranking', adminRankingRoutes)
 app.use('/api/advertisements', advertisementsRoutes)
 app.use('/api/admin/block-list', adminBlockListRoutes)
