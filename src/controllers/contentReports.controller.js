@@ -50,33 +50,81 @@ async function getStoryTarget(targetId) {
 }
 
 async function getCommentTarget(targetId) {
-  const { data, error } = await supabase
+  const { data: storyComment, error: storyCommentError } = await supabase
     .from('comments')
     .select('id, text, story_id, user_id')
     .eq('id', targetId)
+    .is('deleted_at', null)
     .maybeSingle()
 
-  if (error) throw error
-  if (!data) return null
+  if (storyCommentError) throw storyCommentError
 
-  let storyTitle = ''
+  if (storyComment) {
+    let storyTitle = ''
 
-  if (data.story_id) {
-    const { data: story, error: storyError } = await supabase
-      .from('stories')
-      .select('title')
-      .eq('id', data.story_id)
+    if (storyComment.story_id) {
+      const { data: story, error: storyError } = await supabase
+        .from('stories')
+        .select('title')
+        .eq('id', storyComment.story_id)
+        .maybeSingle()
+
+      if (storyError) throw storyError
+      storyTitle = cleanText(story?.title)
+    }
+
+    return {
+      title: storyTitle
+        ? `Comment on ${storyTitle}`
+        : 'Comment',
+      excerpt: excerpt(storyComment.text),
+    }
+  }
+
+  const { data: postComment, error: postCommentError } = await supabase
+    .from('author_page_post_comments')
+    .select('id, text, post_id, user_id')
+    .eq('id', targetId)
+    .is('deleted_at', null)
+    .maybeSingle()
+
+  if (postCommentError) throw postCommentError
+  if (!postComment) return null
+
+  let pageName = ''
+
+  if (postComment.post_id) {
+    const { data: post, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('author_page_id')
+      .eq('id', postComment.post_id)
       .maybeSingle()
 
-    if (storyError) throw storyError
-    storyTitle = cleanText(story?.title)
+    if (postError) throw postError
+
+    if (post?.author_page_id) {
+      const { data: authorPage, error: pageError } = await supabase
+        .from('author_pages')
+        .select('page_name, page_username')
+        .eq('id', post.author_page_id)
+        .maybeSingle()
+
+      if (pageError) throw pageError
+      pageName = cleanText(
+        authorPage?.page_name ||
+          authorPage?.page_username
+      )
+    }
   }
 
   return {
-    title: storyTitle ? `Comment on ${storyTitle}` : 'Comment',
-    excerpt: excerpt(data.text),
+    title: pageName
+      ? `Comment on ${pageName}`
+      : 'Author Page Comment',
+    excerpt: excerpt(postComment.text),
   }
 }
+
 
 async function getAuthorPageTarget(targetId) {
   const { data, error } = await supabase
