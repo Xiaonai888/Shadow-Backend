@@ -3,15 +3,36 @@ import { supabase } from '../config/supabase.js'
 const ALLOWED_ROLE_GROUPS = ['main', 'major', 'minor', 'background']
 const ALLOWED_AVATAR_SOURCES = ['device', 'shadow_gallery']
 const ALLOWED_CHAT_SIDES = ['left', 'right']
+const ALLOWED_GENDERS = ['Female', 'Male', 'Non-binary', 'Unknown']
 const MAX_CHARACTERS = 100
 
 function cleanText(value) {
   return String(value || '').trim()
 }
 
-function cleanNullableText(value) {
-  const text = cleanText(value)
+function cleanNullableText(value, max = 5000) {
+  const text = cleanText(value).slice(0, max)
   return text || null
+}
+
+function cleanGender(value) {
+  const gender = cleanText(value)
+  return ALLOWED_GENDERS.includes(gender) ? gender : null
+}
+
+function cleanBirthday(value) {
+  const birthday = cleanText(value)
+  if (!birthday) return null
+
+  const date = new Date(`${birthday}T00:00:00`)
+  return Number.isNaN(date.getTime()) ? null : birthday
+}
+
+function cleanHeight(value) {
+  if (value === null || value === undefined || value === '') return null
+
+  const height = Math.floor(Number(value))
+  return Number.isFinite(height) && height >= 1 && height <= 300 ? height : null
 }
 
 async function getOwnedChatStory(storyId, userId) {
@@ -46,11 +67,18 @@ function normalizeCharacters(value, storyId, userId) {
       story_id: storyId,
       user_id: userId,
       role_group: roleGroup,
-      nickname: cleanNullableText(item?.nickname),
-      avatar_url: cleanNullableText(item?.avatar_url || item?.avatarUrl),
+      nickname: cleanNullableText(item?.nickname, 40),
+      avatar_url: cleanNullableText(item?.avatar_url || item?.avatarUrl, 1000),
       avatar_source: ALLOWED_AVATAR_SOURCES.includes(avatarSource) ? avatarSource : 'device',
       chat_side: chatSide,
       sort_order: counters[roleGroup],
+      gender: cleanGender(item?.gender),
+      birthday: cleanBirthday(item?.birthday),
+      height_cm: cleanHeight(item?.height_cm ?? item?.heightCm),
+      occupation: cleanNullableText(item?.occupation, 120),
+      personality: cleanNullableText(item?.personality, 300),
+      relationship: cleanNullableText(item?.relationship, 300),
+      bio: cleanNullableText(item?.bio, 5000),
     }
 
     counters[roleGroup] += 1
