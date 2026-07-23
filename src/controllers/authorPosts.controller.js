@@ -547,32 +547,43 @@ export async function setMyAuthorPostReaction(req, res) {
 
 
 function publicAuthorPostComment(comment) {
+  const isDeleted = Boolean(comment.deleted_at)
+
   return {
     id: comment.id,
     post_id: comment.post_id,
-    user_id: comment.user_id,
+    user_id: isDeleted ? null : comment.user_id,
     parent_id: comment.parent_id,
-    text: comment.text || '',
-    is_hidden: Boolean(comment.is_hidden),
-    is_pinned: Boolean(comment.is_pinned),
-    likes: Number(comment.likes || 0),
+    text: isDeleted ? 'Comment deleted' : comment.text || '',
+    is_deleted: isDeleted,
+    is_hidden: isDeleted ? false : Boolean(comment.is_hidden),
+    is_pinned: isDeleted ? false : Boolean(comment.is_pinned),
+    likes: isDeleted ? 0 : Number(comment.likes || 0),
     created_at: comment.created_at,
     updated_at: comment.updated_at,
-    user: comment.user
+    user: isDeleted
       ? {
-          id: comment.user.id,
-          name: comment.user.name || comment.user.username || 'Reader',
-          username: comment.user.username || '',
-          avatar_url: comment.user.avatar_url || '',
-          role: comment.user.role || 'reader',
-        }
-      : {
           id: null,
           name: 'Reader',
           username: '',
           avatar_url: '',
           role: 'reader',
-        },
+        }
+      : comment.user
+        ? {
+            id: comment.user.id,
+            name: comment.user.name || comment.user.username || 'Reader',
+            username: comment.user.username || '',
+            avatar_url: comment.user.avatar_url || '',
+            role: comment.user.role || 'reader',
+          }
+        : {
+            id: null,
+            name: 'Reader',
+            username: '',
+            avatar_url: '',
+            role: 'reader',
+          },
     replies: Array.isArray(comment.replies)
       ? comment.replies.map(publicAuthorPostComment)
       : [],
@@ -620,26 +631,49 @@ export async function getAuthorPostComments(req, res) {
 
     if (commentsError) throw commentsError
 
-    const parentIds = (parentComments || [])
+    const { data: deletedRows, error: deletedError } = await supabase
+      .from('author_page_post_comments')
+      .select('*, user:users(id, name, username, avatar_url, role)')
+      .eq('post_id', postId)
+      .eq('is_hidden', false)
+      .not('deleted_at', 'is', null)
+      .is('parent_id', null)
+      .order('deleted_at', { ascending: false })
+      .limit(Math.min(100, limit * 5))
+
+    if (deletedError) throw deletedError
+
+    const deletedParents = deletedRows || []
+    const candidateParents = [...(parentComments || []), ...deletedParents]
+    const candidateIds = candidateParents
       .map((comment) => comment.id)
       .filter(Boolean)
-
     let replies = []
 
-    if (parentIds.length) {
+    if (candidateIds.length) {
       const { data: replyRows, error: repliesError } = await supabase
         .from('author_page_post_comments')
         .select('*, user:users(id, name, username, avatar_url, role)')
         .eq('post_id', postId)
         .eq('is_hidden', false)
         .is('deleted_at', null)
-        .in('parent_id', parentIds)
+        .in('parent_id', candidateIds)
         .order('created_at', { ascending: true })
 
       if (repliesError) throw repliesError
       replies = replyRows || []
     }
 
+    const replyParentIds = new Set(
+      replies.map((reply) => String(reply.parent_id || ''))
+    )
+    const visibleDeletedParents = deletedParents.filter((comment) =>
+      replyParentIds.has(String(comment.id))
+    )
+    const visibleParents = [
+      ...(parentComments || []),
+      ...visibleDeletedParents,
+    ]
     const repliesByParent = new Map()
 
     for (const reply of replies) {
@@ -649,7 +683,7 @@ export async function getAuthorPostComments(req, res) {
       repliesByParent.set(key, current)
     }
 
-    const comments = (parentComments || []).map((comment) => ({
+    const comments = visibleParents.map((comment) => ({
       ...comment,
       replies: repliesByParent.get(String(comment.id)) || [],
     }))
