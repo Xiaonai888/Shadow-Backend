@@ -1,5 +1,10 @@
 import { supabase } from '../config/supabase.js'
 import { blockedWordsWarningPayload, findBlockedWordsInContent } from '../utils/blockedWords.js'
+import {
+  applyEpisodeAccess,
+  buildEpisodeAccess,
+  getStoryEpisodeAccess,
+} from '../services/episodeAccess.service.js'
 
 const ALLOWED_LANGUAGES = ['Khmer', 'English', 'Chinese', 'Japanese', 'Korean']
 const ALLOWED_UPDATE_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
@@ -188,38 +193,47 @@ status: story.status,
   }
 }
 
-function publicEpisode(episode, pages = [], storyType = 'novel') {
+function publicEpisode(
+  episode,
+  pages = [],
+  storyType = 'novel',
+  access = null
+) {
   if (!episode) return null
 
   const safePages = Array.isArray(pages) ? pages.map(publicEpisodePage) : []
+  const visibleEpisode = applyEpisodeAccess(episode, access)
 
   return {
-    id: episode.id,
-    story_id: episode.story_id,
-    author_id: episode.author_id,
-    user_id: episode.user_id,
+    id: visibleEpisode.id,
+    story_id: visibleEpisode.story_id,
+    author_id: visibleEpisode.author_id,
+    user_id: visibleEpisode.user_id,
     story_type: storyType === 'manga' ? 'manga' : 'novel',
-    title: episode.title,
-    cover_url: episode.cover_url,
-    content: episode.content,
+    title: visibleEpisode.title,
+    cover_url: visibleEpisode.cover_url,
+    content: visibleEpisode.content,
     pages: safePages,
-    page_count: Number(episode.page_count ?? safePages.length ?? 0),
-    is_adult: episode.is_adult,
-    is_locked:
-      Number(episode.episode_number || 0) > 5 &&
-      Boolean(episode.is_locked),
-    unlock_methods: episode.unlock_methods || [],
-    status: episode.status,
-    episode_number: episode.episode_number,
-    character_count: episode.character_count,
-    word_count: episode.word_count,
-    total_likes: episode.total_likes || 0,
-    published_at: episode.published_at,
-    scheduled_at: episode.scheduled_at,
-    deleted_at: episode.deleted_at || null,
-    delete_expires_at: episode.delete_expires_at || null,
-    created_at: episode.created_at,
-    updated_at: episode.updated_at,
+    page_count: Number(
+      visibleEpisode.page_count ?? safePages.length ?? 0
+    ),
+    is_adult: visibleEpisode.is_adult,
+    is_locked: Boolean(visibleEpisode.is_locked),
+    is_free_published: Boolean(visibleEpisode.is_free_published),
+    published_rank: visibleEpisode.published_rank,
+    unlock_methods: visibleEpisode.unlock_methods || [],
+    status: visibleEpisode.status,
+    episode_number: visibleEpisode.episode_number,
+    internal_episode_number: visibleEpisode.internal_episode_number,
+    character_count: visibleEpisode.character_count,
+    word_count: visibleEpisode.word_count,
+    total_likes: visibleEpisode.total_likes || 0,
+    published_at: visibleEpisode.published_at,
+    scheduled_at: visibleEpisode.scheduled_at,
+    deleted_at: visibleEpisode.deleted_at || null,
+    delete_expires_at: visibleEpisode.delete_expires_at || null,
+    created_at: visibleEpisode.created_at,
+    updated_at: visibleEpisode.updated_at,
   }
 }
 
@@ -862,14 +876,12 @@ export async function createEpisode(req, res) {
     }
 
     const episodeNumber = await getNextEpisodeNumber(storyId)
-    const defaultLocked = episodeNumber > 5
-    const isLocked =
-      defaultLocked &&
-      (typeof req.body.is_locked === 'boolean'
-        ? req.body.is_locked
-        : typeof req.body.isLocked === 'boolean'
-          ? req.body.isLocked
-          : true)
+const isLocked =
+  typeof req.body.is_locked === 'boolean'
+    ? req.body.is_locked
+    : typeof req.body.isLocked === 'boolean'
+      ? req.body.isLocked
+      : true
 
     const unlockMethods = cleanUnlockMethods(req.body.unlock_methods || req.body.unlockMethods)
 
@@ -917,13 +929,21 @@ export async function createEpisode(req, res) {
     }
 
     const totalEpisodes = await updateStoryEpisodeCount(storyId)
+const access = await getStoryEpisodeAccess(storyId)
 
-    return res.status(201).json({
-      ok: true,
-      message: isManga ? 'Manga episode created successfully' : 'Episode created successfully',
-      episode: publicEpisode(episode, savedPages, story.story_type),
-      total_episodes: totalEpisodes,
-    })
+return res.status(201).json({
+  ok: true,
+  message: isManga
+    ? 'Manga episode created successfully'
+    : 'Episode created successfully',
+  episode: publicEpisode(
+    episode,
+    savedPages,
+    story.story_type,
+    access
+  ),
+  total_episodes: totalEpisodes,
+})
   } catch (error) {
     console.error('CREATE EPISODE ERROR:', error)
 
@@ -965,13 +985,20 @@ export async function getStoryEpisodes(req, res) {
 
     if (error) throw error
 
-    return res.status(200).json({
-      ok: true,
-      story_type: story.story_type || 'novel',
-      episodes: (data || []).map((episode) =>
-        publicEpisode(episode, [], story.story_type)
-      ),
-    })
+const access = buildEpisodeAccess(data || [])
+
+return res.status(200).json({
+  ok: true,
+  story_type: story.story_type || 'novel',
+  episodes: (data || []).map((episode) =>
+    publicEpisode(
+      episode,
+      [],
+      story.story_type,
+      access
+    )
+  ),
+})
   } catch (error) {
     console.error('GET STORY EPISODES ERROR:', error)
 
@@ -1014,14 +1041,21 @@ export async function getEpisodeById(req, res) {
     }
 
     const pages = story.story_type === 'manga'
-      ? await getEpisodePages(episodeId)
-      : []
+  ? await getEpisodePages(episodeId)
+  : []
 
-    return res.status(200).json({
-      ok: true,
-      story_type: story.story_type || 'novel',
-      episode: publicEpisode(episode, pages, story.story_type),
-    })
+const access = await getStoryEpisodeAccess(storyId)
+
+return res.status(200).json({
+  ok: true,
+  story_type: story.story_type || 'novel',
+  episode: publicEpisode(
+    episode,
+    pages,
+    story.story_type,
+    access
+  ),
+})
   } catch (error) {
     console.error('GET EPISODE BY ID ERROR:', error)
 
@@ -1085,12 +1119,11 @@ export async function updateEpisode(req, res) {
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
     const status = cleanText(req.body.status || episode.status || 'draft')
     const isLocked =
-      Number(episode.episode_number || 0) > 5 &&
-      (typeof req.body.is_locked === 'boolean'
-        ? req.body.is_locked
-        : typeof req.body.isLocked === 'boolean'
-          ? req.body.isLocked
-          : Boolean(episode.is_locked))
+  typeof req.body.is_locked === 'boolean'
+    ? req.body.is_locked
+    : typeof req.body.isLocked === 'boolean'
+      ? req.body.isLocked
+      : Boolean(episode.is_locked)
     const unlockMethods = cleanUnlockMethods(
       req.body.unlock_methods ||
       req.body.unlockMethods ||
@@ -1193,17 +1226,26 @@ export async function updateEpisode(req, res) {
     if (updateError) throw updateError
 
     await supabase
-      .from('stories')
-      .update({
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', storyId)
+  .from('stories')
+  .update({
+    updated_at: new Date().toISOString(),
+  })
+  .eq('id', storyId)
 
-    return res.status(200).json({
-      ok: true,
-      message: isManga ? 'Manga episode updated successfully' : 'Episode updated successfully',
-      episode: publicEpisode(updatedEpisode, savedPages, story.story_type),
-    })
+const access = await getStoryEpisodeAccess(storyId)
+
+return res.status(200).json({
+  ok: true,
+  message: isManga
+    ? 'Manga episode updated successfully'
+    : 'Episode updated successfully',
+  episode: publicEpisode(
+    updatedEpisode,
+    savedPages,
+    story.story_type,
+    access
+  ),
+})
   } catch (error) {
     console.error('UPDATE EPISODE ERROR:', error)
 
@@ -1334,19 +1376,26 @@ export async function updateEpisodeStatus(req, res) {
     if (updateError) throw updateError
 
     if (status === 'published') {
-      await updateStoryStatusAfterEpisodeChange(storyId)
-    }
+  await updateStoryStatusAfterEpisodeChange(storyId)
+}
 
-    return res.status(200).json({
-      ok: true,
-      message:
-        status === 'published'
-          ? 'Episode published successfully'
-          : status === 'scheduled'
-            ? 'Episode scheduled successfully'
-            : 'Episode saved as draft',
-      episode: publicEpisode(updatedEpisode, pages, story.story_type),
-    })
+const access = await getStoryEpisodeAccess(storyId)
+
+return res.status(200).json({
+  ok: true,
+  message:
+    status === 'published'
+      ? 'Episode published successfully'
+      : status === 'scheduled'
+        ? 'Episode scheduled successfully'
+        : 'Episode saved as draft',
+  episode: publicEpisode(
+    updatedEpisode,
+    pages,
+    story.story_type,
+    access
+  ),
+})
   } catch (error) {
     console.error('UPDATE EPISODE STATUS ERROR:', error)
 
