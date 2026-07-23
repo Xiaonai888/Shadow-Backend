@@ -1,6 +1,11 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
+import {
+  applyEpisodeAccess,
+  buildEpisodeAccess,
+  getStoryEpisodeAccess,
+} from '../services/episodeAccess.service.js'
 
 const FALLBACK_UNLOCK_RULES = {
   standard_free_first_episode_monthly_limit: 10,
@@ -83,7 +88,9 @@ status: story.status,
 }
 
 function isStoryCompleted(story) {
-  return String(story?.story_status || '').trim().toLowerCase() === 'completed'
+  return String(story?.story_status || '')
+    .trim()
+    .toLowerCase() === 'completed'
 }
 
 function getEpisodePublishedTime(episode) {
@@ -94,7 +101,11 @@ function getEpisodePublishedTime(episode) {
 }
 
 function isPublicEpisode(episode, now = Date.now()) {
-  const status = String(episode?.status || 'published').trim().toLowerCase()
+  const status = String(
+    episode?.status || 'published'
+  )
+    .trim()
+    .toLowerCase()
 
   if (status && status !== 'published') return false
 
@@ -105,21 +116,35 @@ function isPublicEpisode(episode, now = Date.now()) {
   return true
 }
 
-function compareEpisodeOrder(a, b) {
-  const firstNumber = Number(a?.episode_number || 0)
-  const secondNumber = Number(b?.episode_number || 0)
+function compareEpisodeOrder(first, second) {
+  const firstNumber = Number(first?.episode_number || 0)
+  const secondNumber = Number(second?.episode_number || 0)
 
-  if (firstNumber !== secondNumber) return firstNumber - secondNumber
+  if (firstNumber !== secondNumber) {
+    return firstNumber - secondNumber
+  }
 
-  const firstTime = getEpisodePublishedTime(a) || new Date(a?.created_at || 0).getTime()
-  const secondTime = getEpisodePublishedTime(b) || new Date(b?.created_at || 0).getTime()
+  const firstTime =
+    getEpisodePublishedTime(first) ||
+    new Date(first?.created_at || 0).getTime()
 
-  if (firstTime !== secondTime) return firstTime - secondTime
+  const secondTime =
+    getEpisodePublishedTime(second) ||
+    new Date(second?.created_at || 0).getTime()
 
-  return String(a?.id || '').localeCompare(String(b?.id || ''))
+  if (firstTime !== secondTime) {
+    return firstTime - secondTime
+  }
+
+  return String(first?.id || '').localeCompare(
+    String(second?.id || '')
+  )
 }
 
-function getFirstVisibleEpisodeId(episodes = [], now = Date.now()) {
+function getFirstVisibleEpisodeId(
+  episodes = [],
+  now = Date.now()
+) {
   const visibleEpisodes = (episodes || [])
     .filter((episode) => isPublicEpisode(episode, now))
     .sort(compareEpisodeOrder)
@@ -128,102 +153,200 @@ function getFirstVisibleEpisodeId(episodes = [], now = Date.now()) {
 }
 
 async function getFirstVisibleEpisodeIdForStory(storyId) {
-  const { data, error } = await supabase
-    .from('episodes')
-    .select('id, episode_number, published_at, created_at, status')
-    .eq('story_id', storyId)
-    .eq('status', 'published')
-    .is('deleted_at', null)
-    .order('episode_number', { ascending: true })
-    .order('created_at', { ascending: true })
+  const access = await getStoryEpisodeAccess(storyId)
 
-  if (error) throw error
-
-  return getFirstVisibleEpisodeId(data || [])
+  return access.publishedEpisodes[0]?.id || null
 }
 
 function getPositiveInteger(value, fallback, max = 365) {
   const number = Number(value)
 
-  if (!Number.isFinite(number) || number <= 0) return fallback
+  if (!Number.isFinite(number) || number <= 0) {
+    return fallback
+  }
 
   return Math.min(Math.floor(number), max)
 }
 
-function getAutoFreeOldEpisodeLimit(story, totalVisibleEpisodes = null) {
-  const totalEpisodes = Number(totalVisibleEpisodes ?? story?.total_episodes ?? 0)
-  const maxEpisodes = getPositiveInteger(story?.auto_free_max_episodes, 5, 100)
-  const maxPercent = getPositiveInteger(story?.auto_free_max_percent, 10, 100)
-  const percentLimit = Math.ceil(totalEpisodes * (maxPercent / 100))
+function getAutoFreeOldEpisodeLimit(
+  story,
+  totalVisibleEpisodes = null
+) {
+  const totalEpisodes = Number(
+    totalVisibleEpisodes ??
+    story?.total_episodes ??
+    0
+  )
 
-  return Math.max(0, Math.min(maxEpisodes, percentLimit))
+  const maxEpisodes = getPositiveInteger(
+    story?.auto_free_max_episodes,
+    5,
+    100
+  )
+
+  const maxPercent = getPositiveInteger(
+    story?.auto_free_max_percent,
+    10,
+    100
+  )
+
+  const percentLimit = Math.ceil(
+    totalEpisodes * (maxPercent / 100)
+  )
+
+  return Math.max(
+    0,
+    Math.min(maxEpisodes, percentLimit)
+  )
 }
 
-function isOldEnoughForAutoFree(episode, story, now = Date.now()) {
-  if (!story?.auto_free_old_episodes_enabled) return false
+function isOldEnoughForAutoFree(
+  episode,
+  story,
+  now = Date.now()
+) {
+  if (!story?.auto_free_old_episodes_enabled) {
+    return false
+  }
+
   if (!episode?.is_locked) return false
 
   const publishedTime = getEpisodePublishedTime(episode)
 
   if (!publishedTime) return false
 
-  const freeAfterDays = getPositiveInteger(story?.auto_free_after_days, 30, 365)
-  const freeAfterMs = freeAfterDays * 24 * 60 * 60 * 1000
+  const freeAfterDays = getPositiveInteger(
+    story?.auto_free_after_days,
+    30,
+    365
+  )
+
+  const freeAfterMs =
+    freeAfterDays * 24 * 60 * 60 * 1000
 
   return now - publishedTime >= freeAfterMs
 }
 
-function getAutoFreeVisibleEpisodeIds(visibleEpisodes = [], story, now = Date.now()) {
-  if (!story?.auto_free_old_episodes_enabled) return new Set()
+function getAutoFreeVisibleEpisodeIds(
+  visibleEpisodes = [],
+  story,
+  now = Date.now(),
+  access = null
+) {
+  if (!story?.auto_free_old_episodes_enabled) {
+    return new Set()
+  }
 
-  const orderedEpisodes = [...(visibleEpisodes || [])]
-    .filter((episode) => isPublicEpisode(episode, now))
-    .sort(compareEpisodeOrder)
+  const resolvedAccess =
+    access ||
+    buildEpisodeAccess(visibleEpisodes, now)
 
-  const limit = getAutoFreeOldEpisodeLimit(story, orderedEpisodes.length)
+  const orderedEpisodes =
+    resolvedAccess.publishedEpisodes || []
+
+  const freePublishedEpisodeIds =
+    resolvedAccess.freePublishedEpisodeIds ||
+    new Set()
+
+  const limit = getAutoFreeOldEpisodeLimit(
+    story,
+    orderedEpisodes.length
+  )
 
   if (limit <= 0) return new Set()
 
   return new Set(
     orderedEpisodes
-      .filter((episode) => Number(episode.episode_number || 0) > 5)
-      .filter((episode) => isOldEnoughForAutoFree(episode, story, now))
+      .filter(
+        (episode) =>
+          !freePublishedEpisodeIds.has(
+            String(episode.id)
+          )
+      )
+      .filter((episode) =>
+        isOldEnoughForAutoFree(
+          episode,
+          story,
+          now
+        )
+      )
       .slice(0, limit)
       .map((episode) => episode.id)
   )
 }
 
-async function getAutoFreeVisibleEpisodeIdsForStory(storyId, story, now = Date.now()) {
-  const { data, error } = await supabase
-    .from('episodes')
-    .select('id, episode_number, is_locked, published_at, created_at, status')
-    .eq('story_id', storyId)
-    .eq('status', 'published')
-    .is('deleted_at', null)
-    .order('episode_number', { ascending: true })
-    .order('created_at', { ascending: true })
+async function getAutoFreeVisibleEpisodeIdsForStory(
+  storyId,
+  story,
+  now = Date.now(),
+  access = null
+) {
+  const resolvedAccess =
+    access ||
+    (await getStoryEpisodeAccess(storyId, now))
 
-  if (error) throw error
-
-  return getAutoFreeVisibleEpisodeIds(data || [], story, now)
+  return getAutoFreeVisibleEpisodeIds(
+    resolvedAccess.publishedEpisodes,
+    story,
+    now,
+    resolvedAccess
+  )
 }
 
-function isWaitFreeEpisode(episode, now = Date.now()) {
-  const episodeNumber = Number(episode?.episode_number || 0)
-  const publishedTime = getEpisodePublishedTime(episode)
+function isWaitFreeEpisode(
+  episode,
+  access = null,
+  now = Date.now()
+) {
+  const freePublishedEpisodeIds =
+    access?.freePublishedEpisodeIds ||
+    new Set()
 
-  if (episodeNumber <= 5) return false
+  if (
+    freePublishedEpisodeIds.has(
+      String(episode?.id)
+    )
+  ) {
+    return false
+  }
+
   if (!episode?.is_locked) return false
+
+  const publishedTime =
+    getEpisodePublishedTime(episode)
+
   if (!publishedTime) return false
 
-  return now - publishedTime >= 0 && now - publishedTime < WAIT_FREE_MS
+  return (
+    now - publishedTime >= 0 &&
+    now - publishedTime < WAIT_FREE_MS
+  )
 }
 
-function isFreeEpisode(episode, firstVisibleEpisodeId = null) {
-  const episodeNumber = Number(episode?.episode_number || 0)
+function isFreeEpisode(
+  episode,
+  firstVisibleEpisodeId = null,
+  access = null
+) {
+  const freePublishedEpisodeIds =
+    access?.freePublishedEpisodeIds ||
+    new Set()
 
-  if (firstVisibleEpisodeId && episode?.id === firstVisibleEpisodeId) return true
-  if (episodeNumber <= 5) return true
+  if (
+    freePublishedEpisodeIds.has(
+      String(episode?.id)
+    )
+  ) {
+    return true
+  }
+
+  if (
+    firstVisibleEpisodeId &&
+    episode?.id === firstVisibleEpisodeId
+  ) {
+    return true
+  }
+
   if (!episode?.is_locked) return true
 
   return false
@@ -234,14 +357,25 @@ function isEpisodeFreeForReader(
   story,
   now = Date.now(),
   firstVisibleEpisodeId = null,
-  autoFreeEpisodeIds = new Set()
+  autoFreeEpisodeIds = new Set(),
+  access = null
 ) {
-  return isFreeEpisode(episode, firstVisibleEpisodeId) || autoFreeEpisodeIds.has(episode?.id)
+  return (
+    isFreeEpisode(
+      episode,
+      firstVisibleEpisodeId,
+      access
+    ) ||
+    autoFreeEpisodeIds.has(episode?.id)
+  )
 }
 
-
-async function getStoryAccessSummaries(storyIds = []) {
-  const ids = [...new Set(storyIds.filter(Boolean))]
+async function getStoryAccessSummaries(
+  storyIds = []
+) {
+  const ids = [
+    ...new Set(storyIds.filter(Boolean)),
+  ]
 
   if (!ids.length) return new Map()
 
@@ -259,42 +393,65 @@ async function getStoryAccessSummaries(storyIds = []) {
 
   const { data, error } = await supabase
     .from('episodes')
-    .select('id, story_id, episode_number, is_locked, published_at, created_at, status')
+    .select(
+      'id, story_id, episode_number, is_locked, published_at, created_at, status, deleted_at'
+    )
     .in('story_id', ids)
+    .is('deleted_at', null)
 
   if (error) throw error
 
   const now = Date.now()
+  const episodesByStory = new Map()
 
-    const firstVisibleEpisodeIds = new Map()
+  for (const episode of data || []) {
+    const key = String(episode.story_id)
+    const current =
+      episodesByStory.get(key) || []
 
-;(data || []).forEach((episode) => {
-  if (!isPublicEpisode(episode, now)) return
-
-  const current = firstVisibleEpisodeIds.get(episode.story_id)
-
-  if (!current || compareEpisodeOrder(episode, current) < 0) {
-    firstVisibleEpisodeIds.set(episode.story_id, episode)
+    current.push(episode)
+    episodesByStory.set(key, current)
   }
-})
 
-  ;(data || []).forEach((episode) => {
-    if (!isPublicEpisode(episode, now)) return
+  for (const storyId of ids) {
+    const storyEpisodes =
+      episodesByStory.get(
+        String(storyId)
+      ) || []
 
-    const summary = summaries.get(episode.story_id)
+    const access = buildEpisodeAccess(
+      storyEpisodes,
+      now
+    )
 
-    if (!summary) return
+    const summary = summaries.get(storyId)
 
-    if (isWaitFreeEpisode(episode, now)) {
-      summary.has_wait_free_episode = true
-      summary.wait_free_episode_count += 1
+    for (
+      const episode of access.publishedEpisodes
+    ) {
+      if (
+        isWaitFreeEpisode(
+          episode,
+          access,
+          now
+        )
+      ) {
+        summary.has_wait_free_episode = true
+        summary.wait_free_episode_count += 1
+      }
+
+      if (
+        isFreeEpisode(
+          episode,
+          null,
+          access
+        )
+      ) {
+        summary.has_free_episode = true
+        summary.free_episode_count += 1
+      }
     }
-
-    if (isFreeEpisode(episode, firstVisibleEpisodeIds.get(episode.story_id)?.id || null)) {
-      summary.has_free_episode = true
-      summary.free_episode_count += 1
-    }
-  })
+  }
 
   return summaries
 }
@@ -338,28 +495,61 @@ status: story.status,
   }
 }
 
-function publicEpisodeListItem(episode, story = null, firstVisibleEpisodeId = null, autoFreeEpisodeIds = new Set()) {
+function publicEpisodeListItem(
+  episode,
+  story = null,
+  firstVisibleEpisodeId = null,
+  autoFreeEpisodeIds = new Set(),
+  access = null
+) {
   if (!episode) return null
 
+  const visibleEpisode =
+    applyEpisodeAccess(episode, access)
+
   const freeForReader = story
-    ? isEpisodeFreeForReader(episode, story, Date.now(), firstVisibleEpisodeId, autoFreeEpisodeIds)
-    : isFreeEpisode(episode, firstVisibleEpisodeId)
+    ? isEpisodeFreeForReader(
+        visibleEpisode,
+        story,
+        Date.now(),
+        firstVisibleEpisodeId,
+        autoFreeEpisodeIds,
+        access
+      )
+    : isFreeEpisode(
+        visibleEpisode,
+        firstVisibleEpisodeId,
+        access
+      )
 
   return {
-    id: episode.id,
-    story_id: episode.story_id,
-    title: episode.title,
-    cover_url: episode.cover_url,
-    is_adult: episode.is_adult,
+    id: visibleEpisode.id,
+    story_id: visibleEpisode.story_id,
+    title: visibleEpisode.title,
+    cover_url: visibleEpisode.cover_url,
+    is_adult: visibleEpisode.is_adult,
     is_locked: !freeForReader,
-    unlock_methods: episode.unlock_methods || [],
-    status: episode.status,
-    episode_number: episode.episode_number,
-    page_count: Number(episode.page_count || 0),
-    character_count: episode.character_count,
-    published_at: episode.published_at,
-    created_at: episode.created_at,
-    updated_at: episode.updated_at,
+    is_free_published: Boolean(
+      visibleEpisode.is_free_published
+    ),
+    published_rank:
+      visibleEpisode.published_rank,
+    unlock_methods:
+      visibleEpisode.unlock_methods || [],
+    status: visibleEpisode.status,
+    episode_number:
+      visibleEpisode.episode_number,
+    internal_episode_number:
+      visibleEpisode.internal_episode_number,
+    page_count: Number(
+      visibleEpisode.page_count || 0
+    ),
+    character_count:
+      visibleEpisode.character_count,
+    published_at:
+      visibleEpisode.published_at,
+    created_at: visibleEpisode.created_at,
+    updated_at: visibleEpisode.updated_at,
   }
 }
 
@@ -396,32 +586,66 @@ function publicEpisode(
   unlocked = false,
   firstVisibleEpisodeId = null,
   autoFreeEpisodeIds = new Set(),
-  pages = []
+  pages = [],
+  access = null
 ) {
   if (!episode) return null
 
+  const visibleEpisode =
+    applyEpisodeAccess(episode, access)
+
   const freeForReader = story
-    ? isEpisodeFreeForReader(episode, story, Date.now(), firstVisibleEpisodeId, autoFreeEpisodeIds)
-    : isFreeEpisode(episode, firstVisibleEpisodeId)
-  const accessible = Boolean(unlocked || freeForReader)
+    ? isEpisodeFreeForReader(
+        visibleEpisode,
+        story,
+        Date.now(),
+        firstVisibleEpisodeId,
+        autoFreeEpisodeIds,
+        access
+      )
+    : isFreeEpisode(
+        visibleEpisode,
+        firstVisibleEpisodeId,
+        access
+      )
+
+  const accessible = Boolean(
+    unlocked || freeForReader
+  )
 
   return {
-    id: episode.id,
-    story_id: episode.story_id,
-    title: episode.title,
-    cover_url: episode.cover_url,
-    content: episode.content,
-    is_adult: episode.is_adult,
+    id: visibleEpisode.id,
+    story_id: visibleEpisode.story_id,
+    title: visibleEpisode.title,
+    cover_url: visibleEpisode.cover_url,
+    content: visibleEpisode.content,
+    is_adult: visibleEpisode.is_adult,
     is_locked: !accessible,
-    unlock_methods: episode.unlock_methods || [],
-    status: episode.status,
-    episode_number: episode.episode_number,
-    page_count: Math.max(Number(episode.page_count || 0), pages.length),
-    pages: accessible ? pages.map(publicEpisodePage) : [],
-    character_count: episode.character_count,
-    published_at: episode.published_at,
-    created_at: episode.created_at,
-    updated_at: episode.updated_at,
+    is_free_published: Boolean(
+      visibleEpisode.is_free_published
+    ),
+    published_rank:
+      visibleEpisode.published_rank,
+    unlock_methods:
+      visibleEpisode.unlock_methods || [],
+    status: visibleEpisode.status,
+    episode_number:
+      visibleEpisode.episode_number,
+    internal_episode_number:
+      visibleEpisode.internal_episode_number,
+    page_count: Math.max(
+      Number(visibleEpisode.page_count || 0),
+      pages.length
+    ),
+    pages: accessible
+      ? pages.map(publicEpisodePage)
+      : [],
+    character_count:
+      visibleEpisode.character_count,
+    published_at:
+      visibleEpisode.published_at,
+    created_at: visibleEpisode.created_at,
+    updated_at: visibleEpisode.updated_at,
   }
 }
 
@@ -462,8 +686,19 @@ function getMonthKey(date = new Date()) {
   return `${year}-${month}`
 }
 
-function isFirstEpisode(episode) {
-  return Number(episode?.episode_number || 0) <= 5
+async function isFirstEpisode(episode) {
+  if (!episode?.story_id || !episode?.id) {
+    return false
+  }
+
+  const access = await getStoryEpisodeAccess(
+    episode.story_id
+  )
+
+  return (
+    access.publishedEpisodes[0]?.id ===
+    episode.id
+  )
 }
 
 
@@ -605,7 +840,7 @@ async function saveFreeFirstEpisodeRead({ userId, storyId, episodeId, monthKey, 
 }
 
 async function checkAndSaveFreeFirstEpisodeAccess({ user, storyId, episode }) {
-  if (!isFirstEpisode(episode)) {
+  if (!(await isFirstEpisode(episode))) {
     return {
       ok: true,
       counted: false,
@@ -1066,7 +1301,10 @@ export async function getPublicStoryEpisodes(req, res) {
       })
     }
 
-    if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
+    if (
+      story.is_shadow_exclusive &&
+      story.exclusive_status !== 'approved'
+    ) {
       return res.status(404).json({
         ok: false,
         message: 'Story not found',
@@ -1075,7 +1313,9 @@ export async function getPublicStoryEpisodes(req, res) {
 
     const { data, error } = await supabase
       .from('episodes')
-      .select('id, story_id, title, cover_url, is_adult, is_locked, unlock_methods, status, episode_number, page_count, character_count, published_at, created_at, updated_at')
+      .select(
+        'id, story_id, title, cover_url, is_adult, is_locked, unlock_methods, status, episode_number, page_count, character_count, published_at, created_at, updated_at'
+      )
       .eq('story_id', storyId)
       .eq('status', 'published')
       .is('deleted_at', null)
@@ -1085,20 +1325,43 @@ export async function getPublicStoryEpisodes(req, res) {
     if (error) throw error
 
     const now = Date.now()
-    const visibleEpisodes = (data || []).filter((episode) => isPublicEpisode(episode, now))
-    const firstVisibleEpisodeId = getFirstVisibleEpisodeId(visibleEpisodes, now)
-    const autoFreeEpisodeIds = getAutoFreeVisibleEpisodeIds(visibleEpisodes, story, now)
+    const visibleEpisodes = (data || []).filter((episode) =>
+      isPublicEpisode(episode, now)
+    )
+    const access = await getStoryEpisodeAccess(storyId, now)
+    const firstVisibleEpisodeId =
+      access.publishedEpisodes[0]?.id ||
+      getFirstVisibleEpisodeId(visibleEpisodes, now)
+    const autoFreeEpisodeIds =
+      getAutoFreeVisibleEpisodeIds(
+        visibleEpisodes,
+        story,
+        now,
+        access
+      )
 
-return res.status(200).json({
-  ok: true,
-  first_visible_episode_id: firstVisibleEpisodeId,
-  auto_free_episode_ids: [...autoFreeEpisodeIds],
-  episodes: visibleEpisodes.map((episode) =>
-    publicEpisodeListItem(episode, story, firstVisibleEpisodeId, autoFreeEpisodeIds)
-  ),
-})
+    return res.status(200).json({
+      ok: true,
+      first_visible_episode_id: firstVisibleEpisodeId,
+      free_published_episode_ids: [
+        ...access.freePublishedEpisodeIds,
+      ],
+      auto_free_episode_ids: [...autoFreeEpisodeIds],
+      episodes: visibleEpisodes.map((episode) =>
+        publicEpisodeListItem(
+          episode,
+          story,
+          firstVisibleEpisodeId,
+          autoFreeEpisodeIds,
+          access
+        )
+      ),
+    })
   } catch (error) {
-    console.error('GET PUBLIC STORY EPISODES ERROR:', error)
+    console.error(
+      'GET PUBLIC STORY EPISODES ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
@@ -1121,7 +1384,10 @@ export async function getPublicEpisodeById(req, res) {
       })
     }
 
-    if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
+    if (
+      story.is_shadow_exclusive &&
+      story.exclusive_status !== 'approved'
+    ) {
       return res.status(404).json({
         ok: false,
         message: 'Story not found',
@@ -1149,16 +1415,46 @@ export async function getPublicEpisodeById(req, res) {
     const user = getOptionalUser(req)
     const userId = user?.user_id || ''
     const now = Date.now()
-    const firstVisibleEpisodeId = await getFirstVisibleEpisodeIdForStory(storyId)
-    const autoFreeEpisodeIds = await getAutoFreeVisibleEpisodeIdsForStory(storyId, story, now)
-    const freeEpisode = isEpisodeFreeForReader(episode, story, now, firstVisibleEpisodeId, autoFreeEpisodeIds)
-    const activeUnlock = await hasActiveEpisodeUnlock({ userId, episodeId })
+    const access = await getStoryEpisodeAccess(
+      storyId,
+      now
+    )
+    const firstVisibleEpisodeId =
+      access.publishedEpisodes[0]?.id ||
+      (await getFirstVisibleEpisodeIdForStory(
+        storyId
+      ))
+    const autoFreeEpisodeIds =
+      await getAutoFreeVisibleEpisodeIdsForStory(
+        storyId,
+        story,
+        now,
+        access
+      )
+    const freeEpisode = isEpisodeFreeForReader(
+      episode,
+      story,
+      now,
+      firstVisibleEpisodeId,
+      autoFreeEpisodeIds,
+      access
+    )
+    const activeUnlock =
+      await hasActiveEpisodeUnlock({
+        userId,
+        episodeId,
+      })
     const unlocked = freeEpisode || activeUnlock
     const isManga =
-      String(story.story_type || 'novel').trim().toLowerCase() === 'manga'
+      String(story.story_type || 'novel')
+        .trim()
+        .toLowerCase() === 'manga'
     const episodePages =
       unlocked && isManga
-        ? await getPublicEpisodePages({ episodeId, storyId })
+        ? await getPublicEpisodePages({
+            episodeId,
+            storyId,
+          })
         : []
 
     if (!unlocked) {
@@ -1169,7 +1465,13 @@ export async function getPublicEpisodeById(req, res) {
         locked: true,
         story: publicStory(story),
         episode: {
-          ...publicEpisodeListItem(episode, story, firstVisibleEpisodeId, autoFreeEpisodeIds),
+          ...publicEpisodeListItem(
+            episode,
+            story,
+            firstVisibleEpisodeId,
+            autoFreeEpisodeIds,
+            access
+          ),
           content: '',
         },
       })
@@ -1178,7 +1480,11 @@ export async function getPublicEpisodeById(req, res) {
     return res.status(200).json({
       ok: true,
       locked: false,
-      first_visible_episode_id: firstVisibleEpisodeId,
+      first_visible_episode_id:
+        firstVisibleEpisodeId,
+      free_published_episode_ids: [
+        ...access.freePublishedEpisodeIds,
+      ],
       story: publicStory(story),
       episode: publicEpisode(
         episode,
@@ -1186,18 +1492,21 @@ export async function getPublicEpisodeById(req, res) {
         unlocked,
         firstVisibleEpisodeId,
         autoFreeEpisodeIds,
-        episodePages
+        episodePages,
+        access
       ),
-      free_first_episode: firstVisibleEpisodeId && episode.id === firstVisibleEpisodeId
-        ? {
-            counted: false,
-            limit: 'unlimited',
-            used: null,
-            remaining: 'unlimited',
-            tier: getReaderTier(user),
-            month_key: getMonthKey(),
-          }
-        : null,
+      free_first_episode:
+        firstVisibleEpisodeId &&
+        episode.id === firstVisibleEpisodeId
+          ? {
+              counted: false,
+              limit: 'unlimited',
+              used: null,
+              remaining: 'unlimited',
+              tier: getReaderTier(user),
+              month_key: getMonthKey(),
+            }
+          : null,
       view: {
         counted: false,
         reason: 'qualified_view_required',
@@ -1261,9 +1570,30 @@ export async function countQualifiedEpisodeView(req, res) {
     }
 
     const now = Date.now()
-    const firstVisibleEpisodeId = await getFirstVisibleEpisodeIdForStory(storyId)
-    const autoFreeEpisodeIds = await getAutoFreeVisibleEpisodeIdsForStory(storyId, story, now)
-    const freeEpisode = isEpisodeFreeForReader(episode, story, now, firstVisibleEpisodeId, autoFreeEpisodeIds)
+    const access = await getStoryEpisodeAccess(
+      storyId,
+      now
+    )
+    const firstVisibleEpisodeId =
+      access.publishedEpisodes[0]?.id ||
+      (await getFirstVisibleEpisodeIdForStory(
+        storyId
+      ))
+    const autoFreeEpisodeIds =
+      await getAutoFreeVisibleEpisodeIdsForStory(
+        storyId,
+        story,
+        now,
+        access
+      )
+    const freeEpisode = isEpisodeFreeForReader(
+      episode,
+      story,
+      now,
+      firstVisibleEpisodeId,
+      autoFreeEpisodeIds,
+      access
+    )
     const activeUnlock = await hasActiveEpisodeUnlock({
       userId: user.user_id,
       episodeId,
