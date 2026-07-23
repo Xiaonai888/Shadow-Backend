@@ -51,21 +51,24 @@ function publicUser(user) {
 }
 
 function publicComment(comment, likedIds = new Set()) {
+  const isDeleted = Boolean(comment.deleted_at)
+
   return {
     id: comment.id,
     story_id: comment.story_id,
     episode_id: comment.episode_id || null,
-    user_id: comment.user_id,
+    user_id: isDeleted ? null : comment.user_id,
     parent_id: comment.parent_id,
-    text: comment.text,
-    is_pinned: Boolean(comment.is_pinned),
-    is_hidden: Boolean(comment.is_hidden),
-    is_spoiler: Boolean(comment.is_spoiler),
+    text: isDeleted ? 'Comment deleted' : comment.text,
+    is_deleted: isDeleted,
+    is_pinned: isDeleted ? false : Boolean(comment.is_pinned),
+    is_hidden: isDeleted ? false : Boolean(comment.is_hidden),
+    is_spoiler: isDeleted ? false : Boolean(comment.is_spoiler),
     created_at: comment.created_at,
     updated_at: comment.updated_at,
-    user: publicUser(comment.user),
-    likes: Number(comment.likes || 0),
-    liked: likedIds.has(String(comment.id)),
+    user: isDeleted ? publicUser(null) : publicUser(comment.user),
+    likes: isDeleted ? 0 : Number(comment.likes || 0),
+    liked: !isDeleted && likedIds.has(String(comment.id)),
   }
 }
 
@@ -222,7 +225,6 @@ export async function getStoryComments(req, res) {
     const from = (page - 1) * limit
     const to = from + limit - 1
     const userId = getRequestUserId(req)
-
     const story = await getStory(storyId)
 
     if (!story) {
@@ -260,28 +262,57 @@ export async function getStoryComments(req, res) {
 
     if (error) throw error
 
-    const parentIds = (data || []).map((comment) => comment.id)
+    let deletedParents = []
+
+    if (page === 1) {
+      const { data: deletedRows, error: deletedError } = await supabase
+        .from('comments')
+        .select('*, user:users(id, name, username, avatar_url, role)')
+        .eq('story_id', storyId)
+        .eq('is_hidden', false)
+        .not('deleted_at', 'is', null)
+        .is('parent_id', null)
+        .order('deleted_at', { ascending: false })
+        .limit(Math.min(100, limit * 5))
+
+      if (deletedError) throw deletedError
+      deletedParents = deletedRows || []
+    }
+
+    const candidateParents = [...(data || []), ...deletedParents]
+    const candidateIds = candidateParents.map((comment) => comment.id)
     let replies = []
 
-    if (parentIds.length) {
+    if (candidateIds.length) {
       const { data: replyData, error: replyError } = await supabase
         .from('comments')
         .select('*, user:users(id, name, username, avatar_url, role)')
         .eq('story_id', storyId)
         .eq('is_hidden', false)
         .is('deleted_at', null)
-        .in('parent_id', parentIds)
+        .in('parent_id', candidateIds)
         .order('created_at', { ascending: true })
 
       if (replyError) throw replyError
-
       replies = replyData || []
     }
 
+    const replyParentIds = new Set(
+      replies.map((reply) => String(reply.parent_id || ''))
+    )
+    const visibleDeletedParents = deletedParents.filter((comment) =>
+      replyParentIds.has(String(comment.id))
+    )
+    const parentRows = [...(data || []), ...visibleDeletedParents]
+    const parentIds = parentRows.map((comment) => comment.id)
     const allIds = [...parentIds, ...replies.map((reply) => reply.id)]
     const likedIds = await getLikedIds(allIds, userId)
-    const publicParents = (data || []).map((comment) => publicComment(comment, likedIds))
-    const publicReplies = replies.map((reply) => publicComment(reply, likedIds))
+    const publicParents = parentRows.map((comment) =>
+      publicComment(comment, likedIds)
+    )
+    const publicReplies = replies.map((reply) =>
+      publicComment(reply, likedIds)
+    )
     const comments = attachReplies(publicParents, publicReplies)
     const total = Number(count || 0)
 
@@ -313,7 +344,6 @@ export async function getEpisodeComments(req, res) {
     const from = (page - 1) * limit
     const to = from + limit - 1
     const userId = getRequestUserId(req)
-
     const episode = await getEpisode(episodeId)
 
     if (!episode) {
@@ -352,10 +382,29 @@ export async function getEpisodeComments(req, res) {
 
     if (error) throw error
 
-    const parentIds = (data || []).map((comment) => comment.id)
+    let deletedParents = []
+
+    if (page === 1) {
+      const { data: deletedRows, error: deletedError } = await supabase
+        .from('comments')
+        .select('*, user:users(id, name, username, avatar_url, role)')
+        .eq('story_id', episode.story_id)
+        .eq('episode_id', episodeId)
+        .eq('is_hidden', false)
+        .not('deleted_at', 'is', null)
+        .is('parent_id', null)
+        .order('deleted_at', { ascending: false })
+        .limit(Math.min(100, limit * 5))
+
+      if (deletedError) throw deletedError
+      deletedParents = deletedRows || []
+    }
+
+    const candidateParents = [...(data || []), ...deletedParents]
+    const candidateIds = candidateParents.map((comment) => comment.id)
     let replies = []
 
-    if (parentIds.length) {
+    if (candidateIds.length) {
       const { data: replyData, error: replyError } = await supabase
         .from('comments')
         .select('*, user:users(id, name, username, avatar_url, role)')
@@ -363,18 +412,29 @@ export async function getEpisodeComments(req, res) {
         .eq('episode_id', episodeId)
         .eq('is_hidden', false)
         .is('deleted_at', null)
-        .in('parent_id', parentIds)
+        .in('parent_id', candidateIds)
         .order('created_at', { ascending: true })
 
       if (replyError) throw replyError
-
       replies = replyData || []
     }
 
+    const replyParentIds = new Set(
+      replies.map((reply) => String(reply.parent_id || ''))
+    )
+    const visibleDeletedParents = deletedParents.filter((comment) =>
+      replyParentIds.has(String(comment.id))
+    )
+    const parentRows = [...(data || []), ...visibleDeletedParents]
+    const parentIds = parentRows.map((comment) => comment.id)
     const allIds = [...parentIds, ...replies.map((reply) => reply.id)]
     const likedIds = await getLikedIds(allIds, userId)
-    const publicParents = (data || []).map((comment) => publicComment(comment, likedIds))
-    const publicReplies = replies.map((reply) => publicComment(reply, likedIds))
+    const publicParents = parentRows.map((comment) =>
+      publicComment(comment, likedIds)
+    )
+    const publicReplies = replies.map((reply) =>
+      publicComment(reply, likedIds)
+    )
     const comments = attachReplies(publicParents, publicReplies)
     const total = Number(count || 0)
 
