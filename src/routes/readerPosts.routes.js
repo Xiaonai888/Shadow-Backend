@@ -9,6 +9,7 @@ import {
 } from '../controllers/readerPosts.controller.js'
 import {
   getReaderPostReactionStatus,
+  getReaderPostReactions,
   setReaderPostReaction,
 } from '../controllers/readerPostReactions.controller.js'
 import {
@@ -31,6 +32,12 @@ router.get('/me', requireUser, getMyReaderPosts)
 router.post('/me', requireUser, createMyReaderPost)
 router.patch('/me/:postId', requireUser, updateMyReaderPost)
 router.delete('/me/:postId', requireUser, deleteMyReaderPost)
+
+router.get(
+  '/:postId/reactions',
+  requireUser,
+  getReaderPostReactions
+)
 
 router.get(
   '/:postId/reaction',
