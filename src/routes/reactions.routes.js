@@ -2,6 +2,7 @@ import express from 'express'
 import jwt from 'jsonwebtoken'
 
 import {
+  getStoryReactions,
   getStoryReactionStatus,
   toggleStoryReaction,
 } from '../controllers/reactions.controller.js'
@@ -37,6 +38,7 @@ router.get('/episode/:episodeId/status', optionalUser, getEpisodeReactionStatus)
 router.post('/episode/:episodeId/toggle', requireUser, toggleEpisodeReaction)
 router.get('/episode/:episodeId', getEpisodeReactions)
 router.get('/story/:storyId', optionalUser, getStoryReactionStatus)
+router.get('/story/:storyId/users', getStoryReactions)
 router.post('/story/:storyId/toggle', requireUser, toggleStoryReaction)
 
 export default router
