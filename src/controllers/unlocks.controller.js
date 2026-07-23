@@ -1,6 +1,10 @@
 import { supabase } from '../config/supabase.js'
 import { createAuthorEarningsFromDiamondUnlock } from '../services/authorRevenue.service.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
+import {
+  applyEpisodeAccess,
+  getStoryEpisodeAccess,
+} from '../services/episodeAccess.service.js'
 
 const FALLBACK_RULES = {
   diamond_per_episode: 10,
@@ -85,8 +89,15 @@ function isStoryCompleted(story) {
   return status === 'completed' || status === 'complete' || status === 'finished' || status === 'ended'
 }
 
-function isEpisodeFree(episode) {
-  return !episode?.is_locked || Number(episode?.episode_number || 0) <= 5
+function isEpisodeFree(episode, access = null) {
+  return (
+    Boolean(
+      access?.freePublishedEpisodeIds?.has(
+        String(episode?.id)
+      )
+    ) ||
+    !episode?.is_locked
+  )
 }
 
 function getPositiveInteger(value, fallback, max = 365) {
@@ -140,31 +151,66 @@ function getAutoFreeOldEpisodeLimit(story) {
   return Math.max(0, Math.min(maxEpisodes, percentLimit))
 }
 
-function isAutoFreeOldEpisodeForStory(episode, story, now = Date.now()) {
+function isAutoFreeOldEpisodeForStory(
+  episode,
+  story,
+  access = null,
+  now = Date.now()
+) {
   if (!story?.auto_free_old_episodes_enabled) return false
   if (!episode?.is_locked) return false
 
-  const episodeNumber = Number(episode?.episode_number || 0)
+  if (
+    access?.freePublishedEpisodeIds?.has(
+      String(episode?.id)
+    )
+  ) {
+    return false
+  }
 
-  if (episodeNumber <= 5) return false
+  const publishedRank =
+    access?.publishedRankById?.get(
+      String(episode?.id)
+    ) || 0
+
+  if (publishedRank <= 5) return false
 
   const limit = getAutoFreeOldEpisodeLimit(story)
 
   if (limit <= 0) return false
-  if (episodeNumber > limit + 5) return false
+  if (publishedRank > limit + 5) return false
 
-  const publishedTime = getEpisodePublishedTime(episode)
+  const publishedTime =
+    getEpisodePublishedTime(episode)
 
   if (!publishedTime) return false
 
-  const freeAfterDays = getPositiveInteger(story?.auto_free_after_days, 30, 365)
-  const freeAfterMs = freeAfterDays * 24 * 60 * 60 * 1000
+  const freeAfterDays = getPositiveInteger(
+    story?.auto_free_after_days,
+    30,
+    365
+  )
+  const freeAfterMs =
+    freeAfterDays * 24 * 60 * 60 * 1000
 
   return now - publishedTime >= freeAfterMs
 }
 
-function isEpisodeFreeForReader(episode, story, now = Date.now()) {
-  return isEpisodeFree(episode) || isAutoFreeOldEpisodeForStory(episode, story, now)
+function isEpisodeFreeForReader(
+  episode,
+  story,
+  access = null,
+  now = Date.now()
+) {
+  return (
+    isEpisodeFree(episode, access) ||
+    isAutoFreeOldEpisodeForStory(
+      episode,
+      story,
+      access,
+      now
+    )
+  )
 }
 
 function normalizeTier(value) {
@@ -442,23 +488,47 @@ async function getActiveUnlockEpisodeIds({ userId, storyId }) {
   )
 }
 
-async function getAvailableLockedEpisodes({ userId, storyId, fromEpisodeNumber }) {
-  const unlockedIds = await getActiveUnlockEpisodeIds({ userId, storyId })
+async function getAvailableLockedEpisodes({
+  userId,
+  storyId,
+  fromEpisodeNumber,
+  access,
+}) {
+  const unlockedIds =
+    await getActiveUnlockEpisodeIds({
+      userId,
+      storyId,
+    })
 
   const { data, error } = await supabase
     .from('episodes')
-    .select('id, story_id, author_id, title, episode_number, is_locked, status, published_at, created_at')
+    .select(
+      'id, story_id, author_id, title, episode_number, is_locked, status, published_at, created_at'
+    )
     .eq('story_id', storyId)
     .eq('status', 'published')
     .eq('is_locked', true)
-    .gte('episode_number', Number(fromEpisodeNumber || 1))
+    .is('deleted_at', null)
     .order('episode_number', { ascending: true })
+    .order('created_at', { ascending: true })
 
   if (error) throw error
 
   return (data || [])
-    .filter((episode) => Number(episode.episode_number || 0) > 5)
-    .filter((episode) => !unlockedIds.has(episode.id))
+    .map((episode) =>
+      applyEpisodeAccess(episode, access)
+    )
+    .filter(
+      (episode) =>
+        Number(episode.episode_number || 0) >=
+        Number(fromEpisodeNumber || 1)
+    )
+    .filter(
+      (episode) => !episode.is_free_published
+    )
+    .filter(
+      (episode) => !unlockedIds.has(episode.id)
+    )
 }
 
 async function countGemUnlocksToday(userId) {
@@ -512,30 +582,66 @@ async function getGemLimitStatus({ userId, storyId, tier, rules }) {
   }
 }
 
-async function getUnlockStatusPayload({ userId, storyId, episodeId, tier = 'standard' }) {
-  const [rules, story, episode, wallet] = await Promise.all([
+async function getUnlockStatusPayload({
+  userId,
+  storyId,
+  episodeId,
+  tier = 'standard',
+}) {
+  const [
+    rules,
+    story,
+    rawEpisode,
+    wallet,
+    access,
+  ] = await Promise.all([
     getPlatformUnlockRules(),
     getStory(storyId),
     getEpisode({ storyId, episodeId }),
     getWallet(userId),
+    getStoryEpisodeAccess(storyId),
   ])
 
-  if (!story || !episode) {
+  if (!story || !rawEpisode) {
     return {
       notFound: true,
     }
   }
 
-  const unlock = await getActiveUnlock({ userId, episodeId })
-  const freeEpisode = isEpisodeFreeForReader(episode, story)
-  const unlocked = freeEpisode || Boolean(unlock)
-  const availableEpisodes = await getAvailableLockedEpisodes({
+  const episode = applyEpisodeAccess(
+    rawEpisode,
+    access
+  )
+  const unlock = await getActiveUnlock({
+    userId,
+    episodeId,
+  })
+  const freeEpisode = isEpisodeFreeForReader(
+    episode,
+    story,
+    access
+  )
+  const unlocked =
+    freeEpisode || Boolean(unlock)
+  const availableEpisodes =
+    await getAvailableLockedEpisodes({
+      userId,
+      storyId,
+      fromEpisodeNumber:
+        episode.episode_number,
+      access,
+    })
+  const gemWait = getEpisodeAvailableForGemAt(
+    episode,
+    rules,
+    tier
+  )
+  const gemLimits = await getGemLimitStatus({
     userId,
     storyId,
-    fromEpisodeNumber: episode.episode_number,
+    tier,
+    rules,
   })
-  const gemWait = getEpisodeAvailableForGemAt(episode, rules, tier)
-  const gemLimits = await getGemLimitStatus({ userId, storyId, tier, rules })
 
   return {
     notFound: false,
@@ -550,11 +656,36 @@ async function getUnlockStatusPayload({ userId, storyId, episodeId, tier = 'stan
     gemWait,
     gemLimits,
     packageOptions: [
-      publicPackageOption({ rule: PACKAGE_RULES.single, availableEpisodes, story, rules }),
-      publicPackageOption({ rule: PACKAGE_RULES.next10, availableEpisodes, story, rules }),
-      publicPackageOption({ rule: PACKAGE_RULES.next30, availableEpisodes, story, rules }),
-      publicPackageOption({ rule: PACKAGE_RULES.next50, availableEpisodes, story, rules }),
-      publicPackageOption({ rule: PACKAGE_RULES.all_released, availableEpisodes, story, rules }),
+      publicPackageOption({
+        rule: PACKAGE_RULES.single,
+        availableEpisodes,
+        story,
+        rules,
+      }),
+      publicPackageOption({
+        rule: PACKAGE_RULES.next10,
+        availableEpisodes,
+        story,
+        rules,
+      }),
+      publicPackageOption({
+        rule: PACKAGE_RULES.next30,
+        availableEpisodes,
+        story,
+        rules,
+      }),
+      publicPackageOption({
+        rule: PACKAGE_RULES.next50,
+        availableEpisodes,
+        story,
+        rules,
+      }),
+      publicPackageOption({
+        rule: PACKAGE_RULES.all_released,
+        availableEpisodes,
+        story,
+        rules,
+      }),
     ],
   }
 }
