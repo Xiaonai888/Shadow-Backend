@@ -1,6 +1,10 @@
 import express from 'express'
 import jwt from 'jsonwebtoken'
-import { createEpisodeEcho, getEpisodeEchoes } from '../controllers/echoes.controller.js'
+import {
+  createEpisodeEcho,
+  getEpisodeEchoes,
+  getStoryEchoes,
+} from '../controllers/echoes.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
@@ -24,6 +28,7 @@ function optionalUser(req, res, next) {
   }
 }
 
+router.get('/story/:storyId', optionalUser, getStoryEchoes)
 router.get('/episode/:episodeId', optionalUser, getEpisodeEchoes)
 router.post('/episode/:episodeId', requireUser, createEpisodeEcho)
 
