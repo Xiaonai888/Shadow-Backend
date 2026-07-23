@@ -42,7 +42,9 @@ export async function getReadingProgress(req, res) {
     ] = await Promise.all([
       supabase
         .from('stories')
-        .select('id, title, cover_url, landscape_thumbnail_url, total_episodes, story_status')
+        .select(
+  'id, title, cover_url, landscape_thumbnail_url, total_episodes, story_status, story_type'
+)
         .in('id', storyIds)
         .eq('status', 'published')
         .is('deleted_at', null),
