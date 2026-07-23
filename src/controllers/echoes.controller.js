@@ -157,6 +157,117 @@ export async function getEpisodeEchoes(req, res) {
   }
 }
 
+export async function getStoryEchoes(req, res) {
+  try {
+    const storyId = cleanText(req.params.storyId, 100)
+    const page = Math.max(1, Number(req.query.page || 1))
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit || 20)))
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+    const viewerId = getViewerId(req)
+
+    if (!storyId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Story ID is required',
+      })
+    }
+
+    const { data: story, error: storyError } = await supabase
+      .from('stories')
+      .select(
+        'id, author_id, user_id, title, cover_url, landscape_thumbnail_url, main_genre, status, deleted_at'
+      )
+      .eq('id', storyId)
+      .maybeSingle()
+
+    if (storyError) throw storyError
+
+    if (
+      !story ||
+      story.deleted_at ||
+      String(story.status || '').toLowerCase() !== 'published'
+    ) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    let author = null
+
+    if (story.author_id) {
+      const { data, error } = await supabase
+        .from('author_pages')
+        .select(
+          'id, page_name, page_username, avatar_url'
+        )
+        .eq('id', story.author_id)
+        .maybeSingle()
+
+      if (error) throw error
+      author = data || null
+    }
+
+    let query = supabase
+      .from('episode_echoes')
+      .select(
+        'id, episode_id, story_id, user_id, echo_text, destination, audience, created_at, user:users(id, name, username, avatar_url)',
+        { count: 'exact' }
+      )
+      .eq('story_id', storyId)
+
+    if (viewerId) {
+      query = query.or(
+        `audience.eq.public,user_id.eq.${viewerId}`
+      )
+    } else {
+      query = query.eq('audience', 'public')
+    }
+
+    const { data, error, count } = await query
+      .order('created_at', {
+        ascending: false,
+      })
+      .range(from, to)
+
+    if (error) throw error
+
+    const total = Number(count || 0)
+
+    return res.status(200).json({
+      ok: true,
+      story: {
+        id: story.id,
+        title: story.title || '',
+        cover_url: story.cover_url || '',
+        landscape_thumbnail_url:
+          story.landscape_thumbnail_url || '',
+        main_genre: story.main_genre || '',
+      },
+      author,
+      total,
+      page,
+      limit,
+      has_more: to + 1 < total,
+      echoes: (data || []).map(mapEcho),
+    })
+  } catch (error) {
+    console.error(
+      'GET STORY ECHOES ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        error.message ||
+        'Failed to load story echoes',
+    })
+  }
+}
+
+
 export async function createEpisodeEcho(req, res) {
   try {
     const episodeId = cleanText(req.params.episodeId, 100)
