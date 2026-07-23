@@ -130,6 +130,134 @@ export async function getChatStoryCharacters(req, res) {
   }
 }
 
+export async function getChatStoryCharacterProfile(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId, characterId } = req.params
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const story = await getOwnedChatStory(storyId, userId)
+
+    if (!story) {
+      return res.status(404).json({ ok: false, message: 'Story not found' })
+    }
+
+    if (story.story_type !== 'chat_story') {
+      return res.status(400).json({ ok: false, message: 'This story is not a Chat Story' })
+    }
+
+    const { data, error } = await supabase
+      .from('chat_story_characters')
+      .select('*')
+      .eq('id', characterId)
+      .eq('story_id', storyId)
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({ ok: false, message: 'Character not found' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      character: data,
+    })
+  } catch (error) {
+    console.error('GET CHAT STORY CHARACTER PROFILE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load character profile',
+      error: error.message,
+    })
+  }
+}
+
+export async function updateChatStoryCharacterProfile(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId, characterId } = req.params
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const story = await getOwnedChatStory(storyId, userId)
+
+    if (!story) {
+      return res.status(404).json({ ok: false, message: 'Story not found' })
+    }
+
+    if (story.story_type !== 'chat_story') {
+      return res.status(400).json({ ok: false, message: 'This story is not a Chat Story' })
+    }
+
+    const roleGroup = cleanText(req.body.role_group || req.body.roleGroup).toLowerCase()
+    const nickname = cleanNullableText(req.body.nickname, 40)
+    const avatarSource = cleanText(req.body.avatar_source || req.body.avatarSource || 'device').toLowerCase()
+
+    if (!ALLOWED_ROLE_GROUPS.includes(roleGroup)) {
+      return res.status(400).json({ ok: false, message: 'Invalid character group' })
+    }
+
+    if (roleGroup !== 'background' && !nickname) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Main and supporting characters need a nickname',
+      })
+    }
+
+    const patch = {
+      role_group: roleGroup,
+      nickname,
+      avatar_url: cleanNullableText(req.body.avatar_url || req.body.avatarUrl, 1000),
+      avatar_source: ALLOWED_AVATAR_SOURCES.includes(avatarSource) ? avatarSource : 'device',
+      gender: cleanGender(req.body.gender),
+      birthday: cleanBirthday(req.body.birthday),
+      height_cm: cleanHeight(req.body.height_cm ?? req.body.heightCm),
+      occupation: cleanNullableText(req.body.occupation, 120),
+      personality: cleanNullableText(req.body.personality, 300),
+      relationship: cleanNullableText(req.body.relationship, 300),
+      bio: cleanNullableText(req.body.bio, 5000),
+      updated_at: new Date().toISOString(),
+    }
+
+    const { data, error } = await supabase
+      .from('chat_story_characters')
+      .update(patch)
+      .eq('id', characterId)
+      .eq('story_id', storyId)
+      .eq('user_id', userId)
+      .select()
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({ ok: false, message: 'Character not found' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Character profile updated successfully',
+      character: data,
+    })
+  } catch (error) {
+    console.error('UPDATE CHAT STORY CHARACTER PROFILE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update character profile',
+      error: error.message,
+    })
+  }
+}
+
 export async function saveChatStoryCharacters(req, res) {
   try {
     const userId = req.user?.user_id
