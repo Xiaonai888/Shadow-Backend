@@ -5,6 +5,11 @@ import {
   buildEpisodeAccess,
   getStoryEpisodeAccess,
 } from '../services/episodeAccess.service.js'
+import {
+  calculateEpisodeWordCount,
+  episodeContentToPlainText,
+  hasEpisodeReadableContent,
+} from '../utils/episodeContent.js'
 
 const ALLOWED_LANGUAGES = ['Khmer', 'English', 'Chinese', 'Japanese', 'Korean']
 const ALLOWED_UPDATE_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
@@ -814,8 +819,9 @@ export async function createEpisode(req, res) {
     const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
     const status = cleanText(req.body.status || 'draft')
-    const characterCount = content.length
-    const wordCount = calculateWordCount(content)
+    const plainContent = isManga ? '' : episodeContentToPlainText(content)
+    const characterCount = plainContent.length
+    const wordCount = calculateEpisodeWordCount(content)
 
     if (!title) {
       return res.status(400).json({
@@ -853,7 +859,7 @@ export async function createEpisode(req, res) {
         })
       }
     } else {
-      if (status !== 'draft' && !content.trim()) {
+      if (status !== 'draft' && !hasEpisodeReadableContent(content)) {
         return res.status(400).json({
           ok: false,
           message: 'Episode content is required',
@@ -1129,8 +1135,9 @@ export async function updateEpisode(req, res) {
       req.body.unlockMethods ||
       episode.unlock_methods
     )
-    const characterCount = content.length
-    const wordCount = calculateWordCount(content)
+    const plainContent = isManga ? '' : episodeContentToPlainText(content)
+    const characterCount = plainContent.length
+    const wordCount = calculateEpisodeWordCount(content)
 
     if (!title) {
       return res.status(400).json({
@@ -1168,7 +1175,7 @@ export async function updateEpisode(req, res) {
         })
       }
     } else {
-      if (!content.trim()) {
+      if (!hasEpisodeReadableContent(content)) {
         return res.status(400).json({
           ok: false,
           message: 'Episode content is required',
