@@ -26,6 +26,7 @@ import {
   updateEpisodeStatusByStoryType,
 } from '../controllers/chatStoryEpisodes.controller.js'
 import { getStoryManagerEpisodes } from '../controllers/storyManager.controller.js'
+import { getStoryPerformance } from '../controllers/storyPerformance.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
@@ -41,6 +42,7 @@ router.patch('/:storyId/chat/characters/:characterId/profile', requireUser, upda
 router.post('/:storyId/chat/episodes/save', requireUser, saveChatStoryEpisode)
 router.patch('/:storyId/chat/episodes/:episodeId/status', requireUser, updateChatStoryEpisodeStatus)
 router.get('/:storyId/manager-episodes', requireUser, getStoryManagerEpisodes)
+router.get('/:storyId/performance', requireUser, getStoryPerformance)
 router.get('/:storyId', requireUser, getStoryById)
 router.put('/:storyId', requireUser, updateStory)
 router.delete('/:storyId', requireUser, moveStoryToTrash)
