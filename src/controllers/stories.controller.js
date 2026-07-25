@@ -224,6 +224,7 @@ function publicEpisode(
     ),
     is_adult: visibleEpisode.is_adult,
     is_locked: Boolean(visibleEpisode.is_locked),
+    is_author_free: Boolean(visibleEpisode.is_author_free),
     is_free_published: Boolean(visibleEpisode.is_free_published),
     published_rank: visibleEpisode.published_rank,
     unlock_methods: visibleEpisode.unlock_methods || [],
@@ -818,6 +819,12 @@ export async function createEpisode(req, res) {
     const pageCount = pages.length
     const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
+
+const isFreePublished = cleanBoolean(
+  req.body.is_free_published ?? req.body.isFreePublished,
+  false
+)
+
     const status = cleanText(req.body.status || 'draft')
     const plainContent = isManga ? '' : episodeContentToPlainText(content)
     const characterCount = plainContent.length
@@ -901,6 +908,7 @@ const isLocked =
         cover_url: coverUrl,
         content,
         is_adult: isAdult,
+        is_free_published: isFreePublished,
         is_locked: isLocked,
         unlock_methods: unlockMethods,
         status,
@@ -1123,7 +1131,13 @@ export async function updateEpisode(req, res) {
     const content = isManga ? '' : String(req.body.content || '')
     const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
-    const status = cleanText(req.body.status || episode.status || 'draft')
+
+  const isFreePublished = cleanBoolean(
+  req.body.is_free_published ?? req.body.isFreePublished,
+  Boolean(episode.is_free_published)
+)
+
+const status = cleanText(req.body.status || episode.status || 'draft')
     const isLocked =
   typeof req.body.is_locked === 'boolean'
     ? req.body.is_locked
@@ -1212,6 +1226,7 @@ export async function updateEpisode(req, res) {
       cover_url: coverUrl,
       content,
       is_adult: isAdult,
+      is_free_published: isFreePublished,
       is_locked: isLocked,
       unlock_methods: unlockMethods,
       status,
@@ -1297,6 +1312,10 @@ export async function updateEpisodeStatus(req, res) {
     const isManga = story.story_type === 'manga'
     const pages = isManga ? await getEpisodePages(episodeId) : []
     const status = cleanText(req.body.status)
+    const isFreePublished = cleanBoolean(
+  req.body.is_free_published ?? req.body.isFreePublished,
+  Boolean(episode.is_free_published)
+)
 
     if (!['published', 'scheduled', 'draft'].includes(status)) {
       return res.status(400).json({
@@ -1333,10 +1352,11 @@ export async function updateEpisodeStatus(req, res) {
     }
 
     const updatePayload = {
-      status,
-      page_count: isManga ? pages.length : Number(episode.page_count || 0),
-      updated_at: new Date().toISOString(),
-    }
+  status,
+  is_free_published: isFreePublished,
+  page_count: isManga ? pages.length : Number(episode.page_count || 0),
+  updated_at: new Date().toISOString(),
+}
 
     if (status === 'published') {
       updatePayload.published_at = new Date().toISOString()
