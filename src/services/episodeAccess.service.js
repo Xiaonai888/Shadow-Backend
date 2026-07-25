@@ -67,11 +67,18 @@ export function buildEpisodeAccess(
     publishedEpisodes.map((episode, index) => [episodeId(episode), index + 1])
   )
 
-  const freePublishedEpisodeIds = new Set(
-    publishedEpisodes
-      .slice(0, Math.max(0, Number(freeLimit || 0)))
-      .map((episode) => episodeId(episode))
-  )
+  const automaticFreeEpisodeIds = publishedEpisodes
+  .slice(0, Math.max(0, Number(freeLimit || 0)))
+  .map((episode) => episodeId(episode))
+
+const authorFreeEpisodeIds = publishedEpisodes
+  .filter((episode) => Boolean(episode?.is_free_published))
+  .map((episode) => episodeId(episode))
+
+const freePublishedEpisodeIds = new Set([
+  ...automaticFreeEpisodeIds,
+  ...authorFreeEpisodeIds,
+])
 
   return {
     activeEpisodes,
@@ -90,15 +97,19 @@ export function applyEpisodeAccess(episode, access = null) {
     access?.currentNumberById?.get(id) ??
     Math.max(1, safeNumber(episode.episode_number, 1))
   const publishedRank = access?.publishedRankById?.get(id) ?? null
+  const isAuthorFree = Boolean(episode.is_free_published)
+
   const isFreePublished = Boolean(
-    access?.freePublishedEpisodeIds?.has(id)
-  )
+  isAuthorFree ||
+  access?.freePublishedEpisodeIds?.has(id)
+)
 
   return {
     ...episode,
     internal_episode_number: safeNumber(episode.episode_number, currentNumber),
     episode_number: currentNumber,
     published_rank: publishedRank,
+    is_author_free: isAuthorFree,
     is_free_published: isFreePublished,
     is_locked: isFreePublished ? false : Boolean(episode.is_locked),
   }
@@ -112,7 +123,7 @@ export async function getStoryEpisodeAccess(
   const { data, error } = await supabase
     .from('episodes')
     .select(
-      'id, story_id, episode_number, status, is_locked, published_at, created_at, deleted_at'
+      'id, story_id, episode_number, status, is_locked, is_free_published, published_at, created_at, deleted_at'
     )
     .eq('story_id', storyId)
     .is('deleted_at', null)
