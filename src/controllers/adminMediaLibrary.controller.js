@@ -19,7 +19,7 @@ export async function getAdminMediaLibrary(req, res) {
       await Promise.all([
         supabase
           .from('media_folders')
-          .select('id, name, icon, description, sort_order, is_active, created_at, updated_at')
+          .select('id, name, icon, description, cover_image_url, cover_storage_key, sort_order, is_active, created_at, updated_at')
           .order('sort_order', { ascending: true })
           .order('created_at', { ascending: true }),
         supabase
@@ -54,11 +54,13 @@ export async function createMediaFolder(req, res) {
         name,
         icon: text(req.body.icon, 20) || '📁',
         description: text(req.body.description, 300),
+        cover_image_url: text(req.body.cover_image_url, 1000) || null,
+        cover_storage_key: text(req.body.cover_storage_key, 500) || null,
         sort_order: order(req.body.sort_order),
         is_active: bool(req.body.is_active),
         updated_at: new Date().toISOString(),
       })
-      .select('id, name, icon, description, sort_order, is_active, created_at, updated_at')
+      .select('id, name, icon, description, cover_image_url, cover_storage_key, sort_order, is_active, created_at, updated_at')
       .single()
 
     if (error) throw error
@@ -76,6 +78,15 @@ export async function updateMediaFolder(req, res) {
     if ('name' in req.body) patch.name = text(req.body.name, 100)
     if ('icon' in req.body) patch.icon = text(req.body.icon, 20) || '📁'
     if ('description' in req.body) patch.description = text(req.body.description, 300)
+
+    if ('cover_image_url' in req.body) {
+      patch.cover_image_url = text(req.body.cover_image_url, 1000) || null
+    }
+
+    if ('cover_storage_key' in req.body) {
+      patch.cover_storage_key = text(req.body.cover_storage_key, 500) || null
+    }
+
     if ('sort_order' in req.body) patch.sort_order = order(req.body.sort_order)
     if ('is_active' in req.body) patch.is_active = bool(req.body.is_active)
 
@@ -83,7 +94,7 @@ export async function updateMediaFolder(req, res) {
       .from('media_folders')
       .update(patch)
       .eq('id', req.params.folderId)
-      .select('id, name, icon, description, sort_order, is_active, created_at, updated_at')
+      .select('id, name, icon, description, cover_image_url, cover_storage_key, sort_order, is_active, created_at, updated_at')
       .single()
 
     if (error) throw error
