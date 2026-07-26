@@ -1,4 +1,9 @@
 import { supabase } from '../config/supabase.js'
+import {
+  applyAdultStoryVisibility,
+  getReaderAgeAccess,
+  isStoryVisibleToReader,
+} from '../services/storyAgeAccess.service.js'
 
 function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -16,6 +21,7 @@ export async function getReadingProgress(req, res) {
   try {
     const userId = String(req.user?.user_id || '').trim()
     const limit = Math.min(30, Math.max(1, Number(req.query.limit || 12)))
+    const ageAccess = await getReaderAgeAccess(req)
 
     const { data: rows, error } = await supabase
       .from('reading_progress')
@@ -36,18 +42,25 @@ export async function getReadingProgress(req, res) {
     const storyIds = [...new Set(progressRows.map((item) => item.story_id).filter(Boolean))]
     const episodeIds = [...new Set(progressRows.map((item) => item.episode_id).filter(Boolean))]
 
+    let storiesQuery = supabase
+      .from('stories')
+      .select(
+        'id, title, cover_url, landscape_thumbnail_url, total_episodes, story_status, story_type, is_adult'
+      )
+      .in('id', storyIds)
+      .eq('status', 'published')
+      .is('deleted_at', null)
+
+    storiesQuery = applyAdultStoryVisibility(
+      storiesQuery,
+      ageAccess
+    )
+
     const [
       { data: stories, error: storiesError },
       { data: episodes, error: episodesError },
     ] = await Promise.all([
-      supabase
-        .from('stories')
-        .select(
-  'id, title, cover_url, landscape_thumbnail_url, total_episodes, story_status, story_type'
-)
-        .in('id', storyIds)
-        .eq('status', 'published')
-        .is('deleted_at', null),
+      storiesQuery,
       supabase
         .from('episodes')
         .select('id, story_id, title, episode_number')
@@ -105,13 +118,15 @@ export async function saveReadingProgress(req, res) {
       })
     }
 
+    const ageAccess = await getReaderAgeAccess(req)
+
     const [
       { data: story, error: storyError },
       { data: episode, error: episodeError },
     ] = await Promise.all([
       supabase
         .from('stories')
-        .select('id, total_episodes')
+        .select('id, total_episodes, is_adult')
         .eq('id', storyId)
         .eq('status', 'published')
         .is('deleted_at', null)
@@ -130,6 +145,13 @@ export async function saveReadingProgress(req, res) {
     if (episodeError) throw episodeError
 
     if (!story || !episode) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story or episode was not found',
+      })
+    }
+
+    if (!isStoryVisibleToReader(story, ageAccess)) {
       return res.status(404).json({
         ok: false,
         message: 'Story or episode was not found',
