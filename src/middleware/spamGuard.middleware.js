@@ -2,6 +2,9 @@ import { isIP } from 'node:net'
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 
+const MAX_RESTRICTION_SECONDS = 7 * 24 * 60 * 60
+const DEFAULT_IP_FALLBACK_MULTIPLIER = 5
+
 function cleanText(value, maxLength = 500) {
   return String(value || '').trim().slice(0, maxLength)
 }
@@ -59,6 +62,7 @@ function readBearerAccountId(req) {
 
 function readCookieValue(req, name) {
   const cookieHeader = String(req.headers.cookie || '')
+
   if (!cookieHeader) return ''
 
   const prefix = `${name}=`
@@ -143,36 +147,60 @@ function normalizeResult(data) {
   return data || null
 }
 
-function resolveGuardCode(result) {
-  const status = String(
-    result?.block_status
-      || result?.status
-      || ''
+function secondsUntil(value) {
+  if (!value) return 0
+
+  const timestamp = new Date(value).getTime()
+
+  if (!Number.isFinite(timestamp)) return 0
+
+  return Math.max(
+    0,
+    Math.ceil((timestamp - Date.now()) / 1000)
+  )
+}
+
+function clampRestrictionSeconds(value, fallback = 60) {
+  const seconds = Math.max(1, Number(value) || fallback)
+
+  return Math.min(MAX_RESTRICTION_SECONDS, seconds)
+}
+
+function resolveRestriction(result) {
+  const status = cleanText(
+    result?.block_status || result?.status,
+    80
   ).toLowerCase()
 
-  if (
-    result?.is_permanent_blocked
-    || status === 'permanent_block'
-  ) {
-    return {
-      code: 'PERMANENT_BLOCK',
-      header: 'permanent-block',
-      status: 'permanent_block',
-      message: 'This identity has been permanently blocked.',
-      retryAfter: 86400,
-    }
-  }
+  const retryAfter = clampRestrictionSeconds(
+    result?.retry_after_seconds
+      || secondsUntil(result?.quarantine_until)
+      || secondsUntil(result?.cooldown_until)
+      || 60
+  )
 
-  if (status === 'seven_day_quarantine') {
+  const suspiciousStatus = [
+    'suspicious_block',
+    'risk_block',
+    'temporary_block',
+    'seven_day_quarantine',
+    'permanent_block',
+  ].includes(status)
+
+  const suspicious =
+    suspiciousStatus
+    || result?.is_permanent_blocked
+    || Number(result?.spam_score || 0) >= 50
+    || retryAfter > 15 * 60
+
+  if (suspicious) {
     return {
-      code: 'SEVEN_DAY_QUARANTINE',
-      header: 'seven-day-quarantine',
-      status: 'seven_day_quarantine',
-      message: 'This identity is in 7-day quarantine.',
-      retryAfter: Math.max(
-        1,
-        Number(result.retry_after_seconds || 604800)
-      ),
+      code: 'TEMPORARY_RESTRICTION',
+      header: 'temporary-restriction',
+      status: 'temporary_restriction',
+      message:
+        'Suspicious activity was detected. Access is temporarily restricted.',
+      retryAfter,
     }
   }
 
@@ -180,11 +208,71 @@ function resolveGuardCode(result) {
     code: 'TEMPORARY_COOLDOWN',
     header: 'temporary-cooldown',
     status: 'temporary_cooldown',
-    message: 'Too many requests. Please wait before trying again.',
-    retryAfter: Math.max(
-      1,
-      Number(result?.retry_after_seconds || 60)
-    ),
+    message:
+      'Too many requests. Please wait before trying again.',
+    retryAfter,
+  }
+}
+
+async function evaluateGuard({
+  guardKey,
+  scope,
+  identity,
+  requestPath,
+  method,
+  threshold,
+  windowSeconds,
+}) {
+  const { data, error } = await supabase.rpc(
+    'evaluate_spam_guard',
+    {
+      p_guard_key: guardKey,
+      p_scope: scope,
+      p_ip_address: identity.ipAddress || null,
+      p_visitor_id: identity.visitorId || null,
+      p_account_id: identity.accountId || null,
+      p_endpoint: requestPath,
+      p_method: method,
+      p_threshold: threshold,
+      p_window_seconds: windowSeconds,
+    }
+  )
+
+  if (error) throw error
+
+  return normalizeResult(data)
+}
+
+function canUseIpFallback(scope, identity) {
+  if (
+    identity.identityType !== 'visitor'
+    || !identity.ipAddress
+  ) {
+    return false
+  }
+
+  return ![
+    'account_access',
+    'payment_actions',
+  ].includes(scope)
+}
+
+function buildGuardSnapshot({
+  result,
+  scope,
+  guardKey,
+  identityType,
+}) {
+  return {
+    scope,
+    guard_key: guardKey,
+    identity_type: identityType,
+    request_count: Number(result?.request_count || 0),
+    offense_count: Number(result?.offense_count || 0),
+    spam_score: Number(result?.spam_score || 0),
+    cooldown_until: result?.cooldown_until || null,
+    quarantine_until: result?.quarantine_until || null,
+    block_status: result?.block_status || 'allowed',
   }
 }
 
@@ -194,22 +282,21 @@ export function createSpamGuard({
   windowSeconds = 60,
   skipPaths = [],
   failOpen = true,
+  ipFallbackMultiplier = DEFAULT_IP_FALLBACK_MULTIPLIER,
 } = {}) {
   const safeScope = cleanText(scope, 80) || 'global'
-  const safeThreshold = Math.max(
-    1,
-    Number(threshold) || 120
-  )
+  const safeThreshold = Math.max(1, Number(threshold) || 120)
   const safeWindowSeconds = Math.max(
     1,
     Number(windowSeconds) || 60
   )
+  const safeIpFallbackMultiplier = Math.max(
+    2,
+    Number(ipFallbackMultiplier)
+      || DEFAULT_IP_FALLBACK_MULTIPLIER
+  )
 
-  return async function spamGuardMiddleware(
-    req,
-    res,
-    next
-  ) {
+  return async function spamGuardMiddleware(req, res, next) {
     if (req.method === 'OPTIONS') return next()
 
     const requestPath = cleanText(
@@ -217,92 +304,95 @@ export function createSpamGuard({
       500
     )
 
-    if (shouldSkipPath(requestPath, skipPaths)) {
-      return next()
-    }
+    if (shouldSkipPath(requestPath, skipPaths)) return next()
 
     const identity = buildGuardIdentity(req)
 
     if (!identity.guardKey) return next()
 
     try {
-      const { data, error } = await supabase.rpc(
-        'evaluate_spam_guard',
-        {
-          p_guard_key: identity.guardKey,
-          p_scope: safeScope,
-          p_ip_address: identity.ipAddress || null,
-          p_visitor_id: identity.visitorId || null,
-          p_account_id: identity.accountId || null,
-          p_endpoint: requestPath,
-          p_method: req.method,
-          p_threshold: safeThreshold,
-          p_window_seconds: safeWindowSeconds,
+      let effectiveScope = safeScope
+      let effectiveGuardKey = identity.guardKey
+      let effectiveIdentityType = identity.identityType
+
+      let result = await evaluateGuard({
+        guardKey: identity.guardKey,
+        scope: safeScope,
+        identity,
+        requestPath,
+        method: req.method,
+        threshold: safeThreshold,
+        windowSeconds: safeWindowSeconds,
+      })
+
+      if (
+        result?.allowed !== false
+        && canUseIpFallback(safeScope, identity)
+      ) {
+        const fallbackScope = `${safeScope}_ip_fallback`
+        const fallbackGuardKey = `ip:${identity.ipAddress}`
+
+        const fallbackResult = await evaluateGuard({
+          guardKey: fallbackGuardKey,
+          scope: fallbackScope,
+          identity: {
+            ...identity,
+            accountId: '',
+          },
+          requestPath,
+          method: req.method,
+          threshold: Math.ceil(
+            safeThreshold * safeIpFallbackMultiplier
+          ),
+          windowSeconds: safeWindowSeconds,
+        })
+
+        if (fallbackResult?.allowed === false) {
+          result = fallbackResult
+          effectiveScope = fallbackScope
+          effectiveGuardKey = fallbackGuardKey
+          effectiveIdentityType = 'ip_fallback'
         }
-      )
-
-      if (error) throw error
-
-      const result = normalizeResult(data)
+      }
 
       if (!result) return next()
 
-      req.spamGuard = {
-        scope: safeScope,
-        guard_key: identity.guardKey,
-        identity_type: identity.identityType,
-        request_count: Number(
-          result.request_count || 0
-        ),
-        offense_count: Number(
-          result.offense_count || 0
-        ),
-        spam_score: Number(
-          result.spam_score || 0
-        ),
-        cooldown_until:
-          result.cooldown_until || null,
-        quarantine_until:
-          result.quarantine_until || null,
-        block_status:
-          result.block_status || 'allowed',
-      }
+      req.spamGuard = buildGuardSnapshot({
+        result,
+        scope: effectiveScope,
+        guardKey: effectiveGuardKey,
+        identityType: effectiveIdentityType,
+      })
 
       if (result.allowed !== false) return next()
 
-      const resolved = resolveGuardCode(result)
+      const resolved = resolveRestriction(result)
 
       res.setHeader(
         'Retry-After',
         String(resolved.retryAfter)
       )
-      res.setHeader(
-        'X-Spam-Guard',
-        resolved.header
-      )
+      res.setHeader('X-Spam-Guard', resolved.header)
       res.setHeader(
         'X-Spam-Guard-Scope',
-        safeScope
+        effectiveScope
       )
 
       return res.status(429).json({
         ok: false,
         code: resolved.code,
         message: resolved.message,
-        scope: safeScope,
-        retry_after_seconds:
-          resolved.retryAfter,
-        cooldown_until:
-          result.cooldown_until || null,
-        quarantine_until:
-          result.quarantine_until || null,
+        scope: effectiveScope,
+        retry_after_seconds: resolved.retryAfter,
+        cooldown_until: result.cooldown_until || null,
+        quarantine_until: result.quarantine_until || null,
+        restriction_until:
+          result.quarantine_until
+          || result.cooldown_until
+          || null,
         block_status: resolved.status,
-        offense_count: Number(
-          result.offense_count || 0
-        ),
-        spam_score: Number(
-          result.spam_score || 0
-        ),
+        offense_count: Number(result.offense_count || 0),
+        spam_score: Number(result.spam_score || 0),
         reason:
           result.reason
           || 'Request limit exceeded',
