@@ -6,6 +6,12 @@ import {
   buildEpisodeAccess,
   getStoryEpisodeAccess,
 } from '../services/episodeAccess.service.js'
+import {
+  applyAdultStoryVisibility,
+  getReaderAgeAccess,
+  hideAdultStory,
+  isStoryVisibleToReader,
+} from '../services/storyAgeAccess.service.js'
 
 const FALLBACK_UNLOCK_RULES = {
   standard_free_first_episode_monthly_limit: 10,
@@ -1069,6 +1075,7 @@ export async function getPublicStories(req, res) {
     const authorId = String(req.query.authorId || req.query.author_id || '').trim()
     const exclude = String(req.query.exclude || req.query.excludeId || req.query.exclude_id || '').trim()
     const search = normalizeSearch(req.query.q || req.query.search || req.query.keyword)
+    const ageAccess = await getReaderAgeAccess(req)
 
     let query = supabase
   .from('stories')
@@ -1077,6 +1084,10 @@ export async function getPublicStories(req, res) {
   .is('deleted_at', null)
   .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false')
   .limit(queryLimit)
+    query = applyAdultStoryVisibility(
+  query,
+  ageAccess
+)
 
     if (genre) query = query.eq('main_genre', genre)
     if (language) query = query.eq('story_language', language)
@@ -1154,6 +1165,7 @@ export async function getPublicShadowExclusiveStories(req, res) {
     const storyStatus = String(req.query.story_status || req.query.storyStatus || '').trim()
     const sort = String(req.query.sort || 'latest').trim()
     const authorId = String(req.query.authorId || req.query.author_id || '').trim()
+    const ageAccess = await getReaderAgeAccess(req)
 
     let query = supabase
       .from('stories')
@@ -1163,6 +1175,10 @@ export async function getPublicShadowExclusiveStories(req, res) {
       .eq('is_shadow_exclusive', true)
       .eq('exclusive_status', 'approved')
       .limit(limit)
+    query = applyAdultStoryVisibility(
+  query,
+  ageAccess
+)
 
     if (genre) query = query.eq('main_genre', genre)
     if (['novel', 'manga'].includes(storyType)) query = query.eq('story_type', storyType)
@@ -1216,6 +1232,12 @@ export async function getPublicStoryById(req, res) {
         message: 'Story not found',
       })
     }
+
+    const ageAccess = await getReaderAgeAccess(req)
+
+if (!isStoryVisibleToReader(story, ageAccess)) {
+  return hideAdultStory(res)
+}
 
     const [{ data: slides, error: slidesError }, authorPage] = await Promise.all([
       supabase
