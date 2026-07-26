@@ -1,4 +1,8 @@
 import { supabase } from '../config/supabase.js'
+import {
+  applyAdultStoryVisibility,
+  getReaderAgeAccess,
+} from '../services/storyAgeAccess.service.js'
 
 function normalizeLimit(value, fallback = 10, max = 30) {
   const number = Number(value)
@@ -88,6 +92,7 @@ export async function getLatestPublicEpisodes(req, res) {
     const limit = normalizeLimit(req.query.limit)
     const queryLimit = Math.min(limit * 4, 120)
     const now = new Date().toISOString()
+    const ageAccess = await getReaderAgeAccess(req)
     const fields =
       'id, story_id, title, cover_url, is_adult, is_locked, unlock_methods, status, episode_number, character_count, total_views, published_at, created_at, updated_at'
 
@@ -137,14 +142,24 @@ export async function getLatestPublicEpisodes(req, res) {
       })
     }
 
-    const { data: storyRows, error: storiesError } = await supabase
-      .from('stories')
-      .select(
-        'id, author_id, user_id, title, main_genre, story_language, story_status, cover_url, landscape_thumbnail_url, is_adult, status, is_shadow_exclusive, exclusive_status, total_episodes, total_views, updated_at'
-      )
-      .in('id', storyIds)
-      .eq('status', 'published')
-      .is('deleted_at', null)
+    let storyQuery = supabase
+  .from('stories')
+  .select(
+    'id, author_id, user_id, title, main_genre, story_language, story_status, cover_url, landscape_thumbnail_url, is_adult, status, is_shadow_exclusive, exclusive_status, total_episodes, total_views, updated_at'
+  )
+  .in('id', storyIds)
+  .eq('status', 'published')
+  .is('deleted_at', null)
+
+storyQuery = applyAdultStoryVisibility(
+  storyQuery,
+  ageAccess
+)
+
+const {
+  data: storyRows,
+  error: storiesError,
+} = await storyQuery
 
     if (storiesError) throw storiesError
 
