@@ -1,6 +1,10 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
+import {
+  applyAdultStoryVisibility,
+  getReaderAgeAccess,
+} from '../services/storyAgeAccess.service.js'
 
 function normalizePageUsername(username) {
   return String(username || '')
@@ -8,7 +12,6 @@ function normalizePageUsername(username) {
     .replace(/^@+/, '')
     .toLowerCase()
 }
-
 function isValidPageUsername(username) {
   return /^[a-z0-9_]+$/.test(username)
 }
@@ -61,16 +64,30 @@ function publicAuthorWork(story) {
   }
 }
 
-async function getAuthorPageWorks(authorPageId) {
+async function getAuthorPageWorks(
+  authorPageId,
+  canViewAdultStories = false
+) {
   if (!authorPageId) return []
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('stories')
-    .select('id, author_id, user_id, title, story_language, main_genre, story_status, tags, description, is_adult, cover_url, status, access_type, total_episodes, total_views, total_likes, total_comments, created_at, updated_at')
+    .select(
+      'id, author_id, user_id, title, story_language, main_genre, story_status, tags, description, is_adult, cover_url, status, access_type, total_episodes, total_views, total_likes, total_comments, created_at, updated_at'
+    )
     .eq('author_id', authorPageId)
     .eq('status', 'published')
     .is('deleted_at', null)
-    .order('updated_at', { ascending: false })
+    .order('updated_at', {
+      ascending: false,
+    })
+
+  query = applyAdultStoryVisibility(query, {
+    can_view_adult_stories:
+      canViewAdultStories,
+  })
+
+  const { data, error } = await query
 
   if (error) throw error
 
@@ -80,11 +97,16 @@ async function getAuthorPageWorks(authorPageId) {
 function getOptionalUserId(req) {
   try {
     const authHeader = req.headers.authorization || ''
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
+    const token = authHeader.startsWith('Bearer ')
+      ? authHeader.slice(7)
+      : ''
 
     if (!token) return null
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET)
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    )
 
     if (decoded.type !== 'reader') return null
 
@@ -163,7 +185,10 @@ export async function getMyAuthorPage(req, res) {
       })
     }
 
-    const works = await getAuthorPageWorks(data.id)
+    const works = await getAuthorPageWorks(
+      data.id,
+      true
+    )
 
     return res.status(200).json({
       ok: true,
@@ -187,6 +212,7 @@ export async function getPublicAuthorPage(req, res) {
   try {
     const pageUsername = normalizePageUsername(req.params.pageUsername)
     const userId = getOptionalUserId(req)
+    const ageAccess = await getReaderAgeAccess(req)
 
     if (!pageUsername) {
       return res.status(400).json({
@@ -211,13 +237,21 @@ export async function getPublicAuthorPage(req, res) {
       })
     }
 
+    const isOwner =
+      Boolean(userId) &&
+      String(data.user_id) === String(userId)
+
+    const canViewAdultStories =
+      isOwner ||
+      ageAccess.can_view_adult_stories
+
     const [isFollowing, works] = await Promise.all([
       getFollowStatus(data.id, userId),
-      getAuthorPageWorks(data.id),
+      getAuthorPageWorks(
+        data.id,
+        canViewAdultStories
+      ),
     ])
-
-    const isOwner =
-      Boolean(userId) && String(data.user_id) === String(userId)
 
     if (!isOwner) {
       await incrementAuthorPageAnalytics(
@@ -251,6 +285,7 @@ export async function getTopAuthorPages(req, res) {
   try {
     const limit = Math.min(20, Math.max(1, Number(req.query.limit || 5)))
     const userId = getOptionalUserId(req)
+    const ageAccess = await getReaderAgeAccess(req)
 
     const { data: pages, error } = await supabase
       .from('author_pages')
@@ -267,12 +302,22 @@ export async function getTopAuthorPages(req, res) {
     const followingPageIds = new Set()
 
     if (authorPageIds.length) {
-      const { data: stories, error: storiesError } = await supabase
-        .from('stories')
-        .select('author_id')
-        .in('author_id', authorPageIds)
-        .eq('status', 'published')
-        .is('deleted_at', null)
+      let storiesQuery = supabase
+  .from('stories')
+  .select('author_id')
+  .in('author_id', authorPageIds)
+  .eq('status', 'published')
+  .is('deleted_at', null)
+
+storiesQuery = applyAdultStoryVisibility(
+  storiesQuery,
+  ageAccess
+)
+
+const {
+  data: stories,
+  error: storiesError,
+} = await storiesQuery
 
       if (storiesError) throw storiesError
 
