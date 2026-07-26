@@ -139,20 +139,6 @@ const communityWriteSpamGuard = createSpamGuard({
   windowSeconds: 60,
 })
 
-const echoSpamGuard = (req, res, next) => {
-  if (req.method === 'GET') {
-    return readerReadSpamGuard(req, res, next)
-  }
-  return communityWriteSpamGuard(req, res, next)
-}
-
-const commentSpamGuard = (req, res, next) => {
-  if (req.method === 'GET') {
-    return readerReadSpamGuard(req, res, next)
-  }
-  return communityWriteSpamGuard(req, res, next)
-}
-
 const episodeViewSpamGuard = createSpamGuard({
   scope: 'episode_views',
   threshold: 60,
@@ -171,54 +157,270 @@ const taskProgressSpamGuard = createSpamGuard({
   windowSeconds: 60,
 })
 
+const rewardActionSpamGuard = createSpamGuard({
+  scope: 'reward_actions',
+  threshold: 30,
+  windowSeconds: 60,
+})
+
+const giftActionSpamGuard = createSpamGuard({
+  scope: 'gift_actions',
+  threshold: 30,
+  windowSeconds: 60,
+})
+
+const supportActionSpamGuard = createSpamGuard({
+  scope: 'support_actions',
+  threshold: 20,
+  windowSeconds: 60,
+})
+
+const reportActionSpamGuard = createSpamGuard({
+  scope: 'report_actions',
+  threshold: 20,
+  windowSeconds: 60,
+})
+
+const authorContentSpamGuard = createSpamGuard({
+  scope: 'author_content',
+  threshold: 120,
+  windowSeconds: 60,
+})
+
+const mediaUploadSpamGuard = createSpamGuard({
+  scope: 'media_upload',
+  threshold: 30,
+  windowSeconds: 60,
+})
+
 const publicReadSpamGuard = (req, res, next) => {
-  if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
-  if (req.method === 'POST' && req.path.endsWith('/view')) {
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+
+  if (
+    req.method === 'POST' &&
+    String(req.path || '').endsWith('/view')
+  ) {
     return episodeViewSpamGuard(req, res, next)
   }
+
   return next()
 }
 
-const readerCollectionSpamGuard = (req, res, next) => {
-  if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
+const communityRouteSpamGuard = (req, res, next) => {
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+
   return communityWriteSpamGuard(req, res, next)
 }
 
-const reactionSpamGuard = (req, res, next) => {
-  if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
-  return communityWriteSpamGuard(req, res, next)
+const storyManagementSpamGuard = (req, res, next) => {
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+
+  return authorContentSpamGuard(req, res, next)
 }
 
-const giftSpamGuard = (req, res, next) => {
-  if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
-  return communityWriteSpamGuard(req, res, next)
+const mediaUploadRouteSpamGuard = (req, res, next) => {
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+
+  return mediaUploadSpamGuard(req, res, next)
+}
+
+const authorRouteSpamGuard = (req, res, next) => {
+  const path = String(req.path || '')
+
+  if (path.startsWith('/media')) {
+    return next()
+  }
+
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+
+  if (
+    path.includes('/payment-methods') ||
+    path.includes('/page-notifications') ||
+    path.includes('/story-notifications') ||
+    path.includes('/story-notification-preferences')
+  ) {
+    return readerActionSpamGuard(req, res, next)
+  }
+
+  if (
+    path.includes('/follow') ||
+    path.includes('/reviews') ||
+    path.includes('/posts') ||
+    path.includes('/react') ||
+    path.includes('/comments') ||
+    path.includes('/echoes')
+  ) {
+    return communityWriteSpamGuard(req, res, next)
+  }
+
+  if (
+    path === '/create' ||
+    path === '/avatar' ||
+    path === '/profile-images' ||
+    path === '/me'
+  ) {
+    return authorContentSpamGuard(req, res, next)
+  }
+
+  return readerActionSpamGuard(req, res, next)
 }
 
 const taskSpamGuard = (req, res, next) => {
-  if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
-  if (req.method === 'POST' && req.path.includes('/progress')) {
+  const path = String(req.path || '')
+
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+
+  if (path.includes('/progress')) {
     return taskProgressSpamGuard(req, res, next)
   }
-  return communityWriteSpamGuard(req, res, next)
+
+  if (path.includes('/claim')) {
+    return rewardActionSpamGuard(req, res, next)
+  }
+
+  return readerActionSpamGuard(req, res, next)
 }
 
 const notificationSpamGuard = (req, res, next) => {
-  if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+
+  return readerActionSpamGuard(req, res, next)
+}
+
+const mailSpamGuard = (req, res, next) => {
+  const path = String(req.path || '')
+
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+
+  if (path.endsWith('/claim')) {
+    return rewardActionSpamGuard(req, res, next)
+  }
+
   return readerActionSpamGuard(req, res, next)
 }
 
 const readingProgressSpamGuard = (req, res, next) => {
-  if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+
   return readingProgressWriteSpamGuard(req, res, next)
 }
 
-const authorActionSpamGuard = (req, res, next) => {
-  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+const supportSpamGuard = (req, res, next) => {
+  const path = String(req.path || '')
+
+  if (path.startsWith('/admin/')) {
     return readerActionSpamGuard(req, res, next)
   }
-  return next()
+
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+
+  return supportActionSpamGuard(req, res, next)
 }
 
+const giftSpamGuard = (req, res, next) => {
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+
+  return giftActionSpamGuard(req, res, next)
+}
+
+const shortStorySpamGuard = (req, res, next) => {
+  const path = String(req.path || '')
+
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+
+  if (req.method === 'POST' && path.endsWith('/view')) {
+    return episodeViewSpamGuard(req, res, next)
+  }
+
+  if (req.method === 'POST') {
+    return mediaUploadSpamGuard(req, res, next)
+  }
+
+  return authorContentSpamGuard(req, res, next)
+}
+
+const shadowMallSpamGuard = (req, res, next) => {
+  const path = String(req.path || '')
+
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+
+  if (
+    path.startsWith('/orders') ||
+    path.startsWith('/admin/')
+  ) {
+    return readerActionSpamGuard(req, res, next)
+  }
+
+  if (
+    path.includes('/reaction') ||
+    path.includes('/comments') ||
+    path.includes('/echoes') ||
+    path.includes('/wishlist')
+  ) {
+    return communityWriteSpamGuard(req, res, next)
+  }
+
+  return readerActionSpamGuard(req, res, next)
+}
+
+const authorStoreSpamGuard = (req, res, next) => {
+  const path = String(req.path || '')
+
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+
+  if (
+    path.startsWith('/orders') ||
+    path.startsWith('/admin/') ||
+    path.startsWith('/telegram/webhook') ||
+    path.includes('/withdrawals') ||
+    path.includes('/sales-reports') ||
+    path.includes('/telegram-settings')
+  ) {
+    return readerActionSpamGuard(req, res, next)
+  }
+
+  if (path.includes('/pdfs/')) {
+    return mediaUploadSpamGuard(req, res, next)
+  }
+
+  if (
+    path.startsWith('/me/products') ||
+    path.startsWith('/me/categories') ||
+    path.startsWith('/me/delivery-settings')
+  ) {
+    return authorContentSpamGuard(req, res, next)
+  }
+
+  return readerActionSpamGuard(req, res, next)
+}
 
 const paymentSpamGuard = createSpamGuard({
   scope: 'payment_actions',
@@ -236,11 +438,12 @@ app.get('/', (req, res) => {
 app.use('/health', healthRoutes)
 app.use('/api/auth', accountAccessSpamGuard, authRoutes)
 app.use('/api/slides', publicReadSpamGuard, slidesRoutes)
-app.use('/api/books', booksRoutes)
+app.use('/api/books', publicReadSpamGuard, booksRoutes)
 app.use('/api/users', accountAccessSpamGuard, usersRoutes)
-app.use('/api/authors', authorActionSpamGuard, authorsRoutes)
-app.use('/api/stories', storiesRoutes)
-app.use('/api/story-media', storyMediaRoutes)
+app.use('/api/authors/media', mediaUploadRouteSpamGuard, authorMediaRoutes)
+app.use('/api/authors', authorRouteSpamGuard, authorsRoutes)
+app.use('/api/stories', storyManagementSpamGuard, storiesRoutes)
+app.use('/api/story-media', mediaUploadRouteSpamGuard, storyMediaRoutes)
 app.use('/api/public', publicReadSpamGuard)
 app.use('/api/public', publicStoriesRoutes)
 app.use('/api/admin/exclusive', adminExclusiveRoutes)
@@ -248,23 +451,23 @@ app.use('/api/admin/comments', adminCommentsRoutes)
 app.use('/api/admin/purchases', adminPurchasesRoutes)
 app.use('/api/admin/activity-logs', adminActivityRoutes)
 app.use('/api/genres', publicReadSpamGuard, genresRoutes)
-app.use('/api/comments', commentSpamGuard, commentsRoutes)
-app.use('/api/reactions', reactionSpamGuard, reactionsRoutes)
-app.use('/api/echoes', echoSpamGuard, echoesRoutes)
-app.use('/api/reader', readerCollectionSpamGuard, libraryRoutes)
-app.use('/api/saved-posts', readerActionSpamGuard, savedPostsRoutes)
+app.use('/api/comments', communityRouteSpamGuard, commentsRoutes)
+app.use('/api/reactions', communityRouteSpamGuard, reactionsRoutes)
+app.use('/api/echoes', communityRouteSpamGuard, echoesRoutes)
+app.use('/api/reader', communityRouteSpamGuard, libraryRoutes)
+app.use('/api/saved-posts', communityRouteSpamGuard, savedPostsRoutes)
 app.use('/api/help-center', helpCenterRoutes)
-app.use('/api/support', readerActionSpamGuard, supportRequestsRoutes)
+app.use('/api/support', supportSpamGuard, supportRequestsRoutes)
 app.use('/api/purchase', paymentSpamGuard, purchaseRoutes)
 app.use('/api/telegram', telegramRoutes)
 app.use('/api/unlocks', paymentSpamGuard, unlocksRoutes)
-app.use('/api/shadow-mall', readerActionSpamGuard, shadowMallProductsRoutes)
+app.use('/api/shadow-mall', shadowMallSpamGuard, shadowMallProductsRoutes)
 app.use('/api/admin/community', adminCommunityRoutes)
 app.use('/api/admin/spam-guard', adminSpamGuardRoutes)
 app.use('/api/tasks', taskSpamGuard, tasksRoutes)
 app.use('/api/notifications', notificationSpamGuard, notificationsRoutes)
 app.use('/api/admin/notifications', adminNotificationsRoutes)
-app.use('/api/mails', readerActionSpamGuard, readerMailsRoutes)
+app.use('/api/mails', mailSpamGuard, readerMailsRoutes)
 app.use('/api/admin/stories', adminStoriesRoutes)
 app.use('/api/admin/chat-story-gallery', adminChatStoryGalleryRoutes)
 app.use('/api/admin/media-library', adminMediaLibraryRoutes)
@@ -272,8 +475,7 @@ app.use('/api/admin/ranking', adminRankingRoutes)
 app.use('/api/advertisements', advertisementsRoutes)
 app.use('/api/admin/block-list', adminBlockListRoutes)
 app.use('/api/admin/mails', adminReaderMailsRoutes)
-app.use('/api/authors/media', readerActionSpamGuard, authorMediaRoutes)
-app.use('/api/author-store', readerActionSpamGuard, authorStoreRoutes)
+app.use('/api/author-store', authorStoreSpamGuard, authorStoreRoutes)
 app.use('/api/admin/income', adminIncomeRoutes)
 app.use('/api/visitors', visitorTrackingSpamGuard, visitorAnalyticsRoutes)
 app.use('/api/task-center', adminTaskCenterRoutes)
@@ -283,15 +485,15 @@ app.use('/api/admin/two-factor', adminTwoFactorRoutes)
 app.use('/api/admin/passkey-pin', adminPasskeyPinRoutes)
 app.use('/api/public', contentVersionsRoutes)
 app.use('/api/gifts', giftSpamGuard, giftsRoutes)
-app.use('/api/author-stories', readerActionSpamGuard, authorStoriesRoutes)
-app.use('/api/reader-stories', readerActionSpamGuard, readerStoriesRoutes)
-app.use('/api/discover-stories', readerActionSpamGuard, discoverStoriesRoutes)
-app.use('/api/fast', readerActionSpamGuard, fastRoutes)
-app.use('/api/reports', readerActionSpamGuard, contentReportsRoutes)
+app.use('/api/author-stories', shortStorySpamGuard, authorStoriesRoutes)
+app.use('/api/reader-stories', shortStorySpamGuard, readerStoriesRoutes)
+app.use('/api/discover-stories', readerReadSpamGuard, discoverStoriesRoutes)
+app.use('/api/fast', mediaUploadRouteSpamGuard, fastRoutes)
+app.use('/api/reports', reportActionSpamGuard, contentReportsRoutes)
 app.use('/api/admin/reports', adminReportsRoutes)
-app.use('/api/reader-posts', readerActionSpamGuard, readerPostsRoutes)
+app.use('/api/reader-posts', communityRouteSpamGuard, readerPostsRoutes)
 app.use('/api/reading-progress', readingProgressSpamGuard, readingProgressRoutes)
-app.use('/api/share-profile', readerActionSpamGuard, shareProfileRoutes)
+app.use('/api/share-profile', mediaUploadRouteSpamGuard, shareProfileRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
