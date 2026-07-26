@@ -153,14 +153,63 @@ const commentSpamGuard = (req, res, next) => {
   return communityWriteSpamGuard(req, res, next)
 }
 
+const episodeViewSpamGuard = createSpamGuard({
+  scope: 'episode_views',
+  threshold: 60,
+  windowSeconds: 60,
+})
+
+const readingProgressWriteSpamGuard = createSpamGuard({
+  scope: 'reading_progress',
+  threshold: 120,
+  windowSeconds: 60,
+})
+
+const taskProgressSpamGuard = createSpamGuard({
+  scope: 'task_progress',
+  threshold: 60,
+  windowSeconds: 60,
+})
+
 const publicReadSpamGuard = (req, res, next) => {
   if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
+  if (req.method === 'POST' && req.path.endsWith('/view')) {
+    return episodeViewSpamGuard(req, res, next)
+  }
   return next()
 }
 
-const readerReadActionSpamGuard = (req, res, next) => {
+const readerCollectionSpamGuard = (req, res, next) => {
+  if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
+  return communityWriteSpamGuard(req, res, next)
+}
+
+const reactionSpamGuard = (req, res, next) => {
+  if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
+  return communityWriteSpamGuard(req, res, next)
+}
+
+const giftSpamGuard = (req, res, next) => {
+  if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
+  return communityWriteSpamGuard(req, res, next)
+}
+
+const taskSpamGuard = (req, res, next) => {
+  if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
+  if (req.method === 'POST' && req.path.includes('/progress')) {
+    return taskProgressSpamGuard(req, res, next)
+  }
+  return communityWriteSpamGuard(req, res, next)
+}
+
+const notificationSpamGuard = (req, res, next) => {
   if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
   return readerActionSpamGuard(req, res, next)
+}
+
+const readingProgressSpamGuard = (req, res, next) => {
+  if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
+  return readingProgressWriteSpamGuard(req, res, next)
 }
 
 const authorActionSpamGuard = (req, res, next) => {
@@ -200,9 +249,9 @@ app.use('/api/admin/purchases', adminPurchasesRoutes)
 app.use('/api/admin/activity-logs', adminActivityRoutes)
 app.use('/api/genres', publicReadSpamGuard, genresRoutes)
 app.use('/api/comments', commentSpamGuard, commentsRoutes)
-app.use('/api/reactions', readerActionSpamGuard, reactionsRoutes)
+app.use('/api/reactions', reactionSpamGuard, reactionsRoutes)
 app.use('/api/echoes', echoSpamGuard, echoesRoutes)
-app.use('/api/reader', readerActionSpamGuard, libraryRoutes)
+app.use('/api/reader', readerCollectionSpamGuard, libraryRoutes)
 app.use('/api/saved-posts', readerActionSpamGuard, savedPostsRoutes)
 app.use('/api/help-center', helpCenterRoutes)
 app.use('/api/support', readerActionSpamGuard, supportRequestsRoutes)
@@ -212,8 +261,8 @@ app.use('/api/unlocks', paymentSpamGuard, unlocksRoutes)
 app.use('/api/shadow-mall', readerActionSpamGuard, shadowMallProductsRoutes)
 app.use('/api/admin/community', adminCommunityRoutes)
 app.use('/api/admin/spam-guard', adminSpamGuardRoutes)
-app.use('/api/tasks', readerReadActionSpamGuard, tasksRoutes)
-app.use('/api/notifications', readerReadActionSpamGuard, notificationsRoutes)
+app.use('/api/tasks', taskSpamGuard, tasksRoutes)
+app.use('/api/notifications', notificationSpamGuard, notificationsRoutes)
 app.use('/api/admin/notifications', adminNotificationsRoutes)
 app.use('/api/mails', readerActionSpamGuard, readerMailsRoutes)
 app.use('/api/admin/stories', adminStoriesRoutes)
@@ -233,7 +282,7 @@ app.use('/api/admin/device-access', adminDeviceAccessRoutes)
 app.use('/api/admin/two-factor', adminTwoFactorRoutes)
 app.use('/api/admin/passkey-pin', adminPasskeyPinRoutes)
 app.use('/api/public', contentVersionsRoutes)
-app.use('/api/gifts', readerActionSpamGuard, giftsRoutes)
+app.use('/api/gifts', giftSpamGuard, giftsRoutes)
 app.use('/api/author-stories', readerActionSpamGuard, authorStoriesRoutes)
 app.use('/api/reader-stories', readerActionSpamGuard, readerStoriesRoutes)
 app.use('/api/discover-stories', readerActionSpamGuard, discoverStoriesRoutes)
@@ -241,7 +290,7 @@ app.use('/api/fast', readerActionSpamGuard, fastRoutes)
 app.use('/api/reports', readerActionSpamGuard, contentReportsRoutes)
 app.use('/api/admin/reports', adminReportsRoutes)
 app.use('/api/reader-posts', readerActionSpamGuard, readerPostsRoutes)
-app.use('/api/reading-progress', readerReadActionSpamGuard, readingProgressRoutes)
+app.use('/api/reading-progress', readingProgressSpamGuard, readingProgressRoutes)
 app.use('/api/share-profile', readerActionSpamGuard, shareProfileRoutes)
 
 app.use((req, res) => {
