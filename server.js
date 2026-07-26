@@ -146,6 +146,13 @@ const echoSpamGuard = (req, res, next) => {
   return communityWriteSpamGuard(req, res, next)
 }
 
+const commentSpamGuard = (req, res, next) => {
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+  return communityWriteSpamGuard(req, res, next)
+}
+
 const authorActionSpamGuard = (req, res, next) => {
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
     return readerActionSpamGuard(req, res, next)
@@ -181,7 +188,7 @@ app.use('/api/admin/comments', adminCommentsRoutes)
 app.use('/api/admin/purchases', adminPurchasesRoutes)
 app.use('/api/admin/activity-logs', adminActivityRoutes)
 app.use('/api/genres', genresRoutes)
-app.use('/api/comments', readerActionSpamGuard, commentsRoutes)
+app.use('/api/comments', commentSpamGuard, commentsRoutes)
 app.use('/api/reactions', readerActionSpamGuard, reactionsRoutes)
 app.use('/api/echoes', echoSpamGuard, echoesRoutes)
 app.use('/api/reader', readerActionSpamGuard, libraryRoutes)
