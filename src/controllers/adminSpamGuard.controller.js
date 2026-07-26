@@ -1,6 +1,14 @@
 import { isIP } from 'node:net'
 import { supabase } from '../config/supabase.js'
 
+const RESTRICTION_DURATIONS = {
+  '1h': 60 * 60,
+  '6h': 6 * 60 * 60,
+  '24h': 24 * 60 * 60,
+  '3d': 3 * 24 * 60 * 60,
+  '7d': 7 * 24 * 60 * 60,
+}
+
 function toPositiveInt(value, fallback, max) {
   const parsed = Number.parseInt(String(value || ''), 10)
   if (!Number.isFinite(parsed) || parsed < 1) return fallback
@@ -14,7 +22,7 @@ function cleanSearch(value) {
     .slice(0, 120)
 }
 
-function cleanReason(value, maxLength = 500) {
+function cleanText(value, maxLength = 500) {
   return String(value || '').trim().slice(0, maxLength)
 }
 
@@ -23,27 +31,30 @@ function isFuture(value) {
 }
 
 function getAdminName(req) {
-  return String(
+  return cleanText(
     req.admin?.name
-    || req.admin?.username
-    || req.admin?.email
-    || req.admin?.admin_id
-    || req.admin?.id
-    || 'Admin'
-  ).slice(0, 160)
+      || req.admin?.username
+      || req.admin?.email
+      || req.admin?.admin_id
+      || req.admin?.id
+      || 'Admin',
+    160
+  )
 }
 
 function resolveStateStatus(row) {
-  if (row.is_permanent_blocked) return 'permanent_block'
-  if (isFuture(row.quarantine_until)) return 'seven_day_quarantine'
+  if (isFuture(row.quarantine_until)) return 'temporary_restriction'
   if (isFuture(row.cooldown_until)) return 'temporary_cooldown'
-  return row.block_status === 'permanent_block' || row.block_status === 'seven_day_quarantine' || row.block_status === 'temporary_cooldown'
-    ? 'allowed'
-    : row.block_status || 'allowed'
+  return 'allowed'
 }
 
 function formatState(row) {
   const blockStatus = resolveStateStatus(row)
+  const restrictionUntil = blockStatus === 'temporary_restriction'
+    ? row.quarantine_until
+    : blockStatus === 'temporary_cooldown'
+      ? row.cooldown_until
+      : null
 
   return {
     id: row.id,
@@ -57,16 +68,18 @@ function formatState(row) {
     spam_score: Number(row.spam_score || 0),
     cooldown_until: row.cooldown_until,
     quarantine_until: row.quarantine_until,
+    restriction_until: restrictionUntil,
     quarantine_started_at: row.quarantine_started_at,
     quarantine_reason: row.quarantine_reason || '',
     block_status: blockStatus,
     block_reason: row.block_reason || '',
     is_in_cooldown: blockStatus === 'temporary_cooldown',
-    is_in_quarantine: blockStatus === 'seven_day_quarantine',
-    is_permanent_blocked: blockStatus === 'permanent_block',
-    permanent_blocked_at: row.permanent_blocked_at,
-    permanent_blocked_by: row.permanent_blocked_by || '',
-    permanent_block_reason: row.permanent_block_reason || '',
+    is_in_restriction: blockStatus === 'temporary_restriction',
+    is_in_quarantine: blockStatus === 'temporary_restriction',
+    is_permanent_blocked: false,
+    permanent_blocked_at: null,
+    permanent_blocked_by: '',
+    permanent_block_reason: '',
     permanent_unblocked_at: row.permanent_unblocked_at,
     permanent_unblocked_by: row.permanent_unblocked_by || '',
     permanent_unblock_reason: row.permanent_unblock_reason || '',
@@ -83,6 +96,11 @@ function formatState(row) {
 }
 
 function formatEvent(row) {
+  const blockStatus = row.block_status === 'seven_day_quarantine'
+    || row.block_status === 'permanent_block'
+    ? 'temporary_restriction'
+    : row.block_status || ''
+
   return {
     id: row.id,
     state_id: row.state_id,
@@ -100,7 +118,7 @@ function formatEvent(row) {
     offense_count: Number(row.offense_count || 0),
     spam_score: Number(row.spam_score || 0),
     cooldown_until: row.cooldown_until,
-    block_status: row.block_status || '',
+    block_status: blockStatus,
     block_until: row.block_until,
     admin_note: row.admin_note || '',
     metadata: row.metadata || {},
@@ -127,7 +145,12 @@ async function countRows(table, applyFilters = (query) => query) {
 
 async function getSpamGuardStateById(stateId) {
   if (!/^[0-9a-f-]{36}$/i.test(stateId)) {
-    return { errorResponse: { status: 400, message: 'Invalid spam guard state ID' } }
+    return {
+      errorResponse: {
+        status: 400,
+        message: 'Invalid spam guard state ID',
+      },
+    }
   }
 
   const { data, error } = await supabase
@@ -139,7 +162,12 @@ async function getSpamGuardStateById(stateId) {
   if (error) throw error
 
   if (!data) {
-    return { errorResponse: { status: 404, message: 'Spam guard state not found' } }
+    return {
+      errorResponse: {
+        status: 404,
+        message: 'Spam guard state not found',
+      },
+    }
   }
 
   return { data }
@@ -177,6 +205,186 @@ async function insertSpamGuardEvent(existing, payload) {
   if (error) throw error
 }
 
+function normalizeDuration(value, fallback = '7d') {
+  const duration = cleanText(value, 20).toLowerCase()
+  return RESTRICTION_DURATIONS[duration] ? duration : fallback
+}
+
+function restrictionUntil(duration) {
+  const seconds = RESTRICTION_DURATIONS[duration]
+  return new Date(Date.now() + seconds * 1000).toISOString()
+}
+
+async function applyRestriction(req, res, legacyPermanentRoute = false) {
+  try {
+    const stateId = cleanText(req.params.stateId, 80)
+    const reason = cleanText(
+      req.body?.reason || req.body?.note,
+      500
+    )
+    const duration = normalizeDuration(
+      req.body?.duration,
+      legacyPermanentRoute ? '7d' : '24h'
+    )
+
+    if (reason.length < 3) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Temporary restriction reason is required',
+      })
+    }
+
+    const { data: existing, errorResponse } = await getSpamGuardStateById(stateId)
+
+    if (errorResponse) {
+      return res.status(errorResponse.status).json({
+        ok: false,
+        message: errorResponse.message,
+      })
+    }
+
+    const now = new Date().toISOString()
+    const blockUntil = restrictionUntil(duration)
+    const adminName = getAdminName(req)
+
+    const { data: updated, error: updateError } = await supabase
+      .from('spam_guard_state')
+      .update({
+        is_permanent_blocked: false,
+        permanent_blocked_at: null,
+        permanent_blocked_by: null,
+        permanent_block_reason: null,
+        cooldown_until: null,
+        quarantine_until: blockUntil,
+        quarantine_started_at: now,
+        quarantine_reason: reason,
+        block_status: 'temporary_restriction',
+        block_reason: reason,
+        request_count: 0,
+        window_started_at: now,
+        last_reason: `Temporary restriction applied by ${adminName}`,
+        updated_at: now,
+      })
+      .eq('id', stateId)
+      .select()
+      .single()
+
+    if (updateError) throw updateError
+
+    await insertSpamGuardEvent(existing, {
+      now,
+      action: 'temporary_restriction_started',
+      reason,
+      block_status: 'temporary_restriction',
+      block_until: blockUntil,
+      admin_note: reason,
+      metadata: {
+        applied_by: adminName,
+        duration,
+        legacy_permanent_route: legacyPermanentRoute,
+        automatic_permanent_block: false,
+        previous_block_status: existing.block_status || '',
+        previous_cooldown_until: existing.cooldown_until,
+        previous_quarantine_until: existing.quarantine_until,
+      },
+    })
+
+    return res.status(200).json({
+      ok: true,
+      message: legacyPermanentRoute
+        ? 'Permanent blocks are disabled. A 7-day temporary restriction was applied.'
+        : `Temporary restriction applied for ${duration}`,
+      state: formatState(updated),
+    })
+  } catch (error) {
+    console.error('ADMIN SPAM GUARD RESTRICTION ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to apply temporary restriction',
+      error: error.message,
+    })
+  }
+}
+
+async function releaseAllRestrictions(req, res, legacyUnblockRoute = false) {
+  try {
+    const stateId = cleanText(req.params.stateId, 80)
+    const reason = cleanText(
+      req.body?.reason || req.body?.note || 'Manual release',
+      500
+    )
+    const { data: existing, errorResponse } = await getSpamGuardStateById(stateId)
+
+    if (errorResponse) {
+      return res.status(errorResponse.status).json({
+        ok: false,
+        message: errorResponse.message,
+      })
+    }
+
+    const now = new Date().toISOString()
+    const adminName = getAdminName(req)
+
+    const { data: updated, error: updateError } = await supabase
+      .from('spam_guard_state')
+      .update({
+        is_permanent_blocked: false,
+        permanent_blocked_at: null,
+        permanent_blocked_by: null,
+        permanent_block_reason: null,
+        permanent_unblocked_at: now,
+        permanent_unblocked_by: adminName,
+        permanent_unblock_reason: reason,
+        cooldown_until: null,
+        quarantine_until: null,
+        quarantine_started_at: null,
+        quarantine_reason: null,
+        block_status: 'allowed',
+        block_reason: '',
+        request_count: 0,
+        window_started_at: now,
+        last_reason: `Restriction released by ${adminName}`,
+        updated_at: now,
+      })
+      .eq('id', stateId)
+      .select()
+      .single()
+
+    if (updateError) throw updateError
+
+    await insertSpamGuardEvent(existing, {
+      now,
+      action: 'restriction_released',
+      reason,
+      block_status: 'allowed',
+      block_until: null,
+      admin_note: reason,
+      metadata: {
+        released_by: adminName,
+        legacy_unblock_route: legacyUnblockRoute,
+        previous_block_status: existing.block_status || '',
+        previous_cooldown_until: existing.cooldown_until,
+        previous_quarantine_until: existing.quarantine_until,
+      },
+    })
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Temporary restriction released',
+      state: formatState(updated),
+    })
+  } catch (error) {
+    console.error('ADMIN SPAM GUARD RELEASE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to release temporary restriction',
+      error: error.message,
+    })
+  }
+}
+
 export async function getAdminSpamGuardOverview(req, res) {
   try {
     const now = new Date().toISOString()
@@ -186,9 +394,8 @@ export async function getAdminSpamGuardOverview(req, res) {
     const [
       totalTracked,
       activeCooldowns,
-      activeQuarantines,
-      permanentBlocks,
-      offendersToday,
+      activeRestrictions,
+      offensesToday,
       highSpamScore,
       visitorTrackingCooldowns,
       accountAccessCooldowns,
@@ -198,29 +405,25 @@ export async function getAdminSpamGuardOverview(req, res) {
       countRows('spam_guard_state'),
       countRows(
         'spam_guard_state',
-        (query) => query
-          .gt('cooldown_until', now)
-          .eq('is_permanent_blocked', false)
+        (query) => query.gt('cooldown_until', now)
       ),
       countRows(
         'spam_guard_state',
-        (query) => query
-          .gt('quarantine_until', now)
-          .eq('is_permanent_blocked', false)
-      ),
-      countRows(
-        'spam_guard_state',
-        (query) => query.eq('is_permanent_blocked', true)
+        (query) => query.gt('quarantine_until', now)
       ),
       countRows(
         'spam_guard_events',
         (query) => query
-          .in('action', ['cooldown_started', 'quarantine_started', 'permanent_blocked'])
+          .in('action', [
+            'cooldown_started',
+            'temporary_restriction_started',
+            'quarantine_started',
+          ])
           .gte('occurred_at', dayStart.toISOString())
       ),
       countRows(
         'spam_guard_state',
-        (query) => query.gte('spam_score', 90)
+        (query) => query.gte('spam_score', 50)
       ),
       countRows(
         'spam_guard_state',
@@ -253,10 +456,11 @@ export async function getAdminSpamGuardOverview(req, res) {
       summary: {
         total_tracked: totalTracked,
         active_cooldowns: activeCooldowns,
-        active_quarantines: activeQuarantines,
-        permanent_blocks: permanentBlocks,
-        active_blocks: activeCooldowns + activeQuarantines + permanentBlocks,
-        offenses_today: offendersToday,
+        active_restrictions: activeRestrictions,
+        active_quarantines: activeRestrictions,
+        permanent_blocks: 0,
+        active_blocks: activeCooldowns + activeRestrictions,
+        offenses_today: offensesToday,
         high_spam_score: highSpamScore,
         visitor_tracking_cooldowns: visitorTrackingCooldowns,
         account_access_cooldowns: accountAccessCooldowns,
@@ -279,8 +483,8 @@ export async function getAdminSpamGuardStates(req, res) {
   try {
     const page = toPositiveInt(req.query.page, 1, 100000)
     const limit = toPositiveInt(req.query.limit, 20, 100)
-    const filter = String(req.query.filter || 'all').trim().toLowerCase()
-    const scope = String(req.query.scope || '').trim().toLowerCase()
+    const filter = cleanText(req.query.filter || 'all', 40).toLowerCase()
+    const scope = cleanText(req.query.scope, 80).toLowerCase()
     const q = cleanSearch(req.query.q)
     const from = (page - 1) * limit
     const to = from + limit - 1
@@ -298,24 +502,23 @@ export async function getAdminSpamGuardStates(req, res) {
     if (scope) query = query.eq('scope', scope)
 
     if (filter === 'cooldown') {
-      query = query
-        .gt('cooldown_until', now)
-        .eq('is_permanent_blocked', false)
-    } else if (filter === 'quarantine') {
-      query = query
-        .gt('quarantine_until', now)
-        .eq('is_permanent_blocked', false)
-    } else if (filter === 'permanent') {
-      query = query.eq('is_permanent_blocked', true)
+      query = query.gt('cooldown_until', now)
+    } else if (
+      filter === 'restriction'
+      || filter === 'quarantine'
+      || filter === 'permanent'
+    ) {
+      query = query.gt('quarantine_until', now)
     } else if (filter === 'blocked') {
-      query = query.or(`cooldown_until.gt.${now},quarantine_until.gt.${now},is_permanent_blocked.eq.true`)
+      query = query.or(
+        `cooldown_until.gt.${now},quarantine_until.gt.${now}`
+      )
     } else if (filter === 'released') {
       query = query
-        .eq('is_permanent_blocked', false)
         .or(`cooldown_until.is.null,cooldown_until.lte.${now}`)
         .or(`quarantine_until.is.null,quarantine_until.lte.${now}`)
     } else if (filter === 'high_score') {
-      query = query.gte('spam_score', 90)
+      query = query.gte('spam_score', 50)
     } else if (filter === 'repeat_offender') {
       query = query.gte('offense_count', 2)
     }
@@ -325,7 +528,7 @@ export async function getAdminSpamGuardStates(req, res) {
         query = query.eq('ip_address', q)
       } else {
         query = query.or(
-          `guard_key.ilike.%${q}%,scope.ilike.%${q}%,visitor_id.ilike.%${q}%,account_id.ilike.%${q}%,last_endpoint.ilike.%${q}%,last_reason.ilike.%${q}%,block_reason.ilike.%${q}%,permanent_block_reason.ilike.%${q}%`
+          `guard_key.ilike.%${q}%,scope.ilike.%${q}%,visitor_id.ilike.%${q}%,account_id.ilike.%${q}%,last_endpoint.ilike.%${q}%,last_reason.ilike.%${q}%,block_reason.ilike.%${q}%,quarantine_reason.ilike.%${q}%`
         )
       }
     }
@@ -362,8 +565,8 @@ export async function getAdminSpamGuardEvents(req, res) {
   try {
     const page = toPositiveInt(req.query.page, 1, 100000)
     const limit = toPositiveInt(req.query.limit, 20, 100)
-    const scope = String(req.query.scope || '').trim().toLowerCase()
-    const action = String(req.query.action || '').trim().toLowerCase()
+    const scope = cleanText(req.query.scope, 80).toLowerCase()
+    const action = cleanText(req.query.action, 80).toLowerCase()
     const q = cleanSearch(req.query.q)
     const from = (page - 1) * limit
     const to = from + limit - 1
@@ -420,7 +623,7 @@ export async function getAdminSpamGuardEvents(req, res) {
 
 export async function releaseAdminSpamGuardCooldown(req, res) {
   try {
-    const stateId = String(req.params.stateId || '').trim()
+    const stateId = cleanText(req.params.stateId, 80)
     const { data: existing, errorResponse } = await getSpamGuardStateById(stateId)
 
     if (errorResponse) {
@@ -432,21 +635,25 @@ export async function releaseAdminSpamGuardCooldown(req, res) {
 
     const now = new Date().toISOString()
     const adminName = getAdminName(req)
-    const activeQuarantine = isFuture(existing.quarantine_until)
-    const nextStatus = existing.is_permanent_blocked
-      ? 'permanent_block'
-      : activeQuarantine
-        ? 'seven_day_quarantine'
-        : 'allowed'
+    const activeRestriction = isFuture(existing.quarantine_until)
+    const nextStatus = activeRestriction
+      ? 'temporary_restriction'
+      : 'allowed'
 
     const { data: updated, error: updateError } = await supabase
       .from('spam_guard_state')
       .update({
+        is_permanent_blocked: false,
+        permanent_blocked_at: null,
+        permanent_blocked_by: null,
+        permanent_block_reason: null,
         cooldown_until: null,
         request_count: 0,
         window_started_at: now,
         block_status: nextStatus,
-        block_reason: nextStatus === 'allowed' ? '' : existing.block_reason || existing.quarantine_reason || existing.permanent_block_reason || '',
+        block_reason: activeRestriction
+          ? existing.quarantine_reason || existing.block_reason || ''
+          : '',
         last_reason: `Cooldown released manually by ${adminName}`,
         updated_at: now,
       })
@@ -462,7 +669,9 @@ export async function releaseAdminSpamGuardCooldown(req, res) {
       reason: `Released manually by ${adminName}`,
       cooldown_until: null,
       block_status: nextStatus,
-      block_until: activeQuarantine ? existing.quarantine_until : null,
+      block_until: activeRestriction
+        ? existing.quarantine_until
+        : null,
       admin_note: `Released by ${adminName}`,
       metadata: {
         released_by: adminName,
@@ -476,7 +685,7 @@ export async function releaseAdminSpamGuardCooldown(req, res) {
       state: formatState(updated),
     })
   } catch (error) {
-    console.error('ADMIN SPAM GUARD RELEASE ERROR:', error)
+    console.error('ADMIN SPAM GUARD COOLDOWN RELEASE ERROR:', error)
 
     return res.status(500).json({
       ok: false,
@@ -487,214 +696,21 @@ export async function releaseAdminSpamGuardCooldown(req, res) {
 }
 
 export async function releaseAdminSpamGuardQuarantine(req, res) {
-  try {
-    const stateId = String(req.params.stateId || '').trim()
-    const { data: existing, errorResponse } = await getSpamGuardStateById(stateId)
+  return releaseAllRestrictions(req, res)
+}
 
-    if (errorResponse) {
-      return res.status(errorResponse.status).json({
-        ok: false,
-        message: errorResponse.message,
-      })
-    }
+export async function applyAdminSpamGuardRestriction(req, res) {
+  return applyRestriction(req, res)
+}
 
-    if (existing.is_permanent_blocked) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Permanent block must be unblocked separately',
-      })
-    }
-
-    const now = new Date().toISOString()
-    const adminName = getAdminName(req)
-    const activeCooldown = isFuture(existing.cooldown_until)
-    const nextStatus = activeCooldown ? 'temporary_cooldown' : 'allowed'
-
-    const { data: updated, error: updateError } = await supabase
-      .from('spam_guard_state')
-      .update({
-        quarantine_until: null,
-        quarantine_reason: '',
-        block_status: nextStatus,
-        block_reason: activeCooldown ? existing.last_reason || existing.block_reason || '' : '',
-        last_reason: `Quarantine released manually by ${adminName}`,
-        updated_at: now,
-      })
-      .eq('id', stateId)
-      .select()
-      .single()
-
-    if (updateError) throw updateError
-
-    await insertSpamGuardEvent(existing, {
-      now,
-      action: 'block_released',
-      reason: `Quarantine released manually by ${adminName}`,
-      block_status: nextStatus,
-      block_until: activeCooldown ? existing.cooldown_until : null,
-      admin_note: `Released by ${adminName}`,
-      metadata: {
-        released_by: adminName,
-        released_type: 'seven_day_quarantine',
-        previous_quarantine_until: existing.quarantine_until,
-      },
-    })
-
-    return res.status(200).json({
-      ok: true,
-      message: '7-day quarantine released',
-      state: formatState(updated),
-    })
-  } catch (error) {
-    console.error('ADMIN SPAM GUARD QUARANTINE RELEASE ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to release quarantine',
-      error: error.message,
-    })
-  }
+export async function releaseAdminSpamGuardRestriction(req, res) {
+  return releaseAllRestrictions(req, res)
 }
 
 export async function blockAdminSpamGuardPermanently(req, res) {
-  try {
-    const stateId = String(req.params.stateId || '').trim()
-    const reason = cleanReason(req.body?.reason || req.body?.note || '')
-
-    if (reason.length < 3) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Permanent block reason is required',
-      })
-    }
-
-    const { data: existing, errorResponse } = await getSpamGuardStateById(stateId)
-
-    if (errorResponse) {
-      return res.status(errorResponse.status).json({
-        ok: false,
-        message: errorResponse.message,
-      })
-    }
-
-    const now = new Date().toISOString()
-    const adminName = getAdminName(req)
-
-    const { data: updated, error: updateError } = await supabase
-      .from('spam_guard_state')
-      .update({
-        is_permanent_blocked: true,
-        permanent_blocked_at: now,
-        permanent_blocked_by: adminName,
-        permanent_block_reason: reason,
-        cooldown_until: null,
-        quarantine_until: null,
-        block_status: 'permanent_block',
-        block_reason: reason,
-        last_reason: `Permanently blocked by ${adminName}`,
-        updated_at: now,
-      })
-      .eq('id', stateId)
-      .select()
-      .single()
-
-    if (updateError) throw updateError
-
-    await insertSpamGuardEvent(existing, {
-      now,
-      action: 'permanent_blocked',
-      reason,
-      block_status: 'permanent_block',
-      block_until: null,
-      admin_note: reason,
-      metadata: {
-        blocked_by: adminName,
-        previous_block_status: existing.block_status || '',
-        previous_cooldown_until: existing.cooldown_until,
-        previous_quarantine_until: existing.quarantine_until,
-      },
-    })
-
-    return res.status(200).json({
-      ok: true,
-      message: 'Spam identity permanently blocked',
-      state: formatState(updated),
-    })
-  } catch (error) {
-    console.error('ADMIN SPAM GUARD PERMANENT BLOCK ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to permanently block spam identity',
-      error: error.message,
-    })
-  }
+  return applyRestriction(req, res, true)
 }
 
 export async function unblockAdminSpamGuardPermanent(req, res) {
-  try {
-    const stateId = String(req.params.stateId || '').trim()
-    const reason = cleanReason(req.body?.reason || req.body?.note || 'Manual unblock')
-    const { data: existing, errorResponse } = await getSpamGuardStateById(stateId)
-
-    if (errorResponse) {
-      return res.status(errorResponse.status).json({
-        ok: false,
-        message: errorResponse.message,
-      })
-    }
-
-    const now = new Date().toISOString()
-    const adminName = getAdminName(req)
-
-    const { data: updated, error: updateError } = await supabase
-      .from('spam_guard_state')
-      .update({
-        is_permanent_blocked: false,
-        permanent_unblocked_at: now,
-        permanent_unblocked_by: adminName,
-        permanent_unblock_reason: reason,
-        cooldown_until: null,
-        quarantine_until: null,
-        block_status: 'allowed',
-        block_reason: '',
-        request_count: 0,
-        window_started_at: now,
-        last_reason: `Permanent block removed by ${adminName}`,
-        updated_at: now,
-      })
-      .eq('id', stateId)
-      .select()
-      .single()
-
-    if (updateError) throw updateError
-
-    await insertSpamGuardEvent(existing, {
-      now,
-      action: 'permanent_unblocked',
-      reason,
-      block_status: 'allowed',
-      block_until: null,
-      admin_note: reason,
-      metadata: {
-        unblocked_by: adminName,
-        previous_permanent_blocked_at: existing.permanent_blocked_at,
-        previous_permanent_block_reason: existing.permanent_block_reason,
-      },
-    })
-
-    return res.status(200).json({
-      ok: true,
-      message: 'Permanent block removed',
-      state: formatState(updated),
-    })
-  } catch (error) {
-    console.error('ADMIN SPAM GUARD PERMANENT UNBLOCK ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to unblock spam identity',
-      error: error.message,
-    })
-  }
+  return releaseAllRestrictions(req, res, true)
 }
