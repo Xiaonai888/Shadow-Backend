@@ -1,14 +1,67 @@
 import { supabase } from '../config/supabase.js'
 
+const MAX_BLOCK_MILLISECONDS = 30 * 24 * 60 * 60 * 1000
+
+function toTimestamp(value) {
+  const timestamp = new Date(value || '').getTime()
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
 function publicBlock(block) {
+  const expiresAt = block?.expires_at || null
+  const retryAfterSeconds = expiresAt
+    ? Math.max(
+        1,
+        Math.ceil(
+          (toTimestamp(expiresAt) - Date.now()) / 1000
+        )
+      )
+    : 0
+
   return {
     id: block.id,
     user_id: block.user_id,
     reason: block.reason || 'Other',
     note: block.note || '',
-    expires_at: block.expires_at,
-    is_permanent: !block.expires_at,
+    expires_at: expiresAt,
+    restriction_until: expiresAt,
+    retry_after_seconds: retryAfterSeconds,
+    is_permanent: false,
   }
+}
+
+async function deactivateBlocks(blockIds) {
+  const ids = [...new Set(blockIds.filter(Boolean))]
+
+  if (!ids.length) return
+
+  const { error } = await supabase
+    .from('reader_comment_blocks')
+    .update({
+      is_active: false,
+      updated_at: new Date().toISOString(),
+    })
+    .in('id', ids)
+
+  if (error) throw error
+}
+
+async function capBlockExpiration(block, expiresAt) {
+  const { data, error } = await supabase
+    .from('reader_comment_blocks')
+    .update({
+      expires_at: expiresAt,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', block.id)
+    .select(
+      'id, user_id, reason, note, expires_at, is_active, created_at'
+    )
+    .single()
+
+  if (error) throw error
+
+  return data
 }
 
 export async function getActiveReaderCommentBlock(userId) {
@@ -16,45 +69,65 @@ export async function getActiveReaderCommentBlock(userId) {
 
   const { data, error } = await supabase
     .from('reader_comment_blocks')
-    .select('id, user_id, reason, note, expires_at, is_active')
+    .select(
+      'id, user_id, reason, note, expires_at, is_active, created_at'
+    )
     .eq('user_id', userId)
     .eq('is_active', true)
     .order('created_at', { ascending: false })
-    .limit(5)
+    .limit(20)
 
   if (error) throw error
 
   const now = Date.now()
-  const activeBlock = (data || []).find((block) => {
-    if (!block.expires_at) return true
-    return new Date(block.expires_at).getTime() > now
-  })
+  const maximumExpiresAt =
+    now + MAX_BLOCK_MILLISECONDS
+  let activeBlock = null
+  const blocksToDeactivate = []
 
-  const expiredBlocks = (data || []).filter((block) => {
-    if (!block.expires_at) return false
-    return new Date(block.expires_at).getTime() <= now
-  })
+  for (const block of data || []) {
+    const expiresAt = toTimestamp(block.expires_at)
 
-  if (expiredBlocks.length) {
-    await supabase
-      .from('reader_comment_blocks')
-      .update({
-        is_active: false,
-        updated_at: new Date().toISOString(),
-      })
-      .in('id', expiredBlocks.map((block) => block.id))
+    if (!expiresAt || expiresAt <= now) {
+      blocksToDeactivate.push(block.id)
+      continue
+    }
+
+    if (activeBlock) {
+      blocksToDeactivate.push(block.id)
+      continue
+    }
+
+    if (expiresAt > maximumExpiresAt) {
+      activeBlock = await capBlockExpiration(
+        block,
+        new Date(maximumExpiresAt).toISOString()
+      )
+      continue
+    }
+
+    activeBlock = block
   }
 
-  return activeBlock ? publicBlock(activeBlock) : null
+  await deactivateBlocks(blocksToDeactivate)
+
+  return activeBlock
+    ? publicBlock(activeBlock)
+    : null
 }
 
 export function readerCommentBlockedPayload(block) {
+  const publicData = publicBlock(block)
+
   return {
     ok: false,
     code: 'READER_COMMENT_BLOCKED',
-    message: block.expires_at
-      ? 'Your commenting access is temporarily restricted.'
-      : 'Your commenting access is restricted.',
-    comment_block: publicBlock(block),
+    message:
+      'Your commenting access is temporarily restricted.',
+    retry_after_seconds:
+      publicData.retry_after_seconds,
+    restriction_until:
+      publicData.restriction_until,
+    comment_block: publicData,
   }
 }
