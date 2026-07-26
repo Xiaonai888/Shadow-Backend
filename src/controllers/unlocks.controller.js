@@ -5,6 +5,10 @@ import {
   applyEpisodeAccess,
   getStoryEpisodeAccess,
 } from '../services/episodeAccess.service.js'
+import {
+  getReaderAgeAccessByUserId,
+  isStoryVisibleToReader,
+} from '../services/storyAgeAccess.service.js'
 
 const FALLBACK_RULES = {
   diamond_per_episode: 10,
@@ -607,7 +611,14 @@ async function getUnlockStatusPayload({
       notFound: true,
     }
   }
+const ageAccess =
+  await getReaderAgeAccessByUserId(userId)
 
+if (!isStoryVisibleToReader(story, ageAccess)) {
+  return {
+    notFound: true,
+  }
+}
   const episode = applyEpisodeAccess(
     rawEpisode,
     access
