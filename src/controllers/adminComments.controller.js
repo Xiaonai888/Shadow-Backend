@@ -994,3 +994,88 @@ export async function moderateAdminComment(
     })
   }
 }
+
+export async function deleteAdminComment(
+  req,
+  res
+) {
+  req.body = {
+    ...(req.body || {}),
+    action: 'delete',
+  }
+
+  return moderateAdminComment(
+    req,
+    res
+  )
+}
+
+export async function banAdminCommentUser(
+  req,
+  res
+) {
+  req.body = {
+    ...(req.body || {}),
+    action: 'ban',
+  }
+
+  return moderateAdminComment(
+    req,
+    res
+  )
+}
+
+export async function getAdminCommentOwnerReports(
+  req,
+  res
+) {
+  try {
+    const limit = Math.min(
+      normalizeLimit(
+        req.query.limit,
+        OWNER_REPORT_LIMIT
+      ),
+      OWNER_REPORT_LIMIT
+    )
+
+    const {
+      data,
+      error,
+    } = await supabase
+      .from('admin_activity_logs')
+      .select(
+        'id, action, section_key, actor, details, created_at'
+      )
+      .eq(
+        'section_key',
+        'comments'
+      )
+      .order(
+        'created_at',
+        { ascending: false }
+      )
+      .limit(limit)
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      records:
+        (data || []).map(
+          publicOwnerReport
+        ),
+    })
+  } catch (error) {
+    console.error(
+      'GET ADMIN COMMENT OWNER REPORTS ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to load owner report',
+      error: error.message,
+    })
+  }
+}
