@@ -127,6 +127,25 @@ const readerActionSpamGuard = createSpamGuard({
   windowSeconds: 60,
 })
 
+const readerReadSpamGuard = createSpamGuard({
+  scope: 'reader_read',
+  threshold: 300,
+  windowSeconds: 60,
+})
+
+const communityWriteSpamGuard = createSpamGuard({
+  scope: 'community_write',
+  threshold: 120,
+  windowSeconds: 60,
+})
+
+const echoSpamGuard = (req, res, next) => {
+  if (req.method === 'GET') {
+    return readerReadSpamGuard(req, res, next)
+  }
+  return communityWriteSpamGuard(req, res, next)
+}
+
 const authorActionSpamGuard = (req, res, next) => {
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
     return readerActionSpamGuard(req, res, next)
@@ -164,7 +183,7 @@ app.use('/api/admin/activity-logs', adminActivityRoutes)
 app.use('/api/genres', genresRoutes)
 app.use('/api/comments', readerActionSpamGuard, commentsRoutes)
 app.use('/api/reactions', readerActionSpamGuard, reactionsRoutes)
-app.use('/api/echoes', readerActionSpamGuard, echoesRoutes)
+app.use('/api/echoes', echoSpamGuard, echoesRoutes)
 app.use('/api/reader', readerActionSpamGuard, libraryRoutes)
 app.use('/api/saved-posts', readerActionSpamGuard, savedPostsRoutes)
 app.use('/api/help-center', helpCenterRoutes)
