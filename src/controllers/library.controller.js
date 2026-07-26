@@ -1,4 +1,8 @@
 import { supabase } from '../config/supabase.js'
+import {
+  getReaderAgeAccess,
+  isStoryVisibleToReader,
+} from '../services/storyAgeAccess.service.js'
 
 function normalizeStoryId(value) {
   return String(value || '').trim()
@@ -95,6 +99,8 @@ export async function getReaderLibrary(req, res) {
       })
     }
 
+    const ageAccess = await getReaderAgeAccess(req)
+
     const { data, error } = await supabase
       .from('reader_library')
       .select('id, user_id, story_id, created_at, story:stories(*)')
@@ -106,7 +112,14 @@ export async function getReaderLibrary(req, res) {
     return res.status(200).json({
       ok: true,
       items: (data || [])
-        .filter((item) => item.story)
+        .filter(
+  (item) =>
+    item.story &&
+    isStoryVisibleToReader(
+      item.story,
+      ageAccess
+    )
+)
         .map(publicLibraryItem),
     })
   } catch (error) {
@@ -142,6 +155,15 @@ export async function addStoryToLibrary(req, res) {
     const story = await getPublishedStory(storyId)
 
     if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    const ageAccess = await getReaderAgeAccess(req)
+
+    if (!isStoryVisibleToReader(story, ageAccess)) {
       return res.status(404).json({
         ok: false,
         message: 'Story not found',
@@ -233,6 +255,8 @@ export async function getReaderSubscriptions(req, res) {
       })
     }
 
+    const ageAccess = await getReaderAgeAccess(req)
+
     const { data, error } = await supabase
       .from('reader_subscriptions')
       .select('id, user_id, story_id, created_at, story:stories(*)')
@@ -244,7 +268,14 @@ export async function getReaderSubscriptions(req, res) {
     return res.status(200).json({
       ok: true,
       items: (data || [])
-        .filter((item) => item.story)
+        .filter(
+          (item) =>
+            item.story &&
+            isStoryVisibleToReader(
+              item.story,
+              ageAccess
+            )
+        )
         .map(publicLibraryItem),
     })
   } catch (error) {
@@ -280,6 +311,15 @@ export async function addStoryToSubscriptions(req, res) {
     const story = await getPublishedStory(storyId)
 
     if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    const ageAccess = await getReaderAgeAccess(req)
+
+    if (!isStoryVisibleToReader(story, ageAccess)) {
       return res.status(404).json({
         ok: false,
         message: 'Story not found',
