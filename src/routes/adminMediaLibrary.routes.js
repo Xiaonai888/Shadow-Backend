@@ -1,6 +1,5 @@
 import express from 'express'
 import multer from 'multer'
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
   createMediaFolder,
@@ -8,80 +7,59 @@ import {
   deleteMediaFolder,
   deleteMediaItem,
   getAdminMediaLibrary,
+  removeMediaFolderCover,
   updateMediaFolder,
   updateMediaItem,
+  uploadMediaFolderCover,
 } from '../controllers/adminMediaLibrary.controller.js'
+import { uploadMediaLibraryObject } from '../services/mediaLibraryR2.service.js'
 
 const router = express.Router()
-
+const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'])
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: 5 * 1024 * 1024,
     files: 20,
   },
+  fileFilter(req, file, callback) {
+    if (allowedTypes.has(file.mimetype)) return callback(null, true)
+    const error = new Error('Only JPEG, PNG, WEBP, GIF or AVIF images are allowed')
+    error.statusCode = 400
+    return callback(error)
+  },
 })
 
-function env(key) {
-  return String(process.env[key] || '').trim()
-}
-
-const accountId = env('R2_ACCOUNT_ID')
-const endpoint =
-  env('CLOUDFLARE_R2_ENDPOINT') ||
-  (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : '')
-const accessKeyId = env('CLOUDFLARE_R2_ACCESS_KEY_ID') || env('R2_ACCESS_KEY_ID')
-const secretAccessKey = env('CLOUDFLARE_R2_SECRET_ACCESS_KEY') || env('R2_SECRET_ACCESS_KEY')
-const bucket = env('CLOUDFLARE_R2_BUCKET') || env('R2_BUCKET_NAME')
-const publicUrl = env('CLOUDFLARE_R2_PUBLIC_URL') || env('R2_PUBLIC_URL')
-
-const r2 = new S3Client({
-  region: 'auto',
-  endpoint,
-  credentials: { accessKeyId, secretAccessKey },
-})
-
-function extension(file) {
-  const name = file.originalname || ''
-  const fromName = name.includes('.') ? name.split('.').pop() : ''
-  const fromMime = file.mimetype?.split('/')[1] || 'jpg'
-  return (fromName || fromMime).toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
+function runUpload(handler) {
+  return (req, res, next) => {
+    handler(req, res, (error) => {
+      if (!error) return next()
+      const message = error.code === 'LIMIT_FILE_SIZE'
+        ? 'Each image must be 5 MB or smaller'
+        : error.message || 'Invalid image'
+      return res.status(error.statusCode || 400).json({ ok: false, message })
+    })
+  }
 }
 
 router.get('/', requireAdmin, getAdminMediaLibrary)
 
-router.post('/upload', requireAdmin, upload.array('images', 20), async (req, res) => {
+router.post('/upload', requireAdmin, runUpload(upload.array('images', 20)), async (req, res) => {
+  const uploaded = []
+
   try {
     const files = Array.isArray(req.files) ? req.files : []
-
-    if (!files.length) {
-      return res.status(400).json({ ok: false, message: 'At least one image is required' })
-    }
-
-    if (files.some((file) => !file.mimetype?.startsWith('image/'))) {
-      return res.status(400).json({ ok: false, message: 'Only image files are allowed' })
-    }
-
-    if (!bucket || !publicUrl || !endpoint || !accessKeyId || !secretAccessKey) {
-      return res.status(500).json({ ok: false, message: 'Cloudflare R2 is not configured' })
-    }
-
-    const uploaded = []
+    if (!files.length) return res.status(400).json({ ok: false, message: 'At least one image is required' })
 
     for (const file of files) {
-      const key = `media-library/${Date.now()}-${Math.random().toString(36).slice(2)}.${extension(file)}`
-
-      await r2.send(new PutObjectCommand({
-        Bucket: bucket,
-        Key: key,
-        Body: file.buffer,
-        ContentType: file.mimetype,
-      }))
-
+      const result = await uploadMediaLibraryObject({
+        file,
+        prefix: 'media-library/images',
+      })
       uploaded.push({
         original_name: file.originalname,
-        storage_key: key,
-        image_url: `${publicUrl.replace(/\/$/, '')}/${key}`,
+        storage_key: result.storage_key,
+        image_url: result.image_url,
       })
     }
 
@@ -94,6 +72,8 @@ router.post('/upload', requireAdmin, upload.array('images', 20), async (req, res
 
 router.post('/folders', requireAdmin, createMediaFolder)
 router.patch('/folders/:folderId', requireAdmin, updateMediaFolder)
+router.post('/folders/:folderId/cover', requireAdmin, runUpload(upload.single('cover')), uploadMediaFolderCover)
+router.delete('/folders/:folderId/cover', requireAdmin, removeMediaFolderCover)
 router.delete('/folders/:folderId', requireAdmin, deleteMediaFolder)
 
 router.post('/images', requireAdmin, createMediaItem)
