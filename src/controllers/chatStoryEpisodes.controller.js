@@ -104,14 +104,28 @@ function normalizeMessages(input, characterIds) {
   }
 
   const messages = []
+  let authorNoteCount = 0
 
   for (let index = 0; index < input.length; index += 1) {
     const item = input[index] || {}
-    const type = cleanText(item.type).toLowerCase() === 'chat' ? 'chat' : 'aside'
+    const requestedType = cleanText(item.type).toLowerCase()
+const type = ['chat', 'aside', 'author_note'].includes(requestedType)
+  ? requestedType
+  : 'aside'
     const text = cleanText(item.text)
     const characterId = cleanNullableText(item.character_id || item.characterId)
 
     if (!text) continue
+    if (type === 'author_note') {
+  authorNoteCount += 1
+
+  if (authorNoteCount > 1) {
+    return {
+      error: 'Only one Author’s Note is allowed in one episode',
+      messages: [],
+    }
+  }
+}
     if (text.length > MAX_MESSAGE_CHARACTERS) {
       return {
         error: `Each message must be ${MAX_MESSAGE_CHARACTERS} characters or less`,
@@ -132,18 +146,42 @@ function normalizeMessages(input, characterIds) {
     })
   }
 
-  if (!messages.length) {
-    return { error: 'Add at least one Chat or ASIDE message', messages: [] }
+  if (!messages.some((message) => message.type !== 'author_note')) {
+  return {
+    error: 'Add at least one Chat or ASIDE message',
+    messages: [],
   }
+}
 
-  const totalCharacters = messages.reduce((sum, message) => sum + message.text.length, 0)
+const authorNote = messages.find(
+  (message) => message.type === 'author_note'
+)
 
-  if (totalCharacters > MAX_TOTAL_CHARACTERS) {
-    return {
-      error: `Chat episode must be ${MAX_TOTAL_CHARACTERS} text characters or less`,
-      messages: [],
-    }
+const orderedMessages = [
+  ...messages.filter((message) => message.type !== 'author_note'),
+  ...(authorNote ? [authorNote] : []),
+].map((message, index) => ({
+  ...message,
+  sort_order: index,
+}))
+
+const totalCharacters = orderedMessages.reduce(
+  (sum, message) => sum + message.text.length,
+  0
+)
+
+if (totalCharacters > MAX_TOTAL_CHARACTERS) {
+  return {
+    error: `Chat episode must be ${MAX_TOTAL_CHARACTERS} text characters or less`,
+    messages: [],
   }
+}
+
+return {
+  error: '',
+  messages: orderedMessages,
+  totalCharacters,
+}
 
   return { error: '', messages, totalCharacters }
 }
@@ -189,7 +227,14 @@ export async function saveChatStoryEpisode(req, res) {
       return res.status(400).json({ ok: false, message: normalized.error })
     }
 
-    const plainText = normalized.messages.map((message) => message.text).join('\n')
+    const plainText = normalized.messages
+  .map((message) => message.text)
+  .join('\n')
+
+const storyPlainText = normalized.messages
+  .filter((message) => message.type !== 'author_note')
+  .map((message) => message.text)
+  .join('\n')
     const content = JSON.stringify({
       format: 'shadow_chat_story_v1',
       version: 1,
@@ -221,7 +266,7 @@ export async function saveChatStoryEpisode(req, res) {
             ? req.body.isLocked
             : true,
       character_count: normalized.totalCharacters,
-      word_count: calculateWordCount(plainText),
+      word_count: calculateWordCount(storyPlainText),
       page_count: 0,
       updated_at: now,
     }
