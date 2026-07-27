@@ -19,7 +19,7 @@ const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gi
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 5 * 1024 * 1024,
+    fileSize: 20 * 1024 * 1024,
     files: 20,
   },
   fileFilter(req, file, callback) {
@@ -35,7 +35,7 @@ function runUpload(handler) {
     handler(req, res, (error) => {
       if (!error) return next()
       const message = error.code === 'LIMIT_FILE_SIZE'
-        ? 'Each image must be 5 MB or smaller'
+        ? 'Each image must be 20 MB or smaller'
         : error.message || 'Invalid image'
       return res.status(error.statusCode || 400).json({ ok: false, message })
     })
