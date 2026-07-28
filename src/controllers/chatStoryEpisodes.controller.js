@@ -426,10 +426,14 @@ export async function updateChatStoryEpisodeStatus(req, res) {
 
     const now = new Date().toISOString()
     const updatePayload = {
-      status,
-      is_adult: Boolean(req.body.is_adult ?? req.body.isAdult),
-      updated_at: now,
-    }
+  status,
+  is_adult: Boolean(req.body.is_adult ?? req.body.isAdult),
+  is_free_published: Boolean(
+    req.body.is_free_published ??
+      req.body.isFreePublished
+  ),
+  updated_at: now,
+}
 
     if (status === 'published') {
       updatePayload.published_at = now
