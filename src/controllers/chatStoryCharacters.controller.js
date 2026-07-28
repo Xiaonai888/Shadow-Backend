@@ -49,19 +49,58 @@ async function getOwnedChatStory(storyId, userId) {
 }
 
 function normalizeCharacters(value, storyId, userId) {
-  const counters = { main: 0, major: 0, minor: 0, background: 0 }
+  const counters = {
+    main: 0,
+    major: 0,
+    minor: 0,
+    background: 0,
+  }
 
-  return value.map((item) => {
-    const roleGroup = cleanText(item?.role_group || item?.roleGroup).toLowerCase()
-    const avatarSource = cleanText(item?.avatar_source || item?.avatarSource || 'device').toLowerCase()
-    const requestedSide = cleanText(item?.chat_side || item?.chatSide).toLowerCase()
-    const chatSide = ALLOWED_CHAT_SIDES.includes(requestedSide)
-      ? requestedSide
-      : roleGroup === 'main'
-        ? 'right'
-        : 'left'
+  const requestedLeadIndex = value.findIndex((item) => {
+    const roleGroup = cleanText(
+      item?.role_group || item?.roleGroup
+    ).toLowerCase()
 
-    if (!ALLOWED_ROLE_GROUPS.includes(roleGroup)) return null
+    const requestedLead =
+      item?.is_lead === true ||
+      item?.isLead === true ||
+      item?.is_lead === 'true' ||
+      item?.isLead === 'true'
+
+    return roleGroup === 'main' && requestedLead
+  })
+
+  const firstMainIndex = value.findIndex((item) => {
+    const roleGroup = cleanText(
+      item?.role_group || item?.roleGroup
+    ).toLowerCase()
+
+    return roleGroup === 'main'
+  })
+
+  const leadIndex =
+    requestedLeadIndex >= 0
+      ? requestedLeadIndex
+      : firstMainIndex
+
+  return value.map((item, index) => {
+    const roleGroup = cleanText(
+      item?.role_group || item?.roleGroup
+    ).toLowerCase()
+
+    if (!ALLOWED_ROLE_GROUPS.includes(roleGroup)) {
+      return null
+    }
+
+    const avatarSource = cleanText(
+      item?.avatar_source ||
+        item?.avatarSource ||
+        'device'
+    ).toLowerCase()
+
+    const isLead =
+      roleGroup === 'main' &&
+      index === leadIndex
 
     const character = {
       source_id: cleanNullableText(item?.id, 100),
@@ -69,20 +108,40 @@ function normalizeCharacters(value, storyId, userId) {
       user_id: userId,
       role_group: roleGroup,
       nickname: cleanNullableText(item?.nickname, 40),
-      avatar_url: cleanNullableText(item?.avatar_url || item?.avatarUrl, 1000),
-      avatar_source: ALLOWED_AVATAR_SOURCES.includes(avatarSource) ? avatarSource : 'device',
-      chat_side: chatSide,
+      avatar_url: cleanNullableText(
+        item?.avatar_url || item?.avatarUrl,
+        1000
+      ),
+      avatar_source: ALLOWED_AVATAR_SOURCES.includes(
+        avatarSource
+      )
+        ? avatarSource
+        : 'device',
+      is_lead: isLead,
+      chat_side: isLead ? 'right' : 'left',
       sort_order: counters[roleGroup],
       gender: cleanGender(item?.gender),
       birthday: cleanBirthday(item?.birthday),
-      height_cm: cleanHeight(item?.height_cm ?? item?.heightCm),
-      occupation: cleanNullableText(item?.occupation, 120),
-      personality: cleanNullableText(item?.personality, 300),
-      relationship: cleanNullableText(item?.relationship, 300),
+      height_cm: cleanHeight(
+        item?.height_cm ?? item?.heightCm
+      ),
+      occupation: cleanNullableText(
+        item?.occupation,
+        120
+      ),
+      personality: cleanNullableText(
+        item?.personality,
+        300
+      ),
+      relationship: cleanNullableText(
+        item?.relationship,
+        300
+      ),
       bio: cleanNullableText(item?.bio, 5000),
     }
 
     counters[roleGroup] += 1
+
     return character
   })
 }
@@ -191,8 +250,12 @@ export async function updateChatStoryCharacterProfile(req, res) {
     }
 
     const patch = {
-      role_group: roleGroup,
-      nickname,
+  role_group: roleGroup,
+  is_lead:
+    roleGroup === 'main'
+      ? undefined
+      : false,
+  nickname,
       avatar_url: cleanNullableText(req.body.avatar_url || req.body.avatarUrl, 1000),
       avatar_source: ALLOWED_AVATAR_SOURCES.includes(avatarSource) ? avatarSource : 'device',
       gender: cleanGender(req.body.gender),
@@ -292,17 +355,28 @@ export async function saveChatStoryCharacters(req, res) {
     const removedIds = [...existingIds].filter((id) => !retainedIds.includes(id))
 
     if (removedIds.length) {
-      const { error: deleteError } = await supabase
-        .from('chat_story_characters')
-        .delete()
-        .in('id', removedIds)
-        .eq('story_id', storyId)
-        .eq('user_id', userId)
+  const { error: deleteError } = await supabase
+    .from('chat_story_characters')
+    .delete()
+    .in('id', removedIds)
+    .eq('story_id', storyId)
+    .eq('user_id', userId)
 
-      if (deleteError) throw deleteError
-    }
+  if (deleteError) throw deleteError
+}
 
-    for (const character of characters) {
+const { error: clearLeadError } = await supabase
+  .from('chat_story_characters')
+  .update({
+    is_lead: false,
+    chat_side: 'left',
+  })
+  .eq('story_id', storyId)
+  .eq('user_id', userId)
+
+if (clearLeadError) throw clearLeadError
+
+for (const character of characters) {
       const { source_id: sourceId, ...payload } = character
 
       if (sourceId && existingIds.has(String(sourceId))) {
