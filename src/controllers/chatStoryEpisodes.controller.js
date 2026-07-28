@@ -88,7 +88,9 @@ async function getNextEpisodeNumber(storyId) {
 async function getCharacters(storyId, userId) {
   const { data, error } = await supabase
     .from('chat_story_characters')
-    .select('id, nickname, avatar_url, role_group, chat_side, sort_order')
+    .select(
+  'id, nickname, avatar_url, role_group, chat_side, sort_order, is_lead'
+)
     .eq('story_id', storyId)
     .eq('user_id', userId)
     .order('sort_order', { ascending: true })
@@ -220,8 +222,43 @@ export async function saveChatStoryEpisode(req, res) {
     }
 
     const characters = await getCharacters(storyId, userId)
-    const characterIds = new Set(characters.map((character) => String(character.id)))
-    const normalized = normalizeMessages(req.body.messages, characterIds)
+    const characterIds = new Set(
+  characters.map(
+    (character) =>
+      String(character.id)
+  )
+)
+
+const requestedLeadCharacterId =
+  cleanNullableText(
+    req.body.lead_character_id ||
+      req.body.leadCharacterId
+  )
+
+const defaultLeadCharacter =
+  characters.find(
+    (character) =>
+      character.is_lead === true
+  ) ||
+  characters.find(
+    (character) =>
+      character.chat_side === 'right'
+  ) ||
+  characters[0] ||
+  null
+
+const leadCharacterId =
+  requestedLeadCharacterId &&
+  characterIds.has(
+    requestedLeadCharacterId
+  )
+    ? requestedLeadCharacterId
+    : defaultLeadCharacter?.id || null
+
+const normalized = normalizeMessages(
+  req.body.messages,
+  characterIds
+)
 
     if (normalized.error) {
       return res.status(400).json({ ok: false, message: normalized.error })
@@ -240,11 +277,13 @@ const storyPlainText = normalized.messages
       version: 1,
       story_id: storyId,
       episode_title: title,
-      characters: characters.map((character) => ({
+lead_character_id: leadCharacterId,
+characters: characters.map((character) => ({
         id: character.id,
         nickname: character.nickname || '',
         avatar_url: character.avatar_url || '',
         role_group: character.role_group,
+        is_lead: character.is_lead === true,
         chat_side: character.chat_side,
         sort_order: character.sort_order,
       })),
