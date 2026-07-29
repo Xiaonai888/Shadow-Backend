@@ -85,17 +85,23 @@ export async function saveAuthorHiddenCommentReview({
 }) {
   const { error } = await supabase
     .from('author_hidden_comment_reviews')
-    .insert({
-      author_page_id: String(authorPageId),
-      author_user_id: String(authorUserId),
-      comment_id: String(commentId),
-      story_id: String(storyId),
-      episode_id: episodeId ? String(episodeId) : null,
-      reader_user_id: String(readerUserId),
-      matched_words: matchedWords,
-      comment_text: cleanText(text),
-      status: 'hidden',
-    })
+    .upsert(
+      {
+        author_page_id: String(authorPageId),
+        author_user_id: String(authorUserId),
+        comment_id: String(commentId),
+        story_id: String(storyId),
+        episode_id: episodeId ? String(episodeId) : null,
+        reader_user_id: String(readerUserId),
+        matched_words: matchedWords,
+        comment_text: cleanText(text),
+        status: 'hidden',
+        reviewed_at: null,
+      },
+      {
+        onConflict: 'comment_id',
+      }
+    )
 
   if (error) throw error
 }
