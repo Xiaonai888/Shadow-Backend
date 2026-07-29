@@ -136,13 +136,16 @@ if (type !== 'image' && !text) continue
       }
     }
     if (type === 'chat' && (!characterId || !characterIds.has(characterId))) {
-      return { error: 'One or more selected characters are invalid', messages: [] }
-    }
+  return { error: 'One or more selected characters are invalid', messages: [] }
+}
+if (type === 'image' && characterId && !characterIds.has(characterId)) {
+  return { error: 'The selected image character is invalid', messages: [] }
+}
 
     messages.push({
   id: cleanText(item.id) || `${Date.now()}-${index}`,
   type,
-  character_id: type === 'chat' ? characterId : null,
+  character_id: type === 'chat' || type === 'image' ? characterId : null,
   text: type === 'image' ? '' : text,
   image_url: type === 'image' ? imageUrl : null,
   sort_order: messages.length,
