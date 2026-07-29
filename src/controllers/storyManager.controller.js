@@ -15,6 +15,7 @@ function publicManagerEpisode(episode, commentCounts) {
     total_likes: Number(episode.total_likes || 0),
     total_comments: Number(commentCounts.get(String(episode.id)) || 0),
     is_adult: Boolean(episode.is_adult),
+    is_free_published: Boolean(episode.is_free_published),
     published_at: episode.published_at || null,
     scheduled_at: episode.scheduled_at || null,
     created_at: episode.created_at,
@@ -52,7 +53,7 @@ export async function getStoryManagerEpisodes(req, res) {
     const { data: episodes, error: episodeError } = await supabase
       .from('episodes')
       .select(
-        'id, story_id, title, cover_url, status, episode_number, character_count, word_count, page_count, total_views, total_likes, is_adult, published_at, scheduled_at, created_at, updated_at'
+        'id, story_id, title, cover_url, status, episode_number, character_count, word_count, page_count, total_views, total_likes, is_adult, is_free_published, published_at, scheduled_at, created_at, updated_at'
       )
       .eq('story_id', storyId)
       .eq('user_id', userId)
