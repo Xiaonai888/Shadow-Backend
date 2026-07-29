@@ -1089,7 +1089,7 @@ export async function getPublicStories(req, res) {
   ageAccess
 )
 
-    if (genre) query = query.eq('main_genre', genre)
+    if (genre) query = query.ilike('main_genre', genre)
     if (language) query = query.eq('story_language', language)
     if (['novel', 'manga'].includes(storyType)) query = query.eq('story_type', storyType)
     if (authorId) query = query.eq('author_id', authorId)
@@ -1180,7 +1180,7 @@ export async function getPublicShadowExclusiveStories(req, res) {
   ageAccess
 )
 
-    if (genre) query = query.eq('main_genre', genre)
+    if (genre) query = query.ilike('main_genre', genre)
     if (['novel', 'manga'].includes(storyType)) query = query.eq('story_type', storyType)
     if (storyStatus) query = query.eq('story_status', storyStatus)
     if (authorId) query = query.eq('author_id', authorId)
