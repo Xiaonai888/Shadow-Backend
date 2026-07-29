@@ -55,6 +55,10 @@ import {
   deleteMyAuthorBlockedWord,
   getMyAuthorBlockedWords,
 } from '../controllers/authorBlockedWords.controller.js'
+import {
+  getMyAuthorHiddenComments,
+  reviewMyAuthorHiddenComment,
+} from '../controllers/authorHiddenComments.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
 import {
@@ -72,6 +76,8 @@ router.get('/me/income', requireUser, getMyAuthorIncome)
 router.get('/me/comment-protection/blocked-words', requireUser, getMyAuthorBlockedWords)
 router.post('/me/comment-protection/blocked-words', requireUser, createMyAuthorBlockedWord)
 router.delete('/me/comment-protection/blocked-words/:wordId', requireUser, deleteMyAuthorBlockedWord)
+router.get('/me/comment-protection/hidden-comments', requireUser, getMyAuthorHiddenComments)
+router.patch('/me/comment-protection/hidden-comments/:reviewId', requireUser, reviewMyAuthorHiddenComment)
 router.get('/me/payment-methods', requireUser, getMyAuthorPaymentMethods)
 router.get('/me/page-notifications', requireUser, getMyAuthorPageNotifications)
 router.patch('/me/page-notifications/read-all', requireUser, markAllMyAuthorPageNotificationsRead)
