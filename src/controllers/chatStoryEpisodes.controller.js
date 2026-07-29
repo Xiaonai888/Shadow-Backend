@@ -111,13 +111,14 @@ function normalizeMessages(input, characterIds) {
   for (let index = 0; index < input.length; index += 1) {
     const item = input[index] || {}
     const requestedType = cleanText(item.type).toLowerCase()
-const type = ['chat', 'aside', 'author_note'].includes(requestedType)
+const type = ['chat', 'aside', 'author_note', 'image'].includes(requestedType)
   ? requestedType
   : 'aside'
-    const text = cleanText(item.text)
-    const characterId = cleanNullableText(item.character_id || item.characterId)
-
-    if (!text) continue
+const text = cleanText(item.text)
+const imageUrl = cleanNullableText(item.image_url || item.imageUrl)
+const characterId = cleanNullableText(item.character_id || item.characterId)
+if (type === 'image' && !imageUrl) continue
+if (type !== 'image' && !text) continue
     if (type === 'author_note') {
   authorNoteCount += 1
 
@@ -139,13 +140,14 @@ const type = ['chat', 'aside', 'author_note'].includes(requestedType)
     }
 
     messages.push({
-      id: cleanText(item.id) || `${Date.now()}-${index}`,
-      type,
-      character_id: type === 'chat' ? characterId : null,
-      text,
-      sort_order: messages.length,
-      created_at: cleanNullableText(item.created_at || item.createdAt),
-    })
+  id: cleanText(item.id) || `${Date.now()}-${index}`,
+  type,
+  character_id: type === 'chat' ? characterId : null,
+  text: type === 'image' ? '' : text,
+  image_url: type === 'image' ? imageUrl : null,
+  sort_order: messages.length,
+  created_at: cleanNullableText(item.created_at || item.createdAt),
+})
   }
 
   if (!messages.some((message) => message.type !== 'author_note')) {
