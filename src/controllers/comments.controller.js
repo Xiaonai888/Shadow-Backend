@@ -1592,11 +1592,47 @@ export async function updateOwnComment(
       })
     }
 
+    const story =
+      await getStory(
+        comment.story_id
+      )
+
+    if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message:
+          'Story not found',
+      })
+    }
+
+    const shouldProtect =
+      Boolean(story.author_id) &&
+      String(story.user_id || '') !==
+        String(userId)
+    const matchedWords = shouldProtect
+      ? await findAuthorBlockedWordsInComment({
+          authorPageId:
+            story.author_id,
+          authorUserId:
+            story.user_id,
+          text,
+        })
+      : []
+    const isAutoHidden =
+      matchedWords.length > 0
+    const becameHidden =
+      isAutoHidden &&
+      !comment.is_hidden
+
     const { data, error } =
       await supabase
         .from('comments')
         .update({
           text,
+          is_hidden:
+            Boolean(
+              comment.is_hidden
+            ) || isAutoHidden,
           updated_at:
             new Date().toISOString(),
         })
@@ -1611,6 +1647,96 @@ export async function updateOwnComment(
         .single()
 
     if (error) throw error
+
+    if (isAutoHidden) {
+      try {
+        await saveAuthorHiddenCommentReview({
+          authorPageId:
+            story.author_id,
+          authorUserId:
+            story.user_id,
+          commentId:
+            data.id,
+          storyId:
+            story.id,
+          episodeId:
+            comment.episode_id
+            || null,
+          readerUserId:
+            userId,
+          text,
+          matchedWords,
+        })
+      } catch (reviewError) {
+        await supabase
+          .from('comments')
+          .update({
+            text:
+              comment.text,
+            is_hidden:
+              Boolean(
+                comment.is_hidden
+              ),
+            updated_at:
+              comment.updated_at,
+          })
+          .eq('id', commentId)
+          .is(
+            'deleted_at',
+            null
+          )
+
+        throw reviewError
+      }
+
+      if (becameHidden) {
+        const {
+          error: storyUpdateError,
+        } = await supabase
+          .from('stories')
+          .update({
+            total_comments:
+              Math.max(
+                0,
+                Number(
+                  story.total_comments
+                  || 0
+                ) - 1
+              ),
+            updated_at:
+              new Date().toISOString(),
+          })
+          .eq('id', story.id)
+
+        if (storyUpdateError) {
+          console.warn(
+            'UPDATE HIDDEN COMMENT COUNT WARNING:',
+            storyUpdateError.message
+          )
+        }
+      }
+
+      return res.status(202).json({
+        ...authorHiddenCommentPayload(
+          matchedWords
+        ),
+        comment_id:
+          data.id,
+        comment_count:
+          becameHidden
+            ? Math.max(
+                0,
+                Number(
+                  story.total_comments
+                  || 0
+                ) - 1
+              )
+            : Number(
+                story.total_comments
+                || 0
+              ),
+      })
+    }
 
     const updatedComment =
       await getPublicComment(
