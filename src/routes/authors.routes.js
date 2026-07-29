@@ -50,6 +50,11 @@ import {
   getMyAuthorQuest,
   saveMyAuthorPaymentMethod,
 } from '../controllers/authorRevenue.controller.js'
+import {
+  createMyAuthorBlockedWord,
+  deleteMyAuthorBlockedWord,
+  getMyAuthorBlockedWords,
+} from '../controllers/authorBlockedWords.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
 import {
