@@ -1077,33 +1077,165 @@ export async function getPublicStories(req, res) {
     const search = normalizeSearch(req.query.q || req.query.search || req.query.keyword)
     const ageAccess = await getReaderAgeAccess(req)
 
-    let query = supabase
-  .from('stories')
-  .select('*')
-  .eq('status', 'published')
-  .is('deleted_at', null)
-  .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false')
-  .limit(queryLimit)
-    query = applyAdultStoryVisibility(
-  query,
-  ageAccess
-)
+    const buildStoriesQuery = (genreMode = 'main') => {
+  let nextQuery = supabase
+    .from('stories')
+    .select('*')
+    .eq('status', 'published')
+    .is('deleted_at', null)
+    .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false')
+    .limit(queryLimit)
 
-    if (genre) query = query.ilike('main_genre', genre)
-    if (language) query = query.eq('story_language', language)
-    if (['novel', 'manga'].includes(storyType)) query = query.eq('story_type', storyType)
-    if (authorId) query = query.eq('author_id', authorId)
-    if (exclude) query = query.neq('id', exclude)
+  nextQuery = applyAdultStoryVisibility(
+    nextQuery,
+    ageAccess
+  )
 
-    if (search) {
-      query = query.or(`title.ilike.%${search}%,description.ilike.%${search}%,main_genre.ilike.%${search}%`)
+  if (genre) {
+    nextQuery =
+      genreMode === 'tag'
+        ? nextQuery.contains('tags', [genre])
+        : nextQuery.ilike('main_genre', genre)
+  }
+
+  if (language) {
+    nextQuery = nextQuery.eq(
+      'story_language',
+      language
+    )
+  }
+
+  if (
+    ['novel', 'manga'].includes(storyType)
+  ) {
+    nextQuery = nextQuery.eq(
+      'story_type',
+      storyType
+    )
+  }
+
+  if (authorId) {
+    nextQuery = nextQuery.eq(
+      'author_id',
+      authorId
+    )
+  }
+
+  if (exclude) {
+    nextQuery = nextQuery.neq(
+      'id',
+      exclude
+    )
+  }
+
+  if (search) {
+    nextQuery = nextQuery.or(
+      `title.ilike.%${search}%,description.ilike.%${search}%,main_genre.ilike.%${search}%`
+    )
+  }
+
+  return applyStorySort(nextQuery, sort)
+}
+
+const queryResults = genre
+  ? await Promise.all([
+      buildStoriesQuery('main'),
+      buildStoriesQuery('tag'),
+    ])
+  : [await buildStoriesQuery()]
+
+const queryError = queryResults.find(
+  (result) => result.error
+)?.error
+
+if (queryError) throw queryError
+
+const mergedStories = []
+const seenStoryIds = new Set()
+
+for (const result of queryResults) {
+  for (const story of result.data || []) {
+    const storyId = String(story.id || '')
+
+    if (
+      !storyId ||
+      seenStoryIds.has(storyId)
+    ) {
+      continue
     }
 
-    query = applyStorySort(query, sort)
+    seenStoryIds.add(storyId)
+    mergedStories.push(story)
+  }
+}
 
-    const { data, error } = await query
+const normalizedSort = String(
+  sort || 'latest'
+).toLowerCase()
 
-    if (error) throw error
+const sortedStories = [
+  ...mergedStories,
+].sort((first, second) => {
+  const firstCreated = new Date(
+    first.created_at || 0
+  ).getTime()
+
+  const secondCreated = new Date(
+    second.created_at || 0
+  ).getTime()
+
+  const firstUpdated = new Date(
+    first.updated_at || first.created_at || 0
+  ).getTime()
+
+  const secondUpdated = new Date(
+    second.updated_at || second.created_at || 0
+  ).getTime()
+
+  if (normalizedSort === 'updated') {
+    return secondUpdated - firstUpdated
+  }
+
+  if (
+    normalizedSort === 'popular' ||
+    normalizedSort === 'likes'
+  ) {
+    const likesDifference =
+      Number(second.total_likes || 0) -
+      Number(first.total_likes || 0)
+
+    if (likesDifference) {
+      return likesDifference
+    }
+
+    return secondUpdated - firstUpdated
+  }
+
+  if (
+    normalizedSort === 'weekly_top' ||
+    normalizedSort === 'weekly' ||
+    normalizedSort === 'trending'
+  ) {
+    const viewsDifference =
+      Number(second.total_views || 0) -
+      Number(first.total_views || 0)
+
+    if (viewsDifference) {
+      return viewsDifference
+    }
+
+    return secondUpdated - firstUpdated
+  }
+
+  return secondCreated - firstCreated
+})
+
+const stories = isDiscoverMoreSort(sort)
+  ? pickDiscoverMoreStories(
+      sortedStories,
+      limit
+    )
+  : sortedStories.slice(0, limit)
 
     const stories = isDiscoverMoreSort(sort) ? pickDiscoverMoreStories(data || [], limit) : data || []
     const authorIds = [
