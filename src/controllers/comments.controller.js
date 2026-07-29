@@ -11,6 +11,11 @@ import {
   getCommentTrashMessage,
   getCommentTrashStatus,
 } from '../services/commentTrash.service.js'
+import {
+  authorHiddenCommentPayload,
+  findAuthorBlockedWordsInComment,
+  saveAuthorHiddenCommentReview,
+} from '../utils/authorCommentProtection.js'
 
 const COMMENT_BAN_DURATIONS = {
   '1h': 60 * 60 * 1000,
