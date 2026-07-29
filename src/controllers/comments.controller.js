@@ -962,118 +962,190 @@ export async function getEpisodeComments(
   }
 }
 
-import { supabase } from '../config/supabase.js'
+async function createComment({
+  story,
+  episodeId = null,
+  userId,
+  text,
+  parentId,
+}) {
+  if (parentId) {
+    const parent =
+      await getComment(parentId)
 
-function cleanText(value) {
-  return String(value || '').normalize('NFC').trim().replace(/\s+/g, ' ')
-}
+    const sameStory =
+      parent &&
+      String(
+        parent.story_id
+      ) === String(story.id)
+    const sameEpisode =
+      episodeId
+        ? String(
+            parent?.episode_id || ''
+          ) === String(episodeId)
+        : true
 
-function normalizeText(value) {
-  return cleanText(value).toLowerCase()
-}
+    if (
+      !sameStory ||
+      !sameEpisode
+    ) {
+      return {
+        errorResponse: {
+          status: 400,
+          message:
+            'Parent comment is not valid',
+        },
+      }
+    }
+  }
 
-function hasKhmer(value) {
-  return /[\u1780-\u17FF]/.test(String(value || ''))
-}
+  const shouldProtect =
+    Boolean(story.author_id) &&
+    String(story.user_id || '') !==
+      String(userId)
+  const matchedWords = shouldProtect
+    ? await findAuthorBlockedWordsInComment({
+        authorPageId: story.author_id,
+        authorUserId: story.user_id,
+        text,
+      })
+    : []
+  const isAutoHidden =
+    matchedWords.length > 0
 
-function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
+  const insertData = {
+    story_id: story.id,
+    user_id: userId,
+    parent_id: parentId,
+    text,
+    is_hidden: isAutoHidden,
+  }
 
-function countOccurrences(text, word) {
-  if (!text || !word) return 0
+  if (episodeId) {
+    insertData.episode_id =
+      episodeId
+  }
 
-  if (hasKhmer(word)) {
-    let count = 0
-    let index = 0
+  const { data, error } =
+    await supabase
+      .from('comments')
+      .insert(insertData)
+      .select(
+        '*, user:users(id, name, username, avatar_url, role)'
+      )
+      .single()
 
-    while (index <= text.length) {
-      const foundIndex = text.indexOf(word, index)
-      if (foundIndex === -1) break
-      count += 1
-      index = foundIndex + word.length
+  if (error) throw error
+
+  if (isAutoHidden) {
+    try {
+      await saveAuthorHiddenCommentReview({
+        authorPageId: story.author_id,
+        authorUserId: story.user_id,
+        commentId: data.id,
+        storyId: story.id,
+        episodeId,
+        readerUserId: userId,
+        text,
+        matchedWords,
+      })
+    } catch (reviewError) {
+      await supabase
+        .from('comments')
+        .delete()
+        .eq('id', data.id)
+
+      throw reviewError
     }
 
-    return count
+    return {
+      hiddenResponse:
+        authorHiddenCommentPayload(
+          matchedWords
+        ),
+    }
   }
 
-  const pattern = new RegExp(
-    `(^|[^\\p{L}\\p{N}])${escapeRegExp(word)}(?=$|[^\\p{L}\\p{N}])`,
-    'giu'
-  )
-
-  return [...text.matchAll(pattern)].length
-}
-
-export async function findAuthorBlockedWordsInComment({
-  authorPageId,
-  authorUserId,
-  text,
-}) {
-  const normalizedText = normalizeText(text)
-
-  if (!authorPageId || !authorUserId || !normalizedText) return []
-
-  const { data, error } = await supabase
-    .from('author_blocked_words')
-    .select('id, word, normalized_word')
-    .eq('author_page_id', String(authorPageId))
-    .eq('author_user_id', String(authorUserId))
-    .eq('is_active', true)
-
-  if (error) throw error
-
-  return (data || [])
-    .map((item) => {
-      const blockedWord = normalizeText(item.normalized_word || item.word)
-      const count = countOccurrences(normalizedText, blockedWord)
-
-      return {
-        id: item.id,
-        word: item.word,
-        count,
-      }
+  await supabase
+    .from('stories')
+    .update({
+      total_comments:
+        Number(
+          story.total_comments || 0
+        ) + 1,
+      updated_at:
+        new Date().toISOString(),
     })
-    .filter((item) => item.count > 0)
-}
+    .eq('id', story.id)
 
-export async function saveAuthorHiddenCommentReview({
-  authorPageId,
-  authorUserId,
-  commentId,
-  storyId,
-  episodeId = null,
-  readerUserId,
-  text,
-  matchedWords,
-}) {
-  const { error } = await supabase
-    .from('author_hidden_comment_reviews')
-    .insert({
-      author_page_id: String(authorPageId),
-      author_user_id: String(authorUserId),
-      comment_id: String(commentId),
-      story_id: String(storyId),
-      episode_id: episodeId ? String(episodeId) : null,
-      reader_user_id: String(readerUserId),
-      matched_words: matchedWords,
-      comment_text: cleanText(text),
-      status: 'hidden',
-    })
+  const isOwner =
+    String(
+      story.user_id || ''
+    ) === String(userId)
+  const reader =
+    publicUser(data.user)
 
-  if (error) throw error
-}
+  if (
+    !isOwner &&
+    story.author_id
+  ) {
+    const targetUrl =
+      episodeId
+        ? `/story/${story.id}/episode/${episodeId}?comment=${data.id}`
+        : `/story/${story.id}?comment=${data.id}`
+    const sourceKey =
+      episodeId
+        ? `episode-comment:${data.id}`
+        : `story-comment:${data.id}`
 
-export function authorHiddenCommentPayload(matchedWords = []) {
+    await Promise.all([
+      incrementAuthorPageAnalytics(
+        story.author_id,
+        'comments'
+      ),
+      incrementAuthorPageAnalytics(
+        story.author_id,
+        'interactions'
+      ),
+      createAuthorStoryNotificationSafely({
+        authorId:
+          story.author_id,
+        type: 'comment',
+        title:
+          `${reader.name} ${
+            parentId
+              ? 'replied on'
+              : 'commented on'
+          } ${
+            story.title
+            || 'your story'
+          }`,
+        message: text,
+        targetUrl,
+        sourceKey,
+        metadata: {
+          story_id: story.id,
+          episode_id:
+            episodeId || null,
+          comment_id: data.id,
+          parent_id: parentId,
+          reader_id: userId,
+          reader_name:
+            reader.name,
+          reader_username:
+            reader.username,
+          reader_avatar_url:
+            reader.avatar_url,
+        },
+      }),
+    ])
+  }
+
   return {
-    ok: false,
-    code: 'AUTHOR_COMMENT_AUTO_HIDDEN',
-    message: 'Your comment was hidden by the author’s comment protection rules and is waiting for review.',
-    matched_words: [],
-    matched_count: matchedWords.length,
+    comment:
+      publicComment(data),
   }
 }
-
 
 export async function createStoryComment(
   req,
@@ -1168,6 +1240,12 @@ export async function createStoryComment(
             result.errorResponse
               .message,
         })
+    }
+
+    if (result.hiddenResponse) {
+      return res.status(202).json(
+        result.hiddenResponse
+      )
     }
 
     return res.status(201).json({
@@ -1297,6 +1375,12 @@ export async function createEpisodeComment(
             result.errorResponse
               .message,
         })
+    }
+
+    if (result.hiddenResponse) {
+      return res.status(202).json(
+        result.hiddenResponse
+      )
     }
 
     return res.status(201).json({
