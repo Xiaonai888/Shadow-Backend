@@ -1237,7 +1237,7 @@ const stories = isDiscoverMoreSort(sort)
     )
   : sortedStories.slice(0, limit)
 
-    const stories = isDiscoverMoreSort(sort) ? pickDiscoverMoreStories(data || [], limit) : data || []
+    
     const authorIds = [
       ...new Set(stories.map((story) => story.author_id).filter(Boolean)),
     ]
