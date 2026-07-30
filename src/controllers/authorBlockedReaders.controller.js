@@ -715,6 +715,7 @@ export async function getMyAuthorBlockStories(
         'id, title, cover_url, status, updated_at'
       )
       .eq('user_id', userId)
+      .is('deleted_at', null)
       .order(
         'updated_at',
         { ascending: false }
@@ -891,6 +892,7 @@ export async function createMyAuthorBlockedReader(
         )
         .eq('id', storyId)
         .eq('user_id', userId)
+        .is('deleted_at', null)
         .maybeSingle()
 
       if (error) throw error
