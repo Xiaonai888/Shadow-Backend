@@ -3,6 +3,7 @@ import {
   getAdminStories,
   getAdminStoriesOverview,
   getAdminStoryById,
+  getAdminStoryUpdateActivity,
   issueStoryWarning,
   updateAuthorAdminStatus,
   updateStoryAdminVisibility,
@@ -12,6 +13,7 @@ import { requireAdmin } from '../middleware/auth.middleware.js'
 const router = express.Router()
 
 router.get('/overview', requireAdmin, getAdminStoriesOverview)
+router.get('/update-activity', requireAdmin, getAdminStoryUpdateActivity)
 router.get('/', requireAdmin, getAdminStories)
 router.get('/:storyId', requireAdmin, getAdminStoryById)
 router.patch('/:storyId/visibility', requireAdmin, updateStoryAdminVisibility)
