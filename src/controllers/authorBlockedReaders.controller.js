@@ -1,4 +1,7 @@
 import { supabase } from '../config/supabase.js'
+import {
+  saveAuthorCommentActivityLogSafely,
+} from '../services/authorCommentActivity.service.js'
 
 const DURATION_MILLISECONDS = {
   '1h': 60 * 60 * 1000,
@@ -1042,6 +1045,46 @@ export async function createMyAuthorBlockedReader(
       if (error) throw error
     }
 
+        await saveAuthorCommentActivityLogSafely({
+      authorPageId,
+      authorUserId:
+        String(userId),
+      actorType: 'author',
+      actorUserId:
+        String(userId),
+      actionType:
+        existing
+          ? 'reader_block_updated'
+          : 'reader_blocked',
+      targetType:
+        'reader_block',
+      targetId:
+        block.id,
+      summary:
+        scopeType === 'all_author'
+          ? `Blocked ${reader.name || reader.username || 'a reader'} from all stories`
+          : `Blocked ${reader.name || reader.username || 'a reader'} from ${story?.title || 'a story'}`,
+      metadata: {
+        reader_user_id:
+          readerUserId,
+        reader_name:
+          reader.name ||
+          reader.username ||
+          '',
+        scope_type:
+          scopeType,
+        story_id:
+          scopeType === 'story'
+            ? storyId
+            : null,
+        duration,
+        expires_at:
+          expiresAt,
+        reason:
+          reason || '',
+      },
+    })
+
     return res.status(
       existing ? 200 : 201
     ).json({
@@ -1152,7 +1195,9 @@ export async function deleteMyAuthorBlockedReader(
         'author_user_id',
         String(userId)
       )
-      .select('id')
+            .select(
+        'id, reader_user_id, scope_type, story_id, reason, expires_at'
+      )
       .maybeSingle()
 
     if (error) throw error
@@ -1164,6 +1209,37 @@ export async function deleteMyAuthorBlockedReader(
           'Blocked reader record not found',
       })
     }
+
+    await saveAuthorCommentActivityLogSafely({
+      authorPageId:
+        String(authorPage.id),
+      authorUserId:
+        String(userId),
+      actorType: 'author',
+      actorUserId:
+        String(userId),
+      actionType:
+        'reader_unblocked',
+      targetType:
+        'reader_block',
+      targetId:
+        data.id,
+      summary:
+        'Unblocked a reader',
+      metadata: {
+        reader_user_id:
+          data.reader_user_id,
+        scope_type:
+          data.scope_type,
+        story_id:
+          data.story_id || null,
+        reason:
+          data.reason || '',
+        expires_at:
+          data.expires_at ||
+          null,
+      },
+    })
 
     return res.status(200).json({
       ok: true,
