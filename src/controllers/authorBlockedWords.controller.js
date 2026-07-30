@@ -1,4 +1,7 @@
 import { supabase } from '../config/supabase.js'
+import {
+  saveAuthorCommentActivityLogSafely,
+} from '../services/authorCommentActivity.service.js'
 
 const MAX_WORDS_PER_TYPE = 200
 const MAX_WORD_LENGTH = 120
@@ -114,7 +117,28 @@ export async function getMyAuthorBlockedWords(
 
     if (error) throw error
 
-    return res.status(200).json({
+    await saveAuthorCommentActivityLogSafely({
+      authorPageId,
+      authorUserId,
+      actorType: 'author',
+      actorUserId: authorUserId,
+      actionType:
+        filterType === 'block'
+          ? 'blocked_word_added'
+          : 'auto_hide_word_added',
+      targetType: 'word_filter',
+      targetId: data.id,
+      summary:
+        filterType === 'block'
+          ? `Added blocked word: ${word}`
+          : `Added auto-hide word: ${word}`,
+      metadata: {
+        word,
+        filter_type: filterType,
+      },
+    })
+
+    return res.status(201).json({
       ok: true,
       filter_type: filterType,
       words:
@@ -381,20 +405,46 @@ export async function deleteMyAuthorBlockedWord(
         'author_user_id',
         String(userId)
       )
-      .select(
-        'id, filter_type'
+            .select(
+        'id, word, filter_type'
       )
       .maybeSingle()
 
     if (error) throw error
 
-    if (!data) {
+        if (!data) {
       return res.status(404).json({
         ok: false,
         message:
           'Word filter not found',
       })
     }
+
+    await saveAuthorCommentActivityLogSafely({
+      authorPageId:
+        String(authorPage.id),
+      authorUserId:
+        String(userId),
+      actorType: 'author',
+      actorUserId:
+        String(userId),
+      actionType:
+        data.filter_type === 'block'
+          ? 'blocked_word_removed'
+          : 'auto_hide_word_removed',
+      targetType: 'word_filter',
+      targetId: data.id,
+      summary:
+        data.filter_type === 'block'
+          ? `Removed blocked word: ${data.word || ''}`
+          : `Removed auto-hide word: ${data.word || ''}`,
+      metadata: {
+        word: data.word || '',
+        filter_type:
+          data.filter_type ||
+          'auto_hide',
+      },
+    })
 
     return res.status(200).json({
       ok: true,
