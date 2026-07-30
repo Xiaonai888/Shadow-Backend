@@ -23,10 +23,9 @@ export async function getActiveAuthorReaderBlock({
   storyId,
   readerUserId,
 }) {
-  if (
+    if (
     !authorPageId ||
     !authorUserId ||
-    !storyId ||
     !readerUserId
   ) {
     return null
@@ -105,14 +104,17 @@ export async function getActiveAuthorReaderBlock({
         'all_author'
     )
   const storyBlock =
-    activeRows.find(
-      (item) =>
-        item.scope_type ===
-          'story' &&
-        String(
-          item.story_id || ''
-        ) === String(storyId)
-    )
+    storyId
+      ? activeRows.find(
+          (item) =>
+            item.scope_type ===
+              'story' &&
+            String(
+              item.story_id || ''
+            ) ===
+              String(storyId)
+        )
+      : null
   const block =
     allAuthorBlock ||
     storyBlock
@@ -158,10 +160,10 @@ export function authorReaderBlockedPayload(
     ok: false,
     code:
       'AUTHOR_READER_BLOCKED',
-    message:
+       message:
       block?.scope_type ===
       'all_author'
-        ? 'The author has temporarily restricted you from commenting on their stories.'
+        ? 'The author has temporarily restricted you from commenting on their stories or author page.'
         : 'The author has temporarily restricted you from commenting on this story.',
     reason:
       block?.reason || '',
