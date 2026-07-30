@@ -66,6 +66,13 @@ import {
   getMyAuthorBlockStories,
   searchMyAuthorReaders,
 } from '../controllers/authorBlockedReaders.controller.js'
+import {
+  getMyAuthorCommentCleanupSettings,
+  getMyAuthorModerationHistory,
+  runMyAuthorCommentCleanupNow,
+  updateMyAuthorCommentCleanupSettings,
+} from '../controllers/authorCommentProtectionSettings.controller.js'
+import { requireUser } from '../middleware/user.middleware.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
 import {
@@ -90,6 +97,10 @@ router.get('/me/comment-protection/blocked-readers/search', requireUser, searchM
 router.get('/me/comment-protection/blocked-readers/stories', requireUser, getMyAuthorBlockStories)
 router.post('/me/comment-protection/blocked-readers', requireUser, createMyAuthorBlockedReader)
 router.delete('/me/comment-protection/blocked-readers/:blockId', requireUser, deleteMyAuthorBlockedReader)
+router.get('/me/comment-protection/cleanup-settings', requireUser, getMyAuthorCommentCleanupSettings)
+router.put('/me/comment-protection/cleanup-settings', requireUser, updateMyAuthorCommentCleanupSettings)
+router.post('/me/comment-protection/cleanup/run', requireUser, runMyAuthorCommentCleanupNow)
+router.get('/me/comment-protection/moderation-history', requireUser, getMyAuthorModerationHistory)
 router.get('/me/payment-methods', requireUser, getMyAuthorPaymentMethods)
 router.get('/me/page-notifications', requireUser, getMyAuthorPageNotifications)
 router.patch('/me/page-notifications/read-all', requireUser, markAllMyAuthorPageNotificationsRead)
