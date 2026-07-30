@@ -17,6 +17,10 @@ import {
   findAuthorWordFiltersInComment,
   saveAuthorHiddenCommentReview,
 } from '../utils/authorCommentProtection.js'
+import {
+  authorReaderBlockedPayload,
+  getActiveAuthorReaderBlock,
+} from '../utils/authorReaderCommentBlocks.js'
 
 const COMMENT_BAN_DURATIONS = {
   '1h': 60 * 60 * 1000,
@@ -1226,6 +1230,34 @@ export async function createStoryComment(
       })
     }
 
+    const authorReaderBlock =
+      await getActiveAuthorReaderBlock({
+        authorPageId:
+          story.author_id,
+        authorUserId:
+          story.user_id,
+        storyId:
+          story.id,
+        readerUserId:
+          userId,
+      })
+
+    if (authorReaderBlock) {
+      res.setHeader(
+        'Retry-After',
+        String(
+          authorReaderBlock
+            .retry_after_seconds
+        )
+      )
+
+      return res.status(403).json(
+        authorReaderBlockedPayload(
+          authorReaderBlock
+        )
+      )
+    }
+
     const storyBan =
       await getActiveStoryCommentBan(
         storyId,
@@ -1359,6 +1391,34 @@ export async function createEpisodeComment(
         message:
           'Story not found',
       })
+    }
+
+    const authorReaderBlock =
+      await getActiveAuthorReaderBlock({
+        authorPageId:
+          story.author_id,
+        authorUserId:
+          story.user_id,
+        storyId:
+          story.id,
+        readerUserId:
+          userId,
+      })
+
+    if (authorReaderBlock) {
+      res.setHeader(
+        'Retry-After',
+        String(
+          authorReaderBlock
+            .retry_after_seconds
+        )
+      )
+
+      return res.status(403).json(
+        authorReaderBlockedPayload(
+          authorReaderBlock
+        )
+      )
     }
 
     const storyBan =
