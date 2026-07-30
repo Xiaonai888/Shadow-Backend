@@ -1,7 +1,13 @@
 import { supabase } from '../config/supabase.js'
 
+const AUTO_HIDE_TYPE = 'auto_hide'
+const BLOCK_TYPE = 'block'
+
 function cleanText(value) {
-  return String(value || '').normalize('NFC').trim().replace(/\s+/g, ' ')
+  return String(value || '')
+    .normalize('NFC')
+    .trim()
+    .replace(/\s+/g, ' ')
 }
 
 function normalizeText(value) {
@@ -9,14 +15,22 @@ function normalizeText(value) {
 }
 
 function hasKhmer(value) {
-  return /[\u1780-\u17FF]/.test(String(value || ''))
+  return /[\u1780-\u17FF]/.test(
+    String(value || '')
+  )
 }
 
 function escapeRegExp(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return String(value).replace(
+    /[.*+?^${}()|[\]\\]/g,
+    '\\$&'
+  )
 }
 
-function countOccurrences(text, word) {
+function countOccurrences(
+  text,
+  word
+) {
   if (!text || !word) return 0
 
   if (hasKhmer(word)) {
@@ -24,53 +38,131 @@ function countOccurrences(text, word) {
     let index = 0
 
     while (index <= text.length) {
-      const foundIndex = text.indexOf(word, index)
-      if (foundIndex === -1) break
+      const foundIndex =
+        text.indexOf(
+          word,
+          index
+        )
+
+      if (foundIndex === -1) {
+        break
+      }
+
       count += 1
-      index = foundIndex + word.length
+      index =
+        foundIndex + word.length
     }
 
     return count
   }
 
   const pattern = new RegExp(
-    `(^|[^\\p{L}\\p{N}])${escapeRegExp(word)}(?=$|[^\\p{L}\\p{N}])`,
+    `(^|[^\\p{L}\\p{N}])${escapeRegExp(
+      word
+    )}(?=$|[^\\p{L}\\p{N}])`,
     'giu'
   )
 
-  return [...text.matchAll(pattern)].length
+  return [
+    ...text.matchAll(pattern),
+  ].length
 }
 
-export async function findAuthorBlockedWordsInComment({
+function emptyWordFilters() {
+  return {
+    autoHideWords: [],
+    blockedWords: [],
+  }
+}
+
+export async function findAuthorWordFiltersInComment({
   authorPageId,
   authorUserId,
   text,
 }) {
-  const normalizedText = normalizeText(text)
+  const normalizedText =
+    normalizeText(text)
 
-  if (!authorPageId || !authorUserId || !normalizedText) return []
+  if (
+    !authorPageId ||
+    !authorUserId ||
+    !normalizedText
+  ) {
+    return emptyWordFilters()
+  }
 
   const { data, error } = await supabase
     .from('author_blocked_words')
-    .select('id, word, normalized_word')
-    .eq('author_page_id', String(authorPageId))
-    .eq('author_user_id', String(authorUserId))
+    .select(
+      'id, word, normalized_word, filter_type'
+    )
+    .eq(
+      'author_page_id',
+      String(authorPageId)
+    )
+    .eq(
+      'author_user_id',
+      String(authorUserId)
+    )
     .eq('is_active', true)
 
   if (error) throw error
 
-  return (data || [])
-    .map((item) => {
-      const blockedWord = normalizeText(item.normalized_word || item.word)
-      const count = countOccurrences(normalizedText, blockedWord)
+  const matchedWords =
+    (data || [])
+      .map((item) => {
+        const filterType =
+          item.filter_type ===
+          BLOCK_TYPE
+            ? BLOCK_TYPE
+            : AUTO_HIDE_TYPE
+        const word = normalizeText(
+          item.normalized_word ||
+          item.word
+        )
+        const count =
+          countOccurrences(
+            normalizedText,
+            word
+          )
 
-      return {
-        id: item.id,
-        word: item.word,
-        count,
-      }
-    })
-    .filter((item) => item.count > 0)
+        return {
+          id: item.id,
+          word: item.word,
+          count,
+          filter_type:
+            filterType,
+        }
+      })
+      .filter(
+        (item) => item.count > 0
+      )
+
+  return {
+    autoHideWords:
+      matchedWords.filter(
+        (item) =>
+          item.filter_type ===
+          AUTO_HIDE_TYPE
+      ),
+    blockedWords:
+      matchedWords.filter(
+        (item) =>
+          item.filter_type ===
+          BLOCK_TYPE
+      ),
+  }
+}
+
+export async function findAuthorBlockedWordsInComment(
+  options
+) {
+  const result =
+    await findAuthorWordFiltersInComment(
+      options
+    )
+
+  return result.autoHideWords
 }
 
 export async function saveAuthorHiddenCommentReview({
@@ -84,34 +176,67 @@ export async function saveAuthorHiddenCommentReview({
   matchedWords,
 }) {
   const { error } = await supabase
-    .from('author_hidden_comment_reviews')
+    .from(
+      'author_hidden_comment_reviews'
+    )
     .upsert(
       {
-        author_page_id: String(authorPageId),
-        author_user_id: String(authorUserId),
-        comment_id: String(commentId),
-        story_id: String(storyId),
-        episode_id: episodeId ? String(episodeId) : null,
-        reader_user_id: String(readerUserId),
-        matched_words: matchedWords,
-        comment_text: cleanText(text),
+        author_page_id:
+          String(authorPageId),
+        author_user_id:
+          String(authorUserId),
+        comment_id:
+          String(commentId),
+        story_id:
+          String(storyId),
+        episode_id:
+          episodeId
+            ? String(episodeId)
+            : null,
+        reader_user_id:
+          String(readerUserId),
+        matched_words:
+          matchedWords,
+        comment_text:
+          cleanText(text),
         status: 'hidden',
         reviewed_at: null,
       },
       {
-        onConflict: 'comment_id',
+        onConflict:
+          'comment_id',
       }
     )
 
   if (error) throw error
 }
 
-export function authorHiddenCommentPayload(matchedWords = []) {
+export function authorBlockedCommentPayload(
+  matchedWords = []
+) {
   return {
     ok: false,
-    code: 'AUTHOR_COMMENT_AUTO_HIDDEN',
-    message: 'Your comment was hidden by the author’s comment protection rules and is waiting for review.',
+    code:
+      'AUTHOR_COMMENT_WORD_BLOCKED',
+    message:
+      'Your comment contains a word or phrase blocked by the author. Edit it and try again.',
     matched_words: [],
-    matched_count: matchedWords.length,
+    matched_count:
+      matchedWords.length,
+  }
+}
+
+export function authorHiddenCommentPayload(
+  matchedWords = []
+) {
+  return {
+    ok: false,
+    code:
+      'AUTHOR_COMMENT_AUTO_HIDDEN',
+    message:
+      'Your comment was hidden by the author’s comment protection rules and is waiting for review.',
+    matched_words: [],
+    matched_count:
+      matchedWords.length,
   }
 }
