@@ -1,5 +1,7 @@
 import { supabase } from '../config/supabase.js'
-
+import {
+  saveAuthorCommentActivityLogSafely,
+} from '../services/authorCommentActivity.service.js'
 const AUTO_HIDE_TYPE = 'auto_hide'
 const BLOCK_TYPE = 'block'
 
@@ -208,7 +210,29 @@ export async function saveAuthorHiddenCommentReview({
       }
     )
 
-  if (error) throw error
+    if (error) throw error
+
+  await saveAuthorCommentActivityLogSafely({
+    authorPageId,
+    authorUserId,
+    actorType: 'system',
+    actorUserId: null,
+    actionType:
+      'comment_auto_hidden',
+    targetType: 'comment',
+    targetId: commentId,
+    summary:
+      'A comment was automatically hidden for review',
+    metadata: {
+      story_id: storyId,
+      episode_id:
+        episodeId || null,
+      reader_user_id:
+        readerUserId,
+      matched_words:
+        matchedWords,
+    },
+  })
 }
 
 export function authorBlockedCommentPayload(
