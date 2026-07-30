@@ -6,6 +6,11 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
+import sharp from 'sharp'
+
+const MAX_IMAGE_BYTES = 300 * 1024
+const RESIZE_WIDTHS = [768, 640, 512, 384, 320, 256]
+const QUALITY_LEVELS = [82, 76, 70, 64, 58, 52, 46, 40]
 
 let client = null
 
@@ -56,18 +61,56 @@ function safeSegment(value, fallback = 'media') {
   return output || fallback
 }
 
-function extension(file) {
-  const original = String(file?.originalname || '')
-  const namePart = original.includes('.') ? original.split('.').pop() : ''
-  const mimePart = String(file?.mimetype || '').split('/')[1] || ''
-  const output = String(namePart || mimePart || 'jpg')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '')
-  return output === 'jpeg' ? 'jpg' : output || 'jpg'
-}
-
 function uniqueKeys(values) {
   return [...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))]
+}
+
+async function createOptimizedWebP(file) {
+  const metadata = await sharp(file.buffer, { failOn: 'none' }).metadata()
+  const width = Number(metadata.width || 0)
+  const height = Number(metadata.height || 0)
+
+  if (
+    file.mimetype === 'image/webp' &&
+    file.buffer.length <= MAX_IMAGE_BYTES &&
+    width > 0 &&
+    height > 0 &&
+    width <= 768 &&
+    height <= 768
+  ) {
+    return file.buffer
+  }
+
+  let smallestBuffer = null
+
+  for (const maxWidth of RESIZE_WIDTHS) {
+    for (const quality of QUALITY_LEVELS) {
+      const buffer = await sharp(file.buffer, { failOn: 'none' })
+        .rotate()
+        .resize({
+          width: maxWidth,
+          height: maxWidth,
+          fit: 'inside',
+          withoutEnlargement: true,
+        })
+        .webp({
+          quality,
+          effort: 4,
+          smartSubsample: true,
+        })
+        .toBuffer()
+
+      if (!smallestBuffer || buffer.length < smallestBuffer.length) {
+        smallestBuffer = buffer
+      }
+
+      if (buffer.length <= MAX_IMAGE_BYTES) {
+        return buffer
+      }
+    }
+  }
+
+  return smallestBuffer
 }
 
 export async function uploadMediaLibraryObject({ file, prefix = 'media-library/images' }) {
@@ -75,13 +118,14 @@ export async function uploadMediaLibraryObject({ file, prefix = 'media-library/i
   if (!String(file.mimetype || '').startsWith('image/')) throw new Error('Only image files are allowed')
 
   const config = configuration()
-  const key = `${String(prefix || 'media-library/images').replace(/^\/+|\/+$/g, '')}/${Date.now()}-${randomUUID()}.${extension(file)}`
+  const optimizedBuffer = await createOptimizedWebP(file)
+  const key = `${String(prefix || 'media-library/images').replace(/^\/+|\/+$/g, '')}/${Date.now()}-${randomUUID()}.webp`
 
   await r2().send(new PutObjectCommand({
     Bucket: config.bucket,
     Key: key,
-    Body: file.buffer,
-    ContentType: file.mimetype,
+    Body: optimizedBuffer,
+    ContentType: 'image/webp',
     CacheControl: 'public, max-age=31536000, immutable',
   }))
 
@@ -91,9 +135,8 @@ export async function uploadMediaLibraryObject({ file, prefix = 'media-library/i
   }))
 
   const uploadedSize = Number(head.ContentLength || 0)
-  const sourceSize = Number(file.size || file.buffer.length || 0)
 
-  if (uploadedSize !== sourceSize) {
+  if (uploadedSize !== optimizedBuffer.length) {
     await deleteMediaLibraryObject(key).catch(() => {})
     throw new Error('Cloudflare R2 upload verification failed')
   }
@@ -102,7 +145,8 @@ export async function uploadMediaLibraryObject({ file, prefix = 'media-library/i
     storage_key: key,
     image_url: `${config.publicUrl}/${key}`,
     file_size: uploadedSize,
-    mime_type: head.ContentType || file.mimetype,
+    source_file_size: Number(file.size || file.buffer.length || 0),
+    mime_type: 'image/webp',
   }
 }
 
