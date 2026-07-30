@@ -1106,8 +1106,8 @@ export async function getPublicStories(req, res) {
   }
 
   if (
-    ['novel', 'manga'].includes(storyType)
-  ) {
+  ['novel', 'manga', 'chat_story'].includes(storyType)
+) {
     nextQuery = nextQuery.eq(
       'story_type',
       storyType
@@ -1313,7 +1313,7 @@ export async function getPublicShadowExclusiveStories(req, res) {
 )
 
     if (genre) query = query.ilike('main_genre', genre)
-    if (['novel', 'manga'].includes(storyType)) query = query.eq('story_type', storyType)
+    if (['novel', 'manga', 'chat_story'].includes(storyType)) query = query.eq('story_type', storyType)
     if (storyStatus) query = query.eq('story_status', storyStatus)
     if (authorId) query = query.eq('author_id', authorId)
 
