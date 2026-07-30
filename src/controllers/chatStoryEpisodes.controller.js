@@ -277,23 +277,85 @@ const storyPlainText = normalized.messages
   .filter((message) => message.type !== 'author_note')
   .map((message) => message.text)
   .join('\n')
-    const content = JSON.stringify({
-      format: 'shadow_chat_story_v1',
-      version: 1,
-      story_id: storyId,
-      episode_title: title,
-lead_character_id: leadCharacterId,
-characters: characters.map((character) => ({
-        id: character.id,
-        nickname: character.nickname || '',
-        avatar_url: character.avatar_url || '',
-        role_group: character.role_group,
-        is_lead: character.is_lead === true,
-        chat_side: character.chat_side,
-        sort_order: character.sort_order,
-      })),
-      messages: normalized.messages,
+    const hasRequestedCharacterIds =
+  Array.isArray(req.body.character_ids) ||
+  Array.isArray(req.body.characterIds)
+
+const requestedCharacterIdsInput =
+  Array.isArray(req.body.character_ids)
+    ? req.body.character_ids
+    : Array.isArray(req.body.characterIds)
+      ? req.body.characterIds
+      : []
+
+const requestedCharacterIds = [
+  ...new Set(
+    requestedCharacterIdsInput
+      .map((value) => cleanText(value))
+      .filter(Boolean)
+  ),
+]
+
+const invalidCharacterIds =
+  requestedCharacterIds.filter(
+    (characterId) =>
+      !characterIds.has(characterId)
+  )
+
+if (invalidCharacterIds.length) {
+  return res.status(400).json({
+    ok: false,
+    message:
+      'One or more selected episode characters are invalid',
+  })
+}
+
+const episodeCharacterIds =
+  new Set(requestedCharacterIds)
+
+for (const message of normalized.messages) {
+  if (message.character_id) {
+    episodeCharacterIds.add(
+      String(message.character_id)
+    )
+  }
+}
+
+if (leadCharacterId) {
+  episodeCharacterIds.add(
+    String(leadCharacterId)
+  )
+}
+
+const episodeCharacters =
+  hasRequestedCharacterIds
+    ? characters.filter((character) =>
+        episodeCharacterIds.has(
+          String(character.id)
+        )
+      )
+    : characters
+
+const content = JSON.stringify({
+  format: 'shadow_chat_story_v1',
+  version: 1,
+  story_id: storyId,
+  episode_title: title,
+  lead_character_id: leadCharacterId,
+  characters: episodeCharacters.map(
+    (character) => ({
+      id: character.id,
+      nickname: character.nickname || '',
+      avatar_url: character.avatar_url || '',
+      role_group: character.role_group,
+      is_lead:
+        character.is_lead === true,
+      chat_side: character.chat_side,
+      sort_order: character.sort_order,
     })
+  ),
+  messages: normalized.messages,
+})
 
     const requestedEpisodeId = cleanNullableText(req.body.episode_id || req.body.episodeId)
     const existingEpisode = await getOwnedEpisode(storyId, requestedEpisodeId, userId)
