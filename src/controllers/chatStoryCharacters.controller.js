@@ -339,42 +339,54 @@ export async function saveChatStoryCharacters(req, res) {
     }
 
     const { data: existingRows, error: existingError } = await supabase
-      .from('chat_story_characters')
-      .select('id')
-      .eq('story_id', storyId)
-      .eq('user_id', userId)
-
-    if (existingError) throw existingError
-
-    const existingIds = new Set((existingRows || []).map((row) => String(row.id)))
-    const retainedIds = characters
-      .map((character) => character.source_id)
-      .filter((id) => id && existingIds.has(String(id)))
-      .map(String)
-
-    const removedIds = [...existingIds].filter((id) => !retainedIds.includes(id))
-
-    if (removedIds.length) {
-  const { error: deleteError } = await supabase
-    .from('chat_story_characters')
-    .delete()
-    .in('id', removedIds)
-    .eq('story_id', storyId)
-    .eq('user_id', userId)
-
-  if (deleteError) throw deleteError
-}
-
-const { error: clearLeadError } = await supabase
   .from('chat_story_characters')
-  .update({
-    is_lead: false,
-    chat_side: 'left',
-  })
+  .select('id')
   .eq('story_id', storyId)
   .eq('user_id', userId)
 
-if (clearLeadError) throw clearLeadError
+if (existingError) throw existingError
+
+const existingIds = new Set(
+  (existingRows || []).map((row) => String(row.id))
+)
+
+const newCharacterCount = characters.reduce(
+  (count, character) => {
+    const sourceId = character.source_id
+    const alreadyExists =
+      sourceId && existingIds.has(String(sourceId))
+
+    return alreadyExists ? count : count + 1
+  },
+  0
+)
+
+if (
+  newCharacterCount > 0 &&
+  existingIds.size + newCharacterCount > MAX_CHARACTERS
+) {
+  return res.status(400).json({
+    ok: false,
+    message: `Maximum ${MAX_CHARACTERS} characters allowed`,
+  })
+}
+
+const requestedLeadCharacter = characters.find(
+  (character) => character.is_lead === true
+)
+
+if (requestedLeadCharacter) {
+  const { error: clearLeadError } = await supabase
+    .from('chat_story_characters')
+    .update({
+      is_lead: false,
+      chat_side: 'left',
+    })
+    .eq('story_id', storyId)
+    .eq('user_id', userId)
+
+  if (clearLeadError) throw clearLeadError
+}
 
 for (const character of characters) {
       const { source_id: sourceId, ...payload } = character
