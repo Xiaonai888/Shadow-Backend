@@ -4,6 +4,9 @@ import {
   getCommentTrashMessage,
   getCommentTrashStatus,
 } from '../services/commentTrash.service.js'
+import {
+  saveAuthorCommentActivityLogSafely,
+} from '../services/authorCommentActivity.service.js'
 
 const DEFAULT_LIMIT = 10
 const MAX_LIMIT = 30
@@ -702,9 +705,37 @@ export async function reviewMyAuthorHiddenComment(
           String(userId)
         )
 
-      if (updateError) {
+            if (updateError) {
         throw updateError
       }
+
+      await saveAuthorCommentActivityLogSafely({
+        authorPageId:
+          String(authorPage.id),
+        authorUserId:
+          String(userId),
+        actorType: 'author',
+        actorUserId:
+          String(userId),
+        actionType:
+          'comment_deleted',
+        targetType: 'comment',
+        targetId:
+          review.comment_id,
+        summary:
+          'Moved a hidden comment to Trash',
+        metadata: {
+          review_id:
+            review.id,
+          story_id:
+            review.story_id,
+          episode_id:
+            review.episode_id ||
+            null,
+          reader_user_id:
+            review.reader_user_id,
+        },
+      })
 
       return res.status(200).json({
         ok: true,
@@ -757,6 +788,38 @@ export async function reviewMyAuthorHiddenComment(
             'Failed to update hidden comment',
         })
     }
+
+    await saveAuthorCommentActivityLogSafely({
+      authorPageId:
+        String(authorPage.id),
+      authorUserId:
+        String(userId),
+      actorType: 'author',
+      actorUserId:
+        String(userId),
+      actionType:
+        action === 'restore'
+          ? 'comment_restored'
+          : 'comment_kept_hidden',
+      targetType: 'comment',
+      targetId:
+        review.comment_id,
+      summary:
+        action === 'restore'
+          ? 'Restored a hidden comment'
+          : 'Kept a comment hidden',
+      metadata: {
+        review_id:
+          review.id,
+        story_id:
+          review.story_id,
+        episode_id:
+          review.episode_id ||
+          null,
+        reader_user_id:
+          review.reader_user_id,
+      },
+    })
 
     return res.status(200).json({
       ...result,
