@@ -1384,15 +1384,16 @@ export async function createEpisodeComment(
       })
 
     if (result.errorResponse) {
+      const {
+        status,
+        ...payload
+      } = result.errorResponse
+
       return res
-        .status(
-          result.errorResponse.status
-        )
+        .status(status)
         .json({
           ok: false,
-          message:
-            result.errorResponse
-              .message,
+          ...payload,
         })
     }
 
