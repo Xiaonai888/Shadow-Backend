@@ -73,7 +73,7 @@ import {
   updateMyAuthorCommentCleanupSettings,
 } from '../controllers/authorCommentProtectionSettings.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
-import { requireUser } from '../middleware/user.middleware.js'
+
 
 import {
   getMyAuthorPageNotifications,
