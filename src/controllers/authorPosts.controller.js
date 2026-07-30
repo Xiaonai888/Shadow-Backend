@@ -5,6 +5,10 @@ import {
   getCommentTrashMessage,
   getCommentTrashStatus,
 } from '../services/commentTrash.service.js'
+import {
+  authorReaderBlockedPayload,
+  getActiveAuthorReaderBlock,
+} from '../utils/authorReaderCommentBlocks.js'
 
 function normalizePageUsername(username) {
   return String(username || '')
@@ -863,11 +867,38 @@ export async function createAuthorPostComment(req, res) {
 
     if (postError) throw postError
 
-    if (!post) {
+        if (!post) {
       return res.status(404).json({
         ok: false,
         message: 'Post not found',
       })
+    }
+
+    const authorReaderBlock =
+      await getActiveAuthorReaderBlock({
+        authorPageId:
+          post.author_page_id,
+        authorUserId:
+          post.user_id,
+        storyId: null,
+        readerUserId:
+          userId,
+      })
+
+    if (authorReaderBlock) {
+      res.setHeader(
+        'Retry-After',
+        String(
+          authorReaderBlock
+            .retry_after_seconds
+        )
+      )
+
+      return res.status(403).json(
+        authorReaderBlockedPayload(
+          authorReaderBlock
+        )
+      )
     }
 
     if (parentId) {
