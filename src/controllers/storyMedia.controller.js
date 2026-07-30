@@ -193,8 +193,24 @@ export async function uploadStoryImage(req, res) {
       })
     }
 
-    const requestedFolder = String(req.body.folder || req.query.folder || '').trim()
-const isPdfUpload = requestedFolder === 'author_store_pdf'
+    const requestedFolder = String(
+  req.body.folder || req.query.folder || ''
+).trim()
+const isPdfUpload =
+  requestedFolder === 'author_store_pdf'
+const isChatStoryCharacterUpload =
+  requestedFolder === 'chat_story_character'
+
+if (
+  isChatStoryCharacterUpload &&
+  req.file.size > 2 * 1024 * 1024
+) {
+  return res.status(413).json({
+    ok: false,
+    code: 'CHARACTER_IMAGE_TOO_LARGE',
+    message: 'Character profile image must be 2 MB or smaller',
+  })
+}
 
 if (isPdfUpload && req.file.mimetype !== 'application/pdf') {
   return res.status(400).json({
