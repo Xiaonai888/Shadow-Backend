@@ -12,8 +12,9 @@ import {
   getCommentTrashStatus,
 } from '../services/commentTrash.service.js'
 import {
+  authorBlockedCommentPayload,
   authorHiddenCommentPayload,
-  findAuthorBlockedWordsInComment,
+  findAuthorWordFiltersInComment,
   saveAuthorHiddenCommentReview,
 } from '../utils/authorCommentProtection.js'
 
@@ -1003,13 +1004,30 @@ async function createComment({
     Boolean(story.author_id) &&
     String(story.user_id || '') !==
       String(userId)
-  const matchedWords = shouldProtect
-    ? await findAuthorBlockedWordsInComment({
+  const wordFilters = shouldProtect
+    ? await findAuthorWordFiltersInComment({
         authorPageId: story.author_id,
         authorUserId: story.user_id,
         text,
       })
-    : []
+    : {
+        autoHideWords: [],
+        blockedWords: [],
+      }
+
+  if (wordFilters.blockedWords.length) {
+    return {
+      errorResponse: {
+        status: 400,
+        ...authorBlockedCommentPayload(
+          wordFilters.blockedWords
+        ),
+      },
+    }
+  }
+
+  const matchedWords =
+    wordFilters.autoHideWords
   const isAutoHidden =
     matchedWords.length > 0
 
@@ -1230,15 +1248,16 @@ export async function createStoryComment(
       })
 
     if (result.errorResponse) {
+      const {
+        status,
+        ...payload
+      } = result.errorResponse
+
       return res
-        .status(
-          result.errorResponse.status
-        )
+        .status(status)
         .json({
           ok: false,
-          message:
-            result.errorResponse
-              .message,
+          ...payload,
         })
     }
 
@@ -1609,15 +1628,31 @@ export async function updateOwnComment(
       Boolean(story.author_id) &&
       String(story.user_id || '') !==
         String(userId)
-    const matchedWords = shouldProtect
-      ? await findAuthorBlockedWordsInComment({
+    const wordFilters = shouldProtect
+      ? await findAuthorWordFiltersInComment({
           authorPageId:
             story.author_id,
           authorUserId:
             story.user_id,
           text,
         })
-      : []
+      : {
+          autoHideWords: [],
+          blockedWords: [],
+        }
+
+    if (
+      wordFilters.blockedWords.length
+    ) {
+      return res.status(400).json(
+        authorBlockedCommentPayload(
+          wordFilters.blockedWords
+        )
+      )
+    }
+
+    const matchedWords =
+      wordFilters.autoHideWords
     const isAutoHidden =
       matchedWords.length > 0
     const becameHidden =
