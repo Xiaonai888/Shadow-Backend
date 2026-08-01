@@ -1,6 +1,13 @@
 import { supabase } from '../config/supabase.js'
 
 const DEFAULT_EXCLUSIVE_SECTIONS = ['featured']
+const ALLOWED_LIST_STATUSES = new Set([
+  'all',
+  'pending',
+  'approved',
+  'rejected',
+  'removed',
+])
 
 function cleanSections(value) {
   if (!Array.isArray(value)) return DEFAULT_EXCLUSIVE_SECTIONS
@@ -16,11 +23,21 @@ function cleanAccessType(value) {
   return value === 'free' ? 'free' : 'premium'
 }
 
+function getListLimit(value) {
+  const parsed = Number.parseInt(String(value || ''), 10)
+
+  if (!Number.isFinite(parsed) || parsed < 1) return 50
+
+  return Math.min(parsed, 100)
+}
+
 function storyListItem(story) {
   if (!story) return null
 
   return {
     id: story.id,
+    author_id: story.author_id,
+    user_id: story.user_id,
     title: story.title,
     story_language: story.story_language,
     main_genre: story.main_genre,
@@ -66,53 +83,120 @@ async function getStoryOr404(storyId) {
   return data
 }
 
+async function getExclusiveSummary() {
+  const [
+    totalPublishedResult,
+    approvedResult,
+    pendingResult,
+    rejectedResult,
+    normalResult,
+    premiumResult,
+  ] = await Promise.all([
+    supabase
+      .from('stories')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'published'),
+    supabase
+      .from('stories')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'published')
+      .eq('is_shadow_exclusive', true)
+      .eq('exclusive_status', 'approved'),
+    supabase
+      .from('stories')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'published')
+      .eq('exclusive_status', 'pending'),
+    supabase
+      .from('stories')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'published')
+      .eq('exclusive_status', 'rejected'),
+    supabase
+      .from('stories')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'published')
+      .eq('is_shadow_exclusive', false)
+      .eq('exclusive_status', 'none'),
+    supabase
+      .from('stories')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'published')
+      .eq('access_type', 'premium'),
+  ])
+
+  const results = [
+    totalPublishedResult,
+    approvedResult,
+    pendingResult,
+    rejectedResult,
+    normalResult,
+    premiumResult,
+  ]
+
+  const failedResult = results.find((result) => result.error)
+
+  if (failedResult?.error) throw failedResult.error
+
+  return {
+    total_published: Number(totalPublishedResult.count || 0),
+    exclusive_stories: Number(approvedResult.count || 0),
+    pending_requests: Number(pendingResult.count || 0),
+    rejected_requests: Number(rejectedResult.count || 0),
+    normal_stories: Number(normalResult.count || 0),
+    premium_stories: Number(premiumResult.count || 0),
+  }
+}
+
 export async function listAdminExclusiveStories(req, res) {
   try {
-    const status = String(req.query.status || 'all').trim()
-    const search = String(req.query.search || '').trim()
-    const limit = Math.min(Number(req.query.limit || 50), 100)
+    const requestedStatus = String(req.query.status || 'all').trim().toLowerCase()
+    const status = ALLOWED_LIST_STATUSES.has(requestedStatus)
+      ? requestedStatus
+      : 'all'
+    const search = String(req.query.search || '').trim().slice(0, 200)
+    const limit = getListLimit(req.query.limit)
 
     let query = supabase
       .from('stories')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('status', 'published')
-      .limit(limit)
       .order('updated_at', { ascending: false })
+      .range(0, limit - 1)
 
     if (status === 'pending') {
       query = query.eq('exclusive_status', 'pending')
     } else if (status === 'approved') {
-      query = query.eq('is_shadow_exclusive', true).eq('exclusive_status', 'approved')
+      query = query
+        .eq('is_shadow_exclusive', true)
+        .eq('exclusive_status', 'approved')
     } else if (status === 'rejected') {
       query = query.eq('exclusive_status', 'rejected')
     } else if (status === 'removed') {
-      query = query.eq('exclusive_status', 'none').eq('is_shadow_exclusive', false)
+      query = query
+        .eq('exclusive_status', 'none')
+        .eq('is_shadow_exclusive', false)
     }
 
     if (search) {
       query = query.ilike('title', `%${search}%`)
     }
 
-    const { data, error } = await query
+    const [{ data, error, count }, summary] = await Promise.all([
+      query,
+      getExclusiveSummary(),
+    ])
 
     if (error) throw error
 
-    const [approvedResult, pendingResult] = await Promise.all([
-  supabase.from('stories').select('id', { count: 'exact', head: true }).eq('status', 'published').eq('is_shadow_exclusive', true).eq('exclusive_status', 'approved'),
-  supabase.from('stories').select('id', { count: 'exact', head: true }).eq('status', 'published').eq('exclusive_status', 'pending'),
-])
-
-if (approvedResult.error) throw approvedResult.error
-if (pendingResult.error) throw pendingResult.error
-
     return res.status(200).json({
-  ok: true,
-  stories: (data || []).map(storyListItem),
-  summary: {
-    exclusive_stories: approvedResult.count || 0,
-    pending_requests: pendingResult.count || 0,
-  },
-})
+      ok: true,
+      stories: (data || []).map(storyListItem),
+      result_count: Number(count || 0),
+      limit,
+      status,
+      summary,
+    })
   } catch (error) {
     console.error('LIST ADMIN EXCLUSIVE STORIES ERROR:', error)
 
