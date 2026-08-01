@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { createAuthorEarningsFromDiamondUnlock } from '../services/authorRevenue.service.js'
+import { createStoryReadingIncomeSafely } from '../services/storyReadingIncome.service.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 import {
   applyEpisodeAccess,
@@ -858,11 +859,27 @@ async function createUnlocksAndTransactions({ userId, storyId, episodes, unlockT
 
   if (transactionError) throw transactionError
 
-  if (transactionCurrency === 'diamond') {
-    await createAuthorEarningsFromDiamondUnlock({
-      transactions: transactions || [],
-    })
-  }
+  if (transactionCurrency === 'diamond' && transactions?.length) {
+  await createStoryReadingIncomeSafely({
+    purchaseKey: `diamond-unlock:${transactions[0].id}`,
+    readerId: userId,
+    storyId,
+    authorId: episodes[0]?.author_id || null,
+    firstEpisodeId: episodes[0]?.id || null,
+    packageKey: metadata?.package_key || unlockScope || 'single',
+    episodeCount: episodes.length,
+    originalDiamonds: metadata?.original_price || transactionAmount,
+    packageDiscountPercent: metadata?.discount_percent || 0,
+    blackSundayDiscountPercent:
+      metadata?.black_sunday_discount_percent || 0,
+    paidDiamonds: transactionAmount,
+    metadata,
+  })
+
+  await createAuthorEarningsFromDiamondUnlock({
+    transactions: transactions || [],
+  })
+}
 
   return unlocks || []
 }
