@@ -9,6 +9,7 @@ import {
   getReaderAgeAccessByUserId,
   isStoryVisibleToReader,
 } from '../services/storyAgeAccess.service.js'
+import { applyBlackSundayDiscount } from '../services/blackSunday.service.js'
 
 const FALLBACK_RULES = {
   diamond_per_episode: 10,
@@ -348,13 +349,19 @@ function getEpisodeAvailableForGemAt(episode, rules, tier = 'standard') {
 
 function calculateDiamondCost(count, discountPercent = 0, rules = FALLBACK_RULES) {
   const original = Number(count || 0) * getRuleNumber(rules, 'diamond_per_episode')
-  const discount = Math.max(0, Math.min(100, Number(discountPercent || 0)))
-  const total = Math.ceil(original * ((100 - discount) / 100))
+  const packageDiscount = Math.max(0, Math.min(100, Number(discountPercent || 0)))
+  const packagePrice = Math.ceil(original * ((100 - packageDiscount) / 100))
+  const blackSunday = applyBlackSundayDiscount(packagePrice)
 
   return {
     original,
-    total,
-    discount_percent: discount,
+    package_price: packagePrice,
+    total: blackSunday.amount,
+    discount_percent: packageDiscount,
+    black_sunday_active: blackSunday.event.active,
+    black_sunday_discount_percent: blackSunday.discount_percent,
+    black_sunday_discount_amount: blackSunday.discount_amount,
+    event: blackSunday.event,
   }
 }
 
@@ -377,9 +384,16 @@ function publicPackageOption({ rule, availableEpisodes, story, rules }) {
       : rule.key === 'all_released'
         ? 'All Released Episodes works when the story has more than 70 released locked episodes or the story is completed.'
         : `This story does not have ${requiredCount} locked released episodes available from this point.`,
-    discount_percent: rule.discount_percent,
+    discount_percent: cost.discount_percent,
     original_price: cost.original,
+    package_price: cost.package_price,
     price: cost.total,
+    black_sunday_active: cost.black_sunday_active,
+    black_sunday_discount_percent:
+      cost.black_sunday_discount_percent,
+    black_sunday_discount_amount:
+      cost.black_sunday_discount_amount,
+    event: cost.event,
     currency: 'diamond',
     episode_ids: enabled ? availableEpisodes.slice(0, requiredCount).map((episode) => episode.id) : [],
   }
@@ -859,9 +873,33 @@ const readerAdvertisement = adPolicy.show_read_ad ? await getFreeUnlockAdvertise
       unlocked: payload.unlocked,
       free_episode: payload.freeEpisode,
       unlock_type: payload.freeEpisode ? 'free' : payload.unlock?.unlock_type || null,
-      price: {
+            price: {
         currency: 'diamond',
-        amount: getRuleNumber(payload.rules, 'diamond_per_episode'),
+        amount:
+          payload.packageOptions.find(
+            (item) => item.key === 'single'
+          )?.price ||
+          getRuleNumber(
+            payload.rules,
+            'diamond_per_episode'
+          ),
+        original_amount:
+          payload.packageOptions.find(
+            (item) => item.key === 'single'
+          )?.original_price ||
+          getRuleNumber(
+            payload.rules,
+            'diamond_per_episode'
+          ),
+        black_sunday_active: Boolean(
+          payload.packageOptions.find(
+            (item) => item.key === 'single'
+          )?.black_sunday_active
+        ),
+        black_sunday_discount_percent:
+          payload.packageOptions.find(
+            (item) => item.key === 'single'
+          )?.black_sunday_discount_percent || 0,
       },
      gem_access: {
   currency: 'gem',
