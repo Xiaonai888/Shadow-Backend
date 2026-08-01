@@ -3,6 +3,7 @@ import {
   getAdminStories,
   getAdminStoriesOverview,
   getAdminStoryById,
+  getAdminStoryPicker,
   getAdminStoryUpdateActivity,
   issueStoryWarning,
   updateAuthorAdminStatus,
@@ -14,6 +15,7 @@ const router = express.Router()
 
 router.get('/overview', requireAdmin, getAdminStoriesOverview)
 router.get('/update-activity', requireAdmin, getAdminStoryUpdateActivity)
+router.get('/picker', requireAdmin, getAdminStoryPicker)
 router.get('/', requireAdmin, getAdminStories)
 router.get('/:storyId', requireAdmin, getAdminStoryById)
 router.patch('/:storyId/visibility', requireAdmin, updateStoryAdminVisibility)
