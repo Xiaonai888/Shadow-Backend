@@ -48,14 +48,16 @@ function toPositiveInteger(value, fallback = 1) {
   return Math.floor(number)
 }
 
-function toNullablePositiveInteger(value) {
+function toNullablePositiveNumber(value) {
   if (value === undefined || value === null || value === '') return null
 
   const number = Number(value)
 
-  return Number.isFinite(number) && number > 0
-    ? Math.floor(number)
-    : null
+  if (!Number.isFinite(number) || number <= 0) {
+    return null
+  }
+
+  return Math.round((number + Number.EPSILON) * 1000000) / 1000000
 }
 
 function normalizePromotion(value) {
@@ -74,11 +76,11 @@ function normalizePromotion(value) {
         : 'link',
     story_id: promotion.story_id || null,
     original_price_diamonds:
-      toNullablePositiveInteger(
+      toNullablePositiveNumber(
         promotion.original_price_diamonds
       ),
     sale_price_diamonds:
-      toNullablePositiveInteger(
+      toNullablePositiveNumber(
         promotion.sale_price_diamonds
       ),
     profile_image_url: promotion.profile_image_url || '',
@@ -368,14 +370,14 @@ function buildPromotionPayload(
 
   const originalPriceDiamonds =
     promotionType === 'story_sale'
-      ? toNullablePositiveInteger(
+      ? toNullablePositiveNumber(
           req.body.original_price_diamonds
         )
       : null
 
   const salePriceDiamonds =
     promotionType === 'story_sale'
-      ? toNullablePositiveInteger(
+      ? toNullablePositiveNumber(
           req.body.sale_price_diamonds
         )
       : null
