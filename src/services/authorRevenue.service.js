@@ -1,4 +1,8 @@
 import { supabase } from '../config/supabase.js'
+import {
+  resolveEffectiveAuthorShare,
+  splitDistributableRevenue,
+} from './revenueRules.service.js'
 
 function numberValue(value) {
   const number = Number(value || 0)
