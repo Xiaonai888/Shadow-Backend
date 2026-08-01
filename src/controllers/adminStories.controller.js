@@ -155,6 +155,80 @@ function publicStory(story, author = null) {
   }
 }
 
+function extractStoryIdFromPickerQuery(value) {
+  const text = cleanText(value)
+
+  if (!text) return ''
+  if (isUuid(text)) return text
+
+  let decodedText = text
+
+  try {
+    decodedText = decodeURIComponent(text)
+  } catch {
+    decodedText = text
+  }
+
+  const uuidPattern =
+    '[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
+
+  const patterns = [
+    new RegExp(
+      `(?:^|/)author/story/(${uuidPattern})(?:/|$|[?#])`,
+      'i'
+    ),
+    new RegExp(
+      `(?:^|/)story/(${uuidPattern})(?:/|$|[?#])`,
+      'i'
+    ),
+  ]
+
+  for (const pattern of patterns) {
+    const match = decodedText.match(pattern)
+
+    if (match?.[1] && isUuid(match[1])) {
+      return match[1]
+    }
+  }
+
+  return ''
+}
+
+function normalizeStoryPickerSearch(value) {
+  return cleanText(value)
+    .replace(/[(),]/g, ' ')
+    .replace(/[%_]/g, '\\$&')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function publicStoryPickerItem(story, author = null) {
+  if (!story) return null
+
+  return {
+    id: story.id,
+    title: story.title || '',
+    cover_url: story.cover_url || '',
+    story_type: story.story_type || 'novel',
+    story_language: story.story_language || '',
+    story_status: story.story_status || 'New',
+    total_episodes: Number(
+      story.total_episodes || 0
+    ),
+    updated_at: story.updated_at || null,
+    story_url: `/story/${story.id}`,
+    author_page: author
+      ? {
+          id: author.id,
+          page_name: author.page_name || '',
+          page_username:
+            author.page_username || '',
+          avatar_url: author.avatar_url || '',
+        }
+      : null,
+  }
+}
+
 function extractStorySlides(story) {
   const possibleSlides = story?.slides || story?.slide_urls || story?.story_slides || story?.images
 
@@ -492,6 +566,180 @@ export async function getAdminStoryUpdateActivity(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to load story update activity',
+      error: error.message,
+    })
+  }
+}
+
+export async function getAdminStoryPicker(
+  req,
+  res
+) {
+  try {
+    const page = normalizePage(req.query.page)
+    const limit = Math.min(
+      normalizeLimit(req.query.limit),
+      20
+    )
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    const search = cleanText(
+      req.query.q ||
+        req.query.search ||
+        req.query.keyword
+    )
+
+    const exactStoryId =
+      extractStoryIdFromPickerQuery(search)
+
+    let query = supabase
+      .from('stories')
+      .select(
+        [
+          'id',
+          'author_id',
+          'title',
+          'cover_url',
+          'story_type',
+          'story_language',
+          'story_status',
+          'total_episodes',
+          'updated_at',
+        ].join(','),
+        {
+          count: 'exact',
+        }
+      )
+      .eq('status', 'published')
+      .eq('admin_visibility_status', 'active')
+      .is('deleted_at', null)
+
+    let queryType = 'recent'
+
+    if (exactStoryId) {
+      query = query.eq('id', exactStoryId)
+      queryType = 'exact_story'
+    } else if (search) {
+      const searchText =
+        normalizeStoryPickerSearch(search)
+
+      if (!searchText) {
+        return res.status(200).json({
+          ok: true,
+          stories: [],
+          page: 1,
+          limit,
+          total: 0,
+          total_pages: 1,
+          has_next: false,
+          has_prev: false,
+          query_type: 'search',
+        })
+      }
+
+      const authorSearchText =
+        searchText.replace(/^@/, '')
+
+      let authorIds = []
+
+      if (authorSearchText) {
+        const {
+          data: matchedAuthors,
+          error: authorSearchError,
+        } = await supabase
+          .from('author_pages')
+          .select('id')
+          .or(
+            [
+              `page_name.ilike.%${authorSearchText}%`,
+              `page_username.ilike.%${authorSearchText}%`,
+            ].join(',')
+          )
+          .limit(100)
+
+        if (authorSearchError) {
+          throw authorSearchError
+        }
+
+        authorIds = [
+          ...new Set(
+            (matchedAuthors || [])
+              .map((author) => author.id)
+              .filter(Boolean)
+          ),
+        ]
+      }
+
+      const searchFilters = [
+        `title.ilike.%${searchText}%`,
+      ]
+
+      if (authorIds.length) {
+        searchFilters.push(
+          `author_id.in.(${authorIds.join(',')})`
+        )
+      }
+
+      query = query.or(searchFilters.join(','))
+      queryType = 'search'
+    }
+
+    const {
+      data,
+      count,
+      error,
+    } = await query
+      .order('updated_at', {
+        ascending: false,
+        nullsFirst: false,
+      })
+      .range(from, to)
+
+    if (error) throw error
+
+    const authors = await fetchAuthors(
+      (data || []).map(
+        (story) => story.author_id
+      )
+    )
+
+    const stories = (data || [])
+      .map((story) =>
+        publicStoryPickerItem(
+          story,
+          authors.get(story.author_id)
+        )
+      )
+      .filter(Boolean)
+
+    const total = Number(count || 0)
+    const totalPages = Math.max(
+      1,
+      Math.ceil(total / limit)
+    )
+
+    return res.status(200).json({
+      ok: true,
+      stories,
+      page,
+      limit,
+      total,
+      total_pages: totalPages,
+      has_next: page < totalPages,
+      has_prev: page > 1,
+      query_type: queryType,
+    })
+  } catch (error) {
+    console.error(
+      'GET ADMIN STORY PICKER ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to search published stories',
       error: error.message,
     })
   }
