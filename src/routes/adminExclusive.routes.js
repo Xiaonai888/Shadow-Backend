@@ -7,8 +7,11 @@ import {
   requestShadowExclusive,
   updateShadowExclusiveSections,
 } from '../controllers/adminExclusive.controller.js'
+import { requireAdmin } from '../middleware/auth.middleware.js'
 
 const router = express.Router()
+
+router.use(requireAdmin)
 
 router.get('/stories', listAdminExclusiveStories)
 router.patch('/stories/:storyId/request', requestShadowExclusive)
