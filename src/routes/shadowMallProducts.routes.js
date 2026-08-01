@@ -35,6 +35,10 @@ import {
   updateOwnShadowMallPromotionComment,
 } from '../controllers/shadowMallPromotionSocial.controller.js'
 import {
+  getShadowMallStorySaleStatus,
+  purchaseShadowMallStory,
+} from '../controllers/shadowMallStorySales.controller.js'
+import {
   getShadowMallBuyerProfile,
   saveShadowMallBuyerProfile,
 } from '../controllers/shadowMallBuyerProfiles.controller.js'
@@ -91,6 +95,17 @@ router.get('/home', getShadowMallHome)
 router.get('/promotion', getPublicShadowMallPromotion)
 router.get('/promotions', getPublicShadowMallPromotions)
 router.get('/products', getShadowMallProducts)
+
+router.get(
+  '/promotions/:promotionId/story-sale/status',
+  requireUser,
+  getShadowMallStorySaleStatus
+)
+router.post(
+  '/promotions/:promotionId/story-sale/purchase',
+  requireUser,
+  purchaseShadowMallStory
+)
 
 router.get(
   '/promotions/:promotionId/reaction',
