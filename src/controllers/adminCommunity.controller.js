@@ -1,6 +1,10 @@
 import { isIP } from 'node:net'
 import { supabase } from '../config/supabase.js'
 
+const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
+const PAGE_SIZE = 1000
+
 function toPositiveInt(value, fallback, max) {
   const number = Number.parseInt(String(value || ''), 10)
   if (!Number.isFinite(number) || number < 1) return fallback
@@ -19,6 +23,22 @@ function getDayStartIso() {
 
 function getActiveStartIso() {
   return new Date(Date.now() - 10 * 60 * 1000).toISOString()
+}
+
+function getCambodiaDayRange(now = new Date()) {
+  const cambodiaNow = new Date(now.getTime() + CAMBODIA_OFFSET_MS)
+  const startTime =
+    Date.UTC(
+      cambodiaNow.getUTCFullYear(),
+      cambodiaNow.getUTCMonth(),
+      cambodiaNow.getUTCDate()
+    ) - CAMBODIA_OFFSET_MS
+
+  return {
+    startIso: new Date(startTime).toISOString(),
+    endIso: new Date(startTime + DAY_MS).toISOString(),
+    nowIso: now.toISOString(),
+  }
 }
 
 function cleanSearch(value) {
@@ -50,6 +70,140 @@ async function getOverviewData() {
   }
 }
 
+async function getReaderActivityToday() {
+  const { startIso, nowIso } = getCambodiaDayRange()
+  const activeStartIso = getActiveStartIso()
+  const rows = []
+  let from = 0
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('reading_progress')
+      .select('user_id, last_read_at')
+      .gte('last_read_at', startIso)
+      .lte('last_read_at', nowIso)
+      .order('last_read_at', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1)
+
+    if (error) throw error
+
+    const pageRows = Array.isArray(data) ? data : []
+    rows.push(...pageRows)
+
+    if (pageRows.length < PAGE_SIZE) break
+    from += PAGE_SIZE
+  }
+
+  const readersToday = new Set()
+  const activeReaders = new Set()
+
+  for (const row of rows) {
+    const userId = String(row.user_id || '').trim()
+    if (!userId) continue
+
+    readersToday.add(userId)
+
+    if (row.last_read_at && row.last_read_at >= activeStartIso) {
+      activeReaders.add(userId)
+    }
+  }
+
+  return {
+    readers_today: readersToday.size,
+    active_readers_last_10_minutes: activeReaders.size,
+  }
+}
+
+async function getPublishedEpisodeRowsToday() {
+  const { startIso, endIso, nowIso } = getCambodiaDayRange()
+  const effectiveEndIso = nowIso < endIso ? nowIso : endIso
+  const rows = []
+
+  for (const mode of ['scheduled', 'legacy']) {
+    let from = 0
+
+    while (true) {
+      let query = supabase
+        .from('episodes')
+        .select('id, story_id, published_at, created_at')
+        .eq('status', 'published')
+        .is('deleted_at', null)
+        .order(mode === 'scheduled' ? 'published_at' : 'created_at', { ascending: true })
+        .range(from, from + PAGE_SIZE - 1)
+
+      if (mode === 'scheduled') {
+        query = query
+          .not('published_at', 'is', null)
+          .gte('published_at', startIso)
+          .lte('published_at', effectiveEndIso)
+      } else {
+        query = query
+          .is('published_at', null)
+          .gte('created_at', startIso)
+          .lte('created_at', effectiveEndIso)
+      }
+
+      const { data, error } = await query
+
+      if (error) throw error
+
+      const pageRows = Array.isArray(data) ? data : []
+      rows.push(...pageRows)
+
+      if (pageRows.length < PAGE_SIZE) break
+      from += PAGE_SIZE
+    }
+  }
+
+  return rows
+}
+
+async function getStoryUpdatesToday() {
+  const episodeRows = await getPublishedEpisodeRowsToday()
+  const episodeById = new Map()
+
+  for (const episode of episodeRows) {
+    if (episode?.id) episodeById.set(String(episode.id), episode)
+  }
+
+  const uniqueEpisodes = [...episodeById.values()]
+  const storyIds = [...new Set(uniqueEpisodes.map((episode) => episode.story_id).filter(Boolean))]
+
+  if (!storyIds.length) {
+    return {
+      stories_updated_today: 0,
+      episodes_published_today: 0,
+    }
+  }
+
+  const validStoryIds = new Set()
+
+  for (let index = 0; index < storyIds.length; index += PAGE_SIZE) {
+    const batch = storyIds.slice(index, index + PAGE_SIZE)
+    const { data, error } = await supabase
+      .from('stories')
+      .select('id')
+      .in('id', batch)
+      .eq('status', 'published')
+      .is('deleted_at', null)
+
+    if (error) throw error
+
+    for (const story of data || []) {
+      if (story?.id) validStoryIds.add(String(story.id))
+    }
+  }
+
+  const publishedEpisodes = uniqueEpisodes.filter((episode) =>
+    validStoryIds.has(String(episode.story_id || ''))
+  )
+
+  return {
+    stories_updated_today: validStoryIds.size,
+    episodes_published_today: publishedEpisodes.length,
+  }
+}
+
 function formatReader(user) {
   return {
     id: user.id,
@@ -63,7 +217,6 @@ function formatReader(user) {
     status: user.is_active === false ? 'inactive' : 'active',
     is_author: Boolean(user.is_author),
     joined_at: user.created_at,
-    
   }
 }
 
@@ -160,43 +313,43 @@ export async function getAdminCommunityReaders(req, res) {
 
     const { data, error, count } = await query
 
-if (error) throw error
+    if (error) throw error
 
-let genderQuery = supabase
-  .from('users')
-  .select('gender, custom_gender')
+    let genderQuery = supabase
+      .from('users')
+      .select('gender, custom_gender')
 
-if (q) {
-  genderQuery = genderQuery.or(`name.ilike.%${q}%,username.ilike.%${q}%,email.ilike.%${q}%`)
-}
+    if (q) {
+      genderQuery = genderQuery.or(`name.ilike.%${q}%,username.ilike.%${q}%,email.ilike.%${q}%`)
+    }
 
-const { data: genderRows, error: genderError } = await genderQuery
+    const { data: genderRows, error: genderError } = await genderQuery
 
-if (genderError) throw genderError
+    if (genderError) throw genderError
 
-const genderSummary = (genderRows || []).reduce(
-  (summary, user) => {
-    const gender = String(user.gender || '').toLowerCase()
+    const genderSummary = (genderRows || []).reduce(
+      (summary, user) => {
+        const gender = String(user.gender || '').toLowerCase()
 
-    if (gender === 'female') summary.female += 1
-    else if (gender === 'male') summary.male += 1
-    else if (gender === 'custom') summary.custom += 1
-    else summary.not_provided += 1
+        if (gender === 'female') summary.female += 1
+        else if (gender === 'male') summary.male += 1
+        else if (gender === 'custom') summary.custom += 1
+        else summary.not_provided += 1
 
-    summary.total += 1
-    return summary
-  },
-  { total: 0, female: 0, male: 0, custom: 0, not_provided: 0 }
-)
+        summary.total += 1
+        return summary
+      },
+      { total: 0, female: 0, male: 0, custom: 0, not_provided: 0 }
+    )
 
-const total = count || 0
-const totalPages = Math.max(1, Math.ceil(total / limit))
+    const total = count || 0
+    const totalPages = Math.max(1, Math.ceil(total / limit))
 
     return res.status(200).json({
       ok: true,
       readers: (data || []).map(formatReader),
-gender_summary: genderSummary,
-page,
+      gender_summary: genderSummary,
+      page,
       limit,
       total,
       total_pages: totalPages,
@@ -297,6 +450,8 @@ export async function getAdminCommunityVisitorOverview(req, res) {
       suspiciousRisk,
       likelyBotRisk,
       highRisk,
+      readerActivity,
+      storyUpdates,
     ] = await Promise.all([
       countVisitorRows('is_suspected_bot', true),
       countVisitorRows('risk_level', 'normal'),
@@ -304,6 +459,8 @@ export async function getAdminCommunityVisitorOverview(req, res) {
       countVisitorRows('risk_level', 'suspicious'),
       countVisitorRows('risk_level', 'likely_bot'),
       countVisitorRows('risk_level', 'high_risk'),
+      getReaderActivityToday(),
+      getStoryUpdatesToday(),
     ])
 
     return res.status(200).json({
@@ -315,6 +472,10 @@ export async function getAdminCommunityVisitorOverview(req, res) {
         visitors_this_month: Number(overview.visitors_this_month || 0),
         active_last_10_minutes: Number(overview.active_last_10_minutes || 0),
         total_page_views: Number(overview.total_page_views || 0),
+        readers_today: Number(readerActivity.readers_today || 0),
+        active_readers_last_10_minutes: Number(readerActivity.active_readers_last_10_minutes || 0),
+        stories_updated_today: Number(storyUpdates.stories_updated_today || 0),
+        episodes_published_today: Number(storyUpdates.episodes_published_today || 0),
         suspected_bots: suspectedBots,
         normal_risk: normalRisk,
         low_risk: lowRisk,
