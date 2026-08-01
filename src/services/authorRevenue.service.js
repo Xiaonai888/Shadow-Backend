@@ -322,8 +322,21 @@ const shareDecision = resolveEffectiveAuthorShare({
   boostSharePercent: shareContext.boost_share_percent,
 })
 
+const directCostDiamonds = Math.min(
+  netPaidDiamonds,
+  Math.max(
+    0,
+    numberValue(metadata.direct_cost_diamonds)
+  )
+)
+
+const distributableNetRevenue = Math.max(
+  0,
+  netPaidDiamonds - directCostDiamonds
+)
+
 const revenueSplit = splitDistributableRevenue({
-  distributableNetRevenue: netPaidDiamonds,
+  distributableNetRevenue,
   authorSharePercent:
     shareDecision.effective_author_share_percent,
 })
@@ -354,7 +367,8 @@ const authorNetPayoutUsd = authorGrossUsd
       paid_diamonds: netPaidDiamonds,
       original_diamonds: originalDiamonds,
       discount_percent: percentValue(metadata.discount_percent),
-      net_paid_diamonds: netPaidDiamonds,
+      net_paid_diamonds:
+      revenueSplit.distributable_net_revenue,
       author_share_percent: authorSharePercent,
       share_source: shareDecision.effective_share_source,
       quest_stage_number: shareContext.quest_stage_number,
