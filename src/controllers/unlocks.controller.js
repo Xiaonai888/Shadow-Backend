@@ -365,6 +365,27 @@ function calculateDiamondCost(count, discountPercent = 0, rules = FALLBACK_RULES
   }
 }
 
+function calculateCoinCost(rules = FALLBACK_RULES) {
+  const original = getRuleNumber(
+    rules,
+    'gem_per_episode'
+  )
+  const blackSunday =
+    applyBlackSundayDiscount(original)
+
+  return {
+    original,
+    total: blackSunday.amount,
+    black_sunday_active:
+      blackSunday.event.active,
+    black_sunday_discount_percent:
+      blackSunday.discount_percent,
+    black_sunday_discount_amount:
+      blackSunday.discount_amount,
+    event: blackSunday.event,
+  }
+}
+
 function publicPackageOption({ rule, availableEpisodes, story, rules }) {
   const availableCount = availableEpisodes.length
   const requiredCount = rule.key === 'all_released' ? availableCount : Number(rule.count || 0)
@@ -867,6 +888,9 @@ export async function getEpisodeUnlockStatus(req, res) {
 
 const readerAdvertisement = adPolicy.show_read_ad ? await getFreeUnlockAdvertisement() : null
 
+const coinCost =
+  calculateCoinCost(payload.rules)
+
     return res.status(200).json({
       ok: true,
       locked: !payload.unlocked,
@@ -901,11 +925,20 @@ const readerAdvertisement = adPolicy.show_read_ad ? await getFreeUnlockAdvertise
             (item) => item.key === 'single'
           )?.black_sunday_discount_percent || 0,
       },
-     gem_access: {
+          gem_access: {
   currency: 'gem',
   display_currency: 'coin',
-  amount: getRuleNumber(payload.rules, 'gem_per_episode'),
-  coin_amount: getRuleNumber(payload.rules, 'gem_per_episode'),
+  amount: coinCost.total,
+  original_amount: coinCost.original,
+  coin_amount: coinCost.total,
+  original_coin_amount: coinCost.original,
+  black_sunday_active:
+    coinCost.black_sunday_active,
+  black_sunday_discount_percent:
+    coinCost.black_sunday_discount_percent,
+  black_sunday_discount_amount:
+    coinCost.black_sunday_discount_amount,
+  event: coinCost.event,
   access_days: getRuleNumber(payload.rules, 'gem_access_days'),
   coin_access_days: getRuleNumber(payload.rules, 'gem_access_days'),
   available: payload.gemWait.available && payload.gemLimits.daily.allowed && payload.gemLimits.monthly_story.allowed,
@@ -915,7 +948,15 @@ const readerAdvertisement = adPolicy.show_read_ad ? await getFreeUnlockAdvertise
 },
 coin_access: {
   currency: 'coin',
-  amount: getRuleNumber(payload.rules, 'gem_per_episode'),
+  amount: coinCost.total,
+  original_amount: coinCost.original,
+  black_sunday_active:
+    coinCost.black_sunday_active,
+  black_sunday_discount_percent:
+    coinCost.black_sunday_discount_percent,
+  black_sunday_discount_amount:
+    coinCost.black_sunday_discount_amount,
+  event: coinCost.event,
   access_days: getRuleNumber(payload.rules, 'gem_access_days'),
   available: payload.gemWait.available && payload.gemLimits.daily.allowed && payload.gemLimits.monthly_story.allowed,
   available_at: payload.gemWait.available_at,
@@ -1196,8 +1237,13 @@ export async function unlockEpisodeWithGems(req, res) {
       })
     }
 
-    const gemPrice = getRuleNumber(payload.rules, 'gem_per_episode')
-    const accessDays = getRuleNumber(payload.rules, 'gem_access_days')
+    const coinCost =
+      calculateCoinCost(payload.rules)
+    const gemPrice = coinCost.total
+    const accessDays = getRuleNumber(
+      payload.rules,
+      'gem_access_days'
+    )
 
     if (Number(payload.wallet.gem_balance || 0) < gemPrice) {
       return res.status(402).json({
