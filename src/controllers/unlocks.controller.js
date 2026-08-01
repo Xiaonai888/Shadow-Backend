@@ -1117,7 +1117,17 @@ export async function unlockEpisodePackageWithDiamonds(req, res) {
         episode_count: episodesToUnlock.length,
         discount_percent: option.discount_percent,
         original_price: option.original_price,
+        package_price: option.package_price,
         final_price: option.price,
+        black_sunday_active:
+          option.black_sunday_active,
+        black_sunday_discount_percent:
+          option.black_sunday_discount_percent,
+        black_sunday_discount_amount:
+          option.black_sunday_discount_amount,
+        event_key: option.event?.key || '',
+        event_time_zone:
+          option.event?.time_zone || '',
         reader_tier: tier,
       },
     })
@@ -1328,29 +1338,55 @@ export async function unlockEpisodeWithVoucher(req, res) {
       })
     }
 
-    if (!payload.gemWait.available) {
+        if (!payload.gemWait.available) {
+      const waitText = formatWaitDuration(
+        payload.gemWait.wait_seconds
+      )
+      const unlockDateText = formatUnlockDateTime(
+        payload.gemWait.available_at
+      )
+      const waitCoinCost =
+        calculateCoinCost(payload.rules)
+
       return res.status(403).json({
         ok: false,
-        code: 'VOUCHER_WAIT_REQUIRED',
-        message: 'This episode is newly released. Voucher unlock is not available yet.',
-        available_at: payload.gemWait.available_at,
-        wait_seconds: payload.gemWait.wait_seconds,
+        code: 'COIN_WAIT_REQUIRED',
+        legacy_code: 'GEM_WAIT_REQUIRED',
+        message: `This episode is newly released. Coin access will be available in ${waitText}.${unlockDateText ? ` Unlocks on ${unlockDateText}.` : ''}`,
+        available_at:
+          payload.gemWait.available_at,
+        wait_seconds:
+          payload.gemWait.wait_seconds,
+        coin_access: {
+          amount: waitCoinCost.total,
+          original_amount:
+            waitCoinCost.original,
+          black_sunday_active:
+            waitCoinCost.black_sunday_active,
+          black_sunday_discount_percent:
+            waitCoinCost.black_sunday_discount_percent,
+          access_days: getRuleNumber(
+            payload.rules,
+            'gem_access_days'
+          ),
+        },
+        gem_access: {
+          amount: waitCoinCost.total,
+          original_amount:
+            waitCoinCost.original,
+          black_sunday_active:
+            waitCoinCost.black_sunday_active,
+          black_sunday_discount_percent:
+            waitCoinCost.black_sunday_discount_percent,
+          access_days: getRuleNumber(
+            payload.rules,
+            'gem_access_days'
+          ),
+        },
         wallet: publicWallet(payload.wallet),
       })
     }
 
-    const voucherPrice = getRuleNumber(payload.rules, 'voucher_cost_per_episode')
-
-    if (Number(payload.wallet.voucher_balance || 0) < voucherPrice) {
-      return res.status(402).json({
-        ok: false,
-        code: 'INSUFFICIENT_VOUCHERS',
-        message: 'Not enough Vouchers',
-        need: voucherPrice - Number(payload.wallet.voucher_balance || 0),
-        price: voucherPrice,
-        wallet: publicWallet(payload.wallet),
-      })
-    }
 
     const updatedWallet = await updateVoucherBalance({
       userId,
