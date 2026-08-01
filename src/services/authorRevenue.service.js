@@ -195,18 +195,8 @@ async function upsertQuestProgress({ authorPage, bestStage, totals }) {
 }
 
 async function getAuthorShareContext(authorPage, settings) {
-  const activeBoost = await getActiveLifetimeBoost(authorPage.id)
-
-  if (activeBoost?.status === 'active') {
-    return {
-      share_percent: percentValue(activeBoost.share_percent),
-      share_source: 'lifetime_boost',
-      quest_stage_number: null,
-      lifetime_boost_id: activeBoost.id,
-    }
-  }
-
-  const [stages, totals] = await Promise.all([
+  const [activeBoost, stages, totals] = await Promise.all([
+    getActiveLifetimeBoost(authorPage.id),
     getQuestStages(),
     getAuthorTotals(authorPage),
   ])
@@ -218,11 +208,35 @@ async function getAuthorShareContext(authorPage, settings) {
     totals,
   })
 
+  const questSharePercent = percentValue(
+    progress.current_share_percent ||
+      settings.default_share_percent ||
+      10
+  )
+
+  const boostSharePercent =
+    activeBoost?.status === 'active'
+      ? percentValue(activeBoost.share_percent)
+      : 0
+
   return {
-    share_percent: percentValue(progress.current_share_percent || settings.default_share_percent || 10),
-    share_source: 'quest_stage',
-    quest_stage_number: numberValue(progress.current_stage_number || 1),
-    lifetime_boost_id: null,
+    quest_share_percent: questSharePercent,
+    boost_share_percent: boostSharePercent,
+    share_percent: Math.max(
+      questSharePercent,
+      boostSharePercent
+    ),
+    share_source:
+      boostSharePercent > questSharePercent
+        ? 'lifetime_boost'
+        : 'quest_stage',
+    quest_stage_number: numberValue(
+      progress.current_stage_number || 1
+    ),
+    lifetime_boost_id:
+      activeBoost?.status === 'active'
+        ? activeBoost.id
+        : null,
   }
 }
 
