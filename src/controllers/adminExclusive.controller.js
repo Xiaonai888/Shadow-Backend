@@ -97,10 +97,22 @@ export async function listAdminExclusiveStories(req, res) {
 
     if (error) throw error
 
+    const [approvedResult, pendingResult] = await Promise.all([
+  supabase.from('stories').select('id', { count: 'exact', head: true }).eq('status', 'published').eq('is_shadow_exclusive', true).eq('exclusive_status', 'approved'),
+  supabase.from('stories').select('id', { count: 'exact', head: true }).eq('status', 'published').eq('exclusive_status', 'pending'),
+])
+
+if (approvedResult.error) throw approvedResult.error
+if (pendingResult.error) throw pendingResult.error
+
     return res.status(200).json({
-      ok: true,
-      stories: (data || []).map(storyListItem),
-    })
+  ok: true,
+  stories: (data || []).map(storyListItem),
+  summary: {
+    exclusive_stories: approvedResult.count || 0,
+    pending_requests: pendingResult.count || 0,
+  },
+})
   } catch (error) {
     console.error('LIST ADMIN EXCLUSIVE STORIES ERROR:', error)
 
