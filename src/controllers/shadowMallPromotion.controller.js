@@ -150,6 +150,36 @@ async function deleteUrls(urls = []) {
   )
 }
 
+async function validateStoryForPromotion(storyId) {
+  const { data: story, error } = await supabase
+    .from('stories')
+    .select('id, status, admin_visibility_status, deleted_at')
+    .eq('id', storyId)
+    .is('deleted_at', null)
+    .maybeSingle()
+
+  if (error) throw error
+
+  const isPublished =
+    String(story?.status || '').toLowerCase() === 'published'
+
+  const isActive =
+    String(
+      story?.admin_visibility_status || 'active'
+    ).toLowerCase() === 'active'
+
+  if (!story || !isPublished || !isActive) {
+    const validationError = new Error(
+      'Selected story must be published and active'
+    )
+
+    validationError.statusCode = 400
+    throw validationError
+  }
+
+  return story
+}
+
 async function readPromotionById(id) {
   const { data, error } = await supabase
     .from('shadow_mall_ads')
@@ -497,12 +527,16 @@ async function createPromotionRecord(req) {
 
   try {
     const payload = buildPromotionPayload(
-      req,
-      images,
-      nextDisplayOrder
-    )
+  req,
+  images,
+  nextDisplayOrder
+)
 
-    const { data, error } = await supabase
+if (payload.promotion_type === 'story_sale') {
+  await validateStoryForPromotion(payload.story_id)
+}
+
+const { data, error } = await supabase
       .from('shadow_mall_ads')
       .insert(payload)
       .select('*')
@@ -525,13 +559,17 @@ async function updatePromotionRecord(req, current) {
 
   try {
     const payload = buildPromotionPayload(
-      req,
-      images,
-      current.display_order || 1,
-      current
-    )
+  req,
+  images,
+  current.display_order || 1,
+  current
+)
 
-    const { data, error } = await supabase
+if (payload.promotion_type === 'story_sale') {
+  await validateStoryForPromotion(payload.story_id)
+}
+
+const { data, error } = await supabase
       .from('shadow_mall_ads')
       .update(payload)
       .eq('id', current.id)
