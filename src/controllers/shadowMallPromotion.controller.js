@@ -11,6 +11,10 @@ const DEFAULT_PROMOTION = {
     'Discover signed novels, limited merch, and reader gifts from official publishers.',
   button_text: 'Shop now',
   link_url: '/shop',
+  promotion_type: 'link',
+  story_id: null,
+  original_price_diamonds: null,
+  sale_price_diamonds: null,
   profile_image_url: '',
   image_url: '',
   display_order: 1,
@@ -44,6 +48,16 @@ function toPositiveInteger(value, fallback = 1) {
   return Math.floor(number)
 }
 
+function toNullablePositiveInteger(value) {
+  if (value === undefined || value === null || value === '') return null
+
+  const number = Number(value)
+
+  return Number.isFinite(number) && number > 0
+    ? Math.floor(number)
+    : null
+}
+
 function normalizePromotion(value) {
   const promotion = value || DEFAULT_PROMOTION
 
@@ -54,6 +68,19 @@ function normalizePromotion(value) {
     description: promotion.description || '',
     button_text: promotion.button_text || 'Shop now',
     link_url: promotion.link_url || '/shop',
+    promotion_type:
+      promotion.promotion_type === 'story_sale'
+        ? 'story_sale'
+        : 'link',
+    story_id: promotion.story_id || null,
+    original_price_diamonds:
+      toNullablePositiveInteger(
+        promotion.original_price_diamonds
+      ),
+    sale_price_diamonds:
+      toNullablePositiveInteger(
+        promotion.sale_price_diamonds
+      ),
     profile_image_url: promotion.profile_image_url || '',
     image_url: promotion.image_url || '',
     display_order: toPositiveInteger(
@@ -328,7 +355,54 @@ function buildPromotionPayload(
     throw error
   }
 
+  const promotionType =
+    String(req.body.promotion_type || 'link') ===
+    'story_sale'
+      ? 'story_sale'
+      : 'link'
 
+  const storyId =
+    promotionType === 'story_sale'
+      ? String(req.body.story_id || '').trim()
+      : null
+
+  const originalPriceDiamonds =
+    promotionType === 'story_sale'
+      ? toNullablePositiveInteger(
+          req.body.original_price_diamonds
+        )
+      : null
+
+  const salePriceDiamonds =
+    promotionType === 'story_sale'
+      ? toNullablePositiveInteger(
+          req.body.sale_price_diamonds
+        )
+      : null
+
+  if (
+    promotionType === 'story_sale' &&
+    (!storyId ||
+      !originalPriceDiamonds ||
+      !salePriceDiamonds)
+  ) {
+    const error = new Error(
+      'Story and both Diamond prices are required'
+    )
+    error.statusCode = 400
+    throw error
+  }
+
+  if (
+    promotionType === 'story_sale' &&
+    salePriceDiamonds > originalPriceDiamonds
+  ) {
+    const error = new Error(
+      'Sale price cannot be higher than original price'
+    )
+    error.statusCode = 400
+    throw error
+  }
   const isActive = toBoolean(
     req.body.is_active,
     current ? Boolean(current.is_active) : true
@@ -347,10 +421,16 @@ function buildPromotionPayload(
       String(
         req.body.button_text || 'Shop now'
       ).trim() || 'Shop now',
-    link_url:
+        link_url:
       String(
         req.body.link_url || '/shop'
       ).trim() || '/shop',
+    promotion_type: promotionType,
+    story_id: storyId,
+    original_price_diamonds:
+      originalPriceDiamonds,
+    sale_price_diamonds:
+      salePriceDiamonds,
     profile_image_url: images.profileImageUrl,
     image_url: images.imageUrl,
     display_order: toPositiveInteger(
@@ -378,6 +458,10 @@ function buildPromotionPayload(
     'description',
     'button_text',
     'link_url',
+    'promotion_type',
+    'story_id',
+    'original_price_diamonds',
+    'sale_price_diamonds',
     'profile_image_url',
     'image_url',
   ]
