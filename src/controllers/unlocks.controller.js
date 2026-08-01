@@ -830,16 +830,18 @@ async function createUnlocksAndTransactions({ userId, storyId, episodes, unlockT
   if (unlockError) throw unlockError
 
   const unlockMap = new Map((unlocks || []).map((unlock) => [unlock.episode_id, unlock.id]))
-  const perEpisodeAmount = episodes.length > 0 ? Math.ceil(Number(transactionAmount || 0) / episodes.length) : 0
-
-  const transactionRows = episodes.map((episode) => ({
+  const totalTransactionAmount = Math.max(0, Math.floor(Number(transactionAmount || 0)))
+  const baseAmount = episodes.length > 0 ? Math.floor(totalTransactionAmount / episodes.length) : 0
+  const remainderAmount = episodes.length > 0 ? totalTransactionAmount % episodes.length : 0
+  
+  const transactionRows = episodes.map((episode, index) => ({
     unlock_id: unlockMap.get(episode.id) || null,
     user_id: userId,
     story_id: storyId,
     episode_id: episode.id,
     author_id: episode.author_id,
     currency: transactionCurrency,
-    amount: perEpisodeAmount,
+    amount: baseAmount + (index < remainderAmount ? 1 : 0),
     transaction_type: 'unlock',
     metadata: {
       ...metadata,
