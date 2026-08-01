@@ -1205,140 +1205,6 @@ export async function unlockEpisodeWithGems(req, res) {
     }
 
     if (!payload.gemWait.available) {
-  const waitText = formatWaitDuration(payload.gemWait.wait_seconds)
-  const unlockDateText = formatUnlockDateTime(payload.gemWait.available_at)
-
-  return res.status(403).json({
-    ok: false,
-    code: 'COIN_WAIT_REQUIRED',
-    legacy_code: 'GEM_WAIT_REQUIRED',
-    message: `This episode is newly released. Coin access will be available in ${waitText}.${unlockDateText ? ` Unlocks on ${unlockDateText}.` : ''}`,
-    available_at: payload.gemWait.available_at,
-    wait_seconds: payload.gemWait.wait_seconds,
-    coin_access: {
-      amount: getRuleNumber(payload.rules, 'gem_per_episode'),
-      access_days: getRuleNumber(payload.rules, 'gem_access_days'),
-    },
-    gem_access: {
-      amount: getRuleNumber(payload.rules, 'gem_per_episode'),
-      access_days: getRuleNumber(payload.rules, 'gem_access_days'),
-    },
-    wallet: publicWallet(payload.wallet),
-  })
-}
-
-    if (!payload.gemLimits.daily.allowed) {
-      return res.status(403).json({
-        ok: false,
-        code: 'GEM_DAILY_LIMIT_REACHED',
-        message: `You reached your daily Coin unlock limit for ${tier} readers.`,
-        limit_status: payload.gemLimits,
-        wallet: publicWallet(payload.wallet),
-      })
-    }
-
-    if (!payload.gemLimits.monthly_story.allowed) {
-      return res.status(403).json({
-        ok: false,
-        code: 'GEM_MONTHLY_STORY_LIMIT_REACHED',
-        message: `You reached your monthly Coin unlock limit for this story.`,
-        limit_status: payload.gemLimits,
-        wallet: publicWallet(payload.wallet),
-      })
-    }
-
-    const coinCost =
-      calculateCoinCost(payload.rules)
-    const gemPrice = coinCost.total
-    const accessDays = getRuleNumber(
-      payload.rules,
-      'gem_access_days'
-    )
-
-    if (Number(payload.wallet.gem_balance || 0) < gemPrice) {
-      return res.status(402).json({
-        ok: false,
-        code: 'INSUFFICIENT_COINS',
-        legacy_code: 'INSUFFICIENT_GEMS',
-        message: 'Not enough Coins',
-        need: gemPrice - Number(payload.wallet.gem_balance || 0),
-        price: gemPrice,
-        wallet: publicWallet(payload.wallet),
-      })
-    }
-
-    const expiresAt = new Date(Date.now() + accessDays * 24 * 60 * 60 * 1000).toISOString()
-    const updatedWallet = await updateGemBalance({
-      userId,
-      wallet: payload.wallet,
-      amount: gemPrice,
-    })
-
-    const unlocks = await createUnlocksAndTransactions({
-      userId,
-      storyId,
-      episodes: [payload.episode],
-      unlockType: 'gem',
-      unlockScope: 'single',
-      accessType: 'temporary',
-      expiresAt,
-      diamondSpent: 0,
-      transactionCurrency: 'gem',
-      transactionAmount: gemPrice,
-      metadata: {
-        access_days: accessDays,
-        reader_tier: tier,
-        daily_limit_status: payload.gemLimits.daily,
-        monthly_story_limit_status: payload.gemLimits.monthly_story,
-      },
-    })
-
-    return res.status(200).json({
-      ok: true,
-      message: 'Episode unlocked with Coins',
-      unlocked: true,
-      access_type: 'temporary',
-      expires_at: expiresAt,
-      unlocked_episode_ids: unlocks.map((unlock) => unlock.episode_id),
-      wallet: publicWallet(updatedWallet),
-    })
-  } catch (error) {
-    console.error('UNLOCK EPISODE WITH GEMS ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to unlock episode with Coins',
-      error: error.message,
-    })
-  }
-}
-
-
-export async function unlockEpisodeWithVoucher(req, res) {
-  try {
-    const userId = req.user?.user_id
-    const { storyId, episodeId } = req.params
-    const tier = getReaderTier(req)
-
-    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId, tier })
-
-    if (payload.notFound) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Episode not found',
-      })
-    }
-
-    if (payload.freeEpisode || payload.unlocked) {
-      return res.status(200).json({
-        ok: true,
-        message: 'Episode already unlocked',
-        unlocked: true,
-        wallet: publicWallet(payload.wallet),
-      })
-    }
-
-        if (!payload.gemWait.available) {
       const waitText = formatWaitDuration(
         payload.gemWait.wait_seconds
       )
@@ -1387,6 +1253,185 @@ export async function unlockEpisodeWithVoucher(req, res) {
       })
     }
 
+    if (!payload.gemLimits.daily.allowed) {
+      return res.status(403).json({
+        ok: false,
+        code: 'GEM_DAILY_LIMIT_REACHED',
+        message: `You reached your daily Coin unlock limit for ${tier} readers.`,
+        limit_status: payload.gemLimits,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    if (!payload.gemLimits.monthly_story.allowed) {
+      return res.status(403).json({
+        ok: false,
+        code: 'GEM_MONTHLY_STORY_LIMIT_REACHED',
+        message: 'You reached your monthly Coin unlock limit for this story.',
+        limit_status: payload.gemLimits,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    const coinCost =
+      calculateCoinCost(payload.rules)
+    const gemPrice = coinCost.total
+    const accessDays = getRuleNumber(
+      payload.rules,
+      'gem_access_days'
+    )
+
+    if (Number(payload.wallet.gem_balance || 0) < gemPrice) {
+      return res.status(402).json({
+        ok: false,
+        code: 'INSUFFICIENT_COINS',
+        legacy_code: 'INSUFFICIENT_GEMS',
+        message: 'Not enough Coins',
+        need:
+          gemPrice -
+          Number(
+            payload.wallet.gem_balance || 0
+          ),
+        price: gemPrice,
+        original_price: coinCost.original,
+        black_sunday_active:
+          coinCost.black_sunday_active,
+        black_sunday_discount_percent:
+          coinCost.black_sunday_discount_percent,
+        black_sunday_discount_amount:
+          coinCost.black_sunday_discount_amount,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    const expiresAt = new Date(
+      Date.now() +
+        accessDays * 24 * 60 * 60 * 1000
+    ).toISOString()
+
+    const updatedWallet = await updateGemBalance({
+      userId,
+      wallet: payload.wallet,
+      amount: gemPrice,
+    })
+
+    const unlocks = await createUnlocksAndTransactions({
+      userId,
+      storyId,
+      episodes: [payload.episode],
+      unlockType: 'gem',
+      unlockScope: 'single',
+      accessType: 'temporary',
+      expiresAt,
+      diamondSpent: 0,
+      transactionCurrency: 'gem',
+      transactionAmount: gemPrice,
+      metadata: {
+        access_days: accessDays,
+        reader_tier: tier,
+        original_price: coinCost.original,
+        final_price: gemPrice,
+        black_sunday_active:
+          coinCost.black_sunday_active,
+        black_sunday_discount_percent:
+          coinCost.black_sunday_discount_percent,
+        black_sunday_discount_amount:
+          coinCost.black_sunday_discount_amount,
+        event_key: coinCost.event?.key || '',
+        event_time_zone:
+          coinCost.event?.time_zone || '',
+        daily_limit_status:
+          payload.gemLimits.daily,
+        monthly_story_limit_status:
+          payload.gemLimits.monthly_story,
+      },
+    })
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Episode unlocked with Coins',
+      unlocked: true,
+      access_type: 'temporary',
+      expires_at: expiresAt,
+      price: gemPrice,
+      original_price: coinCost.original,
+      black_sunday_active:
+        coinCost.black_sunday_active,
+      black_sunday_discount_percent:
+        coinCost.black_sunday_discount_percent,
+      black_sunday_discount_amount:
+        coinCost.black_sunday_discount_amount,
+      unlocked_episode_ids: unlocks.map(
+        (unlock) => unlock.episode_id
+      ),
+      wallet: publicWallet(updatedWallet),
+    })
+  } catch (error) {
+    console.error('UNLOCK EPISODE WITH GEMS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to unlock episode with Coins',
+      error: error.message,
+    })
+  }
+}
+
+
+export async function unlockEpisodeWithVoucher(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const { storyId, episodeId } = req.params
+    const tier = getReaderTier(req)
+
+    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId, tier })
+
+    if (payload.notFound) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Episode not found',
+      })
+    }
+
+    if (payload.freeEpisode || payload.unlocked) {
+      return res.status(200).json({
+        ok: true,
+        message: 'Episode already unlocked',
+        unlocked: true,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    if (!payload.gemWait.available) {
+      return res.status(403).json({
+        ok: false,
+        code: 'VOUCHER_WAIT_REQUIRED',
+        message: 'This episode is newly released. Voucher unlock is not available yet.',
+        available_at: payload.gemWait.available_at,
+        wait_seconds: payload.gemWait.wait_seconds,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    const voucherPrice = getRuleNumber(
+      payload.rules,
+      'voucher_cost_per_episode'
+    )
+
+    if (Number(payload.wallet.voucher_balance || 0) < voucherPrice) {
+      return res.status(402).json({
+        ok: false,
+        code: 'INSUFFICIENT_VOUCHERS',
+        message: 'Not enough Vouchers',
+        need:
+          voucherPrice -
+          Number(
+            payload.wallet.voucher_balance || 0
+          ),
+        price: voucherPrice,
+        wallet: publicWallet(payload.wallet),
+      })
+    }
 
     const updatedWallet = await updateVoucherBalance({
       userId,
@@ -1415,7 +1460,9 @@ export async function unlockEpisodeWithVoucher(req, res) {
       message: 'Episode unlocked with Voucher',
       unlocked: true,
       access_type: 'permanent',
-      unlocked_episode_ids: unlocks.map((unlock) => unlock.episode_id),
+      unlocked_episode_ids: unlocks.map(
+        (unlock) => unlock.episode_id
+      ),
       wallet: publicWallet(updatedWallet),
     })
   } catch (error) {
