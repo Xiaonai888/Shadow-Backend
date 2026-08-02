@@ -34,6 +34,7 @@ async function sumDiamondField({
     .select(field)
     .eq('author_id', authorId)
     .eq('currency', 'diamond')
+    .eq('source_type', 'diamond_unlock')
     .neq('earning_status', 'void')
     .gte('created_at', from)
 
@@ -96,10 +97,10 @@ export async function getAuthorProfileSummary(authorId) {
       from: todayStartIso,
     }),
     sumDiamondField({
-  authorId,
-  field: 'author_net_payout_usd',
-  from: monthStartIso,
-}),
+      authorId,
+      field: 'author_net_payout_usd',
+      from: monthStartIso,
+    }),
     getMonthlyGiftCount(authorId, monthStartIso),
   ])
 
