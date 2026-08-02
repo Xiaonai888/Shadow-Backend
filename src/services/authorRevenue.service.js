@@ -349,11 +349,26 @@ const authorEarnedDiamonds =
 
 const platformEarnedDiamonds =
   revenueSplit.platform_revenue
-    const authorGrossUsd = authorEarnedDiamonds * numberValue(settings.diamond_to_usd_rate)
-    const withholdingEnabled = false
-const withholdingPercent = 0
-const withholdingAmountUsd = 0
-const authorNetPayoutUsd = authorGrossUsd
+    const authorGrossUsd =
+  authorEarnedDiamonds *
+  numberValue(settings.diamond_to_usd_rate)
+
+const withholdingEnabled = Boolean(
+  settings.withholding_enabled
+)
+
+const withholdingPercent = withholdingEnabled
+  ? percentValue(settings.withholding_percent)
+  : 0
+
+const withholdingAmountUsd =
+  authorGrossUsd *
+  (withholdingPercent / 100)
+
+const authorNetPayoutUsd = Math.max(
+  0,
+  authorGrossUsd - withholdingAmountUsd
+)
 
     rows.push({
       author_id: authorPage.id,
@@ -366,7 +381,10 @@ const authorNetPayoutUsd = authorGrossUsd
       currency: 'diamond',
       paid_diamonds: netPaidDiamonds,
       original_diamonds: originalDiamonds,
-      discount_percent: percentValue(metadata.discount_percent),
+      discount_percent: percentValue(
+  metadata.total_discount_percent ??
+    metadata.discount_percent
+),
       net_paid_diamonds:
       revenueSplit.distributable_net_revenue,
       author_share_percent: authorSharePercent,
@@ -384,7 +402,23 @@ const authorNetPayoutUsd = authorGrossUsd
       earning_status: numberValue(settings.payout_pending_days) > 0 ? 'pending' : 'available',
       earning_month: getMonthKey(),
       available_at: addDaysIso(settings.payout_pending_days),
-      metadata,
+      metadata: {
+        ...metadata,
+        direct_cost_diamonds: directCostDiamonds,
+        distributable_net_revenue_diamonds:
+          revenueSplit.distributable_net_revenue,
+        quest_share_percent:
+          shareDecision.quest_share_percent,
+        event_share_percent:
+          shareDecision.event_share_percent,
+        boost_share_percent:
+          shareDecision.boost_share_percent,
+        effective_author_share_percent:
+          authorSharePercent,
+        effective_share_source:
+          shareDecision.effective_share_source,
+        revenue_rules_version: '2026-08-02',
+      },
       updated_at: new Date().toISOString(),
     })
   }
