@@ -132,18 +132,6 @@ function getNextPayoutDate(settings) {
   ).toISOString()
 }
 
-function getNextPayoutDate(settings) {
-  const payoutDay = Math.max(1, Math.min(28, numberValue(settings?.payout_day || 15)))
-  const now = new Date()
-  let payoutDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), payoutDay, 0, 0, 0))
-
-  if (now.getUTCDate() >= payoutDay) {
-    payoutDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, payoutDay, 0, 0, 0))
-  }
-
-  return payoutDate.toISOString()
-}
-
 function publicPaymentMethod(method) {
   if (!method) return null
 
