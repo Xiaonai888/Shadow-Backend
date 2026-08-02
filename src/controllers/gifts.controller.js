@@ -253,6 +253,31 @@ export async function sendStoryGift(req, res) {
       const readerName = reader?.name || reader?.username || 'A reader'
       const giftName = gift?.name || gift?.gift_name || giftKey
       const giftId = gift?.id || gift?.gift_id || `${storyId}:${userId}:${Date.now()}`
+      const giftImagePath =
+        gift?.image_path ||
+        gift?.image ||
+        gift?.gift_image_path ||
+        ''
+
+      await recordAuthorGiftSafely({
+        sourceKey: `story-gift:${giftId}`,
+        authorId: story.author_id,
+        authorUserId: story.user_id || null,
+        readerId: userId,
+        readerName,
+        readerUsername: reader?.username || '',
+        readerAvatarUrl: reader?.avatar_url || '',
+        storyId,
+        storyTitle: story.title || 'Story',
+        giftId: gift?.id || gift?.gift_id || null,
+        giftKey,
+        giftName,
+        giftImagePath,
+        quantity,
+        currency: gift?.currency || '',
+        price: Number(gift?.price || 0),
+        supportPoints: Number(gift?.support_points || 0),
+      })
 
       await createAuthorStoryNotificationSafely({
         authorId: story.author_id,
@@ -266,6 +291,7 @@ export async function sendStoryGift(req, res) {
           gift_id: gift?.id || gift?.gift_id || null,
           gift_key: giftKey,
           gift_name: giftName,
+          gift_image_path: giftImagePath,
           quantity,
           currency: gift?.currency || null,
           price: Number(gift?.price || 0),
