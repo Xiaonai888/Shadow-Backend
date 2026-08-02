@@ -510,10 +510,21 @@ function publicPackageOption({
       : rule.key === 'all_released'
         ? 'All Released Episodes works when the story has more than 70 released locked episodes or the story is completed.'
         : `This story does not have ${requiredCount} locked released episodes available from this point.`,
-    discount_percent: cost.discount_percent,
-    original_price: cost.original,
-    package_price: cost.package_price,
-    price: cost.total,
+    discount_percent:
+  cost.total_discount_percent,
+package_discount_percent:
+  cost.package_discount_percent,
+premium_discount_percent:
+  cost.premium_discount_percent,
+total_discount_percent:
+  cost.total_discount_percent,
+total_discount_amount:
+  cost.total_discount_amount,
+applied_discounts:
+  cost.applied_discounts,
+original_price: cost.original,
+package_price: cost.package_price,
+price: cost.total,
     black_sunday_active: cost.black_sunday_active,
     black_sunday_discount_percent:
       cost.black_sunday_discount_percent,
@@ -807,37 +818,42 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
     gemWait,
     gemLimits,
     packageOptions: [
-      publicPackageOption({
-        rule: PACKAGE_RULES.single,
-        availableEpisodes,
-        story,
-        rules,
-      }),
-      publicPackageOption({
-        rule: PACKAGE_RULES.next10,
-        availableEpisodes,
-        story,
-        rules,
-      }),
-      publicPackageOption({
-        rule: PACKAGE_RULES.next30,
-        availableEpisodes,
-        story,
-        rules,
-      }),
-      publicPackageOption({
-        rule: PACKAGE_RULES.next50,
-        availableEpisodes,
-        story,
-        rules,
-      }),
-      publicPackageOption({
-        rule: PACKAGE_RULES.all_released,
-        availableEpisodes,
-        story,
-        rules,
-      }),
-    ],
+  publicPackageOption({
+    rule: PACKAGE_RULES.single,
+    availableEpisodes,
+    story,
+    rules,
+    tier,
+  }),
+  publicPackageOption({
+    rule: PACKAGE_RULES.next10,
+    availableEpisodes,
+    story,
+    rules,
+    tier,
+  }),
+  publicPackageOption({
+    rule: PACKAGE_RULES.next30,
+    availableEpisodes,
+    story,
+    rules,
+    tier,
+  }),
+  publicPackageOption({
+    rule: PACKAGE_RULES.next50,
+    availableEpisodes,
+    story,
+    rules,
+    tier,
+  }),
+  publicPackageOption({
+    rule: PACKAGE_RULES.all_released,
+    availableEpisodes,
+    story,
+    rules,
+    tier,
+  }),
+],
   }
 }
 
@@ -1309,10 +1325,21 @@ export async function unlockEpisodePackageWithDiamonds(req, res) {
         package_key: packageKey,
         package_label: option.label,
         episode_count: episodesToUnlock.length,
-        discount_percent: option.discount_percent,
-        original_price: option.original_price,
-        package_price: option.package_price,
-        final_price: option.price,
+        discount_percent:
+  option.total_discount_percent,
+package_discount_percent:
+  option.package_discount_percent,
+premium_discount_percent:
+  option.premium_discount_percent,
+total_discount_percent:
+  option.total_discount_percent,
+total_discount_amount:
+  option.total_discount_amount,
+applied_discounts:
+  option.applied_discounts,
+original_price: option.original_price,
+package_price: option.package_price,
+final_price: option.price,
         black_sunday_active:
           option.black_sunday_active,
         black_sunday_discount_percent:
