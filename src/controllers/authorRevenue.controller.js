@@ -742,6 +742,116 @@ export async function getMyAuthorQuest(req, res) {
   }
 }
 
+export async function activateMyAuthorLifetimeBoost(
+  req,
+  res
+) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({
+        ok: false,
+        message: 'Please create an author page first',
+      })
+    }
+
+    const totals = await getAuthorTotals(authorPage)
+    const lastStage =
+      buildLastStageProgress(totals)
+
+    const lifetimeBoost =
+      await getOrCreateLifetimeBoost({
+        authorPage,
+        lastStage,
+      })
+
+    if (lifetimeBoost.status === 'active') {
+      return res.status(200).json({
+        ok: true,
+        message:
+          '100-Day Creator Boost is already active',
+        lifetime_boost: lifetimeBoost,
+      })
+    }
+
+    if (
+      !lastStage.completed ||
+      lifetimeBoost.status !== 'eligible'
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          '100-Day Creator Boost is not eligible yet',
+        lifetime_boost: lifetimeBoost,
+        last_stage: lastStage,
+      })
+    }
+
+    const startedAt = new Date()
+    const endedAt = new Date(
+      startedAt.getTime() +
+        100 * 24 * 60 * 60 * 1000
+    )
+
+    const {
+      data: activatedBoost,
+      error: activateError,
+    } = await supabase
+      .from('author_lifetime_boosts')
+      .update({
+        status: 'active',
+        share_percent: 100,
+        duration_days: 100,
+        started_at: startedAt.toISOString(),
+        ended_at: endedAt.toISOString(),
+        updated_at: startedAt.toISOString(),
+      })
+      .eq('id', lifetimeBoost.id)
+      .eq('status', 'eligible')
+      .select()
+      .maybeSingle()
+
+    if (activateError) throw activateError
+
+    if (!activatedBoost) {
+      return res.status(409).json({
+        ok: false,
+        message:
+          'Boost status changed. Please refresh and try again.',
+      })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message:
+        '100-Day Creator Boost activated successfully',
+      lifetime_boost: activatedBoost,
+    })
+  } catch (error) {
+    console.error(
+      'ACTIVATE AUTHOR LIFETIME BOOST ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to activate 100-Day Creator Boost',
+      error: error.message,
+    })
+  }
+}
+
 export async function getMyAuthorIncome(req, res) {
   try {
     const userId = req.user?.user_id
