@@ -11,6 +11,8 @@ import {
   isStoryVisibleToReader,
 } from '../services/storyAgeAccess.service.js'
 import { applyBlackSundayDiscount } from '../services/blackSunday.service.js'
+const CAMBODIA_TIME_OFFSET_MS =
+  7 * 60 * 60 * 1000
 
 const FALLBACK_RULES = {
   diamond_per_episode: 10,
@@ -269,17 +271,36 @@ async function getFreeUnlockAdvertisement() {
   return publicReaderAdvertisement(data)
 }
 
-function startOfTodayIso() {
-  const date = new Date()
-  date.setHours(0, 0, 0, 0)
-  return date.toISOString()
+function startOfTodayIso(date = new Date()) {
+  const cambodiaDate = new Date(
+    date.getTime() + CAMBODIA_TIME_OFFSET_MS
+  )
+
+  const localMidnightUtc = Date.UTC(
+    cambodiaDate.getUTCFullYear(),
+    cambodiaDate.getUTCMonth(),
+    cambodiaDate.getUTCDate()
+  )
+
+  return new Date(
+    localMidnightUtc - CAMBODIA_TIME_OFFSET_MS
+  ).toISOString()
 }
 
-function startOfMonthIso() {
-  const date = new Date()
-  date.setDate(1)
-  date.setHours(0, 0, 0, 0)
-  return date.toISOString()
+function startOfMonthIso(date = new Date()) {
+  const cambodiaDate = new Date(
+    date.getTime() + CAMBODIA_TIME_OFFSET_MS
+  )
+
+  const localMonthStartUtc = Date.UTC(
+    cambodiaDate.getUTCFullYear(),
+    cambodiaDate.getUTCMonth(),
+    1
+  )
+
+  return new Date(
+    localMonthStartUtc - CAMBODIA_TIME_OFFSET_MS
+  ).toISOString()
 }
 
 function getRuleNumber(rules, key) {
