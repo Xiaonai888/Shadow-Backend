@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
 import { createAuthorEarningsFromDiamondUnlock } from '../services/authorRevenue.service.js'
 import { createStoryReadingIncomeSafely } from '../services/storyReadingIncome.service.js'
@@ -12,6 +13,7 @@ import {
 } from '../services/storyAgeAccess.service.js'
 import { applyBlackSundayDiscount } from '../services/blackSunday.service.js'
 import { getAdditiveDiscountResult } from '../services/revenueRules.service.js'
+
 const CAMBODIA_TIME_OFFSET_MS =
   7 * 60 * 60 * 1000
 
@@ -382,7 +384,10 @@ function calculateDiamondCost({
 
   const packageDiscount = Math.max(
     0,
-    Math.min(100, Number(packageDiscountPercent || 0))
+    Math.min(
+      100,
+      Number(packageDiscountPercent || 0)
+    )
   )
 
   const premiumDiscount =
@@ -487,16 +492,25 @@ function publicPackageOption({
   tier = 'standard',
 }) {
   const availableCount = availableEpisodes.length
-  const requiredCount = rule.key === 'all_released' ? availableCount : Number(rule.count || 0)
-  const canUseAllReleased = rule.key !== 'all_released' || availableCount > 70 || isStoryCompleted(story)
-  const enabled = availableCount >= requiredCount && requiredCount > 0 && canUseAllReleased
+  const requiredCount =
+    rule.key === 'all_released'
+      ? availableCount
+      : Number(rule.count || 0)
+  const canUseAllReleased =
+    rule.key !== 'all_released' ||
+    availableCount > 70 ||
+    isStoryCompleted(story)
+  const enabled =
+    availableCount >= requiredCount &&
+    requiredCount > 0 &&
+    canUseAllReleased
   const cost = calculateDiamondCost({
-  count: requiredCount,
-  packageDiscountPercent:
-    rule.discount_percent,
-  tier,
-  rules,
-})
+    count: requiredCount,
+    packageDiscountPercent:
+      rule.discount_percent,
+    tier,
+    rules,
+  })
 
   return {
     key: rule.key,
@@ -511,28 +525,33 @@ function publicPackageOption({
         ? 'All Released Episodes works when the story has more than 70 released locked episodes or the story is completed.'
         : `This story does not have ${requiredCount} locked released episodes available from this point.`,
     discount_percent:
-  cost.total_discount_percent,
-package_discount_percent:
-  cost.package_discount_percent,
-premium_discount_percent:
-  cost.premium_discount_percent,
-total_discount_percent:
-  cost.total_discount_percent,
-total_discount_amount:
-  cost.total_discount_amount,
-applied_discounts:
-  cost.applied_discounts,
-original_price: cost.original,
-package_price: cost.package_price,
-price: cost.total,
-    black_sunday_active: cost.black_sunday_active,
+      cost.total_discount_percent,
+    package_discount_percent:
+      cost.package_discount_percent,
+    premium_discount_percent:
+      cost.premium_discount_percent,
+    total_discount_percent:
+      cost.total_discount_percent,
+    total_discount_amount:
+      cost.total_discount_amount,
+    applied_discounts:
+      cost.applied_discounts,
+    original_price: cost.original,
+    package_price: cost.package_price,
+    price: cost.total,
+    black_sunday_active:
+      cost.black_sunday_active,
     black_sunday_discount_percent:
       cost.black_sunday_discount_percent,
     black_sunday_discount_amount:
       cost.black_sunday_discount_amount,
     event: cost.event,
     currency: 'diamond',
-    episode_ids: enabled ? availableEpisodes.slice(0, requiredCount).map((episode) => episode.id) : [],
+    episode_ids: enabled
+      ? availableEpisodes
+          .slice(0, requiredCount)
+          .map((episode) => episode.id)
+      : [],
   }
 }
 
@@ -818,60 +837,43 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
     gemWait,
     gemLimits,
     packageOptions: [
-  publicPackageOption({
-    rule: PACKAGE_RULES.single,
-    availableEpisodes,
-    story,
-    rules,
-    tier,
-  }),
-  publicPackageOption({
-    rule: PACKAGE_RULES.next10,
-    availableEpisodes,
-    story,
-    rules,
-    tier,
-  }),
-  publicPackageOption({
-    rule: PACKAGE_RULES.next30,
-    availableEpisodes,
-    story,
-    rules,
-    tier,
-  }),
-  publicPackageOption({
-    rule: PACKAGE_RULES.next50,
-    availableEpisodes,
-    story,
-    rules,
-    tier,
-  }),
-  publicPackageOption({
-    rule: PACKAGE_RULES.all_released,
-    availableEpisodes,
-    story,
-    rules,
-    tier,
-  }),
-],
+      publicPackageOption({
+        rule: PACKAGE_RULES.single,
+        availableEpisodes,
+        story,
+        rules,
+        tier,
+      }),
+      publicPackageOption({
+        rule: PACKAGE_RULES.next10,
+        availableEpisodes,
+        story,
+        rules,
+        tier,
+      }),
+      publicPackageOption({
+        rule: PACKAGE_RULES.next30,
+        availableEpisodes,
+        story,
+        rules,
+        tier,
+      }),
+      publicPackageOption({
+        rule: PACKAGE_RULES.next50,
+        availableEpisodes,
+        story,
+        rules,
+        tier,
+      }),
+      publicPackageOption({
+        rule: PACKAGE_RULES.all_released,
+        availableEpisodes,
+        story,
+        rules,
+        tier,
+      }),
+    ],
   }
-}
-
-async function updateDiamondBalance({ userId, wallet, amount }) {
-  const nextDiamondBalance = Number(wallet.diamond_balance || 0) - Number(amount || 0)
-
-  const { data, error } = await supabase
-    .from('user_wallets')
-    .update({
-      diamond_balance: nextDiamondBalance,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('user_id', userId)
-    .select()
-    .single()
-
-  if (error) throw error
-  return data
 }
 
 async function updateGemBalance({ userId, wallet, amount }) {
@@ -925,8 +927,288 @@ async function updateStoryCardBalance({ userId, wallet, amount }) {
   return data
 }
 
-async function createUnlocksAndTransactions({ userId, storyId, episodes, unlockType, unlockScope, accessType, expiresAt, diamondSpent, transactionCurrency, transactionAmount, metadata }) {
+async function getAuthorEarningsForTransactions(
+  transactions
+) {
+  const transactionIds = (transactions || [])
+    .map((transaction) => transaction?.id)
+    .filter(Boolean)
+
+  if (!transactionIds.length) return []
+
+  const { data, error } = await supabase
+    .from('author_earnings')
+    .select('*')
+    .in('unlock_transaction_id', transactionIds)
+
+  if (error) throw error
+
+  return data || []
+}
+
+async function recordDiamondUnlockAccounting({
+  purchaseKey,
+  userId,
+  storyId,
+  episodes,
+  transactions,
+  transactionAmount,
+  unlockScope,
+  metadata,
+}) {
+  if (!transactions?.length) return []
+
+  const createdEarnings =
+    await createAuthorEarningsFromDiamondUnlock({
+      transactions,
+    })
+
+  const earningRows = Array.isArray(createdEarnings) &&
+    createdEarnings.length
+    ? createdEarnings
+    : await getAuthorEarningsForTransactions(
+        transactions
+      )
+
+  if (!earningRows.length) {
+    throw new Error(
+      'Diamond unlock earnings were not created'
+    )
+  }
+
+  const firstEarning = earningRows[0]
+  const authorEarnedDiamonds = earningRows.reduce(
+    (sum, row) =>
+      sum + Number(row.author_earned_diamonds || 0),
+    0
+  )
+  const platformEarnedDiamonds = earningRows.reduce(
+    (sum, row) =>
+      sum + Number(row.platform_earned_diamonds || 0),
+    0
+  )
+  const distributableNetRevenueDiamonds =
+    earningRows.reduce(
+      (sum, row) =>
+        sum + Number(row.net_paid_diamonds || 0),
+      0
+    )
+  const directCostDiamonds = Math.max(
+    0,
+    Number(transactionAmount || 0) -
+      distributableNetRevenueDiamonds
+  )
+
+  await createStoryReadingIncomeSafely({
+    purchaseKey: `diamond-unlock:${purchaseKey}`,
+    readerId: userId,
+    storyId,
+    authorId: episodes[0]?.author_id || null,
+    firstEpisodeId: episodes[0]?.id || null,
+    packageKey:
+      metadata?.package_key ||
+      unlockScope ||
+      'single',
+    episodeCount: episodes.length,
+    originalDiamonds:
+      metadata?.original_price ||
+      transactionAmount,
+    packageDiscountPercent:
+      metadata?.package_discount_percent ??
+      metadata?.discount_percent ??
+      0,
+    blackSundayDiscountPercent:
+      metadata?.black_sunday_discount_percent || 0,
+    paidDiamonds: transactionAmount,
+    authorSharePercent:
+      firstEarning.author_share_percent,
+    shareSource: firstEarning.share_source,
+    authorEarnedDiamonds,
+    platformEarnedDiamonds,
+    directCostDiamonds,
+    distributableNetRevenueDiamonds,
+    metadata: {
+      ...metadata,
+      purchase_key: purchaseKey,
+      revenue_source: 'author_earnings',
+      effective_author_share_percent: Number(
+        firstEarning.author_share_percent || 0
+      ),
+      effective_share_source:
+        firstEarning.share_source || '',
+    },
+  })
+
+  return earningRows
+}
+
+function allocateEpisodeAmounts(totalAmount, episodes) {
+  const total = Math.max(
+    0,
+    Math.floor(Number(totalAmount || 0))
+  )
+  const count = episodes.length
+
+  if (!count) return []
+
+  const baseAmount = Math.floor(total / count)
+  const remainder = total % count
+
+  return episodes.map((episode, index) => ({
+    episode_id: episode.id,
+    author_id: episode.author_id,
+    episode_number:
+      Number(episode.episode_number || 0),
+    episode_title: episode.title || '',
+    allocated_amount:
+      baseAmount + (index < remainder ? 1 : 0),
+  }))
+}
+
+function buildDiamondPurchaseKey({
+  userId,
+  storyId,
+  episodeId,
+  packageKey,
+}) {
+  return createHash('sha256')
+    .update(
+      [
+        'diamond-unlock-v1',
+        userId,
+        storyId,
+        episodeId,
+        packageKey,
+      ].join(':')
+    )
+    .digest('hex')
+}
+
+async function getCompletedDiamondPurchase({
+  userId,
+  purchaseKey,
+}) {
+  const { data: request, error: requestError } =
+    await supabase
+      .from('episode_unlock_purchase_requests')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('purchase_key', purchaseKey)
+      .eq('status', 'completed')
+      .maybeSingle()
+
+  if (requestError) throw requestError
+  if (!request) return null
+
+  const { data: transactions, error: transactionError } =
+    await supabase
+      .from('episode_unlock_transactions')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('currency', 'diamond')
+      .eq('transaction_type', 'unlock')
+      .contains('metadata', {
+        purchase_key: purchaseKey,
+      })
+      .order('created_at', { ascending: true })
+
+  if (transactionError) throw transactionError
+
+  const episodeIds = (transactions || [])
+    .map((transaction) => transaction.episode_id)
+    .filter(Boolean)
+
+  let unlocks = []
+
+  if (episodeIds.length) {
+    const { data, error } = await supabase
+      .from('episode_unlocks')
+      .select('*')
+      .eq('user_id', userId)
+      .in('episode_id', episodeIds)
+
+    if (error) throw error
+    unlocks = data || []
+  }
+
+  const { data: wallet, error: walletError } =
+    await supabase
+      .from('user_wallets')
+      .select('*')
+      .eq('user_id', userId)
+      .single()
+
+  if (walletError) throw walletError
+
+  return {
+    request,
+    wallet,
+    unlocks,
+    transactions: transactions || [],
+  }
+}
+
+async function commitDiamondUnlockPurchase({
+  userId,
+  purchaseKey,
+  storyId,
+  episodes,
+  unlockScope,
+  transactionAmount,
+  metadata,
+}) {
+  const episodeRows = allocateEpisodeAmounts(
+    transactionAmount,
+    episodes
+  )
+
+  const { data, error } = await supabase.rpc(
+    'commit_diamond_episode_unlock_purchase',
+    {
+      p_user_id: userId,
+      p_purchase_key: purchaseKey,
+      p_story_id: storyId,
+      p_amount: transactionAmount,
+      p_unlock_scope: unlockScope,
+      p_episodes: episodeRows,
+      p_metadata: metadata || {},
+    }
+  )
+
+  if (error) throw error
+
+  return {
+    idempotent: Boolean(data?.idempotent),
+    wallet: data?.wallet || null,
+    unlocks: Array.isArray(data?.unlocks)
+      ? data.unlocks
+      : [],
+    transactions: Array.isArray(data?.transactions)
+      ? data.transactions
+      : [],
+  }
+}
+
+async function createUnlocksAndTransactions({
+  userId,
+  storyId,
+  episodes,
+  unlockType,
+  unlockScope,
+  accessType,
+  expiresAt,
+  diamondSpent,
+  transactionCurrency,
+  transactionAmount,
+  metadata,
+}) {
   if (!episodes.length) return []
+
+  if (transactionCurrency === 'diamond') {
+    throw new Error(
+      'Diamond unlocks must use the atomic purchase function'
+    )
+  }
 
   const unlockRows = episodes.map((episode) => ({
     user_id: userId,
@@ -941,136 +1223,69 @@ async function createUnlocksAndTransactions({ userId, storyId, episodes, unlockT
     unlock_status: 'active',
   }))
 
-  const { data: unlocks, error: unlockError } = await supabase
-    .from('episode_unlocks')
-    .upsert(unlockRows, {
-      onConflict: 'user_id,episode_id',
-    })
-    .select()
+  const { data: unlocks, error: unlockError } =
+    await supabase
+      .from('episode_unlocks')
+      .upsert(unlockRows, {
+        onConflict: 'user_id,episode_id',
+      })
+      .select()
 
   if (unlockError) throw unlockError
 
-  const unlockMap = new Map((unlocks || []).map((unlock) => [unlock.episode_id, unlock.id]))
-  const totalTransactionAmount = Math.max(0, Math.floor(Number(transactionAmount || 0)))
-  const baseAmount = episodes.length > 0 ? Math.floor(totalTransactionAmount / episodes.length) : 0
-  const remainderAmount = episodes.length > 0 ? totalTransactionAmount % episodes.length : 0
-  
-  const transactionRows = episodes.map((episode, index) => ({
-    unlock_id: unlockMap.get(episode.id) || null,
-    user_id: userId,
-    story_id: storyId,
-    episode_id: episode.id,
-    author_id: episode.author_id,
-    currency: transactionCurrency,
-    amount: baseAmount + (index < remainderAmount ? 1 : 0),
-    transaction_type: 'unlock',
-    metadata: {
-      ...metadata,
-      episode_number: episode.episode_number,
-      episode_title: episode.title,
-      package_total_amount: transactionAmount,
-    },
-  }))
+  const unlockMap = new Map(
+    (unlocks || []).map((unlock) => [
+      unlock.episode_id,
+      unlock.id,
+    ])
+  )
+  const totalTransactionAmount = Math.max(
+    0,
+    Math.floor(Number(transactionAmount || 0))
+  )
+  const baseAmount =
+    episodes.length > 0
+      ? Math.floor(
+          totalTransactionAmount / episodes.length
+        )
+      : 0
+  const remainderAmount =
+    episodes.length > 0
+      ? totalTransactionAmount % episodes.length
+      : 0
 
-    const { data: transactions, error: transactionError } = await supabase
+  const transactionRows = episodes.map(
+    (episode, index) => ({
+      unlock_id:
+        unlockMap.get(episode.id) || null,
+      user_id: userId,
+      story_id: storyId,
+      episode_id: episode.id,
+      author_id: episode.author_id,
+      currency: transactionCurrency,
+      amount:
+        baseAmount +
+        (index < remainderAmount ? 1 : 0),
+      transaction_type: 'unlock',
+      metadata: {
+        ...metadata,
+        episode_number: episode.episode_number,
+        episode_title: episode.title,
+        package_total_amount:
+          transactionAmount,
+      },
+    })
+  )
+
+  const {
+    data: transactions,
+    error: transactionError,
+  } = await supabase
     .from('episode_unlock_transactions')
     .insert(transactionRows)
     .select()
 
   if (transactionError) throw transactionError
-
-    if (
-    transactionCurrency === 'diamond' &&
-    transactions?.length
-  ) {
-    const earnings =
-      await createAuthorEarningsFromDiamondUnlock({
-        transactions,
-      })
-
-    const earningRows = Array.isArray(earnings)
-      ? earnings
-      : []
-
-    if (earningRows.length) {
-      const firstEarning = earningRows[0]
-
-      const authorEarnedDiamonds =
-        earningRows.reduce(
-          (sum, row) =>
-            sum +
-            Number(row.author_earned_diamonds || 0),
-          0
-        )
-
-      const platformEarnedDiamonds =
-        earningRows.reduce(
-          (sum, row) =>
-            sum +
-            Number(row.platform_earned_diamonds || 0),
-          0
-        )
-
-      const distributableNetRevenueDiamonds =
-        earningRows.reduce(
-          (sum, row) =>
-            sum +
-            Number(row.net_paid_diamonds || 0),
-          0
-        )
-
-      const directCostDiamonds = Math.max(
-        0,
-        totalTransactionAmount -
-          distributableNetRevenueDiamonds
-      )
-
-      await createStoryReadingIncomeSafely({
-        purchaseKey:
-          `diamond-unlock:${transactions[0].id}`,
-        readerId: userId,
-        storyId,
-        authorId:
-          episodes[0]?.author_id || null,
-        firstEpisodeId:
-          episodes[0]?.id || null,
-        packageKey:
-          metadata?.package_key ||
-          unlockScope ||
-          'single',
-        episodeCount: episodes.length,
-        originalDiamonds:
-          metadata?.original_price ||
-          totalTransactionAmount,
-        packageDiscountPercent:
-          metadata?.package_discount_percent ??
-          metadata?.discount_percent ??
-          0,
-        blackSundayDiscountPercent:
-          metadata?.black_sunday_discount_percent ||
-          0,
-        paidDiamonds: totalTransactionAmount,
-        authorSharePercent:
-          firstEarning.author_share_percent,
-        shareSource:
-          firstEarning.share_source,
-        authorEarnedDiamonds,
-        platformEarnedDiamonds,
-        directCostDiamonds,
-        distributableNetRevenueDiamonds,
-        metadata: {
-          ...metadata,
-          revenue_source: 'author_earnings',
-          effective_author_share_percent:
-            Number(
-              firstEarning.author_share_percent || 0
-            ),
-          effective_share_source:
-            firstEarning.share_source || '',
-        },
-      })
-    }
-  }
 
   return unlocks || []
 }
@@ -1106,49 +1321,52 @@ const singleDiamondOption =
     (item) => item.key === 'single'
   ) || null
 
-return res.status(200).json({
-  ok: true,
-  locked: !payload.unlocked,
-  unlocked: payload.unlocked,
-  free_episode: payload.freeEpisode,
-  unlock_type:
-    payload.freeEpisode
-      ? 'free'
-      : payload.unlock?.unlock_type || null,
-  price: {
-    currency: 'diamond',
-    amount:
-      singleDiamondOption?.price ||
-      getRuleNumber(
-        payload.rules,
-        'diamond_per_episode'
-      ),
-    original_amount:
-      singleDiamondOption?.original_price ||
-      getRuleNumber(
-        payload.rules,
-        'diamond_per_episode'
-      ),
-    package_discount_percent:
-      singleDiamondOption?.package_discount_percent || 0,
-    premium_discount_percent:
-      singleDiamondOption?.premium_discount_percent || 0,
-    total_discount_percent:
-      singleDiamondOption?.total_discount_percent || 0,
-    total_discount_amount:
-      singleDiamondOption?.total_discount_amount || 0,
-    applied_discounts:
-      singleDiamondOption?.applied_discounts || [],
-    black_sunday_active: Boolean(
-      singleDiamondOption?.black_sunday_active
-    ),
-    black_sunday_discount_percent:
-      singleDiamondOption?.black_sunday_discount_percent || 0,
-    black_sunday_discount_amount:
-      singleDiamondOption?.black_sunday_discount_amount || 0,
-    event:
-      singleDiamondOption?.event || null,
-  },
+    return res.status(200).json({
+      ok: true,
+      locked: !payload.unlocked,
+      unlocked: payload.unlocked,
+      free_episode: payload.freeEpisode,
+      unlock_type: payload.freeEpisode ? 'free' : payload.unlock?.unlock_type || null,
+            price: {
+        currency: 'diamond',
+        amount:
+          singleDiamondOption?.price ||
+          getRuleNumber(
+            payload.rules,
+            'diamond_per_episode'
+          ),
+        original_amount:
+          singleDiamondOption?.original_price ||
+          getRuleNumber(
+            payload.rules,
+            'diamond_per_episode'
+          ),
+        package_discount_percent:
+          singleDiamondOption
+            ?.package_discount_percent || 0,
+        premium_discount_percent:
+          singleDiamondOption
+            ?.premium_discount_percent || 0,
+        total_discount_percent:
+          singleDiamondOption
+            ?.total_discount_percent || 0,
+        total_discount_amount:
+          singleDiamondOption
+            ?.total_discount_amount || 0,
+        applied_discounts:
+          singleDiamondOption?.applied_discounts || [],
+        black_sunday_active: Boolean(
+          singleDiamondOption?.black_sunday_active
+        ),
+        black_sunday_discount_percent:
+          singleDiamondOption
+            ?.black_sunday_discount_percent || 0,
+        black_sunday_discount_amount:
+          singleDiamondOption
+            ?.black_sunday_discount_amount || 0,
+        event:
+          singleDiamondOption?.event || null,
+      },
           gem_access: {
   currency: 'gem',
   display_currency: 'coin',
@@ -1259,22 +1477,100 @@ export async function unlockEpisodeWithDiamonds(req, res) {
   }
 }
 
-export async function unlockEpisodePackageWithDiamonds(req, res) {
-  try {
-    const userId = req.user?.user_id
-    const { storyId, episodeId } = req.params
-    const tier = getReaderTier(req)
-    const packageKey = String(req.body.package_key || req.body.packageKey || 'single').trim()
-    const rule = PACKAGE_RULES[packageKey]
+export async function unlockEpisodePackageWithDiamonds(
+  req,
+  res
+) {
+  const userId = req.user?.user_id
+  const { storyId, episodeId } = req.params
+  const tier = getReaderTier(req)
+  const packageKey = String(
+    req.body.package_key ||
+      req.body.packageKey ||
+      'single'
+  ).trim()
+  const rule = PACKAGE_RULES[packageKey]
 
-    if (!rule) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Unlock package is not valid',
+  if (!rule) {
+    return res.status(400).json({
+      ok: false,
+      message: 'Unlock package is not valid',
+    })
+  }
+
+  const purchaseKey = buildDiamondPurchaseKey({
+    userId,
+    storyId,
+    episodeId,
+    packageKey,
+  })
+
+  try {
+    const completedPurchase =
+      await getCompletedDiamondPurchase({
+        userId,
+        purchaseKey,
+      })
+
+    if (completedPurchase) {
+      const transactions =
+        completedPurchase.transactions
+
+      if (!transactions.length) {
+        throw new Error(
+          'Completed purchase transactions were not found'
+        )
+      }
+      const episodes = transactions.map(
+        (transaction) => ({
+          id: transaction.episode_id,
+          author_id: transaction.author_id,
+          episode_number:
+            transaction.metadata?.episode_number,
+          title:
+            transaction.metadata?.episode_title,
+        })
+      )
+      const metadata =
+        transactions[0]?.metadata || {}
+
+      await recordDiamondUnlockAccounting({
+        purchaseKey,
+        userId,
+        storyId,
+        episodes,
+        transactions,
+        transactionAmount:
+          completedPurchase.request.amount,
+        unlockScope:
+          completedPurchase.request.unlock_scope,
+        metadata,
+      })
+
+      return res.status(200).json({
+        ok: true,
+        message: 'Episodes unlocked successfully',
+        unlocked: true,
+        idempotent: true,
+        package_key: packageKey,
+        unlocked_count:
+          completedPurchase.unlocks.length,
+        unlocked_episode_ids:
+          completedPurchase.unlocks.map(
+            (unlock) => unlock.episode_id
+          ),
+        wallet: publicWallet(
+          completedPurchase.wallet
+        ),
       })
     }
 
-    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId, tier })
+    const payload = await getUnlockStatusPayload({
+      userId,
+      storyId,
+      episodeId,
+      tier,
+    })
 
     if (payload.notFound) {
       return res.status(404).json({
@@ -1292,105 +1588,151 @@ export async function unlockEpisodePackageWithDiamonds(req, res) {
       })
     }
 
-    const option = payload.packageOptions.find((item) => item.key === packageKey)
+    const option = payload.packageOptions.find(
+      (item) => item.key === packageKey
+    )
 
     if (!option?.enabled) {
       return res.status(400).json({
         ok: false,
         code: 'PACKAGE_NOT_AVAILABLE',
-        message: option?.disabled_reason || 'This package is not available',
+        message:
+          option?.disabled_reason ||
+          'This package is not available',
         option,
         package_options: payload.packageOptions,
         wallet: publicWallet(payload.wallet),
       })
     }
 
-    if (Number(payload.wallet.diamond_balance || 0) < Number(option.price || 0)) {
+    if (
+      Number(payload.wallet.diamond_balance || 0) <
+      Number(option.price || 0)
+    ) {
       return res.status(402).json({
         ok: false,
         code: 'INSUFFICIENT_DIAMONDS',
         message: 'Not enough Diamonds',
-        need: Number(option.price || 0) - Number(payload.wallet.diamond_balance || 0),
+        need:
+          Number(option.price || 0) -
+          Number(
+            payload.wallet.diamond_balance || 0
+          ),
         price: Number(option.price || 0),
         option,
         wallet: publicWallet(payload.wallet),
       })
     }
 
-    const episodesToUnlock = payload.availableEpisodes.slice(0, option.requested_count)
-    const updatedWallet = await updateDiamondBalance({
-      userId,
-      wallet: payload.wallet,
-      amount: option.price,
-    })
+    const episodesToUnlock =
+      payload.availableEpisodes.slice(
+        0,
+        option.requested_count
+      )
+    const metadata = {
+      purchase_key: purchaseKey,
+      package_key: packageKey,
+      package_label: option.label,
+      episode_count: episodesToUnlock.length,
+      discount_percent:
+        option.total_discount_percent,
+      package_discount_percent:
+        option.package_discount_percent,
+      premium_discount_percent:
+        option.premium_discount_percent,
+      total_discount_percent:
+        option.total_discount_percent,
+      total_discount_amount:
+        option.total_discount_amount,
+      applied_discounts:
+        option.applied_discounts,
+      original_price: option.original_price,
+      package_price: option.package_price,
+      final_price: option.price,
+      black_sunday_active:
+        option.black_sunday_active,
+      black_sunday_discount_percent:
+        option.black_sunday_discount_percent,
+      black_sunday_discount_amount:
+        option.black_sunday_discount_amount,
+      event_key: option.event?.key || '',
+      event_time_zone:
+        option.event?.time_zone || '',
+      reader_tier: tier,
+    }
 
-    const unlocks = await createUnlocksAndTransactions({
+    const purchase =
+      await commitDiamondUnlockPurchase({
+        userId,
+        purchaseKey,
+        storyId,
+        episodes: episodesToUnlock,
+        unlockScope: rule.unlock_scope,
+        transactionAmount: option.price,
+        metadata,
+      })
+
+    await recordDiamondUnlockAccounting({
+      purchaseKey,
       userId,
       storyId,
       episodes: episodesToUnlock,
-      unlockType: 'diamond',
-      unlockScope: rule.unlock_scope,
-      accessType: 'permanent',
-      expiresAt: null,
-      diamondSpent: option.price,
-      transactionCurrency: 'diamond',
+      transactions: purchase.transactions,
       transactionAmount: option.price,
-      metadata: {
-        package_key: packageKey,
-        package_label: option.label,
-        episode_count: episodesToUnlock.length,
-        discount_percent:
-  option.total_discount_percent,
-package_discount_percent:
-  option.package_discount_percent,
-premium_discount_percent:
-  option.premium_discount_percent,
-total_discount_percent:
-  option.total_discount_percent,
-total_discount_amount:
-  option.total_discount_amount,
-applied_discounts:
-  option.applied_discounts,
-original_price: option.original_price,
-package_price: option.package_price,
-final_price: option.price,
-        black_sunday_active:
-          option.black_sunday_active,
-        black_sunday_discount_percent:
-          option.black_sunday_discount_percent,
-        black_sunday_discount_amount:
-          option.black_sunday_discount_amount,
-        event_key: option.event?.key || '',
-        event_time_zone:
-          option.event?.time_zone || '',
-        reader_tier: tier,
-      },
+      unlockScope: rule.unlock_scope,
+      metadata,
     })
 
-        const reader = await getReaderProfileSafely(userId)
-    const readerName = reader?.name || reader?.username || 'A reader'
+    const reader =
+      await getReaderProfileSafely(userId)
+    const readerName =
+      reader?.name ||
+      reader?.username ||
+      'A reader'
     const firstEpisode = episodesToUnlock[0]
-    const isOwner = String(payload.story.user_id || '') === String(userId)
+    const isOwner =
+      String(payload.story.user_id || '') ===
+      String(userId)
 
-    if (!isOwner && payload.story.author_id && unlocks.length) {
+    if (
+      !isOwner &&
+      payload.story.author_id &&
+      purchase.unlocks.length
+    ) {
       await createAuthorStoryNotificationSafely({
         authorId: payload.story.author_id,
         type: 'unlock',
-        title: `${readerName} unlocked ${unlocks.length} episode${unlocks.length > 1 ? 's' : ''}`,
-        message: `${option.price} Diamonds spent on ${payload.story.title || 'your story'}`,
-        targetUrl: `/story/${storyId}/episode/${firstEpisode?.id || episodeId}`,
-        sourceKey: `diamond-unlock:${unlocks[0].id}`,
+        title:
+          `${readerName} unlocked ` +
+          `${purchase.unlocks.length} episode` +
+          `${purchase.unlocks.length > 1 ? 's' : ''}`,
+        message:
+          `${option.price} Diamonds spent on ` +
+          `${payload.story.title || 'your story'}`,
+        targetUrl:
+          `/story/${storyId}/episode/` +
+          `${firstEpisode?.id || episodeId}`,
+        sourceKey:
+          `diamond-unlock:${purchaseKey}`,
         metadata: {
           story_id: storyId,
-          episode_id: firstEpisode?.id || episodeId,
-          unlock_ids: unlocks.map((unlock) => unlock.id),
+          episode_id:
+            firstEpisode?.id || episodeId,
+          unlock_ids: purchase.unlocks.map(
+            (unlock) => unlock.id
+          ),
+          purchase_key: purchaseKey,
           package_key: packageKey,
-          episode_count: unlocks.length,
-          diamond_amount: Number(option.price || 0),
+          episode_count:
+            purchase.unlocks.length,
+          diamond_amount:
+            Number(option.price || 0),
           reader_id: userId,
           reader_name: readerName,
-          reader_username: reader?.username || '',
-          reader_avatar_url: reader?.avatar_url || '',
+          reader_username:
+            reader?.username || '',
+          reader_avatar_url:
+            reader?.avatar_url || '',
         },
       })
     }
@@ -1399,16 +1741,55 @@ final_price: option.price,
       ok: true,
       message: 'Episodes unlocked successfully',
       unlocked: true,
+      idempotent: purchase.idempotent,
       package_key: packageKey,
-      unlocked_count: unlocks.length,
-      unlocked_episode_ids: unlocks.map((unlock) => unlock.episode_id),
-      wallet: publicWallet(updatedWallet),
+      unlocked_count: purchase.unlocks.length,
+      unlocked_episode_ids:
+        purchase.unlocks.map(
+          (unlock) => unlock.episode_id
+        ),
+      wallet: publicWallet(purchase.wallet),
     })
   } catch (error) {
-    console.error('UNLOCK EPISODE PACKAGE WITH DIAMONDS ERROR:', error)
+    console.error(
+      'UNLOCK EPISODE PACKAGE WITH DIAMONDS ERROR:',
+      error
+    )
+
+    const errorMessage = String(
+      error?.message || ''
+    )
+
+    if (
+      errorMessage.includes(
+        'INSUFFICIENT_DIAMONDS'
+      )
+    ) {
+      const wallet = await getWallet(userId)
+
+      return res.status(402).json({
+        ok: false,
+        code: 'INSUFFICIENT_DIAMONDS',
+        message: 'Not enough Diamonds',
+        wallet: publicWallet(wallet),
+      })
+    }
+
+    if (
+      errorMessage.includes('PURCHASE_KEY_REUSED') ||
+      errorMessage.includes('PURCHASE_IN_PROGRESS')
+    ) {
+      return res.status(409).json({
+        ok: false,
+        code: 'PURCHASE_CONFLICT',
+        message:
+          'This purchase is already being processed. Please try again.',
+      })
+    }
 
     return res.status(500).json({
       ok: false,
+      code: 'DIAMOND_UNLOCK_FAILED',
       message: 'Failed to unlock episodes',
       error: error.message,
     })
