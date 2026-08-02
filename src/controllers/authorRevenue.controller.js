@@ -228,6 +228,37 @@ async function getQuestStages() {
   return data || []
 }
 
+async function getPaidFanCount(authorId) {
+  const { data, error } = await supabase
+    .from('episode_unlock_transactions')
+    .select('user_id, episode_id')
+    .eq('author_id', authorId)
+    .eq('currency', 'diamond')
+    .eq('transaction_type', 'unlock')
+    .gt('amount', 0)
+
+  if (error) throw error
+
+  const readers = new Map()
+
+  for (const row of data || []) {
+    const readerId = String(row.user_id || '')
+    const episodeId = String(row.episode_id || '')
+
+    if (!readerId || !episodeId) continue
+
+    if (!readers.has(readerId)) {
+      readers.set(readerId, new Set())
+    }
+
+    readers.get(readerId).add(episodeId)
+  }
+
+  return [...readers.values()].filter(
+    (episodes) => episodes.size >= 10
+  ).length
+}
+
 async function getAuthorTotals(authorPage) {
   const { data: stories, error: storiesError } = await supabase
     .from('stories')
@@ -252,6 +283,10 @@ async function getAuthorTotals(authorPage) {
 
   const publishedEpisodes = episodes.filter((episode) => episode.status === 'published')
 
+  const totalPaidFans = await getPaidFanCount(
+  authorPage.id
+)
+
   return {
     total_published_episodes: publishedEpisodes.length,
     total_words: publishedEpisodes.reduce(
@@ -267,7 +302,8 @@ async function getAuthorTotals(authorPage) {
     total_comments: (stories || []).reduce((sum, story) => sum + numberValue(story.total_comments), 0),
     total_ratings: 0,
     total_read_seconds: 0,
-    total_fans: numberValue(authorPage.total_followers),
+    total_paid_fans: totalPaidFans,
+    total_fans: totalPaidFans,
   }
 }
 
