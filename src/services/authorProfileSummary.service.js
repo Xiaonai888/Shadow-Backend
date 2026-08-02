@@ -96,11 +96,10 @@ export async function getAuthorProfileSummary(authorId) {
       from: todayStartIso,
     }),
     sumDiamondField({
-      authorId,
-      field: 'author_net_payout_usd',
-      from: monthStartIso,
-      to: todayStartIso,
-    }),
+  authorId,
+  field: 'author_net_payout_usd',
+  from: monthStartIso,
+}),
     getMonthlyGiftCount(authorId, monthStartIso),
   ])
 
