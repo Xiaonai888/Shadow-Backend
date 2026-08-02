@@ -1,16 +1,20 @@
 import { supabase } from '../config/supabase.js'
 import { getAuthorProfileSummary } from '../services/authorProfileSummary.service.js'
-const LAST_STAGE_REQUIREMENTS = {
-  total_fans: 1000,
-  total_views: 1000000,
-  total_likes: 1000000,
-  total_comments: 1000,
-  total_ratings: 1000,
-  total_read_hours: 1000,
+const BOOST_REQUIRED_REQUIREMENTS = {
   total_published_episodes: 100,
-  total_followers: 1000,
+  total_words: 100000,
+  total_fans: 1000,
+  total_net_paid_earnings_usd: 100,
+  policy_clear: 1,
 }
 
+const BOOST_GROWTH_REQUIREMENTS = {
+  total_views: 1000000,
+  total_read_hours: 1000,
+  total_likes: 1000000,
+  total_ratings: 1000,
+  total_followers: 1000,
+}
 function numberValue(value) {
   const number = Number(value || 0)
 
@@ -157,28 +161,86 @@ function getNextStage(stages, currentStageNumber) {
 }
 
 function buildLastStageProgress(totals) {
-  const readHours = Math.floor(numberValue(totals.total_read_seconds) / 3600)
+  const readHours = Math.floor(
+    numberValue(totals.total_read_seconds) / 3600
+  )
 
-  const requirements = {
-    fans: buildRequirementProgress(totals.total_fans, LAST_STAGE_REQUIREMENTS.total_fans),
-    views: buildRequirementProgress(totals.total_views, LAST_STAGE_REQUIREMENTS.total_views),
-    likes: buildRequirementProgress(totals.total_likes, LAST_STAGE_REQUIREMENTS.total_likes),
-    comments: buildRequirementProgress(totals.total_comments, LAST_STAGE_REQUIREMENTS.total_comments),
-    ratings: buildRequirementProgress(totals.total_ratings, LAST_STAGE_REQUIREMENTS.total_ratings),
-    read_hours: buildRequirementProgress(readHours, LAST_STAGE_REQUIREMENTS.total_read_hours),
-    episodes: buildRequirementProgress(totals.total_published_episodes, LAST_STAGE_REQUIREMENTS.total_published_episodes),
-    followers: buildRequirementProgress(totals.total_followers, LAST_STAGE_REQUIREMENTS.total_followers),
+  const requiredRequirements = {
+    episodes: buildRequirementProgress(
+      totals.total_published_episodes,
+      BOOST_REQUIRED_REQUIREMENTS.total_published_episodes
+    ),
+    words: buildRequirementProgress(
+      totals.total_words,
+      BOOST_REQUIRED_REQUIREMENTS.total_words
+    ),
+    fans: buildRequirementProgress(
+      totals.total_fans,
+      BOOST_REQUIRED_REQUIREMENTS.total_fans
+    ),
+    paid_earnings: buildRequirementProgress(
+      totals.total_net_paid_earnings_usd,
+      BOOST_REQUIRED_REQUIREMENTS.total_net_paid_earnings_usd
+    ),
+    policy: buildRequirementProgress(
+      totals.has_serious_policy_violation ? 0 : 1,
+      BOOST_REQUIRED_REQUIREMENTS.policy_clear
+    ),
   }
 
-  const completed = Object.values(requirements).every((item) => item.completed)
+  const growthRequirements = {
+    views: buildRequirementProgress(
+      totals.total_views,
+      BOOST_GROWTH_REQUIREMENTS.total_views
+    ),
+    read_hours: buildRequirementProgress(
+      readHours,
+      BOOST_GROWTH_REQUIREMENTS.total_read_hours
+    ),
+    likes: buildRequirementProgress(
+      totals.total_likes,
+      BOOST_GROWTH_REQUIREMENTS.total_likes
+    ),
+    ratings: buildRequirementProgress(
+      totals.total_ratings,
+      BOOST_GROWTH_REQUIREMENTS.total_ratings
+    ),
+    followers: buildRequirementProgress(
+      totals.total_followers,
+      BOOST_GROWTH_REQUIREMENTS.total_followers
+    ),
+  }
+
+  const requiredCompleted =
+    Object.values(requiredRequirements).every(
+      (item) => item.completed
+    )
+
+  const growthCompletedCount =
+    Object.values(growthRequirements).filter(
+      (item) => item.completed
+    ).length
 
   return {
     title: '100-Day Creator Boost',
     share_percent: 100,
     duration_days: 100,
     once_per_account: true,
-    completed,
-    requirements,
+    completed:
+      requiredCompleted &&
+      growthCompletedCount >= 3,
+    required_completed: requiredCompleted,
+    growth_completed_count:
+      growthCompletedCount,
+    growth_required_count: 3,
+    requirements: {
+      ...requiredRequirements,
+      ...growthRequirements,
+    },
+    required_requirements:
+      requiredRequirements,
+    growth_requirements:
+      growthRequirements,
   }
 }
 
@@ -328,6 +390,10 @@ async function getAuthorTotals(authorPage) {
     total_fans: totalPaidFans,
     total_net_paid_earnings_usd:
     totalNetPaidEarningsUsd,
+    has_serious_policy_violation:
+  Boolean(
+    authorPage.has_serious_policy_violation
+  ),
   }
 }
 
