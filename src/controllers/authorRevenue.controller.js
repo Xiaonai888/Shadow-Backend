@@ -259,6 +259,24 @@ async function getPaidFanCount(authorId) {
   ).length
 }
 
+async function getTotalNetPaidEarnings(authorId) {
+  const { data, error } = await supabase
+    .from('author_earnings')
+    .select('author_net_payout_usd')
+    .eq('author_id', authorId)
+    .eq('currency', 'diamond')
+    .neq('earning_status', 'void')
+
+  if (error) throw error
+
+  return (data || []).reduce(
+    (total, row) =>
+      total +
+      numberValue(row.author_net_payout_usd),
+    0
+  )
+}
+
 async function getAuthorTotals(authorPage) {
   const { data: stories, error: storiesError } = await supabase
     .from('stories')
@@ -283,9 +301,13 @@ async function getAuthorTotals(authorPage) {
 
   const publishedEpisodes = episodes.filter((episode) => episode.status === 'published')
 
-  const totalPaidFans = await getPaidFanCount(
-  authorPage.id
-)
+  const [
+  totalPaidFans,
+  totalNetPaidEarningsUsd,
+] = await Promise.all([
+  getPaidFanCount(authorPage.id),
+  getTotalNetPaidEarnings(authorPage.id),
+])
 
   return {
     total_published_episodes: publishedEpisodes.length,
@@ -304,6 +326,8 @@ async function getAuthorTotals(authorPage) {
     total_read_seconds: 0,
     total_paid_fans: totalPaidFans,
     total_fans: totalPaidFans,
+    total_net_paid_earnings_usd:
+    totalNetPaidEarningsUsd,
   }
 }
 
