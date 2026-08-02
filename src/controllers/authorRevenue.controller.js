@@ -173,9 +173,9 @@ function buildLastStageProgress(totals) {
   const completed = Object.values(requirements).every((item) => item.completed)
 
   return {
-    title: '3-Month Creator Boost',
+    title: '100-Day Creator Boost',
     share_percent: 100,
-    duration_days: 90,
+    duration_days: 100,
     once_per_account: true,
     completed,
     requirements,
