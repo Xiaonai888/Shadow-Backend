@@ -52,6 +52,10 @@ import {
   saveMyAuthorPaymentMethod,
 } from '../controllers/authorRevenue.controller.js'
 import {
+  getMyAuthorDiamonds,
+  getMyAuthorGifts,
+} from '../controllers/authorAssets.controller.js'
+import {
   createMyAuthorBlockedWord,
   deleteMyAuthorBlockedWord,
   getMyAuthorBlockedWords,
@@ -89,6 +93,8 @@ router.get('/me', requireUser, getMyAuthorPage)
 router.get('/me/quest', requireUser, getMyAuthorQuest)
 router.post('/me/quest/boost/activate', requireUser, activateMyAuthorLifetimeBoost)
 router.get('/me/income', requireUser, getMyAuthorIncome)
+router.get('/me/diamonds', requireUser, getMyAuthorDiamonds)
+router.get('/me/gifts', requireUser, getMyAuthorGifts)
 router.get('/me/comment-protection/blocked-words', requireUser, getMyAuthorBlockedWords)
 router.post('/me/comment-protection/blocked-words', requireUser, createMyAuthorBlockedWord)
 router.delete('/me/comment-protection/blocked-words/:wordId', requireUser, deleteMyAuthorBlockedWord)
