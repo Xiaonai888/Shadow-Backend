@@ -1149,7 +1149,6 @@ return res.status(200).json({
     event:
       singleDiamondOption?.event || null,
   },
-  gem_access: {
           gem_access: {
   currency: 'gem',
   display_currency: 'coin',
