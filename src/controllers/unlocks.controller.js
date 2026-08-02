@@ -1102,6 +1102,10 @@ const coinCost =
   calculateCoinCost(payload.rules)
 
     return res.status(200).json({
+      const singleDiamondOption =
+  payload.packageOptions.find(
+    (item) => item.key === 'single'
+  ) || null
       ok: true,
       locked: !payload.unlocked,
       unlocked: payload.unlocked,
@@ -1109,32 +1113,37 @@ const coinCost =
       unlock_type: payload.freeEpisode ? 'free' : payload.unlock?.unlock_type || null,
             price: {
         currency: 'diamond',
-        amount:
-          payload.packageOptions.find(
-            (item) => item.key === 'single'
-          )?.price ||
-          getRuleNumber(
-            payload.rules,
-            'diamond_per_episode'
-          ),
-        original_amount:
-          payload.packageOptions.find(
-            (item) => item.key === 'single'
-          )?.original_price ||
-          getRuleNumber(
-            payload.rules,
-            'diamond_per_episode'
-          ),
-        black_sunday_active: Boolean(
-          payload.packageOptions.find(
-            (item) => item.key === 'single'
-          )?.black_sunday_active
-        ),
-        black_sunday_discount_percent:
-          payload.packageOptions.find(
-            (item) => item.key === 'single'
-          )?.black_sunday_discount_percent || 0,
-      },
+       amount:
+  singleDiamondOption?.price ||
+  getRuleNumber(
+    payload.rules,
+    'diamond_per_episode'
+  ),
+original_amount:
+  singleDiamondOption?.original_price ||
+  getRuleNumber(
+    payload.rules,
+    'diamond_per_episode'
+  ),
+        package_discount_percent:
+  singleDiamondOption?.package_discount_percent || 0,
+premium_discount_percent:
+  singleDiamondOption?.premium_discount_percent || 0,
+total_discount_percent:
+  singleDiamondOption?.total_discount_percent || 0,
+total_discount_amount:
+  singleDiamondOption?.total_discount_amount || 0,
+applied_discounts:
+  singleDiamondOption?.applied_discounts || [],
+black_sunday_active: Boolean(
+  singleDiamondOption?.black_sunday_active
+),
+black_sunday_discount_percent:
+  singleDiamondOption?.black_sunday_discount_percent || 0,
+black_sunday_discount_amount:
+  singleDiamondOption?.black_sunday_discount_amount || 0,
+event:
+  singleDiamondOption?.event || null,
           gem_access: {
   currency: 'gem',
   display_currency: 'coin',
