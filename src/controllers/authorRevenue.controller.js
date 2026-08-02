@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { getAuthorProfileSummary } from '../services/authorProfileSummary.service.js'
+import { getAuthorIncomeRecordData } from '../services/authorIncomeRecords.service.js'
 const BOOST_REQUIRED_REQUIREMENTS = {
   total_published_episodes: 100,
   total_words: 100000,
@@ -714,7 +715,17 @@ export async function getMyAuthorIncome(req, res) {
       })
     }
 
-    const profileSummary = await getAuthorProfileSummary(authorPage.id)
+    const [
+      profileSummary,
+      incomeRecordData,
+    ] = await Promise.all([
+      getAuthorProfileSummary(authorPage.id),
+      getAuthorIncomeRecordData({
+        authorId: authorPage.id,
+        period: req.query.record_period,
+        date: req.query.record_date,
+      }),
+    ])
 
     const [settings, quest, paymentMethod, todayIncome, weekIncome, monthIncome, totalIncome, recentEarnings, topSupporters, payoutHistory] = await Promise.all([
       getRevenueSettings(),
@@ -775,6 +786,8 @@ export async function getMyAuthorIncome(req, res) {
 gifts: {
   total_received: profileSummary.monthly_gifts,
 },
+      income_summary: incomeRecordData.summary,
+      income_record: incomeRecordData.record,
       current_share_percent: percentValue(quest.data?.current_share_percent || settings.default_share_percent),
       next_payout_date: getNextPayoutDate(settings),
       payment_method: {
