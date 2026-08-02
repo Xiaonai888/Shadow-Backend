@@ -1,5 +1,5 @@
 import { supabase } from '../config/supabase.js'
-
+import { getAuthorProfileSummary } from '../services/authorProfileSummary.service.js'
 const LAST_STAGE_REQUIREMENTS = {
   total_fans: 1000,
   total_views: 1000000,
@@ -624,6 +624,8 @@ export async function getMyAuthorIncome(req, res) {
       })
     }
 
+    const profileSummary = await getAuthorProfileSummary(authorPage.id)
+
     const [settings, quest, paymentMethod, todayIncome, weekIncome, monthIncome, totalIncome, recentEarnings, topSupporters, payoutHistory] = await Promise.all([
       getRevenueSettings(),
       supabase
@@ -673,12 +675,16 @@ export async function getMyAuthorIncome(req, res) {
         page_slug: authorPage.page_slug,
       },
       income: {
-        today_usd: todayIncome,
-        this_week_usd: weekIncome,
-        this_month_usd: (thisMonthRows || []).reduce((sum, item) => sum + numberValue(item.author_net_payout_usd), 0),
+  today_diamonds: profileSummary.today_diamonds,
+  today_usd: todayIncome,
+  this_week_usd: weekIncome,
+  this_month_usd: profileSummary.this_month_usd,
         last_month_usd: (lastMonthRows || []).reduce((sum, item) => sum + numberValue(item.author_net_payout_usd), 0),
         total_usd: totalIncome,
-      },
+},
+gifts: {
+  total_received: profileSummary.monthly_gifts,
+},
       current_share_percent: percentValue(quest.data?.current_share_percent || settings.default_share_percent),
       next_payout_date: getNextPayoutDate(settings),
       payment_method: {
