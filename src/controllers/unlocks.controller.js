@@ -859,27 +859,98 @@ async function createUnlocksAndTransactions({ userId, storyId, episodes, unlockT
 
   if (transactionError) throw transactionError
 
-  if (transactionCurrency === 'diamond' && transactions?.length) {
-  await createStoryReadingIncomeSafely({
-    purchaseKey: `diamond-unlock:${transactions[0].id}`,
-    readerId: userId,
-    storyId,
-    authorId: episodes[0]?.author_id || null,
-    firstEpisodeId: episodes[0]?.id || null,
-    packageKey: metadata?.package_key || unlockScope || 'single',
-    episodeCount: episodes.length,
-    originalDiamonds: metadata?.original_price || transactionAmount,
-    packageDiscountPercent: metadata?.discount_percent || 0,
-    blackSundayDiscountPercent:
-      metadata?.black_sunday_discount_percent || 0,
-    paidDiamonds: transactionAmount,
-    metadata,
-  })
+    if (
+    transactionCurrency === 'diamond' &&
+    transactions?.length
+  ) {
+    const earnings =
+      await createAuthorEarningsFromDiamondUnlock({
+        transactions,
+      })
 
-  await createAuthorEarningsFromDiamondUnlock({
-    transactions: transactions || [],
-  })
-}
+    const earningRows = Array.isArray(earnings)
+      ? earnings
+      : []
+
+    if (earningRows.length) {
+      const firstEarning = earningRows[0]
+
+      const authorEarnedDiamonds =
+        earningRows.reduce(
+          (sum, row) =>
+            sum +
+            Number(row.author_earned_diamonds || 0),
+          0
+        )
+
+      const platformEarnedDiamonds =
+        earningRows.reduce(
+          (sum, row) =>
+            sum +
+            Number(row.platform_earned_diamonds || 0),
+          0
+        )
+
+      const distributableNetRevenueDiamonds =
+        earningRows.reduce(
+          (sum, row) =>
+            sum +
+            Number(row.net_paid_diamonds || 0),
+          0
+        )
+
+      const directCostDiamonds = Math.max(
+        0,
+        totalTransactionAmount -
+          distributableNetRevenueDiamonds
+      )
+
+      await createStoryReadingIncomeSafely({
+        purchaseKey:
+          `diamond-unlock:${transactions[0].id}`,
+        readerId: userId,
+        storyId,
+        authorId:
+          episodes[0]?.author_id || null,
+        firstEpisodeId:
+          episodes[0]?.id || null,
+        packageKey:
+          metadata?.package_key ||
+          unlockScope ||
+          'single',
+        episodeCount: episodes.length,
+        originalDiamonds:
+          metadata?.original_price ||
+          totalTransactionAmount,
+        packageDiscountPercent:
+          metadata?.package_discount_percent ??
+          metadata?.discount_percent ??
+          0,
+        blackSundayDiscountPercent:
+          metadata?.black_sunday_discount_percent ||
+          0,
+        paidDiamonds: totalTransactionAmount,
+        authorSharePercent:
+          firstEarning.author_share_percent,
+        shareSource:
+          firstEarning.share_source,
+        authorEarnedDiamonds,
+        platformEarnedDiamonds,
+        directCostDiamonds,
+        distributableNetRevenueDiamonds,
+        metadata: {
+          ...metadata,
+          revenue_source: 'author_earnings',
+          effective_author_share_percent:
+            Number(
+              firstEarning.author_share_percent || 0
+            ),
+          effective_share_source:
+            firstEarning.share_source || '',
+        },
+      })
+    }
+  }
 
   return unlocks || []
 }
