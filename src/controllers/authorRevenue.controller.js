@@ -38,39 +38,98 @@ function progressPercent(current, required) {
   return Math.max(0, Math.min(100, Math.floor((numberValue(current) / numberValue(required)) * 100)))
 }
 
+const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
+
+function getCambodiaDate(date = new Date()) {
+  return new Date(date.getTime() + CAMBODIA_OFFSET_MS)
+}
+
 function getMonthKey(date = new Date()) {
-  const year = date.getUTCFullYear()
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0')
+  const cambodiaDate = getCambodiaDate(date)
+  const year = cambodiaDate.getUTCFullYear()
+  const month = String(
+    cambodiaDate.getUTCMonth() + 1
+  ).padStart(2, '0')
 
   return `${year}-${month}`
 }
 
 function getPreviousMonthKey(date = new Date()) {
-  const previous = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() - 1, 1))
+  const cambodiaDate = getCambodiaDate(date)
+  const previous = new Date(
+    Date.UTC(
+      cambodiaDate.getUTCFullYear(),
+      cambodiaDate.getUTCMonth() - 1,
+      1
+    )
+  )
+
   const year = previous.getUTCFullYear()
-  const month = String(previous.getUTCMonth() + 1).padStart(2, '0')
+  const month = String(
+    previous.getUTCMonth() + 1
+  ).padStart(2, '0')
 
   return `${year}-${month}`
 }
 
 function startOfMonthIso(date = new Date()) {
-  const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1, 0, 0, 0))
+  const cambodiaDate = getCambodiaDate(date)
 
-  return start.toISOString()
+  return new Date(
+    Date.UTC(
+      cambodiaDate.getUTCFullYear(),
+      cambodiaDate.getUTCMonth(),
+      1
+    ) - CAMBODIA_OFFSET_MS
+  ).toISOString()
 }
 
 function startOfWeekIso(date = new Date()) {
-  const day = date.getUTCDay()
+  const cambodiaDate = getCambodiaDate(date)
+  const day = cambodiaDate.getUTCDay()
   const diff = day === 0 ? 6 : day - 1
-  const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() - diff, 0, 0, 0))
 
-  return start.toISOString()
+  return new Date(
+    Date.UTC(
+      cambodiaDate.getUTCFullYear(),
+      cambodiaDate.getUTCMonth(),
+      cambodiaDate.getUTCDate() - diff
+    ) - CAMBODIA_OFFSET_MS
+  ).toISOString()
 }
 
 function startOfTodayIso(date = new Date()) {
-  const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0))
+  const cambodiaDate = getCambodiaDate(date)
 
-  return start.toISOString()
+  return new Date(
+    Date.UTC(
+      cambodiaDate.getUTCFullYear(),
+      cambodiaDate.getUTCMonth(),
+      cambodiaDate.getUTCDate()
+    ) - CAMBODIA_OFFSET_MS
+  ).toISOString()
+}
+
+function getNextPayoutDate(settings) {
+  const payoutDay = Math.max(
+    1,
+    Math.min(
+      28,
+      numberValue(settings?.payout_day || 15)
+    )
+  )
+
+  const cambodiaDate = getCambodiaDate()
+  const addMonth =
+    cambodiaDate.getUTCDate() >= payoutDay ? 1 : 0
+
+  return new Date(
+    Date.UTC(
+      cambodiaDate.getUTCFullYear(),
+      cambodiaDate.getUTCMonth() + addMonth,
+      payoutDay
+    ) - CAMBODIA_OFFSET_MS
+  ).toISOString()
 }
 
 function getNextPayoutDate(settings) {
