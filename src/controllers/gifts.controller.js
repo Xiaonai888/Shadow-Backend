@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
+import { recordAuthorGiftSafely } from '../services/authorGiftLedger.service.js'
 
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
