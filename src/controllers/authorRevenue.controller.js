@@ -375,6 +375,7 @@ async function getTotalNetPaidEarnings(authorId) {
     .select('author_net_payout_usd')
     .eq('author_id', authorId)
     .eq('currency', 'diamond')
+    .eq('source_type', 'diamond_unlock')
     .neq('earning_status', 'void')
 
   if (error) throw error
@@ -578,6 +579,8 @@ async function sumAuthorIncome({ authorId, from }) {
     .from('author_earnings')
     .select('author_net_payout_usd')
     .eq('author_id', authorId)
+    .eq('currency', 'diamond')
+    .eq('source_type', 'diamond_unlock')
     .neq('earning_status', 'void')
 
   if (from) {
@@ -588,14 +591,22 @@ async function sumAuthorIncome({ authorId, from }) {
 
   if (error) throw error
 
-  return (data || []).reduce((sum, item) => sum + numberValue(item.author_net_payout_usd), 0)
+  return (data || []).reduce(
+    (sum, item) =>
+      sum + numberValue(item.author_net_payout_usd),
+    0
+  )
 }
 
 async function getRecentEarnings(authorId) {
   const { data, error } = await supabase
     .from('author_earnings')
-    .select('id, reader_id, story_id, episode_id, author_earned_diamonds, author_net_payout_usd, author_share_percent, earning_status, metadata, created_at')
+    .select(
+      'id, reader_id, story_id, episode_id, author_earned_diamonds, author_net_payout_usd, author_share_percent, earning_status, metadata, created_at'
+    )
     .eq('author_id', authorId)
+    .eq('currency', 'diamond')
+    .eq('source_type', 'diamond_unlock')
     .neq('earning_status', 'void')
     .order('created_at', { ascending: false })
     .limit(10)
@@ -608,8 +619,12 @@ async function getRecentEarnings(authorId) {
 async function getTopSupporters(authorId) {
   const { data, error } = await supabase
     .from('author_earnings')
-    .select('reader_id, author_earned_diamonds, author_net_payout_usd')
+    .select(
+      'reader_id, author_earned_diamonds, author_net_payout_usd'
+    )
     .eq('author_id', authorId)
+    .eq('currency', 'diamond')
+    .eq('source_type', 'diamond_unlock')
     .neq('earning_status', 'void')
     .not('reader_id', 'is', null)
 
@@ -629,8 +644,10 @@ async function getTopSupporters(authorId) {
     }
 
     const supporter = supporters.get(readerId)
-    supporter.total_diamonds += numberValue(item.author_earned_diamonds)
-    supporter.total_usd += numberValue(item.author_net_payout_usd)
+    supporter.total_diamonds +=
+      numberValue(item.author_earned_diamonds)
+    supporter.total_usd +=
+      numberValue(item.author_net_payout_usd)
   }
 
   return Array.from(supporters.values())
@@ -689,9 +706,13 @@ export async function getMyAuthorQuest(req, res) {
       authorPage,
       lastStage,
     })
-    const activeBoost = await getActiveLifetimeBoost(authorPage.id)
+    const activeBoost =
+  await getActiveLifetimeBoost(authorPage.id)
 
-    return res.status(200).json({
+const currentLifetimeBoost =
+  activeBoost || lifetimeBoost
+
+return res.status(200).json({
       ok: true,
       author_page: {
         id: authorPage.id,
@@ -720,16 +741,24 @@ export async function getMyAuthorQuest(req, res) {
       totals,
       stage_rules: stages.map((stage) => buildStageProgress(stage, totals)),
       lifetime_boost: {
-        id: lifetimeBoost.id,
-        status: lifetimeBoost.status,
-        share_percent: percentValue(lifetimeBoost.share_percent),
-        duration_days: numberValue(lifetimeBoost.duration_days),
-        eligible_at: lifetimeBoost.eligible_at,
-        started_at: lifetimeBoost.started_at,
-        ended_at: lifetimeBoost.ended_at,
-        used_at: lifetimeBoost.used_at,
-        last_stage: lastStage,
-      },
+  id: currentLifetimeBoost.id,
+  status: currentLifetimeBoost.status,
+  share_percent: percentValue(
+    currentLifetimeBoost.share_percent
+  ),
+  duration_days: numberValue(
+    currentLifetimeBoost.duration_days
+  ),
+  eligible_at:
+    currentLifetimeBoost.eligible_at,
+  started_at:
+    currentLifetimeBoost.started_at,
+  ended_at:
+    currentLifetimeBoost.ended_at,
+  used_at:
+    currentLifetimeBoost.used_at,
+  last_stage: lastStage,
+},
     })
   } catch (error) {
     console.error('GET MY AUTHOR QUEST ERROR:', error)
@@ -814,6 +843,7 @@ export async function activateMyAuthorLifetimeBoost(
         duration_days: 100,
         started_at: startedAt.toISOString(),
         ended_at: endedAt.toISOString(),
+        used_at: startedAt.toISOString(),
         updated_at: startedAt.toISOString(),
       })
       .eq('id', lifetimeBoost.id)
@@ -884,6 +914,9 @@ export async function getMyAuthorIncome(req, res) {
       }),
     ])
 
+    const activeIncomeBoost =
+  await getActiveLifetimeBoost(authorPage.id)
+
     const [settings, quest, paymentMethod, todayIncome, weekIncome, monthIncome, totalIncome, recentEarnings, topSupporters, payoutHistory] = await Promise.all([
       getRevenueSettings(),
       supabase
@@ -910,15 +943,18 @@ export async function getMyAuthorIncome(req, res) {
       .from('author_earnings')
       .select('author_net_payout_usd')
       .eq('author_id', authorPage.id)
+      .eq('currency', 'diamond')
+      .eq('source_type', 'diamond_unlock')
       .eq('earning_month', thisMonthKey)
       .neq('earning_status', 'void')
-
     if (thisMonthError) throw thisMonthError
 
     const { data: lastMonthRows, error: lastMonthError } = await supabase
       .from('author_earnings')
       .select('author_net_payout_usd')
       .eq('author_id', authorPage.id)
+      .eq('currency', 'diamond')
+      .eq('source_type', 'diamond_unlock')
       .eq('earning_month', lastMonthKey)
       .neq('earning_status', 'void')
 
@@ -945,7 +981,21 @@ gifts: {
 },
       income_summary: incomeRecordData.summary,
       income_record: incomeRecordData.record,
-      current_share_percent: percentValue(quest.data?.current_share_percent || settings.default_share_percent),
+      current_share_percent:
+  activeIncomeBoost?.status === 'active'
+    ? percentValue(activeIncomeBoost.share_percent)
+    : percentValue(
+        quest.data?.current_share_percent ||
+          settings.default_share_percent
+      ),
+current_share_source:
+  activeIncomeBoost?.status === 'active'
+    ? 'lifetime_boost'
+    : 'quest_stage',
+boost_ends_at:
+  activeIncomeBoost?.status === 'active'
+    ? activeIncomeBoost.ended_at
+    : null,
       next_payout_date: getNextPayoutDate(settings),
       payment_method: {
         complete: Boolean(paymentMethod),
