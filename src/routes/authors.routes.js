@@ -45,6 +45,7 @@ import {
   getAuthorPostEchoes,
 } from '../controllers/authorPostEchoes.controller.js'
 import {
+  activateMyAuthorLifetimeBoost,
   getMyAuthorIncome,
   getMyAuthorPaymentMethods,
   getMyAuthorQuest,
@@ -86,6 +87,7 @@ const router = express.Router()
 router.get('/me/dashboard', requireUser, getMyAuthorDashboard)
 router.get('/me', requireUser, getMyAuthorPage)
 router.get('/me/quest', requireUser, getMyAuthorQuest)
+router.post('/me/quest/boost/activate', requireUser, activateMyAuthorLifetimeBoost)
 router.get('/me/income', requireUser, getMyAuthorIncome)
 router.get('/me/comment-protection/blocked-words', requireUser, getMyAuthorBlockedWords)
 router.post('/me/comment-protection/blocked-words', requireUser, createMyAuthorBlockedWord)
