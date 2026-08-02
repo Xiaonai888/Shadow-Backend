@@ -11,6 +11,7 @@ import {
   isStoryVisibleToReader,
 } from '../services/storyAgeAccess.service.js'
 import { applyBlackSundayDiscount } from '../services/blackSunday.service.js'
+import { getAdditiveDiscountResult } from '../services/revenueRules.service.js'
 const CAMBODIA_TIME_OFFSET_MS =
   7 * 60 * 60 * 1000
 
@@ -369,20 +370,90 @@ function getEpisodeAvailableForGemAt(episode, rules, tier = 'standard') {
   }
 }
 
-function calculateDiamondCost(count, discountPercent = 0, rules = FALLBACK_RULES) {
-  const original = Number(count || 0) * getRuleNumber(rules, 'diamond_per_episode')
-  const packageDiscount = Math.max(0, Math.min(100, Number(discountPercent || 0)))
-  const packagePrice = Math.ceil(original * ((100 - packageDiscount) / 100))
-  const blackSunday = applyBlackSundayDiscount(packagePrice)
+function calculateDiamondCost({
+  count,
+  packageDiscountPercent = 0,
+  tier = 'standard',
+  rules = FALLBACK_RULES,
+}) {
+  const original =
+    Number(count || 0) *
+    getRuleNumber(rules, 'diamond_per_episode')
+
+  const packageDiscount = Math.max(
+    0,
+    Math.min(100, Number(packageDiscountPercent || 0))
+  )
+
+  const premiumDiscount =
+    tier === 'premium' ? 10 : 0
+
+  const blackSunday =
+    applyBlackSundayDiscount(original)
+
+  const pricing = getAdditiveDiscountResult(
+    original,
+    [
+      {
+        key: 'package',
+        label: 'Package',
+        percent: packageDiscount,
+      },
+      {
+        key: 'premium',
+        label: 'Premium',
+        percent: premiumDiscount,
+      },
+      {
+        key: 'black_sunday',
+        label: 'Black Sunday',
+        percent: blackSunday.discount_percent,
+        active: blackSunday.event.active,
+      },
+    ]
+  )
+
+  const total =
+    original > 0
+      ? Math.max(
+          1,
+          Math.ceil(pricing.final_paid_amount)
+        )
+      : 0
 
   return {
     original,
-    package_price: packagePrice,
-    total: blackSunday.amount,
+    package_price:
+      original > 0
+        ? Math.max(
+            1,
+            Math.ceil(
+              original *
+                ((100 - packageDiscount) / 100)
+            )
+          )
+        : 0,
+    total,
     discount_percent: packageDiscount,
-    black_sunday_active: blackSunday.event.active,
-    black_sunday_discount_percent: blackSunday.discount_percent,
-    black_sunday_discount_amount: blackSunday.discount_amount,
+    package_discount_percent:
+      packageDiscount,
+    premium_discount_percent:
+      premiumDiscount,
+    total_discount_percent:
+      pricing.total_discount_percent,
+    total_discount_amount:
+      Math.max(0, original - total),
+    applied_discounts:
+      pricing.applied_discounts,
+    black_sunday_active:
+      blackSunday.event.active,
+    black_sunday_discount_percent:
+      blackSunday.discount_percent,
+    black_sunday_discount_amount:
+      Math.ceil(
+        original *
+          (blackSunday.discount_percent / 100)
+      ),
     event: blackSunday.event,
   }
 }
@@ -408,12 +479,24 @@ function calculateCoinCost(rules = FALLBACK_RULES) {
   }
 }
 
-function publicPackageOption({ rule, availableEpisodes, story, rules }) {
+function publicPackageOption({
+  rule,
+  availableEpisodes,
+  story,
+  rules,
+  tier = 'standard',
+}) {
   const availableCount = availableEpisodes.length
   const requiredCount = rule.key === 'all_released' ? availableCount : Number(rule.count || 0)
   const canUseAllReleased = rule.key !== 'all_released' || availableCount > 70 || isStoryCompleted(story)
   const enabled = availableCount >= requiredCount && requiredCount > 0 && canUseAllReleased
-  const cost = calculateDiamondCost(requiredCount, rule.discount_percent, rules)
+  const cost = calculateDiamondCost({
+  count: requiredCount,
+  packageDiscountPercent:
+    rule.discount_percent,
+  tier,
+  rules,
+})
 
   return {
     key: rule.key,
