@@ -299,6 +299,156 @@ export async function createMyAuthorPost(req, res) {
   }
 }
 
+export async function updateMyAuthorPost(req, res) {
+  try {
+    const userId = req.user?.user_id || req.user?.id
+    const postId = String(req.params.postId || '').trim()
+    const body = req.body || {}
+    const hasContent = Object.prototype.hasOwnProperty.call(body, 'content')
+    const hasImageUrls =
+      Object.prototype.hasOwnProperty.call(body, 'image_urls') ||
+      Object.prototype.hasOwnProperty.call(body, 'imageUrls')
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!postId) {
+      return res.status(400).json({ ok: false, message: 'Post ID is required' })
+    }
+
+    if (!hasContent && !hasImageUrls) {
+      return res.status(400).json({ ok: false, message: 'Nothing to update' })
+    }
+
+    const nextContent = hasContent
+      ? String(body.content || '').trim()
+      : null
+
+    if (hasContent && nextContent.length > AUTHOR_POST_CONTENT_LIMIT) {
+      return res.status(400).json({
+        ok: false,
+        message: `Post content must be ${AUTHOR_POST_CONTENT_LIMIT.toLocaleString()} characters or fewer`,
+      })
+    }
+
+    let imageUrlsRaw = null
+    let imageUrls = null
+
+    if (hasImageUrls) {
+      imageUrlsRaw = Object.prototype.hasOwnProperty.call(body, 'image_urls')
+        ? body.image_urls
+        : body.imageUrls
+
+      if (!Array.isArray(imageUrlsRaw)) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Post photos must be an array',
+        })
+      }
+
+      if (imageUrlsRaw.length > AUTHOR_POST_IMAGES_LIMIT) {
+        return res.status(400).json({
+          ok: false,
+          message: 'You can add up to 5 photos per post.',
+          image_limit: AUTHOR_POST_IMAGES_LIMIT,
+        })
+      }
+
+      imageUrls = normalizeImageUrls(imageUrlsRaw)
+
+      if (imageUrls.length !== imageUrlsRaw.length) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Invalid post photo URL',
+        })
+      }
+    }
+
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('id, user_id')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (pageError) throw pageError
+
+    if (!authorPage) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Author page not found',
+      })
+    }
+
+    const { data: existingPost, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('*')
+      .eq('id', postId)
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!existingPost) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
+    }
+
+    const finalContent = hasContent
+      ? nextContent
+      : String(existingPost.content || '').trim()
+
+    const finalImageUrls = hasImageUrls
+      ? imageUrls
+      : normalizeImageUrls(existingPost.image_urls)
+
+    if (!finalContent && !finalImageUrls.length) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Post content or photo is required',
+      })
+    }
+
+    const updates = {
+      updated_at: new Date().toISOString(),
+    }
+
+    if (hasContent) updates.content = finalContent
+    if (hasImageUrls) updates.image_urls = finalImageUrls
+
+    const { data: updatedPost, error: updateError } = await supabase
+      .from('author_page_posts')
+      .update(updates)
+      .eq('id', postId)
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .select()
+      .single()
+
+    if (updateError) throw updateError
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Post updated',
+      post: publicAuthorPost(updatedPost),
+    })
+  } catch (error) {
+    console.error('UPDATE MY AUTHOR POST ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update author post',
+      error: error.message,
+    })
+  }
+}
+
 export async function setMyAuthorPostPinned(req, res) {
   try {
     const userId = req.user?.user_id
