@@ -48,6 +48,12 @@ import {
 } from '../controllers/authorPostNotifications.controller.js'
 
 import {
+  getMyAuthorPostTrash,
+  moveMyAuthorPostToTrash,
+  restoreMyAuthorPostFromTrash,
+} from '../controllers/authorPostTrash.controller.js'
+
+import {
   createAuthorPostEcho,
   getAuthorPostEchoes,
 } from '../controllers/authorPostEchoes.controller.js'
@@ -145,8 +151,11 @@ router.put('/profile-images', requireUser, updateAuthorProfileImages)
 router.put('/me', requireUser, updateMyAuthorPage)
 router.get('/page/:pageUsername/posts', getAuthorPagePosts)
 router.post('/me/posts', requireUser, createMyAuthorPost)
+router.get('/me/posts/trash', requireUser, getMyAuthorPostTrash)
 router.patch('/me/posts/:postId', requireUser, updateMyAuthorPost)
 router.patch('/me/posts/:postId/pin', requireUser, setMyAuthorPostPinned)
+router.patch('/me/posts/:postId/trash', requireUser, moveMyAuthorPostToTrash)
+router.patch('/me/posts/:postId/restore', requireUser, restoreMyAuthorPostFromTrash)
 router.post('/me/posts/:postId/react', requireUser, setMyAuthorPostReaction)
 router.get('/page/posts/:postId/notification-preference', requireUser, getMyAuthorPostNotificationPreference)
 router.put('/page/posts/:postId/notification-preference', requireUser, updateMyAuthorPostNotificationPreference)
