@@ -38,6 +38,7 @@ import {
   getAuthorPostReactions,
   setMyAuthorPostPinned,
   setMyAuthorPostReaction,
+  updateMyAuthorPost,
   updateOwnAuthorPostComment,
 } from '../controllers/authorPosts.controller.js'
 import {
@@ -137,6 +138,7 @@ router.put('/profile-images', requireUser, updateAuthorProfileImages)
 router.put('/me', requireUser, updateMyAuthorPage)
 router.get('/page/:pageUsername/posts', getAuthorPagePosts)
 router.post('/me/posts', requireUser, createMyAuthorPost)
+router.patch('/me/posts/:postId', requireUser, updateMyAuthorPost)
 router.patch('/me/posts/:postId/pin', requireUser, setMyAuthorPostPinned)
 router.post('/me/posts/:postId/react', requireUser, setMyAuthorPostReaction)
 router.get('/page/posts/:postId', getAuthorPostById)
