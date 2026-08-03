@@ -119,11 +119,23 @@ export async function getAuthorPagePosts(req, res) {
       return res.status(404).json({ ok: false, message: 'Author page not found' })
     }
 
-    const { data: posts, error: postsError } = await supabase
+    let postsQuery = supabase
       .from('author_page_posts')
       .select('*')
       .eq('author_page_id', authorPage.id)
       .eq('status', 'active')
+
+    const before = String(req.query.before || '').trim()
+
+    if (before) {
+      const beforeDate = new Date(`${before}T23:59:59.999Z`)
+
+      if (!Number.isNaN(beforeDate.getTime())) {
+        postsQuery = postsQuery.lte('created_at', beforeDate.toISOString())
+      }
+    }
+
+    const { data: posts, error: postsError } = await postsQuery
       .order('is_pinned', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(limit)
