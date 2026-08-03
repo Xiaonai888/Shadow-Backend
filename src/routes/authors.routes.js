@@ -41,10 +41,17 @@ import {
   updateMyAuthorPost,
   updateOwnAuthorPostComment,
 } from '../controllers/authorPosts.controller.js'
+
 import {
   getMyAuthorPostNotificationPreference,
   updateMyAuthorPostNotificationPreference,
 } from '../controllers/authorPostNotifications.controller.js'
+
+import {
+  createAuthorPostEcho,
+  getAuthorPostEchoes,
+} from '../controllers/authorPostEchoes.controller.js'
+
 import {
   activateMyAuthorLifetimeBoost,
   getMyAuthorIncome,
