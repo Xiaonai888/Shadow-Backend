@@ -289,14 +289,20 @@ export async function createEpisodeEcho(req, res) {
 
     const { data, error } = await supabase
       .from('episode_echoes')
-      .insert({
-        episode_id: context.episode.id,
-        story_id: context.story.id,
-        user_id: userId,
-        echo_text: echoText,
-        destination,
-        audience,
-      })
+      .upsert(
+        {
+          episode_id: context.episode.id,
+          story_id: context.story.id,
+          user_id: userId,
+          echo_text: echoText,
+          destination,
+          audience,
+          created_at: new Date().toISOString(),
+        },
+        {
+          onConflict: 'episode_id,user_id',
+        }
+      )
       .select('id, episode_id, story_id, user_id, echo_text, destination, audience, created_at')
       .single()
 
