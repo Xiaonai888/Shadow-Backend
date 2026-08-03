@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 
 const MAX_POST_LENGTH = 10000
+const MAX_POST_IMAGES = 5
 const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 30
 const FEED_SCAN_LIMIT = 120
@@ -58,12 +59,73 @@ function normalizeContent(value) {
     .trim()
 }
 
-function validateContent(value) {
+function normalizeImageUrls(value) {
+  if (
+    value === undefined ||
+    value === null
+  ) {
+    return []
+  }
+
+  if (!Array.isArray(value)) {
+    const error = new Error(
+      'Post images must be an array'
+    )
+    error.statusCode = 400
+    throw error
+  }
+
+  const imageUrls = [
+    ...new Set(
+      value
+        .filter(
+          (item) =>
+            typeof item === 'string'
+        )
+        .map((item) => item.trim())
+        .filter(Boolean)
+    ),
+  ]
+
+  if (
+    imageUrls.length >
+    MAX_POST_IMAGES
+  ) {
+    const error = new Error(
+      `You can add up to ${MAX_POST_IMAGES} images per post`
+    )
+    error.statusCode = 400
+    throw error
+  }
+
+  const invalidUrl = imageUrls.find(
+    (url) =>
+      !/^https?:\/\/\S+$/i.test(url)
+  )
+
+  if (invalidUrl) {
+    const error = new Error(
+      'Post image URL is invalid'
+    )
+    error.statusCode = 400
+    throw error
+  }
+
+  return imageUrls
+}
+
+function validateContent(
+  value,
+  imageUrls = []
+) {
   const content = normalizeContent(value)
 
-  if (!content) {
+  if (
+    !content &&
+    !imageUrls.length
+  ) {
     const error = new Error(
-      'Post text is required'
+      'Post text or image is required'
     )
     error.statusCode = 400
     throw error
@@ -144,6 +206,17 @@ function normalizePost(
     id: post.id,
     user_id: post.user_id,
     content: post.content || '',
+    image_urls: Array.isArray(
+      post.image_urls
+    )
+      ? post.image_urls
+          .filter(
+            (url) =>
+              typeof url === 'string' &&
+              url.trim()
+          )
+          .slice(0, MAX_POST_IMAGES)
+      : [],
     visibility:
       post.visibility || 'public',
     comments_permission:
@@ -654,8 +727,13 @@ export async function createMyReaderPost(
 ) {
   try {
     const userId = getUserId(req)
+    const imageUrls =
+      normalizeImageUrls(
+        req.body.image_urls
+      )
     const content = validateContent(
-      req.body.content
+      req.body.content,
+      imageUrls
     )
     const visibility =
       normalizeVisibility(
@@ -681,6 +759,7 @@ export async function createMyReaderPost(
         .insert({
           user_id: userId,
           content,
+          image_urls: imageUrls,
           visibility,
           comments_permission:
             commentsPermission,
@@ -753,12 +832,23 @@ export async function updateMyReaderPost(
       })
     }
 
-    const content =
+    const imageUrls =
+      req.body.image_urls === undefined
+        ? Array.isArray(
+            current.image_urls
+          )
+          ? current.image_urls
+          : []
+        : normalizeImageUrls(
+            req.body.image_urls
+          )
+
+    const content = validateContent(
       req.body.content === undefined
         ? current.content
-        : validateContent(
-            req.body.content
-          )
+        : req.body.content,
+      imageUrls
+    )
 
     const visibility =
       req.body.visibility === undefined
@@ -794,6 +884,7 @@ export async function updateMyReaderPost(
         .from('reader_posts')
         .update({
           content,
+          image_urls: imageUrls,
           visibility,
           comments_permission:
             commentsPermission,
