@@ -42,9 +42,9 @@ import {
   updateOwnAuthorPostComment,
 } from '../controllers/authorPosts.controller.js'
 import {
-  createAuthorPostEcho,
-  getAuthorPostEchoes,
-} from '../controllers/authorPostEchoes.controller.js'
+  getMyAuthorPostNotificationPreference,
+  updateMyAuthorPostNotificationPreference,
+} from '../controllers/authorPostNotifications.controller.js'
 import {
   activateMyAuthorLifetimeBoost,
   getMyAuthorIncome,
@@ -141,6 +141,8 @@ router.post('/me/posts', requireUser, createMyAuthorPost)
 router.patch('/me/posts/:postId', requireUser, updateMyAuthorPost)
 router.patch('/me/posts/:postId/pin', requireUser, setMyAuthorPostPinned)
 router.post('/me/posts/:postId/react', requireUser, setMyAuthorPostReaction)
+router.get('/page/posts/:postId/notification-preference', requireUser, getMyAuthorPostNotificationPreference)
+router.put('/page/posts/:postId/notification-preference', requireUser, updateMyAuthorPostNotificationPreference)
 router.get('/page/posts/:postId', getAuthorPostById)
 router.get('/page/posts/:postId/reactions', getAuthorPostReactions)
 router.get('/page/posts/:postId/comments', getAuthorPostComments)
