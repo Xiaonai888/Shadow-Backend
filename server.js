@@ -14,6 +14,7 @@ import publicStoriesRoutes from './src/routes/publicStories.routes.js'
 import adminExclusiveRoutes from './src/routes/adminExclusive.routes.js'
 import genresRoutes from './src/routes/genres.routes.js'
 import commentsRoutes from './src/routes/comments.routes.js'
+import commentTrashRoutes from './src/routes/commentTrash.routes.js'
 import reactionsRoutes from './src/routes/reactions.routes.js'
 import adminCommentsRoutes from './src/routes/adminComments.routes.js'
 import libraryRoutes from './src/routes/library.routes.js'
@@ -453,6 +454,7 @@ app.use('/api/admin/purchases', adminPurchasesRoutes)
 app.use('/api/admin/activity-logs', adminActivityRoutes)
 app.use('/api/genres', publicReadSpamGuard, genresRoutes)
 app.use('/api/comments', communityRouteSpamGuard, commentsRoutes)
+app.use('/api/comment-trash', communityRouteSpamGuard, commentTrashRoutes)
 app.use('/api/reactions', communityRouteSpamGuard, reactionsRoutes)
 app.use('/api/echoes', communityRouteSpamGuard, echoesRoutes)
 app.use('/api/reader', communityRouteSpamGuard, libraryRoutes)
