@@ -478,6 +478,306 @@ async function attachVisibleUsers(
     .filter(Boolean)
 }
 
+
+function echoAudienceToVisibility(
+  audience
+) {
+  if (audience === 'only-me') {
+    return 'only_me'
+  }
+
+  if (audience === 'followers') {
+    return 'followers'
+  }
+
+  if (audience === 'close-readers') {
+    return 'friends'
+  }
+
+  return 'public'
+}
+
+function mergeTimelinePosts(
+  groups,
+  limit
+) {
+  return groups
+    .flat()
+    .filter(Boolean)
+    .sort((left, right) => {
+      const rightTime = new Date(
+        right.publish_at ||
+          right.created_at ||
+          0
+      ).getTime()
+      const leftTime = new Date(
+        left.publish_at ||
+          left.created_at ||
+          0
+      ).getTime()
+
+      if (rightTime !== leftTime) {
+        return rightTime - leftTime
+      }
+
+      return String(
+        right.id || ''
+      ).localeCompare(
+        String(left.id || '')
+      )
+    })
+    .slice(0, limit)
+}
+
+async function readEpisodeEchoPosts({
+  viewerId,
+  ownerId = '',
+  publicFeed = false,
+  limit = FEED_SCAN_LIMIT,
+}) {
+  let query = supabase
+    .from('episode_echoes')
+    .select(
+      'id, episode_id, story_id, user_id, echo_text, destination, audience, created_at'
+    )
+    .order('created_at', {
+      ascending: false,
+    })
+    .limit(limit)
+
+  if (publicFeed) {
+    query = query
+      .eq('destination', 'feed')
+      .eq('audience', 'public')
+  } else {
+    query = query.in(
+      'destination',
+      ['feed', 'shadow']
+    )
+  }
+
+  if (ownerId) {
+    query = query.eq(
+      'user_id',
+      ownerId
+    )
+
+    if (
+      String(ownerId) !==
+      String(viewerId)
+    ) {
+      query = query.eq(
+        'audience',
+        'public'
+      )
+    }
+  }
+
+  const {
+    data: echoes,
+    error: echoError,
+  } = await query
+
+  if (echoError) throw echoError
+
+  const rows = Array.isArray(echoes)
+    ? echoes
+    : []
+
+  if (!rows.length) return []
+
+  const userIds = [
+    ...new Set(
+      rows
+        .map((item) =>
+          String(item.user_id || '')
+        )
+        .filter(Boolean)
+    ),
+  ]
+  const episodeIds = [
+    ...new Set(
+      rows
+        .map((item) =>
+          String(item.episode_id || '')
+        )
+        .filter(Boolean)
+    ),
+  ]
+  const storyIds = [
+    ...new Set(
+      rows
+        .map((item) =>
+          String(item.story_id || '')
+        )
+        .filter(Boolean)
+    ),
+  ]
+
+  const userMap =
+    await readUsersByIds(userIds)
+
+  let episodes = []
+  let stories = []
+
+  if (episodeIds.length) {
+    const {
+      data,
+      error,
+    } = await supabase
+      .from('episodes')
+      .select(
+        'id, story_id, title, episode_number, cover_url, status, deleted_at'
+      )
+      .in('id', episodeIds)
+      .is('deleted_at', null)
+
+    if (error) throw error
+    episodes = data || []
+  }
+
+  if (storyIds.length) {
+    const {
+      data,
+      error,
+    } = await supabase
+      .from('stories')
+      .select(
+        'id, title, cover_url, landscape_thumbnail_url, main_genre, status, deleted_at'
+      )
+      .in('id', storyIds)
+      .is('deleted_at', null)
+
+    if (error) throw error
+    stories = data || []
+  }
+
+  const episodeMap = new Map(
+    episodes.map((episode) => [
+      String(episode.id),
+      episode,
+    ])
+  )
+  const storyMap = new Map(
+    stories.map((story) => [
+      String(story.id),
+      story,
+    ])
+  )
+
+  return rows
+    .map((echo) => {
+      const user = userMap.get(
+        String(echo.user_id)
+      )
+      const episode = episodeMap.get(
+        String(echo.episode_id)
+      )
+      const story = storyMap.get(
+        String(echo.story_id)
+      )
+
+      if (!user || !episode || !story) {
+        return null
+      }
+
+      if (
+        String(episode.status || '')
+          .toLowerCase() !==
+          'published' ||
+        String(story.status || '')
+          .toLowerCase() !==
+          'published'
+      ) {
+        return null
+      }
+
+      const sourceImage =
+        story.landscape_thumbnail_url ||
+        story.cover_url ||
+        episode.cover_url ||
+        ''
+      const sourceTitle =
+        story.title || 'Story'
+      const episodeTitle =
+        episode.title ||
+        `Episode ${Number(
+          episode.episode_number || 0
+        )}`
+      const echoText = String(
+        echo.echo_text || ''
+      ).trim()
+
+      return {
+        id: `episode-echo:${echo.id}`,
+        user_id: echo.user_id,
+        content:
+          echoText ||
+          `Echoed “${sourceTitle}” — ${episodeTitle}`,
+        image_urls: sourceImage
+          ? [sourceImage]
+          : [],
+        visibility:
+          echoAudienceToVisibility(
+            echo.audience
+          ),
+        comments_permission:
+          'no_one',
+        story_sharing: true,
+        publish_at:
+          echo.created_at,
+        like_count: 0,
+        comment_count: 0,
+        echo_count: 0,
+        created_at:
+          echo.created_at,
+        updated_at:
+          echo.created_at,
+        is_edited: false,
+        is_owner: false,
+        is_echo: true,
+        echo_id: echo.id,
+        echo_type:
+          'episode',
+        echo_destination:
+          echo.destination ||
+          'feed',
+        echo_audience:
+          echo.audience ||
+          'public',
+        source_type:
+          'episode',
+        source_id:
+          episode.id,
+        source_url:
+          `/story/${story.id}/episode/${episode.id}`,
+        source_story: {
+          id: story.id,
+          title: sourceTitle,
+          cover_url:
+            story.cover_url || '',
+          landscape_thumbnail_url:
+            story.landscape_thumbnail_url ||
+            '',
+          main_genre:
+            story.main_genre || '',
+        },
+        source_episode: {
+          id: episode.id,
+          title: episodeTitle,
+          episode_number: Number(
+            episode.episode_number || 0
+          ),
+          cover_url:
+            episode.cover_url || '',
+        },
+        user: normalizeUser(user),
+      }
+    })
+    .filter(Boolean)
+}
+
+
 async function readOwnedPost(
   postId,
   userId
@@ -523,12 +823,25 @@ export async function getReaderPostsFeed(
 
     if (error) throw error
 
-    const posts = (
-      await attachVisibleUsers(
+    const [
+      readerPosts,
+      echoPosts,
+    ] = await Promise.all([
+      attachVisibleUsers(
         data,
         viewerId
-      )
-    ).slice(0, limit)
+      ),
+      readEpisodeEchoPosts({
+        viewerId,
+        publicFeed: true,
+        limit: FEED_SCAN_LIMIT,
+      }),
+    ])
+
+    const posts = mergeTimelinePosts(
+      [readerPosts, echoPosts],
+      limit
+    )
 
     return res.status(200).json({
       ok: true,
@@ -581,7 +894,7 @@ export async function getMyReaderPosts(
       String(userId)
     )
 
-    const posts = (data || [])
+    const readerPosts = (data || [])
       .map((post) =>
         user
           ? normalizePost(
@@ -592,6 +905,18 @@ export async function getMyReaderPosts(
           : null
       )
       .filter(Boolean)
+
+    const echoPosts =
+      await readEpisodeEchoPosts({
+        viewerId: userId,
+        ownerId: userId,
+        limit: FEED_SCAN_LIMIT,
+      })
+
+    const posts = mergeTimelinePosts(
+      [readerPosts, echoPosts],
+      limit
+    )
 
     return res.status(200).json({
       ok: true,
@@ -683,7 +1008,7 @@ export async function getReaderPostsByUsername(
         [user.id]
       )
 
-    const posts = (data || [])
+    const readerPosts = (data || [])
       .filter((post) =>
         canViewerSeePost(
           post,
@@ -691,7 +1016,6 @@ export async function getReaderPostsByUsername(
           relationships
         )
       )
-      .slice(0, limit)
       .map((post) =>
         normalizePost(
           post,
@@ -699,6 +1023,18 @@ export async function getReaderPostsByUsername(
           viewerId
         )
       )
+
+    const echoPosts =
+      await readEpisodeEchoPosts({
+        viewerId,
+        ownerId: user.id,
+        limit: FEED_SCAN_LIMIT,
+      })
+
+    const posts = mergeTimelinePosts(
+      [readerPosts, echoPosts],
+      limit
+    )
 
     return res.status(200).json({
       ok: true,
