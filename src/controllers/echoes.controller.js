@@ -853,11 +853,18 @@ async function hydrateSocialEchoes(
     ...new Set(items.filter(Boolean)),
   ]
 
+  const linkedReaderPostIds = unique(
+    echoes.map((echo) =>
+      String(echo.reader_post_id || '')
+    )
+  )
+
   const [
     storyResult,
     episodeResult,
     readerPostResult,
     authorPostResult,
+    linkedReaderPostResult,
   ] = await Promise.all([
     unique(sourceIds.story).length
       ? supabase
@@ -901,6 +908,15 @@ async function hydrateSocialEchoes(
           )
           .eq('status', 'active')
       : Promise.resolve({ data: [], error: null }),
+    linkedReaderPostIds.length
+      ? supabase
+          .from('reader_posts')
+          .select(
+            'id, user_id, content, image_urls, visibility, comments_permission, story_sharing, publish_at, like_count, comment_count, echo_count, created_at, updated_at, deleted_at'
+          )
+          .in('id', linkedReaderPostIds)
+          .is('deleted_at', null)
+      : Promise.resolve({ data: [], error: null }),
   ])
 
   for (const result of [
@@ -908,6 +924,7 @@ async function hydrateSocialEchoes(
     episodeResult,
     readerPostResult,
     authorPostResult,
+    linkedReaderPostResult,
   ]) {
     if (result.error) throw result.error
   }
@@ -978,6 +995,8 @@ async function hydrateSocialEchoes(
     readerPostResult.data || []
   const authorPosts =
     authorPostResult.data || []
+  const linkedReaderPosts =
+    linkedReaderPostResult.data || []
   const echoUserIds = echoes.map(
     (echo) => echo.user_id
   )
@@ -1041,6 +1060,12 @@ async function hydrateSocialEchoes(
     authorPages.map((page) => [
       String(page.id),
       page,
+    ])
+  )
+  const linkedReaderPostMap = new Map(
+    linkedReaderPosts.map((post) => [
+      String(post.id),
+      post,
     ])
   )
 
@@ -1308,34 +1333,77 @@ async function hydrateSocialEchoes(
       const echoText = String(
         echo.echo_text || ''
       ).trim()
+      const linkedPost =
+        linkedReaderPostMap.get(
+          String(echo.reader_post_id || '')
+        ) || null
+      const createdAt =
+        linkedPost?.created_at ||
+        echo.created_at ||
+        echoTime
+      const updatedAt =
+        linkedPost?.updated_at ||
+        echoTime
+      const isEdited =
+        Boolean(linkedPost?.updated_at) &&
+        Boolean(linkedPost?.created_at) &&
+        new Date(
+          linkedPost.updated_at
+        ).getTime() >
+          new Date(
+            linkedPost.created_at
+          ).getTime() +
+            1000
 
       return {
-        id: `social-echo:${echo.id}`,
+        id:
+          linkedPost?.id ||
+          echo.reader_post_id ||
+          `social-echo:${echo.id}`,
         user_id: echo.user_id,
-        content: echoText,
+        content:
+          linkedPost?.content ??
+          echoText,
         image_urls:
-          source.image_urls || [],
+          Array.isArray(
+            linkedPost?.image_urls
+          )
+            ? linkedPost.image_urls
+            : [],
         visibility:
+          linkedPost?.visibility ||
           audienceToVisibility(
             echo.audience
           ),
-        comments_permission: 'no_one',
+        comments_permission:
+          linkedPost?.comments_permission ||
+          'everyone',
         story_sharing: true,
-        publish_at: echoTime,
-        like_count: 0,
-        comment_count: 0,
-        echo_count: Number(
-          echo.share_count || 1
+        publish_at:
+          linkedPost?.publish_at ||
+          echoTime,
+        like_count: Number(
+          linkedPost?.like_count || 0
         ),
-        created_at: echoTime,
-        updated_at: echoTime,
-        is_edited: false,
+        comment_count: Number(
+          linkedPost?.comment_count || 0
+        ),
+        echo_count: Number(
+          linkedPost?.echo_count || 0
+        ),
+        created_at: createdAt,
+        updated_at: updatedAt,
+        is_edited: isEdited,
         is_owner:
           Boolean(viewerId) &&
           String(echo.user_id) ===
             String(viewerId),
         is_echo: true,
         echo_id: echo.id,
+        reader_post_id:
+          linkedPost?.id ||
+          echo.reader_post_id ||
+          null,
         echo_type: echo.source_type,
         echo_destination:
           echo.destination || 'feed',
@@ -1403,7 +1471,7 @@ async function readSocialEchoRows(
   let query = supabase
     .from('social_echoes')
     .select(
-      'id, user_id, source_type, source_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
+      'id, user_id, source_type, source_id, reader_post_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
     )
 
   query = configure(query)
@@ -1420,6 +1488,120 @@ async function readSocialEchoRows(
     rows: data || [],
     scanLimit,
   }
+}
+
+async function createOrRefreshEchoReaderPost({
+  readerPostId,
+  userId,
+  content,
+  audience,
+  now,
+}) {
+  const payload = {
+    user_id: userId,
+    content: String(content || '').trim(),
+    image_urls: [],
+    visibility:
+      audienceToVisibility(audience),
+    comments_permission: 'everyone',
+    story_sharing: true,
+    publish_at: now,
+    updated_at: now,
+    deleted_at: null,
+  }
+
+  if (readerPostId) {
+    const { data: current, error } =
+      await supabase
+        .from('reader_posts')
+        .select('id, user_id')
+        .eq('id', readerPostId)
+        .eq('user_id', userId)
+        .maybeSingle()
+
+    if (error) throw error
+
+    if (current) {
+      const { data, error: updateError } =
+        await supabase
+          .from('reader_posts')
+          .update(payload)
+          .eq('id', current.id)
+          .eq('user_id', userId)
+          .select(
+            'id, user_id, content, image_urls, visibility, comments_permission, story_sharing, publish_at, like_count, comment_count, echo_count, created_at, updated_at, deleted_at'
+          )
+          .single()
+
+      if (updateError) throw updateError
+
+      return {
+        post: data,
+        created: false,
+      }
+    }
+  }
+
+  const { data, error } = await supabase
+    .from('reader_posts')
+    .insert({
+      ...payload,
+      like_count: 0,
+      comment_count: 0,
+      echo_count: 0,
+      created_at: now,
+    })
+    .select(
+      'id, user_id, content, image_urls, visibility, comments_permission, story_sharing, publish_at, like_count, comment_count, echo_count, created_at, updated_at, deleted_at'
+    )
+    .single()
+
+  if (error) throw error
+
+  return {
+    post: data,
+    created: true,
+  }
+}
+
+async function softDeleteEchoReaderPost(
+  readerPostId,
+  userId
+) {
+  if (!readerPostId) return
+
+  const deletedAt = new Date().toISOString()
+  const { error } = await supabase
+    .from('reader_posts')
+    .update({
+      deleted_at: deletedAt,
+      updated_at: deletedAt,
+    })
+    .eq('id', readerPostId)
+    .eq('user_id', userId)
+    .is('deleted_at', null)
+
+  if (error) throw error
+}
+
+async function restoreEchoReaderPost(
+  readerPostId,
+  userId
+) {
+  if (!readerPostId) return
+
+  const restoredAt =
+    new Date().toISOString()
+  const { error } = await supabase
+    .from('reader_posts')
+    .update({
+      deleted_at: null,
+      updated_at: restoredAt,
+    })
+    .eq('id', readerPostId)
+    .eq('user_id', userId)
+
+  if (error) throw error
 }
 
 export async function createSocialEcho(
@@ -1506,7 +1688,9 @@ export async function createSocialEcho(
       error: existingError,
     } = await supabase
       .from('social_echoes')
-      .select('id, share_count, created_at')
+      .select(
+        'id, reader_post_id, share_count, created_at'
+      )
       .eq('user_id', userId)
       .eq('source_type', sourceType)
       .eq('source_id', sourceId)
@@ -1514,62 +1698,89 @@ export async function createSocialEcho(
 
     if (existingError) throw existingError
 
+    const {
+      post: echoReaderPost,
+      created: readerPostCreated,
+    } = await createOrRefreshEchoReaderPost({
+      readerPostId:
+        existing?.reader_post_id || null,
+      userId,
+      content: echoText,
+      audience,
+      now,
+    })
+
     let data = null
     let created = false
 
-    if (existing) {
-      const { data: updated, error } =
-        await supabase
-          .from('social_echoes')
-          .update({
-            echo_text: echoText,
-            destination,
-            audience,
-            selected_reader_ids:
-              selectedReaderIds,
-            share_count:
-              Math.max(
-                1,
-                Number(
-                  existing.share_count || 1
-                )
-              ) + 1,
-            updated_at: now,
-          })
-          .eq('id', existing.id)
-          .eq('user_id', userId)
-          .select(
-            'id, user_id, source_type, source_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
-          )
-          .single()
+    try {
+      if (existing) {
+        const { data: updated, error } =
+          await supabase
+            .from('social_echoes')
+            .update({
+              reader_post_id:
+                echoReaderPost.id,
+              echo_text: echoText,
+              destination,
+              audience,
+              selected_reader_ids:
+                selectedReaderIds,
+              share_count:
+                Math.max(
+                  1,
+                  Number(
+                    existing.share_count || 1
+                  )
+                ) + 1,
+              updated_at: now,
+            })
+            .eq('id', existing.id)
+            .eq('user_id', userId)
+            .select(
+              'id, user_id, source_type, source_id, reader_post_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
+            )
+            .single()
 
-      if (error) throw error
-      data = updated
-    } else {
-      const { data: inserted, error } =
-        await supabase
-          .from('social_echoes')
-          .insert({
-            user_id: userId,
-            source_type: sourceType,
-            source_id: sourceId,
-            echo_text: echoText,
-            destination,
-            audience,
-            selected_reader_ids:
-              selectedReaderIds,
-            share_count: 1,
-            created_at: now,
-            updated_at: now,
-          })
-          .select(
-            'id, user_id, source_type, source_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
-          )
-          .single()
+        if (error) throw error
+        data = updated
+      } else {
+        const { data: inserted, error } =
+          await supabase
+            .from('social_echoes')
+            .insert({
+              user_id: userId,
+              source_type: sourceType,
+              source_id: sourceId,
+              reader_post_id:
+                echoReaderPost.id,
+              echo_text: echoText,
+              destination,
+              audience,
+              selected_reader_ids:
+                selectedReaderIds,
+              share_count: 1,
+              created_at: now,
+              updated_at: now,
+            })
+            .select(
+              'id, user_id, source_type, source_id, reader_post_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
+            )
+            .single()
 
-      if (error) throw error
-      data = inserted
-      created = true
+        if (error) throw error
+        data = inserted
+        created = true
+      }
+    } catch (error) {
+      if (readerPostCreated) {
+        await softDeleteEchoReaderPost(
+          echoReaderPost.id,
+          userId
+        ).catch(() => {})
+      }
+
+      throw error
     }
 
     const reader =
@@ -2004,7 +2215,9 @@ export async function deleteSocialEcho(
     const { data: current, error } =
       await supabase
         .from('social_echoes')
-        .select('id, source_type, source_id')
+        .select(
+          'id, source_type, source_id, reader_post_id'
+        )
         .eq('id', echoId)
         .eq('user_id', userId)
         .maybeSingle()
@@ -2018,6 +2231,11 @@ export async function deleteSocialEcho(
       })
     }
 
+    await softDeleteEchoReaderPost(
+      current.reader_post_id,
+      userId
+    )
+
     const { error: deleteError } =
       await supabase
         .from('social_echoes')
@@ -2025,7 +2243,14 @@ export async function deleteSocialEcho(
         .eq('id', current.id)
         .eq('user_id', userId)
 
-    if (deleteError) throw deleteError
+    if (deleteError) {
+      await restoreEchoReaderPost(
+        current.reader_post_id,
+        userId
+      ).catch(() => {})
+
+      throw deleteError
+    }
 
     const echoCount =
       await readSocialSourceShareCount(
@@ -2035,7 +2260,10 @@ export async function deleteSocialEcho(
 
     return res.status(200).json({
       ok: true,
-      deleted_id: current.id,
+      deleted_id:
+        current.reader_post_id ||
+        current.id,
+      echo_id: current.id,
       echo_count: echoCount,
     })
   } catch (error) {
