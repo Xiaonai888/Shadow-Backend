@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 
 const AUTHOR_POST_TRASH_DAYS = 30
+const ADMIN_ARCHIVE_DAYS = 90
 const DAY_MS = 24 * 60 * 60 * 1000
 
 function getUserId(req) {
@@ -46,6 +47,7 @@ function publicTrashPost(post) {
     updated_at: post.updated_at,
     deleted_at: post.deleted_at,
     delete_expires_at: post.delete_expires_at,
+    admin_archive_expires_at: post.admin_archive_expires_at,
     days_left: getDaysLeft(post.delete_expires_at),
   }
 }
@@ -145,6 +147,10 @@ export async function moveMyAuthorPostToTrash(req, res) {
       deletedAt.getTime() +
         AUTHOR_POST_TRASH_DAYS * DAY_MS
     )
+    const adminArchiveExpiresAt = new Date(
+      deleteExpiresAt.getTime() +
+        ADMIN_ARCHIVE_DAYS * DAY_MS
+    )
 
     const { data, error } = await supabase
       .from('author_page_posts')
@@ -153,6 +159,8 @@ export async function moveMyAuthorPostToTrash(req, res) {
         is_pinned: false,
         deleted_at: deletedAt.toISOString(),
         delete_expires_at: deleteExpiresAt.toISOString(),
+        admin_archive_expires_at:
+          adminArchiveExpiresAt.toISOString(),
         updated_at: deletedAt.toISOString(),
       })
       .eq('id', postId)
@@ -223,6 +231,7 @@ export async function restoreMyAuthorPostFromTrash(req, res) {
         status: 'active',
         deleted_at: null,
         delete_expires_at: null,
+        admin_archive_expires_at: null,
         updated_at: now,
       })
       .eq('id', postId)
@@ -250,6 +259,7 @@ export async function restoreMyAuthorPostFromTrash(req, res) {
         status: 'active',
         deleted_at: null,
         delete_expires_at: null,
+        admin_archive_expires_at: null,
         days_left: 0,
       },
     })
