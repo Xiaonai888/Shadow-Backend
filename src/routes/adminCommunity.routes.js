@@ -5,6 +5,8 @@ import {
   getAdminCommunityReaders,
   getAdminCommunityVisitorOverview,
   getAdminCommunityVisitors,
+  getAdminDashboardGrowth,
+  getAdminDashboardPaidOrders,
 } from '../controllers/adminCommunity.controller.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 
@@ -15,5 +17,7 @@ router.get('/readers', requireAdmin, getAdminCommunityReaders)
 router.get('/authors', requireAdmin, getAdminCommunityAuthors)
 router.get('/visitors/overview', requireAdmin, getAdminCommunityVisitorOverview)
 router.get('/visitors', requireAdmin, getAdminCommunityVisitors)
+router.get('/dashboard/growth', requireAdmin, getAdminDashboardGrowth)
+router.get('/dashboard/orders', requireAdmin, getAdminDashboardPaidOrders)
 
 export default router
