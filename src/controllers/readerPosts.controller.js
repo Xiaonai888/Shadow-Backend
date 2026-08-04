@@ -116,11 +116,13 @@ function normalizeImageUrls(value) {
 
 function validateContent(
   value,
-  imageUrls = []
+  imageUrls = [],
+  allowEmpty = false
 ) {
   const content = normalizeContent(value)
 
   if (
+    !allowEmpty &&
     !content &&
     !imageUrls.length
   ) {
@@ -477,6 +479,49 @@ async function readReaderPostEchoCounts(
   return counts
 }
 
+async function readLinkedEchoPostIds(
+  postIds
+) {
+  const ids = uniqueStrings(postIds)
+
+  if (!ids.length) return new Set()
+
+  const { data, error } = await supabase
+    .from('social_echoes')
+    .select('reader_post_id')
+    .in('reader_post_id', ids)
+
+  if (error) throw error
+
+  return new Set(
+    (data || [])
+      .map((row) =>
+        String(row.reader_post_id || '')
+      )
+      .filter(Boolean)
+  )
+}
+
+async function readLinkedEchoByPostId(
+  postId,
+  userId
+) {
+  if (!postId || !userId) return null
+
+  const { data, error } = await supabase
+    .from('social_echoes')
+    .select(
+      'id, user_id, source_type, source_id, reader_post_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
+    )
+    .eq('reader_post_id', postId)
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (error) throw error
+
+  return data || null
+}
+
 async function attachVisibleUsers(
   posts,
   viewerId
@@ -680,7 +725,7 @@ async function readSocialEchoPosts({
   let query = supabase
     .from('social_echoes')
     .select(
-      'id, user_id, source_type, source_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
+      'id, user_id, source_type, source_id, reader_post_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
     )
     .order('updated_at', {
       ascending: false,
@@ -743,12 +788,19 @@ async function readSocialEchoPosts({
   const authorPostIds = uniqueStrings(
     sourceIds.author_post
   )
+  const linkedReaderPostIds =
+    uniqueStrings(
+      echoes.map((echo) =>
+        echo.reader_post_id
+      )
+    )
 
   const [
     storyResult,
     episodeResult,
     readerPostResult,
     authorPostResult,
+    linkedReaderPostResult,
   ] = await Promise.all([
     storyIds.length
       ? supabase
@@ -798,6 +850,18 @@ async function readSocialEchoPosts({
           data: [],
           error: null,
         }),
+    linkedReaderPostIds.length
+      ? supabase
+          .from('reader_posts')
+          .select(
+            'id, user_id, content, image_urls, visibility, comments_permission, story_sharing, publish_at, like_count, comment_count, echo_count, created_at, updated_at, deleted_at'
+          )
+          .in('id', linkedReaderPostIds)
+          .is('deleted_at', null)
+      : Promise.resolve({
+          data: [],
+          error: null,
+        }),
   ])
 
   for (const result of [
@@ -805,6 +869,7 @@ async function readSocialEchoPosts({
     episodeResult,
     readerPostResult,
     authorPostResult,
+    linkedReaderPostResult,
   ]) {
     if (result.error) throw result.error
   }
@@ -868,6 +933,12 @@ async function readSocialEchoPosts({
     readerPostResult.data || []
   const authorPosts =
     authorPostResult.data || []
+  const linkedReaderPosts =
+    linkedReaderPostResult.data || []
+  const linkedEchoCounts =
+    await readReaderPostEchoCounts(
+      linkedReaderPostIds
+    )
   const sourceReaderUserIds =
     readerPosts.map((post) =>
       post.user_id
@@ -920,6 +991,13 @@ async function readSocialEchoPosts({
       page,
     ])
   )
+  const linkedReaderPostMap =
+    new Map(
+      linkedReaderPosts.map((post) => [
+        String(post.id),
+        post,
+      ])
+    )
 
   return echoes
     .filter((echo) =>
@@ -1190,39 +1268,101 @@ async function readSocialEchoPosts({
 
       if (!source) return null
 
+      const linkedPost =
+        linkedReaderPostMap.get(
+          String(
+            echo.reader_post_id || ''
+          )
+        ) || null
+
+      if (
+        echo.reader_post_id &&
+        !linkedPost
+      ) {
+        return null
+      }
+
       const echoTime =
         echo.updated_at ||
         echo.created_at
+      const echoText = String(
+        echo.echo_text || ''
+      ).trim()
+      const createdAt =
+        linkedPost?.created_at ||
+        echo.created_at ||
+        echoTime
+      const updatedAt =
+        linkedPost?.updated_at ||
+        echoTime
+      const isEdited =
+        Boolean(linkedPost?.updated_at) &&
+        Boolean(linkedPost?.created_at) &&
+        new Date(
+          linkedPost.updated_at
+        ).getTime() >
+          new Date(
+            linkedPost.created_at
+          ).getTime() +
+            1000
+      const storedEchoCount = Number(
+        linkedPost?.echo_count || 0
+      )
+      const universalEchoCount = Number(
+        linkedEchoCounts.get(
+          String(linkedPost?.id || '')
+        ) || 0
+      )
 
       return {
-        id: `social-echo:${echo.id}`,
+        id:
+          linkedPost?.id ||
+          `social-echo:${echo.id}`,
         user_id: echo.user_id,
-        content: String(
-          echo.echo_text || ''
-        ).trim(),
+        content:
+          linkedPost?.content ??
+          echoText,
         image_urls:
-          source.image_urls || [],
+          Array.isArray(
+            linkedPost?.image_urls
+          )
+            ? linkedPost.image_urls
+            : [],
         visibility:
+          linkedPost?.visibility ||
           echoAudienceToVisibility(
             echo.audience
           ),
-        comments_permission: 'no_one',
+        comments_permission:
+          linkedPost?.comments_permission ||
+          (linkedPost
+            ? 'everyone'
+            : 'no_one'),
         story_sharing: true,
-        publish_at: echoTime,
-        like_count: 0,
-        comment_count: 0,
-        echo_count: Number(
-          echo.share_count || 1
+        publish_at:
+          linkedPost?.publish_at ||
+          echoTime,
+        like_count: Number(
+          linkedPost?.like_count || 0
         ),
-        created_at: echoTime,
-        updated_at: echoTime,
-        is_edited: false,
+        comment_count: Number(
+          linkedPost?.comment_count || 0
+        ),
+        echo_count: Math.max(
+          storedEchoCount,
+          universalEchoCount
+        ),
+        created_at: createdAt,
+        updated_at: updatedAt,
+        is_edited: isEdited,
         is_owner:
           Boolean(viewerId) &&
           String(echo.user_id) ===
             String(viewerId),
         is_echo: true,
         echo_id: echo.id,
+        reader_post_id:
+          linkedPost?.id || null,
         echo_type: echo.source_type,
         echo_destination:
           echo.destination || 'feed',
@@ -1301,6 +1441,7 @@ export async function getReaderPostsFeed(
     const [
       readerPosts,
       echoPosts,
+      linkedEchoPostIds,
     ] = await Promise.all([
       attachVisibleUsers(
         data,
@@ -1311,10 +1452,20 @@ export async function getReaderPostsFeed(
         feedOnly: true,
         limit: FEED_SCAN_LIMIT,
       }),
+      readLinkedEchoPostIds(
+        data.map((post) => post.id)
+      ),
     ])
+    const standardPosts =
+      readerPosts.filter(
+        (post) =>
+          !linkedEchoPostIds.has(
+            String(post.id)
+          )
+      )
 
     const posts = mergeTimelinePosts(
-      [readerPosts, echoPosts],
+      [standardPosts, echoPosts],
       limit
     )
 
@@ -1366,6 +1517,7 @@ export async function getMyReaderPosts(
     const [
       readerPosts,
       echoPosts,
+      linkedEchoPostIds,
     ] = await Promise.all([
       attachVisibleUsers(
         data,
@@ -1376,10 +1528,20 @@ export async function getMyReaderPosts(
         ownerId: userId,
         limit: FEED_SCAN_LIMIT,
       }),
+      readLinkedEchoPostIds(
+        data.map((post) => post.id)
+      ),
     ])
+    const standardPosts =
+      readerPosts.filter(
+        (post) =>
+          !linkedEchoPostIds.has(
+            String(post.id)
+          )
+      )
 
     const posts = mergeTimelinePosts(
-      [readerPosts, echoPosts],
+      [standardPosts, echoPosts],
       limit
     )
 
@@ -1473,6 +1635,7 @@ export async function getReaderPostsByUsername(
     const [
       readerPosts,
       echoPosts,
+      linkedEchoPostIds,
     ] = await Promise.all([
       attachVisibleUsers(
         data,
@@ -1483,10 +1646,20 @@ export async function getReaderPostsByUsername(
         ownerId: user.id,
         limit: FEED_SCAN_LIMIT,
       }),
+      readLinkedEchoPostIds(
+        data.map((post) => post.id)
+      ),
     ])
+    const standardPosts =
+      readerPosts.filter(
+        (post) =>
+          !linkedEchoPostIds.has(
+            String(post.id)
+          )
+      )
 
     const posts = mergeTimelinePosts(
-      [readerPosts, echoPosts],
+      [standardPosts, echoPosts],
       limit
     )
 
@@ -1622,6 +1795,12 @@ export async function updateMyReaderPost(
       })
     }
 
+    const linkedEcho =
+      await readLinkedEchoByPostId(
+        postId,
+        userId
+      )
+
     const imageUrls =
       req.body.image_urls === undefined
         ? Array.isArray(
@@ -1637,7 +1816,8 @@ export async function updateMyReaderPost(
       req.body.content === undefined
         ? current.content
         : req.body.content,
-      imageUrls
+      imageUrls,
+      Boolean(linkedEcho)
     )
 
     const visibility =
@@ -1669,6 +1849,8 @@ export async function updateMyReaderPost(
             req.body.story_sharing
           )
 
+    const updatedAt =
+      new Date().toISOString()
     const { data, error } =
       await supabase
         .from('reader_posts')
@@ -1680,8 +1862,7 @@ export async function updateMyReaderPost(
             commentsPermission,
           story_sharing:
             storySharing,
-          updated_at:
-            new Date().toISOString(),
+          updated_at: updatedAt,
         })
         .eq('id', postId)
         .eq('user_id', userId)
@@ -1690,6 +1871,23 @@ export async function updateMyReaderPost(
         .single()
 
     if (error) throw error
+
+    if (linkedEcho) {
+      const { error: echoUpdateError } =
+        await supabase
+          .from('social_echoes')
+          .update({
+            echo_text: content,
+            updated_at: updatedAt,
+          })
+          .eq('id', linkedEcho.id)
+          .eq('user_id', userId)
+          .eq('reader_post_id', postId)
+
+      if (echoUpdateError) {
+        throw echoUpdateError
+      }
+    }
 
     const userMap =
       await readUsersByIds([userId])
@@ -1749,6 +1947,12 @@ export async function deleteMyReaderPost(
       })
     }
 
+    const linkedEcho =
+      await readLinkedEchoByPostId(
+        postId,
+        userId
+      )
+
     const deletedAt =
       new Date().toISOString()
 
@@ -1764,9 +1968,25 @@ export async function deleteMyReaderPost(
 
     if (error) throw error
 
+    if (linkedEcho) {
+      const { error: echoDeleteError } =
+        await supabase
+          .from('social_echoes')
+          .delete()
+          .eq('id', linkedEcho.id)
+          .eq('user_id', userId)
+          .eq('reader_post_id', postId)
+
+      if (echoDeleteError) {
+        throw echoDeleteError
+      }
+    }
+
     return res.status(200).json({
       ok: true,
       deleted_id: postId,
+      deleted_echo_id:
+        linkedEcho?.id || null,
     })
   } catch (error) {
     console.error(
