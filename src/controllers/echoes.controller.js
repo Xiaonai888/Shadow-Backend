@@ -1248,6 +1248,10 @@ async function hydrateSocialEchoes(
           image_urls: images,
           visibility:
             post.visibility || 'public',
+          publish_at:
+            post.publish_at || null,
+          created_at:
+            post.created_at || null,
           user: normalizeSocialUser(
             sourceUser,
             post.user_id
@@ -1270,6 +1274,10 @@ async function hydrateSocialEchoes(
                 )}#reader-post-${post.id}`
               : `/profile#reader-post-${post.id}`,
           label: 'reader post',
+          created_at:
+            post.created_at ||
+            post.publish_at ||
+            null,
           owner: normalizeSocialUser(
             sourceUser,
             post.user_id
@@ -1305,6 +1313,8 @@ async function hydrateSocialEchoes(
           user_id: post.user_id,
           content: post.content || '',
           image_urls: images,
+          created_at:
+            post.created_at || null,
           author_page: authorPage || null,
         }
         source = {
@@ -1318,9 +1328,13 @@ async function hydrateSocialEchoes(
           image_urls: images,
           url:
             authorPage?.page_username
-              ? `/author/page/${authorPage.page_username}`
+              ? `/author/page/${authorPage.page_username}?post=${encodeURIComponent(
+                  post.id
+                )}`
               : '/',
           label: 'author post',
+          created_at:
+            post.created_at || null,
           owner: authorPage || null,
         }
       }
