@@ -55,6 +55,7 @@ import discoverStoriesRoutes from './src/routes/discoverStories.routes.js'
 import { startReaderStoriesCleanup } from './src/controllers/readerStories.controller.js'
 import { startAuthorStoriesCleanup } from './src/controllers/authorStories.controller.js'
 import { startAuthorCommentCleanup } from './src/services/authorCommentCleanup.service.js'
+import { startAuthorPostCleanup } from './src/services/authorPostCleanup.service.js'
 import fastRoutes from './src/routes/fast.routes.js'
 import contentReportsRoutes from './src/routes/contentReports.routes.js'
 import adminReportsRoutes from './src/routes/adminReports.routes.js'
@@ -514,6 +515,7 @@ app.listen(PORT, () => {
   startAuthorStoriesCleanup()
   startReaderStoriesCleanup()
   startAuthorCommentCleanup()
+  startAuthorPostCleanup()
 
   if (process.env.ENABLE_TELEGRAM_USER_LISTENER === 'true') {
     startTelegramUserListener().catch((error) => {
