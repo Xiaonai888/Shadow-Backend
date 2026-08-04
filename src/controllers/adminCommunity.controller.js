@@ -568,3 +568,247 @@ export async function getAdminCommunityVisitors(req, res) {
     })
   }
 }
+
+const DASHBOARD_MALL_PAID_STATUSES = [
+  'under_review',
+  'confirmed',
+  'preparing',
+  'shipped',
+  'completed',
+]
+
+async function getRecentTaskCenterUserIds() {
+  const activeStartIso = getActiveStartIso()
+  const tableNames = [
+    'reader_checkins',
+    'reader_reading_rewards',
+    'reader_reading_mission_progress',
+  ]
+  const userIds = new Set()
+
+  for (const tableName of tableNames) {
+    let from = 0
+
+    while (true) {
+      const { data, error } = await supabase
+        .from(tableName)
+        .select('user_id, updated_at')
+        .gte('updated_at', activeStartIso)
+        .order('updated_at', { ascending: true })
+        .range(from, from + PAGE_SIZE - 1)
+
+      if (error) throw error
+
+      const rows = Array.isArray(data) ? data : []
+
+      for (const row of rows) {
+        if (row.user_id) userIds.add(String(row.user_id))
+      }
+
+      if (rows.length < PAGE_SIZE) break
+      from += PAGE_SIZE
+    }
+  }
+
+  return userIds
+}
+
+function getPaidOrderTime(order) {
+  return order.paid_at || order.updated_at || order.created_at || null
+}
+
+function formatDashboardPaidOrder(order, source, authorPageMap = new Map()) {
+  const buyerProfile =
+    order.buyer_profile && typeof order.buyer_profile === 'object'
+      ? order.buyer_profile
+      : {}
+  const authorPage = authorPageMap.get(String(order.author_page_id || '')) || null
+  const isAuthorStore = source === 'author_store'
+
+  return {
+    id: order.id,
+    source,
+    source_label: isAuthorStore ? 'All Author Store' : 'Shadow Mall',
+    store_name: isAuthorStore
+      ? authorPage?.page_name || authorPage?.page_username || 'Author Store'
+      : 'Shadow Mall',
+    author_page_id: order.author_page_id || null,
+    order_id: order.order_id || order.order_number || order.id,
+    buyer_name:
+      order.buyer_name ||
+      buyerProfile.name ||
+      buyerProfile.full_name ||
+      buyerProfile.buyer_name ||
+      'Reader',
+    total_usd: Number(order.total_usd || order.total_amount || 0),
+    currency: order.currency || 'USD',
+    status: order.order_status || order.status || '',
+    payment_status:
+      order.payment_status ||
+      (DASHBOARD_MALL_PAID_STATUSES.includes(String(order.status || ''))
+        ? 'paid'
+        : ''),
+    paid_at: order.paid_at || null,
+    created_at: order.created_at || null,
+    updated_at: order.updated_at || null,
+    items: Array.isArray(order.items) ? order.items : [],
+  }
+}
+
+export async function getAdminDashboardGrowth(req, res) {
+  try {
+    const { startIso, nowIso } = getCambodiaDayRange()
+
+    const [
+      onlineUserIds,
+      newReadersResult,
+      newAuthorsResult,
+      mallOrdersResult,
+      authorStoreOrdersResult,
+    ] = await Promise.all([
+      getRecentTaskCenterUserIds(),
+      supabase
+        .from('users')
+        .select('id', { count: 'exact', head: true })
+        .gte('created_at', startIso)
+        .lte('created_at', nowIso),
+      supabase
+        .from('author_pages')
+        .select('id', { count: 'exact', head: true })
+        .gte('created_at', startIso)
+        .lte('created_at', nowIso),
+      supabase
+        .from('shadow_mall_orders')
+        .select('id', { count: 'exact', head: true })
+        .in('status', DASHBOARD_MALL_PAID_STATUSES)
+        .gte('paid_at', startIso)
+        .lte('paid_at', nowIso),
+      supabase
+        .from('author_store_orders')
+        .select('id', { count: 'exact', head: true })
+        .eq('payment_status', 'paid')
+        .gte('paid_at', startIso)
+        .lte('paid_at', nowIso),
+    ])
+
+    const errors = [
+      newReadersResult.error,
+      newAuthorsResult.error,
+      mallOrdersResult.error,
+      authorStoreOrdersResult.error,
+    ].filter(Boolean)
+
+    if (errors.length) throw errors[0]
+
+    const shadowMallOrders = Number(mallOrdersResult.count || 0)
+    const authorStoreOrders = Number(authorStoreOrdersResult.count || 0)
+
+    return res.status(200).json({
+      ok: true,
+      summary: {
+        reader_online: onlineUserIds.size,
+        new_readers: Number(newReadersResult.count || 0),
+        new_authors: Number(newAuthorsResult.count || 0),
+        new_orders: shadowMallOrders + authorStoreOrders,
+        shadow_mall_orders: shadowMallOrders,
+        author_store_orders: authorStoreOrders,
+        online_window_minutes: 10,
+        online_source: 'task_center_activity',
+      },
+    })
+  } catch (error) {
+    console.error('GET ADMIN DASHBOARD GROWTH ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to load dashboard growth summary',
+    })
+  }
+}
+
+export async function getAdminDashboardPaidOrders(req, res) {
+  try {
+    const page = toPositiveInt(req.query.page, 1, 1000)
+    const limit = toPositiveInt(req.query.limit, 20, 100)
+    const fetchTo = page * limit - 1
+
+    const [mallResult, authorStoreResult] = await Promise.all([
+      supabase
+        .from('shadow_mall_orders')
+        .select('*', { count: 'exact' })
+        .in('status', DASHBOARD_MALL_PAID_STATUSES)
+        .order('created_at', { ascending: false })
+        .range(0, fetchTo),
+      supabase
+        .from('author_store_orders')
+        .select('*, items:author_store_order_items(*)', { count: 'exact' })
+        .eq('payment_status', 'paid')
+        .order('created_at', { ascending: false })
+        .range(0, fetchTo),
+    ])
+
+    if (mallResult.error) throw mallResult.error
+    if (authorStoreResult.error) throw authorStoreResult.error
+
+    const authorStoreOrders = authorStoreResult.data || []
+    const authorPageIds = [
+      ...new Set(
+        authorStoreOrders
+          .map((order) => order.author_page_id)
+          .filter(Boolean)
+      ),
+    ]
+    const authorPageMap = new Map()
+
+    if (authorPageIds.length) {
+      const { data: authorPages, error: authorPagesError } = await supabase
+        .from('author_pages')
+        .select('id, page_name, page_username')
+        .in('id', authorPageIds)
+
+      if (authorPagesError) throw authorPagesError
+
+      for (const pageItem of authorPages || []) {
+        authorPageMap.set(String(pageItem.id), pageItem)
+      }
+    }
+
+    const mergedOrders = [
+      ...(mallResult.data || []).map((order) =>
+        formatDashboardPaidOrder(order, 'shadow_mall')
+      ),
+      ...authorStoreOrders.map((order) =>
+        formatDashboardPaidOrder(order, 'author_store', authorPageMap)
+      ),
+    ].sort(
+      (first, second) =>
+        new Date(getPaidOrderTime(second) || 0).getTime() -
+        new Date(getPaidOrderTime(first) || 0).getTime()
+    )
+
+    const total =
+      Number(mallResult.count || 0) +
+      Number(authorStoreResult.count || 0)
+    const from = (page - 1) * limit
+    const orders = mergedOrders.slice(from, from + limit)
+    const totalPages = Math.max(1, Math.ceil(total / limit))
+
+    return res.status(200).json({
+      ok: true,
+      orders,
+      page,
+      limit,
+      total,
+      total_pages: totalPages,
+      has_next: page < totalPages,
+      has_prev: page > 1,
+    })
+  } catch (error) {
+    console.error('GET ADMIN DASHBOARD PAID ORDERS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to load paid orders',
+    })
+  }
+}
