@@ -730,23 +730,37 @@ export async function getAdminDashboardPaidOrders(req, res) {
   try {
     const page = toPositiveInt(req.query.page, 1, 1000)
     const limit = toPositiveInt(req.query.limit, 20, 100)
+    const requestedSource = String(req.query.source || 'all').trim().toLowerCase()
+    const source = ['shadow_mall', 'author_store'].includes(requestedSource)
+      ? requestedSource
+      : 'all'
     const fetchTo = page * limit - 1
 
+    const mallQuery =
+      source === 'author_store'
+        ? Promise.resolve({ data: [], count: 0, error: null })
+        : supabase
+            .from('shadow_mall_orders')
+            .select('*', { count: 'exact' })
+            .in('status', DASHBOARD_MALL_PAID_STATUSES)
+            .order('paid_at', { ascending: false, nullsFirst: false })
+            .order('created_at', { ascending: false })
+            .range(0, fetchTo)
+
+    const authorStoreQuery =
+      source === 'shadow_mall'
+        ? Promise.resolve({ data: [], count: 0, error: null })
+        : supabase
+            .from('author_store_orders')
+            .select('*, items:author_store_order_items(*)', { count: 'exact' })
+            .eq('payment_status', 'paid')
+            .order('paid_at', { ascending: false, nullsFirst: false })
+            .order('created_at', { ascending: false })
+            .range(0, fetchTo)
+
     const [mallResult, authorStoreResult] = await Promise.all([
-      supabase
-        .from('shadow_mall_orders')
-        .select('*', { count: 'exact' })
-        .in('status', DASHBOARD_MALL_PAID_STATUSES)
-        .order('paid_at', { ascending: false, nullsFirst: false })
-        .order('created_at', { ascending: false })
-        .range(0, fetchTo),
-      supabase
-        .from('author_store_orders')
-        .select('*, items:author_store_order_items(*)', { count: 'exact' })
-        .eq('payment_status', 'paid')
-        .order('paid_at', { ascending: false, nullsFirst: false })
-        .order('created_at', { ascending: false })
-        .range(0, fetchTo),
+      mallQuery,
+      authorStoreQuery,
     ])
 
     if (mallResult.error) throw mallResult.error
@@ -798,6 +812,7 @@ export async function getAdminDashboardPaidOrders(req, res) {
     return res.status(200).json({
       ok: true,
       orders,
+      source,
       page,
       limit,
       total,
