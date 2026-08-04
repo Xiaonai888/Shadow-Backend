@@ -737,12 +737,14 @@ export async function getAdminDashboardPaidOrders(req, res) {
         .from('shadow_mall_orders')
         .select('*', { count: 'exact' })
         .in('status', DASHBOARD_MALL_PAID_STATUSES)
+        .order('paid_at', { ascending: false, nullsFirst: false })
         .order('created_at', { ascending: false })
         .range(0, fetchTo),
       supabase
         .from('author_store_orders')
         .select('*, items:author_store_order_items(*)', { count: 'exact' })
         .eq('payment_status', 'paid')
+        .order('paid_at', { ascending: false, nullsFirst: false })
         .order('created_at', { ascending: false })
         .range(0, fetchTo),
     ])
