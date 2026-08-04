@@ -357,3 +357,1698 @@ export async function createEpisodeEcho(req, res) {
     })
   }
 }
+
+const SOCIAL_SOURCE_TYPES = new Set([
+  'story',
+  'episode',
+  'reader_post',
+  'author_post',
+])
+
+function getSocialUserId(req) {
+  return String(
+    req.user?.user_id ||
+      req.user?.id ||
+      ''
+  ).trim()
+}
+
+function normalizeSourceType(value) {
+  const sourceType = String(value || '')
+    .trim()
+    .toLowerCase()
+
+  return SOCIAL_SOURCE_TYPES.has(sourceType)
+    ? sourceType
+    : ''
+}
+
+function normalizeReaderIds(value) {
+  if (!Array.isArray(value)) return []
+
+  return [
+    ...new Set(
+      value
+        .map((item) =>
+          String(item || '').trim()
+        )
+        .filter(Boolean)
+    ),
+  ].slice(0, 50)
+}
+
+function getSocialLimit(value, fallback = 20) {
+  const parsed = Number.parseInt(value, 10)
+
+  if (!Number.isFinite(parsed)) {
+    return fallback
+  }
+
+  return Math.min(50, Math.max(1, parsed))
+}
+
+function normalizeSocialUser(user, fallbackId = '') {
+  const row = Array.isArray(user)
+    ? user[0]
+    : user
+
+  return {
+    id: row?.id || fallbackId,
+    name:
+      row?.name ||
+      row?.username ||
+      'Reader',
+    username: row?.username || '',
+    avatar_url: row?.avatar_url || '',
+  }
+}
+
+function audienceToVisibility(audience) {
+  if (audience === 'only-me') {
+    return 'only_me'
+  }
+
+  if (audience === 'followers') {
+    return 'followers'
+  }
+
+  if (audience === 'close-readers') {
+    return 'friends'
+  }
+
+  return 'public'
+}
+
+async function readSocialUsers(userIds) {
+  const ids = [
+    ...new Set(
+      (userIds || [])
+        .map((id) => String(id || ''))
+        .filter(Boolean)
+    ),
+  ]
+
+  if (!ids.length) return new Map()
+
+  const { data, error } = await supabase
+    .from('users')
+    .select(
+      'id, name, username, avatar_url, is_active'
+    )
+    .in('id', ids)
+
+  if (error) throw error
+
+  return new Map(
+    (data || [])
+      .filter(
+        (user) =>
+          user.is_active !== false
+      )
+      .map((user) => [
+        String(user.id),
+        user,
+      ])
+  )
+}
+
+async function getSocialRelationshipMaps(
+  viewerId,
+  ownerIds
+) {
+  const ids = [
+    ...new Set(
+      (ownerIds || [])
+        .map((id) => String(id || ''))
+        .filter(
+          (id) =>
+            id &&
+            id !== String(viewerId)
+        )
+    ),
+  ]
+
+  const empty = {
+    viewerFollowsOwners: new Set(),
+    ownersFollowViewer: new Set(),
+  }
+
+  if (!viewerId || !ids.length) {
+    return empty
+  }
+
+  const [followingResult, followersResult] =
+    await Promise.all([
+      supabase
+        .from('user_follows')
+        .select('following_user_id')
+        .eq('follower_user_id', viewerId)
+        .in('following_user_id', ids),
+      supabase
+        .from('user_follows')
+        .select('follower_user_id')
+        .eq('following_user_id', viewerId)
+        .in('follower_user_id', ids),
+    ])
+
+  if (followingResult.error) {
+    throw followingResult.error
+  }
+
+  if (followersResult.error) {
+    throw followersResult.error
+  }
+
+  return {
+    viewerFollowsOwners: new Set(
+      (followingResult.data || []).map(
+        (row) =>
+          String(row.following_user_id)
+      )
+    ),
+    ownersFollowViewer: new Set(
+      (followersResult.data || []).map(
+        (row) =>
+          String(row.follower_user_id)
+      )
+    ),
+  }
+}
+
+function canViewSocialEcho(
+  echo,
+  viewerId,
+  relationships
+) {
+  const ownerId = String(
+    echo.user_id || ''
+  )
+  const currentViewerId = String(
+    viewerId || ''
+  )
+
+  if (
+    currentViewerId &&
+    currentViewerId === ownerId
+  ) {
+    return true
+  }
+
+  const selectedReaderIds =
+    Array.isArray(
+      echo.selected_reader_ids
+    )
+      ? echo.selected_reader_ids.map(
+          (id) => String(id)
+        )
+      : []
+
+  if (
+    echo.destination === 'reader' ||
+    echo.destination === 'circle'
+  ) {
+    if (
+      !currentViewerId ||
+      !selectedReaderIds.includes(
+        currentViewerId
+      )
+    ) {
+      return false
+    }
+  }
+
+  if (echo.audience === 'public') {
+    return true
+  }
+
+  if (echo.audience === 'only-me') {
+    return false
+  }
+
+  if (echo.audience === 'followers') {
+    return relationships.viewerFollowsOwners.has(
+      ownerId
+    )
+  }
+
+  if (
+    echo.audience === 'close-readers'
+  ) {
+    return selectedReaderIds.includes(
+      currentViewerId
+    )
+  }
+
+  return false
+}
+
+function canViewSocialReaderPost(
+  post,
+  viewerId,
+  relationships
+) {
+  const ownerId = String(
+    post.user_id || ''
+  )
+  const currentViewerId = String(
+    viewerId || ''
+  )
+
+  if (
+    currentViewerId &&
+    currentViewerId === ownerId
+  ) {
+    return true
+  }
+
+  if (
+    post.publish_at &&
+    new Date(post.publish_at).getTime() >
+      Date.now()
+  ) {
+    return false
+  }
+
+  const visibility = String(
+    post.visibility || 'public'
+  )
+    .trim()
+    .toLowerCase()
+
+  if (visibility === 'public') {
+    return true
+  }
+
+  if (
+    visibility === 'only_me' ||
+    visibility === 'private'
+  ) {
+    return false
+  }
+
+  const viewerFollowsOwner =
+    relationships.viewerFollowsOwners.has(
+      ownerId
+    )
+  const ownerFollowsViewer =
+    relationships.ownersFollowViewer.has(
+      ownerId
+    )
+
+  if (visibility === 'followers') {
+    return viewerFollowsOwner
+  }
+
+  if (visibility === 'friends') {
+    return (
+      viewerFollowsOwner &&
+      ownerFollowsViewer
+    )
+  }
+
+  if (
+    visibility ===
+    'friends_and_followers'
+  ) {
+    return (
+      viewerFollowsOwner ||
+      ownerFollowsViewer
+    )
+  }
+
+  return false
+}
+
+async function readSocialSourceForCreate(
+  sourceType,
+  sourceId,
+  viewerId
+) {
+  if (sourceType === 'story') {
+    const { data: story, error } =
+      await supabase
+        .from('stories')
+        .select(
+          'id, author_id, user_id, title, cover_url, landscape_thumbnail_url, main_genre, status, deleted_at'
+        )
+        .eq('id', sourceId)
+        .maybeSingle()
+
+    if (error) throw error
+
+    if (
+      !story ||
+      story.deleted_at ||
+      String(story.status || '')
+        .toLowerCase() !== 'published'
+    ) {
+      return null
+    }
+
+    return {
+      source_type: 'story',
+      story,
+      owner_user_id: story.user_id || '',
+      author_page_id: story.author_id || '',
+      target_url: `/story/${story.id}`,
+      notification_title:
+        story.title || 'your story',
+    }
+  }
+
+  if (sourceType === 'episode') {
+    const context =
+      await getEpisodeContext(sourceId)
+
+    if (!context) return null
+
+    return {
+      source_type: 'episode',
+      episode: context.episode,
+      story: context.story,
+      author: context.author,
+      owner_user_id:
+        context.story.user_id || '',
+      author_page_id:
+        context.story.author_id || '',
+      target_url:
+        `/story/${context.story.id}/episode/${context.episode.id}`,
+      notification_title:
+        context.episode.title ||
+        'your episode',
+    }
+  }
+
+  if (sourceType === 'reader_post') {
+    const { data: post, error } =
+      await supabase
+        .from('reader_posts')
+        .select(
+          'id, user_id, content, image_urls, visibility, publish_at, deleted_at'
+        )
+        .eq('id', sourceId)
+        .is('deleted_at', null)
+        .maybeSingle()
+
+    if (error) throw error
+    if (!post) return null
+
+    const relationships =
+      await getSocialRelationshipMaps(
+        viewerId,
+        [post.user_id]
+      )
+
+    if (
+      !canViewSocialReaderPost(
+        post,
+        viewerId,
+        relationships
+      )
+    ) {
+      return null
+    }
+
+    return {
+      source_type: 'reader_post',
+      reader_post: post,
+      owner_user_id: post.user_id || '',
+      target_url:
+        `/profile#reader-post-${post.id}`,
+      notification_title:
+        'your reader post',
+    }
+  }
+
+  if (sourceType === 'author_post') {
+    const { data: post, error } =
+      await supabase
+        .from('author_page_posts')
+        .select(
+          'id, author_page_id, user_id, content, image_urls, status, author_page:author_pages(id, user_id, page_name, page_username, avatar_url)'
+        )
+        .eq('id', sourceId)
+        .eq('status', 'active')
+        .maybeSingle()
+
+    if (error) throw error
+    if (!post) return null
+
+    const authorPage = Array.isArray(
+      post.author_page
+    )
+      ? post.author_page[0]
+      : post.author_page
+
+    return {
+      source_type: 'author_post',
+      author_post: {
+        ...post,
+        author_page: authorPage || null,
+      },
+      owner_user_id:
+        post.user_id ||
+        authorPage?.user_id ||
+        '',
+      author_page_id:
+        post.author_page_id || '',
+      target_url:
+        authorPage?.page_username
+          ? `/author/page/${authorPage.page_username}`
+          : '/',
+      notification_title:
+        'your author post',
+    }
+  }
+
+  return null
+}
+
+async function hydrateSocialEchoes(
+  rows,
+  viewerId
+) {
+  const echoes = Array.isArray(rows)
+    ? rows
+    : []
+
+  if (!echoes.length) return []
+
+  const sourceIds = {
+    story: [],
+    episode: [],
+    reader_post: [],
+    author_post: [],
+  }
+
+  for (const echo of echoes) {
+    if (sourceIds[echo.source_type]) {
+      sourceIds[echo.source_type].push(
+        String(echo.source_id)
+      )
+    }
+  }
+
+  const unique = (items) => [
+    ...new Set(items.filter(Boolean)),
+  ]
+
+  const [
+    storyResult,
+    episodeResult,
+    readerPostResult,
+    authorPostResult,
+  ] = await Promise.all([
+    unique(sourceIds.story).length
+      ? supabase
+          .from('stories')
+          .select(
+            'id, author_id, user_id, title, cover_url, landscape_thumbnail_url, main_genre, status, deleted_at'
+          )
+          .in('id', unique(sourceIds.story))
+          .is('deleted_at', null)
+      : Promise.resolve({ data: [], error: null }),
+    unique(sourceIds.episode).length
+      ? supabase
+          .from('episodes')
+          .select(
+            'id, story_id, title, episode_number, cover_url, published_at, status, deleted_at'
+          )
+          .in('id', unique(sourceIds.episode))
+          .is('deleted_at', null)
+      : Promise.resolve({ data: [], error: null }),
+    unique(sourceIds.reader_post).length
+      ? supabase
+          .from('reader_posts')
+          .select(
+            'id, user_id, content, image_urls, visibility, publish_at, created_at, deleted_at'
+          )
+          .in(
+            'id',
+            unique(sourceIds.reader_post)
+          )
+          .is('deleted_at', null)
+      : Promise.resolve({ data: [], error: null }),
+    unique(sourceIds.author_post).length
+      ? supabase
+          .from('author_page_posts')
+          .select(
+            'id, author_page_id, user_id, content, image_urls, status, created_at, author_page:author_pages(id, user_id, page_name, page_username, avatar_url)'
+          )
+          .in(
+            'id',
+            unique(sourceIds.author_post)
+          )
+          .eq('status', 'active')
+      : Promise.resolve({ data: [], error: null }),
+  ])
+
+  for (const result of [
+    storyResult,
+    episodeResult,
+    readerPostResult,
+    authorPostResult,
+  ]) {
+    if (result.error) throw result.error
+  }
+
+  const episodes = episodeResult.data || []
+  const episodeStoryIds = unique(
+    episodes.map((episode) =>
+      String(episode.story_id || '')
+    )
+  )
+  const directStoryIds = unique(
+    sourceIds.story
+  )
+  const allStoryIds = unique([
+    ...directStoryIds,
+    ...episodeStoryIds,
+  ])
+
+  let allStories = storyResult.data || []
+
+  const missingStoryIds = allStoryIds.filter(
+    (id) =>
+      !allStories.some(
+        (story) =>
+          String(story.id) === id
+      )
+  )
+
+  if (missingStoryIds.length) {
+    const { data, error } = await supabase
+      .from('stories')
+      .select(
+        'id, author_id, user_id, title, cover_url, landscape_thumbnail_url, main_genre, status, deleted_at'
+      )
+      .in('id', missingStoryIds)
+      .is('deleted_at', null)
+
+    if (error) throw error
+    allStories = [
+      ...allStories,
+      ...(data || []),
+    ]
+  }
+
+  const authorPageIds = unique(
+    allStories
+      .map((story) =>
+        String(story.author_id || '')
+      )
+      .filter(Boolean)
+  )
+
+  let authorPages = []
+
+  if (authorPageIds.length) {
+    const { data, error } = await supabase
+      .from('author_pages')
+      .select(
+        'id, user_id, page_name, page_username, avatar_url'
+      )
+      .in('id', authorPageIds)
+
+    if (error) throw error
+    authorPages = data || []
+  }
+
+  const readerPosts =
+    readerPostResult.data || []
+  const authorPosts =
+    authorPostResult.data || []
+  const echoUserIds = echoes.map(
+    (echo) => echo.user_id
+  )
+  const sourceUserIds = [
+    ...readerPosts.map(
+      (post) => post.user_id
+    ),
+    ...authorPosts.map((post) => {
+      const page = Array.isArray(
+        post.author_page
+      )
+        ? post.author_page[0]
+        : post.author_page
+
+      return post.user_id || page?.user_id
+    }),
+  ]
+  const userMap = await readSocialUsers([
+    ...echoUserIds,
+    ...sourceUserIds,
+  ])
+  const relationshipOwnerIds = unique([
+    ...echoUserIds.map((id) =>
+      String(id || '')
+    ),
+    ...sourceUserIds.map((id) =>
+      String(id || '')
+    ),
+  ])
+  const relationships =
+    await getSocialRelationshipMaps(
+      viewerId,
+      relationshipOwnerIds
+    )
+
+  const storyMap = new Map(
+    allStories.map((story) => [
+      String(story.id),
+      story,
+    ])
+  )
+  const episodeMap = new Map(
+    episodes.map((episode) => [
+      String(episode.id),
+      episode,
+    ])
+  )
+  const readerPostMap = new Map(
+    readerPosts.map((post) => [
+      String(post.id),
+      post,
+    ])
+  )
+  const authorPostMap = new Map(
+    authorPosts.map((post) => [
+      String(post.id),
+      post,
+    ])
+  )
+  const authorPageMap = new Map(
+    authorPages.map((page) => [
+      String(page.id),
+      page,
+    ])
+  )
+
+  return echoes
+    .filter((echo) =>
+      canViewSocialEcho(
+        echo,
+        viewerId,
+        relationships
+      )
+    )
+    .map((echo) => {
+      const user = userMap.get(
+        String(echo.user_id)
+      )
+
+      if (!user) return null
+
+      let source = null
+      let sourceStory = null
+      let sourceEpisode = null
+      let sourceReaderPost = null
+      let sourceAuthorPost = null
+
+      if (echo.source_type === 'story') {
+        const story = storyMap.get(
+          String(echo.source_id)
+        )
+
+        if (
+          !story ||
+          String(story.status || '')
+            .toLowerCase() !==
+            'published'
+        ) {
+          return null
+        }
+
+        const authorPage = authorPageMap.get(
+          String(story.author_id || '')
+        )
+        const imageUrl =
+          story.landscape_thumbnail_url ||
+          story.cover_url ||
+          ''
+
+        sourceStory = {
+          id: story.id,
+          title: story.title || 'Story',
+          cover_url: story.cover_url || '',
+          landscape_thumbnail_url:
+            story.landscape_thumbnail_url ||
+            '',
+          main_genre:
+            story.main_genre || '',
+          author_page: authorPage || null,
+        }
+        source = {
+          type: 'story',
+          id: story.id,
+          name: story.title || 'Story',
+          content: '',
+          image_url: imageUrl,
+          image_urls: imageUrl
+            ? [imageUrl]
+            : [],
+          url: `/story/${story.id}`,
+          label: 'story',
+          owner: authorPage || null,
+        }
+      }
+
+      if (echo.source_type === 'episode') {
+        const episode = episodeMap.get(
+          String(echo.source_id)
+        )
+        const story = episode
+          ? storyMap.get(
+              String(episode.story_id)
+            )
+          : null
+
+        if (
+          !episode ||
+          !story ||
+          String(episode.status || '')
+            .toLowerCase() !==
+            'published' ||
+          String(story.status || '')
+            .toLowerCase() !==
+            'published'
+        ) {
+          return null
+        }
+
+        const authorPage = authorPageMap.get(
+          String(story.author_id || '')
+        )
+        const imageUrl =
+          story.landscape_thumbnail_url ||
+          story.cover_url ||
+          episode.cover_url ||
+          ''
+
+        sourceStory = {
+          id: story.id,
+          title: story.title || 'Story',
+          cover_url: story.cover_url || '',
+          landscape_thumbnail_url:
+            story.landscape_thumbnail_url ||
+            '',
+          main_genre:
+            story.main_genre || '',
+          author_page: authorPage || null,
+        }
+        sourceEpisode = {
+          id: episode.id,
+          story_id: episode.story_id,
+          title:
+            episode.title ||
+            `Episode ${Number(
+              episode.episode_number || 0
+            )}`,
+          episode_number: Number(
+            episode.episode_number || 0
+          ),
+          cover_url:
+            episode.cover_url || '',
+        }
+        source = {
+          type: 'episode',
+          id: episode.id,
+          name:
+            story.title || 'Story',
+          content:
+            sourceEpisode.title,
+          image_url: imageUrl,
+          image_urls: imageUrl
+            ? [imageUrl]
+            : [],
+          url:
+            `/story/${story.id}/episode/${episode.id}`,
+          label: 'episode',
+          owner: authorPage || null,
+        }
+      }
+
+      if (
+        echo.source_type ===
+        'reader_post'
+      ) {
+        const post = readerPostMap.get(
+          String(echo.source_id)
+        )
+
+        if (
+          !post ||
+          !canViewSocialReaderPost(
+            post,
+            viewerId,
+            relationships
+          )
+        ) {
+          return null
+        }
+
+        const sourceUser = userMap.get(
+          String(post.user_id)
+        )
+        const images = Array.isArray(
+          post.image_urls
+        )
+          ? post.image_urls.filter(Boolean)
+          : []
+
+        sourceReaderPost = {
+          id: post.id,
+          user_id: post.user_id,
+          content: post.content || '',
+          image_urls: images,
+          visibility:
+            post.visibility || 'public',
+          user: normalizeSocialUser(
+            sourceUser,
+            post.user_id
+          ),
+        }
+        source = {
+          type: 'reader_post',
+          id: post.id,
+          name:
+            sourceUser?.name ||
+            sourceUser?.username ||
+            'Reader Post',
+          content: post.content || '',
+          image_url: images[0] || '',
+          image_urls: images,
+          url:
+            sourceUser?.username
+              ? `/profile?username=${encodeURIComponent(
+                  sourceUser.username
+                )}#reader-post-${post.id}`
+              : `/profile#reader-post-${post.id}`,
+          label: 'reader post',
+          owner: normalizeSocialUser(
+            sourceUser,
+            post.user_id
+          ),
+        }
+      }
+
+      if (
+        echo.source_type ===
+        'author_post'
+      ) {
+        const post = authorPostMap.get(
+          String(echo.source_id)
+        )
+
+        if (!post) return null
+
+        const authorPage = Array.isArray(
+          post.author_page
+        )
+          ? post.author_page[0]
+          : post.author_page
+        const images = Array.isArray(
+          post.image_urls
+        )
+          ? post.image_urls.filter(Boolean)
+          : []
+
+        sourceAuthorPost = {
+          id: post.id,
+          author_page_id:
+            post.author_page_id,
+          user_id: post.user_id,
+          content: post.content || '',
+          image_urls: images,
+          author_page: authorPage || null,
+        }
+        source = {
+          type: 'author_post',
+          id: post.id,
+          name:
+            authorPage?.page_name ||
+            'Author Post',
+          content: post.content || '',
+          image_url: images[0] || '',
+          image_urls: images,
+          url:
+            authorPage?.page_username
+              ? `/author/page/${authorPage.page_username}`
+              : '/',
+          label: 'author post',
+          owner: authorPage || null,
+        }
+      }
+
+      if (!source) return null
+
+      const echoTime =
+        echo.updated_at ||
+        echo.created_at
+      const echoText = String(
+        echo.echo_text || ''
+      ).trim()
+
+      return {
+        id: `social-echo:${echo.id}`,
+        user_id: echo.user_id,
+        content: echoText,
+        image_urls:
+          source.image_urls || [],
+        visibility:
+          audienceToVisibility(
+            echo.audience
+          ),
+        comments_permission: 'no_one',
+        story_sharing: true,
+        publish_at: echoTime,
+        like_count: 0,
+        comment_count: 0,
+        echo_count: Number(
+          echo.share_count || 1
+        ),
+        created_at: echoTime,
+        updated_at: echoTime,
+        is_edited: false,
+        is_owner:
+          Boolean(viewerId) &&
+          String(echo.user_id) ===
+            String(viewerId),
+        is_echo: true,
+        echo_id: echo.id,
+        echo_type: echo.source_type,
+        echo_destination:
+          echo.destination || 'feed',
+        echo_audience:
+          echo.audience || 'public',
+        selected_reader_ids:
+          Array.isArray(
+            echo.selected_reader_ids
+          )
+            ? echo.selected_reader_ids
+            : [],
+        share_count: Number(
+          echo.share_count || 1
+        ),
+        source_type: echo.source_type,
+        source_id: echo.source_id,
+        source_url: source.url,
+        source,
+        source_story: sourceStory,
+        source_episode: sourceEpisode,
+        source_reader_post:
+          sourceReaderPost,
+        source_author_post:
+          sourceAuthorPost,
+        user: normalizeSocialUser(
+          user,
+          echo.user_id
+        ),
+      }
+    })
+    .filter(Boolean)
+}
+
+async function readSocialSourceShareCount(
+  sourceType,
+  sourceId
+) {
+  const { data, error } = await supabase
+    .from('social_echoes')
+    .select('share_count')
+    .eq('source_type', sourceType)
+    .eq('source_id', sourceId)
+
+  if (error) throw error
+
+  return (data || []).reduce(
+    (total, row) =>
+      total +
+      Math.max(
+        1,
+        Number(row.share_count || 1)
+      ),
+    0
+  )
+}
+
+async function readSocialEchoRows(
+  configure,
+  limit
+) {
+  const scanLimit = Math.min(
+    300,
+    Math.max(limit * 6, 60)
+  )
+  let query = supabase
+    .from('social_echoes')
+    .select(
+      'id, user_id, source_type, source_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
+    )
+
+  query = configure(query)
+
+  const { data, error } = await query
+    .order('updated_at', {
+      ascending: false,
+    })
+    .limit(scanLimit)
+
+  if (error) throw error
+
+  return {
+    rows: data || [],
+    scanLimit,
+  }
+}
+
+export async function createSocialEcho(
+  req,
+  res
+) {
+  try {
+    const userId = getSocialUserId(req)
+    const sourceType = normalizeSourceType(
+      req.body?.source_type
+    )
+    const sourceId = cleanText(
+      req.body?.source_id,
+      120
+    )
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Login is required',
+      })
+    }
+
+    if (!sourceType || !sourceId) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          'Valid source_type and source_id are required',
+      })
+    }
+
+    const source =
+      await readSocialSourceForCreate(
+        sourceType,
+        sourceId,
+        userId
+      )
+
+    if (!source) {
+      return res.status(404).json({
+        ok: false,
+        message:
+          'The shared content was not found or cannot be viewed',
+      })
+    }
+
+    const echoText = cleanText(
+      req.body?.echo_text,
+      280
+    )
+    const destination = normalizeChoice(
+      req.body?.destination,
+      DESTINATIONS,
+      'feed'
+    )
+    const audience = normalizeChoice(
+      req.body?.audience,
+      AUDIENCES,
+      'public'
+    )
+    const selectedReaderIds =
+      normalizeReaderIds(
+        req.body?.selected_reader_ids
+      ).filter(
+        (id) => id !== String(userId)
+      )
+
+    if (
+      (destination === 'reader' ||
+        destination === 'circle' ||
+        audience === 'close-readers') &&
+      !selectedReaderIds.length
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          'Select at least one reader for this echo',
+      })
+    }
+
+    const now = new Date().toISOString()
+    const {
+      data: existing,
+      error: existingError,
+    } = await supabase
+      .from('social_echoes')
+      .select('id, share_count, created_at')
+      .eq('user_id', userId)
+      .eq('source_type', sourceType)
+      .eq('source_id', sourceId)
+      .maybeSingle()
+
+    if (existingError) throw existingError
+
+    let data = null
+    let created = false
+
+    if (existing) {
+      const { data: updated, error } =
+        await supabase
+          .from('social_echoes')
+          .update({
+            echo_text: echoText,
+            destination,
+            audience,
+            selected_reader_ids:
+              selectedReaderIds,
+            share_count:
+              Math.max(
+                1,
+                Number(
+                  existing.share_count || 1
+                )
+              ) + 1,
+            updated_at: now,
+          })
+          .eq('id', existing.id)
+          .eq('user_id', userId)
+          .select(
+            'id, user_id, source_type, source_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
+          )
+          .single()
+
+      if (error) throw error
+      data = updated
+    } else {
+      const { data: inserted, error } =
+        await supabase
+          .from('social_echoes')
+          .insert({
+            user_id: userId,
+            source_type: sourceType,
+            source_id: sourceId,
+            echo_text: echoText,
+            destination,
+            audience,
+            selected_reader_ids:
+              selectedReaderIds,
+            share_count: 1,
+            created_at: now,
+            updated_at: now,
+          })
+          .select(
+            'id, user_id, source_type, source_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
+          )
+          .single()
+
+      if (error) throw error
+      data = inserted
+      created = true
+    }
+
+    const reader =
+      await getReaderProfileSafely(userId)
+    const readerName =
+      reader?.name ||
+      reader?.username ||
+      'A reader'
+    const isOwner =
+      String(source.owner_user_id || '') ===
+      String(userId)
+    const shouldNotify =
+      !isOwner &&
+      Boolean(source.author_page_id) &&
+      audience !== 'only-me' &&
+      (sourceType === 'story' ||
+        sourceType === 'episode')
+
+    if (shouldNotify) {
+      await Promise.all([
+        incrementAuthorPageAnalytics(
+          source.author_page_id,
+          'interactions'
+        ),
+        createAuthorStoryNotificationSafely({
+          authorId: source.author_page_id,
+          type: 'echo',
+          title:
+            `${readerName} echoed ${source.notification_title}`,
+          message: echoText,
+          targetUrl: source.target_url,
+          sourceKey:
+            `social-echo:${data.id}`,
+          metadata: {
+            source_type: sourceType,
+            source_id: sourceId,
+            echo_id: data.id,
+            destination,
+            audience,
+            share_count: Number(
+              data.share_count || 1
+            ),
+            reader_id: userId,
+            reader_name: readerName,
+            reader_username:
+              reader?.username || '',
+            reader_avatar_url:
+              reader?.avatar_url || '',
+          },
+        }),
+      ])
+    }
+
+    const [echo] =
+      await hydrateSocialEchoes(
+        [
+          {
+            ...data,
+            user: reader,
+          },
+        ],
+        userId
+      )
+    const echoCount =
+      await readSocialSourceShareCount(
+        sourceType,
+        sourceId
+      )
+
+    return res
+      .status(created ? 201 : 200)
+      .json({
+        ok: true,
+        created,
+        echo_count: echoCount,
+        echo: echo || {
+          ...data,
+          user: normalizeSocialUser(
+            reader,
+            userId
+          ),
+        },
+      })
+  } catch (error) {
+    console.error(
+      'CREATE SOCIAL ECHO ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        error.message ||
+        'Failed to echo content',
+    })
+  }
+}
+
+export async function getSocialEchoFeed(
+  req,
+  res
+) {
+  try {
+    const viewerId = getSocialUserId(req)
+    const limit = getSocialLimit(
+      req.query.limit,
+      20
+    )
+    const { rows, scanLimit } =
+      await readSocialEchoRows(
+        (query) =>
+          query.eq(
+            'destination',
+            'feed'
+          ),
+        limit
+      )
+    const hydrated =
+      await hydrateSocialEchoes(
+        rows,
+        viewerId
+      )
+    const echoes = hydrated.slice(
+      0,
+      limit
+    )
+
+    return res.status(200).json({
+      ok: true,
+      echoes,
+      total: echoes.length,
+      has_more:
+        hydrated.length > limit ||
+        rows.length === scanLimit,
+    })
+  } catch (error) {
+    console.error(
+      'GET SOCIAL ECHO FEED ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        error.message ||
+        'Failed to load echo feed',
+    })
+  }
+}
+
+export async function getMySocialEchoes(
+  req,
+  res
+) {
+  try {
+    const userId = getSocialUserId(req)
+    const limit = getSocialLimit(
+      req.query.limit,
+      30
+    )
+    const { rows, scanLimit } =
+      await readSocialEchoRows(
+        (query) =>
+          query
+            .eq('user_id', userId)
+            .in('destination', [
+              'feed',
+              'shadow',
+            ]),
+        limit
+      )
+    const hydrated =
+      await hydrateSocialEchoes(
+        rows,
+        userId
+      )
+    const echoes = hydrated.slice(
+      0,
+      limit
+    )
+
+    return res.status(200).json({
+      ok: true,
+      echoes,
+      total: echoes.length,
+      has_more:
+        hydrated.length > limit ||
+        rows.length === scanLimit,
+    })
+  } catch (error) {
+    console.error(
+      'GET MY SOCIAL ECHOES ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        error.message ||
+        'Failed to load your echoes',
+    })
+  }
+}
+
+export async function getSocialEchoesByUsername(
+  req,
+  res
+) {
+  try {
+    const viewerId = getSocialUserId(req)
+    const username = cleanText(
+      String(req.params.username || '')
+        .replace(/^@+/, ''),
+      80
+    )
+    const limit = getSocialLimit(
+      req.query.limit,
+      30
+    )
+
+    const { data: user, error } =
+      await supabase
+        .from('users')
+        .select(
+          'id, name, username, avatar_url, is_active'
+        )
+        .ilike('username', username)
+        .eq('is_active', true)
+        .maybeSingle()
+
+    if (error) throw error
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Reader not found',
+      })
+    }
+
+    const { rows, scanLimit } =
+      await readSocialEchoRows(
+        (query) =>
+          query
+            .eq('user_id', user.id)
+            .in('destination', [
+              'feed',
+              'shadow',
+            ]),
+        limit
+      )
+    const hydrated =
+      await hydrateSocialEchoes(
+        rows,
+        viewerId
+      )
+    const echoes = hydrated.slice(
+      0,
+      limit
+    )
+
+    return res.status(200).json({
+      ok: true,
+      user: normalizeSocialUser(user),
+      echoes,
+      total: echoes.length,
+      has_more:
+        hydrated.length > limit ||
+        rows.length === scanLimit,
+    })
+  } catch (error) {
+    console.error(
+      'GET READER SOCIAL ECHOES ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        error.message ||
+        'Failed to load reader echoes',
+    })
+  }
+}
+
+export async function getReceivedSocialEchoes(
+  req,
+  res
+) {
+  try {
+    const viewerId = getSocialUserId(req)
+    const limit = getSocialLimit(
+      req.query.limit,
+      30
+    )
+    const { rows, scanLimit } =
+      await readSocialEchoRows(
+        (query) =>
+          query.in('destination', [
+            'reader',
+            'circle',
+          ]),
+        limit
+      )
+    const receivedRows = rows.filter(
+      (row) =>
+        Array.isArray(
+          row.selected_reader_ids
+        ) &&
+        row.selected_reader_ids
+          .map((id) => String(id))
+          .includes(String(viewerId))
+    )
+    const hydrated =
+      await hydrateSocialEchoes(
+        receivedRows,
+        viewerId
+      )
+    const echoes = hydrated.slice(
+      0,
+      limit
+    )
+
+    return res.status(200).json({
+      ok: true,
+      echoes,
+      total: echoes.length,
+      has_more:
+        hydrated.length > limit ||
+        rows.length === scanLimit,
+    })
+  } catch (error) {
+    console.error(
+      'GET RECEIVED SOCIAL ECHOES ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        error.message ||
+        'Failed to load received echoes',
+    })
+  }
+}
+
+export async function getSocialEchoesBySource(
+  req,
+  res
+) {
+  try {
+    const viewerId = getSocialUserId(req)
+    const sourceType = normalizeSourceType(
+      req.params.sourceType
+    )
+    const sourceId = cleanText(
+      req.params.sourceId,
+      120
+    )
+    const limit = getSocialLimit(
+      req.query.limit,
+      50
+    )
+
+    if (!sourceType || !sourceId) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          'Valid source type and source ID are required',
+      })
+    }
+
+    const { rows, scanLimit } =
+      await readSocialEchoRows(
+        (query) =>
+          query
+            .eq('source_type', sourceType)
+            .eq('source_id', sourceId),
+        limit
+      )
+    const hydrated =
+      await hydrateSocialEchoes(
+        rows,
+        viewerId
+      )
+    const echoes = hydrated.slice(
+      0,
+      limit
+    )
+    const echoCount =
+      await readSocialSourceShareCount(
+        sourceType,
+        sourceId
+      )
+
+    return res.status(200).json({
+      ok: true,
+      source_type: sourceType,
+      source_id: sourceId,
+      echo_count: echoCount,
+      echoes,
+      total: echoes.length,
+      has_more:
+        hydrated.length > limit ||
+        rows.length === scanLimit,
+    })
+  } catch (error) {
+    console.error(
+      'GET SOCIAL ECHO SOURCE ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        error.message ||
+        'Failed to load source echoes',
+    })
+  }
+}
+
+export async function deleteSocialEcho(
+  req,
+  res
+) {
+  try {
+    const userId = getSocialUserId(req)
+    const echoId = cleanText(
+      req.params.echoId,
+      120
+    )
+
+    const { data: current, error } =
+      await supabase
+        .from('social_echoes')
+        .select('id, source_type, source_id')
+        .eq('id', echoId)
+        .eq('user_id', userId)
+        .maybeSingle()
+
+    if (error) throw error
+
+    if (!current) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Echo not found',
+      })
+    }
+
+    const { error: deleteError } =
+      await supabase
+        .from('social_echoes')
+        .delete()
+        .eq('id', current.id)
+        .eq('user_id', userId)
+
+    if (deleteError) throw deleteError
+
+    const echoCount =
+      await readSocialSourceShareCount(
+        current.source_type,
+        current.source_id
+      )
+
+    return res.status(200).json({
+      ok: true,
+      deleted_id: current.id,
+      echo_count: echoCount,
+    })
+  } catch (error) {
+    console.error(
+      'DELETE SOCIAL ECHO ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        error.message ||
+        'Failed to delete echo',
+    })
+  }
+}
