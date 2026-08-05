@@ -580,43 +580,13 @@ export async function getAuthorPageReviews(req, res) {
 
     if (reviewError) throw reviewError
 
-    const { data: reviewer, error: reviewerError } = await supabase
-  .from('users')
-  .select('id, name, username, avatar_url')
-  .eq('id', userId)
-  .maybeSingle()
-
-if (reviewerError) throw reviewerError
-    const reviewerName =
-  reviewer?.name || reviewer?.username || 'A reader'
-const sourceKey = `author-page-review:${authorPage.id}:${userId}`
-
-await deleteAuthorPageNotificationBySourceKeySafely({
-  authorPageId: authorPage.id,
-  type: 'review',
-  sourceKey,
-})
-
-    await createAuthorPageNotificationSafely({
-  authorPageId: authorPage.id,
-  authorUserId: authorPage.user_id,
-  type: 'review',
-  title: `${reviewerName} ${isRecommended ? 'recommended' : 'did not recommend'} your page`,
-  message: reviewText,
-  targetUrl: `/author/page/${authorPage.page_username}`,
-  sourceKey,
-
-        metadata: {
-    review_id: review.id,
-    is_recommended: isRecommended,
-    reviewer_id: userId,
-    reviewer_name: reviewerName,
-    reviewer_username: reviewer?.username || '',
-    reviewer_avatar_url: reviewer?.avatar_url || '',
-  },
-})
-
-    const reviewerIds = [...new Set((reviewRows || []).map((item) => item.reviewer_user_id).filter(Boolean))]
+    const reviewerIds = [
+      ...new Set(
+        (reviewRows || [])
+          .map((item) => item.reviewer_user_id)
+          .filter(Boolean)
+      ),
+    ]
     let usersById = new Map()
 
     if (reviewerIds.length) {
@@ -642,14 +612,20 @@ await deleteAuthorPageNotificationBySourceKeySafely({
         review_text: item.review_text || '',
         created_at: item.created_at,
         updated_at: item.updated_at,
-        is_mine: userId ? String(item.reviewer_user_id) === String(userId) : false,
+        is_mine: userId
+          ? String(item.reviewer_user_id) === String(userId)
+          : false,
       }
     })
 
     const totalCount = reviews.length
     const recommendCount = reviews.filter((item) => item.is_recommended).length
-    const recommendPercent = totalCount ? Math.round((recommendCount / totalCount) * 100) : 0
-    const myReview = userId ? reviews.find((item) => item.is_mine) || null : null
+    const recommendPercent = totalCount
+      ? Math.round((recommendCount / totalCount) * 100)
+      : 0
+    const myReview = userId
+      ? reviews.find((item) => item.is_mine) || null
+      : null
 
     return res.status(200).json({
       ok: true,
@@ -670,6 +646,7 @@ await deleteAuthorPageNotificationBySourceKeySafely({
     })
   }
 }
+
 
 export async function upsertMyAuthorPageReview(req, res) {
   try {
@@ -700,7 +677,10 @@ export async function upsertMyAuthorPageReview(req, res) {
     }
 
     if (String(authorPage.user_id) === String(userId)) {
-      return res.status(400).json({ ok: false, message: 'You cannot review your own author page' })
+      return res.status(400).json({
+        ok: false,
+        message: 'You cannot review your own author page',
+      })
     }
 
     const { data: review, error: reviewError } = await supabase
@@ -716,16 +696,51 @@ export async function upsertMyAuthorPageReview(req, res) {
         },
         { onConflict: 'author_page_id,reviewer_user_id' }
       )
-      .select('id, reviewer_user_id, is_recommended, review_text, status, created_at, updated_at')
+      .select(
+        'id, reviewer_user_id, is_recommended, review_text, status, created_at, updated_at'
+      )
       .single()
 
     if (reviewError) throw reviewError
 
+    const { data: reviewer, error: reviewerError } = await supabase
+      .from('users')
+      .select('id, name, username, avatar_url')
+      .eq('id', userId)
+      .maybeSingle()
+
+    if (reviewerError) throw reviewerError
+
+    const reviewerName =
+      reviewer?.name || reviewer?.username || 'A reader'
+    const sourceKey =
+      `author-page-review:${authorPage.id}:${userId}`
+
     await deleteAuthorPageNotificationBySourceKeySafely({
-  authorPageId: authorPage.id,
-  type: 'review',
-  sourceKey: `author-page-review:${authorPage.id}:${userId}`,
-})
+      authorPageId: authorPage.id,
+      type: 'review',
+      sourceKey,
+    })
+
+    await createAuthorPageNotificationSafely({
+      authorPageId: authorPage.id,
+      authorUserId: authorPage.user_id,
+      type: 'review',
+      title: `${reviewerName} ${
+        isRecommended ? 'recommended' : 'did not recommend'
+      } your page`,
+      message: reviewText,
+      targetUrl: `/author/page/${authorPage.page_username}`,
+      sourceKey,
+      metadata: {
+        review_id: review.id,
+        is_recommended: isRecommended,
+        reviewer_id: userId,
+        reviewer_name: reviewerName,
+        reviewer_username: reviewer?.username || '',
+        reviewer_avatar_url: reviewer?.avatar_url || '',
+      },
+    })
 
     return res.status(200).json({
       ok: true,
@@ -741,6 +756,7 @@ export async function upsertMyAuthorPageReview(req, res) {
     })
   }
 }
+
 
 export async function deleteMyAuthorPageReview(req, res) {
   try {
@@ -778,6 +794,12 @@ export async function deleteMyAuthorPageReview(req, res) {
       .eq('reviewer_user_id', userId)
 
     if (reviewError) throw reviewError
+
+    await deleteAuthorPageNotificationBySourceKeySafely({
+      authorPageId: authorPage.id,
+      type: 'review',
+      sourceKey: `author-page-review:${authorPage.id}:${userId}`,
+    })
 
     return res.status(200).json({
       ok: true,
