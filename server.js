@@ -28,10 +28,13 @@ import shadowMallProductsRoutes from './src/routes/shadowMallProducts.routes.js'
 import adminCommunityRoutes from './src/routes/adminCommunity.routes.js'
 import adminSpamGuardRoutes from './src/routes/adminSpamGuard.routes.js'
 import tasksRoutes from './src/routes/tasks.routes.js'
-import adminStoriesRoutes from './src/routes/adminStories.routes.js'
+import adminStoriesRoutes app.use('/api/mails', mailSpamGuard, readerMailsRoutes)
+
+'./src/routes/adminStories.routes.js'
 import adminRankingRoutes from './src/routes/adminRanking.routes.js'
 import notificationsRoutes from './src/routes/notifications.routes.js'
 import readerMailsRoutes from './src/routes/readerMails.routes.js'
+import chatRoutes from './src/routes/chat.routes.js'
 import adminNotificationsRoutes from './src/routes/adminNotifications.routes.js'
 import advertisementsRoutes from './src/routes/advertisements.routes.js'
 import adminBlockListRoutes from './src/routes/adminBlockList.routes.js'
@@ -472,6 +475,7 @@ app.use('/api/tasks', taskSpamGuard, tasksRoutes)
 app.use('/api/notifications', notificationSpamGuard, notificationsRoutes)
 app.use('/api/admin/notifications', adminNotificationsRoutes)
 app.use('/api/mails', mailSpamGuard, readerMailsRoutes)
+app.use('/api/chat', chatRoutes)
 app.use('/api/admin/stories', adminStoriesRoutes)
 app.use('/api/admin/chat-story-gallery', adminChatStoryGalleryRoutes)
 app.use('/api/admin/media-library', adminMediaLibraryRoutes)
