@@ -824,6 +824,167 @@ async function readSocialSourceForCreate(
   return null
 }
 
+async function buildSocialSourcePreview(
+  sourceType,
+  sourceId,
+  viewerId
+) {
+  const result =
+    await readSocialSourceForCreate(
+      sourceType,
+      sourceId,
+      viewerId
+    )
+
+  if (!result) return null
+
+  if (sourceType === 'story') {
+    const story = result.story
+    let authorPage = null
+
+    if (story.author_id) {
+      const { data, error } =
+        await supabase
+          .from('author_pages')
+          .select(
+            'id, user_id, page_name, page_username, avatar_url'
+          )
+          .eq('id', story.author_id)
+          .maybeSingle()
+
+      if (error) throw error
+      authorPage = data || null
+    }
+
+    const imageUrl =
+      story.landscape_thumbnail_url ||
+      story.cover_url ||
+      ''
+
+    return {
+      type: 'story',
+      id: story.id,
+      name: story.title || 'Story',
+      content: '',
+      image_url: imageUrl,
+      image_urls: imageUrl
+        ? [imageUrl]
+        : [],
+      url: result.target_url,
+      label: 'story',
+      owner: authorPage,
+    }
+  }
+
+  if (sourceType === 'episode') {
+    const episode = result.episode
+    const story = result.story
+    const imageUrl =
+      story.landscape_thumbnail_url ||
+      story.cover_url ||
+      episode.cover_url ||
+      ''
+
+    return {
+      type: 'episode',
+      id: episode.id,
+      name: story.title || 'Story',
+      content:
+        episode.title ||
+        `Episode ${Number(
+          episode.episode_number || 0
+        )}`,
+      image_url: imageUrl,
+      image_urls: imageUrl
+        ? [imageUrl]
+        : [],
+      url: result.target_url,
+      label: 'episode',
+      owner: result.author || null,
+    }
+  }
+
+  if (sourceType === 'reader_post') {
+    const post = result.reader_post
+    const { data: user, error } =
+      await supabase
+        .from('users')
+        .select(
+          'id, name, username, avatar_url'
+        )
+        .eq('id', post.user_id)
+        .maybeSingle()
+
+    if (error) throw error
+
+    const images = Array.isArray(
+      post.image_urls
+    )
+      ? post.image_urls.filter(Boolean)
+      : []
+    const username = String(
+      user?.username || ''
+    ).trim()
+
+    return {
+      type: 'reader_post',
+      id: post.id,
+      name:
+        user?.name ||
+        username ||
+        'Reader Post',
+      content: post.content || '',
+      image_url: images[0] || '',
+      image_urls: images,
+      url: username
+        ? `/profile?username=${encodeURIComponent(
+            username
+          )}#reader-post-${post.id}`
+        : `/profile#reader-post-${post.id}`,
+      label: 'reader post',
+      owner: normalizeSocialUser(
+        user,
+        post.user_id
+      ),
+    }
+  }
+
+  if (sourceType === 'author_post') {
+    const post = result.author_post
+    const authorPage = Array.isArray(
+      post.author_page
+    )
+      ? post.author_page[0]
+      : post.author_page
+    const images = Array.isArray(
+      post.image_urls
+    )
+      ? post.image_urls.filter(Boolean)
+      : []
+
+    return {
+      type: 'author_post',
+      id: post.id,
+      name:
+        authorPage?.page_name ||
+        'Author Post',
+      content: post.content || '',
+      image_url: images[0] || '',
+      image_urls: images,
+      url:
+        authorPage?.page_username
+          ? `/author/page/${authorPage.page_username}?post=${encodeURIComponent(
+              post.id
+            )}`
+          : '/',
+      label: 'author post',
+      owner: authorPage || null,
+    }
+  }
+
+  return null
+}
+
 async function hydrateSocialEchoes(
   rows,
   viewerId
@@ -2166,6 +2327,21 @@ export async function getSocialEchoesBySource(
       })
     }
 
+    const source =
+      await buildSocialSourcePreview(
+        sourceType,
+        sourceId,
+        viewerId
+      )
+
+    if (!source) {
+      return res.status(404).json({
+        ok: false,
+        message:
+          'Source content is not available',
+      })
+    }
+
     const { rows, scanLimit } =
       await readSocialEchoRows(
         (query) =>
@@ -2174,6 +2350,7 @@ export async function getSocialEchoesBySource(
             .eq('source_id', sourceId),
         limit
       )
+
     const hydrated =
       await hydrateSocialEchoes(
         rows,
@@ -2193,6 +2370,7 @@ export async function getSocialEchoesBySource(
       ok: true,
       source_type: sourceType,
       source_id: sourceId,
+      source,
       echo_count: echoCount,
       echoes,
       total: echoes.length,
@@ -2214,6 +2392,7 @@ export async function getSocialEchoesBySource(
     })
   }
 }
+
 
 export async function deleteSocialEcho(
   req,
