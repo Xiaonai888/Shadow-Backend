@@ -147,28 +147,28 @@ export async function getAuthorPagePosts(req, res) {
     if (postsError) throw postsError
 
     const postIds = (posts || []).map((post) => post.id).filter(Boolean)
-let reactionSummaryByPost = new Map()
+    let reactionSummaryByPost = new Map()
 
-if (postIds.length) {
-  const { data: reactionRows, error: reactionSummaryError } = await supabase
-    .from('author_page_post_reactions')
-    .select('post_id, reaction_type')
-    .in('post_id', postIds)
+    if (postIds.length) {
+      const { data: reactionRows, error: reactionSummaryError } = await supabase
+        .from('author_page_post_reactions')
+        .select('post_id, reaction_type')
+        .in('post_id', postIds)
 
-  if (reactionSummaryError) throw reactionSummaryError
+      if (reactionSummaryError) throw reactionSummaryError
 
-  reactionSummaryByPost = buildReactionSummaryMap(reactionRows || [])
-}
+      reactionSummaryByPost = buildReactionSummaryMap(reactionRows || [])
+    }
 
-return res.status(200).json({
-  ok: true,
-  posts: (posts || []).map((post) =>
-    publicAuthorPost({
-      ...post,
-      reaction_summary: reactionSummaryByPost.get(post.id) || [],
+    return res.status(200).json({
+      ok: true,
+      posts: (posts || []).map((post) =>
+        publicAuthorPost({
+          ...post,
+          reaction_summary: reactionSummaryByPost.get(post.id) || [],
+        })
+      ),
     })
-  ),
-})
   } catch (error) {
     console.error('GET AUTHOR PAGE POSTS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load author posts', error: error.message })
@@ -679,15 +679,58 @@ export async function setMyAuthorPostReaction(req, res) {
     const isOwner =
       String(post.user_id || '') === String(userId)
 
-    if (
-      interactionCreated &&
-      !isOwner &&
-      post.author_page_id
-    ) {
-      await incrementAuthorPageAnalytics(
-        post.author_page_id,
-        'interactions'
-      )
+    if (!isOwner && post.author_page_id) {
+      const sourceKey = `author-post-reaction:${postId}:${userId}`
+
+      if (!reacted) {
+        await deleteAuthorPageNotificationBySourceKeySafely({
+          authorPageId: post.author_page_id,
+          type: 'reaction',
+          sourceKey,
+        })
+      } else {
+        const { data: reader, error: readerError } = await supabase
+          .from('users')
+          .select('id, name, username, avatar_url')
+          .eq('id', userId)
+          .maybeSingle()
+
+        if (readerError) throw readerError
+
+        const readerName =
+          reader?.name || reader?.username || 'A reader'
+
+        await deleteAuthorPageNotificationBySourceKeySafely({
+          authorPageId: post.author_page_id,
+          type: 'reaction',
+          sourceKey,
+        })
+
+        await Promise.all([
+          interactionCreated
+            ? incrementAuthorPageAnalytics(
+                post.author_page_id,
+                'interactions'
+              )
+            : Promise.resolve(),
+          createAuthorPageNotificationSafely({
+            authorPageId: post.author_page_id,
+            authorUserId: post.user_id,
+            type: 'reaction',
+            title: `${readerName} reacted ${reactionType} to your post`,
+            targetUrl: `/author/page?post=${postId}`,
+            sourceKey,
+            metadata: {
+              post_id: postId,
+              reaction_type: reactionType,
+              reader_id: userId,
+              reader_name: readerName,
+              reader_username: reader?.username || '',
+              reader_avatar_url: reader?.avatar_url || '',
+            },
+          }),
+        ])
+      }
     }
 
     return res.status(200).json({
@@ -1033,7 +1076,7 @@ export async function createAuthorPostComment(req, res) {
 
     if (postError) throw postError
 
-        if (!post) {
+    if (!post) {
       return res.status(404).json({
         ok: false,
         message: 'Post not found',
@@ -1125,36 +1168,39 @@ export async function createAuthorPostComment(req, res) {
     if (updatePostError) throw updatePostError
 
     const reader = Array.isArray(createdComment.user)
-  ? createdComment.user[0]
-  : createdComment.user
-const readerName = reader?.name || reader?.username || 'A reader'
+      ? createdComment.user[0]
+      : createdComment.user
+    const readerName =
+      reader?.name || reader?.username || 'A reader'
 
     const notificationPayload = {
-  authorPageId: post.author_page_id,
-  authorUserId: post.user_id,
-  type: 'comment',
-  title: `${readerName} ${parentId ? 'replied to' : 'commented on'} your post`,
-  message: text,
-  targetUrl: `/author/page?post=${postId}`,
-  sourceKey: `author-post-comment:${createdComment.id}`,
-
-        metadata: {
-    post_id: postId, comment_id: createdComment.id, parent_id: parentId,
-    reader_id: userId, reader_name: readerName,
-    reader_username: reader?.username || '',
-    reader_avatar_url: reader?.avatar_url || '',
-  },
-}
+      authorPageId: post.author_page_id,
+      authorUserId: post.user_id,
+      type: 'comment',
+      title: `${readerName} ${parentId ? 'replied to' : 'commented on'} your post`,
+      message: text,
+      targetUrl: `/author/page?post=${postId}`,
+      sourceKey: `author-post-comment:${createdComment.id}`,
+      metadata: {
+        post_id: postId,
+        comment_id: createdComment.id,
+        parent_id: parentId,
+        reader_id: userId,
+        reader_name: readerName,
+        reader_username: reader?.username || '',
+        reader_avatar_url: reader?.avatar_url || '',
+      },
+    }
 
     const isOwner = String(post.user_id || '') === String(userId)
 
     if (!isOwner && post.author_page_id) {
-  await Promise.all([
-    incrementAuthorPageAnalytics(post.author_page_id, 'comments'),
-    incrementAuthorPageAnalytics(post.author_page_id, 'interactions'),
-    createAuthorPageNotificationSafely(notificationPayload),
-  ])
-}
+      await Promise.all([
+        incrementAuthorPageAnalytics(post.author_page_id, 'comments'),
+        incrementAuthorPageAnalytics(post.author_page_id, 'interactions'),
+        createAuthorPageNotificationSafely(notificationPayload),
+      ])
+    }
 
     return res.status(201).json({
       ok: true,
@@ -1295,8 +1341,8 @@ export async function deleteOwnAuthorPostComment(req, res) {
 
     const { data: post, error: postError } = await supabase
       .from('author_page_posts')
-.select('id, author_page_id, user_id')
-.eq('id', comment.post_id)
+      .select('id, author_page_id, user_id')
+      .eq('id', comment.post_id)
       .maybeSingle()
 
     if (postError) throw postError
@@ -1350,15 +1396,14 @@ export async function deleteOwnAuthorPostComment(req, res) {
     }
 
     await deleteAuthorPageNotificationBySourceKeySafely({
-  authorPageId: post.author_page_id,
-  type: 'comment',
-  sourceKey: `author-post-comment:${commentId}`,
-})
+      authorPageId: post.author_page_id,
+      type: 'comment',
+      sourceKey: `author-post-comment:${commentId}`,
+    })
 
     return res.status(200).json({
-  ok: true,
-  message: 'Comment moved to trash',
-      
+      ok: true,
+      message: 'Comment moved to trash',
       comment_id: result.comment_id,
       deleted_at: result.deleted_at,
       delete_expires_at: result.delete_expires_at,
