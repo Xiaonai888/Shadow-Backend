@@ -8,6 +8,7 @@ import {
   markConversationReadController,
   sendConversationMessageController,
 } from '../controllers/chat.controller.js'
+import { blockConversationController } from '../controllers/chatBlock.controller.js'
 import { searchChatUsersController } from '../controllers/chatUserSearch.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
@@ -68,6 +69,12 @@ router.post(
   '/conversations/:conversationId/messages',
   chatWriteGuard,
   sendConversationMessageController
+)
+
+router.patch(
+  '/conversations/:conversationId/block',
+  chatWriteGuard,
+  blockConversationController
 )
 
 router.patch(
