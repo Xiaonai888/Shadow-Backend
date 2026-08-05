@@ -1354,6 +1354,11 @@ export async function deleteOwnAuthorPostComment(req, res) {
   type: 'comment',
   sourceKey: `author-post-comment:${commentId}`,
 })
+
+    return res.status(200).json({
+  ok: true,
+  message: 'Comment moved to trash',
+      
       comment_id: result.comment_id,
       deleted_at: result.deleted_at,
       delete_expires_at: result.delete_expires_at,
