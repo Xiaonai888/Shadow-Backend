@@ -146,14 +146,25 @@ export async function getReaderPostReactions(req, res) {
       })
     }
 
-    const { data: countRows, error: countError } = await supabase
-      .from('reader_post_reactions')
-      .select('reaction_type')
-      .eq('post_id', postId)
+    const [countResult, reactionResult] = await Promise.all([
+      supabase
+        .from('reader_post_reactions')
+        .select('reaction_type')
+        .eq('post_id', postId),
+      supabase
+        .from('reader_post_reactions')
+        .select('id, user_id, reaction_type, created_at', {
+          count: 'exact',
+        })
+        .eq('post_id', postId)
+        .order('created_at', { ascending: false })
+        .range(from, to),
+    ])
 
-    if (countError) throw countError
+    if (countResult.error) throw countResult.error
+    if (reactionResult.error) throw reactionResult.error
 
-    const counts = (countRows || []).reduce((result, item) => {
+    const counts = (countResult.data || []).reduce((result, item) => {
       const type = normalizeReactionType(item.reaction_type)
 
       if (!ALLOWED_REACTIONS.has(type)) return result
@@ -162,20 +173,32 @@ export async function getReaderPostReactions(req, res) {
       return result
     }, {})
 
-    const { data, error, count } = await supabase
-      .from('reader_post_reactions')
-      .select(
-        'id, user_id, reaction_type, created_at, user:users(id, name, username, avatar_url)',
-        { count: 'exact' }
+    const reactionRows = reactionResult.data || []
+    const userIds = [
+      ...new Set(
+        reactionRows
+          .map((item) => String(item.user_id || '').trim())
+          .filter(Boolean)
+      ),
+    ]
+
+    let usersById = new Map()
+
+    if (userIds.length) {
+      const { data: users, error: usersError } = await supabase
+        .from('users')
+        .select('id, name, username, avatar_url')
+        .in('id', userIds)
+
+      if (usersError) throw usersError
+
+      usersById = new Map(
+        (users || []).map((user) => [String(user.id), user])
       )
-      .eq('post_id', postId)
-      .order('created_at', { ascending: false })
-      .range(from, to)
+    }
 
-    if (error) throw error
-
-    const reactions = (data || []).map((item) => {
-      const user = Array.isArray(item.user) ? item.user[0] : item.user
+    const reactions = reactionRows.map((item) => {
+      const user = usersById.get(String(item.user_id || ''))
 
       return {
         id: item.id,
@@ -190,7 +213,7 @@ export async function getReaderPostReactions(req, res) {
       }
     })
 
-    const total = Number(count || 0)
+    const total = Number(reactionResult.count || 0)
 
     return res.status(200).json({
       ok: true,
