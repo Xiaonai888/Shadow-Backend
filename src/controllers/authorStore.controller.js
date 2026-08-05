@@ -1,6 +1,9 @@
 import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
 import {
+  createAuthorStorePaidNotificationsSafely,
+} from '../services/authorStorePageNotifications.service.js'
+import {
   answerAuthorStoreCallbackQuery,
   editAuthorStoreTelegramMessage,
   html,
@@ -3615,6 +3618,7 @@ export async function updateAdminAuthorStoreOrderStatus(req, res) {
         .single()
 
       if (finalUpdateError) throw finalUpdateError
+      await createAuthorStorePaidNotificationsSafely(finalOrder)
 
       return res.status(200).json({
         ok: true,
@@ -3753,6 +3757,7 @@ export async function handleAuthorStoreAbaCallback(req, res) {
       .single()
 
     if (updateError) throw updateError
+    await createAuthorStorePaidNotificationsSafely(updatedOrder)
 
     await deductAuthorStoreOrderStock(updatedOrder)
 
