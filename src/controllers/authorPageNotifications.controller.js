@@ -131,7 +131,10 @@ export async function markMyAuthorPageNotificationRead(req, res) {
     }
 
     if (!notificationId) {
-      return res.status(400).json({ ok: false, message: 'Notification ID is required' })
+      return res.status(400).json({
+        ok: false,
+        message: 'Notification ID is required',
+      })
     }
 
     const authorPage = await getMyAuthorPageByUserId(userId)
@@ -166,6 +169,109 @@ export async function markMyAuthorPageNotificationRead(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to mark notification as read',
+      error: error.message,
+    })
+  }
+}
+
+export async function markMyAuthorPageNotificationUnread(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const notificationId = String(req.params.id || '').trim()
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!notificationId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Notification ID is required',
+      })
+    }
+
+    const authorPage = await getMyAuthorPageByUserId(userId)
+
+    if (!authorPage) {
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_page_notifications')
+      .update({
+        is_read: false,
+        read_at: null,
+      })
+      .eq('id', notificationId)
+      .eq('author_page_id', authorPage.id)
+      .select()
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({ ok: false, message: 'Notification not found' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      notification: normalizeNotification(data),
+    })
+  } catch (error) {
+    console.error('MARK AUTHOR PAGE NOTIFICATION UNREAD ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to mark notification as unread',
+      error: error.message,
+    })
+  }
+}
+
+export async function deleteMyAuthorPageNotification(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const notificationId = String(req.params.id || '').trim()
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!notificationId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Notification ID is required',
+      })
+    }
+
+    const authorPage = await getMyAuthorPageByUserId(userId)
+
+    if (!authorPage) {
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
+    }
+
+    const { data, error } = await supabase
+      .from('author_page_notifications')
+      .delete()
+      .eq('id', notificationId)
+      .eq('author_page_id', authorPage.id)
+      .select('id')
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({ ok: false, message: 'Notification not found' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      deleted_id: data.id,
+    })
+  } catch (error) {
+    console.error('DELETE AUTHOR PAGE NOTIFICATION ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to delete notification',
       error: error.message,
     })
   }
