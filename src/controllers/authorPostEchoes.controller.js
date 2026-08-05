@@ -1,4 +1,7 @@
 import { supabase } from '../config/supabase.js'
+import {
+  createAuthorPageNotificationSafely,
+} from '../services/authorPageNotifications.service.js'
 
 const DESTINATIONS = new Set([
   'feed',
@@ -346,8 +349,34 @@ export async function createAuthorPostEcho(
     if (updateError) throw updateError
 
     const reader = await readUser(userId)
+const isOwner = String(post.user_id || '') === String(userId)
 
-    return res.status(201).json({
+if (!isOwner && post.author_page_id && audience !== 'only-me') {
+  const readerName =
+    reader?.name || reader?.username || 'A reader'
+
+  await createAuthorPageNotificationSafely({
+    authorPageId: post.author_page_id,
+    authorUserId: post.user_id,
+    type: 'echo',
+    title: `${readerName} echoed your post`,
+    message: echoText,
+    targetUrl: `/author/page?post=${postId}`,
+    sourceKey: `author-post-echo:${data.id}`,
+    metadata: {
+      post_id: postId,
+      echo_id: data.id,
+      destination,
+      audience,
+      reader_id: userId,
+      reader_name: readerName,
+      reader_username: reader?.username || '',
+      reader_avatar_url: reader?.avatar_url || '',
+    },
+  })
+}
+
+return res.status(201).json({
       ok: true,
       echo_count: echoCount,
       echo: publicEcho({
