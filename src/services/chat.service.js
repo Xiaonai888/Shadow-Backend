@@ -173,6 +173,27 @@ async function getPublicUser(userId) {
   return data || null
 }
 
+async function getActiveUser(userId) {
+  const safeUserId = requireUuid(userId, 'Reader user ID')
+
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, name, username, avatar_url, is_author, is_active')
+    .eq('id', safeUserId)
+    .eq('is_active', true)
+    .maybeSingle()
+
+  if (error) {
+    throw databaseFailure(error, 'Failed to load reader profile')
+  }
+
+  if (!data) {
+    fail(404, 'READER_NOT_FOUND', 'Reader account not found')
+  }
+
+  return data
+}
+
 async function findBlockBetween(firstUserId, secondUserId) {
   if (!firstUserId || !secondUserId) return null
 
@@ -302,8 +323,9 @@ async function buildConversationSummary(
     unread_count: unreadCount,
     can_send: conversation.request_status === 'accepted',
     can_decide:
-      viewerParticipant.participant_role === 'author' &&
-      conversation.request_status === 'pending',
+      conversation.request_status === 'pending' &&
+      String(conversation.created_by_user_id) !==
+        String(viewerParticipant.user_id),
     last_read_at: viewerParticipant.last_read_at,
     last_message_at: conversation.last_message_at,
     created_at: conversation.created_at,
@@ -501,6 +523,162 @@ export async function createReaderAuthorRequest({
       await getConversationSummaryForUser(
         conversation.id,
         safeReaderUserId
+      ),
+  }
+}
+
+export async function createReaderReaderRequest({
+  senderUserId,
+  targetUserId,
+  message,
+}) {
+  const safeSenderUserId = requireUuid(
+    senderUserId,
+    'Sender user ID'
+  )
+  const safeTargetUserId = requireUuid(
+    targetUserId,
+    'Reader user ID'
+  )
+  const safeMessage = requireMessage(message)
+
+  if (safeSenderUserId === safeTargetUserId) {
+    fail(
+      400,
+      'CANNOT_MESSAGE_SELF',
+      'You cannot message yourself'
+    )
+  }
+
+  const targetUser = await getActiveUser(safeTargetUserId)
+  const block = await findBlockBetween(
+    safeSenderUserId,
+    targetUser.id
+  )
+
+  if (block) {
+    fail(403, 'CHAT_BLOCKED', 'Messaging is blocked')
+  }
+
+  const sortedUserIds = [
+    safeSenderUserId,
+    targetUser.id,
+  ].sort()
+
+  const directKey =
+    `reader_reader:${sortedUserIds[0]}:${sortedUserIds[1]}`
+
+  const existing = await getExistingDirectConversation(directKey)
+
+  if (existing) {
+    handleExistingRequestStatus(existing)
+
+    return {
+      created: false,
+      conversation:
+        await getConversationSummaryForUser(
+          existing.id,
+          safeSenderUserId
+        ),
+    }
+  }
+
+  const {
+    data: conversation,
+    error: conversationError,
+  } = await supabase
+    .from('chat_conversations')
+    .insert({
+      conversation_type: 'reader_reader',
+      direct_key: directKey,
+      created_by_user_id: safeSenderUserId,
+      author_page_id: null,
+      request_status: 'pending',
+    })
+    .select(
+      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, created_at, updated_at'
+    )
+    .single()
+
+  if (conversationError) {
+    if (conversationError.code === '23505') {
+      const racedConversation =
+        await getExistingDirectConversation(directKey)
+
+      if (racedConversation) {
+        handleExistingRequestStatus(racedConversation)
+
+        return {
+          created: false,
+          conversation:
+            await getConversationSummaryForUser(
+              racedConversation.id,
+              safeSenderUserId
+            ),
+        }
+      }
+    }
+
+    throw databaseFailure(
+      conversationError,
+      'Failed to create reader message request'
+    )
+  }
+
+  try {
+    const now = new Date().toISOString()
+
+    const { error: participantsError } = await supabase
+      .from('chat_participants')
+      .insert([
+        {
+          conversation_id: conversation.id,
+          user_id: safeSenderUserId,
+          participant_role: 'reader',
+          last_read_at: now,
+        },
+        {
+          conversation_id: conversation.id,
+          user_id: targetUser.id,
+          participant_role: 'reader',
+        },
+      ])
+
+    if (participantsError) {
+      throw participantsError
+    }
+
+    const { error: messageError } = await supabase
+      .from('chat_messages')
+      .insert({
+        conversation_id: conversation.id,
+        sender_user_id: safeSenderUserId,
+        message_type: 'text',
+        body: safeMessage,
+        is_request_message: true,
+      })
+
+    if (messageError) {
+      throw messageError
+    }
+  } catch (error) {
+    await supabase
+      .from('chat_conversations')
+      .delete()
+      .eq('id', conversation.id)
+
+    throw databaseFailure(
+      error,
+      'Failed to save reader message request'
+    )
+  }
+
+  return {
+    created: true,
+    conversation:
+      await getConversationSummaryForUser(
+        conversation.id,
+        safeSenderUserId
       ),
   }
 }
@@ -731,7 +909,7 @@ export async function sendConversationMessage({
     fail(
       409,
       'REQUEST_NOT_ACCEPTED',
-      'The author must accept this message request first'
+      'The recipient must accept this message request first'
     )
   }
 
@@ -837,26 +1015,52 @@ export async function decideMessageRequest({
     safeUserId
   )
 
-  if (
-    conversation.conversation_type !== 'reader_author' ||
-    participant.participant_role !== 'author'
-  ) {
+  const isRequestRecipient =
+    String(conversation.created_by_user_id) !== safeUserId
+
+  if (!isRequestRecipient) {
     fail(
       403,
-      'AUTHOR_DECISION_REQUIRED',
-      'Only the author can manage this request'
+      'REQUEST_RECIPIENT_REQUIRED',
+      'Only the request recipient can manage this request'
     )
   }
 
-  const authorPage = await getAuthorPage(
-    conversation.author_page_id
-  )
+  if (conversation.conversation_type === 'reader_author') {
+    if (participant.participant_role !== 'author') {
+      fail(
+        403,
+        'AUTHOR_DECISION_REQUIRED',
+        'Only the author can manage this request'
+      )
+    }
 
-  if (String(authorPage.user_id) !== safeUserId) {
+    const authorPage = await getAuthorPage(
+      conversation.author_page_id
+    )
+
+    if (String(authorPage.user_id) !== safeUserId) {
+      fail(
+        403,
+        'AUTHOR_DECISION_REQUIRED',
+        'Only the author page owner can manage this request'
+      )
+    }
+  } else if (
+    conversation.conversation_type === 'reader_reader'
+  ) {
+    if (participant.participant_role !== 'reader') {
+      fail(
+        403,
+        'READER_DECISION_REQUIRED',
+        'Only the reader recipient can manage this request'
+      )
+    }
+  } else {
     fail(
-      403,
-      'AUTHOR_DECISION_REQUIRED',
-      'Only the author page owner can manage this request'
+      400,
+      'INVALID_CONVERSATION_TYPE',
+      'Conversation type is not supported'
     )
   }
 
@@ -889,16 +1093,16 @@ export async function decideMessageRequest({
         : 'blocked'
 
   if (normalizedAction === 'block') {
-    const readerParticipant = await getOtherParticipant(
+    const otherParticipant = await getOtherParticipant(
       conversation.id,
       safeUserId
     )
 
-    if (!readerParticipant) {
+    if (!otherParticipant) {
       fail(
         409,
-        'READER_PARTICIPANT_MISSING',
-        'Reader participant is unavailable'
+        'PARTICIPANT_MISSING',
+        'The other participant is unavailable'
       )
     }
 
@@ -906,7 +1110,7 @@ export async function decideMessageRequest({
       .from('chat_blocks')
       .insert({
         blocker_user_id: safeUserId,
-        blocked_user_id: readerParticipant.user_id,
+        blocked_user_id: otherParticipant.user_id,
       })
 
     if (
@@ -915,7 +1119,7 @@ export async function decideMessageRequest({
     ) {
       throw databaseFailure(
         blockError,
-        'Failed to block reader'
+        'Failed to block user'
       )
     }
   }
