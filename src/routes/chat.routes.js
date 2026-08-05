@@ -1,6 +1,7 @@
 import express from 'express'
 import {
   createReaderAuthorRequestController,
+  createReaderReaderRequestController,
   decideMessageRequestController,
   getConversationMessagesController,
   listMyConversationsController,
@@ -36,6 +37,12 @@ router.post(
   '/reader-author/requests',
   chatRequestGuard,
   createReaderAuthorRequestController
+)
+
+router.post(
+  '/reader-reader/requests',
+  chatRequestGuard,
+  createReaderReaderRequestController
 )
 
 router.get(
