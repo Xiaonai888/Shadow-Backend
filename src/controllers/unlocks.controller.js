@@ -1291,6 +1291,8 @@ async function createUnlocksAndTransactions({
   return unlocks || []
 }
 export function getWriterWednesdayStatus(req, res) {
+  res.set('Cache-Control', 'no-store')
+
   return res.status(200).json({
     ok: true,
     event: getWriterWednesdayEvent(),
