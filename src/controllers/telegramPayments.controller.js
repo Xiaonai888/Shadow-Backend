@@ -1,4 +1,7 @@
 import { supabase } from '../config/supabase.js'
+import {
+  createAuthorStorePaidNotificationsSafely,
+} from '../services/authorStorePageNotifications.service.js'
 import { deductShadowMallOrderStock } from './shadowMallOrders.controller.js'
 import {
   deductAuthorStoreOrderStock,
@@ -1008,6 +1011,7 @@ async function processAbaMessage(parsed, message) {
 
   if (isAuthorPdfOrder(matchedAuthorOrder)) {
     const completedOrder = await markAuthorPdfOrderCompleted(matchedAuthorOrder, telegramPayment, parsed)
+    await createAuthorStorePaidNotificationsSafely(completedOrder)
 
     try {
       await unlockAuthorStorePdfDownloads(completedOrder)
@@ -1048,6 +1052,7 @@ async function processAbaMessage(parsed, message) {
   }
 
   const updatedAuthorOrder = await markAuthorStoreOrderUnderReview(matchedAuthorOrder, telegramPayment, parsed)
+    await createAuthorStorePaidNotificationsSafely(updatedAuthorOrder)
 
   try {
     await deductAuthorStoreOrderStock(updatedAuthorOrder)
