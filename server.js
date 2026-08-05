@@ -28,9 +28,7 @@ import shadowMallProductsRoutes from './src/routes/shadowMallProducts.routes.js'
 import adminCommunityRoutes from './src/routes/adminCommunity.routes.js'
 import adminSpamGuardRoutes from './src/routes/adminSpamGuard.routes.js'
 import tasksRoutes from './src/routes/tasks.routes.js'
-import adminStoriesRoutes app.use('/api/mails', mailSpamGuard, readerMailsRoutes)
-
-'./src/routes/adminStories.routes.js'
+import adminStoriesRoutes from './src/routes/adminStories.routes.js'
 import adminRankingRoutes from './src/routes/adminRanking.routes.js'
 import notificationsRoutes from './src/routes/notifications.routes.js'
 import readerMailsRoutes from './src/routes/readerMails.routes.js'
