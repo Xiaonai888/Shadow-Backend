@@ -3,8 +3,6 @@ import {
   resolveEffectiveAuthorShare,
   splitDistributableRevenue,
 } from './revenueRules.service.js'
-import { getWriterWednesdayAuthorShare } from './writerWednesday.service.js'
-
 const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -537,9 +535,8 @@ export async function createAuthorEarningsFromDiamondUnlock({
     const eventSharePercent = Math.max(
   percentValue(metadata.event_author_share_percent),
   percentValue(metadata.promotion_author_share_percent),
-  getWriterWednesdayAuthorShare(transactionDate)
+  percentValue(metadata.writer_wednesday_author_share_percent)
 )
-
     const shareDecision =
       resolveEffectiveAuthorShare({
         questSharePercent:
