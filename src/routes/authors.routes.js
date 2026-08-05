@@ -93,11 +93,12 @@ import {
 } from '../controllers/authorCommentProtectionSettings.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
-
 import {
+  deleteMyAuthorPageNotification,
   getMyAuthorPageNotifications,
   markAllMyAuthorPageNotificationsRead,
   markMyAuthorPageNotificationRead,
+  markMyAuthorPageNotificationUnread,
 } from '../controllers/authorPageNotifications.controller.js'
 
 const router = express.Router()
@@ -127,6 +128,8 @@ router.get('/me/payment-methods', requireUser, getMyAuthorPaymentMethods)
 router.get('/me/page-notifications', requireUser, getMyAuthorPageNotifications)
 router.patch('/me/page-notifications/read-all', requireUser, markAllMyAuthorPageNotificationsRead)
 router.patch('/me/page-notifications/:id/read', requireUser, markMyAuthorPageNotificationRead)
+router.patch('/me/page-notifications/:id/unread', requireUser, markMyAuthorPageNotificationUnread)
+router.delete('/me/page-notifications/:id', requireUser, deleteMyAuthorPageNotification)
 router.get('/me/story-notifications', requireUser, getMyAuthorStoryNotifications)
 router.patch('/me/story-notifications/read-all', requireUser, markAllMyAuthorStoryNotificationsRead)
 router.patch('/me/story-notifications/:id/read', requireUser, markMyAuthorStoryNotificationRead)
