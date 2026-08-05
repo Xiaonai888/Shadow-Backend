@@ -10,6 +10,8 @@ const NOTIFICATION_TYPES = new Set([
   'system',
 ])
 
+const FREQUENCY_LEVELS = new Set(['more', 'normal', 'less'])
+
 function normalizeNotification(item) {
   return {
     id: item.id,
@@ -243,6 +245,7 @@ export async function updateMyAuthorStoryNotificationPreference(req, res) {
     const userId = req.user?.user_id
     const type = String(req.params.type || '').trim().toLowerCase()
     const isEnabled = req.body?.is_enabled !== false
+    const frequencyLevel = String(req.body?.frequency_level || 'normal').trim().toLowerCase()
 
     if (!userId) {
       return res.status(401).json({ ok: false, message: 'Unauthorized' })
@@ -250,6 +253,10 @@ export async function updateMyAuthorStoryNotificationPreference(req, res) {
 
     if (!NOTIFICATION_TYPES.has(type)) {
       return res.status(400).json({ ok: false, message: 'Notification type is not valid' })
+    }
+
+    if (!FREQUENCY_LEVELS.has(frequencyLevel)) {
+      return res.status(400).json({ ok: false, message: 'Frequency level is not valid' })
     }
 
     const authorPage = await getAuthorPage(userId)
@@ -266,6 +273,7 @@ export async function updateMyAuthorStoryNotificationPreference(req, res) {
           author_user_id: userId,
           type,
           is_enabled: isEnabled,
+          frequency_level: frequencyLevel,
           updated_at: new Date().toISOString(),
         },
         {
