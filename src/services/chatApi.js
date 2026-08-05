@@ -109,6 +109,19 @@ export function createReaderAuthorMessageRequest({
   })
 }
 
+export function createReaderReaderMessageRequest({
+  readerUserId,
+  message,
+}) {
+  return chatRequest('/reader-reader/requests', {
+    method: 'POST',
+    body: {
+      reader_user_id: readerUserId,
+      message,
+    },
+  })
+}
+
 export function sendChatMessage(
   conversationId,
   message
