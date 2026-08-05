@@ -1671,6 +1671,10 @@ writer_wednesday_active:
   writerWednesday.active,
 writer_wednesday_author_share_percent:
   writerWednesday.author_share_percent,
+writer_wednesday_platform_share_percent:
+  writerWednesday.platform_share_percent,
+writer_wednesday_time_zone:
+  writerWednesday.time_zone,
 reader_tier: tier,
     }
 
