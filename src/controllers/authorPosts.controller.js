@@ -1,6 +1,10 @@
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import {
+  createAuthorPageNotificationSafely,
+  deleteAuthorPageNotificationBySourceKeySafely,
+} from '../services/authorPageNotifications.service.js'
+import {
   deleteAuthorPageCommentToTrash,
   getCommentTrashMessage,
   getCommentTrashStatus,
@@ -1120,14 +1124,37 @@ export async function createAuthorPostComment(req, res) {
 
     if (updatePostError) throw updatePostError
 
+    const reader = Array.isArray(createdComment.user)
+  ? createdComment.user[0]
+  : createdComment.user
+const readerName = reader?.name || reader?.username || 'A reader'
+
+    const notificationPayload = {
+  authorPageId: post.author_page_id,
+  authorUserId: post.user_id,
+  type: 'comment',
+  title: `${readerName} ${parentId ? 'replied to' : 'commented on'} your post`,
+  message: text,
+  targetUrl: `/author/page?post=${postId}`,
+  sourceKey: `author-post-comment:${createdComment.id}`,
+
+        metadata: {
+    post_id: postId, comment_id: createdComment.id, parent_id: parentId,
+    reader_id: userId, reader_name: readerName,
+    reader_username: reader?.username || '',
+    reader_avatar_url: reader?.avatar_url || '',
+  },
+}
+
     const isOwner = String(post.user_id || '') === String(userId)
 
     if (!isOwner && post.author_page_id) {
-      await Promise.all([
-        incrementAuthorPageAnalytics(post.author_page_id, 'comments'),
-        incrementAuthorPageAnalytics(post.author_page_id, 'interactions'),
-      ])
-    }
+  await Promise.all([
+    incrementAuthorPageAnalytics(post.author_page_id, 'comments'),
+    incrementAuthorPageAnalytics(post.author_page_id, 'interactions'),
+    createAuthorPageNotificationSafely(notificationPayload),
+  ])
+}
 
     return res.status(201).json({
       ok: true,
@@ -1268,8 +1295,8 @@ export async function deleteOwnAuthorPostComment(req, res) {
 
     const { data: post, error: postError } = await supabase
       .from('author_page_posts')
-      .select('id, user_id')
-      .eq('id', comment.post_id)
+.select('id, author_page_id, user_id')
+.eq('id', comment.post_id)
       .maybeSingle()
 
     if (postError) throw postError
@@ -1322,9 +1349,11 @@ export async function deleteOwnAuthorPostComment(req, res) {
       })
     }
 
-    return res.status(200).json({
-      ok: true,
-      message: 'Comment moved to trash',
+    await deleteAuthorPageNotificationBySourceKeySafely({
+  authorPageId: post.author_page_id,
+  type: 'comment',
+  sourceKey: `author-post-comment:${commentId}`,
+})
       comment_id: result.comment_id,
       deleted_at: result.deleted_at,
       delete_expires_at: result.delete_expires_at,
