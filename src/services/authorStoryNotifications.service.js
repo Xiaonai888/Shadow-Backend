@@ -10,8 +10,41 @@ const NOTIFICATION_TYPES = new Set([
   'system',
 ])
 
+const FREQUENCY_LEVELS = new Set(['more', 'normal', 'less'])
+const FREQUENCY_TYPES = new Set(['comment', 'like', 'echo'])
+
 function cleanText(value, fallback = '') {
   return String(value ?? fallback).trim()
+}
+
+async function shouldThrottleNotification({
+  authorId,
+  type,
+  targetUrl,
+  frequencyLevel,
+}) {
+  if (!FREQUENCY_TYPES.has(type) || frequencyLevel === 'more') return false
+
+  const minutes = frequencyLevel === 'less' ? 60 : 5
+  const since = new Date(Date.now() - minutes * 60 * 1000).toISOString()
+
+  let query = supabase
+    .from('author_story_notifications')
+    .select('id')
+    .eq('author_id', authorId)
+    .eq('type', type)
+    .gte('created_at', since)
+    .order('created_at', { ascending: false })
+    .limit(1)
+
+  if (frequencyLevel === 'normal' && targetUrl) {
+    query = query.eq('target_url', targetUrl)
+  }
+
+  const { data, error } = await query.maybeSingle()
+
+  if (error) throw error
+  return Boolean(data)
 }
 
 export async function createAuthorStoryNotification({
@@ -26,7 +59,9 @@ export async function createAuthorStoryNotification({
 }) {
   const cleanAuthorId = cleanText(authorId)
   const cleanTitle = cleanText(title)
-  const cleanType = NOTIFICATION_TYPES.has(type) ? type : 'system'
+  const requestedType = cleanText(type, 'system').toLowerCase()
+  const cleanType = NOTIFICATION_TYPES.has(requestedType) ? requestedType : 'system'
+  const cleanTargetUrl = cleanText(targetUrl)
 
   if (!cleanAuthorId || !cleanTitle) return null
 
@@ -47,7 +82,7 @@ export async function createAuthorStoryNotification({
 
   const { data: preference, error: preferenceError } = await supabase
     .from('author_story_notification_preferences')
-    .select('is_enabled')
+    .select('is_enabled, frequency_level')
     .eq('author_id', cleanAuthorId)
     .eq('type', cleanType)
     .maybeSingle()
@@ -55,13 +90,31 @@ export async function createAuthorStoryNotification({
   if (preferenceError) throw preferenceError
   if (preference?.is_enabled === false) return null
 
+  const requestedFrequency = cleanText(
+    preference?.frequency_level,
+    'normal'
+  ).toLowerCase()
+
+  const frequencyLevel = FREQUENCY_LEVELS.has(requestedFrequency)
+    ? requestedFrequency
+    : 'normal'
+
+  const shouldThrottle = await shouldThrottleNotification({
+    authorId: cleanAuthorId,
+    type: cleanType,
+    targetUrl: cleanTargetUrl,
+    frequencyLevel,
+  })
+
+  if (shouldThrottle) return null
+
   const row = {
     author_id: cleanAuthorId,
     author_user_id: cleanAuthorUserId,
     type: cleanType,
     title: cleanTitle,
     message: cleanText(message),
-    target_url: cleanText(targetUrl),
+    target_url: cleanTargetUrl,
     source_key: cleanText(sourceKey) || null,
     metadata: metadata && typeof metadata === 'object' ? metadata : {},
     is_read: false,
