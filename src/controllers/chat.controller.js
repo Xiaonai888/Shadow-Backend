@@ -1,6 +1,7 @@
 import {
   ChatServiceError,
   createReaderAuthorRequest,
+  createReaderReaderRequest,
   decideMessageRequest,
   getConversationMessages,
   listMyConversations,
@@ -52,6 +53,33 @@ export async function createReaderAuthorRequestController(
       res,
       error,
       'CREATE READER AUTHOR CHAT REQUEST ERROR'
+    )
+  }
+}
+
+export async function createReaderReaderRequestController(
+  req,
+  res
+) {
+  try {
+    const result = await createReaderReaderRequest({
+      senderUserId: req.user?.user_id,
+      targetUserId:
+        req.body?.reader_user_id ||
+        req.body?.readerUserId,
+      message: req.body?.message,
+    })
+
+    return res.status(result.created ? 201 : 200).json({
+      ok: true,
+      created: result.created,
+      conversation: result.conversation,
+    })
+  } catch (error) {
+    return handleChatError(
+      res,
+      error,
+      'CREATE READER READER CHAT REQUEST ERROR'
     )
   }
 }
