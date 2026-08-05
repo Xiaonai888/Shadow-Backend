@@ -1353,6 +1353,10 @@ export async function updateEpisodeStatus(req, res) {
 
     const updatePayload = {
   status,
+  is_adult: cleanBoolean(
+    req.body.is_adult ?? req.body.isAdult,
+    Boolean(episode.is_adult)
+  ),
   is_free_published: isFreePublished,
   page_count: isManga ? pages.length : Number(episode.page_count || 0),
   updated_at: new Date().toISOString(),
