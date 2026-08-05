@@ -8,7 +8,11 @@ import {
   markConversationReadController,
   sendConversationMessageController,
 } from '../controllers/chat.controller.js'
-import { blockConversationController } from '../controllers/chatBlock.controller.js'
+import {
+  blockConversationController,
+  getConversationBlockStatusController,
+  unblockConversationController,
+} from '../controllers/chatBlock.controller.js'
 import { searchChatUsersController } from '../controllers/chatUserSearch.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
@@ -65,6 +69,12 @@ router.get(
   getConversationMessagesController
 )
 
+router.get(
+  '/conversations/:conversationId/block',
+  chatReadGuard,
+  getConversationBlockStatusController
+)
+
 router.post(
   '/conversations/:conversationId/messages',
   chatWriteGuard,
@@ -75,6 +85,12 @@ router.patch(
   '/conversations/:conversationId/block',
   chatWriteGuard,
   blockConversationController
+)
+
+router.delete(
+  '/conversations/:conversationId/block',
+  chatWriteGuard,
+  unblockConversationController
 )
 
 router.patch(
