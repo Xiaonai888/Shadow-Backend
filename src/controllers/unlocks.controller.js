@@ -12,6 +12,7 @@ import {
   isStoryVisibleToReader,
 } from '../services/storyAgeAccess.service.js'
 import { applyBlackSundayDiscount } from '../services/blackSunday.service.js'
+import { getWriterWednesdayEvent } from '../services/writerWednesday.service.js'
 import { getAdditiveDiscountResult } from '../services/revenueRules.service.js'
 
 const CAMBODIA_TIME_OFFSET_MS =
@@ -1629,6 +1630,9 @@ export async function unlockEpisodePackageWithDiamonds(
         0,
         option.requested_count
       )
+
+    const writerWednesday =
+  getWriterWednesdayEvent()
     const metadata = {
       purchase_key: purchaseKey,
       package_key: packageKey,
@@ -1655,10 +1659,19 @@ export async function unlockEpisodePackageWithDiamonds(
         option.black_sunday_discount_percent,
       black_sunday_discount_amount:
         option.black_sunday_discount_amount,
-      event_key: option.event?.key || '',
-      event_time_zone:
-        option.event?.time_zone || '',
-      reader_tier: tier,
+      event_key: writerWednesday.active
+  ? writerWednesday.key
+  : option.event?.key || '',
+event_time_zone: writerWednesday.active
+  ? writerWednesday.time_zone
+  : option.event?.time_zone || '',
+event_author_share_percent:
+  writerWednesday.author_share_percent,
+writer_wednesday_active:
+  writerWednesday.active,
+writer_wednesday_author_share_percent:
+  writerWednesday.author_share_percent,
+reader_tier: tier,
     }
 
     const purchase =
