@@ -1290,6 +1290,12 @@ async function createUnlocksAndTransactions({
 
   return unlocks || []
 }
+export function getWriterWednesdayStatus(req, res) {
+  return res.status(200).json({
+    ok: true,
+    event: getWriterWednesdayEvent(),
+  })
+}
 
 export async function getEpisodeUnlockStatus(req, res) {
   try {
