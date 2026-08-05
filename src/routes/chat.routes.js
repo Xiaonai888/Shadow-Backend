@@ -8,6 +8,7 @@ import {
   markConversationReadController,
   sendConversationMessageController,
 } from '../controllers/chat.controller.js'
+import { searchChatUsersController } from '../controllers/chatUserSearch.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
 
@@ -43,6 +44,12 @@ router.post(
   '/reader-reader/requests',
   chatRequestGuard,
   createReaderReaderRequestController
+)
+
+router.get(
+  '/users/search',
+  chatReadGuard,
+  searchChatUsersController
 )
 
 router.get(
