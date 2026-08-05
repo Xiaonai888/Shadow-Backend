@@ -2,6 +2,10 @@ import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import {
+  createAuthorPageNotificationSafely,
+  deleteAuthorPageNotificationBySourceKeySafely,
+} from '../services/authorPageNotifications.service.js'
+import {
   applyAdultStoryVisibility,
   getReaderAgeAccess,
 } from '../services/storyAgeAccess.service.js'
@@ -822,6 +826,32 @@ export async function followAuthorPage(req, res) {
       )
     }
 
+    if (followCreated) {
+  const { data: reader, error: readerError } = await supabase
+    .from('users')
+    .select('id, name, username, avatar_url')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (readerError) throw readerError
+  const readerName = reader?.name || reader?.username || 'A reader'
+
+        await createAuthorPageNotificationSafely({
+    authorPageId: authorPage.id,
+    authorUserId: authorPage.user_id,
+    type: 'follower',
+    title: `${readerName} followed your author page`,
+    targetUrl: `/author/page/${authorPage.page_username}/followers`,
+    sourceKey: `author-page-follow:${authorPage.id}:${userId}`,
+
+              metadata: {
+      reader_id: userId, reader_name: readerName,
+      reader_username: reader?.username || '',
+      reader_avatar_url: reader?.avatar_url || '',
+    },
+  })
+}
+
     const updatedPage = await syncAuthorFollowerCount(
       authorPage.id
     )
@@ -879,6 +909,12 @@ export async function unfollowAuthorPage(req, res) {
       .eq('follower_user_id', userId)
 
     if (deleteError) throw deleteError
+
+    await deleteAuthorPageNotificationBySourceKeySafely({
+  authorPageId: authorPage.id,
+  type: 'follower',
+  sourceKey: `author-page-follow:${authorPage.id}:${userId}`,
+})
 
     const updatedPage = await syncAuthorFollowerCount(authorPage.id)
 
