@@ -580,6 +580,42 @@ export async function getAuthorPageReviews(req, res) {
 
     if (reviewError) throw reviewError
 
+    const { data: reviewer, error: reviewerError } = await supabase
+  .from('users')
+  .select('id, name, username, avatar_url')
+  .eq('id', userId)
+  .maybeSingle()
+
+if (reviewerError) throw reviewerError
+    const reviewerName =
+  reviewer?.name || reviewer?.username || 'A reader'
+const sourceKey = `author-page-review:${authorPage.id}:${userId}`
+
+await deleteAuthorPageNotificationBySourceKeySafely({
+  authorPageId: authorPage.id,
+  type: 'review',
+  sourceKey,
+})
+
+    await createAuthorPageNotificationSafely({
+  authorPageId: authorPage.id,
+  authorUserId: authorPage.user_id,
+  type: 'review',
+  title: `${reviewerName} ${isRecommended ? 'recommended' : 'did not recommend'} your page`,
+  message: reviewText,
+  targetUrl: `/author/page/${authorPage.page_username}`,
+  sourceKey,
+
+        metadata: {
+    review_id: review.id,
+    is_recommended: isRecommended,
+    reviewer_id: userId,
+    reviewer_name: reviewerName,
+    reviewer_username: reviewer?.username || '',
+    reviewer_avatar_url: reviewer?.avatar_url || '',
+  },
+})
+
     const reviewerIds = [...new Set((reviewRows || []).map((item) => item.reviewer_user_id).filter(Boolean))]
     let usersById = new Map()
 
@@ -684,6 +720,12 @@ export async function upsertMyAuthorPageReview(req, res) {
       .single()
 
     if (reviewError) throw reviewError
+
+    await deleteAuthorPageNotificationBySourceKeySafely({
+  authorPageId: authorPage.id,
+  type: 'review',
+  sourceKey: `author-page-review:${authorPage.id}:${userId}`,
+})
 
     return res.status(200).json({
       ok: true,
