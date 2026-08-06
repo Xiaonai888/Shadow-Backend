@@ -19,6 +19,11 @@ const FREQUENCY_LEVELS = new Set([
   'less',
 ])
 
+const NOTIFICATION_PAGE_SIZE = 30
+const RETENTION_DAYS = 30
+const RETAIN_MINIMUM = 30
+const CLEANUP_BATCH_SIZE = 1000
+
 function normalizeNotification(item) {
   if (!item) return null
 
@@ -51,6 +56,97 @@ function normalizePreferences(rows = []) {
   }
 
   return preferences
+}
+
+function parseBeforeCursor(value) {
+  const cleanValue = String(
+    value || ''
+  ).trim()
+
+  if (!cleanValue) return ''
+
+  const parsed = new Date(cleanValue)
+
+  if (Number.isNaN(parsed.getTime())) {
+    return null
+  }
+
+  return parsed.toISOString()
+}
+
+async function cleanupOldAuthorPageNotifications(
+  authorPageId
+) {
+  const cutoff = new Date(
+    Date.now() -
+      RETENTION_DAYS *
+        24 *
+        60 *
+        60 *
+        1000
+  ).toISOString()
+
+  const {
+    data: newestRows,
+    error: newestError,
+  } = await supabase
+    .from('author_page_notifications')
+    .select('id')
+    .eq(
+      'author_page_id',
+      authorPageId
+    )
+    .order('created_at', {
+      ascending: false,
+    })
+    .limit(RETAIN_MINIMUM)
+
+  if (newestError) throw newestError
+
+  const keepIds = new Set(
+    (newestRows || []).map((item) =>
+      String(item.id)
+    )
+  )
+
+  const {
+    data: oldRows,
+    error: oldRowsError,
+  } = await supabase
+    .from('author_page_notifications')
+    .select('id')
+    .eq(
+      'author_page_id',
+      authorPageId
+    )
+    .lt('created_at', cutoff)
+    .order('created_at', {
+      ascending: true,
+    })
+    .limit(CLEANUP_BATCH_SIZE)
+
+  if (oldRowsError) {
+    throw oldRowsError
+  }
+
+  const deleteIds = (oldRows || [])
+    .map((item) => item.id)
+    .filter(
+      (id) =>
+        !keepIds.has(String(id))
+    )
+
+  if (!deleteIds.length) return
+
+  const { error: deleteError } =
+    await supabase
+      .from(
+        'author_page_notifications'
+      )
+      .delete()
+      .in('id', deleteIds)
+
+  if (deleteError) throw deleteError
 }
 
 async function getMyAuthorPageByUserId(userId) {
@@ -104,10 +200,13 @@ export async function getMyAuthorPageNotifications(
   try {
     const userId = req.user?.user_id
     const limit = Math.min(
-      50,
+      NOTIFICATION_PAGE_SIZE,
       Math.max(
         1,
-        Number(req.query.limit || 30)
+        Number(
+          req.query.limit ||
+            NOTIFICATION_PAGE_SIZE
+        )
       )
     )
     const type = String(
@@ -118,6 +217,9 @@ export async function getMyAuthorPageNotifications(
     const unreadOnly =
       String(req.query.unread || '')
         .toLowerCase() === 'true'
+    const before = parseBeforeCursor(
+      req.query.before
+    )
 
     if (!userId) {
       return res.status(401).json({
@@ -126,27 +228,62 @@ export async function getMyAuthorPageNotifications(
       })
     }
 
+    if (before === null) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          'Notification cursor is not valid',
+      })
+    }
+
     const authorPage =
-      await getMyAuthorPageByUserId(userId)
+      await getMyAuthorPageByUserId(
+        userId
+      )
 
     if (!authorPage) {
       return res.status(404).json({
         ok: false,
-        message: 'Author page not found',
+        message:
+          'Author page not found',
       })
     }
 
+    await cleanupOldAuthorPageNotifications(
+      authorPage.id
+    ).catch((error) => {
+      console.error(
+        'CLEANUP AUTHOR PAGE NOTIFICATIONS ERROR:',
+        error
+      )
+    })
+
     let query = supabase
-      .from('author_page_notifications')
+      .from(
+        'author_page_notifications'
+      )
       .select('*')
-      .eq('author_page_id', authorPage.id)
+      .eq(
+        'author_page_id',
+        authorPage.id
+      )
       .order('created_at', {
         ascending: false,
       })
-      .limit(limit)
+      .limit(limit + 1)
+
+    if (before) {
+      query = query.lt(
+        'created_at',
+        before
+      )
+    }
 
     if (type !== 'all') {
-      query = query.eq('type', type)
+      query = query.eq(
+        'type',
+        type
+      )
     }
 
     if (unreadOnly) {
@@ -169,7 +306,9 @@ export async function getMyAuthorPageNotifications(
     ] = await Promise.all([
       query,
       supabase
-        .from('author_page_notifications')
+        .from(
+          'author_page_notifications'
+        )
         .select('id', {
           count: 'exact',
           head: true,
@@ -198,17 +337,38 @@ export async function getMyAuthorPageNotifications(
       throw preferenceError
     }
 
+    const rows = data || []
+    const hasMore =
+      rows.length > limit
+    const visibleRows =
+      rows.slice(0, limit)
+    const nextCursor =
+      hasMore &&
+      visibleRows.length
+        ? visibleRows[
+            visibleRows.length - 1
+          ].created_at
+        : null
+
     return res.status(200).json({
       ok: true,
-      notifications: (data || []).map(
-        normalizeNotification
-      ),
+      notifications:
+        visibleRows.map(
+          normalizeNotification
+        ),
       unread_count:
         Number(unreadCount || 0),
       preferences:
         normalizePreferences(
           preferenceRows || []
         ),
+      has_more: hasMore,
+      next_cursor: nextCursor,
+      page_size: limit,
+      retention_days:
+        RETENTION_DAYS,
+      minimum_retained:
+        RETAIN_MINIMUM,
     })
   } catch (error) {
     console.error(
