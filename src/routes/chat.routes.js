@@ -13,6 +13,10 @@ import {
   getConversationBlockStatusController,
   unblockConversationController,
 } from '../controllers/chatBlock.controller.js'
+import {
+  listChatQuickContactsController,
+  touchChatPresenceController,
+} from '../controllers/chatQuickContacts.controller.js'
 import { searchChatUsersController } from '../controllers/chatUserSearch.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
@@ -55,6 +59,18 @@ router.get(
   '/users/search',
   chatReadGuard,
   searchChatUsersController
+)
+
+router.get(
+  '/quick-contacts',
+  chatReadGuard,
+  listChatQuickContactsController
+)
+
+router.patch(
+  '/presence',
+  chatWriteGuard,
+  touchChatPresenceController
 )
 
 router.get(
