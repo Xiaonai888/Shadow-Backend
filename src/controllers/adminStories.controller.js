@@ -119,6 +119,7 @@ function publicStory(story, author = null) {
     author_id: story.author_id,
     user_id: story.user_id,
     title: story.title,
+    story_type: story.story_type || 'novel',
     story_language: story.story_language,
     main_genre: story.main_genre,
     story_status: story.story_status || 'New',
