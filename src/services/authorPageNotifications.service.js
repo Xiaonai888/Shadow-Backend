@@ -17,6 +17,12 @@ function cleanText(value, fallback = '') {
   return String(value ?? fallback).trim()
 }
 
+function cleanMetadata(value) {
+  return value && typeof value === 'object'
+    ? { ...value }
+    : {}
+}
+
 async function getAuthorPageOwner(authorPageId) {
   const { data, error } = await supabase
     .from('author_pages')
@@ -27,6 +33,75 @@ async function getAuthorPageOwner(authorPageId) {
 
   if (error) throw error
   return data || null
+}
+
+async function findNotificationBySourceKey({
+  authorPageId,
+  type,
+  sourceKey,
+}) {
+  if (!sourceKey) return null
+
+  const candidateTypes =
+    type === 'system'
+      ? ['system']
+      : [type, 'system']
+
+  const { data, error } = await supabase
+    .from('author_page_notifications')
+    .select('*')
+    .eq('author_page_id', authorPageId)
+    .in('type', candidateTypes)
+    .order('created_at', { ascending: false })
+    .limit(200)
+
+  if (error) throw error
+
+  return (
+    (data || []).find((item) => {
+      const metadata = cleanMetadata(item.metadata)
+      const savedType = cleanText(
+        metadata.notification_type || item.type
+      )
+
+      return (
+        cleanText(metadata.source_key) === sourceKey &&
+        savedType === type
+      )
+    }) || null
+  )
+}
+
+async function insertNotification({
+  authorPageId,
+  authorUserId,
+  storedType,
+  originalType,
+  title,
+  message,
+  targetUrl,
+  metadata,
+}) {
+  const { data, error } = await supabase
+    .from('author_page_notifications')
+    .insert({
+      author_page_id: authorPageId,
+      user_id: authorUserId,
+      type: storedType,
+      title,
+      message,
+      target_url: targetUrl,
+      metadata: {
+        ...metadata,
+        notification_type: originalType,
+      },
+      is_read: false,
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+  return data
 }
 
 export async function createAuthorPageNotification({
@@ -41,66 +116,89 @@ export async function createAuthorPageNotification({
 }) {
   const cleanAuthorPageId = cleanText(authorPageId)
   const cleanTitle = cleanText(title)
-  const cleanType = AUTHOR_PAGE_NOTIFICATION_TYPES.has(type)
-    ? type
-    : 'system'
+  const cleanType =
+    AUTHOR_PAGE_NOTIFICATION_TYPES.has(type)
+      ? type
+      : 'system'
 
   if (!cleanAuthorPageId || !cleanTitle) return null
 
   let cleanAuthorUserId = cleanText(authorUserId)
 
   if (!cleanAuthorUserId) {
-    const authorPage = await getAuthorPageOwner(cleanAuthorPageId)
+    const authorPage = await getAuthorPageOwner(
+      cleanAuthorPageId
+    )
     cleanAuthorUserId = cleanText(authorPage?.user_id)
   }
 
   if (!cleanAuthorUserId) return null
 
   const cleanSourceKey = cleanText(sourceKey)
-  const cleanMetadata =
-    metadata && typeof metadata === 'object'
-      ? { ...metadata }
-      : {}
+  const cleanNotificationMetadata = {
+    ...cleanMetadata(metadata),
+    ...(cleanSourceKey
+      ? { source_key: cleanSourceKey }
+      : {}),
+  }
 
   if (cleanSourceKey) {
-    cleanMetadata.source_key = cleanSourceKey
+    const existing =
+      await findNotificationBySourceKey({
+        authorPageId: cleanAuthorPageId,
+        type: cleanType,
+        sourceKey: cleanSourceKey,
+      })
 
-    const { data: existing, error: existingError } = await supabase
-      .from('author_page_notifications')
-      .select('*')
-      .eq('author_page_id', cleanAuthorPageId)
-      .eq('type', cleanType)
-      .contains('metadata', { source_key: cleanSourceKey })
-      .maybeSingle()
-
-    if (existingError) throw existingError
     if (existing) return existing
   }
 
-  const { data, error } = await supabase
-    .from('author_page_notifications')
-    .insert({
-      author_page_id: cleanAuthorPageId,
-      user_id: cleanAuthorUserId,
-      type: cleanType,
-      title: cleanTitle,
-      message: cleanText(message),
-      target_url: cleanText(targetUrl),
-      metadata: cleanMetadata,
-      is_read: false,
-    })
-    .select()
-    .single()
+  const payload = {
+    authorPageId: cleanAuthorPageId,
+    authorUserId: cleanAuthorUserId,
+    originalType: cleanType,
+    title: cleanTitle,
+    message: cleanText(message),
+    targetUrl: cleanText(targetUrl),
+    metadata: cleanNotificationMetadata,
+  }
 
-  if (error) throw error
-  return data
+  try {
+    return await insertNotification({
+      ...payload,
+      storedType: cleanType,
+    })
+  } catch (error) {
+    if (cleanType === 'system') throw error
+
+    console.warn(
+      `AUTHOR PAGE NOTIFICATION TYPE FALLBACK: ${cleanType}`,
+      error
+    )
+
+    return insertNotification({
+      ...payload,
+      storedType: 'system',
+    })
+  }
 }
 
-export async function createAuthorPageNotificationSafely(payload) {
+export async function createAuthorPageNotificationSafely(
+  payload
+) {
   try {
     return await createAuthorPageNotification(payload)
   } catch (error) {
-    console.error('CREATE AUTHOR PAGE NOTIFICATION ERROR:', error)
+    console.error(
+      'CREATE AUTHOR PAGE NOTIFICATION ERROR:',
+      {
+        message: error?.message || '',
+        code: error?.code || '',
+        details: error?.details || '',
+        hint: error?.hint || '',
+        payload,
+      }
+    )
     return null
   }
 }
@@ -113,21 +211,72 @@ export async function deleteAuthorPageNotificationBySourceKeySafely({
   try {
     const cleanAuthorPageId = cleanText(authorPageId)
     const cleanSourceKey = cleanText(sourceKey)
-    const cleanType = AUTHOR_PAGE_NOTIFICATION_TYPES.has(type)
-      ? type
-      : ''
+    const cleanType =
+      AUTHOR_PAGE_NOTIFICATION_TYPES.has(type)
+        ? type
+        : ''
 
-    if (!cleanAuthorPageId || !cleanSourceKey || !cleanType) return
+    if (
+      !cleanAuthorPageId ||
+      !cleanSourceKey ||
+      !cleanType
+    ) {
+      return
+    }
 
-    const { error } = await supabase
+    const candidateTypes =
+      cleanType === 'system'
+        ? ['system']
+        : [cleanType, 'system']
+
+    const { data, error } = await supabase
       .from('author_page_notifications')
-      .delete()
+      .select('id, type, metadata')
       .eq('author_page_id', cleanAuthorPageId)
-      .eq('type', cleanType)
-      .contains('metadata', { source_key: cleanSourceKey })
+      .in('type', candidateTypes)
+      .order('created_at', { ascending: false })
+      .limit(200)
 
     if (error) throw error
+
+    const matchingIds = (data || [])
+      .filter((item) => {
+        const itemMetadata =
+          cleanMetadata(item.metadata)
+        const savedType = cleanText(
+          itemMetadata.notification_type ||
+            item.type
+        )
+
+        return (
+          cleanText(itemMetadata.source_key) ===
+            cleanSourceKey &&
+          savedType === cleanType
+        )
+      })
+      .map((item) => item.id)
+      .filter(Boolean)
+
+    if (!matchingIds.length) return
+
+    const { error: deleteError } = await supabase
+      .from('author_page_notifications')
+      .delete()
+      .in('id', matchingIds)
+
+    if (deleteError) throw deleteError
   } catch (error) {
-    console.error('DELETE AUTHOR PAGE NOTIFICATION ERROR:', error)
+    console.error(
+      'DELETE AUTHOR PAGE NOTIFICATION ERROR:',
+      {
+        message: error?.message || '',
+        code: error?.code || '',
+        details: error?.details || '',
+        hint: error?.hint || '',
+        authorPageId,
+        type,
+        sourceKey,
+      }
+    )
   }
 }
