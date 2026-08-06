@@ -83,7 +83,7 @@ async function getConversation(conversationId) {
   const { data, error } = await supabase
     .from('chat_conversations')
     .select(
-      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, created_at, updated_at'
+      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, cleared_for_all_at, created_at, updated_at'
     )
     .eq('id', conversationId)
     .maybeSingle()
@@ -103,7 +103,7 @@ async function getViewerParticipant(conversationId, userId) {
   const { data, error } = await supabase
     .from('chat_participants')
     .select(
-      'id, conversation_id, user_id, participant_role, last_read_at, muted_at, deleted_at, created_at'
+      'id, conversation_id, user_id, participant_role, last_read_at, muted_at, archived_at, deleted_at, cleared_at, created_at'
     )
     .eq('conversation_id', conversationId)
     .eq('user_id', userId)
@@ -142,7 +142,7 @@ async function getOtherParticipant(conversationId, userId) {
   const { data, error } = await supabase
     .from('chat_participants')
     .select(
-      'id, conversation_id, user_id, participant_role, last_read_at, muted_at, deleted_at, created_at'
+      'id, conversation_id, user_id, participant_role, last_read_at, muted_at, archived_at, deleted_at, cleared_at, created_at'
     )
     .eq('conversation_id', conversationId)
     .neq('user_id', userId)
@@ -224,44 +224,148 @@ async function findBlockBetween(firstUserId, secondUserId) {
   return firstBlock || secondBlock || null
 }
 
-async function getLatestMessage(conversationId) {
-  const { data, error } = await supabase
-    .from('chat_messages')
-    .select(
-      'id, sender_user_id, message_type, body, is_request_message, created_at'
+function getVisibilityCutoff(
+  conversation,
+  participant
+) {
+  const values = [
+    conversation?.cleared_for_all_at,
+    participant?.cleared_at,
+  ]
+    .filter(Boolean)
+    .map((value) => new Date(value))
+    .filter(
+      (value) =>
+        !Number.isNaN(value.getTime())
     )
-    .eq('conversation_id', conversationId)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
 
-  if (error) {
-    throw databaseFailure(error, 'Failed to load latest message')
+  if (!values.length) {
+    return null
   }
 
-  return data || null
+  return new Date(
+    Math.max(
+      ...values.map((value) =>
+        value.getTime()
+      )
+    )
+  ).toISOString()
 }
 
-async function getUnreadCount(
-  conversationId,
-  userId,
-  lastReadAt
+function formatDeletedMessage(message) {
+  const isDeleted = Boolean(
+    message?.deleted_at
+  )
+
+  return {
+    ...message,
+    body: isDeleted
+      ? ''
+      : message?.body || '',
+    is_deleted: isDeleted,
+  }
+}
+
+async function getLatestMessage(
+  conversation,
+  viewerParticipant
 ) {
   let query = supabase
     .from('chat_messages')
-    .select('id', { count: 'exact', head: true })
-    .eq('conversation_id', conversationId)
-    .neq('sender_user_id', userId)
+    .select(
+      'id, conversation_id, sender_user_id, message_type, body, is_request_message, reply_to_message_id, forwarded_from_message_id, forwarded_from_user_id, edited_at, deleted_at, created_at'
+    )
+    .eq(
+      'conversation_id',
+      conversation.id
+    )
+    .order('created_at', {
+      ascending: false,
+    })
+    .limit(1)
+
+  const visibilityCutoff =
+    getVisibilityCutoff(
+      conversation,
+      viewerParticipant
+    )
+
+  if (visibilityCutoff) {
+    query = query.gt(
+      'created_at',
+      visibilityCutoff
+    )
+  }
+
+  const { data, error } =
+    await query.maybeSingle()
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to load latest message'
+    )
+  }
+
+  return data
+    ? formatDeletedMessage(data)
+    : null
+}
+
+async function getUnreadCount(
+  conversation,
+  viewerParticipant
+) {
+  let query = supabase
+    .from('chat_messages')
+    .select('id', {
+      count: 'exact',
+      head: true,
+    })
+    .eq(
+      'conversation_id',
+      conversation.id
+    )
+    .neq(
+      'sender_user_id',
+      viewerParticipant.user_id
+    )
     .is('deleted_at', null)
 
-  if (lastReadAt) {
-    query = query.gt('created_at', lastReadAt)
+  const readCutoffs = [
+    viewerParticipant.last_read_at,
+    getVisibilityCutoff(
+      conversation,
+      viewerParticipant
+    ),
+  ]
+    .filter(Boolean)
+    .map((value) => new Date(value))
+    .filter(
+      (value) =>
+        !Number.isNaN(value.getTime())
+    )
+
+  if (readCutoffs.length) {
+    query = query.gt(
+      'created_at',
+      new Date(
+        Math.max(
+          ...readCutoffs.map((value) =>
+            value.getTime()
+          )
+        )
+      ).toISOString()
+    )
   }
 
   const { count, error } = await query
 
   if (error) {
-    throw databaseFailure(error, 'Failed to count unread messages')
+    throw databaseFailure(
+      error,
+      'Failed to count unread messages'
+    )
   }
 
   return Number(count || 0)
@@ -280,11 +384,13 @@ async function buildConversationSummary(
       conversation.author_page_id
         ? getAuthorPage(conversation.author_page_id)
         : Promise.resolve(null),
-      getLatestMessage(conversation.id),
+      getLatestMessage(
+        conversation,
+        viewerParticipant
+      ),
       getUnreadCount(
-        conversation.id,
-        viewerParticipant.user_id,
-        viewerParticipant.last_read_at
+        conversation,
+        viewerParticipant
       ),
     ])
 
@@ -325,6 +431,9 @@ async function buildConversationSummary(
       String(conversation.created_by_user_id) !==
         String(viewerParticipant.user_id),
     last_read_at: viewerParticipant.last_read_at,
+    cleared_at: viewerParticipant.cleared_at || null,
+    cleared_for_all_at:
+      conversation.cleared_for_all_at || null,
     last_message_at: conversation.last_message_at,
     created_at: conversation.created_at,
     updated_at: conversation.updated_at,
@@ -335,17 +444,52 @@ async function getConversationSummaryForUser(
   conversationId,
   userId
 ) {
-  const { conversation, participant } =
-    await getConversationAccess(conversationId, userId)
+  const safeConversationId = requireUuid(
+    conversationId,
+    'Conversation ID'
+  )
+  const safeUserId = requireUuid(
+    userId,
+    'User ID'
+  )
 
-  return buildConversationSummary(conversation, participant)
+  const { error: restoreError } =
+    await supabase
+      .from('chat_participants')
+      .update({
+        archived_at: null,
+        deleted_at: null,
+      })
+      .eq(
+        'conversation_id',
+        safeConversationId
+      )
+      .eq('user_id', safeUserId)
+
+  if (restoreError) {
+    throw databaseFailure(
+      restoreError,
+      'Failed to restore conversation'
+    )
+  }
+
+  const { conversation, participant } =
+    await getConversationAccess(
+      safeConversationId,
+      safeUserId
+    )
+
+  return buildConversationSummary(
+    conversation,
+    participant
+  )
 }
 
 async function getExistingDirectConversation(directKey) {
   const { data, error } = await supabase
     .from('chat_conversations')
     .select(
-      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, created_at, updated_at'
+      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, cleared_for_all_at, created_at, updated_at'
     )
     .eq('direct_key', directKey)
     .maybeSingle()
@@ -438,7 +582,7 @@ export async function createReaderAuthorRequest({
       request_status: 'pending',
     })
     .select(
-      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, created_at, updated_at'
+      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, cleared_for_all_at, created_at, updated_at'
     )
     .single()
 
@@ -594,7 +738,7 @@ export async function createReaderReaderRequest({
       request_status: 'pending',
     })
     .select(
-      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, created_at, updated_at'
+      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, cleared_for_all_at, created_at, updated_at'
     )
     .single()
 
@@ -700,7 +844,7 @@ export async function listMyConversations({
     await supabase
       .from('chat_participants')
       .select(
-        'id, conversation_id, user_id, participant_role, last_read_at, muted_at, deleted_at, created_at'
+        'id, conversation_id, user_id, participant_role, last_read_at, muted_at, archived_at, deleted_at, cleared_at, created_at'
       )
       .eq('user_id', safeUserId)
       .is('deleted_at', null)
@@ -724,7 +868,7 @@ export async function listMyConversations({
   let conversationQuery = supabase
     .from('chat_conversations')
     .select(
-      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, created_at, updated_at'
+      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, cleared_for_all_at, created_at, updated_at'
     )
     .in('id', conversationIds)
     .order('last_message_at', {
@@ -775,7 +919,10 @@ export async function getConversationMessages({
   before,
   limit,
 }) {
-  const safeUserId = requireUuid(userId, 'User ID')
+  const safeUserId = requireUuid(
+    userId,
+    'User ID'
+  )
   const {
     conversation,
     participant,
@@ -788,21 +935,41 @@ export async function getConversationMessages({
     100,
     Math.max(1, Number(limit) || 50)
   )
+  const visibilityCutoff =
+    getVisibilityCutoff(
+      conversation,
+      participant
+    )
 
   let messageQuery = supabase
     .from('chat_messages')
     .select(
-      'id, conversation_id, sender_user_id, message_type, body, is_request_message, edited_at, created_at'
+      'id, conversation_id, sender_user_id, message_type, body, is_request_message, reply_to_message_id, forwarded_from_message_id, forwarded_from_user_id, edited_at, deleted_at, created_at'
     )
-    .eq('conversation_id', conversation.id)
-    .is('deleted_at', null)
-    .order('created_at', { ascending: false })
+    .eq(
+      'conversation_id',
+      conversation.id
+    )
+    .order('created_at', {
+      ascending: false,
+    })
     .limit(safeLimit)
+
+  if (visibilityCutoff) {
+    messageQuery = messageQuery.gt(
+      'created_at',
+      visibilityCutoff
+    )
+  }
 
   if (before) {
     const beforeDate = new Date(before)
 
-    if (Number.isNaN(beforeDate.getTime())) {
+    if (
+      Number.isNaN(
+        beforeDate.getTime()
+      )
+    ) {
       fail(
         400,
         'INVALID_CURSOR',
@@ -816,8 +983,10 @@ export async function getConversationMessages({
     )
   }
 
-  const { data: messageRows, error: messageError } =
-    await messageQuery
+  const {
+    data: messageRows,
+    error: messageError,
+  } = await messageQuery
 
   if (messageError) {
     throw databaseFailure(
@@ -826,23 +995,83 @@ export async function getConversationMessages({
     )
   }
 
-  const messages = [...(messageRows || [])].reverse()
-  const senderIds = [
+  const messages = [
+    ...(messageRows || []),
+  ].reverse()
+  const replyMessageIds = [
     ...new Set(
       messages
-        .map((item) => item.sender_user_id)
+        .map(
+          (item) =>
+            item.reply_to_message_id
+        )
         .filter(Boolean)
     ),
   ]
+  let replyMap = new Map()
 
+  if (replyMessageIds.length) {
+    const {
+      data: replyRows,
+      error: replyError,
+    } = await supabase
+      .from('chat_messages')
+      .select(
+        'id, conversation_id, sender_user_id, message_type, body, edited_at, deleted_at, created_at'
+      )
+      .eq(
+        'conversation_id',
+        conversation.id
+      )
+      .in('id', replyMessageIds)
+
+    if (replyError) {
+      throw databaseFailure(
+        replyError,
+        'Failed to load replied messages'
+      )
+    }
+
+    replyMap = new Map(
+      (replyRows || []).map((item) => [
+        String(item.id),
+        item,
+      ])
+    )
+  }
+
+  const senderIds = [
+    ...new Set(
+      [
+        ...messages.map(
+          (item) =>
+            item.sender_user_id
+        ),
+        ...messages.map(
+          (item) =>
+            item.forwarded_from_user_id
+        ),
+        ...Array.from(
+          replyMap.values()
+        ).map(
+          (item) =>
+            item.sender_user_id
+        ),
+      ].filter(Boolean)
+    ),
+  ]
   let senderMap = new Map()
 
   if (senderIds.length) {
-    const { data: senders, error: senderError } =
-      await supabase
-        .from('users')
-        .select('id, name, username, avatar_url')
-        .in('id', senderIds)
+    const {
+      data: senders,
+      error: senderError,
+    } = await supabase
+      .from('users')
+      .select(
+        'id, name, username, avatar_url'
+      )
+      .in('id', senderIds)
 
     if (senderError) {
       throw databaseFailure(
@@ -852,27 +1081,91 @@ export async function getConversationMessages({
     }
 
     senderMap = new Map(
-      (senders || []).map((item) => [item.id, item])
+      (senders || []).map((item) => [
+        String(item.id),
+        item,
+      ])
     )
   }
 
-  const formattedMessages = messages.map((item) => {
-    const sender = senderMap.get(item.sender_user_id)
+  const formatUser = (userId) => {
+    const user = senderMap.get(
+      String(userId || '')
+    )
 
-    return {
-      ...item,
-      sender: sender
-        ? {
-            id: sender.id,
-            name: sender.name,
-            username: sender.username,
-            avatar_url: sender.avatar_url || null,
-          }
-        : null,
-      is_mine:
-        String(item.sender_user_id) === safeUserId,
-    }
-  })
+    return user
+      ? {
+          id: user.id,
+          name: user.name,
+          username: user.username,
+          avatar_url:
+            user.avatar_url || null,
+        }
+      : null
+  }
+
+  const formattedMessages =
+    messages.map((item) => {
+      const formatted =
+        formatDeletedMessage(item)
+      const original = item.reply_to_message_id
+        ? replyMap.get(
+            String(
+              item.reply_to_message_id
+            )
+          )
+        : null
+      const originalIsVisible =
+        original &&
+        (!visibilityCutoff ||
+          new Date(
+            original.created_at
+          ).getTime() >
+            new Date(
+              visibilityCutoff
+            ).getTime())
+      const replyTo =
+        item.reply_to_message_id
+          ? originalIsVisible
+            ? {
+                ...formatDeletedMessage(
+                  original
+                ),
+                sender: formatUser(
+                  original.sender_user_id
+                ),
+              }
+            : {
+                id:
+                  item.reply_to_message_id,
+                body: '',
+                is_deleted: true,
+                is_unavailable: true,
+                sender: null,
+              }
+          : null
+
+      return {
+        ...formatted,
+        sender: formatUser(
+          item.sender_user_id
+        ),
+        is_mine:
+          String(
+            item.sender_user_id
+          ) === safeUserId,
+        reply_to: replyTo,
+        is_forwarded: Boolean(
+          item.forwarded_from_message_id
+        ),
+        forwarded_from: item
+          .forwarded_from_user_id
+          ? formatUser(
+              item.forwarded_from_user_id
+            )
+          : null,
+      }
+    })
 
   return {
     conversation:
@@ -881,13 +1174,13 @@ export async function getConversationMessages({
         participant
       ),
     messages: formattedMessages,
+    selection_limit: 100,
     next_before:
       messageRows?.length === safeLimit
         ? messages[0]?.created_at || null
         : null,
   }
 }
-
 export async function sendConversationMessage({
   userId,
   conversationId,
@@ -955,7 +1248,7 @@ export async function sendConversationMessage({
       is_request_message: false,
     })
     .select(
-      'id, conversation_id, sender_user_id, message_type, body, is_request_message, edited_at, created_at'
+      'id, conversation_id, sender_user_id, message_type, body, is_request_message, reply_to_message_id, forwarded_from_message_id, forwarded_from_user_id, edited_at, deleted_at, created_at'
     )
     .single()
 
@@ -985,6 +1278,7 @@ export async function sendConversationMessage({
     .update({
       last_read_at: readAt,
       archived_at: null,
+      deleted_at: null,
     })
     .eq('id', participant.id)
 
@@ -1148,7 +1442,7 @@ export async function decideMessageRequest({
     })
     .eq('id', conversation.id)
     .select(
-      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, created_at, updated_at'
+      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, cleared_for_all_at, created_at, updated_at'
     )
     .single()
 
