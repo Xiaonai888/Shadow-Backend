@@ -1829,6 +1829,47 @@ async function createOrRefreshEchoReaderPost({
   }
 }
 
+async function softDeleteEchoReaderPost(
+  readerPostId,
+  userId
+) {
+  if (!readerPostId) return
+
+  const deletedAt = new Date().toISOString()
+  const { error } = await supabase
+    .from('reader_posts')
+    .update({
+      deleted_at: deletedAt,
+      updated_at: deletedAt,
+    })
+    .eq('id', readerPostId)
+    .eq('user_id', userId)
+    .is('deleted_at', null)
+
+  if (error) throw error
+}
+
+async function restoreEchoReaderPost(
+  readerPostId,
+  userId
+) {
+  if (!readerPostId) return
+
+  const restoredAt =
+    new Date().toISOString()
+  const { error } = await supabase
+    .from('reader_posts')
+    .update({
+      deleted_at: null,
+      updated_at: restoredAt,
+    })
+    .eq('id', readerPostId)
+    .eq('user_id', userId)
+
+  if (error) throw error
+}
+
+
 export async function createSocialEcho(
   req,
   res
