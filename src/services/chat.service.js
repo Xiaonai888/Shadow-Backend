@@ -232,7 +232,6 @@ async function getLatestMessage(conversationId) {
       'id, sender_user_id, message_type, body, is_request_message, created_at'
     )
     .eq('conversation_id', conversationId)
-    .is('deleted_at', null)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle()
