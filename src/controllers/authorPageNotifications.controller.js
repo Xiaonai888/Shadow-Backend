@@ -1,5 +1,24 @@
 import { supabase } from '../config/supabase.js'
 
+const NOTIFICATION_TYPES = new Set([
+  'comment',
+  'reaction',
+  'echo',
+  'mention',
+  'follower',
+  'review',
+  'order',
+  'income',
+  'system',
+  'admin',
+])
+
+const FREQUENCY_LEVELS = new Set([
+  'more',
+  'normal',
+  'less',
+])
+
 function normalizeNotification(item) {
   if (!item) return null
 
@@ -16,6 +35,22 @@ function normalizeNotification(item) {
     created_at: item.created_at,
     read_at: item.read_at || null,
   }
+}
+
+function normalizePreferences(rows = []) {
+  const preferences = {}
+
+  for (const row of rows) {
+    preferences[row.type] = {
+      is_enabled: row.is_enabled !== false,
+      frequency_level:
+        FREQUENCY_LEVELS.has(row.frequency_level)
+          ? row.frequency_level
+          : 'normal',
+    }
+  }
+
+  return preferences
 }
 
 async function getMyAuthorPageByUserId(userId) {
@@ -62,28 +97,52 @@ export async function createAuthorPageNotification({
   return normalizeNotification(data)
 }
 
-export async function getMyAuthorPageNotifications(req, res) {
+export async function getMyAuthorPageNotifications(
+  req,
+  res
+) {
   try {
     const userId = req.user?.user_id
-    const limit = Math.min(50, Math.max(1, Number(req.query.limit || 30)))
-    const type = String(req.query.type || 'all').trim().toLowerCase()
-    const unreadOnly = String(req.query.unread || '').toLowerCase() === 'true'
+    const limit = Math.min(
+      50,
+      Math.max(
+        1,
+        Number(req.query.limit || 30)
+      )
+    )
+    const type = String(
+      req.query.type || 'all'
+    )
+      .trim()
+      .toLowerCase()
+    const unreadOnly =
+      String(req.query.unread || '')
+        .toLowerCase() === 'true'
 
     if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
     }
 
-    const authorPage = await getMyAuthorPageByUserId(userId)
+    const authorPage =
+      await getMyAuthorPageByUserId(userId)
 
     if (!authorPage) {
-      return res.status(404).json({ ok: false, message: 'Author page not found' })
+      return res.status(404).json({
+        ok: false,
+        message: 'Author page not found',
+      })
     }
 
     let query = supabase
       .from('author_page_notifications')
       .select('*')
       .eq('author_page_id', authorPage.id)
-      .order('created_at', { ascending: false })
+      .order('created_at', {
+        ascending: false,
+      })
       .limit(limit)
 
     if (type !== 'all') {
@@ -91,56 +150,114 @@ export async function getMyAuthorPageNotifications(req, res) {
     }
 
     if (unreadOnly) {
-      query = query.eq('is_read', false)
+      query = query.eq(
+        'is_read',
+        false
+      )
     }
 
-    const { data, error } = await query
+    const [
+      { data, error },
+      {
+        count: unreadCount,
+        error: countError,
+      },
+      {
+        data: preferenceRows,
+        error: preferenceError,
+      },
+    ] = await Promise.all([
+      query,
+      supabase
+        .from('author_page_notifications')
+        .select('id', {
+          count: 'exact',
+          head: true,
+        })
+        .eq(
+          'author_page_id',
+          authorPage.id
+        )
+        .eq('is_read', false),
+      supabase
+        .from(
+          'author_page_notification_preferences'
+        )
+        .select(
+          'type, is_enabled, frequency_level'
+        )
+        .eq(
+          'author_page_id',
+          authorPage.id
+        ),
+    ])
 
     if (error) throw error
-
-    const { count: unreadCount, error: countError } = await supabase
-      .from('author_page_notifications')
-      .select('id', { count: 'exact', head: true })
-      .eq('author_page_id', authorPage.id)
-      .eq('is_read', false)
-
     if (countError) throw countError
+    if (preferenceError) {
+      throw preferenceError
+    }
 
     return res.status(200).json({
       ok: true,
-      notifications: (data || []).map(normalizeNotification),
-      unread_count: Number(unreadCount || 0),
+      notifications: (data || []).map(
+        normalizeNotification
+      ),
+      unread_count:
+        Number(unreadCount || 0),
+      preferences:
+        normalizePreferences(
+          preferenceRows || []
+        ),
     })
   } catch (error) {
-    console.error('GET AUTHOR PAGE NOTIFICATIONS ERROR:', error)
+    console.error(
+      'GET AUTHOR PAGE NOTIFICATIONS ERROR:',
+      error
+    )
+
     return res.status(500).json({
       ok: false,
-      message: 'Failed to load page notifications',
+      message:
+        'Failed to load page notifications',
       error: error.message,
     })
   }
 }
 
-export async function markMyAuthorPageNotificationRead(req, res) {
+export async function markMyAuthorPageNotificationRead(
+  req,
+  res
+) {
   try {
     const userId = req.user?.user_id
-    const notificationId = String(req.params.id || '').trim()
+    const notificationId = String(
+      req.params.id || ''
+    ).trim()
 
     if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
     }
 
     if (!notificationId) {
       return res.status(400).json({
         ok: false,
-        message: 'Notification ID is required',
+        message:
+          'Notification ID is required',
       })
     }
 
-    const authorPage = await getMyAuthorPageByUserId(userId)
+    const authorPage =
+      await getMyAuthorPageByUserId(userId)
 
     if (!authorPage) {
-      return res.status(404).json({ ok: false, message: 'Author page not found' })
+      return res.status(404).json({
+        ok: false,
+        message: 'Author page not found',
+      })
     }
 
     const { data, error } = await supabase
@@ -150,50 +267,76 @@ export async function markMyAuthorPageNotificationRead(req, res) {
         read_at: new Date().toISOString(),
       })
       .eq('id', notificationId)
-      .eq('author_page_id', authorPage.id)
+      .eq(
+        'author_page_id',
+        authorPage.id
+      )
       .select()
       .maybeSingle()
 
     if (error) throw error
 
     if (!data) {
-      return res.status(404).json({ ok: false, message: 'Notification not found' })
+      return res.status(404).json({
+        ok: false,
+        message:
+          'Notification not found',
+      })
     }
 
     return res.status(200).json({
       ok: true,
-      notification: normalizeNotification(data),
+      notification:
+        normalizeNotification(data),
     })
   } catch (error) {
-    console.error('MARK AUTHOR PAGE NOTIFICATION READ ERROR:', error)
+    console.error(
+      'MARK AUTHOR PAGE NOTIFICATION READ ERROR:',
+      error
+    )
+
     return res.status(500).json({
       ok: false,
-      message: 'Failed to mark notification as read',
+      message:
+        'Failed to mark notification as read',
       error: error.message,
     })
   }
 }
 
-export async function markMyAuthorPageNotificationUnread(req, res) {
+export async function markMyAuthorPageNotificationUnread(
+  req,
+  res
+) {
   try {
     const userId = req.user?.user_id
-    const notificationId = String(req.params.id || '').trim()
+    const notificationId = String(
+      req.params.id || ''
+    ).trim()
 
     if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
     }
 
     if (!notificationId) {
       return res.status(400).json({
         ok: false,
-        message: 'Notification ID is required',
+        message:
+          'Notification ID is required',
       })
     }
 
-    const authorPage = await getMyAuthorPageByUserId(userId)
+    const authorPage =
+      await getMyAuthorPageByUserId(userId)
 
     if (!authorPage) {
-      return res.status(404).json({ ok: false, message: 'Author page not found' })
+      return res.status(404).json({
+        ok: false,
+        message: 'Author page not found',
+      })
     }
 
     const { data, error } = await supabase
@@ -203,64 +346,97 @@ export async function markMyAuthorPageNotificationUnread(req, res) {
         read_at: null,
       })
       .eq('id', notificationId)
-      .eq('author_page_id', authorPage.id)
+      .eq(
+        'author_page_id',
+        authorPage.id
+      )
       .select()
       .maybeSingle()
 
     if (error) throw error
 
     if (!data) {
-      return res.status(404).json({ ok: false, message: 'Notification not found' })
+      return res.status(404).json({
+        ok: false,
+        message:
+          'Notification not found',
+      })
     }
 
     return res.status(200).json({
       ok: true,
-      notification: normalizeNotification(data),
+      notification:
+        normalizeNotification(data),
     })
   } catch (error) {
-    console.error('MARK AUTHOR PAGE NOTIFICATION UNREAD ERROR:', error)
+    console.error(
+      'MARK AUTHOR PAGE NOTIFICATION UNREAD ERROR:',
+      error
+    )
+
     return res.status(500).json({
       ok: false,
-      message: 'Failed to mark notification as unread',
+      message:
+        'Failed to mark notification as unread',
       error: error.message,
     })
   }
 }
 
-export async function deleteMyAuthorPageNotification(req, res) {
+export async function deleteMyAuthorPageNotification(
+  req,
+  res
+) {
   try {
     const userId = req.user?.user_id
-    const notificationId = String(req.params.id || '').trim()
+    const notificationId = String(
+      req.params.id || ''
+    ).trim()
 
     if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
     }
 
     if (!notificationId) {
       return res.status(400).json({
         ok: false,
-        message: 'Notification ID is required',
+        message:
+          'Notification ID is required',
       })
     }
 
-    const authorPage = await getMyAuthorPageByUserId(userId)
+    const authorPage =
+      await getMyAuthorPageByUserId(userId)
 
     if (!authorPage) {
-      return res.status(404).json({ ok: false, message: 'Author page not found' })
+      return res.status(404).json({
+        ok: false,
+        message: 'Author page not found',
+      })
     }
 
     const { data, error } = await supabase
       .from('author_page_notifications')
       .delete()
       .eq('id', notificationId)
-      .eq('author_page_id', authorPage.id)
+      .eq(
+        'author_page_id',
+        authorPage.id
+      )
       .select('id')
       .maybeSingle()
 
     if (error) throw error
 
     if (!data) {
-      return res.status(404).json({ ok: false, message: 'Notification not found' })
+      return res.status(404).json({
+        ok: false,
+        message:
+          'Notification not found',
+      })
     }
 
     return res.status(200).json({
@@ -268,27 +444,143 @@ export async function deleteMyAuthorPageNotification(req, res) {
       deleted_id: data.id,
     })
   } catch (error) {
-    console.error('DELETE AUTHOR PAGE NOTIFICATION ERROR:', error)
+    console.error(
+      'DELETE AUTHOR PAGE NOTIFICATION ERROR:',
+      error
+    )
+
     return res.status(500).json({
       ok: false,
-      message: 'Failed to delete notification',
+      message:
+        'Failed to delete notification',
       error: error.message,
     })
   }
 }
 
-export async function markAllMyAuthorPageNotificationsRead(req, res) {
+export async function updateMyAuthorPageNotificationPreference(
+  req,
+  res
+) {
+  try {
+    const userId = req.user?.user_id
+    const type = String(
+      req.params.type || ''
+    )
+      .trim()
+      .toLowerCase()
+    const isEnabled =
+      req.body?.is_enabled !== false
+    const frequencyLevel = String(
+      req.body?.frequency_level ||
+        'normal'
+    )
+      .trim()
+      .toLowerCase()
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!NOTIFICATION_TYPES.has(type)) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          'Notification type is not valid',
+      })
+    }
+
+    if (
+      !FREQUENCY_LEVELS.has(
+        frequencyLevel
+      )
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          'Frequency level is not valid',
+      })
+    }
+
+    const authorPage =
+      await getMyAuthorPageByUserId(userId)
+
+    if (!authorPage) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Author page not found',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from(
+        'author_page_notification_preferences'
+      )
+      .upsert(
+        {
+          author_page_id: authorPage.id,
+          user_id: userId,
+          type,
+          is_enabled: isEnabled,
+          frequency_level:
+            frequencyLevel,
+          updated_at:
+            new Date().toISOString(),
+        },
+        {
+          onConflict:
+            'author_page_id,type',
+        }
+      )
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      preference: data,
+    })
+  } catch (error) {
+    console.error(
+      'UPDATE AUTHOR PAGE NOTIFICATION PREFERENCE ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to update notification preference',
+      error: error.message,
+    })
+  }
+}
+
+export async function markAllMyAuthorPageNotificationsRead(
+  req,
+  res
+) {
   try {
     const userId = req.user?.user_id
 
     if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
     }
 
-    const authorPage = await getMyAuthorPageByUserId(userId)
+    const authorPage =
+      await getMyAuthorPageByUserId(userId)
 
     if (!authorPage) {
-      return res.status(404).json({ ok: false, message: 'Author page not found' })
+      return res.status(404).json({
+        ok: false,
+        message: 'Author page not found',
+      })
     }
 
     const { error } = await supabase
@@ -297,20 +589,29 @@ export async function markAllMyAuthorPageNotificationsRead(req, res) {
         is_read: true,
         read_at: new Date().toISOString(),
       })
-      .eq('author_page_id', authorPage.id)
+      .eq(
+        'author_page_id',
+        authorPage.id
+      )
       .eq('is_read', false)
 
     if (error) throw error
 
     return res.status(200).json({
       ok: true,
-      message: 'Notifications marked as read',
+      message:
+        'Notifications marked as read',
     })
   } catch (error) {
-    console.error('MARK ALL AUTHOR PAGE NOTIFICATIONS READ ERROR:', error)
+    console.error(
+      'MARK ALL AUTHOR PAGE NOTIFICATIONS READ ERROR:',
+      error
+    )
+
     return res.status(500).json({
       ok: false,
-      message: 'Failed to mark all notifications as read',
+      message:
+        'Failed to mark all notifications as read',
       error: error.message,
     })
   }
