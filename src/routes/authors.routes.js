@@ -103,6 +103,13 @@ import {
   updateMyAuthorPageNotificationPreference,
 } from '../controllers/authorPageNotifications.controller.js'
 
+
+import {
+  blockReaderAuthorPage,
+  getReaderAuthorPageBlockStatus,
+  unblockReaderAuthorPage,
+} from '../controllers/readerAuthorPageBlocks.controller.js'
+
 const router = express.Router()
 
 router.get('/me/dashboard', requireUser, getMyAuthorDashboard)
@@ -147,6 +154,9 @@ router.get('/page/:pageUsername/followers', getAuthorPageFollowers)
 router.get('/page/:pageUsername/reviews', getAuthorPageReviews)
 router.put('/page/:pageUsername/reviews/me', requireUser, upsertMyAuthorPageReview)
 router.delete('/page/:pageUsername/reviews/me', requireUser, deleteMyAuthorPageReview)
+router.get('/page/:pageUsername/block-status', requireUser, getReaderAuthorPageBlockStatus)
+router.post('/page/:pageUsername/block', requireUser, blockReaderAuthorPage)
+router.delete('/page/:pageUsername/block', requireUser, unblockReaderAuthorPage)
 router.get('/page/:pageUsername', getPublicAuthorPage)
 router.post('/page/:pageUsername/follow', requireUser, followAuthorPage)
 router.delete('/page/:pageUsername/follow', requireUser, unfollowAuthorPage)
