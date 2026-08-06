@@ -53,6 +53,7 @@ import echoesRoutes from './src/routes/echoes.routes.js'
 import authorStoriesRoutes from './src/routes/authorStories.routes.js'
 import readerStoriesRoutes from './src/routes/readerStories.routes.js'
 import discoverStoriesRoutes from './src/routes/discoverStories.routes.js'
+import discoverSearchRoutes from './src/routes/discoverSearch.routes.js'
 import { startReaderStoriesCleanup } from './src/controllers/readerStories.controller.js'
 import { startAuthorStoriesCleanup } from './src/controllers/authorStories.controller.js'
 import { startAuthorCommentCleanup } from './src/services/authorCommentCleanup.service.js'
@@ -494,6 +495,7 @@ app.use('/api/gifts', giftSpamGuard, giftsRoutes)
 app.use('/api/author-stories', shortStorySpamGuard, authorStoriesRoutes)
 app.use('/api/reader-stories', shortStorySpamGuard, readerStoriesRoutes)
 app.use('/api/discover-stories', readerReadSpamGuard, discoverStoriesRoutes)
+app.use('/api/discover-search', readerReadSpamGuard, discoverSearchRoutes)
 app.use('/api/fast', mediaUploadRouteSpamGuard, fastRoutes)
 app.use('/api/reports', reportActionSpamGuard, contentReportsRoutes)
 app.use('/api/admin/reports', adminReportsRoutes)
