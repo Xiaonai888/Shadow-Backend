@@ -1113,3 +1113,120 @@ export async function updateAuthorAdminStatus(req, res) {
     return res.status(500).json({ ok: false, message: 'Failed to update author page status', error: error.message })
   }
 }
+
+export async function downloadAdminStoryMedia(req, res) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 20000)
+
+  try {
+    const { storyId, mediaType, mediaIndex } = req.params
+    const type = cleanText(mediaType).toLowerCase()
+    const index = Math.max(0, Math.floor(Number(mediaIndex || 0)))
+
+    if (!['cover', 'slide'].includes(type)) {
+      return res.status(400).json({ ok: false, message: 'Invalid media type' })
+    }
+
+    const { data: story, error: storyError } = await supabase
+      .from('stories')
+      .select('id, title, cover_url')
+      .eq('id', storyId)
+      .maybeSingle()
+
+    if (storyError) throw storyError
+    if (!story) {
+      return res.status(404).json({ ok: false, message: 'Story not found' })
+    }
+
+    let mediaUrl = story.cover_url
+    let mediaLabel = 'cover'
+
+    if (type === 'slide') {
+      const { data: slide, error: slideError } = await supabase
+        .from('story_carousel_slides')
+        .select('image_url, sort_order')
+        .eq('story_id', storyId)
+        .order('sort_order', { ascending: true })
+        .range(index, index)
+        .maybeSingle()
+
+      if (slideError) throw slideError
+      mediaUrl = slide?.image_url || ''
+      mediaLabel = `slide-${index + 1}`
+    }
+
+    if (!mediaUrl) {
+      return res.status(404).json({ ok: false, message: 'Media file not found' })
+    }
+
+    const parsedUrl = new URL(mediaUrl)
+    const allowedHosts = new Set(
+      [process.env.R2_PUBLIC_URL, process.env.SUPABASE_URL]
+        .filter(Boolean)
+        .map((value) => new URL(value).hostname)
+    )
+
+    if (
+      parsedUrl.protocol !== 'https:' ||
+      !allowedHosts.has(parsedUrl.hostname)
+    ) {
+      return res.status(400).json({ ok: false, message: 'Media source is not allowed' })
+    }
+
+    const mediaResponse = await fetch(mediaUrl, {
+      signal: controller.signal,
+      redirect: 'follow',
+    })
+
+    if (!mediaResponse.ok) {
+      return res.status(502).json({
+        ok: false,
+        message: `Media server returned ${mediaResponse.status}`,
+      })
+    }
+
+    const contentType =
+      mediaResponse.headers.get('content-type')?.split(';')[0] ||
+      'application/octet-stream'
+    const extensionFromUrl =
+      parsedUrl.pathname.match(/\.(jpe?g|png|webp|gif|avif)$/i)?.[1]?.toLowerCase()
+    const extensionByType = {
+      'image/jpeg': 'jpg',
+      'image/png': 'png',
+      'image/webp': 'webp',
+      'image/gif': 'gif',
+      'image/avif': 'avif',
+    }
+    const extension = extensionFromUrl || extensionByType[contentType] || 'bin'
+    const asciiName = `story-${story.id}-${mediaLabel}.${extension}`
+    const displayTitle =
+      cleanText(story.title)
+        .replace(/[\\/:*?"<>|]+/g, '')
+        .slice(0, 80) || 'story'
+    const displayName = `${displayTitle}-${mediaLabel}.${extension}`
+    const buffer = Buffer.from(await mediaResponse.arrayBuffer())
+
+    res.setHeader('Content-Type', contentType)
+    res.setHeader('Content-Length', String(buffer.length))
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(displayName)}`
+    )
+    res.setHeader('Cache-Control', 'private, no-store')
+    return res.status(200).send(buffer)
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      return res.status(504).json({ ok: false, message: 'Media download timed out' })
+    }
+
+    console.error('DOWNLOAD ADMIN STORY MEDIA ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to download story media',
+      error: error.message,
+    })
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
