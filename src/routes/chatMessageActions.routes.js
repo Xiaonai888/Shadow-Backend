@@ -9,6 +9,9 @@ import {
   unpinMessageController,
 } from '../controllers/chatMessageActions.controller.js'
 import {
+  reportChatMessageController,
+} from '../controllers/chatMessageReport.controller.js'
+import {
   createSpamGuard,
 } from '../middleware/spamGuard.middleware.js'
 
@@ -29,6 +32,12 @@ const messageWriteGuard = createSpamGuard({
 const messageBulkGuard = createSpamGuard({
   scope: 'chat_message_action_bulk',
   threshold: 20,
+  windowSeconds: 60,
+})
+
+const messageReportGuard = createSpamGuard({
+  scope: 'chat_message_report',
+  threshold: 10,
   windowSeconds: 60,
 })
 
@@ -72,6 +81,12 @@ router.delete(
   '/conversations/:conversationId/messages/:messageId/pin',
   messageWriteGuard,
   unpinMessageController
+)
+
+router.post(
+  '/conversations/:conversationId/messages/:messageId/report',
+  messageReportGuard,
+  reportChatMessageController
 )
 
 router.post(
