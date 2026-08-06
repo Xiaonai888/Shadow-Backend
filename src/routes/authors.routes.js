@@ -100,6 +100,7 @@ import {
   markAllMyAuthorPageNotificationsRead,
   markMyAuthorPageNotificationRead,
   markMyAuthorPageNotificationUnread,
+  updateMyAuthorPageNotificationPreference,
 } from '../controllers/authorPageNotifications.controller.js'
 
 const router = express.Router()
@@ -136,6 +137,7 @@ router.patch('/me/story-notifications/read-all', requireUser, markAllMyAuthorSto
 router.patch('/me/story-notifications/:id/read', requireUser, markMyAuthorStoryNotificationRead)
 router.patch('/me/story-notifications/:id/unread', requireUser, markMyAuthorStoryNotificationUnread)
 router.delete('/me/story-notifications/:id', requireUser, deleteMyAuthorStoryNotification)
+router.put('/me/page-notification-preferences/:type', requireUser, updateMyAuthorPageNotificationPreference)
 router.put('/me/story-notification-preferences/:type', requireUser, updateMyAuthorStoryNotificationPreference)
 router.get('/following', requireUser, getFollowedAuthorPages)
 router.get('/following/posts/feed', requireUser, getFollowedAuthorPostsFeed)
