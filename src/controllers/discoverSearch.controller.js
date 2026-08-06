@@ -31,6 +31,41 @@ const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 30
 const ALL_SECTION_LIMIT = 8
 const MAX_SCAN_LIMIT = 80
+const MAX_SEARCH_TERMS = 18
+
+const SEARCH_SYNONYM_GROUPS = [
+  ['ប្រលោមលោក', 'novel'],
+  ['ស្នេហា', 'រ៉ូមែនទិក', 'Romance', 'romantic', 'love'],
+  ['ហ្វេនតាស៊ី', 'អច្ឆរិយៈ', 'Fantasy', 'fantasy'],
+  ['សកម្មភាព', 'ប្រយុទ្ធ', 'Action', 'action'],
+  ['ផ្សងព្រេង', 'Adventure', 'adventure'],
+  ['កំប្លែង', 'Comedy', 'comedy', 'funny'],
+  ['មនោសញ្ចេតនា', 'ដ្រាម៉ា', 'Drama', 'drama'],
+  ['រន្ធត់', 'ខ្មោច', 'Horror', 'horror', 'ghost'],
+  ['អាថ៌កំបាំង', 'ស៊ើបអង្កេត', 'Mystery', 'mystery'],
+  ['ប្រវត្តិសាស្ត្រ', 'បុរាណ', 'Historical', 'historical'],
+  ['វិទ្យាសាស្ត្រប្រឌិត', 'Sci-Fi', 'sci-fi', 'science fiction'],
+  ['ជីវិតសិស្ស', 'សាលារៀន', 'School Life', 'school life'],
+  ['អរូបី', 'Supernatural', 'supernatural'],
+  ['ក្បាច់គុន', 'Martial Arts', 'martial arts'],
+  ['សងសឹក', 'Revenge', 'revenge'],
+  ['ឆ្លងពេលវេលា', 'Time Travel', 'time travel'],
+  ['តួស្រីខ្លាំង', 'Strong Female Lead', 'strong female lead'],
+  ['អត្តសញ្ញាណលាក់កំបាំង', 'Hidden Identity', 'hidden identity'],
+  ['រាជវង្ស', 'Royalty', 'royalty'],
+  ['វេទមន្ត', 'Magic', 'magic'],
+  ['ឱកាសទីពីរ', 'Second Chance', 'second chance'],
+  ['តួប្រុសត្រជាក់', 'Cold Male Lead', 'cold male lead'],
+  ['ស្នេហាយឺតៗ', 'Slow Burn', 'slow burn'],
+  ['សត្រូវក្លាយជាគូស្នេហ៍', 'Enemies to Lovers', 'enemies to lovers'],
+  ['ប្រុសស្រឡាញ់ប្រុស', 'BL', 'boys love'],
+  ['ស្រីស្រឡាញ់ស្រី', 'GL', 'girls love'],
+  ['ចប់', 'Completed', 'completed', 'complete'],
+  ['កំពុងបន្ត', 'Ongoing', 'ongoing', 'updating'],
+  ['ភាសាខ្មែរ', 'Khmer', 'khmer'],
+  ['ភាសាអង់គ្លេស', 'English', 'english'],
+  ['សៀវភៅ PDF', 'PDF Book', 'pdf', 'ebook'],
+]
 
 function cleanKeyword(value) {
   return String(value || '')
@@ -41,7 +76,7 @@ function cleanKeyword(value) {
 
 function cleanFilterKeyword(value) {
   return cleanKeyword(value)
-    .replace(/[^\p{L}\p{N}\s@#&+'\-]/gu, ' ')
+    .replace(/[^\p{L}\p{M}\p{N}\s@#&+'\-]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -60,17 +95,76 @@ function getLimit(value) {
   return Math.min(MAX_LIMIT, Math.max(1, number))
 }
 
-function getScanLimit(limit) {
-  return Math.min(MAX_SCAN_LIMIT, Math.max(limit * 3, 24))
+function matchesSearchAlias(normalizedQuery, compactQuery, alias) {
+  const normalizedAlias = cleanKeyword(alias).toLocaleLowerCase()
+
+  if (!normalizedAlias) return false
+
+  if (/^[a-z0-9]+$/i.test(normalizedAlias) && normalizedAlias.length <= 3) {
+    return normalizedQuery.split(/\s+/).includes(normalizedAlias)
+  }
+
+  return (
+    normalizedQuery.includes(normalizedAlias) ||
+    compactQuery.includes(normalizedAlias.replace(/\s+/g, ''))
+  )
+}
+
+function getSearchTerms(value) {
+  const keyword = cleanKeyword(value)
+
+  if (!keyword) return []
+
+  const normalizedQuery = keyword.toLocaleLowerCase()
+  const compactQuery = normalizedQuery.replace(/\s+/g, '')
+  const candidates = [keyword, ...keyword.split(/\s+/)]
+
+  for (const group of SEARCH_SYNONYM_GROUPS) {
+    if (
+      group.some((alias) =>
+        matchesSearchAlias(normalizedQuery, compactQuery, alias)
+      )
+    ) {
+      candidates.push(...group)
+    }
+  }
+
+  const seen = new Set()
+  const terms = []
+
+  for (const candidate of candidates) {
+    const term = cleanFilterKeyword(candidate)
+    const key = term.toLocaleLowerCase()
+
+    if (!term || seen.has(key)) continue
+
+    seen.add(key)
+    terms.push(term)
+
+    if (terms.length >= MAX_SEARCH_TERMS) break
+  }
+
+  return terms
+}
+
+function getScanLimit(limit, keyword = '') {
+  const termBoost = getSearchTerms(keyword).length * 8
+
+  return Math.min(
+    MAX_SCAN_LIMIT,
+    Math.max(limit * 3, 24, termBoost)
+  )
 }
 
 function makeIlikeFilter(columns, keyword) {
-  const filterKeyword = cleanFilterKeyword(keyword)
+  const terms = getSearchTerms(keyword)
 
-  if (!filterKeyword) return ''
+  if (!terms.length) return ''
 
-  return columns
-    .map((column) => `${column}.ilike.*${filterKeyword}*`)
+  return terms
+    .flatMap((term) =>
+      columns.map((column) => `${column}.ilike.*${term}*`)
+    )
     .join(',')
 }
 
@@ -92,23 +186,41 @@ function uniqueById(items) {
 
 function textScore(keyword, values) {
   const target = cleanKeyword(keyword).toLocaleLowerCase()
+  const terms = getSearchTerms(keyword).map((term) =>
+    term.toLocaleLowerCase()
+  )
+  const texts = (values || [])
+    .map((value) => String(value || '').trim().toLocaleLowerCase())
+    .filter(Boolean)
 
-  if (!target) return 0
+  if (!target || !texts.length) return 0
 
   let score = 0
 
-  for (const value of values || []) {
-    const text = String(value || '').trim().toLocaleLowerCase()
-
-    if (!text) continue
-
+  for (const text of texts) {
     if (text === target) {
-      score = Math.max(score, 100)
+      score = Math.max(score, 1000)
     } else if (text.startsWith(target)) {
-      score = Math.max(score, 70)
+      score = Math.max(score, 700)
     } else if (text.includes(target)) {
-      score = Math.max(score, 40)
+      score = Math.max(score, 500)
     }
+  }
+
+  for (const term of terms) {
+    let bestTermScore = 0
+
+    for (const text of texts) {
+      if (text === term) {
+        bestTermScore = Math.max(bestTermScore, 160)
+      } else if (text.startsWith(term)) {
+        bestTermScore = Math.max(bestTermScore, 110)
+      } else if (text.includes(term)) {
+        bestTermScore = Math.max(bestTermScore, 70)
+      }
+    }
+
+    score += bestTermScore
   }
 
   return score
@@ -368,7 +480,7 @@ async function searchStories(
   limit,
   ageAccess
 ) {
-  const scanLimit = getScanLimit(limit)
+  const scanLimit = getScanLimit(limit, keyword)
   const select =
     'id, author_id, user_id, title, story_type, story_language, main_genre, story_status, tags, description, is_adult, cover_url, landscape_thumbnail_url, status, access_type, total_episodes, total_views, total_likes, total_comments, created_at, updated_at'
   const filter = makeIlikeFilter(
@@ -422,11 +534,13 @@ async function searchStories(
     )
   }
 
-  if (keyword) {
+  const tagTerms = getSearchTerms(keyword)
+
+  if (tagTerms.length) {
     requests.push(
       resolveQuery(
         baseQuery()
-          .contains('tags', [keyword])
+          .overlaps('tags', tagTerms)
           .order('total_views', { ascending: false })
           .limit(scanLimit)
       )
@@ -492,7 +606,7 @@ async function searchStories(
 }
 
 async function searchPdfs(keyword, matchedPages, limit) {
-  const scanLimit = getScanLimit(limit)
+  const scanLimit = getScanLimit(limit, keyword)
   const select =
     'id, author_page_id, user_id, product_type, title, author_name, publisher, category, genre, description, cover_url, original_price, sale_price, status, page_count, created_at, updated_at'
   const filter = makeIlikeFilter(
@@ -602,7 +716,7 @@ async function searchPosts(
   matchedPages,
   limit
 ) {
-  const scanLimit = getScanLimit(limit)
+  const scanLimit = getScanLimit(limit, keyword)
   const now = new Date().toISOString()
   const userIds = matchedUsers.map((user) => user.id).filter(Boolean)
   const pageIds = matchedPages.map((page) => page.id).filter(Boolean)
@@ -620,7 +734,7 @@ async function searchPosts(
           .eq('visibility', 'public')
           .is('deleted_at', null)
           .lte('publish_at', now)
-          .ilike('content', `%${keyword}%`)
+          .or(makeIlikeFilter(['content'], keyword))
           .order('publish_at', { ascending: false })
           .limit(scanLimit)
       )
@@ -634,7 +748,7 @@ async function searchPosts(
             'id, author_page_id, user_id, post_type, content, image_urls, status, is_pinned, like_count, comment_count, echo_count, created_at, updated_at'
           )
           .eq('status', 'active')
-          .ilike('content', `%${keyword}%`)
+          .or(makeIlikeFilter(['content'], keyword))
           .order('created_at', { ascending: false })
           .limit(scanLimit)
       )
@@ -805,7 +919,7 @@ export async function searchDiscover(req, res) {
       return res.status(200).json(emptyPayload(keyword, type))
     }
 
-    const scanLimit = getScanLimit(requestedLimit)
+    const scanLimit = getScanLimit(requestedLimit, keyword)
     const matchedUsers = await searchMatchingUsers(keyword, scanLimit)
     const matchedUserIds = matchedUsers.map((user) => user.id).filter(Boolean)
     const matchedPages = await searchMatchingPages(
