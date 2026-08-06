@@ -1,4 +1,5 @@
 import chatConversationManagementRoutes from './chatConversationManagement.routes.js'
+import chatMessageActionsRoutes from './chatMessageActions.routes.js'
 import express from 'express'
 import {
   createReaderAuthorRequestController,
@@ -44,6 +45,7 @@ const chatRequestGuard = createSpamGuard({
 
 router.use(requireUser)
 router.use(chatConversationManagementRoutes)
+router.use(chatMessageActionsRoutes)
 
 router.post(
   '/reader-author/requests',
