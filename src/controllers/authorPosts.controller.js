@@ -762,7 +762,10 @@ export async function getAuthorPostReactions(req, res) {
   try {
     const postId = String(req.params.postId || '').trim()
     const page = Math.max(1, Number(req.query.page || 1))
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 50)))
+    const limit = Math.min(
+      100,
+      Math.max(1, Number(req.query.limit || 50))
+    )
     const from = (page - 1) * limit
     const to = from + limit - 1
 
@@ -789,49 +792,97 @@ export async function getAuthorPostReactions(req, res) {
       })
     }
 
-    const { data: countRows, error: countError } = await supabase
-      .from('author_page_post_reactions')
-      .select('reaction_type')
-      .eq('post_id', postId)
+    const { data: countRows, error: countError } =
+      await supabase
+        .from('author_page_post_reactions')
+        .select('reaction_type')
+        .eq('post_id', postId)
 
     if (countError) throw countError
 
-    const counts = (countRows || []).reduce((result, item) => {
-      const type = String(item.reaction_type || 'love')
-        .trim()
-        .toLowerCase()
+    const counts = (countRows || []).reduce(
+      (result, item) => {
+        const type = String(
+          item.reaction_type || 'love'
+        )
+          .trim()
+          .toLowerCase()
 
-      result[type] = Number(result[type] || 0) + 1
-      return result
-    }, {})
+        result[type] =
+          Number(result[type] || 0) + 1
+        return result
+      },
+      {}
+    )
 
-    const { data, error, count } = await supabase
+    const {
+      data: reactionRows,
+      error: reactionsError,
+      count,
+    } = await supabase
       .from('author_page_post_reactions')
       .select(
-        'id, user_id, reaction_type, created_at, user:users(id, name, username, avatar_url)',
+        'id, user_id, reaction_type, created_at',
         { count: 'exact' }
       )
       .eq('post_id', postId)
       .order('created_at', { ascending: false })
       .range(from, to)
 
-    if (error) throw error
+    if (reactionsError) throw reactionsError
 
-    const reactions = (data || []).map((item) => {
-      const user = Array.isArray(item.user) ? item.user[0] : item.user
+    const userIds = [
+      ...new Set(
+        (reactionRows || [])
+          .map((item) => item.user_id)
+          .filter(Boolean)
+      ),
+    ]
 
-      return {
-        id: item.id,
-        reaction_type: item.reaction_type || 'love',
-        created_at: item.created_at,
-        user: {
-          id: user?.id || item.user_id,
-          name: user?.name || user?.username || 'Reader',
-          username: user?.username || '',
-          avatar_url: user?.avatar_url || '',
-        },
+    let usersById = new Map()
+
+    if (userIds.length) {
+      const { data: users, error: usersError } =
+        await supabase
+          .from('users')
+          .select(
+            'id, name, username, avatar_url'
+          )
+          .in('id', userIds)
+
+      if (usersError) throw usersError
+
+      usersById = new Map(
+        (users || []).map((user) => [
+          String(user.id),
+          user,
+        ])
+      )
+    }
+
+    const reactions = (reactionRows || []).map(
+      (item) => {
+        const user =
+          usersById.get(String(item.user_id)) ||
+          {}
+
+        return {
+          id: item.id,
+          reaction_type:
+            item.reaction_type || 'love',
+          created_at: item.created_at,
+          user: {
+            id: user.id || item.user_id,
+            name:
+              user.name ||
+              user.username ||
+              'Reader',
+            username: user.username || '',
+            avatar_url: user.avatar_url || '',
+          },
+        }
       }
-    })
+    )
 
     const total = Number(count || 0)
 
@@ -839,7 +890,9 @@ export async function getAuthorPostReactions(req, res) {
       ok: true,
       post: {
         id: post.id,
-        content: String(post.content || '').slice(0, 120),
+        content: String(
+          post.content || ''
+        ).slice(0, 120),
       },
       total,
       counts,
@@ -849,7 +902,10 @@ export async function getAuthorPostReactions(req, res) {
       reactions,
     })
   } catch (error) {
-    console.error('GET AUTHOR POST REACTIONS ERROR:', error)
+    console.error(
+      'GET AUTHOR POST REACTIONS ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
