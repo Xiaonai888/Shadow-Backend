@@ -32,6 +32,30 @@ function databaseFailure(error, message) {
   return wrapped
 }
 
+function normalizeDeleteScope(scope) {
+  const normalized = String(scope || 'for_me')
+    .trim()
+    .toLowerCase()
+
+  if (
+    ['for_me', 'me', 'user', 'myself'].includes(normalized)
+  ) {
+    return 'for_me'
+  }
+
+  if (
+    ['for_both', 'both', 'all', 'everyone'].includes(normalized)
+  ) {
+    return 'for_both'
+  }
+
+  fail(
+    400,
+    'INVALID_DELETE_SCOPE',
+    'Delete option is not valid'
+  )
+}
+
 async function getParticipant(conversationId, userId) {
   const safeConversationId = requireUuid(
     conversationId,
@@ -42,11 +66,10 @@ async function getParticipant(conversationId, userId) {
   const { data, error } = await supabase
     .from('chat_participants')
     .select(
-      'id, conversation_id, user_id, archived_at, deleted_at'
+      'id, conversation_id, user_id, archived_at, deleted_at, cleared_at, last_read_at'
     )
     .eq('conversation_id', safeConversationId)
     .eq('user_id', safeUserId)
-    .is('deleted_at', null)
     .maybeSingle()
 
   if (error) {
@@ -65,6 +88,94 @@ async function getParticipant(conversationId, userId) {
   }
 
   return data
+}
+
+async function getConversationState(conversationId) {
+  const safeConversationId = requireUuid(
+    conversationId,
+    'Conversation ID'
+  )
+
+  const { data, error } = await supabase
+    .from('chat_conversations')
+    .select('id, cleared_for_all_at')
+    .eq('id', safeConversationId)
+    .maybeSingle()
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to load conversation'
+    )
+  }
+
+  if (!data) {
+    fail(
+      404,
+      'CONVERSATION_NOT_FOUND',
+      'Conversation not found'
+    )
+  }
+
+  return data
+}
+
+async function getParticipantStates(conversationId) {
+  const { data, error } = await supabase
+    .from('chat_participants')
+    .select(
+      'id, archived_at, deleted_at, cleared_at, last_read_at'
+    )
+    .eq('conversation_id', conversationId)
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to load conversation participants'
+    )
+  }
+
+  if (!data?.length) {
+    fail(
+      409,
+      'PARTICIPANT_MISSING',
+      'Conversation participants are unavailable'
+    )
+  }
+
+  return data
+}
+
+async function rollbackDeleteForBoth({
+  conversation,
+  participants,
+}) {
+  const operations = [
+    supabase
+      .from('chat_conversations')
+      .update({
+        cleared_for_all_at:
+          conversation.cleared_for_all_at || null,
+      })
+      .eq('id', conversation.id),
+    ...participants.map((participant) =>
+      supabase
+        .from('chat_participants')
+        .update({
+          archived_at:
+            participant.archived_at || null,
+          deleted_at:
+            participant.deleted_at || null,
+          cleared_at:
+            participant.cleared_at || null,
+          last_read_at:
+            participant.last_read_at || null,
+        })
+        .eq('id', participant.id)
+    ),
+  ]
+
+  await Promise.allSettled(operations)
 }
 
 export async function listManagedConversations({
@@ -192,6 +303,7 @@ export async function deleteConversationForUser({
     .update({
       archived_at: null,
       deleted_at: deletedAt,
+      cleared_at: deletedAt,
       last_read_at: deletedAt,
     })
     .eq('id', participant.id)
@@ -199,12 +311,110 @@ export async function deleteConversationForUser({
   if (error) {
     throw databaseFailure(
       error,
-      'Failed to delete conversation'
+      'Failed to delete conversation for you'
     )
   }
 
   return {
     conversation_id: participant.conversation_id,
+    delete_scope: 'for_me',
+    cleared_at: deletedAt,
     deleted_at: deletedAt,
   }
+}
+
+export async function deleteConversationForBoth({
+  userId,
+  conversationId,
+}) {
+  const participant = await getParticipant(
+    conversationId,
+    userId
+  )
+  const [conversation, participants] = await Promise.all([
+    getConversationState(participant.conversation_id),
+    getParticipantStates(participant.conversation_id),
+  ])
+  const deletedAt = new Date().toISOString()
+
+  const { error: conversationError } = await supabase
+    .from('chat_conversations')
+    .update({
+      cleared_for_all_at: deletedAt,
+    })
+    .eq('id', conversation.id)
+
+  if (conversationError) {
+    throw databaseFailure(
+      conversationError,
+      'Failed to delete conversation for both'
+    )
+  }
+
+  const { error: participantsError } = await supabase
+    .from('chat_participants')
+    .update({
+      archived_at: null,
+      deleted_at: deletedAt,
+      cleared_at: deletedAt,
+      last_read_at: deletedAt,
+    })
+    .eq('conversation_id', conversation.id)
+
+  if (participantsError) {
+    await rollbackDeleteForBoth({
+      conversation,
+      participants,
+    })
+
+    throw databaseFailure(
+      participantsError,
+      'Failed to delete conversation for both'
+    )
+  }
+
+  const { error: pinsError } = await supabase
+    .from('chat_message_pins')
+    .delete()
+    .eq('conversation_id', conversation.id)
+
+  if (pinsError) {
+    await rollbackDeleteForBoth({
+      conversation,
+      participants,
+    })
+
+    throw databaseFailure(
+      pinsError,
+      'Failed to remove pinned messages'
+    )
+  }
+
+  return {
+    conversation_id: conversation.id,
+    delete_scope: 'for_both',
+    cleared_for_all_at: deletedAt,
+    deleted_at: deletedAt,
+    affected_participants: participants.length,
+  }
+}
+
+export async function deleteConversation({
+  userId,
+  conversationId,
+  scope,
+}) {
+  const normalizedScope = normalizeDeleteScope(scope)
+
+  if (normalizedScope === 'for_both') {
+    return deleteConversationForBoth({
+      userId,
+      conversationId,
+    })
+  }
+
+  return deleteConversationForUser({
+    userId,
+    conversationId,
+  })
 }
