@@ -846,26 +846,35 @@ export async function getAdminStoryById(req, res) {
     if (logsError) throw logsError
     if (slidesError) throw slidesError
 
-    const { data: episodePages, error: episodePagesError } = await supabase
-  .from('episode_pages')
-  .select('id, episode_id, story_id, image_url, sort_order, width, height')
-  .eq('story_id', storyId)
-  .order('sort_order', { ascending: true })
+    const episodeIds = (episodes || [])
+      .map((episode) => episode.id)
+      .filter(Boolean)
 
-if (episodePagesError) throw episodePagesError
+    let episodePages = []
 
-const pagesByEpisode = new Map()
+    if (episodeIds.length) {
+      const { data, error } = await supabase
+        .from('episode_pages')
+        .select('id, episode_id, story_id, image_url, sort_order, width, height')
+        .in('episode_id', episodeIds)
+        .order('sort_order', { ascending: true })
 
-;(episodePages || []).forEach((page) => {
-  const pages = pagesByEpisode.get(page.episode_id) || []
-  pages.push(page)
-  pagesByEpisode.set(page.episode_id, pages)
-})
+      if (error) throw error
+      episodePages = data || []
+    }
 
-const adminEpisodes = (episodes || []).map((episode) => ({
-  ...episode,
-  pages: pagesByEpisode.get(episode.id) || [],
-}))
+    const pagesByEpisode = new Map()
+
+    episodePages.forEach((page) => {
+      const pages = pagesByEpisode.get(page.episode_id) || []
+      pages.push(page)
+      pagesByEpisode.set(page.episode_id, pages)
+    })
+
+    const adminEpisodes = (episodes || []).map((episode) => ({
+      ...episode,
+      pages: pagesByEpisode.get(episode.id) || [],
+    }))
 
     const storySlides = slides || []
     const storyData = publicStory(story, authors.get(story.author_id))
