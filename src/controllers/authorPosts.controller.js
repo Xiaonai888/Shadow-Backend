@@ -1,3 +1,4 @@
+import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import {
@@ -13,6 +14,54 @@ import {
   authorReaderBlockedPayload,
   getActiveAuthorReaderBlock,
 } from '../utils/authorReaderCommentBlocks.js'
+
+function getRequestUserId(req) {
+  try {
+    const authHeader =
+      req.headers.authorization || ''
+    const token = authHeader.startsWith(
+      'Bearer '
+    )
+      ? authHeader.slice(7)
+      : ''
+
+    if (!token) return null
+
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    )
+
+    return decoded.type === 'reader'
+      ? decoded.user_id || null
+      : null
+  } catch {
+    return null
+  }
+}
+
+async function getAuthorPostCommentLikedIds(
+  userId,
+  commentIds
+) {
+  if (!userId || !commentIds.length) {
+    return new Set()
+  }
+
+  const { data, error } = await supabase
+    .from('author_page_post_comment_likes')
+    .select('comment_id')
+    .eq('user_id', userId)
+    .in('comment_id', commentIds)
+
+  if (error) throw error
+
+  return new Set(
+    (data || []).map((item) =>
+      String(item.comment_id)
+    )
+  )
+}
 
 function normalizePageUsername(username) {
   return String(username || '')
@@ -916,19 +965,36 @@ export async function getAuthorPostReactions(req, res) {
 }
 
 
-function publicAuthorPostComment(comment) {
+function publicAuthorPostComment(
+  comment,
+  likedIds = new Set()
+) {
   const isDeleted = Boolean(comment.deleted_at)
+  const relatedUser = Array.isArray(comment.user)
+    ? comment.user[0]
+    : comment.user
 
   return {
     id: comment.id,
     post_id: comment.post_id,
     user_id: isDeleted ? null : comment.user_id,
     parent_id: comment.parent_id,
-    text: isDeleted ? 'Comment deleted' : comment.text || '',
+    text: isDeleted
+      ? 'Comment deleted'
+      : comment.text || '',
     is_deleted: isDeleted,
-    is_hidden: isDeleted ? false : Boolean(comment.is_hidden),
-    is_pinned: isDeleted ? false : Boolean(comment.is_pinned),
-    likes: isDeleted ? 0 : Number(comment.likes || 0),
+    is_hidden: isDeleted
+      ? false
+      : Boolean(comment.is_hidden),
+    is_pinned: isDeleted
+      ? false
+      : Boolean(comment.is_pinned),
+    likes: isDeleted
+      ? 0
+      : Number(comment.likes || 0),
+    liked:
+      !isDeleted &&
+      likedIds.has(String(comment.id)),
     created_at: comment.created_at,
     updated_at: comment.updated_at,
     user: isDeleted
@@ -939,13 +1005,19 @@ function publicAuthorPostComment(comment) {
           avatar_url: '',
           role: 'reader',
         }
-      : comment.user
+      : relatedUser
         ? {
-            id: comment.user.id,
-            name: comment.user.name || comment.user.username || 'Reader',
-            username: comment.user.username || '',
-            avatar_url: comment.user.avatar_url || '',
-            role: comment.user.role || 'reader',
+            id: relatedUser.id,
+            name:
+              relatedUser.name ||
+              relatedUser.username ||
+              'Reader',
+            username:
+              relatedUser.username || '',
+            avatar_url:
+              relatedUser.avatar_url || '',
+            role:
+              relatedUser.role || 'reader',
           }
         : {
             id: null,
@@ -955,13 +1027,19 @@ function publicAuthorPostComment(comment) {
             role: 'reader',
           },
     replies: Array.isArray(comment.replies)
-      ? comment.replies.map(publicAuthorPostComment)
+      ? comment.replies.map((reply) =>
+          publicAuthorPostComment(
+            reply,
+            likedIds
+          )
+        )
       : [],
   }
 }
 
 export async function getAuthorPostComments(req, res) {
   try {
+    const userId = getRequestUserId(req)
     const postId = String(req.params.postId || '').trim()
     const limit = Math.min(30, Math.max(1, Number(req.query.limit || 20)))
 
@@ -1058,6 +1136,19 @@ export async function getAuthorPostComments(req, res) {
       replies: repliesByParent.get(String(comment.id)) || [],
     }))
 
+    const commentIds = comments.flatMap((comment) => [
+      comment.id,
+      ...(comment.replies || []).map(
+        (reply) => reply.id
+      ),
+    ]).filter(Boolean)
+
+    const likedIds =
+      await getAuthorPostCommentLikedIds(
+        userId,
+        commentIds
+      )
+
     const { count, error: countError } = await supabase
       .from('author_page_post_comments')
       .select('id', {
@@ -1072,7 +1163,12 @@ export async function getAuthorPostComments(req, res) {
 
     return res.status(200).json({
       ok: true,
-      comments: comments.map(publicAuthorPostComment),
+      comments: comments.map((comment) =>
+        publicAuthorPostComment(
+          comment,
+          likedIds
+        )
+      ),
       total: Number(count || 0),
       has_more: false,
     })
@@ -1355,6 +1451,225 @@ export async function updateOwnAuthorPostComment(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to update comment',
+      error: error.message,
+    })
+  }
+}
+
+export async function toggleAuthorPostCommentLike(
+  req,
+  res
+) {
+  try {
+    const userId = req.user?.user_id
+    const commentId = String(
+      req.params.commentId || ''
+    ).trim()
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!commentId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment ID is required',
+      })
+    }
+
+    const { data: comment, error: commentError } =
+      await supabase
+        .from('author_page_post_comments')
+        .select(
+          'id, post_id, user_id, text, deleted_at'
+        )
+        .eq('id', commentId)
+        .is('deleted_at', null)
+        .maybeSingle()
+
+    if (commentError) throw commentError
+
+    if (!comment) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
+
+    const { data: post, error: postError } =
+      await supabase
+        .from('author_page_posts')
+        .select(
+          'id, author_page_id, user_id, status'
+        )
+        .eq('id', comment.post_id)
+        .eq('status', 'active')
+        .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Author Page post not found',
+      })
+    }
+
+    const {
+      data: existingLike,
+      error: lookupError,
+    } = await supabase
+      .from('author_page_post_comment_likes')
+      .select('id')
+      .eq('comment_id', commentId)
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (lookupError) throw lookupError
+
+    let liked = false
+
+    if (existingLike?.id) {
+      const { error: deleteError } =
+        await supabase
+          .from(
+            'author_page_post_comment_likes'
+          )
+          .delete()
+          .eq('id', existingLike.id)
+
+      if (deleteError) throw deleteError
+    } else {
+      const { error: insertError } =
+        await supabase
+          .from(
+            'author_page_post_comment_likes'
+          )
+          .insert({
+            comment_id: commentId,
+            user_id: userId,
+          })
+
+      if (insertError) throw insertError
+      liked = true
+    }
+
+    const { count, error: countError } =
+      await supabase
+        .from(
+          'author_page_post_comment_likes'
+        )
+        .select('id', {
+          count: 'exact',
+          head: true,
+        })
+        .eq('comment_id', commentId)
+
+    if (countError) throw countError
+
+    const likes = Number(count || 0)
+
+    const { error: updateCommentError } =
+      await supabase
+        .from('author_page_post_comments')
+        .update({
+          likes,
+          updated_at:
+            new Date().toISOString(),
+        })
+        .eq('id', commentId)
+
+    if (updateCommentError) {
+      throw updateCommentError
+    }
+
+    const commentBelongsToAuthor =
+      String(comment.user_id || '') ===
+      String(post.user_id || '')
+    const isSelfLike =
+      String(comment.user_id || '') ===
+      String(userId)
+    const sourceKey =
+      `author-post-comment-like:${commentId}:${userId}`
+
+    if (
+      commentBelongsToAuthor &&
+      !isSelfLike &&
+      post.author_page_id
+    ) {
+      if (!liked) {
+        await deleteAuthorPageNotificationBySourceKeySafely({
+          authorPageId:
+            post.author_page_id,
+          type: 'reaction',
+          sourceKey,
+        })
+      } else {
+        const {
+          data: reader,
+          error: readerError,
+        } = await supabase
+          .from('users')
+          .select(
+            'id, name, username, avatar_url'
+          )
+          .eq('id', userId)
+          .maybeSingle()
+
+        if (readerError) throw readerError
+
+        const readerName =
+          reader?.name ||
+          reader?.username ||
+          'A reader'
+
+        await createAuthorPageNotificationSafely({
+          authorPageId:
+            post.author_page_id,
+          authorUserId: post.user_id,
+          type: 'reaction',
+          title:
+            `${readerName} liked your comment`,
+          message: String(
+            comment.text || ''
+          ).slice(0, 160),
+          targetUrl:
+            `/author/page?post=${post.id}`,
+          sourceKey,
+          metadata: {
+            post_id: post.id,
+            comment_id: commentId,
+            reaction_type:
+              'comment_like',
+            reader_id: userId,
+            reader_name: readerName,
+            reader_username:
+              reader?.username || '',
+            reader_avatar_url:
+              reader?.avatar_url || '',
+          },
+        })
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      liked,
+      likes,
+    })
+  } catch (error) {
+    console.error(
+      'TOGGLE AUTHOR POST COMMENT LIKE ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to update comment like',
       error: error.message,
     })
   }
