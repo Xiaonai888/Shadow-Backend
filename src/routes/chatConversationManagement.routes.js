@@ -1,44 +1,81 @@
 import express from 'express'
-import { ChatServiceError } from '../services/chat.service.js'
+import {
+  ChatServiceError,
+} from '../services/chat.service.js'
 import {
   archiveConversation,
-  deleteConversationForUser,
+  deleteConversation,
   listManagedConversations,
   unarchiveConversation,
 } from '../services/chatConversationManagement.service.js'
+import {
+  createSpamGuard,
+} from '../middleware/spamGuard.middleware.js'
 
 const router = express.Router()
 
-function handleError(res, error, label) {
-  console.error(label, {
-    message: error?.message || error,
-    cause: error?.cause?.message || null,
+const conversationReadGuard =
+  createSpamGuard({
+    scope:
+      'chat_conversation_management_read',
+    threshold: 120,
+    windowSeconds: 60,
   })
 
-  if (error instanceof ChatServiceError) {
-    return res.status(error.status).json({
-      ok: false,
-      code: error.code,
-      message: error.message,
-    })
+const conversationWriteGuard =
+  createSpamGuard({
+    scope:
+      'chat_conversation_management_write',
+    threshold: 30,
+    windowSeconds: 60,
+  })
+
+function handleError(
+  res,
+  error,
+  label
+) {
+  console.error(label, {
+    message:
+      error?.message || error,
+    cause:
+      error?.cause?.message || null,
+  })
+
+  if (
+    error instanceof
+    ChatServiceError
+  ) {
+    return res
+      .status(error.status)
+      .json({
+        ok: false,
+        code: error.code,
+        message: error.message,
+      })
   }
 
   return res.status(500).json({
     ok: false,
     code: 'CHAT_SERVER_ERROR',
-    message: 'Chat is temporarily unavailable',
+    message:
+      'Chat is temporarily unavailable',
   })
 }
 
 router.get(
   '/conversations/managed',
+  conversationReadGuard,
   async (req, res) => {
     try {
       const conversations =
         await listManagedConversations({
-          userId: req.user?.user_id,
-          status: req.query?.status,
-          view: req.query?.view,
+          userId:
+            req.user?.user_id,
+          status:
+            req.query?.status,
+          view:
+            req.query?.view,
         })
 
       return res.status(200).json({
@@ -57,12 +94,17 @@ router.get(
 
 router.patch(
   '/conversations/:conversationId/archive',
+  conversationWriteGuard,
   async (req, res) => {
     try {
-      const result = await archiveConversation({
-        userId: req.user?.user_id,
-        conversationId: req.params.conversationId,
-      })
+      const result =
+        await archiveConversation({
+          userId:
+            req.user?.user_id,
+          conversationId:
+            req.params
+              .conversationId,
+        })
 
       return res.status(200).json({
         ok: true,
@@ -80,12 +122,17 @@ router.patch(
 
 router.delete(
   '/conversations/:conversationId/archive',
+  conversationWriteGuard,
   async (req, res) => {
     try {
-      const result = await unarchiveConversation({
-        userId: req.user?.user_id,
-        conversationId: req.params.conversationId,
-      })
+      const result =
+        await unarchiveConversation({
+          userId:
+            req.user?.user_id,
+          conversationId:
+            req.params
+              .conversationId,
+        })
 
       return res.status(200).json({
         ok: true,
@@ -103,12 +150,21 @@ router.delete(
 
 router.delete(
   '/conversations/:conversationId',
+  conversationWriteGuard,
   async (req, res) => {
     try {
-      const result = await deleteConversationForUser({
-        userId: req.user?.user_id,
-        conversationId: req.params.conversationId,
-      })
+      const result =
+        await deleteConversation({
+          userId:
+            req.user?.user_id,
+          conversationId:
+            req.params
+              .conversationId,
+          scope:
+            req.body?.scope ||
+            req.query?.scope ||
+            'for_me',
+        })
 
       return res.status(200).json({
         ok: true,
