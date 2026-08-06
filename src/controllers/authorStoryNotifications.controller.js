@@ -27,6 +27,21 @@ function normalizeNotification(item) {
   }
 }
 
+function normalizePreferences(rows = []) {
+  const preferences = {}
+
+  for (const row of rows) {
+    preferences[row.type] = {
+      is_enabled: row.is_enabled !== false,
+      frequency_level: FREQUENCY_LEVELS.has(row.frequency_level)
+        ? row.frequency_level
+        : 'normal',
+    }
+  }
+
+  return preferences
+}
+
 async function getAuthorPage(userId) {
   const { data, error } = await supabase
     .from('author_pages')
@@ -66,22 +81,32 @@ export async function getMyAuthorStoryNotifications(req, res) {
     if (type !== 'all') query = query.eq('type', type)
     if (unreadOnly) query = query.eq('is_read', false)
 
-    const { data, error } = await query
+    const [
+      { data, error },
+      { count, error: countError },
+      { data: preferenceRows, error: preferenceError },
+    ] = await Promise.all([
+      query,
+      supabase
+        .from('author_story_notifications')
+        .select('id', { count: 'exact', head: true })
+        .eq('author_id', authorPage.id)
+        .eq('is_read', false),
+      supabase
+        .from('author_story_notification_preferences')
+        .select('type, is_enabled, frequency_level')
+        .eq('author_id', authorPage.id),
+    ])
 
     if (error) throw error
-
-    const { count, error: countError } = await supabase
-      .from('author_story_notifications')
-      .select('id', { count: 'exact', head: true })
-      .eq('author_id', authorPage.id)
-      .eq('is_read', false)
-
     if (countError) throw countError
+    if (preferenceError) throw preferenceError
 
     return res.status(200).json({
       ok: true,
       notifications: (data || []).map(normalizeNotification),
       unread_count: Number(count || 0),
+      preferences: normalizePreferences(preferenceRows || []),
     })
   } catch (error) {
     console.error('GET AUTHOR STORY NOTIFICATIONS ERROR:', error)
