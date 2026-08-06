@@ -38,6 +38,7 @@ import {
   getAuthorPostReactions,
   setMyAuthorPostPinned,
   setMyAuthorPostReaction,
+  toggleAuthorPostCommentLike,
   updateMyAuthorPost,
   updateOwnAuthorPostComment,
 } from '../controllers/authorPosts.controller.js'
@@ -167,6 +168,7 @@ router.get('/page/posts/:postId/reactions', getAuthorPostReactions)
 router.get('/page/posts/:postId/comments', getAuthorPostComments)
 router.post('/me/posts/:postId/comments', requireUser, createAuthorPostComment)
 router.patch('/me/post-comments/:commentId', requireUser, updateOwnAuthorPostComment)
+router.post('/me/post-comments/:commentId/like', requireUser, toggleAuthorPostCommentLike)
 router.delete('/me/post-comments/:commentId', requireUser, deleteOwnAuthorPostComment)
 router.get('/page/posts/:postId/echoes', requireUser, getAuthorPostEchoes)
 router.post('/page/posts/:postId/echoes', requireUser, createAuthorPostEcho)
