@@ -146,7 +146,6 @@ async function getOtherParticipant(conversationId, userId) {
     )
     .eq('conversation_id', conversationId)
     .neq('user_id', userId)
-    .is('deleted_at', null)
     .limit(1)
     .maybeSingle()
 
@@ -964,11 +963,29 @@ export async function sendConversationMessage({
     throw databaseFailure(error, 'Failed to send message')
   }
 
+  const { error: restoreError } = await supabase
+    .from('chat_participants')
+    .update({
+      archived_at: null,
+      deleted_at: null,
+    })
+    .eq('id', otherParticipant.id)
+
+  if (restoreError) {
+    throw databaseFailure(
+      restoreError,
+      'Failed to restore recipient conversation'
+    )
+  }
+
   const readAt = new Date().toISOString()
 
   await supabase
     .from('chat_participants')
-    .update({ last_read_at: readAt })
+    .update({
+      last_read_at: readAt,
+      archived_at: null,
+    })
     .eq('id', participant.id)
 
   const sender = await getPublicUser(safeUserId)
