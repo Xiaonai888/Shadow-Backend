@@ -26,9 +26,11 @@ import {
   getPublicAuthorPage,
   getTopAuthorPages,
   unfollowAuthorPage,
+} from '../controllers/authors.controller.js'
+import {
   updateAuthorAvatar,
   updateAuthorProfileImages,
-} from '../controllers/authors.controller.js'
+} from '../controllers/authorProfileMedia.controller.js'
 import {
   createAuthorPostComment,
   createMyAuthorPost,
@@ -103,7 +105,6 @@ import {
   markMyAuthorPageNotificationUnread,
   updateMyAuthorPageNotificationPreference,
 } from '../controllers/authorPageNotifications.controller.js'
-
 
 import {
   blockReaderAuthorPage,
