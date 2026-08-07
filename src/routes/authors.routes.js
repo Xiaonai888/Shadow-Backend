@@ -1,6 +1,7 @@
 import { getMyAuthorDashboard } from '../controllers/authorDashboard.controller.js'
 import { getFollowedAuthorPostsFeed } from '../controllers/followedAuthorPostsFeed.controller.js'
 import { getDiscoverAuthorSuggestions } from '../controllers/authorDiscovery.controller.js'
+import { inviteAuthorPageFriend } from '../controllers/authorPageInvites.controller.js'
 import express from 'express'
 
 import {
@@ -184,5 +185,6 @@ router.post('/me/post-comments/:commentId/like', requireUser, toggleAuthorPostCo
 router.delete('/me/post-comments/:commentId', requireUser, deleteOwnAuthorPostComment)
 router.get('/page/posts/:postId/echoes', requireUser, getAuthorPostEchoes)
 router.post('/page/posts/:postId/echoes', requireUser, createAuthorPostEcho)
+router.post('/page/:pageUsername/invite', requireUser, inviteAuthorPageFriend)
 
 export default router
