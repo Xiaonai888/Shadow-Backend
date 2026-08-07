@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { assertR2MediaReference } from '../services/mediaStoragePolicy.service.js'
 import { blockedWordsWarningPayload, findBlockedWordsInContent } from '../utils/blockedWords.js'
 import {
   applyEpisodeAccess,
@@ -87,6 +88,69 @@ function cleanNullableText(value) {
   return text || null
 }
 
+function cleanMediaReference(
+  value,
+  {
+    field = 'media',
+    currentValue = '',
+    allowedLegacyValues = [],
+  } = {}
+) {
+  const input = cleanNullableText(value)
+
+  if (!input) return null
+
+  const legacyValues = new Set(
+    [currentValue, ...allowedLegacyValues]
+      .map((item) => cleanText(item))
+      .filter(Boolean)
+  )
+
+  if (legacyValues.has(input)) return input
+
+  return assertR2MediaReference(input, {
+    field,
+    allowEmpty: false,
+  })
+}
+
+function extractHtmlImageSources(value) {
+  const sources = []
+  const html = String(value || '')
+  const pattern = /<img\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi
+  let match
+
+  while ((match = pattern.exec(html))) {
+    const source = cleanText(match[1] || match[2] || match[3])
+    if (source) sources.push(source)
+  }
+
+  return sources
+}
+
+function validateEpisodeContentMedia(content, currentContent = '') {
+  const oldSources = new Set(extractHtmlImageSources(currentContent))
+
+  extractHtmlImageSources(content).forEach((source, index) => {
+    if (oldSources.has(source)) return
+
+    assertR2MediaReference(source, {
+      field: `episodes.content.images[${index}]`,
+      allowEmpty: false,
+    })
+  })
+}
+
+function sendMediaAwareError(res, error, fallback) {
+  const statusCode = Number(error?.statusCode) || 500
+
+  return res.status(statusCode).json({
+    ok: false,
+    message: statusCode === 400 ? error.message : fallback,
+    error: error.message,
+  })
+}
+
 function cleanTags(value) {
   if (!Array.isArray(value)) return []
 
@@ -120,13 +184,19 @@ function cleanOptionalPositiveInteger(value) {
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : null
 }
 
-function cleanEpisodePages(value) {
+function cleanEpisodePages(value, allowedLegacyValues = []) {
   if (!Array.isArray(value)) return []
 
   return value
     .slice(0, MAX_MANGA_PAGES)
     .map((page, index) => ({
-      image_url: cleanText(page?.image_url || page?.imageUrl),
+      image_url: cleanMediaReference(
+        page?.image_url || page?.imageUrl,
+        {
+          field: `episode_pages[${index}].image_url`,
+          allowedLegacyValues,
+        }
+      ),
       storage_path: cleanNullableText(page?.storage_path || page?.storagePath),
       sort_order: index,
       width: cleanOptionalPositiveInteger(page?.width),
@@ -135,6 +205,28 @@ function cleanEpisodePages(value) {
       mime_type: cleanNullableText(page?.mime_type || page?.mimeType),
     }))
     .filter((page) => page.image_url)
+}
+
+function cleanStorySlides(value, allowedLegacyValues = []) {
+  if (!Array.isArray(value)) return []
+
+  return value
+    .slice(0, 5)
+    .map((slide, index) => ({
+      image_url: cleanMediaReference(
+        slide?.image_url || slide?.imageUrl,
+        {
+          field: `story_carousel_slides[${index}].image_url`,
+          allowedLegacyValues,
+        }
+      ),
+      link_url: cleanNullableText(slide?.link_url || slide?.linkUrl),
+      sort_order: Number.isFinite(Number(slide?.sort_order ?? slide?.sortOrder))
+        ? Number(slide?.sort_order ?? slide?.sortOrder)
+        : index,
+      is_active: slide?.is_active ?? slide?.isActive ?? true,
+    }))
+    .filter((slide) => slide.image_url)
 }
 
 function publicEpisodePage(page) {
@@ -306,7 +398,7 @@ async function getEpisodePages(episodeId) {
 }
 
 async function saveEpisodePages({ episodeId, storyId, pages }) {
-  const cleanPages = cleanEpisodePages(pages)
+  const cleanPages = Array.isArray(pages) ? pages : []
   const now = new Date().toISOString()
 
   if (!cleanPages.length) {
@@ -425,26 +517,21 @@ async function getStorySlides(storyId) {
 }
 
 async function replaceStorySlides(storyId, slides) {
+  const slideRows = (Array.isArray(slides) ? slides : [])
+    .map((slide) => ({
+      story_id: storyId,
+      image_url: slide.image_url,
+      link_url: slide.link_url,
+      sort_order: slide.sort_order,
+      is_active: slide.is_active,
+    }))
+
   const { error: deleteError } = await supabase
     .from('story_carousel_slides')
     .delete()
     .eq('story_id', storyId)
 
   if (deleteError) throw deleteError
-
-  const slideRows = (Array.isArray(slides) ? slides : [])
-    .slice(0, 5)
-    .map((slide, index) => ({
-      story_id: storyId,
-      image_url: cleanText(slide.image_url || slide.imageUrl),
-      link_url: cleanNullableText(slide.link_url || slide.linkUrl),
-      sort_order: Number.isFinite(Number(slide.sort_order ?? slide.sortOrder))
-        ? Number(slide.sort_order ?? slide.sortOrder)
-        : index,
-      is_active: slide.is_active ?? slide.isActive ?? true,
-    }))
-    .filter((slide) => slide.image_url)
-
   if (!slideRows.length) return []
 
   const { data, error } = await supabase
@@ -509,9 +596,13 @@ export async function createStory(req, res) {
     const tags = cleanTags(req.body.tags)
     const description = cleanNullableText(req.body.description)
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
-    const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
-const landscapeThumbnailUrl = cleanNullableText(
-  req.body.landscape_thumbnail_url || req.body.landscapeThumbnailUrl
+    const coverUrl = cleanMediaReference(
+      req.body.cover_url || req.body.coverUrl,
+      { field: 'stories.cover_url' }
+    )
+const landscapeThumbnailUrl = cleanMediaReference(
+  req.body.landscape_thumbnail_url || req.body.landscapeThumbnailUrl,
+  { field: 'stories.landscape_thumbnail_url' }
 )
 const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
 const autoFreeOldEpisodesEnabled = cleanBoolean(
@@ -533,7 +624,7 @@ const autoFreeMaxPercent = cleanPositiveInteger(
   10,
   100
 )
-const slides = Array.isArray(req.body.slides) ? req.body.slides.slice(0, 5) : []
+const slides = cleanStorySlides(req.body.slides)
 
     const payloadError = validateStoryPayload({ title, storyLanguage, mainGenre, description })
 
@@ -580,12 +671,7 @@ const slides = Array.isArray(req.body.slides) ? req.body.slides.slice(0, 5) : []
     })
   } catch (error) {
     console.error('CREATE STORY ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to create story',
-      error: error.message,
-    })
+    return sendMediaAwareError(res, error, 'Failed to create story')
   }
 }
 
@@ -631,9 +717,19 @@ export async function updateStory(req, res) {
     const tags = cleanTags(req.body.tags)
     const description = cleanNullableText(req.body.description)
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
-    const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
-const landscapeThumbnailUrl = cleanNullableText(
-  req.body.landscape_thumbnail_url || req.body.landscapeThumbnailUrl
+    const coverUrl = cleanMediaReference(
+      req.body.cover_url || req.body.coverUrl,
+      {
+        field: 'stories.cover_url',
+        currentValue: oldStory.cover_url,
+      }
+    )
+const landscapeThumbnailUrl = cleanMediaReference(
+  req.body.landscape_thumbnail_url || req.body.landscapeThumbnailUrl,
+  {
+    field: 'stories.landscape_thumbnail_url',
+    currentValue: oldStory.landscape_thumbnail_url,
+  }
 )
 const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
 const autoFreeOldEpisodesEnabled = cleanBoolean(
@@ -655,7 +751,11 @@ const autoFreeMaxPercent = cleanPositiveInteger(
   Number(oldStory.auto_free_max_percent || 10),
   100
 )
-const slides = Array.isArray(req.body.slides) ? req.body.slides.slice(0, 5) : []
+const existingSlides = await getStorySlides(storyId)
+const legacySlideUrls = existingSlides
+  .map((slide) => slide.image_url)
+  .filter(Boolean)
+const slides = cleanStorySlides(req.body.slides, legacySlideUrls)
 
     const payloadError = validateStoryPayload({ title, storyLanguage, mainGenre, description })
 
@@ -702,12 +802,7 @@ const slides = Array.isArray(req.body.slides) ? req.body.slides.slice(0, 5) : []
     })
   } catch (error) {
     console.error('UPDATE STORY ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to update story',
-      error: error.message,
-    })
+    return sendMediaAwareError(res, error, 'Failed to update story')
   }
 }
 
@@ -817,12 +912,20 @@ export async function createEpisode(req, res) {
     const isManga = story.story_type === 'manga'
     const title = cleanText(req.body.title)
     const content = isManga ? '' : String(req.body.content || '')
+
+    if (!isManga) {
+      validateEpisodeContentMedia(content)
+    }
+
     const pagesInput = isManga
       ? req.body.pages || req.body.episode_pages || req.body.episodePages || []
       : []
     const pages = isManga ? cleanEpisodePages(pagesInput) : []
     const pageCount = pages.length
-    const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
+    const coverUrl = cleanMediaReference(
+      req.body.cover_url || req.body.coverUrl,
+      { field: 'episodes.cover_url' }
+    )
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
 
 const isFreePublished = cleanBoolean(
@@ -972,12 +1075,7 @@ return res.status(201).json({
 })
   } catch (error) {
     console.error('CREATE EPISODE ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to create episode',
-      error: error.message,
-    })
+    return sendMediaAwareError(res, error, 'Failed to create episode')
   }
 }
 
@@ -1129,19 +1227,32 @@ export async function updateEpisode(req, res) {
       req.body.episode_pages ??
       req.body.episodePages
     const hasPagesPayload = Array.isArray(pagesPayload)
-    const existingPages =
-      isManga && !hasPagesPayload
-        ? await getEpisodePages(episodeId)
-        : []
+    const currentPages = isManga
+      ? await getEpisodePages(episodeId)
+      : []
+    const legacyPageUrls = currentPages
+      .map((page) => page.image_url)
+      .filter(Boolean)
     const pages = isManga
       ? hasPagesPayload
-        ? cleanEpisodePages(pagesPayload)
-        : cleanEpisodePages(existingPages)
+        ? cleanEpisodePages(pagesPayload, legacyPageUrls)
+        : currentPages
       : []
     const pageCount = pages.length
     const title = cleanText(req.body.title)
     const content = isManga ? '' : String(req.body.content || '')
-    const coverUrl = cleanNullableText(req.body.cover_url || req.body.coverUrl)
+
+    if (!isManga) {
+      validateEpisodeContentMedia(content, episode.content || '')
+    }
+
+    const coverUrl = cleanMediaReference(
+      req.body.cover_url || req.body.coverUrl,
+      {
+        field: 'episodes.cover_url',
+        currentValue: episode.cover_url,
+      }
+    )
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
 
   const isFreePublished = cleanBoolean(
@@ -1230,7 +1341,7 @@ const status = cleanText(req.body.status || episode.status || 'draft')
       }
     }
 
-    let savedPages = existingPages
+    let savedPages = currentPages
 
     if (isManga && hasPagesPayload) {
       savedPages = await saveEpisodePages({
@@ -1289,12 +1400,7 @@ return res.status(200).json({
 })
   } catch (error) {
     console.error('UPDATE EPISODE ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to update episode',
-      error: error.message,
-    })
+    return sendMediaAwareError(res, error, 'Failed to update episode')
   }
 }
 
@@ -1722,4 +1828,3 @@ export async function restoreStoryFromTrash(req, res) {
     })
   }
 }
-
