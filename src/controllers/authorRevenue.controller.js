@@ -1,6 +1,15 @@
 import { supabase } from '../config/supabase.js'
 import { getAuthorProfileSummary } from '../services/authorProfileSummary.service.js'
 import { getAuthorIncomeRecordData } from '../services/authorIncomeRecords.service.js'
+import {
+  deleteR2ObjectByUrl,
+  uploadFileToR2,
+} from '../services/r2Storage.service.js'
+import {
+  assertR2MediaReference,
+  isR2PublicUrl,
+  isSupabaseStorageUrl,
+} from '../services/mediaStoragePolicy.service.js'
 const BOOST_REQUIRED_REQUIREMENTS = {
   total_published_episodes: 100,
   total_words: 100000,
@@ -151,6 +160,266 @@ function publicPaymentMethod(method) {
     created_at: method.created_at,
     updated_at: method.updated_at,
   }
+}
+
+const AUTHOR_PAYMENT_QR_MAX_BYTES = 2 * 1024 * 1024
+
+function authorPaymentQrError(message) {
+  const error = new Error(message)
+  error.statusCode = 400
+  return error
+}
+
+function detectAuthorPaymentQrType(buffer) {
+  if (
+    buffer.length >= 8 &&
+    buffer.subarray(0, 8).equals(
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+    )
+  ) {
+    return {
+      mimetype: 'image/png',
+      extension: 'png',
+    }
+  }
+
+  if (
+    buffer.length >= 3 &&
+    buffer[0] === 0xff &&
+    buffer[1] === 0xd8 &&
+    buffer[2] === 0xff
+  ) {
+    return {
+      mimetype: 'image/jpeg',
+      extension: 'jpg',
+    }
+  }
+
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return {
+      mimetype: 'image/webp',
+      extension: 'webp',
+    }
+  }
+
+  if (
+    buffer.length >= 6 &&
+    ['GIF87a', 'GIF89a'].includes(
+      buffer.subarray(0, 6).toString('ascii')
+    )
+  ) {
+    return {
+      mimetype: 'image/gif',
+      extension: 'gif',
+    }
+  }
+
+  return null
+}
+
+function decodeAuthorPaymentQrImage(value) {
+  const input = String(value || '').trim()
+  const match = input.match(
+    /^data:image\/(png|jpe?g|webp|gif);base64,([a-z0-9+/=\s]+)$/i
+  )
+
+  if (!match) return null
+
+  const encoded = match[2].replace(/\s+/g, '')
+
+  if (encoded.length > 3 * 1024 * 1024) {
+    throw authorPaymentQrError(
+      'QR image must be 2 MB or smaller'
+    )
+  }
+
+  const buffer = Buffer.from(encoded, 'base64')
+  const type = detectAuthorPaymentQrType(buffer)
+
+  if (!type || !buffer.length) {
+    throw authorPaymentQrError(
+      'QR image must be PNG, JPG, WEBP, or GIF'
+    )
+  }
+
+  if (buffer.length > AUTHOR_PAYMENT_QR_MAX_BYTES) {
+    throw authorPaymentQrError(
+      'QR image must be 2 MB or smaller'
+    )
+  }
+
+  return {
+    buffer,
+    ...type,
+  }
+}
+
+async function uploadAuthorPaymentQrToR2(
+  buffer,
+  mimetype,
+  extension,
+  userId
+) {
+  const url = await uploadFileToR2(
+    {
+      buffer,
+      originalname: `author-payment-qr.${extension}`,
+      mimetype,
+    },
+    `author-payment-methods/${userId}`
+  )
+
+  return assertR2MediaReference(url, {
+    field: 'author_payment_methods.qr_image_url',
+    allowEmpty: false,
+  })
+}
+
+async function copyLegacyAuthorPaymentQrToR2(
+  value,
+  userId
+) {
+  let sourceUrl
+
+  try {
+    sourceUrl = new URL(value)
+  } catch {
+    throw authorPaymentQrError(
+      'Invalid legacy QR image URL'
+    )
+  }
+
+  const configuredSupabaseUrl = String(
+    process.env.SUPABASE_URL || ''
+  ).trim()
+
+  if (configuredSupabaseUrl) {
+    let allowedOrigin
+
+    try {
+      allowedOrigin = new URL(
+        configuredSupabaseUrl
+      ).origin
+    } catch {
+      throw new Error('Invalid SUPABASE_URL')
+    }
+
+    if (sourceUrl.origin !== allowedOrigin) {
+      throw authorPaymentQrError(
+        'Legacy QR image must come from this Supabase project'
+      )
+    }
+  } else if (
+    !sourceUrl.hostname.endsWith('.supabase.co')
+  ) {
+    throw authorPaymentQrError(
+      'Invalid legacy Supabase QR image URL'
+    )
+  }
+
+  const response = await fetch(sourceUrl)
+
+  if (!response.ok) {
+    throw authorPaymentQrError(
+      'Old QR image could not be read. Please upload it again.'
+    )
+  }
+
+  const contentLength = Number(
+    response.headers.get('content-length') || 0
+  )
+
+  if (contentLength > AUTHOR_PAYMENT_QR_MAX_BYTES) {
+    throw authorPaymentQrError(
+      'QR image must be 2 MB or smaller'
+    )
+  }
+
+  const buffer = Buffer.from(
+    await response.arrayBuffer()
+  )
+  const type = detectAuthorPaymentQrType(buffer)
+
+  if (!type || !buffer.length) {
+    throw authorPaymentQrError(
+      'Old QR image is not a supported image'
+    )
+  }
+
+  if (buffer.length > AUTHOR_PAYMENT_QR_MAX_BYTES) {
+    throw authorPaymentQrError(
+      'QR image must be 2 MB or smaller'
+    )
+  }
+
+  return uploadAuthorPaymentQrToR2(
+    buffer,
+    type.mimetype,
+    type.extension,
+    userId
+  )
+}
+
+async function normalizeAuthorPaymentQrImage(
+  value,
+  userId
+) {
+  const input = String(value || '').trim()
+
+  if (!input) {
+    return {
+      url: null,
+      uploaded: false,
+    }
+  }
+
+  if (isR2PublicUrl(input)) {
+    return {
+      url: assertR2MediaReference(input, {
+        field: 'author_payment_methods.qr_image_url',
+        allowEmpty: false,
+      }),
+      uploaded: false,
+    }
+  }
+
+  const inlineImage =
+    decodeAuthorPaymentQrImage(input)
+
+  if (inlineImage) {
+    const url = await uploadAuthorPaymentQrToR2(
+      inlineImage.buffer,
+      inlineImage.mimetype,
+      inlineImage.extension,
+      userId
+    )
+
+    return {
+      url,
+      uploaded: true,
+    }
+  }
+
+  if (isSupabaseStorageUrl(input)) {
+    const url =
+      await copyLegacyAuthorPaymentQrToR2(
+        input,
+        userId
+      )
+
+    return {
+      url,
+      uploaded: true,
+    }
+  }
+
+  throw authorPaymentQrError(
+    'QR image must be uploaded to Cloudflare R2'
+  )
 }
 
 function buildRequirementProgress(current, required) {
@@ -1066,6 +1335,8 @@ export async function getMyAuthorPaymentMethods(req, res) {
 }
 
 export async function saveMyAuthorPaymentMethod(req, res) {
+  let uploadedQrUrl = null
+
   try {
     const userId = req.user?.user_id
 
@@ -1085,7 +1356,11 @@ export async function saveMyAuthorPaymentMethod(req, res) {
       })
     }
 
-    const methodType = String(req.body.method_type || req.body.methodType || '').trim()
+    const methodType = String(
+      req.body.method_type ||
+      req.body.methodType ||
+      ''
+    ).trim()
 
     if (!['bank_qr', 'paypal', 'phone'].includes(methodType)) {
       return res.status(400).json({
@@ -1094,42 +1369,113 @@ export async function saveMyAuthorPaymentMethod(req, res) {
       })
     }
 
+    const qrInput = String(
+      req.body.qr_image_url ||
+      req.body.qrImageUrl ||
+      ''
+    ).trim()
+
     const payload = {
       author_id: authorPage.id,
       user_id: userId,
       method_type: methodType,
-      display_name: String(req.body.display_name || req.body.displayName || '').trim() || null,
-      account_name: String(req.body.account_name || req.body.accountName || '').trim() || null,
-      bank_name: String(req.body.bank_name || req.body.bankName || '').trim() || null,
-      qr_image_url: String(req.body.qr_image_url || req.body.qrImageUrl || '').trim() || null,
-      paypal_name: String(req.body.paypal_name || req.body.paypalName || '').trim() || null,
-      paypal_email: String(req.body.paypal_email || req.body.paypalEmail || '').trim() || null,
-      phone_provider: String(req.body.phone_provider || req.body.phoneProvider || '').trim() || null,
-      phone_number: String(req.body.phone_number || req.body.phoneNumber || '').trim() || null,
+      display_name: String(
+        req.body.display_name ||
+        req.body.displayName ||
+        ''
+      ).trim() || null,
+      account_name: String(
+        req.body.account_name ||
+        req.body.accountName ||
+        ''
+      ).trim() || null,
+      bank_name: String(
+        req.body.bank_name ||
+        req.body.bankName ||
+        ''
+      ).trim() || null,
+      qr_image_url: null,
+      paypal_name: String(
+        req.body.paypal_name ||
+        req.body.paypalName ||
+        ''
+      ).trim() || null,
+      paypal_email: String(
+        req.body.paypal_email ||
+        req.body.paypalEmail ||
+        ''
+      ).trim() || null,
+      phone_provider: String(
+        req.body.phone_provider ||
+        req.body.phoneProvider ||
+        ''
+      ).trim() || null,
+      phone_number: String(
+        req.body.phone_number ||
+        req.body.phoneNumber ||
+        ''
+      ).trim() || null,
       status: 'active',
       is_primary: true,
       updated_at: new Date().toISOString(),
     }
 
-    if (methodType === 'bank_qr' && (!payload.account_name || !payload.bank_name || !payload.qr_image_url)) {
+    if (
+      methodType === 'bank_qr' &&
+      (
+        !payload.account_name ||
+        !payload.bank_name ||
+        !qrInput
+      )
+    ) {
       return res.status(400).json({
         ok: false,
-        message: 'Bank account name, bank name, and QR image are required',
+        message:
+          'Bank account name, bank name, and QR image are required',
       })
     }
 
-    if (methodType === 'paypal' && (!payload.paypal_name || !payload.paypal_email)) {
+    if (
+      methodType === 'paypal' &&
+      (
+        !payload.paypal_name ||
+        !payload.paypal_email
+      )
+    ) {
       return res.status(400).json({
         ok: false,
-        message: 'PayPal name and PayPal email are required',
+        message:
+          'PayPal name and PayPal email are required',
       })
     }
 
-    if (methodType === 'phone' && (!payload.phone_provider || !payload.phone_number || !payload.account_name)) {
+    if (
+      methodType === 'phone' &&
+      (
+        !payload.phone_provider ||
+        !payload.phone_number ||
+        !payload.account_name
+      )
+    ) {
       return res.status(400).json({
         ok: false,
-        message: 'Provider, phone number, and account name are required',
+        message:
+          'Provider, phone number, and account name are required',
       })
+    }
+
+    if (methodType === 'bank_qr') {
+      const normalizedQr =
+        await normalizeAuthorPaymentQrImage(
+          qrInput,
+          userId
+        )
+
+      payload.qr_image_url = normalizedQr.url
+
+      if (normalizedQr.uploaded) {
+        uploadedQrUrl = normalizedQr.url
+      }
     }
 
     await supabase
@@ -1148,18 +1494,41 @@ export async function saveMyAuthorPaymentMethod(req, res) {
 
     if (error) throw error
 
+    uploadedQrUrl = null
+
     return res.status(201).json({
       ok: true,
       message: 'Payment method saved',
       payment_method: publicPaymentMethod(data),
     })
   } catch (error) {
-    console.error('SAVE MY AUTHOR PAYMENT METHOD ERROR:', error)
+    if (uploadedQrUrl) {
+      try {
+        await deleteR2ObjectByUrl(uploadedQrUrl)
+      } catch (cleanupError) {
+        console.warn(
+          'AUTHOR PAYMENT QR CLEANUP WARNING:',
+          cleanupError.message
+        )
+      }
+    }
 
-    return res.status(500).json({
+    console.error(
+      'SAVE MY AUTHOR PAYMENT METHOD ERROR:',
+      error
+    )
+
+    const statusCode =
+      Number(error.statusCode) || 500
+
+    return res.status(statusCode).json({
       ok: false,
-      message: 'Failed to save payment method',
+      message:
+        statusCode === 400
+          ? error.message
+          : 'Failed to save payment method',
       error: error.message,
     })
   }
 }
+
