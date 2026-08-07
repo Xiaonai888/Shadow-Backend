@@ -3,6 +3,9 @@ import { supabase } from '../config/supabase.js'
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
+const MAX_SEARCH_TERMS = 12
+const MAX_SCAN_LIMIT = 100
+
 export class ChatUserSearchError extends Error {
   constructor(status, code, message) {
     super(message)
@@ -34,32 +37,83 @@ function normalizeSearchQuery(value) {
   return String(value || '')
     .normalize('NFKC')
     .replace(/^@+/, '')
-    .replace(/[^\p{L}\p{N}._\-\s]/gu, '')
+    .replace(/[^\p{L}\p{M}\p{N}._\-\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 50)
 }
 
 function normalizeCompareValue(value) {
-  return String(value || '')
-    .normalize('NFKC')
-    .trim()
-    .replace(/^@+/, '')
-    .toLowerCase()
+  return normalizeSearchQuery(value)
+    .toLocaleLowerCase()
 }
 
-function getValueRank(value, query) {
-  const normalized = normalizeCompareValue(value)
+function getSearchTerms(value) {
+  const query = normalizeSearchQuery(value)
 
-  if (!normalized) return 20
-  if (normalized === query) return 0
-  if (normalized.startsWith(query)) return 2
-  if (normalized.includes(query)) return 4
+  if (!query) return []
 
-  return 20
+  const normalized = query.toLocaleLowerCase()
+  const compact = normalized.replace(/\s+/g, '')
+  const candidates = [
+    normalized,
+    compact !== normalized ? compact : '',
+    ...normalized.split(/\s+/),
+  ]
+
+  const seen = new Set()
+  const terms = []
+
+  for (const candidate of candidates) {
+    const term = normalizeSearchQuery(candidate)
+    const key = term.toLocaleLowerCase()
+
+    if (!term || seen.has(key)) continue
+
+    seen.add(key)
+    terms.push(term)
+
+    if (terms.length >= MAX_SEARCH_TERMS) {
+      break
+    }
+  }
+
+  return terms
 }
 
-function getResultRank(result, query) {
+function makeIlikeFilter(columns, query) {
+  const terms = getSearchTerms(query)
+
+  return terms
+    .flatMap((term) =>
+      columns.map(
+        (column) =>
+          `${column}.ilike.*${term}*`
+      )
+    )
+    .join(',')
+}
+
+function getValueScore(value, query) {
+  const text = normalizeCompareValue(value)
+  const target = normalizeCompareValue(query)
+
+  if (!text || !target) return 0
+
+  const compactText = text.replace(/\s+/g, '')
+  const compactTarget = target.replace(/\s+/g, '')
+
+  if (text === target) return 1000
+  if (compactText === compactTarget) return 900
+  if (text.startsWith(target)) return 700
+  if (compactText.startsWith(compactTarget)) return 650
+  if (text.includes(target)) return 500
+  if (compactText.includes(compactTarget)) return 450
+
+  return 0
+}
+
+function getResultScore(result, query) {
   const values = [
     result.username,
     result.name,
@@ -69,10 +123,65 @@ function getResultRank(result, query) {
     result.owner_username,
     result.owner_name,
   ]
-
-  return Math.min(
-    ...values.map((value) => getValueRank(value, query))
+  const texts = values
+    .map(normalizeCompareValue)
+    .filter(Boolean)
+  const compactTexts = texts.map((text) =>
+    text.replace(/\s+/g, '')
   )
+  const target = normalizeCompareValue(query)
+  const terms = target
+    .split(/\s+/)
+    .filter(Boolean)
+
+  let score = Math.max(
+    0,
+    ...values.map((value) =>
+      getValueScore(value, target)
+    )
+  )
+  let matchedTerms = 0
+
+  for (const term of terms) {
+    let best = 0
+
+    for (let index = 0; index < texts.length; index += 1) {
+      const text = texts[index]
+      const compactText = compactTexts[index]
+
+      if (text === term || compactText === term) {
+        best = Math.max(best, 160)
+      } else if (
+        text.startsWith(term) ||
+        compactText.startsWith(term)
+      ) {
+        best = Math.max(best, 110)
+      } else if (
+        text.includes(term) ||
+        compactText.includes(term)
+      ) {
+        best = Math.max(best, 70)
+      }
+    }
+
+    if (best > 0) {
+      matchedTerms += 1
+      score += best
+    }
+  }
+
+  if (
+    terms.length > 1 &&
+    matchedTerms === terms.length
+  ) {
+    score += 300
+  }
+
+  if (result.result_type === 'author') {
+    score += 5
+  }
+
+  return score
 }
 
 function throwDatabaseError(error) {
@@ -106,8 +215,22 @@ export async function searchChatUsers({
     20,
     Math.max(1, Number(limit) || 12)
   )
-  const scanLimit = Math.min(80, safeLimit * 4)
-  const pattern = `%${safeQuery}%`
+  const scanLimit = Math.min(
+    MAX_SCAN_LIMIT,
+    Math.max(safeLimit * 5, 40)
+  )
+  const userFilter = makeIlikeFilter(
+    ['name', 'username'],
+    safeQuery
+  )
+  const pageFilter = makeIlikeFilter(
+    [
+      'page_name',
+      'page_username',
+      'page_slug',
+    ],
+    safeQuery
+  )
 
   const [
     usersResult,
@@ -121,9 +244,7 @@ export async function searchChatUsers({
       )
       .eq('is_active', true)
       .neq('id', safeUserId)
-      .or(
-        `name.ilike.${pattern},username.ilike.${pattern}`
-      )
+      .or(userFilter)
       .order('name', { ascending: true })
       .limit(scanLimit),
     supabase
@@ -133,9 +254,7 @@ export async function searchChatUsers({
       )
       .eq('status', 'active')
       .neq('user_id', safeUserId)
-      .or(
-        `page_name.ilike.${pattern},page_username.ilike.${pattern},page_slug.ilike.${pattern}`
-      )
+      .or(pageFilter)
       .order('page_name', { ascending: true })
       .limit(scanLimit),
     supabase
@@ -193,12 +312,15 @@ export async function searchChatUsers({
 
   for (const block of blocksResult.data || []) {
     const otherUserId =
-      String(block.blocker_user_id) === safeUserId
+      String(block.blocker_user_id) ===
+      safeUserId
         ? block.blocked_user_id
         : block.blocker_user_id
 
     if (otherUserId) {
-      blockedUserIds.add(String(otherUserId))
+      blockedUserIds.add(
+        String(otherUserId)
+      )
     }
   }
 
@@ -208,7 +330,6 @@ export async function searchChatUsers({
       user,
     ])
   )
-
   const pageMap = new Map()
 
   for (const page of [
@@ -222,76 +343,95 @@ export async function searchChatUsers({
   const readerResults = matchedUsers
     .filter(
       (user) =>
-        !blockedUserIds.has(String(user.id))
+        !blockedUserIds.has(
+          String(user.id)
+        )
     )
     .map((user) => ({
       id: user.id,
       user_id: user.id,
-      name: user.name || 'Shadow Reader',
+      name:
+        user.name || 'Shadow Reader',
       username: user.username || '',
-      avatar_url: user.avatar_url || null,
-      is_author: Boolean(user.is_author),
+      avatar_url:
+        user.avatar_url || null,
+      is_author:
+        Boolean(user.is_author),
       result_type: 'reader',
     }))
 
-  const authorResults = [...pageMap.values()]
+  const authorResults = [
+    ...pageMap.values(),
+  ]
     .filter(
       (page) =>
-        !blockedUserIds.has(String(page.user_id))
+        !blockedUserIds.has(
+          String(page.user_id)
+        )
     )
     .map((page) => {
-      const owner = ownerMap.get(String(page.user_id))
+      const owner = ownerMap.get(
+        String(page.user_id)
+      )
 
       return {
         id: page.id,
         author_page_id: page.id,
         user_id: page.user_id,
-        name: page.page_name || 'Author',
+        name:
+          page.page_name || 'Author',
         username:
           page.page_username ||
           page.page_slug ||
           '',
-        page_name: page.page_name || 'Author',
+        page_name:
+          page.page_name || 'Author',
         page_username:
           page.page_username || '',
-        page_slug: page.page_slug || '',
-        owner_name: owner?.name || '',
-        owner_username: owner?.username || '',
-        avatar_url: page.avatar_url || null,
+        page_slug:
+          page.page_slug || '',
+        owner_name:
+          owner?.name || '',
+        owner_username:
+          owner?.username || '',
+        avatar_url:
+          page.avatar_url || null,
         is_author: true,
         result_type: 'author',
       }
     })
 
-  const normalizedQuery =
-    normalizeCompareValue(safeQuery)
-
   return [
     ...readerResults,
     ...authorResults,
   ]
+    .map((result) => ({
+      result,
+      score: getResultScore(
+        result,
+        safeQuery
+      ),
+    }))
+    .filter((item) => item.score > 0)
     .sort((first, second) => {
-      const rankDifference =
-        getResultRank(first, normalizedQuery) -
-        getResultRank(second, normalizedQuery)
-
-      if (rankDifference !== 0) {
-        return rankDifference
-      }
-
       if (
-        first.result_type !== second.result_type
+        second.score !== first.score
       ) {
-        return first.result_type === 'author'
-          ? -1
-          : 1
+        return (
+          second.score - first.score
+        )
       }
 
-      return String(first.name || '').localeCompare(
-        String(second.name || ''),
+      return String(
+        first.result.name || ''
+      ).localeCompare(
+        String(
+          second.result.name || ''
+        ),
         undefined,
         { sensitivity: 'base' }
       )
     })
     .slice(0, safeLimit)
+    .map((item) => item.result)
 }
