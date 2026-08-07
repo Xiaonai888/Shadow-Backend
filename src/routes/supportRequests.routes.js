@@ -9,6 +9,7 @@ import {
   getMySupportRequest,
   listAdminSupportRequests,
   listMySupportRequests,
+  streamSupportScreenshot,
   updateAdminSupportRequest,
 } from '../controllers/supportRequests.controller.js'
 
@@ -34,6 +35,8 @@ function uploadScreenshot(req, res, next) {
     return res.status(error.statusCode || 400).json({ ok: false, message })
   })
 }
+
+router.get('/screenshot/:requestId', streamSupportScreenshot)
 
 router.post('/requests', requireUser, uploadScreenshot, createSupportRequest)
 router.get('/requests', requireUser, listMySupportRequests)
