@@ -1,4 +1,14 @@
 import { supabase } from '../config/supabase.js'
+import {
+  deleteR2ObjectByUrl,
+  uploadFileToR2,
+} from './r2Storage.service.js'
+import {
+  assertNoForbiddenMediaReferences,
+  isInlineMediaValue,
+  isR2PublicUrl,
+  isSupabaseStorageUrl,
+} from './mediaStoragePolicy.service.js'
 
 const AUTHOR_PAGE_NOTIFICATION_TYPES = new Set([
   'comment',
@@ -28,6 +38,9 @@ const FREQUENCY_TYPES = new Set([
   'review',
 ])
 
+const NOTIFICATION_MEDIA_MAX_BYTES =
+  5 * 1024 * 1024
+
 function cleanText(value, fallback = '') {
   return String(value ?? fallback).trim()
 }
@@ -36,6 +49,389 @@ function cleanMetadata(value) {
   return value && typeof value === 'object'
     ? { ...value }
     : {}
+}
+
+function mediaType(buffer) {
+  if (
+    buffer.length >= 8 &&
+    buffer.subarray(0, 8).equals(
+      Buffer.from([
+        137, 80, 78, 71,
+        13, 10, 26, 10,
+      ])
+    )
+  ) {
+    return {
+      mimetype: 'image/png',
+      extension: 'png',
+    }
+  }
+
+  if (
+    buffer.length >= 3 &&
+    buffer[0] === 0xff &&
+    buffer[1] === 0xd8 &&
+    buffer[2] === 0xff
+  ) {
+    return {
+      mimetype: 'image/jpeg',
+      extension: 'jpg',
+    }
+  }
+
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return {
+      mimetype: 'image/webp',
+      extension: 'webp',
+    }
+  }
+
+  if (
+    buffer.length >= 6 &&
+    ['GIF87a', 'GIF89a'].includes(
+      buffer.subarray(0, 6).toString('ascii')
+    )
+  ) {
+    return {
+      mimetype: 'image/gif',
+      extension: 'gif',
+    }
+  }
+
+  return null
+}
+
+function extensionFromMime(value) {
+  const mime = cleanText(value)
+    .toLowerCase()
+    .split(';')[0]
+
+  const map = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/webp': 'webp',
+    'image/gif': 'gif',
+  }
+
+  return map[mime] || ''
+}
+
+function decodeInlineMedia(value) {
+  const input = cleanText(value)
+  const match = input.match(
+    /^data:([^;,]+);base64,([\s\S]+)$/i
+  )
+
+  let mimetype = ''
+  let encoded = ''
+
+  if (match) {
+    mimetype = cleanText(match[1])
+    encoded = match[2]
+  } else if (
+    input.toLowerCase().startsWith('base64,')
+  ) {
+    encoded = input.slice(7)
+  } else {
+    return null
+  }
+
+  const normalized =
+    encoded.replace(/\s+/g, '')
+
+  if (
+    normalized.length >
+    7 * 1024 * 1024
+  ) {
+    return null
+  }
+
+  const buffer = Buffer.from(
+    normalized,
+    'base64'
+  )
+
+  if (
+    !buffer.length ||
+    buffer.length >
+      NOTIFICATION_MEDIA_MAX_BYTES
+  ) {
+    return null
+  }
+
+  const detected = mediaType(buffer)
+  const extension =
+    detected?.extension ||
+    extensionFromMime(mimetype)
+  const finalMime =
+    detected?.mimetype ||
+    mimetype
+
+  if (!extension || !finalMime) {
+    return null
+  }
+
+  return {
+    buffer,
+    mimetype: finalMime,
+    extension,
+  }
+}
+
+function getMediaName(value, fallbackExtension) {
+  try {
+    const url = new URL(value)
+    const name = decodeURIComponent(
+      url.pathname.split('/').pop() || ''
+    )
+
+    if (name && name.includes('.')) {
+      return name
+    }
+  } catch {}
+
+  return `notification-media.${fallbackExtension}`
+}
+
+async function readSupabaseMedia(value) {
+  let sourceUrl
+
+  try {
+    sourceUrl = new URL(value)
+  } catch {
+    return null
+  }
+
+  const configuredUrl =
+    cleanText(process.env.SUPABASE_URL)
+
+  if (!configuredUrl) return null
+
+  let allowedOrigin
+
+  try {
+    allowedOrigin =
+      new URL(configuredUrl).origin
+  } catch {
+    return null
+  }
+
+  if (
+    sourceUrl.origin !== allowedOrigin
+  ) {
+    return null
+  }
+
+  try {
+    const response = await fetch(sourceUrl)
+
+    if (!response.ok) return null
+
+    const contentLength =
+      Number(
+        response.headers.get(
+          'content-length'
+        ) || 0
+      )
+
+    if (
+      contentLength >
+      NOTIFICATION_MEDIA_MAX_BYTES
+    ) {
+      return null
+    }
+
+    const buffer = Buffer.from(
+      await response.arrayBuffer()
+    )
+
+    if (
+      !buffer.length ||
+      buffer.length >
+        NOTIFICATION_MEDIA_MAX_BYTES
+    ) {
+      return null
+    }
+
+    const detected = mediaType(buffer)
+    const headerMime =
+      cleanText(
+        response.headers.get(
+          'content-type'
+        )
+      ).split(';')[0]
+
+    const extension =
+      detected?.extension ||
+      extensionFromMime(headerMime) ||
+      cleanText(
+        sourceUrl.pathname
+          .split('.')
+          .pop()
+      ).toLowerCase()
+
+    if (!extension) return null
+
+    return {
+      buffer,
+      mimetype:
+        detected?.mimetype ||
+        headerMime ||
+        'application/octet-stream',
+      extension,
+      originalname:
+        getMediaName(
+          value,
+          extension
+        ),
+    }
+  } catch (error) {
+    console.warn(
+      'READ AUTHOR PAGE NOTIFICATION MEDIA WARNING:',
+      error.message
+    )
+
+    return null
+  }
+}
+
+async function uploadNotificationMedia(
+  media,
+  authorPageId
+) {
+  return uploadFileToR2(
+    {
+      buffer: media.buffer,
+      originalname:
+        media.originalname ||
+        `notification-media.${media.extension}`,
+      mimetype: media.mimetype,
+    },
+    `author-page-notifications/${authorPageId}`
+  )
+}
+
+async function sanitizeMediaString(
+  value,
+  context
+) {
+  const input = cleanText(value)
+
+  if (!input) return value
+
+  if (context.cache.has(input)) {
+    return context.cache.get(input)
+  }
+
+  if (isR2PublicUrl(input)) {
+    context.cache.set(input, input)
+    return input
+  }
+
+  let media = null
+
+  if (isSupabaseStorageUrl(input)) {
+    media = await readSupabaseMedia(input)
+
+    if (!media) {
+      context.cache.set(input, null)
+      return null
+    }
+  } else if (isInlineMediaValue(input)) {
+    media = decodeInlineMedia(input)
+
+    if (!media) {
+      context.cache.set(input, null)
+      return null
+    }
+  } else {
+    return value
+  }
+
+  try {
+    const url =
+      await uploadNotificationMedia(
+        media,
+        context.authorPageId
+      )
+
+    context.uploadedUrls.add(url)
+    context.cache.set(input, url)
+
+    return url
+  } catch (error) {
+    console.warn(
+      'UPLOAD AUTHOR PAGE NOTIFICATION MEDIA WARNING:',
+      error.message
+    )
+
+    context.cache.set(input, null)
+    return null
+  }
+}
+
+async function sanitizeMetadata(
+  value,
+  context
+) {
+  if (typeof value === 'string') {
+    return sanitizeMediaString(
+      value,
+      context
+    )
+  }
+
+  if (Array.isArray(value)) {
+    return Promise.all(
+      value.map((item) =>
+        sanitizeMetadata(
+          item,
+          context
+        )
+      )
+    )
+  }
+
+  if (
+    value &&
+    typeof value === 'object'
+  ) {
+    const entries =
+      await Promise.all(
+        Object.entries(value).map(
+          async ([key, item]) => [
+            key,
+            await sanitizeMetadata(
+              item,
+              context
+            ),
+          ]
+        )
+      )
+
+    return Object.fromEntries(entries)
+  }
+
+  return value
+}
+
+async function cleanupUploadedMedia(
+  uploadedUrls
+) {
+  for (const url of uploadedUrls) {
+    try {
+      await deleteR2ObjectByUrl(url)
+    } catch (error) {
+      console.warn(
+        'AUTHOR PAGE NOTIFICATION MEDIA CLEANUP WARNING:',
+        error.message
+      )
+    }
+  }
 }
 
 function getEffectiveType(item) {
@@ -231,116 +627,147 @@ export async function createAuthorPageNotification({
   sourceKey = '',
   metadata = {},
 }) {
-  const cleanAuthorPageId = cleanText(
-    authorPageId
-  )
-  const cleanTitle = cleanText(title)
-  const requestedType = cleanText(
-    type,
-    'system'
-  ).toLowerCase()
-  const cleanType =
-    AUTHOR_PAGE_NOTIFICATION_TYPES.has(
-      requestedType
-    )
-      ? requestedType
-      : 'system'
-  const cleanTargetUrl =
-    cleanText(targetUrl)
+  const uploadedUrls = new Set()
 
-  if (!cleanAuthorPageId || !cleanTitle) {
-    return null
-  }
-
-  let cleanAuthorUserId =
-    cleanText(authorUserId)
-
-  if (!cleanAuthorUserId) {
-    const authorPage =
-      await getAuthorPageOwner(
-        cleanAuthorPageId
+  try {
+    const cleanAuthorPageId =
+      cleanText(authorPageId)
+    const cleanTitle =
+      cleanText(title)
+    const requestedType =
+      cleanText(
+        type,
+        'system'
+      ).toLowerCase()
+    const cleanType =
+      AUTHOR_PAGE_NOTIFICATION_TYPES.has(
+        requestedType
       )
+        ? requestedType
+        : 'system'
+    const cleanTargetUrl =
+      cleanText(targetUrl)
 
-    cleanAuthorUserId = cleanText(
-      authorPage?.user_id
-    )
-  }
+    if (!cleanAuthorPageId || !cleanTitle) {
+      return null
+    }
 
-  if (!cleanAuthorUserId) return null
+    let cleanAuthorUserId =
+      cleanText(authorUserId)
 
-  const preference =
-    await getNotificationPreference({
-      authorPageId: cleanAuthorPageId,
-      type: cleanType,
-    })
+    if (!cleanAuthorUserId) {
+      const authorPage =
+        await getAuthorPageOwner(
+          cleanAuthorPageId
+        )
 
-  if (!preference.isEnabled) return null
+      cleanAuthorUserId =
+        cleanText(
+          authorPage?.user_id
+        )
+    }
 
-  const cleanSourceKey =
-    cleanText(sourceKey)
-  const cleanNotificationMetadata = {
-    ...cleanMetadata(metadata),
-    ...(cleanSourceKey
-      ? {
-          source_key: cleanSourceKey,
-        }
-      : {}),
-  }
+    if (!cleanAuthorUserId) return null
 
-  if (cleanSourceKey) {
-    const existing =
-      await findNotificationBySourceKey({
+    const preference =
+      await getNotificationPreference({
         authorPageId:
           cleanAuthorPageId,
         type: cleanType,
-        sourceKey: cleanSourceKey,
       })
 
-    if (existing) return existing
-  }
-
-  const shouldThrottle =
-    await shouldThrottleNotification({
-      authorPageId:
-        cleanAuthorPageId,
-      type: cleanType,
-      targetUrl: cleanTargetUrl,
-      frequencyLevel:
-        preference.frequencyLevel,
-    })
-
-  if (shouldThrottle) return null
-
-  const payload = {
-    authorPageId: cleanAuthorPageId,
-    authorUserId: cleanAuthorUserId,
-    originalType: cleanType,
-    title: cleanTitle,
-    message: cleanText(message),
-    targetUrl: cleanTargetUrl,
-    metadata:
-      cleanNotificationMetadata,
-  }
-
-  try {
-    return await insertNotification({
-      ...payload,
-      storedType: cleanType,
-    })
-  } catch (error) {
-    if (cleanType === 'system') {
-      throw error
+    if (!preference.isEnabled) {
+      return null
     }
 
-    console.warn(
-      `AUTHOR PAGE NOTIFICATION TYPE FALLBACK: ${cleanType}`,
-      error
+    const cleanSourceKey =
+      cleanText(sourceKey)
+
+    if (cleanSourceKey) {
+      const existing =
+        await findNotificationBySourceKey({
+          authorPageId:
+            cleanAuthorPageId,
+          type: cleanType,
+          sourceKey: cleanSourceKey,
+        })
+
+      if (existing) return existing
+    }
+
+    const shouldThrottle =
+      await shouldThrottleNotification({
+        authorPageId:
+          cleanAuthorPageId,
+        type: cleanType,
+        targetUrl: cleanTargetUrl,
+        frequencyLevel:
+          preference.frequencyLevel,
+      })
+
+    if (shouldThrottle) return null
+
+    const cleanNotificationMetadata = {
+      ...cleanMetadata(metadata),
+      ...(cleanSourceKey
+        ? {
+            source_key:
+              cleanSourceKey,
+          }
+        : {}),
+    }
+
+    const safeMetadata =
+      await sanitizeMetadata(
+        cleanNotificationMetadata,
+        {
+          authorPageId:
+            cleanAuthorPageId,
+          cache: new Map(),
+          uploadedUrls,
+        }
+      )
+
+    assertNoForbiddenMediaReferences(
+      safeMetadata,
+      'author_page_notifications.metadata'
     )
 
-    return insertNotification({
-      ...payload,
-      storedType: 'system',
-    })
+    const payload = {
+      authorPageId: cleanAuthorPageId,
+      authorUserId: cleanAuthorUserId,
+      originalType: cleanType,
+      title: cleanTitle,
+      message: cleanText(message),
+      targetUrl: cleanTargetUrl,
+      metadata: safeMetadata,
+    }
+
+    try {
+      return await insertNotification({
+        ...payload,
+        storedType: cleanType,
+      })
+    } catch (error) {
+      if (cleanType === 'system') {
+        throw error
+      }
+
+      console.warn(
+        `AUTHOR PAGE NOTIFICATION TYPE FALLBACK: ${cleanType}`,
+        error
+      )
+
+      return insertNotification({
+        ...payload,
+        storedType: 'system',
+      })
+    }
+  } catch (error) {
+    await cleanupUploadedMedia(
+      uploadedUrls
+    )
+    throw error
   }
 }
 
@@ -373,9 +800,8 @@ export async function deleteAuthorPageNotificationBySourceKeySafely({
   sourceKey,
 }) {
   try {
-    const cleanAuthorPageId = cleanText(
-      authorPageId
-    )
+    const cleanAuthorPageId =
+      cleanText(authorPageId)
     const cleanSourceKey =
       cleanText(sourceKey)
     const requestedType = cleanText(
@@ -402,7 +828,9 @@ export async function deleteAuthorPageNotificationBySourceKeySafely({
         : [cleanType, 'system']
 
     const { data, error } = await supabase
-      .from('author_page_notifications')
+      .from(
+        'author_page_notifications'
+      )
       .select(
         'id, type, metadata'
       )
