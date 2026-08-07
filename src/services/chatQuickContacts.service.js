@@ -430,17 +430,17 @@ export async function listChatQuickContacts({
     }))
     .sort((first, second) => {
       if (
-        Boolean(second.conversation_id) !==
-        Boolean(first.conversation_id)
-      ) {
-        return second.conversation_id ? 1 : -1
-      }
+  second.is_online !== first.is_online
+) {
+  return second.is_online ? 1 : -1
+}
 
-      if (
-        second.is_online !== first.is_online
-      ) {
-        return second.is_online ? 1 : -1
-      }
+if (
+  Boolean(second.conversation_id) !==
+  Boolean(first.conversation_id)
+) {
+  return second.conversation_id ? 1 : -1
+}
 
       if (
         second.source_priority !==
