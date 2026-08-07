@@ -77,6 +77,78 @@ dotenv.config()
 
 const app = express()
 
+const STORAGE_CLEANUP_INTERVAL_MS =
+  24 * 60 * 60 * 1000
+let storageCleanupRunning = false
+
+async function runStorageMigrationCleanupJob() {
+  if (storageCleanupRunning) return
+
+  storageCleanupRunning = true
+
+  try {
+    const {
+      runStorageMigrationCleanup,
+    } = await import(
+      './src/services/storageMigrationCleanup.service.js'
+    )
+
+    const result =
+      await runStorageMigrationCleanup()
+
+    console.log(
+      'STORAGE_MIGRATION_CLEANUP:',
+      JSON.stringify({
+        enabled: result.enabled,
+        scanned: result.scanned,
+        deleted: result.deleted,
+        blocked_active_reference:
+          result.blocked_active_reference,
+        blocked_r2_verification:
+          result.blocked_r2_verification,
+        delete_failed:
+          result.delete_failed,
+        scan_failed:
+          Boolean(result.scan_failed),
+      })
+    )
+  } catch (error) {
+    console.error(
+      'STORAGE_MIGRATION_CLEANUP_ERROR:',
+      error
+    )
+  } finally {
+    storageCleanupRunning = false
+  }
+}
+
+function startStorageMigrationCleanupScheduler() {
+  const enabled =
+    String(
+      process.env
+        .STORAGE_MIGRATION_CLEANUP_ENABLED ??
+        'true'
+    )
+      .trim()
+      .toLowerCase() !== 'false'
+
+  if (!enabled) {
+    console.log(
+      'STORAGE_MIGRATION_CLEANUP: disabled'
+    )
+    return
+  }
+
+  runStorageMigrationCleanupJob()
+
+  const timer = setInterval(
+    runStorageMigrationCleanupJob,
+    STORAGE_CLEANUP_INTERVAL_MS
+  )
+
+  timer.unref?.()
+}
+
 const allowedOrigins = [
   process.env.FRONTEND_URL,
   process.env.ADMIN_URL,
@@ -526,6 +598,7 @@ app.listen(PORT, () => {
   startAuthorCommentCleanup()
   startAuthorPostCleanup()
   startChatRetentionCleanup()
+  startStorageMigrationCleanupScheduler()
 
   if (process.env.ENABLE_TELEGRAM_USER_LISTENER === 'true') {
     startTelegramUserListener().catch((error) => {
