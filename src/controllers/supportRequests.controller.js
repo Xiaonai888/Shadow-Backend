@@ -1,11 +1,18 @@
 import { randomUUID } from 'node:crypto'
+import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import {
   getAdminActor,
   logAdminActivity,
 } from '../services/adminActivity.service.js'
+import {
+  deleteSupportScreenshotFromR2,
+  getSupportScreenshotFromR2,
+  uploadSupportScreenshotToR2,
+} from '../services/supportScreenshotR2.service.js'
 
-const BUCKET = 'support-screenshots'
+const LEGACY_BUCKET = 'support-screenshots'
+const R2_PREFIX = 'r2:'
 const TOPICS = new Set([
   'technical_problem',
   'account_profile',
@@ -43,45 +50,222 @@ function userId(req) {
   return req.user?.user_id || req.user?.id || null
 }
 
-function safeFileName(name) {
-  const cleaned = String(name || 'screenshot')
-    .normalize('NFKD')
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-
-  return cleaned.slice(-120) || 'screenshot'
-}
-
 function errorResponse(res, error, fallback = 'Request failed') {
   console.error('SUPPORT REQUEST ERROR:', error)
   return res.status(500).json({ ok: false, message: fallback })
 }
 
-async function removeScreenshot(path) {
-  if (!path) return
-  const { error } = await supabase.storage.from(BUCKET).remove([path])
-  if (error) console.warn('REMOVE SUPPORT SCREENSHOT WARNING:', error.message)
+function isR2ScreenshotPath(path) {
+  return String(path || '').startsWith(R2_PREFIX)
 }
 
-async function serializeRequest(item, includeScreenshot = false) {
+function r2KeyFromPath(path) {
+  return isR2ScreenshotPath(path)
+    ? String(path).slice(R2_PREFIX.length)
+    : ''
+}
+
+function getBackendBaseUrl(req) {
+  const configured = String(
+    process.env.BACKEND_URL ||
+    process.env.API_BASE_URL ||
+    ''
+  )
+    .trim()
+    .replace(/\/+$/, '')
+
+  if (configured) return configured
+
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '')
+    .split(',')[0]
+    .trim()
+  const protocol = forwardedProto || req.protocol || 'https'
+  return `${protocol}://${req.get('host')}`
+}
+
+function createScreenshotToken(item) {
+  const secret = String(process.env.JWT_SECRET || '').trim()
+
+  if (!secret) {
+    throw new Error('Missing JWT_SECRET')
+  }
+
+  return jwt.sign(
+    {
+      type: 'support_screenshot',
+      request_id: item.id,
+      user_id: item.user_id,
+    },
+    secret,
+    { expiresIn: '1h' }
+  )
+}
+
+async function removeScreenshot(path) {
+  if (!path) return
+
+  try {
+    if (isR2ScreenshotPath(path)) {
+      await deleteSupportScreenshotFromR2(
+        r2KeyFromPath(path)
+      )
+      return
+    }
+
+    const { error } = await supabase.storage
+      .from(LEGACY_BUCKET)
+      .remove([path])
+
+    if (error) {
+      console.warn(
+        'REMOVE SUPPORT SCREENSHOT WARNING:',
+        error.message
+      )
+    }
+  } catch (error) {
+    console.warn(
+      'REMOVE SUPPORT SCREENSHOT WARNING:',
+      error.message
+    )
+  }
+}
+
+async function serializeRequest(
+  item,
+  includeScreenshot = false,
+  req = null
+) {
   if (!item) return item
 
-  const { screenshot_path: screenshotPath, ...request } = item
+  const {
+    screenshot_path: screenshotPath,
+    ...request
+  } = item
+
   let screenshotUrl = null
 
   if (includeScreenshot && screenshotPath) {
-    const { data, error } = await supabase.storage
-      .from(BUCKET)
-      .createSignedUrl(screenshotPath, 3600)
+    if (isR2ScreenshotPath(screenshotPath)) {
+      const token = createScreenshotToken(item)
+      screenshotUrl =
+        `${getBackendBaseUrl(req)}/api/support/screenshot/` +
+        `${encodeURIComponent(item.id)}?token=${encodeURIComponent(token)}`
+    } else {
+      const { data, error } = await supabase.storage
+        .from(LEGACY_BUCKET)
+        .createSignedUrl(screenshotPath, 3600)
 
-    if (!error) screenshotUrl = data?.signedUrl || null
+      if (!error) {
+        screenshotUrl = data?.signedUrl || null
+      }
+    }
   }
 
   return {
     ...request,
     ticket_code: `SHD-${String(item.ticket_number).padStart(6, '0')}`,
     screenshot_url: screenshotUrl,
+  }
+}
+
+export async function streamSupportScreenshot(req, res) {
+  try {
+    const token = String(req.query.token || '').trim()
+    const secret = String(process.env.JWT_SECRET || '').trim()
+
+    if (!token || !secret) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Invalid screenshot link',
+      })
+    }
+
+    let decoded
+
+    try {
+      decoded = jwt.verify(token, secret)
+    } catch {
+      return res.status(401).json({
+        ok: false,
+        message: 'Screenshot link expired or invalid',
+      })
+    }
+
+    if (
+      decoded?.type !== 'support_screenshot' ||
+      String(decoded?.request_id || '') !==
+        String(req.params.requestId || '')
+    ) {
+      return res.status(403).json({
+        ok: false,
+        message: 'Screenshot access denied',
+      })
+    }
+
+    const { data: item, error } = await supabase
+      .from('support_requests')
+      .select('id,user_id,screenshot_path,screenshot_type')
+      .eq('id', req.params.requestId)
+      .maybeSingle()
+
+    if (error) {
+      return errorResponse(
+        res,
+        error,
+        'Could not load screenshot'
+      )
+    }
+
+    if (
+      !item ||
+      String(item.user_id || '') !==
+        String(decoded.user_id || '')
+    ) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Screenshot not found',
+      })
+    }
+
+    if (!isR2ScreenshotPath(item.screenshot_path)) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Screenshot not found',
+      })
+    }
+
+    const object = await getSupportScreenshotFromR2(
+      r2KeyFromPath(item.screenshot_path)
+    )
+
+    if (!object?.Body) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Screenshot not found',
+      })
+    }
+
+    const bytes = await object.Body.transformToByteArray()
+
+    res.setHeader(
+      'Content-Type',
+      object.ContentType ||
+        item.screenshot_type ||
+        'application/octet-stream'
+    )
+    res.setHeader(
+      'Cache-Control',
+      'private, no-store, no-cache, must-revalidate'
+    )
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+
+    return res.status(200).send(Buffer.from(bytes))
+  } catch (error) {
+    return errorResponse(
+      res,
+      error,
+      'Could not load screenshot'
+    )
   }
 }
 
@@ -113,22 +297,15 @@ export async function createSupportRequest(req, res) {
 
   try {
     if (req.file) {
-      screenshotPath = `${readerId}/${requestId}/${Date.now()}-${safeFileName(req.file.originalname)}`
-
-      const { error: uploadError } = await supabase.storage
-        .from(BUCKET)
-        .upload(screenshotPath, req.file.buffer, {
-          contentType: req.file.mimetype,
-          cacheControl: '3600',
-          upsert: false,
+      const uploaded =
+        await uploadSupportScreenshotToR2({
+          userId: readerId,
+          requestId,
+          file: req.file,
         })
 
-      if (uploadError) {
-        return res.status(400).json({
-          ok: false,
-          message: 'Screenshot upload failed',
-        })
-      }
+      screenshotPath =
+        `${R2_PREFIX}${uploaded.storageKey}`
     }
 
     const { data, error } = await supabase
@@ -156,7 +333,7 @@ export async function createSupportRequest(req, res) {
     return res.status(201).json({
       ok: true,
       message: 'Support request submitted',
-      request: await serializeRequest(data),
+      request: await serializeRequest(data, false, req),
     })
   } catch (error) {
     await removeScreenshot(screenshotPath)
@@ -183,7 +360,11 @@ export async function listMySupportRequests(req, res) {
 
     return res.json({
       ok: true,
-      requests: await Promise.all((data || []).map((item) => serializeRequest(item))),
+      requests: await Promise.all(
+        (data || []).map((item) =>
+          serializeRequest(item, false, req)
+        )
+      ),
     })
   } catch (error) {
     return errorResponse(res, error, 'Could not load support requests')
@@ -210,7 +391,7 @@ export async function getMySupportRequest(req, res) {
 
     return res.json({
       ok: true,
-      request: await serializeRequest(data, true),
+      request: await serializeRequest(data, true, req),
     })
   } catch (error) {
     return errorResponse(res, error, 'Could not load support request')
@@ -246,7 +427,11 @@ export async function listAdminSupportRequests(req, res) {
 
     return res.json({
       ok: true,
-      requests: await Promise.all((data || []).map((item) => serializeRequest(item))),
+      requests: await Promise.all(
+        (data || []).map((item) =>
+          serializeRequest(item, false, req)
+        )
+      ),
       pagination: {
         page,
         limit,
@@ -272,7 +457,7 @@ export async function getAdminSupportRequest(req, res) {
 
     return res.json({
       ok: true,
-      request: await serializeRequest(data, true),
+      request: await serializeRequest(data, true, req),
     })
   } catch (error) {
     return errorResponse(res, error, 'Could not load support request')
@@ -324,7 +509,7 @@ export async function updateAdminSupportRequest(req, res) {
     return res.json({
       ok: true,
       message: 'Support request updated',
-      request: await serializeRequest(data, true),
+      request: await serializeRequest(data, true, req),
     })
   } catch (error) {
     return errorResponse(res, error, 'Could not update support request')
