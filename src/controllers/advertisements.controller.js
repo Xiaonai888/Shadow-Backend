@@ -1,5 +1,12 @@
 import { supabase } from '../config/supabase.js'
-import { uploadFileToR2 } from '../services/r2Storage.service.js'
+import {
+  deleteR2ObjectByUrl,
+  uploadFileToR2,
+} from '../services/r2Storage.service.js'
+import {
+  assertR2MediaReference,
+} from '../services/mediaStoragePolicy.service.js'
+
 const allowedPlacements = ['splash', 'opening', 'freeUnlock', 'me']
 const allowedFrequencies = ['once_per_session', 'once_per_day', 'every_visit', 'every_unlock']
 const allowedBadges = ['', 'HOT', 'NEW', 'END', 'UP']
@@ -69,6 +76,30 @@ async function createAdvertisementLog(req, payload) {
 
 async function uploadAdvertisementImage(file, placement) {
   return uploadFileToR2(file, `advertisements/${placement}`)
+}
+
+async function getCurrentAdvertisement(placement) {
+  const { data, error } = await supabase
+    .from('shadow_advertisements')
+    .select('placement, image_url')
+    .eq('placement', placement)
+    .maybeSingle()
+
+  if (error) throw error
+  return data || null
+}
+
+function safeAdvertisementImage(value, currentValue) {
+  const input = normalizeText(value)
+  const current = normalizeText(currentValue)
+
+  if (!input) return ''
+  if (input === current) return input
+
+  return assertR2MediaReference(input, {
+    field: 'shadow_advertisements.image_url',
+    allowEmpty: false,
+  })
 }
 
 export async function getPublicAdvertisement(req, res) {
@@ -174,6 +205,8 @@ export async function getAdminAdvertisementLogs(req, res) {
 }
 
 export async function updateAdminAdvertisement(req, res) {
+  let uploadedImageUrl = ''
+
   try {
     const placement = normalizeText(req.params.placement)
 
@@ -187,13 +220,22 @@ export async function updateAdminAdvertisement(req, res) {
       return res.status(400).json({ ok: false, message: 'Invalid advertisement frequency' })
     }
 
-    const uploadedImageUrl = req.file ? await uploadAdvertisementImage(req.file, placement) : ''
+    const current = await getCurrentAdvertisement(placement)
+
+    if (req.file) {
+      uploadedImageUrl = await uploadAdvertisementImage(req.file, placement)
+    }
+
     const bodyImageUrl = normalizeText(req.body.image_url)
+    const imageUrl = uploadedImageUrl || safeAdvertisementImage(
+      bodyImageUrl,
+      current?.image_url
+    )
 
     const payload = {
       placement,
       enabled: normalizeBoolean(req.body.enabled),
-      image_url: uploadedImageUrl || bodyImageUrl,
+      image_url: imageUrl,
       link_url: normalizeText(req.body.link_url),
       badge: normalizeBadge(req.body.badge),
       duration_seconds: normalizeNumber(req.body.duration_seconds, 5),
@@ -208,23 +250,27 @@ export async function updateAdminAdvertisement(req, res) {
       .select('placement, enabled, image_url, link_url, duration_seconds, close_after_seconds, frequency, created_at, updated_at')
       .single()
 
-   if (error) throw error
+    if (error) throw error
 
-await createAdvertisementLog(req, data).catch((logError) => {
-  console.error('CREATE ADVERTISEMENT LOG ERROR:', logError)
-})
+    await createAdvertisementLog(req, data).catch((logError) => {
+      console.error('CREATE ADVERTISEMENT LOG ERROR:', logError)
+    })
 
-return res.status(200).json({
+    return res.status(200).json({
       ok: true,
       advertisement: data,
     })
   } catch (error) {
+    if (uploadedImageUrl) {
+      await deleteR2ObjectByUrl(uploadedImageUrl).catch(() => {})
+    }
+
     console.error('UPDATE ADMIN ADVERTISEMENT ERROR:', error)
 
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       ok: false,
-      message: 'Failed to save advertisement',
-      error: error.message,
+      code: error.code || 'ADVERTISEMENT_SAVE_FAILED',
+      message: error.message || 'Failed to save advertisement',
     })
   }
 }
