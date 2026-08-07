@@ -20,11 +20,16 @@ const MIN_EPISODE_CHARACTERS = 1500
 const MAX_EPISODE_CHARACTERS = 30000
 const MIN_MANGA_PAGES = 10
 const MAX_MANGA_PAGES = 100
+const MAX_NOVEL_EPISODE_IMAGES = 2
 const AUTHOR_TRASH_DAYS = 30
 const ADMIN_ARCHIVE_DAYS = 90
 
 function cleanText(value) {
   return String(value || '').trim()
+}
+
+function countEpisodeImages(value) {
+  return (String(value || '').match(/<img\b[^>]*>/gi) || []).length
 }
 
 function cleanBoolean(value, fallback = false) {
@@ -866,6 +871,13 @@ const isFreePublished = cleanBoolean(
         })
       }
     } else {
+      if (countEpisodeImages(content) > MAX_NOVEL_EPISODE_IMAGES) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Novel episode can contain up to 2 images',
+        })
+      }
+
       if (status !== 'draft' && !hasEpisodeReadableContent(content)) {
         return res.status(400).json({
           ok: false,
@@ -1189,6 +1201,13 @@ const status = cleanText(req.body.status || episode.status || 'draft')
         })
       }
     } else {
+      if (countEpisodeImages(content) > MAX_NOVEL_EPISODE_IMAGES) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Novel episode can contain up to 2 images',
+        })
+      }
+
       if (!hasEpisodeReadableContent(content)) {
         return res.status(400).json({
           ok: false,
@@ -1332,11 +1351,20 @@ export async function updateEpisodeStatus(req, res) {
             message: `Manga episode needs ${MIN_MANGA_PAGES}-${MAX_MANGA_PAGES} pages before publishing`,
           })
         }
-      } else if (Number(episode.character_count || 0) < MIN_EPISODE_CHARACTERS) {
-        return res.status(400).json({
-          ok: false,
-          message: `Episode needs at least ${MIN_EPISODE_CHARACTERS} characters before publishing`,
-        })
+      } else {
+        if (countEpisodeImages(episode.content) > MAX_NOVEL_EPISODE_IMAGES) {
+          return res.status(400).json({
+            ok: false,
+            message: 'Novel episode can contain up to 2 images',
+          })
+        }
+
+        if (Number(episode.character_count || 0) < MIN_EPISODE_CHARACTERS) {
+          return res.status(400).json({
+            ok: false,
+            message: `Episode needs at least ${MIN_EPISODE_CHARACTERS} characters before publishing`,
+          })
+        }
       }
 
       const blockedMatches = await findBlockedWordsInContent([
