@@ -1,5 +1,8 @@
 import { supabase } from '../config/supabase.js'
 import { uploadFileToR2 } from '../services/r2Storage.service.js'
+import {
+  assertR2MediaReference,
+} from '../services/mediaStoragePolicy.service.js'
 
 function normalizeText(value) {
   return String(value || '').trim()
@@ -65,6 +68,19 @@ function publicAnnouncement(item) {
     target_type: item.target_type || 'all',
     target_label: targetLabel(item.target_type || 'all'),
   }
+}
+
+function safeAnnouncementImage(value, currentValue = '') {
+  const input = normalizeText(value)
+  const current = normalizeText(currentValue)
+
+  if (!input) return ''
+  if (input === current) return input
+
+  return assertR2MediaReference(input, {
+    field: 'notifications.image_url',
+    allowEmpty: false,
+  })
 }
 
 async function getTotalReaderCount() {
@@ -310,7 +326,7 @@ export async function createAdminAnnouncement(req, res) {
   try {
     const title = normalizeText(req.body.title)
     const message = normalizeText(req.body.message)
-    const imageUrl = normalizeText(req.body.image_url)
+    const imageUrl = safeAnnouncementImage(req.body.image_url)
     const link = normalizeText(req.body.link)
     const targetType = normalizeTargetType(req.body.target_type)
     const recipient = normalizeText(req.body.recipient)
@@ -400,10 +416,10 @@ export async function createAdminAnnouncement(req, res) {
   } catch (error) {
     console.error('CREATE ADMIN ANNOUNCEMENT ERROR:', error)
 
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       ok: false,
-      message: 'Failed to send announcement',
-      error: error.message,
+      code: error.code || 'ANNOUNCEMENT_CREATE_FAILED',
+      message: error.message || 'Failed to send announcement',
     })
   }
 }
@@ -413,7 +429,6 @@ export async function updateAdminAnnouncement(req, res) {
     const referenceId = normalizeText(req.params.referenceId)
     const title = normalizeText(req.body.title)
     const message = normalizeText(req.body.message)
-    const imageUrl = normalizeText(req.body.image_url)
     const link = normalizeText(req.body.link)
 
     if (!referenceId) {
@@ -430,7 +445,7 @@ export async function updateAdminAnnouncement(req, res) {
 
     const { data: existing, error: findError } = await supabase
       .from('notifications')
-      .select('reference_id, title')
+      .select('reference_id, title, image_url')
       .eq('type', 'announcements')
       .eq('reference_id', referenceId)
       .is('deleted_at', null)
@@ -441,6 +456,11 @@ export async function updateAdminAnnouncement(req, res) {
     if (!existing?.length) {
       return res.status(404).json({ ok: false, message: 'Announcement not found' })
     }
+
+    const imageUrl = safeAnnouncementImage(
+      req.body.image_url,
+      existing[0]?.image_url
+    )
 
     const { count, error } = await supabase
       .from('notifications')
@@ -480,10 +500,10 @@ export async function updateAdminAnnouncement(req, res) {
   } catch (error) {
     console.error('UPDATE ADMIN ANNOUNCEMENT ERROR:', error)
 
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       ok: false,
-      message: 'Failed to update announcement',
-      error: error.message,
+      code: error.code || 'ANNOUNCEMENT_UPDATE_FAILED',
+      message: error.message || 'Failed to update announcement',
     })
   }
 }
