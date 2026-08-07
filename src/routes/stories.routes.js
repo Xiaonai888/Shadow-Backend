@@ -31,6 +31,7 @@ import {
   acceptStoryPublishAgreement,
   getStoryPublishAgreement,
 } from '../controllers/storyPublishAgreement.controller.js'
+import { enforcePaidContentRequirement } from '../middleware/paidContentRequirement.middleware.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
@@ -44,7 +45,12 @@ router.put('/:storyId/chat/characters', requireUser, saveChatStoryCharacters)
 router.get('/:storyId/chat/characters/:characterId/profile', requireUser, getChatStoryCharacterProfile)
 router.patch('/:storyId/chat/characters/:characterId/profile', requireUser, updateChatStoryCharacterProfile)
 router.post('/:storyId/chat/episodes/save', requireUser, saveChatStoryEpisode)
-router.patch('/:storyId/chat/episodes/:episodeId/status', requireUser, updateChatStoryEpisodeStatus)
+router.patch(
+  '/:storyId/chat/episodes/:episodeId/status',
+  requireUser,
+  enforcePaidContentRequirement,
+  updateChatStoryEpisodeStatus
+)
 router.get('/:storyId/manager-episodes', requireUser, getStoryManagerEpisodes)
 router.get('/:storyId/performance', requireUser, getStoryPerformance)
 router.get('/:storyId/publish-agreement', requireUser, getStoryPublishAgreement)
@@ -58,7 +64,12 @@ router.post('/:storyId/episodes/create', requireUser, createEpisode)
 router.get('/:storyId/episodes', requireUser, getStoryEpisodes)
 router.get('/:storyId/episodes/:episodeId', requireUser, getEpisodeById)
 router.put('/:storyId/episodes/:episodeId', requireUser, updateEpisode)
-router.patch('/:storyId/episodes/:episodeId/status', requireUser, updateEpisodeStatusByStoryType)
+router.patch(
+  '/:storyId/episodes/:episodeId/status',
+  requireUser,
+  enforcePaidContentRequirement,
+  updateEpisodeStatusByStoryType
+)
 router.delete('/:storyId/episodes/:episodeId', requireUser, moveEpisodeToTrash)
 
 export default router
