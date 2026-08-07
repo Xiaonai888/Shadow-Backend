@@ -69,6 +69,8 @@ import readingProgressRoutes from './src/routes/readingProgress.routes.js'
 import shareProfileRoutes from './src/routes/shareProfile.routes.js'
 import adminChatStoryGalleryRoutes from './src/routes/adminChatStoryGallery.routes.js'
 import adminMediaLibraryRoutes from './src/routes/adminMediaLibrary.routes.js'
+import adminChatEvidenceRoutes from './src/routes/adminChatEvidence.routes.js'
+import { startChatRetentionCleanup } from './src/services/chatRetentionCleanup.service.js'
 
 dotenv.config()
 
@@ -499,6 +501,7 @@ app.use('/api/discover-search', readerReadSpamGuard, discoverSearchRoutes)
 app.use('/api/fast', mediaUploadRouteSpamGuard, fastRoutes)
 app.use('/api/reports', reportActionSpamGuard, contentReportsRoutes)
 app.use('/api/admin/reports', adminReportsRoutes)
+app.use('/api/admin/chat-evidence', adminChatEvidenceRoutes)
 app.use('/api/reader-posts', communityRouteSpamGuard, readerPostsRoutes)
 app.use('/api/reading-progress', readingProgressSpamGuard, readingProgressRoutes)
 app.use('/api/share-profile', mediaUploadRouteSpamGuard, shareProfileRoutes)
@@ -520,6 +523,7 @@ app.listen(PORT, () => {
   startReaderStoriesCleanup()
   startAuthorCommentCleanup()
   startAuthorPostCleanup()
+  startChatRetentionCleanup()
 
   if (process.env.ENABLE_TELEGRAM_USER_LISTENER === 'true') {
     startTelegramUserListener().catch((error) => {
