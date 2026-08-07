@@ -7,6 +7,13 @@ import {
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
+const MUTE_DURATION_MS = {
+  '1h': 60 * 60 * 1000,
+  '8h': 8 * 60 * 60 * 1000,
+  '1d': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+}
+
 function fail(status, code, message) {
   throw new ChatServiceError(status, code, message)
 }
@@ -42,6 +49,28 @@ function normalizeDeleteScope(scope) {
     400,
     'INVALID_DELETE_SCOPE',
     'Delete option is not valid'
+  )
+}
+
+function normalizeMuteDuration(value) {
+  const normalized = String(value || 'forever')
+    .trim()
+    .toLowerCase()
+
+  if (
+    normalized === 'forever' ||
+    Object.prototype.hasOwnProperty.call(
+      MUTE_DURATION_MS,
+      normalized
+    )
+  ) {
+    return normalized
+  }
+
+  fail(
+    400,
+    'INVALID_MUTE_DURATION',
+    'Mute duration is not valid'
   )
 }
 
@@ -100,6 +129,19 @@ function mapDeleteError(error) {
   )
 }
 
+function isParticipantMuted(participant) {
+  if (!participant?.is_muted) return false
+  if (!participant.muted_until) return true
+
+  const mutedUntilTime =
+    new Date(participant.muted_until).getTime()
+
+  return (
+    Number.isFinite(mutedUntilTime) &&
+    mutedUntilTime > Date.now()
+  )
+}
+
 async function getActiveParticipant(
   conversationId,
   userId
@@ -113,7 +155,7 @@ async function getActiveParticipant(
   const { data, error } = await supabase
     .from('chat_participants')
     .select(
-      'id, conversation_id, user_id, participant_role, archived_at, deleted_at, cleared_at, retention_until, last_read_at'
+      'id, conversation_id, user_id, participant_role, archived_at, deleted_at, cleared_at, retention_until, last_read_at, is_muted, muted_until'
     )
     .eq('conversation_id', safeConversationId)
     .eq('user_id', safeUserId)
@@ -158,7 +200,9 @@ export async function listManagedConversations({
 
   let participantQuery = supabase
     .from('chat_participants')
-    .select('conversation_id')
+    .select(
+      'conversation_id, is_muted, muted_until'
+    )
     .eq('user_id', safeUserId)
     .is('deleted_at', null)
 
@@ -180,9 +224,13 @@ export async function listManagedConversations({
     return []
   }
 
-  const allowedIds = new Set(
-    data.map((item) => String(item.conversation_id))
+  const participantMap = new Map(
+    data.map((item) => [
+      String(item.conversation_id),
+      item,
+    ])
   )
+  const allowedIds = new Set(participantMap.keys())
   const conversations = await listMyConversations({
     userId: safeUserId,
     status,
@@ -192,16 +240,135 @@ export async function listManagedConversations({
     .filter((conversation) =>
       allowedIds.has(String(conversation.id))
     )
-    .map((conversation) => ({
-      ...conversation,
-      delete_permissions: {
-        can_delete_for_me: true,
-        can_delete_for_both:
-          conversation.conversation_type ===
-          'reader_reader',
-        retention_days: 90,
-      },
-    }))
+    .map((conversation) => {
+      const participant =
+        participantMap.get(String(conversation.id))
+
+      return {
+        ...conversation,
+        is_muted: isParticipantMuted(participant),
+        muted_until: participant?.muted_until || null,
+        delete_permissions: {
+          can_delete_for_me: true,
+          can_delete_for_both:
+            conversation.conversation_type ===
+            'reader_reader',
+          retention_days: 90,
+        },
+      }
+    })
+}
+
+export async function getConversationMuteStatus({
+  userId,
+  conversationId,
+}) {
+  const participant = await getActiveParticipant(
+    conversationId,
+    userId
+  )
+  const isMuted = isParticipantMuted(participant)
+
+  if (participant.is_muted && !isMuted) {
+    const { error } = await supabase
+      .from('chat_participants')
+      .update({
+        is_muted: false,
+        muted_until: null,
+      })
+      .eq('id', participant.id)
+      .is('deleted_at', null)
+
+    if (error) {
+      throw databaseFailure(
+        error,
+        'Failed to refresh mute status'
+      )
+    }
+  }
+
+  return {
+    conversation_id: participant.conversation_id,
+    is_muted: isMuted,
+    muted_until: isMuted
+      ? participant.muted_until || null
+      : null,
+  }
+}
+
+export async function muteConversation({
+  userId,
+  conversationId,
+  duration,
+}) {
+  const participant = await getActiveParticipant(
+    conversationId,
+    userId
+  )
+  const safeDuration =
+    normalizeMuteDuration(duration)
+  const mutedUntil =
+    safeDuration === 'forever'
+      ? null
+      : new Date(
+          Date.now() +
+            MUTE_DURATION_MS[safeDuration]
+        ).toISOString()
+
+  const { error } = await supabase
+    .from('chat_participants')
+    .update({
+      is_muted: true,
+      muted_until: mutedUntil,
+    })
+    .eq('id', participant.id)
+    .is('deleted_at', null)
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to mute conversation'
+    )
+  }
+
+  return {
+    conversation_id: participant.conversation_id,
+    is_muted: true,
+    muted_until: mutedUntil,
+    duration: safeDuration,
+  }
+}
+
+export async function unmuteConversation({
+  userId,
+  conversationId,
+}) {
+  const participant = await getActiveParticipant(
+    conversationId,
+    userId
+  )
+
+  const { error } = await supabase
+    .from('chat_participants')
+    .update({
+      is_muted: false,
+      muted_until: null,
+    })
+    .eq('id', participant.id)
+    .is('deleted_at', null)
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to unmute conversation'
+    )
+  }
+
+  return {
+    conversation_id: participant.conversation_id,
+    is_muted: false,
+    muted_until: null,
+  }
 }
 
 export async function archiveConversation({
