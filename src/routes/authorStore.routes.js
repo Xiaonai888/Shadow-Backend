@@ -37,6 +37,7 @@ import {
   getAdminAuthorStoreStoreDetails,
 } from '../controllers/authorStore.controller.js'
 import {
+  attachMyAuthorStorePrivatePdf,
   uploadMyAuthorStorePrivatePdf,
 } from '../controllers/authorStorePdf.controller.js'
 import {
@@ -97,6 +98,11 @@ router.post(
   requireUser,
   privatePdfUpload.single('pdf'),
   uploadMyAuthorStorePrivatePdf
+)
+router.patch(
+  '/me/products/:productId/private-pdf',
+  requireUser,
+  attachMyAuthorStorePrivatePdf
 )
 router.get('/me/orders', requireUser, getMyAuthorStoreOrders)
 router.patch('/me/orders/:orderId/preparing', requireUser, markMyAuthorStoreOrderPreparing)
