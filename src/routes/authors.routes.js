@@ -33,7 +33,6 @@ import {
 } from '../controllers/authorProfileMedia.controller.js'
 import {
   createAuthorPostComment,
-  createMyAuthorPost,
   deleteOwnAuthorPostComment,
   getAuthorPagePosts,
   getAuthorPostById,
@@ -42,9 +41,12 @@ import {
   setMyAuthorPostPinned,
   setMyAuthorPostReaction,
   toggleAuthorPostCommentLike,
-  updateMyAuthorPost,
   updateOwnAuthorPostComment,
 } from '../controllers/authorPosts.controller.js'
+import {
+  createMyAuthorPost,
+  updateMyAuthorPost,
+} from '../controllers/authorPostMediaGuard.controller.js'
 
 import {
   getMyAuthorPostNotificationPreference,
