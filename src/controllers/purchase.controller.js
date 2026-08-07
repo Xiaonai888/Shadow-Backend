@@ -1,5 +1,13 @@
 import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
+import {
+  deleteR2ObjectByUrl,
+  uploadFileToR2,
+} from '../services/r2Storage.service.js'
+import {
+  assertR2MediaReference,
+  isR2PublicUrl,
+} from '../services/mediaStoragePolicy.service.js'
 
 const PACKAGES = [
   { package_usd: 1, diamonds: 100, bonus_gems: 0 },
@@ -31,6 +39,8 @@ const PAYWAY_HASH_ORDER = [
   'lifetime',
   'qr_image_template',
 ]
+
+const PAYWAY_MEDIA_MAX_BYTES = 5 * 1024 * 1024
 
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
@@ -112,7 +122,14 @@ function buildPayWayPayload({ tranId, amount, user }) {
     qr_image_template: process.env.ABA_PAYWAY_QR_TEMPLATE || 'template3_color',
   }
 
-  return Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined && value !== null && value !== ''))
+  return Object.fromEntries(
+    Object.entries(payload).filter(
+      ([, value]) =>
+        value !== undefined &&
+        value !== null &&
+        value !== ''
+    )
+  )
 }
 
 function publicWallet(wallet) {
@@ -165,12 +182,342 @@ function extractQrResponse(data) {
   const source = data?.data || data || {}
 
   return {
-    qr_string: source.qrString || source.qr_string || source.khqr || source.qr || '',
-    qr_image: source.qrImage || source.qr_image || '',
-    deeplink: source.abapay_deeplink || source.deeplink || '',
-    checkout_url: source.checkout_url || source.payment_url || source.url || '',
-    aba_transaction_id: source.transaction_id || source.tran_id || '',
+    qr_string:
+      source.qrString ||
+      source.qr_string ||
+      source.khqr ||
+      source.qr ||
+      '',
+    qr_image:
+      source.qrImage ||
+      source.qr_image ||
+      '',
+    deeplink:
+      source.abapay_deeplink ||
+      source.deeplink ||
+      '',
+    checkout_url:
+      source.checkout_url ||
+      source.payment_url ||
+      source.url ||
+      '',
+    aba_transaction_id:
+      source.transaction_id ||
+      source.tran_id ||
+      '',
     raw: data || {},
+  }
+}
+
+function paymentMediaError(message) {
+  const error = new Error(message)
+  error.statusCode = 502
+  return error
+}
+
+function detectPaymentImageType(buffer) {
+  if (
+    buffer.length >= 8 &&
+    buffer.subarray(0, 8).equals(
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+    )
+  ) {
+    return { mimetype: 'image/png', extension: 'png' }
+  }
+
+  if (
+    buffer.length >= 3 &&
+    buffer[0] === 0xff &&
+    buffer[1] === 0xd8 &&
+    buffer[2] === 0xff
+  ) {
+    return { mimetype: 'image/jpeg', extension: 'jpg' }
+  }
+
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return { mimetype: 'image/webp', extension: 'webp' }
+  }
+
+  if (
+    buffer.length >= 6 &&
+    ['GIF87a', 'GIF89a'].includes(
+      buffer.subarray(0, 6).toString('ascii')
+    )
+  ) {
+    return { mimetype: 'image/gif', extension: 'gif' }
+  }
+
+  return null
+}
+
+function decodePaymentImage(value, allowBareBase64 = false) {
+  const input = String(value || '').trim()
+
+  if (!input) return null
+
+  const dataMatch = input.match(
+    /^data:image\/(png|jpe?g|webp|gif);base64,([a-z0-9+/=\s]+)$/i
+  )
+
+  let encoded = ''
+
+  if (dataMatch) {
+    encoded = dataMatch[2]
+  } else if (
+    allowBareBase64 &&
+    input.length >= 64 &&
+    /^[a-z0-9+/=\s]+$/i.test(input)
+  ) {
+    encoded = input
+  } else {
+    return null
+  }
+
+  const normalized = encoded.replace(/\s+/g, '')
+
+  if (normalized.length > 7 * 1024 * 1024) {
+    throw paymentMediaError(
+      'ABA QR image is larger than 5 MB'
+    )
+  }
+
+  const buffer = Buffer.from(normalized, 'base64')
+  const type = detectPaymentImageType(buffer)
+
+  if (!type || !buffer.length) {
+    if (dataMatch) {
+      throw paymentMediaError(
+        'ABA returned an invalid QR image'
+      )
+    }
+
+    return null
+  }
+
+  if (buffer.length > PAYWAY_MEDIA_MAX_BYTES) {
+    throw paymentMediaError(
+      'ABA QR image is larger than 5 MB'
+    )
+  }
+
+  return {
+    buffer,
+    ...type,
+  }
+}
+
+async function fetchPaymentImage(url) {
+  let parsed
+
+  try {
+    parsed = new URL(url)
+  } catch {
+    return null
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw paymentMediaError(
+      'ABA QR image URL must use HTTPS'
+    )
+  }
+
+  const response = await fetch(parsed, {
+    redirect: 'follow',
+  })
+
+  if (!response.ok) {
+    throw paymentMediaError(
+      'ABA QR image could not be downloaded'
+    )
+  }
+
+  const contentLength = Number(
+    response.headers.get('content-length') || 0
+  )
+
+  if (contentLength > PAYWAY_MEDIA_MAX_BYTES) {
+    throw paymentMediaError(
+      'ABA QR image is larger than 5 MB'
+    )
+  }
+
+  const buffer = Buffer.from(
+    await response.arrayBuffer()
+  )
+  const type = detectPaymentImageType(buffer)
+
+  if (!type || !buffer.length) {
+    throw paymentMediaError(
+      'ABA QR image URL did not return a supported image'
+    )
+  }
+
+  if (buffer.length > PAYWAY_MEDIA_MAX_BYTES) {
+    throw paymentMediaError(
+      'ABA QR image is larger than 5 MB'
+    )
+  }
+
+  return {
+    buffer,
+    ...type,
+  }
+}
+
+async function uploadPaymentImageToR2(
+  image,
+  userId,
+  orderId
+) {
+  const url = await uploadFileToR2(
+    {
+      buffer: image.buffer,
+      originalname:
+        `aba-qr-${orderId}.${image.extension}`,
+      mimetype: image.mimetype,
+    },
+    `payments/aba/${userId}/${orderId}`
+  )
+
+  return assertR2MediaReference(url, {
+    field: 'payment_transactions.qr_image',
+    allowEmpty: false,
+  })
+}
+
+async function normalizePayWayMediaString(
+  value,
+  {
+    userId,
+    orderId,
+    cache,
+    uploadedUrls,
+    imageHint = false,
+  }
+) {
+  const input = String(value || '').trim()
+
+  if (!input) return ''
+
+  if (cache.has(input)) {
+    return cache.get(input)
+  }
+
+  if (isR2PublicUrl(input)) {
+    const url = assertR2MediaReference(input, {
+      field: 'payment_transactions.qr_image',
+      allowEmpty: false,
+    })
+
+    cache.set(input, url)
+    return url
+  }
+
+  let image = decodePaymentImage(
+    input,
+    imageHint
+  )
+
+  if (
+    !image &&
+    imageHint &&
+    /^https:\/\//i.test(input)
+  ) {
+    image = await fetchPaymentImage(input)
+  }
+
+  if (!image) {
+    return input
+  }
+
+  const url = await uploadPaymentImageToR2(
+    image,
+    userId,
+    orderId
+  )
+
+  cache.set(input, url)
+  uploadedUrls.add(url)
+
+  return url
+}
+
+function isImageFieldName(value) {
+  return /(^|_)(qr_?image|image|qr_?code)($|_)/i.test(
+    String(value || '').replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`)
+  )
+}
+
+async function sanitizePayWayPayloadMedia(
+  value,
+  context,
+  path = 'root'
+) {
+  if (typeof value === 'string') {
+    const key = path.split('.').pop() || ''
+
+    return normalizePayWayMediaString(
+      value,
+      {
+        ...context,
+        imageHint:
+          isImageFieldName(key) ||
+          value.trim().toLowerCase().startsWith('data:image/'),
+      }
+    )
+  }
+
+  if (Array.isArray(value)) {
+    return Promise.all(
+      value.map((item, index) =>
+        sanitizePayWayPayloadMedia(
+          item,
+          context,
+          `${path}.${index}`
+        )
+      )
+    )
+  }
+
+  if (
+    value &&
+    typeof value === 'object'
+  ) {
+    const entries = await Promise.all(
+      Object.entries(value).map(
+        async ([key, item]) => [
+          key,
+          await sanitizePayWayPayloadMedia(
+            item,
+            context,
+            `${path}.${key}`
+          ),
+        ]
+      )
+    )
+
+    return Object.fromEntries(entries)
+  }
+
+  return value
+}
+
+async function cleanupUploadedPaymentMedia(
+  uploadedUrls
+) {
+  for (const url of uploadedUrls) {
+    try {
+      await deleteR2ObjectByUrl(url)
+    } catch (error) {
+      console.warn(
+        'ABA PAYMENT MEDIA CLEANUP WARNING:',
+        error.message
+      )
+    }
   }
 }
 
@@ -182,37 +529,93 @@ function parseReturnParams(value) {
   } catch {}
 
   try {
-    return JSON.parse(Buffer.from(String(value), 'base64').toString('utf8'))
+    return JSON.parse(
+      Buffer.from(
+        String(value),
+        'base64'
+      ).toString('utf8')
+    )
   } catch {}
 
   return {}
 }
 
 function getCallbackOrderId(body) {
-  const returnParams = parseReturnParams(body.return_params)
-  return String(body.merchant_ref || body.tran_id || body.transaction_id || returnParams.order_id || '').trim()
+  const returnParams = parseReturnParams(
+    body.return_params
+  )
+
+  return String(
+    body.merchant_ref ||
+    body.tran_id ||
+    body.transaction_id ||
+    returnParams.order_id ||
+    ''
+  ).trim()
 }
 
 function isApprovedCallback(body) {
-  const status = String(body.status ?? body?.status?.code ?? '').trim().toLowerCase()
-  const paymentStatus = String(body.payment_status || '').trim().toLowerCase()
-  const paymentStatusCode = String(body.payment_status_code ?? '').trim().toLowerCase()
+  const status = String(
+    body.status ??
+    body?.status?.code ??
+    ''
+  ).trim().toLowerCase()
 
-  return status === '0' || status === '00' || paymentStatusCode === '0' || paymentStatusCode === '00' || paymentStatus === 'approved'
+  const paymentStatus = String(
+    body.payment_status || ''
+  ).trim().toLowerCase()
+
+  const paymentStatusCode = String(
+    body.payment_status_code ?? ''
+  ).trim().toLowerCase()
+
+  return (
+    status === '0' ||
+    status === '00' ||
+    paymentStatusCode === '0' ||
+    paymentStatusCode === '00' ||
+    paymentStatus === 'approved'
+  )
 }
 
 function callbackAmountMatches(payment, body) {
-  const callbackAmount = body.payment_amount ?? body.original_amount ?? body.amount
-  const callbackCurrency = body.payment_currency || body.original_currency || body.currency
+  const callbackAmount =
+    body.payment_amount ??
+    body.original_amount ??
+    body.amount
 
-  if (callbackAmount === undefined || callbackAmount === null || callbackAmount === '') return true
-  if (callbackCurrency && String(callbackCurrency).toUpperCase() !== String(payment.currency || 'USD').toUpperCase()) return false
+  const callbackCurrency =
+    body.payment_currency ||
+    body.original_currency ||
+    body.currency
 
-  return Number(callbackAmount).toFixed(2) === Number(payment.amount_usd).toFixed(2)
+  if (
+    callbackAmount === undefined ||
+    callbackAmount === null ||
+    callbackAmount === ''
+  ) {
+    return true
+  }
+
+  if (
+    callbackCurrency &&
+    String(callbackCurrency).toUpperCase() !==
+      String(payment.currency || 'USD').toUpperCase()
+  ) {
+    return false
+  }
+
+  return (
+    Number(callbackAmount).toFixed(2) ===
+    Number(payment.amount_usd).toFixed(2)
+  )
 }
 
 async function getOrCreateWallet(userId) {
-  const { data: existingWallet, error: existingError } = await supabase
+  const {
+    data: existingWallet,
+    error: existingError,
+  } = await supabase
     .from('user_wallets')
     .select('*')
     .eq('user_id', userId)
@@ -223,11 +626,16 @@ async function getOrCreateWallet(userId) {
 
   const { data, error } = await supabase
     .from('user_wallets')
-    .insert({ user_id: userId, diamond_balance: 0, gem_balance: 0 })
+    .insert({
+      user_id: userId,
+      diamond_balance: 0,
+      gem_balance: 0,
+    })
     .select('*')
     .single()
 
   if (error) throw error
+
   return data
 }
 
@@ -239,6 +647,7 @@ async function getUserProfile(userId) {
     .maybeSingle()
 
   if (error) throw error
+
   return data || null
 }
 
@@ -246,7 +655,10 @@ async function callPayWayGenerateQr(payload) {
   const qrUrl = getPayWayQrUrl()
   const hash = createPayWayHash(payload)
 
-  if (!payload.merchant_id || !process.env.ABA_PAYWAY_API_KEY) {
+  if (
+    !payload.merchant_id ||
+    !process.env.ABA_PAYWAY_API_KEY
+  ) {
     return {
       configured: false,
       qr_string: '',
@@ -254,14 +666,22 @@ async function callPayWayGenerateQr(payload) {
       deeplink: '',
       checkout_url: '',
       aba_transaction_id: '',
-      raw: { message: 'ABA PayWay QR API is not configured' },
+      raw: {
+        message:
+          'ABA PayWay QR API is not configured',
+      },
     }
   }
 
   const response = await fetch(qrUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...payload, hash }),
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      ...payload,
+      hash,
+    }),
   })
 
   const text = await response.text()
@@ -274,7 +694,11 @@ async function callPayWayGenerateQr(payload) {
   }
 
   if (!response.ok) {
-    throw new Error(data.message || data.error || 'ABA PayWay QR generation failed')
+    throw new Error(
+      data.message ||
+      data.error ||
+      'ABA PayWay QR generation failed'
+    )
   }
 
   return {
@@ -283,59 +707,144 @@ async function callPayWayGenerateQr(payload) {
   }
 }
 
-export async function getPurchasePackages(req, res) {
-  return res.status(200).json({ ok: true, packages: PACKAGES })
+export async function getPurchasePackages(
+  req,
+  res
+) {
+  return res.status(200).json({
+    ok: true,
+    packages: PACKAGES,
+  })
 }
 
 export async function getMyWallet(req, res) {
   try {
     const userId = getUserId(req)
 
-    if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'User is required',
+      })
+    }
 
-    const wallet = await getOrCreateWallet(userId)
+    const wallet =
+      await getOrCreateWallet(userId)
 
-    return res.status(200).json({ ok: true, wallet: publicWallet(wallet) })
+    return res.status(200).json({
+      ok: true,
+      wallet: publicWallet(wallet),
+    })
   } catch (error) {
-    console.error('GET MY WALLET ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load wallet', error: error.message })
+    console.error(
+      'GET MY WALLET ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load wallet',
+      error: error.message,
+    })
   }
 }
 
-export async function createAbaPayment(req, res) {
+export async function createAbaPayment(
+  req,
+  res
+) {
+  const uploadedUrls = new Set()
+
   try {
     const userId = getUserId(req)
-    const selectedPackage = getPackageByUsd(req.body.package_usd)
+    const selectedPackage =
+      getPackageByUsd(req.body.package_usd)
 
-    if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
-    if (!selectedPackage) return res.status(400).json({ ok: false, message: 'Invalid purchase package' })
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'User is required',
+      })
+    }
+
+    if (!selectedPackage) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid purchase package',
+      })
+    }
 
     const user = await getUserProfile(userId)
     const tranId = createTranId()
-    const amount = formatUsd(selectedPackage.package_usd)
-    const payload = buildPayWayPayload({ tranId, amount, user })
-    const aba = await callPayWayGenerateQr(payload)
-    const expiresAt = new Date(Date.now() + Number(payload.lifetime) * 60 * 1000).toISOString()
+    const amount = formatUsd(
+      selectedPackage.package_usd
+    )
+
+    const payload = buildPayWayPayload({
+      tranId,
+      amount,
+      user,
+    })
+
+    const aba =
+      await callPayWayGenerateQr(payload)
+
+    const mediaContext = {
+      userId,
+      orderId: tranId,
+      cache: new Map(),
+      uploadedUrls,
+    }
+
+    const qrImage =
+      await normalizePayWayMediaString(
+        aba.qr_image,
+        {
+          ...mediaContext,
+          imageHint: true,
+        }
+      )
+
+    const safeAbaPayload =
+      await sanitizePayWayPayloadMedia(
+        aba.raw || {},
+        mediaContext
+      )
+
+    const expiresAt = new Date(
+      Date.now() +
+      Number(payload.lifetime) *
+        60 *
+        1000
+    ).toISOString()
 
     const { data, error } = await supabase
       .from('payment_transactions')
       .insert({
         user_id: userId,
         order_id: tranId,
-        aba_transaction_id: aba.aba_transaction_id || null,
-        package_usd: selectedPackage.package_usd,
-        amount_usd: selectedPackage.package_usd,
+        aba_transaction_id:
+          aba.aba_transaction_id || null,
+        package_usd:
+          selectedPackage.package_usd,
+        amount_usd:
+          selectedPackage.package_usd,
         currency: payload.currency,
-        diamonds: selectedPackage.diamonds,
-        bonus_gems: selectedPackage.bonus_gems,
+        diamonds:
+          selectedPackage.diamonds,
+        bonus_gems:
+          selectedPackage.bonus_gems,
         payment_method: 'aba_khqr',
         qr_string: aba.qr_string || null,
-        qr_image: aba.qr_image || null,
-        checkout_url: aba.checkout_url || null,
-        deeplink: aba.deeplink || null,
+        qr_image: qrImage || null,
+        checkout_url:
+          aba.checkout_url || null,
+        deeplink:
+          aba.deeplink || null,
         status: 'waiting_payment',
         request_payload: payload,
-        aba_payload: aba.raw || {},
+        aba_payload:
+          safeAbaPayload || {},
         expires_at: expiresAt,
       })
       .select('*')
@@ -343,21 +852,60 @@ export async function createAbaPayment(req, res) {
 
     if (error) throw error
 
-    return res.status(201).json({ ok: true, configured: aba.configured, payment: publicPayment(data) })
+    uploadedUrls.clear()
+
+    return res.status(201).json({
+      ok: true,
+      configured: aba.configured,
+      payment: publicPayment(data),
+    })
   } catch (error) {
-    console.error('CREATE ABA PAYMENT ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to create ABA payment', error: error.message })
+    await cleanupUploadedPaymentMedia(
+      uploadedUrls
+    )
+
+    console.error(
+      'CREATE ABA PAYMENT ERROR:',
+      error
+    )
+
+    const statusCode =
+      Number(error.statusCode) || 500
+
+    return res.status(statusCode).json({
+      ok: false,
+      message:
+        statusCode === 502
+          ? error.message
+          : 'Failed to create ABA payment',
+      error: error.message,
+    })
   }
 }
 
-export async function getAbaPaymentStatus(req, res) {
+export async function getAbaPaymentStatus(
+  req,
+  res
+) {
   try {
     const userId = getUserId(req)
-    const orderId = String(req.params.orderId || '').trim()
+    const orderId = String(
+      req.params.orderId || ''
+    ).trim()
 
-    if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'User is required',
+      })
+    }
 
-    await supabase.rpc('expire_waiting_payment', { p_order_id: orderId })
+    await supabase.rpc(
+      'expire_waiting_payment',
+      {
+        p_order_id: orderId,
+      }
+    )
 
     const { data, error } = await supabase
       .from('payment_transactions')
@@ -367,130 +915,300 @@ export async function getAbaPaymentStatus(req, res) {
       .maybeSingle()
 
     if (error) throw error
-    if (!data) return res.status(404).json({ ok: false, message: 'Payment not found' })
 
-    return res.status(200).json({ ok: true, payment: publicPayment(data) })
+    if (!data) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Payment not found',
+      })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      payment: publicPayment(data),
+    })
   } catch (error) {
-    console.error('GET ABA PAYMENT STATUS ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load payment status', error: error.message })
+    console.error(
+      'GET ABA PAYMENT STATUS ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to load payment status',
+      error: error.message,
+    })
   }
 }
 
-export async function handleAbaCallback(req, res) {
+export async function handleAbaCallback(
+  req,
+  res
+) {
   try {
-    const orderId = getCallbackOrderId(req.body)
+    const orderId =
+      getCallbackOrderId(req.body)
 
-    if (!orderId) return res.status(400).json({ ok: false, message: 'Missing order id' })
+    if (!orderId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Missing order id',
+      })
+    }
 
-    const { data: payment, error: paymentError } = await supabase
+    const {
+      data: payment,
+      error: paymentError,
+    } = await supabase
       .from('payment_transactions')
       .select('*')
       .eq('order_id', orderId)
       .maybeSingle()
 
-    if (paymentError) throw paymentError
-    if (!payment) return res.status(404).json({ ok: false, message: 'Payment not found' })
-
-    await supabase.from('payment_callbacks').insert({
-      payment_transaction_id: payment.id,
-      order_id: orderId,
-      payload: req.body,
-      status_detected: isApprovedCallback(req.body) ? 'approved' : 'not_approved',
-    })
-
-    if (!isApprovedCallback(req.body)) {
-      await supabase
-        .from('payment_transactions')
-        .update({ callback_payload: req.body, updated_at: new Date().toISOString() })
-        .eq('id', payment.id)
-
-      return res.status(200).json({ ok: true })
+    if (paymentError) {
+      throw paymentError
     }
 
-    if (!callbackAmountMatches(payment, req.body)) {
-      await supabase
-        .from('payment_transactions')
-        .update({ status: 'amount_mismatch', callback_payload: req.body, updated_at: new Date().toISOString() })
-        .eq('id', payment.id)
-
-      return res.status(200).json({ ok: true })
+    if (!payment) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Payment not found',
+      })
     }
 
-    if (payment.status !== 'waiting_payment') return res.status(200).json({ ok: true })
+    await supabase
+      .from('payment_callbacks')
+      .insert({
+        payment_transaction_id:
+          payment.id,
+        order_id: orderId,
+        payload: req.body,
+        status_detected:
+          isApprovedCallback(req.body)
+            ? 'approved'
+            : 'not_approved',
+      })
+
+    if (
+      !isApprovedCallback(req.body)
+    ) {
+      await supabase
+        .from('payment_transactions')
+        .update({
+          callback_payload: req.body,
+          updated_at:
+            new Date().toISOString(),
+        })
+        .eq('id', payment.id)
+
+      return res.status(200).json({
+        ok: true,
+      })
+    }
+
+    if (
+      !callbackAmountMatches(
+        payment,
+        req.body
+      )
+    ) {
+      await supabase
+        .from('payment_transactions')
+        .update({
+          status: 'amount_mismatch',
+          callback_payload: req.body,
+          updated_at:
+            new Date().toISOString(),
+        })
+        .eq('id', payment.id)
+
+      return res.status(200).json({
+        ok: true,
+      })
+    }
+
+    if (
+      payment.status !==
+      'waiting_payment'
+    ) {
+      return res.status(200).json({
+        ok: true,
+      })
+    }
 
     await supabase
       .from('payment_transactions')
       .update({
-        status: 'callback_received',
-        aba_transaction_id: req.body.transaction_id || req.body.tran_id || payment.aba_transaction_id || null,
+        status:
+          'callback_received',
+        aba_transaction_id:
+          req.body.transaction_id ||
+          req.body.tran_id ||
+          payment.aba_transaction_id ||
+          null,
         callback_payload: req.body,
-        paid_at: req.body.transaction_date ? new Date(req.body.transaction_date).toISOString() : new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        paid_at:
+          req.body.transaction_date
+            ? new Date(
+                req.body.transaction_date
+              ).toISOString()
+            : new Date().toISOString(),
+        updated_at:
+          new Date().toISOString(),
       })
       .eq('id', payment.id)
-      .eq('status', 'waiting_payment')
+      .eq(
+        'status',
+        'waiting_payment'
+      )
 
-    return res.status(200).json({ ok: true })
+    return res.status(200).json({
+      ok: true,
+    })
   } catch (error) {
-    console.error('ABA CALLBACK ERROR:', error)
-    return res.status(500).json({ ok: false, message: error.message || 'Failed to process ABA callback' })
+    console.error(
+      'ABA CALLBACK ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        error.message ||
+        'Failed to process ABA callback',
+    })
   }
 }
 
-export async function getMyPurchaseRequests(req, res) {
+export async function getMyPurchaseRequests(
+  req,
+  res
+) {
   try {
     const userId = getUserId(req)
 
-    if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'User is required',
+      })
+    }
 
-    const page = Math.max(Number(req.query.page || 1), 1)
-    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 20)
-    const from = (page - 1) * limit
-    const to = from + limit - 1
-    const status = String(req.query.status || 'all').trim().toLowerCase()
-    const search = String(req.query.q || req.query.search || '').trim()
+    const page = Math.max(
+      Number(req.query.page || 1),
+      1
+    )
+
+    const limit = Math.min(
+      Math.max(
+        Number(req.query.limit || 20),
+        1
+      ),
+      20
+    )
+
+    const from =
+      (page - 1) * limit
+    const to =
+      from + limit - 1
+
+    const status = String(
+      req.query.status || 'all'
+    )
+      .trim()
+      .toLowerCase()
+
+    const search = String(
+      req.query.q ||
+      req.query.search ||
+      ''
+    ).trim()
 
     const cutoffDate = new Date()
-    cutoffDate.setFullYear(cutoffDate.getFullYear() - 1)
-    const cutoffIso = cutoffDate.toISOString()
+    cutoffDate.setFullYear(
+      cutoffDate.getFullYear() - 1
+    )
+
+    const cutoffIso =
+      cutoffDate.toISOString()
 
     let query = supabase
       .from('payment_transactions')
-      .select('*', { count: 'exact' })
+      .select('*', {
+        count: 'exact',
+      })
       .eq('user_id', userId)
       .gte('created_at', cutoffIso)
 
-    if (status && status !== 'all') {
-      query = query.eq('status', status)
+    if (
+      status &&
+      status !== 'all'
+    ) {
+      query =
+        query.eq('status', status)
     }
 
     if (search) {
-      const safeSearch = search.replace(/[%_,]/g, '')
-      query = query.or(`order_id.ilike.%${safeSearch}%,aba_transaction_id.ilike.%${safeSearch}%`)
+      const safeSearch =
+        search.replace(
+          /[%_,]/g,
+          ''
+        )
+
+      query = query.or(
+        `order_id.ilike.%${safeSearch}%,aba_transaction_id.ilike.%${safeSearch}%`
+      )
     }
 
-    const { data, error, count } = await query
-      .order('created_at', { ascending: false })
+    const {
+      data,
+      error,
+      count,
+    } = await query
+      .order('created_at', {
+        ascending: false,
+      })
       .range(from, to)
 
     if (error) throw error
 
-    const total = Number(count || 0)
-    const totalPages = Math.max(Math.ceil(total / limit), 1)
+    const total =
+      Number(count || 0)
+
+    const totalPages = Math.max(
+      Math.ceil(total / limit),
+      1
+    )
 
     return res.status(200).json({
       ok: true,
-      purchases: (data || []).map((item) => publicPayment(item)),
+      purchases:
+        (data || []).map(
+          (item) =>
+            publicPayment(item)
+        ),
       page,
       limit,
       total,
       total_pages: totalPages,
-      has_next: page < totalPages,
-      has_prev: page > 1,
+      has_next:
+        page < totalPages,
+      has_prev:
+        page > 1,
       history_limit_days: 365,
     })
   } catch (error) {
-    console.error('GET MY PURCHASE REQUESTS ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load purchase requests', error: error.message })
+    console.error(
+      'GET MY PURCHASE REQUESTS ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to load purchase requests',
+      error: error.message,
+    })
   }
 }
