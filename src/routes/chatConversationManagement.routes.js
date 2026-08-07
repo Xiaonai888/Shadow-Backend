@@ -5,8 +5,11 @@ import {
 import {
   archiveConversation,
   deleteConversation,
+  getConversationMuteStatus,
   listManagedConversations,
+  muteConversation,
   unarchiveConversation,
+  unmuteConversation,
 } from '../services/chatConversationManagement.service.js'
 import {
   createSpamGuard,
@@ -87,6 +90,90 @@ router.get(
         res,
         error,
         'LIST MANAGED CHAT CONVERSATIONS ERROR'
+      )
+    }
+  }
+)
+
+router.get(
+  '/conversations/:conversationId/mute',
+  conversationReadGuard,
+  async (req, res) => {
+    try {
+      const result =
+        await getConversationMuteStatus({
+          userId:
+            req.user?.user_id,
+          conversationId:
+            req.params.conversationId,
+        })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'GET CHAT MUTE STATUS ERROR'
+      )
+    }
+  }
+)
+
+router.patch(
+  '/conversations/:conversationId/mute',
+  conversationWriteGuard,
+  async (req, res) => {
+    try {
+      const result =
+        await muteConversation({
+          userId:
+            req.user?.user_id,
+          conversationId:
+            req.params.conversationId,
+          duration:
+            req.body?.duration ||
+            'forever',
+        })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'MUTE CHAT CONVERSATION ERROR'
+      )
+    }
+  }
+)
+
+router.delete(
+  '/conversations/:conversationId/mute',
+  conversationWriteGuard,
+  async (req, res) => {
+    try {
+      const result =
+        await unmuteConversation({
+          userId:
+            req.user?.user_id,
+          conversationId:
+            req.params.conversationId,
+        })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'UNMUTE CHAT CONVERSATION ERROR'
       )
     }
   }
