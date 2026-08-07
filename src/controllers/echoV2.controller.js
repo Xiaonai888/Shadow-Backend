@@ -690,7 +690,8 @@ async function canViewEcho(
 
 async function hydrateEcho(
   echo,
-  viewerId
+  viewerId,
+  sourceOverride = null
 ) {
   if (!echo) return null
 
@@ -706,11 +707,13 @@ async function hydrateEcho(
   const [user, source] =
     await Promise.all([
       readUser(echo.user_id),
-      readSource(
-        echo.source_type,
-        echo.source_id,
-        viewerId
-      ),
+      sourceOverride
+        ? Promise.resolve(sourceOverride)
+        : readSource(
+            echo.source_type,
+            echo.source_id,
+            viewerId
+          ),
     ])
 
   if (!user || !source) {
@@ -1092,7 +1095,8 @@ export async function createEchoV2(
 
     const echo = await hydrateEcho(
       data,
-      userId
+      userId,
+      source
     )
     const echoCount =
       await readSourceEchoCount(
@@ -1152,13 +1156,30 @@ export async function getEchoV2BySource(
       req.params.sourceId,
       120
     )
-    const limit = Math.min(
-      50,
-      Math.max(
-        1,
-        Number(req.query.limit || 20)
-      )
+
+    const parsedLimit = Number.parseInt(
+      req.query.limit,
+      10
     )
+    const parsedPage = Number.parseInt(
+      req.query.page,
+      10
+    )
+
+    const limit = Number.isFinite(
+      parsedLimit
+    )
+      ? Math.min(
+          50,
+          Math.max(1, parsedLimit)
+        )
+      : 20
+
+    const page = Number.isFinite(
+      parsedPage
+    )
+      ? Math.max(1, parsedPage)
+      : 1
 
     if (!sourceType || !sourceId) {
       return res.status(400).json({
@@ -1182,33 +1203,78 @@ export async function getEchoV2BySource(
       })
     }
 
-    const { data, error } = await supabase
-      .from('social_echoes_v2')
-      .select('*')
-      .eq(
-        'source_type',
-        sourceType
-      )
-      .eq('source_id', sourceId)
-      .order('updated_at', {
-        ascending: false,
-      })
-      .limit(limit * 3)
+    const start = (page - 1) * limit
+    const visibleNeeded =
+      start + limit + 1
+    const visibleEchoes = []
+    const batchSize = 100
 
-    if (error) throw error
+    let rawOffset = 0
+    let exhausted = false
 
-    const hydrated = (
-      await Promise.all(
-        (data || []).map((echo) =>
-          hydrateEcho(
-            echo,
-            viewerId
+    while (
+      visibleEchoes.length <
+        visibleNeeded &&
+      !exhausted
+    ) {
+      const { data, error } =
+        await supabase
+          .from('social_echoes_v2')
+          .select('*')
+          .eq(
+            'source_type',
+            sourceType
+          )
+          .eq('source_id', sourceId)
+          .order('updated_at', {
+            ascending: false,
+          })
+          .range(
+            rawOffset,
+            rawOffset + batchSize - 1
+          )
+
+      if (error) throw error
+
+      const rows = Array.isArray(data)
+        ? data
+        : []
+
+      if (!rows.length) {
+        exhausted = true
+        break
+      }
+
+      rawOffset += rows.length
+
+      if (rows.length < batchSize) {
+        exhausted = true
+      }
+
+      const hydratedBatch = (
+        await Promise.all(
+          rows.map((echo) =>
+            hydrateEcho(
+              echo,
+              viewerId,
+              source
+            )
           )
         )
+      ).filter(Boolean)
+
+      visibleEchoes.push(
+        ...hydratedBatch
       )
+    }
+
+    const echoes = visibleEchoes.slice(
+      start,
+      start + limit
     )
-      .filter(Boolean)
-      .slice(0, limit)
+    const hasMore =
+      visibleEchoes.length >
+      start + limit
 
     const echoCount =
       await readSourceEchoCount(
@@ -1221,9 +1287,12 @@ export async function getEchoV2BySource(
       source_type: sourceType,
       source_id: sourceId,
       source,
+      page,
+      limit,
+      has_more: hasMore,
       echo_count: echoCount,
-      total: hydrated.length,
-      echoes: hydrated,
+      total: echoCount,
+      echoes,
     })
   } catch (error) {
     console.error(
