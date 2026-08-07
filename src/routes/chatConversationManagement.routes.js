@@ -5,9 +5,11 @@ import {
 import {
   archiveConversation,
   deleteConversation,
+  getConversationAutoDeleteStatus,
   getConversationMuteStatus,
   listManagedConversations,
   muteConversation,
+  setConversationAutoDelete,
   unarchiveConversation,
   unmuteConversation,
 } from '../services/chatConversationManagement.service.js'
@@ -174,6 +176,62 @@ router.delete(
         res,
         error,
         'UNMUTE CHAT CONVERSATION ERROR'
+      )
+    }
+  }
+)
+
+router.get(
+  '/conversations/:conversationId/auto-delete',
+  conversationReadGuard,
+  async (req, res) => {
+    try {
+      const result =
+        await getConversationAutoDeleteStatus({
+          userId:
+            req.user?.user_id,
+          conversationId:
+            req.params.conversationId,
+        })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'GET CHAT AUTO DELETE STATUS ERROR'
+      )
+    }
+  }
+)
+
+router.patch(
+  '/conversations/:conversationId/auto-delete',
+  conversationWriteGuard,
+  async (req, res) => {
+    try {
+      const result =
+        await setConversationAutoDelete({
+          userId:
+            req.user?.user_id,
+          conversationId:
+            req.params.conversationId,
+          seconds:
+            req.body?.seconds,
+        })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'UPDATE CHAT AUTO DELETE ERROR'
       )
     }
   }
