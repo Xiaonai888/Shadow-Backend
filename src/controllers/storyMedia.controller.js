@@ -1,4 +1,5 @@
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
+import sharp from 'sharp'
 import { supabase } from '../config/supabase.js'
 import { uploadFileToR2 } from '../services/r2Storage.service.js'
 import {
@@ -194,38 +195,81 @@ export async function uploadStoryImage(req, res) {
     }
 
     const requestedFolder = String(
-  req.body.folder || req.query.folder || ''
-).trim()
-const isPdfUpload =
-  requestedFolder === 'author_store_pdf'
-const isChatStoryCharacterUpload =
-  requestedFolder === 'chat_story_character'
+      req.body.folder || req.query.folder || ''
+    ).trim()
+    const isPdfUpload = requestedFolder === 'author_store_pdf'
+    const isChatStoryCharacterUpload =
+      requestedFolder === 'chat_story_character'
+    const isEpisodeContentUpload =
+      requestedFolder === 'episode_content'
 
-if (
-  isChatStoryCharacterUpload &&
-  req.file.size > 2 * 1024 * 1024
-) {
-  return res.status(413).json({
-    ok: false,
-    code: 'CHARACTER_IMAGE_TOO_LARGE',
-    message: 'Character profile image must be 2 MB or smaller',
-  })
-}
+    if (
+      isChatStoryCharacterUpload &&
+      req.file.size > 2 * 1024 * 1024
+    ) {
+      return res.status(413).json({
+        ok: false,
+        code: 'CHARACTER_IMAGE_TOO_LARGE',
+        message: 'Character profile image must be 2 MB or smaller',
+      })
+    }
 
-if (isPdfUpload && req.file.mimetype !== 'application/pdf') {
-  return res.status(400).json({
-    ok: false,
-    message: 'Only PDF files are allowed',
-  })
-}
+    if (
+      isEpisodeContentUpload &&
+      req.file.size > 500 * 1024
+    ) {
+      return res.status(413).json({
+        ok: false,
+        code: 'EPISODE_IMAGE_TOO_LARGE',
+        message: 'Episode image must be 500 KB or smaller',
+      })
+    }
 
-if (!isPdfUpload && !req.file.mimetype?.startsWith('image/')) {
-  return res.status(400).json({
-    ok: false,
-    message: 'Only image files are allowed',
-  })
-}
-  
+    if (isEpisodeContentUpload) {
+      let metadata
+
+      try {
+        metadata = await sharp(req.file.buffer).metadata()
+      } catch {
+        return res.status(400).json({
+          ok: false,
+          code: 'EPISODE_IMAGE_INVALID',
+          message: 'Episode image is invalid',
+        })
+      }
+
+      if (
+        req.file.mimetype !== 'image/webp' ||
+        metadata.format !== 'webp'
+      ) {
+        return res.status(400).json({
+          ok: false,
+          code: 'EPISODE_IMAGE_FORMAT_INVALID',
+          message: 'Episode image must be WebP',
+        })
+      }
+    }
+
+    if (
+      isPdfUpload &&
+      req.file.mimetype !== 'application/pdf'
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Only PDF files are allowed',
+      })
+    }
+
+    if (
+      !isPdfUpload &&
+      !req.file.mimetype?.startsWith('image/')
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Only image files are allowed',
+      })
+    }
+
 
     if (R2_FOLDERS[requestedFolder]) {
   const missingR2EnvKeys = getMissingR2EnvKeys()
