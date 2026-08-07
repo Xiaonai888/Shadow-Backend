@@ -50,6 +50,7 @@ import adminPasskeyPinRoutes from './src/routes/adminPasskeyPin.routes.js'
 import contentVersionsRoutes from './src/routes/contentVersions.routes.js'
 import giftsRoutes from './src/routes/gifts.routes.js'
 import echoesRoutes from './src/routes/echoes.routes.js'
+import echoV2Routes from './src/routes/echoV2.routes.js'
 import authorStoriesRoutes from './src/routes/authorStories.routes.js'
 import readerStoriesRoutes from './src/routes/readerStories.routes.js'
 import discoverStoriesRoutes from './src/routes/discoverStories.routes.js'
@@ -462,6 +463,7 @@ app.use('/api/comments', communityRouteSpamGuard, commentsRoutes)
 app.use('/api/comment-trash', communityRouteSpamGuard, commentTrashRoutes)
 app.use('/api/reactions', communityRouteSpamGuard, reactionsRoutes)
 app.use('/api/echoes', communityRouteSpamGuard, echoesRoutes)
+app.use('/api/echo-v2', communityRouteSpamGuard, echoV2Routes)
 app.use('/api/reader', communityRouteSpamGuard, libraryRoutes)
 app.use('/api/saved-posts', communityRouteSpamGuard, savedPostsRoutes)
 app.use('/api/help-center', helpCenterRoutes)
