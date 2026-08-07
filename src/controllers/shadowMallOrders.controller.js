@@ -1,5 +1,14 @@
 import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
+import {
+  deleteR2ObjectByUrl,
+  uploadFileToR2,
+} from '../services/r2Storage.service.js'
+import {
+  assertR2MediaReference,
+  isR2PublicUrl,
+  isSupabaseStorageUrl,
+} from '../services/mediaStoragePolicy.service.js'
 
 const PAYWAY_HASH_ORDER = [
   'req_time',
@@ -24,8 +33,28 @@ const PAYWAY_HASH_ORDER = [
 ]
 
 const DELIVERY_FEE_USD = 2
-const ADMIN_ORDER_STATUSES = ['under_review', 'confirmed', 'preparing', 'shipped', 'completed', 'cancelled', 'rejected']
-const READER_ORDER_STATUSES = ['waiting_payment', 'under_review', 'confirmed', 'preparing', 'shipped', 'completed', 'cancelled', 'rejected', 'expired', 'amount_mismatch']
+const MALL_MEDIA_MAX_BYTES = 5 * 1024 * 1024
+const ADMIN_ORDER_STATUSES = [
+  'under_review',
+  'confirmed',
+  'preparing',
+  'shipped',
+  'completed',
+  'cancelled',
+  'rejected',
+]
+const READER_ORDER_STATUSES = [
+  'waiting_payment',
+  'under_review',
+  'confirmed',
+  'preparing',
+  'shipped',
+  'completed',
+  'cancelled',
+  'rejected',
+  'expired',
+  'amount_mismatch',
+]
 
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
@@ -61,21 +90,35 @@ function getPayWayQrUrl() {
   const directUrl = process.env.ABA_PAYWAY_QR_URL || ''
   if (directUrl) return directUrl
 
-  const mode = String(process.env.ABA_PAYWAY_MODE || 'sandbox').toLowerCase()
+  const mode = String(
+    process.env.ABA_PAYWAY_MODE || 'sandbox'
+  ).toLowerCase()
 
   if (mode === 'production' || mode === 'live') {
-    return process.env.ABA_PAYWAY_PRODUCTION_QR_URL || 'https://checkout.payway.com.kh/api/payment-gateway/v1/payments/generate-qr'
+    return (
+      process.env.ABA_PAYWAY_PRODUCTION_QR_URL ||
+      'https://checkout.payway.com.kh/api/payment-gateway/v1/payments/generate-qr'
+    )
   }
 
-  return process.env.ABA_PAYWAY_SANDBOX_QR_URL || 'https://checkout-sandbox.payway.com.kh/api/payment-gateway/v1/payments/generate-qr'
+  return (
+    process.env.ABA_PAYWAY_SANDBOX_QR_URL ||
+    'https://checkout-sandbox.payway.com.kh/api/payment-gateway/v1/payments/generate-qr'
+  )
 }
 
 function createPayWayHash(payload) {
   const apiKey = process.env.ABA_PAYWAY_API_KEY || ''
   if (!apiKey) return ''
 
-  const raw = PAYWAY_HASH_ORDER.map((field) => payload[field] ?? '').join('')
-  return crypto.createHmac('sha512', apiKey).update(raw).digest('base64')
+  const raw = PAYWAY_HASH_ORDER
+    .map((field) => payload[field] ?? '')
+    .join('')
+
+  return crypto
+    .createHmac('sha512', apiKey)
+    .update(raw)
+    .digest('base64')
 }
 
 function parseReturnParams(value) {
@@ -86,44 +129,121 @@ function parseReturnParams(value) {
   } catch {}
 
   try {
-    return JSON.parse(Buffer.from(String(value), 'base64').toString('utf8'))
+    return JSON.parse(
+      Buffer.from(
+        String(value),
+        'base64'
+      ).toString('utf8')
+    )
   } catch {}
 
   return {}
 }
 
 function getCallbackOrderId(body) {
-  const returnParams = parseReturnParams(body.return_params)
-  return String(body.merchant_ref || body.tran_id || body.transaction_id || returnParams.order_id || '').trim()
+  const returnParams = parseReturnParams(
+    body.return_params
+  )
+
+  return String(
+    body.merchant_ref ||
+      body.tran_id ||
+      body.transaction_id ||
+      returnParams.order_id ||
+      ''
+  ).trim()
 }
 
 function isApprovedCallback(body) {
-  const status = String(body.status ?? body?.status?.code ?? '').trim().toLowerCase()
-  const paymentStatus = String(body.payment_status || '').trim().toLowerCase()
-  const paymentStatusCode = String(body.payment_status_code ?? '').trim().toLowerCase()
+  const status = String(
+    body.status ??
+      body?.status?.code ??
+      ''
+  )
+    .trim()
+    .toLowerCase()
 
-  return status === '0' || status === '00' || paymentStatusCode === '0' || paymentStatusCode === '00' || paymentStatus === 'approved'
+  const paymentStatus = String(
+    body.payment_status || ''
+  )
+    .trim()
+    .toLowerCase()
+
+  const paymentStatusCode = String(
+    body.payment_status_code ?? ''
+  )
+    .trim()
+    .toLowerCase()
+
+  return (
+    status === '0' ||
+    status === '00' ||
+    paymentStatusCode === '0' ||
+    paymentStatusCode === '00' ||
+    paymentStatus === 'approved'
+  )
 }
 
 function callbackAmountMatches(order, body) {
-  const callbackAmount = body.payment_amount ?? body.original_amount ?? body.amount
-  const callbackCurrency = body.payment_currency || body.original_currency || body.currency
+  const callbackAmount =
+    body.payment_amount ??
+    body.original_amount ??
+    body.amount
 
-  if (callbackAmount === undefined || callbackAmount === null || callbackAmount === '') return true
-  if (callbackCurrency && String(callbackCurrency).toUpperCase() !== String(order.currency || 'USD').toUpperCase()) return false
+  const callbackCurrency =
+    body.payment_currency ||
+    body.original_currency ||
+    body.currency
 
-  return Number(callbackAmount).toFixed(2) === Number(order.total_usd).toFixed(2)
+  if (
+    callbackAmount === undefined ||
+    callbackAmount === null ||
+    callbackAmount === ''
+  ) {
+    return true
+  }
+
+  if (
+    callbackCurrency &&
+    String(callbackCurrency).toUpperCase() !==
+      String(order.currency || 'USD').toUpperCase()
+  ) {
+    return false
+  }
+
+  return (
+    Number(callbackAmount).toFixed(2) ===
+    Number(order.total_usd).toFixed(2)
+  )
 }
 
 function extractQrResponse(data) {
   const source = data?.data || data || {}
 
   return {
-    qr_string: source.qrString || source.qr_string || source.khqr || source.qr || '',
-    qr_image: source.qrImage || source.qr_image || '',
-    deeplink: source.abapay_deeplink || source.deeplink || '',
-    checkout_url: source.checkout_url || source.payment_url || source.url || '',
-    aba_transaction_id: source.transaction_id || source.tran_id || '',
+    qr_string:
+      source.qrString ||
+      source.qr_string ||
+      source.khqr ||
+      source.qr ||
+      '',
+    qr_image:
+      source.qrImage ||
+      source.qr_image ||
+      '',
+    deeplink:
+      source.abapay_deeplink ||
+      source.deeplink ||
+      '',
+    checkout_url:
+      source.checkout_url ||
+      source.payment_url ||
+      source.url ||
+      '',
+    aba_transaction_id:
+      source.transaction_id ||
+      source.tran_id ||
+      '',
     raw: data || {},
   }
 }
@@ -133,18 +253,29 @@ function publicMallOrder(order) {
     id: order.id,
     user_id: order.user_id,
     order_id: order.order_id,
-    aba_transaction_id: order.aba_transaction_id || '',
+    aba_transaction_id:
+      order.aba_transaction_id || '',
     items: order.items || [],
-    buyer_profile: order.buyer_profile || {},
-    delivery_company: order.delivery_company || {},
-    subtotal_usd: Number(order.subtotal_usd || 0),
-    delivery_fee_usd: Number(order.delivery_fee_usd || 0),
-    total_usd: Number(order.total_usd || 0),
-    currency: order.currency || 'USD',
-    qr_string: order.qr_string || '',
-    qr_image: order.qr_image || '',
-    checkout_url: order.checkout_url || '',
-    deeplink: order.deeplink || '',
+    buyer_profile:
+      order.buyer_profile || {},
+    delivery_company:
+      order.delivery_company || {},
+    subtotal_usd:
+      Number(order.subtotal_usd || 0),
+    delivery_fee_usd:
+      Number(order.delivery_fee_usd || 0),
+    total_usd:
+      Number(order.total_usd || 0),
+    currency:
+      order.currency || 'USD',
+    qr_string:
+      order.qr_string || '',
+    qr_image:
+      order.qr_image || '',
+    checkout_url:
+      order.checkout_url || '',
+    deeplink:
+      order.deeplink || '',
     status: order.status,
     created_at: order.created_at,
     expires_at: order.expires_at,
@@ -153,63 +284,615 @@ function publicMallOrder(order) {
   }
 }
 
+function mallMediaError(message) {
+  const error = new Error(message)
+  error.statusCode = 502
+  return error
+}
+
+function detectMallImageType(buffer) {
+  if (
+    buffer.length >= 8 &&
+    buffer.subarray(0, 8).equals(
+      Buffer.from([
+        137, 80, 78, 71,
+        13, 10, 26, 10,
+      ])
+    )
+  ) {
+    return {
+      mimetype: 'image/png',
+      extension: 'png',
+    }
+  }
+
+  if (
+    buffer.length >= 3 &&
+    buffer[0] === 0xff &&
+    buffer[1] === 0xd8 &&
+    buffer[2] === 0xff
+  ) {
+    return {
+      mimetype: 'image/jpeg',
+      extension: 'jpg',
+    }
+  }
+
+  if (
+    buffer.length >= 12 &&
+    buffer
+      .subarray(0, 4)
+      .toString('ascii') === 'RIFF' &&
+    buffer
+      .subarray(8, 12)
+      .toString('ascii') === 'WEBP'
+  ) {
+    return {
+      mimetype: 'image/webp',
+      extension: 'webp',
+    }
+  }
+
+  if (
+    buffer.length >= 6 &&
+    ['GIF87a', 'GIF89a'].includes(
+      buffer
+        .subarray(0, 6)
+        .toString('ascii')
+    )
+  ) {
+    return {
+      mimetype: 'image/gif',
+      extension: 'gif',
+    }
+  }
+
+  return null
+}
+
+function decodeMallImage(
+  value,
+  allowBareBase64 = false
+) {
+  const input = String(value || '').trim()
+
+  if (!input) return null
+
+  const dataMatch = input.match(
+    /^data:image\/(png|jpe?g|webp|gif);base64,([a-z0-9+/=\s]+)$/i
+  )
+
+  let encoded = ''
+
+  if (dataMatch) {
+    encoded = dataMatch[2]
+  } else if (
+    allowBareBase64 &&
+    input.length >= 64 &&
+    /^[a-z0-9+/=\s]+$/i.test(input)
+  ) {
+    encoded = input
+  } else {
+    return null
+  }
+
+  const normalized =
+    encoded.replace(/\s+/g, '')
+
+  if (
+    normalized.length >
+    7 * 1024 * 1024
+  ) {
+    throw mallMediaError(
+      'Shadow Mall image is larger than 5 MB'
+    )
+  }
+
+  const buffer = Buffer.from(
+    normalized,
+    'base64'
+  )
+
+  const type =
+    detectMallImageType(buffer)
+
+  if (!type || !buffer.length) {
+    if (dataMatch) {
+      throw mallMediaError(
+        'Shadow Mall received an invalid image'
+      )
+    }
+
+    return null
+  }
+
+  if (
+    buffer.length >
+    MALL_MEDIA_MAX_BYTES
+  ) {
+    throw mallMediaError(
+      'Shadow Mall image is larger than 5 MB'
+    )
+  }
+
+  return {
+    buffer,
+    ...type,
+  }
+}
+
+function getAllowedRemoteMediaOrigins() {
+  const origins = new Set()
+
+  for (const value of [
+    process.env.SUPABASE_URL,
+    getPayWayQrUrl(),
+  ]) {
+    if (!value) continue
+
+    try {
+      origins.add(new URL(value).origin)
+    } catch {}
+  }
+
+  return origins
+}
+
+async function fetchMallImage(
+  value,
+  allowPayWay = false
+) {
+  let parsed
+
+  try {
+    parsed = new URL(value)
+  } catch {
+    return null
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw mallMediaError(
+      'Shadow Mall image URL must use HTTPS'
+    )
+  }
+
+  const allowedOrigins =
+    getAllowedRemoteMediaOrigins()
+
+  const isAllowed =
+    isSupabaseStorageUrl(value) ||
+    (
+      allowPayWay &&
+      (
+        allowedOrigins.has(parsed.origin) ||
+        parsed.hostname ===
+          'checkout.payway.com.kh' ||
+        parsed.hostname ===
+          'checkout-sandbox.payway.com.kh'
+      )
+    )
+
+  if (!isAllowed) {
+    throw mallMediaError(
+      'Shadow Mall media must use Cloudflare R2'
+    )
+  }
+
+  const response = await fetch(parsed, {
+    redirect: 'follow',
+  })
+
+  if (!response.ok) {
+    throw mallMediaError(
+      'Shadow Mall image could not be downloaded'
+    )
+  }
+
+  const contentLength = Number(
+    response.headers.get(
+      'content-length'
+    ) || 0
+  )
+
+  if (
+    contentLength >
+    MALL_MEDIA_MAX_BYTES
+  ) {
+    throw mallMediaError(
+      'Shadow Mall image is larger than 5 MB'
+    )
+  }
+
+  const buffer = Buffer.from(
+    await response.arrayBuffer()
+  )
+
+  const type =
+    detectMallImageType(buffer)
+
+  if (!type || !buffer.length) {
+    throw mallMediaError(
+      'Shadow Mall image URL did not return a supported image'
+    )
+  }
+
+  if (
+    buffer.length >
+    MALL_MEDIA_MAX_BYTES
+  ) {
+    throw mallMediaError(
+      'Shadow Mall image is larger than 5 MB'
+    )
+  }
+
+  return {
+    buffer,
+    ...type,
+  }
+}
+
+async function uploadMallImageToR2(
+  image,
+  {
+    userId,
+    orderId,
+    kind,
+  }
+) {
+  const url =
+    await uploadFileToR2(
+      {
+        buffer: image.buffer,
+        originalname:
+          `${kind}.${image.extension}`,
+        mimetype: image.mimetype,
+      },
+      `shadow-mall/orders/${userId}/${orderId}`
+    )
+
+  return assertR2MediaReference(
+    url,
+    {
+      field:
+        'shadow_mall_orders.media',
+      allowEmpty: false,
+    }
+  )
+}
+
+async function normalizeMallMediaString(
+  value,
+  {
+    userId,
+    orderId,
+    kind,
+    cache,
+    uploadedUrls,
+    imageHint = false,
+    allowPayWay = false,
+  }
+) {
+  const input =
+    String(value || '').trim()
+
+  if (!input) return ''
+
+  if (cache.has(input)) {
+    return cache.get(input)
+  }
+
+  if (isR2PublicUrl(input)) {
+    const url =
+      assertR2MediaReference(
+        input,
+        {
+          field:
+            'shadow_mall_orders.media',
+          allowEmpty: false,
+        }
+      )
+
+    cache.set(input, url)
+    return url
+  }
+
+  let image =
+    decodeMallImage(
+      input,
+      imageHint
+    )
+
+  if (
+    !image &&
+    /^https:\/\//i.test(input) &&
+    (
+      isSupabaseStorageUrl(input) ||
+      allowPayWay
+    )
+  ) {
+    image =
+      await fetchMallImage(
+        input,
+        allowPayWay
+      )
+  }
+
+  if (!image) {
+    if (imageHint) {
+      throw mallMediaError(
+        'Shadow Mall media must use Cloudflare R2'
+      )
+    }
+
+    return input
+  }
+
+  const url =
+    await uploadMallImageToR2(
+      image,
+      {
+        userId,
+        orderId,
+        kind,
+      }
+    )
+
+  cache.set(input, url)
+  uploadedUrls.add(url)
+
+  return url
+}
+
+function isImageFieldName(value) {
+  const key = String(value || '')
+    .replace(
+      /[A-Z]/g,
+      (match) =>
+        `_${match.toLowerCase()}`
+    )
+
+  return /(^|_)(qr_?image|cover_?url|image|qr_?code)($|_)/i.test(
+    key
+  )
+}
+
+async function sanitizeMallPayloadMedia(
+  value,
+  context,
+  path = 'root'
+) {
+  if (typeof value === 'string') {
+    const key =
+      path.split('.').pop() || ''
+
+    return normalizeMallMediaString(
+      value,
+      {
+        ...context,
+        kind: 'aba-media',
+        imageHint:
+          isImageFieldName(key) ||
+          value
+            .trim()
+            .toLowerCase()
+            .startsWith(
+              'data:image/'
+            ),
+        allowPayWay: true,
+      }
+    )
+  }
+
+  if (Array.isArray(value)) {
+    return Promise.all(
+      value.map(
+        (item, index) =>
+          sanitizeMallPayloadMedia(
+            item,
+            context,
+            `${path}.${index}`
+          )
+      )
+    )
+  }
+
+  if (
+    value &&
+    typeof value === 'object'
+  ) {
+    const entries =
+      await Promise.all(
+        Object.entries(value).map(
+          async ([key, item]) => [
+            key,
+            await sanitizeMallPayloadMedia(
+              item,
+              context,
+              `${path}.${key}`
+            ),
+          ]
+        )
+      )
+
+    return Object.fromEntries(
+      entries
+    )
+  }
+
+  return value
+}
+
+async function normalizeOrderItemCovers(
+  items,
+  context
+) {
+  return Promise.all(
+    (items || []).map(
+      async (item, index) => ({
+        ...item,
+        cover_url:
+          item.cover_url
+            ? await normalizeMallMediaString(
+                item.cover_url,
+                {
+                  ...context,
+                  kind:
+                    `product-cover-${index + 1}`,
+                  imageHint: true,
+                  allowPayWay: false,
+                }
+              )
+            : '',
+      })
+    )
+  )
+}
+
+async function cleanupUploadedMallMedia(
+  uploadedUrls
+) {
+  for (const url of uploadedUrls) {
+    try {
+      await deleteR2ObjectByUrl(
+        url
+      )
+    } catch (error) {
+      console.warn(
+        'SHADOW MALL MEDIA CLEANUP WARNING:',
+        error.message
+      )
+    }
+  }
+}
+
 async function getUserProfile(userId) {
-  const { data, error } = await supabase
-    .from('users')
-    .select('id, name, email, username')
-    .eq('id', userId)
-    .maybeSingle()
+  const { data, error } =
+    await supabase
+      .from('users')
+      .select(
+        'id, name, email, username'
+      )
+      .eq('id', userId)
+      .maybeSingle()
 
   if (error) throw error
+
   return data || null
 }
 
 async function getBuyerProfile(userId) {
-  const { data, error } = await supabase
-    .from('shadow_mall_buyer_profiles')
-    .select('*')
-    .eq('user_id', userId)
-    .maybeSingle()
+  const { data, error } =
+    await supabase
+      .from(
+        'shadow_mall_buyer_profiles'
+      )
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle()
 
   if (error) throw error
+
   return data || null
 }
 
-function buildPayWayPayload({ orderId, amount, user, phone, payItems }) {
+function buildPayWayPayload({
+  orderId,
+  amount,
+  user,
+  phone,
+  payItems,
+}) {
   const callbackUrl =
-    process.env.ABA_PAYWAY_MALL_CALLBACK_URL ||
+    process.env
+      .ABA_PAYWAY_MALL_CALLBACK_URL ||
     'https://shadow-backend-kucw.onrender.com/api/shadow-mall/orders/callback'
 
-  const returnParams = JSON.stringify({ order_id: orderId, type: 'shadow_mall_order' })
-  const lifetime = Number(process.env.ABA_PAYWAY_LIFETIME || 3)
+  const returnParams =
+    JSON.stringify({
+      order_id: orderId,
+      type:
+        'shadow_mall_order',
+    })
+
+  const lifetime =
+    Number(
+      process.env
+        .ABA_PAYWAY_LIFETIME ||
+      3
+    )
 
   const payload = {
     req_time: getUtcReqTime(),
-    merchant_id: process.env.ABA_PAYWAY_MERCHANT_ID || '',
+    merchant_id:
+      process.env
+        .ABA_PAYWAY_MERCHANT_ID ||
+      '',
     tran_id: orderId,
     amount,
-    items: base64(JSON.stringify(payItems)),
-    first_name: String(user?.name || 'Shadow').slice(0, 50),
+    items: base64(
+      JSON.stringify(payItems)
+    ),
+    first_name: String(
+      user?.name || 'Shadow'
+    ).slice(0, 50),
     last_name: 'Mall',
-    email: String(user?.email || 'support@shadowerabook.site'),
-    phone: String(phone || process.env.ABA_PAYWAY_DEFAULT_PHONE || '012345678'),
-    purchase_type: 'purchase',
-    payment_option: process.env.ABA_PAYWAY_PAYMENT_OPTION || 'abapay_khqr',
-    callback_url: base64(callbackUrl),
-    currency: process.env.ABA_PAYWAY_CURRENCY || 'USD',
-    return_params: returnParams,
-    lifetime: Math.max(3, lifetime),
-    qr_image_template: process.env.ABA_PAYWAY_QR_TEMPLATE || 'template3_color',
+    email: String(
+      user?.email ||
+        'support@shadowerabook.site'
+    ),
+    phone: String(
+      phone ||
+        process.env
+          .ABA_PAYWAY_DEFAULT_PHONE ||
+        '012345678'
+    ),
+    purchase_type:
+      'purchase',
+    payment_option:
+      process.env
+        .ABA_PAYWAY_PAYMENT_OPTION ||
+      'abapay_khqr',
+    callback_url:
+      base64(callbackUrl),
+    currency:
+      process.env
+        .ABA_PAYWAY_CURRENCY ||
+      'USD',
+    return_params:
+      returnParams,
+    lifetime:
+      Math.max(3, lifetime),
+    qr_image_template:
+      process.env
+        .ABA_PAYWAY_QR_TEMPLATE ||
+      'template3_color',
   }
 
-  return Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined && value !== null && value !== ''))
+  return Object.fromEntries(
+    Object.entries(payload)
+      .filter(
+        ([, value]) =>
+          value !== undefined &&
+          value !== null &&
+          value !== ''
+      )
+  )
 }
 
-async function callPayWayGenerateQr(payload) {
-  const qrUrl = getPayWayQrUrl()
-  const hash = createPayWayHash(payload)
+async function callPayWayGenerateQr(
+  payload
+) {
+  const qrUrl =
+    getPayWayQrUrl()
 
-  if (!payload.merchant_id || !process.env.ABA_PAYWAY_API_KEY) {
+  const hash =
+    createPayWayHash(payload)
+
+  if (
+    !payload.merchant_id ||
+    !process.env
+      .ABA_PAYWAY_API_KEY
+  ) {
     return {
       configured: false,
       qr_string: '',
@@ -217,27 +900,48 @@ async function callPayWayGenerateQr(payload) {
       deeplink: '',
       checkout_url: '',
       aba_transaction_id: '',
-      raw: { message: 'ABA PayWay QR API is not configured' },
+      raw: {
+        message:
+          'ABA PayWay QR API is not configured',
+      },
     }
   }
 
-  const response = await fetch(qrUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...payload, hash }),
-  })
+  const response =
+    await fetch(qrUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type':
+          'application/json',
+      },
+      body: JSON.stringify({
+        ...payload,
+        hash,
+      }),
+    })
 
-  const text = await response.text()
+  const text =
+    await response.text()
+
   let data = {}
 
   try {
-    data = text ? JSON.parse(text) : {}
+    data =
+      text
+        ? JSON.parse(text)
+        : {}
   } catch {
-    data = { raw: text }
+    data = {
+      raw: text,
+    }
   }
 
   if (!response.ok) {
-    throw new Error(data.message || data.error || 'ABA PayWay QR generation failed')
+    throw new Error(
+      data.message ||
+        data.error ||
+        'ABA PayWay QR generation failed'
+    )
   }
 
   return {
@@ -246,470 +950,1348 @@ async function callPayWayGenerateQr(payload) {
   }
 }
 
-function createCartSignature(orderItems, deliveryCompany) {
-  const items = [...orderItems]
+function createCartSignature(
+  orderItems,
+  deliveryCompany
+) {
+  const items = [
+    ...orderItems,
+  ]
     .map((item) => ({
-      product_id: String(item.product_id),
-      quantity: Number(item.quantity || 1),
+      product_id:
+        String(
+          item.product_id
+        ),
+      quantity:
+        Number(
+          item.quantity || 1
+        ),
     }))
-    .sort((a, b) => String(a.product_id).localeCompare(String(b.product_id)))
+    .sort(
+      (a, b) =>
+        String(
+          a.product_id
+        ).localeCompare(
+          String(
+            b.product_id
+          )
+        )
+    )
 
   const payload = {
     items,
-    delivery_company_key: deliveryCompany?.key || deliveryCompany?.shortName || deliveryCompany?.name || '',
+    delivery_company_key:
+      deliveryCompany?.key ||
+      deliveryCompany?.shortName ||
+      deliveryCompany?.name ||
+      '',
   }
 
   return crypto
     .createHash('sha256')
-    .update(JSON.stringify(payload))
+    .update(
+      JSON.stringify(payload)
+    )
     .digest('hex')
 }
 
-async function buildOrderItems(cartItems) {
-  const cleanItems = Array.isArray(cartItems)
-    ? cartItems
-        .map((item) => ({
-          product_id: String(item.id || item.product_id || '').trim(),
-          quantity: Math.max(1, Math.min(Number(item.quantity || 1), 99)),
-        }))
-        .filter((item) => item.product_id)
-    : []
+async function buildOrderItems(
+  cartItems
+) {
+  const cleanItems =
+    Array.isArray(cartItems)
+      ? cartItems
+          .map((item) => ({
+            product_id:
+              String(
+                item.id ||
+                  item.product_id ||
+                  ''
+              ).trim(),
+            quantity:
+              Math.max(
+                1,
+                Math.min(
+                  Number(
+                    item.quantity ||
+                      1
+                  ),
+                  99
+                )
+              ),
+          }))
+          .filter(
+            (item) =>
+              item.product_id
+          )
+      : []
 
   if (!cleanItems.length) {
-    throw new Error('Cart is empty')
+    throw new Error(
+      'Cart is empty'
+    )
   }
 
-  const ids = cleanItems.map((item) => item.product_id)
+  const ids =
+    cleanItems.map(
+      (item) =>
+        item.product_id
+    )
 
-  const { data: products, error } = await supabase
-    .from('shadow_mall_products')
-    .select('id, title, author_name, cover_url, price_usd, stock_status, stock_quantity, is_active')
+  const {
+    data: products,
+    error,
+  } = await supabase
+    .from(
+      'shadow_mall_products'
+    )
+    .select(
+      'id, title, author_name, cover_url, price_usd, stock_status, stock_quantity, is_active'
+    )
     .in('id', ids)
 
   if (error) throw error
 
-  const productMap = new Map((products || []).map((product) => [String(product.id), product]))
+  const productMap =
+    new Map(
+      (products || []).map(
+        (product) => [
+          String(product.id),
+          product,
+        ]
+      )
+    )
 
-  return cleanItems.map((item) => {
-    const product = productMap.get(String(item.product_id))
+  return cleanItems.map(
+    (item) => {
+      const product =
+        productMap.get(
+          String(
+            item.product_id
+          )
+        )
 
-    if (!product || !product.is_active) {
-      throw new Error('Some books are no longer available')
+      if (
+        !product ||
+        !product.is_active
+      ) {
+        throw new Error(
+          'Some books are no longer available'
+        )
+      }
+
+      if (
+        product.stock_status ===
+        'sold_out'
+      ) {
+        throw new Error(
+          `${product.title} is sold out`
+        )
+      }
+
+      const quantityAvailable =
+        Number(
+          product.stock_quantity ||
+            0
+        )
+
+      if (
+        product.stock_status !==
+          'pre_order' &&
+        quantityAvailable > 0 &&
+        item.quantity >
+          quantityAvailable
+      ) {
+        throw new Error(
+          `${product.title} has only ${quantityAvailable} in stock`
+        )
+      }
+
+      const unitPrice =
+        Number(
+          product.price_usd ||
+            0
+        )
+
+      return {
+        product_id:
+          product.id,
+        title:
+          product.title,
+        author_name:
+          product.author_name ||
+          '',
+        cover_url:
+          product.cover_url ||
+          '',
+        quantity:
+          item.quantity,
+        unit_price_usd:
+          unitPrice,
+        total_usd:
+          Number(
+            (
+              unitPrice *
+              item.quantity
+            ).toFixed(2)
+          ),
+      }
     }
-
-    if (product.stock_status === 'sold_out') {
-      throw new Error(`${product.title} is sold out`)
-    }
-
-    const quantityAvailable = Number(product.stock_quantity || 0)
-    if (product.stock_status !== 'pre_order' && quantityAvailable > 0 && item.quantity > quantityAvailable) {
-      throw new Error(`${product.title} has only ${quantityAvailable} in stock`)
-    }
-
-    const unitPrice = Number(product.price_usd || 0)
-
-    return {
-      product_id: product.id,
-      title: product.title,
-      author_name: product.author_name || '',
-      cover_url: product.cover_url || '',
-      quantity: item.quantity,
-      unit_price_usd: unitPrice,
-      total_usd: Number((unitPrice * item.quantity).toFixed(2)),
-    }
-  })
+  )
 }
 
-export async function deductShadowMallOrderStock(order) {
-  const items = Array.isArray(order?.items) ? order.items : []
+export async function deductShadowMallOrderStock(
+  order
+) {
+  const items =
+    Array.isArray(
+      order?.items
+    )
+      ? order.items
+      : []
 
   for (const item of items) {
-    const productId = item.product_id
-    const quantity = Math.max(1, Number(item.quantity || 1))
+    const productId =
+      item.product_id
 
-    if (!productId || !quantity) continue
+    const quantity =
+      Math.max(
+        1,
+        Number(
+          item.quantity || 1
+        )
+      )
 
-    const { data: product, error: productError } = await supabase
-      .from('shadow_mall_products')
-      .select('id, stock_quantity, stock_status')
+    if (
+      !productId ||
+      !quantity
+    ) {
+      continue
+    }
+
+    const {
+      data: product,
+      error: productError,
+    } = await supabase
+      .from(
+        'shadow_mall_products'
+      )
+      .select(
+        'id, stock_quantity, stock_status'
+      )
       .eq('id', productId)
       .maybeSingle()
 
-    if (productError) throw productError
+    if (productError) {
+      throw productError
+    }
+
     if (!product) continue
 
-    if (product.stock_status === 'pre_order') continue
+    if (
+      product.stock_status ===
+      'pre_order'
+    ) {
+      continue
+    }
 
-    const currentQuantity = Math.max(0, Number(product.stock_quantity || 0))
-    const nextQuantity = Math.max(0, currentQuantity - quantity)
+    const currentQuantity =
+      Math.max(
+        0,
+        Number(
+          product.stock_quantity ||
+            0
+        )
+      )
+
+    const nextQuantity =
+      Math.max(
+        0,
+        currentQuantity -
+          quantity
+      )
 
     const payload = {
-      stock_quantity: nextQuantity,
-      updated_at: new Date().toISOString(),
+      stock_quantity:
+        nextQuantity,
+      updated_at:
+        new Date().toISOString(),
     }
 
-    if (nextQuantity <= 0) {
-      payload.stock_status = 'sold_out'
-      payload.sold_out_at = new Date().toISOString()
+    if (
+      nextQuantity <= 0
+    ) {
+      payload.stock_status =
+        'sold_out'
+
+      payload.sold_out_at =
+        new Date().toISOString()
     }
 
-    const { error: updateError } = await supabase
-      .from('shadow_mall_products')
+    const {
+      error: updateError,
+    } = await supabase
+      .from(
+        'shadow_mall_products'
+      )
       .update(payload)
       .eq('id', productId)
 
-    if (updateError) throw updateError
+    if (updateError) {
+      throw updateError
+    }
   }
 }
 
-export async function createShadowMallOrderPayment(req, res) {
+export async function createShadowMallOrderPayment(
+  req,
+  res
+) {
+  const uploadedUrls =
+    new Set()
+
   try {
-    const userId = getUserId(req)
+    const userId =
+      getUserId(req)
 
-    if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
-
-    const user = await getUserProfile(userId)
-    const buyerProfile = await getBuyerProfile(userId)
-
-    if (!buyerProfile?.phone_number || !buyerProfile?.delivery_address) {
-      return res.status(400).json({ ok: false, message: 'Buyer profile is required before payment' })
+    if (!userId) {
+      return res
+        .status(401)
+        .json({
+          ok: false,
+          message:
+            'User is required',
+        })
     }
 
-    const orderItems = await buildOrderItems(req.body.items)
-    const subtotal = Number(orderItems.reduce((total, item) => total + item.total_usd, 0).toFixed(2))
-    const deliveryFee = DELIVERY_FEE_USD
-    const total = Number((subtotal + deliveryFee).toFixed(2))
+    const user =
+      await getUserProfile(
+        userId
+      )
 
-    const deliveryCompany = req.body.delivery_company || {
-      key: 'jnt',
-      name: 'J&T Express',
-      shortName: 'J&T',
+    const buyerProfile =
+      await getBuyerProfile(
+        userId
+      )
+
+    if (
+      !buyerProfile
+        ?.phone_number ||
+      !buyerProfile
+        ?.delivery_address
+    ) {
+      return res
+        .status(400)
+        .json({
+          ok: false,
+          message:
+            'Buyer profile is required before payment',
+        })
     }
 
-    const cartSignature = createCartSignature(orderItems, deliveryCompany)
-    const activeWindowStart = new Date(Date.now() - 20 * 60 * 1000).toISOString()
+    const rawOrderItems =
+      await buildOrderItems(
+        req.body.items
+      )
 
-    const { data: currentOrder, error: currentOrderError } = await supabase
-      .from('shadow_mall_orders')
+    const subtotal =
+      Number(
+        rawOrderItems
+          .reduce(
+            (
+              total,
+              item
+            ) =>
+              total +
+              item.total_usd,
+            0
+          )
+          .toFixed(2)
+      )
+
+    const deliveryFee =
+      DELIVERY_FEE_USD
+
+    const total =
+      Number(
+        (
+          subtotal +
+          deliveryFee
+        ).toFixed(2)
+      )
+
+    const deliveryCompany =
+      req.body
+        .delivery_company ||
+      {
+        key: 'jnt',
+        name:
+          'J&T Express',
+        shortName:
+          'J&T',
+      }
+
+    const cartSignature =
+      createCartSignature(
+        rawOrderItems,
+        deliveryCompany
+      )
+
+    const activeWindowStart =
+      new Date(
+        Date.now() -
+          20 *
+            60 *
+            1000
+      ).toISOString()
+
+    const {
+      data: currentOrder,
+      error:
+        currentOrderError,
+    } = await supabase
+      .from(
+        'shadow_mall_orders'
+      )
       .select('*')
       .eq('user_id', userId)
-      .eq('status', 'waiting_payment')
-      .eq('cart_signature', cartSignature)
-      .gte('created_at', activeWindowStart)
-      .order('created_at', { ascending: false })
+      .eq(
+        'status',
+        'waiting_payment'
+      )
+      .eq(
+        'cart_signature',
+        cartSignature
+      )
+      .gte(
+        'created_at',
+        activeWindowStart
+      )
+      .order(
+        'created_at',
+        {
+          ascending: false,
+        }
+      )
       .limit(1)
       .maybeSingle()
 
-    if (currentOrderError) throw currentOrderError
-
-    if (currentOrder) {
-      return res.status(200).json({
-        ok: true,
-        reused: true,
-        order: publicMallOrder(currentOrder),
-      })
+    if (
+      currentOrderError
+    ) {
+      throw currentOrderError
     }
 
-    const orderId = createOrderId()
+    if (currentOrder) {
+      return res
+        .status(200)
+        .json({
+          ok: true,
+          reused: true,
+          order:
+            publicMallOrder(
+              currentOrder
+            ),
+        })
+    }
+
+    const orderId =
+      createOrderId()
+
+    const mediaContext = {
+      userId,
+      orderId,
+      cache: new Map(),
+      uploadedUrls,
+    }
+
+    const orderItems =
+      await normalizeOrderItemCovers(
+        rawOrderItems,
+        mediaContext
+      )
 
     const payItems = [
-      ...orderItems.map((item) => ({
-        name: item.title,
-        quantity: item.quantity,
-        price: item.unit_price_usd,
-      })),
+      ...orderItems.map(
+        (item) => ({
+          name:
+            item.title,
+          quantity:
+            item.quantity,
+          price:
+            item.unit_price_usd,
+        })
+      ),
       {
-        name: `${deliveryCompany.shortName || deliveryCompany.name || 'Delivery'} delivery fee`,
+        name:
+          `${
+            deliveryCompany
+              .shortName ||
+            deliveryCompany
+              .name ||
+            'Delivery'
+          } delivery fee`,
         quantity: 1,
-        price: deliveryFee,
+        price:
+          deliveryFee,
       },
     ]
 
-    const amount = formatUsd(total)
-    const payload = buildPayWayPayload({
-      orderId,
-      amount,
-      user,
-      phone: buyerProfile.phone_number,
-      payItems,
-    })
+    const amount =
+      formatUsd(total)
 
-    const aba = await callPayWayGenerateQr(payload)
-    const expiresAt = new Date(Date.now() + Number(payload.lifetime) * 60 * 1000).toISOString()
+    const payload =
+      buildPayWayPayload({
+        orderId,
+        amount,
+        user,
+        phone:
+          buyerProfile
+            .phone_number,
+        payItems,
+      })
 
-    const { data, error } = await supabase
-      .from('shadow_mall_orders')
+    const aba =
+      await callPayWayGenerateQr(
+        payload
+      )
+
+    const qrImage =
+      aba.qr_image
+        ? await normalizeMallMediaString(
+            aba.qr_image,
+            {
+              ...mediaContext,
+              kind:
+                'aba-qr',
+              imageHint: true,
+              allowPayWay:
+                true,
+            }
+          )
+        : ''
+
+    const safeAbaPayload =
+      await sanitizeMallPayloadMedia(
+        aba.raw || {},
+        mediaContext
+      )
+
+    const expiresAt =
+      new Date(
+        Date.now() +
+          Number(
+            payload.lifetime
+          ) *
+            60 *
+            1000
+      ).toISOString()
+
+    const {
+      data,
+      error,
+    } = await supabase
+      .from(
+        'shadow_mall_orders'
+      )
       .insert({
         user_id: userId,
         order_id: orderId,
-        cart_signature: cartSignature,
-        aba_transaction_id: aba.aba_transaction_id || null,
+        cart_signature:
+          cartSignature,
+        aba_transaction_id:
+          aba
+            .aba_transaction_id ||
+          null,
         items: orderItems,
         buyer_profile: {
-          name: user?.name || user?.username || '',
-          phone_number: buyerProfile.phone_number,
-          telegram_username: buyerProfile.telegram_username || '',
-          facebook_link: buyerProfile.facebook_link || '',
-          province_city: buyerProfile.province_city,
-          delivery_address: buyerProfile.delivery_address,
-          delivery_note: buyerProfile.delivery_note || '',
+          name:
+            user?.name ||
+            user?.username ||
+            '',
+          phone_number:
+            buyerProfile
+              .phone_number,
+          telegram_username:
+            buyerProfile
+              .telegram_username ||
+            '',
+          facebook_link:
+            buyerProfile
+              .facebook_link ||
+            '',
+          province_city:
+            buyerProfile
+              .province_city,
+          delivery_address:
+            buyerProfile
+              .delivery_address,
+          delivery_note:
+            buyerProfile
+              .delivery_note ||
+            '',
         },
-        delivery_company: deliveryCompany,
-        subtotal_usd: subtotal,
-        delivery_fee_usd: deliveryFee,
+        delivery_company:
+          deliveryCompany,
+        subtotal_usd:
+          subtotal,
+        delivery_fee_usd:
+          deliveryFee,
         total_usd: total,
-        currency: payload.currency,
-        qr_string: aba.qr_string || null,
-        qr_image: aba.qr_image || null,
-        checkout_url: aba.checkout_url || null,
-        deeplink: aba.deeplink || null,
-        status: 'waiting_payment',
-        request_payload: payload,
-        aba_payload: aba.raw || {},
-        expires_at: expiresAt,
+        currency:
+          payload.currency,
+        qr_string:
+          aba.qr_string ||
+          null,
+        qr_image:
+          qrImage || null,
+        checkout_url:
+          aba.checkout_url ||
+          null,
+        deeplink:
+          aba.deeplink ||
+          null,
+        status:
+          'waiting_payment',
+        request_payload:
+          payload,
+        aba_payload:
+          safeAbaPayload ||
+          {},
+        expires_at:
+          expiresAt,
       })
       .select('*')
       .single()
 
     if (error) throw error
 
-    return res.status(201).json({
-      ok: true,
-      configured: aba.configured,
-      order: publicMallOrder(data),
-    })
+    uploadedUrls.clear()
+
+    return res
+      .status(201)
+      .json({
+        ok: true,
+        configured:
+          aba.configured,
+        order:
+          publicMallOrder(
+            data
+          ),
+      })
   } catch (error) {
-    console.error('CREATE SHADOW MALL ORDER PAYMENT ERROR:', error)
-    return res.status(500).json({
-      ok: false,
-      message: error.message || 'Failed to create Shadow Mall payment',
-    })
+    await cleanupUploadedMallMedia(
+      uploadedUrls
+    )
+
+    console.error(
+      'CREATE SHADOW MALL ORDER PAYMENT ERROR:',
+      error
+    )
+
+    const statusCode =
+      Number(
+        error.statusCode
+      ) || 500
+
+    return res
+      .status(statusCode)
+      .json({
+        ok: false,
+        message:
+          error.message ||
+          'Failed to create Shadow Mall payment',
+      })
   }
 }
 
-export async function getShadowMallOrderStatus(req, res) {
+export async function getShadowMallOrderStatus(
+  req,
+  res
+) {
   try {
-    const userId = getUserId(req)
-    const orderId = String(req.params.orderId || '').trim()
+    const userId =
+      getUserId(req)
 
-    if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
+    const orderId =
+      String(
+        req.params.orderId ||
+          ''
+      ).trim()
 
-    const { data, error } = await supabase
-      .from('shadow_mall_orders')
+    if (!userId) {
+      return res
+        .status(401)
+        .json({
+          ok: false,
+          message:
+            'User is required',
+        })
+    }
+
+    const {
+      data,
+      error,
+    } = await supabase
+      .from(
+        'shadow_mall_orders'
+      )
       .select('*')
-      .eq('order_id', orderId)
-      .eq('user_id', userId)
+      .eq(
+        'order_id',
+        orderId
+      )
+      .eq(
+        'user_id',
+        userId
+      )
       .maybeSingle()
 
     if (error) throw error
-    if (!data) return res.status(404).json({ ok: false, message: 'Shadow Mall order not found' })
 
-    return res.status(200).json({ ok: true, order: publicMallOrder(data) })
+    if (!data) {
+      return res
+        .status(404)
+        .json({
+          ok: false,
+          message:
+            'Shadow Mall order not found',
+        })
+    }
+
+    return res
+      .status(200)
+      .json({
+        ok: true,
+        order:
+          publicMallOrder(
+            data
+          ),
+      })
   } catch (error) {
-    console.error('GET SHADOW MALL ORDER STATUS ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load Shadow Mall order status' })
+    console.error(
+      'GET SHADOW MALL ORDER STATUS ERROR:',
+      error
+    )
+
+    return res
+      .status(500)
+      .json({
+        ok: false,
+        message:
+          'Failed to load Shadow Mall order status',
+      })
   }
 }
 
-export async function getMyShadowMallOrders(req, res) {
+export async function getMyShadowMallOrders(
+  req,
+  res
+) {
   try {
-    const userId = getUserId(req)
+    const userId =
+      getUserId(req)
 
-    if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
+    if (!userId) {
+      return res
+        .status(401)
+        .json({
+          ok: false,
+          message:
+            'User is required',
+        })
+    }
 
-    const page = Math.max(Number(req.query.page || 1), 1)
-    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 50)
-    const status = String(req.query.status || 'all').trim()
-    const q = String(req.query.q || '').trim()
-    const from = (page - 1) * limit
-    const to = from + limit - 1
+    const page =
+      Math.max(
+        Number(
+          req.query.page || 1
+        ),
+        1
+      )
 
-    const historyWindowStart = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
+    const limit =
+      Math.min(
+        Math.max(
+          Number(
+            req.query.limit ||
+              20
+          ),
+          1
+        ),
+        50
+      )
 
-let query = supabase
-  .from('shadow_mall_orders')
-  .select('*', { count: 'exact' })
-  .eq('user_id', userId)
-  .gte('created_at', historyWindowStart)
-    if (status !== 'all' && READER_ORDER_STATUSES.includes(status)) {
-      query = query.eq('status', status)
+    const status =
+      String(
+        req.query.status ||
+          'all'
+      ).trim()
+
+    const q =
+      String(
+        req.query.q || ''
+      ).trim()
+
+    const from =
+      (page - 1) *
+      limit
+
+    const to =
+      from + limit - 1
+
+    const historyWindowStart =
+      new Date(
+        Date.now() -
+          90 *
+            24 *
+            60 *
+            60 *
+            1000
+      ).toISOString()
+
+    let query =
+      supabase
+        .from(
+          'shadow_mall_orders'
+        )
+        .select('*', {
+          count: 'exact',
+        })
+        .eq(
+          'user_id',
+          userId
+        )
+        .gte(
+          'created_at',
+          historyWindowStart
+        )
+
+    if (
+      status !== 'all' &&
+      READER_ORDER_STATUSES.includes(
+        status
+      )
+    ) {
+      query =
+        query.eq(
+          'status',
+          status
+        )
     }
 
     if (q) {
-      query = query.or(`order_id.ilike.%${q}%,aba_transaction_id.ilike.%${q}%`)
+      query =
+        query.or(
+          `order_id.ilike.%${q}%,aba_transaction_id.ilike.%${q}%`
+        )
     }
 
-    const { data, error, count } = await query
-      .order('created_at', { ascending: false })
-      .range(from, to)
+    const {
+      data,
+      error,
+      count,
+    } = await query
+      .order(
+        'created_at',
+        {
+          ascending: false,
+        }
+      )
+      .range(
+        from,
+        to
+      )
 
     if (error) throw error
 
-    return res.status(200).json({
-      ok: true,
-      orders: (data || []).map(publicMallOrder),
-      page,
-      limit,
-      total: count || 0,
-      total_pages: Math.max(Math.ceil((count || 0) / limit), 1),
-      has_next: to + 1 < (count || 0),
-      has_prev: page > 1,
-    })
+    return res
+      .status(200)
+      .json({
+        ok: true,
+        orders:
+          (data || [])
+            .map(
+              publicMallOrder
+            ),
+        page,
+        limit,
+        total:
+          count || 0,
+        total_pages:
+          Math.max(
+            Math.ceil(
+              (count || 0) /
+                limit
+            ),
+            1
+          ),
+        has_next:
+          to + 1 <
+          (count || 0),
+        has_prev:
+          page > 1,
+      })
   } catch (error) {
-    console.error('GET MY SHADOW MALL ORDERS ERROR:', error)
-    return res.status(500).json({
-      ok: false,
-      message: error.message || 'Failed to load Shadow Mall order history',
-    })
+    console.error(
+      'GET MY SHADOW MALL ORDERS ERROR:',
+      error
+    )
+
+    return res
+      .status(500)
+      .json({
+        ok: false,
+        message:
+          error.message ||
+          'Failed to load Shadow Mall order history',
+      })
   }
 }
 
-export async function getAdminShadowMallOrders(req, res) {
+export async function getAdminShadowMallOrders(
+  req,
+  res
+) {
   try {
-    const page = Math.max(Number(req.query.page || 1), 1)
-    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 100)
-    const status = String(req.query.status || 'under_review').trim()
-    const q = String(req.query.q || '').trim()
-    const from = (page - 1) * limit
-    const to = from + limit - 1
+    const page =
+      Math.max(
+        Number(
+          req.query.page || 1
+        ),
+        1
+      )
 
-    const adminHistoryWindowStart = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString()
+    const limit =
+      Math.min(
+        Math.max(
+          Number(
+            req.query.limit ||
+              20
+          ),
+          1
+        ),
+        100
+      )
 
-let query = supabase
-  .from('shadow_mall_orders')
-  .select('*', { count: 'exact' })
-  .gte('created_at', adminHistoryWindowStart)
+    const status =
+      String(
+        req.query.status ||
+          'under_review'
+      ).trim()
+
+    const q =
+      String(
+        req.query.q || ''
+      ).trim()
+
+    const from =
+      (page - 1) *
+      limit
+
+    const to =
+      from + limit - 1
+
+    const adminHistoryWindowStart =
+      new Date(
+        Date.now() -
+          365 *
+            24 *
+            60 *
+            60 *
+            1000
+      ).toISOString()
+
+    let query =
+      supabase
+        .from(
+          'shadow_mall_orders'
+        )
+        .select('*', {
+          count: 'exact',
+        })
+        .gte(
+          'created_at',
+          adminHistoryWindowStart
+        )
+
     if (status === 'all') {
-      query = query
-        .neq('status', 'waiting_payment')
-        .neq('status', 'expired')
-    } else if (ADMIN_ORDER_STATUSES.includes(status)) {
-      query = query.eq('status', status)
+      query =
+        query
+          .neq(
+            'status',
+            'waiting_payment'
+          )
+          .neq(
+            'status',
+            'expired'
+          )
+    } else if (
+      ADMIN_ORDER_STATUSES.includes(
+        status
+      )
+    ) {
+      query =
+        query.eq(
+          'status',
+          status
+        )
     } else {
-      query = query.eq('status', 'under_review')
+      query =
+        query.eq(
+          'status',
+          'under_review'
+        )
     }
 
     if (q) {
-      query = query.or(`order_id.ilike.%${q}%,aba_transaction_id.ilike.%${q}%`)
+      query =
+        query.or(
+          `order_id.ilike.%${q}%,aba_transaction_id.ilike.%${q}%`
+        )
     }
 
-    const { data, error, count } = await query
-      .order('updated_at', { ascending: false })
-      .range(from, to)
+    const {
+      data,
+      error,
+      count,
+    } = await query
+      .order(
+        'updated_at',
+        {
+          ascending: false,
+        }
+      )
+      .range(
+        from,
+        to
+      )
 
     if (error) throw error
 
-    return res.status(200).json({
-      ok: true,
-      orders: (data || []).map(publicMallOrder),
-      page,
-      limit,
-      total: count || 0,
-      total_pages: Math.max(Math.ceil((count || 0) / limit), 1),
-      has_next: to + 1 < (count || 0),
-      has_prev: page > 1,
-    })
+    return res
+      .status(200)
+      .json({
+        ok: true,
+        orders:
+          (data || [])
+            .map(
+              publicMallOrder
+            ),
+        page,
+        limit,
+        total:
+          count || 0,
+        total_pages:
+          Math.max(
+            Math.ceil(
+              (count || 0) /
+                limit
+            ),
+            1
+          ),
+        has_next:
+          to + 1 <
+          (count || 0),
+        has_prev:
+          page > 1,
+      })
   } catch (error) {
-    console.error('GET ADMIN SHADOW MALL ORDERS ERROR:', error)
-    return res.status(500).json({ ok: false, message: error.message || 'Failed to load Shadow Mall orders' })
+    console.error(
+      'GET ADMIN SHADOW MALL ORDERS ERROR:',
+      error
+    )
+
+    return res
+      .status(500)
+      .json({
+        ok: false,
+        message:
+          error.message ||
+          'Failed to load Shadow Mall orders',
+      })
   }
 }
 
-export async function updateAdminShadowMallOrderStatus(req, res) {
+export async function updateAdminShadowMallOrderStatus(
+  req,
+  res
+) {
   try {
-    const orderId = String(req.params.orderId || '').trim()
-    const status = String(req.body.status || '').trim()
+    const orderId =
+      String(
+        req.params.orderId ||
+          ''
+      ).trim()
 
-    if (!ADMIN_ORDER_STATUSES.includes(status)) {
-      return res.status(400).json({ ok: false, message: 'Invalid order status' })
+    const status =
+      String(
+        req.body.status ||
+          ''
+      ).trim()
+
+    if (
+      !ADMIN_ORDER_STATUSES.includes(
+        status
+      )
+    ) {
+      return res
+        .status(400)
+        .json({
+          ok: false,
+          message:
+            'Invalid order status',
+        })
     }
 
-    const { data, error } = await supabase
-      .from('shadow_mall_orders')
+    const {
+      data,
+      error,
+    } = await supabase
+      .from(
+        'shadow_mall_orders'
+      )
       .update({
         status,
-        admin_note: req.body.admin_note || null,
-        updated_at: new Date().toISOString(),
+        admin_note:
+          req.body
+            .admin_note ||
+          null,
+        updated_at:
+          new Date()
+            .toISOString(),
       })
-      .eq('order_id', orderId)
+      .eq(
+        'order_id',
+        orderId
+      )
       .select('*')
       .single()
 
     if (error) throw error
 
-    return res.status(200).json({ ok: true, order: publicMallOrder(data) })
+    return res
+      .status(200)
+      .json({
+        ok: true,
+        order:
+          publicMallOrder(
+            data
+          ),
+      })
   } catch (error) {
-    console.error('UPDATE ADMIN SHADOW MALL ORDER STATUS ERROR:', error)
-    return res.status(500).json({ ok: false, message: error.message || 'Failed to update Shadow Mall order' })
+    console.error(
+      'UPDATE ADMIN SHADOW MALL ORDER STATUS ERROR:',
+      error
+    )
+
+    return res
+      .status(500)
+      .json({
+        ok: false,
+        message:
+          error.message ||
+          'Failed to update Shadow Mall order',
+      })
   }
 }
 
-export async function handleShadowMallAbaCallback(req, res) {
+export async function handleShadowMallAbaCallback(
+  req,
+  res
+) {
   try {
-    const orderId = getCallbackOrderId(req.body)
+    const orderId =
+      getCallbackOrderId(
+        req.body
+      )
 
-    if (!orderId) return res.status(400).json({ ok: false, message: 'Missing order id' })
-
-    const { data: order, error: orderError } = await supabase
-      .from('shadow_mall_orders')
-      .select('*')
-      .eq('order_id', orderId)
-      .maybeSingle()
-
-    if (orderError) throw orderError
-    if (!order) return res.status(404).json({ ok: false, message: 'Shadow Mall order not found' })
-
-    await supabase.from('shadow_mall_order_callbacks').insert({
-      order_id: orderId,
-      payload: req.body,
-      status_detected: isApprovedCallback(req.body) ? 'approved' : 'not_approved',
-    })
-
-    if (!isApprovedCallback(req.body)) {
-      await supabase
-        .from('shadow_mall_orders')
-        .update({ callback_payload: req.body, updated_at: new Date().toISOString() })
-        .eq('id', order.id)
-
-      return res.status(200).json({ ok: true })
+    if (!orderId) {
+      return res
+        .status(400)
+        .json({
+          ok: false,
+          message:
+            'Missing order id',
+        })
     }
 
-    if (!callbackAmountMatches(order, req.body)) {
+    const {
+      data: order,
+      error:
+        orderError,
+    } = await supabase
+      .from(
+        'shadow_mall_orders'
+      )
+      .select('*')
+      .eq(
+        'order_id',
+        orderId
+      )
+      .maybeSingle()
+
+    if (orderError) {
+      throw orderError
+    }
+
+    if (!order) {
+      return res
+        .status(404)
+        .json({
+          ok: false,
+          message:
+            'Shadow Mall order not found',
+        })
+    }
+
+    await supabase
+      .from(
+        'shadow_mall_order_callbacks'
+      )
+      .insert({
+        order_id: orderId,
+        payload: req.body,
+        status_detected:
+          isApprovedCallback(
+            req.body
+          )
+            ? 'approved'
+            : 'not_approved',
+      })
+
+    if (
+      !isApprovedCallback(
+        req.body
+      )
+    ) {
       await supabase
-        .from('shadow_mall_orders')
+        .from(
+          'shadow_mall_orders'
+        )
         .update({
-          status: 'amount_mismatch',
-          callback_payload: req.body,
-          updated_at: new Date().toISOString(),
+          callback_payload:
+            req.body,
+          updated_at:
+            new Date()
+              .toISOString(),
         })
         .eq('id', order.id)
 
-      return res.status(200).json({ ok: true })
+      return res
+        .status(200)
+        .json({
+          ok: true,
+        })
     }
 
-    if (order.status !== 'waiting_payment') return res.status(200).json({ ok: true })
+    if (
+      !callbackAmountMatches(
+        order,
+        req.body
+      )
+    ) {
+      await supabase
+        .from(
+          'shadow_mall_orders'
+        )
+        .update({
+          status:
+            'amount_mismatch',
+          callback_payload:
+            req.body,
+          updated_at:
+            new Date()
+              .toISOString(),
+        })
+        .eq('id', order.id)
 
-    const { data: updatedOrder, error: updateError } = await supabase
-      .from('shadow_mall_orders')
+      return res
+        .status(200)
+        .json({
+          ok: true,
+        })
+    }
+
+    if (
+      order.status !==
+      'waiting_payment'
+    ) {
+      return res
+        .status(200)
+        .json({
+          ok: true,
+        })
+    }
+
+    const {
+      data:
+        updatedOrder,
+      error:
+        updateError,
+    } = await supabase
+      .from(
+        'shadow_mall_orders'
+      )
       .update({
-        status: 'under_review',
-        aba_transaction_id: req.body.transaction_id || req.body.tran_id || order.aba_transaction_id || null,
-        callback_payload: req.body,
-        paid_at: req.body.transaction_date ? new Date(req.body.transaction_date).toISOString() : new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        status:
+          'under_review',
+        aba_transaction_id:
+          req.body
+            .transaction_id ||
+          req.body.tran_id ||
+          order
+            .aba_transaction_id ||
+          null,
+        callback_payload:
+          req.body,
+        paid_at:
+          req.body
+            .transaction_date
+            ? new Date(
+                req.body
+                  .transaction_date
+              ).toISOString()
+            : new Date()
+                .toISOString(),
+        updated_at:
+          new Date()
+            .toISOString(),
       })
       .eq('id', order.id)
-      .eq('status', 'waiting_payment')
+      .eq(
+        'status',
+        'waiting_payment'
+      )
       .select('*')
       .single()
 
-    if (updateError) throw updateError
+    if (updateError) {
+      throw updateError
+    }
 
-    await deductShadowMallOrderStock(updatedOrder)
+    await deductShadowMallOrderStock(
+      updatedOrder
+    )
 
-    return res.status(200).json({ ok: true })
+    return res
+      .status(200)
+      .json({
+        ok: true,
+      })
   } catch (error) {
-    console.error('SHADOW MALL ABA CALLBACK ERROR:', error)
-    return res.status(500).json({ ok: false, message: error.message || 'Failed to process Shadow Mall ABA callback' })
+    console.error(
+      'SHADOW MALL ABA CALLBACK ERROR:',
+      error
+    )
+
+    return res
+      .status(500)
+      .json({
+        ok: false,
+        message:
+          error.message ||
+          'Failed to process Shadow Mall ABA callback',
+      })
   }
 }
