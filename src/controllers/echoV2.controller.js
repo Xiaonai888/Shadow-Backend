@@ -1,4 +1,6 @@
 import { supabase } from '../config/supabase.js'
+import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
+import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 
 const SOURCE_TYPES = new Set([
   'story',
@@ -1147,6 +1149,72 @@ export async function createEchoV2(
     }
 
     saved = true
+
+    const authorPageId = String(
+  source?.owner?.id || ''
+)
+const ownerUserId = String(
+  source?.owner?.user_id || ''
+)
+
+const shouldNotify =
+  created &&
+  Boolean(authorPageId) &&
+  Boolean(ownerUserId) &&
+  ownerUserId !== String(userId) &&
+  audience !== 'only-me' &&
+  (sourceType === 'story' ||
+    sourceType === 'episode')
+
+if (shouldNotify) {
+  const reader =
+    await readUser(userId)
+  const readerName =
+    reader?.name ||
+    reader?.username ||
+    'A reader'
+  const notificationTitle =
+    sourceType === 'episode'
+      ? source.content || 'your episode'
+      : source.name || 'your story'
+
+  await Promise.all([
+    incrementAuthorPageAnalytics(
+      authorPageId,
+      'interactions'
+    ),
+    createAuthorStoryNotificationSafely({
+      authorId: authorPageId,
+      type: 'echo',
+      title: `${readerName} echoed ${notificationTitle}`,
+      message: echoText,
+      targetUrl: source.url,
+      sourceKey:
+        `social-echo-v2:${data.id}`,
+      metadata: {
+        source_type: sourceType,
+        source_id: sourceId,
+        echo_id: data.id,
+        destination,
+        audience,
+        share_count: Number(
+          data.share_count || 1
+        ),
+        reader_id: userId,
+        reader_name: readerName,
+        reader_username:
+          reader?.username || '',
+        reader_avatar_url:
+          reader?.avatar_url || '',
+      },
+    }),
+  ]).catch((error) => {
+    console.error(
+      'ECHO V2 NOTIFICATION ERROR:',
+      error
+    )
+  })
+}
 
     const echo = await hydrateEcho(
       data,
