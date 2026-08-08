@@ -1,7 +1,7 @@
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import sharp from 'sharp'
 import { supabase } from '../config/supabase.js'
-import { uploadFileToR2 } from '../services/r2Storage.service.js'
+import { uploadFileToR2, uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 import {
   assertAuthorStorageAvailable,
   getAuthorStorageQuota,
