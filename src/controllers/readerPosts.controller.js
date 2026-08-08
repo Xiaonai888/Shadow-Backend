@@ -573,7 +573,9 @@ async function readLinkedEchoByPostId(
       .from(
         'social_echo_reader_posts_v2'
       )
-      .select('echo_id, reader_post_id')
+      .select(
+  'echo_id, reader_post_id, updated_at'
+)
       .eq('reader_post_id', postId)
       .eq('user_id', userId)
       .maybeSingle()
@@ -845,8 +847,13 @@ async function createV2EchoReaderPost(
   }
 
   if (existingLink?.reader_post_id) {
-    return existingLink
-  }
+  await syncV2EchoReaderPost(
+    echo,
+    existingLink
+  )
+
+  return existingLink
+}
 
   const timestamp =
     echo.updated_at ||
@@ -935,6 +942,73 @@ async function createV2EchoReaderPost(
   throw linkError
 }
 
+async function syncV2EchoReaderPost(
+  echo,
+  link
+) {
+  if (!echo?.id || !link?.reader_post_id) {
+    return
+  }
+
+  const updatedAt =
+    echo.updated_at ||
+    echo.created_at ||
+    new Date().toISOString()
+
+  const echoTime =
+    new Date(updatedAt).getTime()
+  const linkTime =
+    new Date(
+      link.updated_at || 0
+    ).getTime()
+
+  if (
+    Number.isFinite(linkTime) &&
+    linkTime >= echoTime
+  ) {
+    return
+  }
+
+  const { error: postError } =
+    await supabase
+      .from('reader_posts')
+      .update({
+        content: String(
+          echo.echo_text || ''
+        ).trim(),
+        visibility:
+          echoAudienceToVisibility(
+            echo.audience
+          ),
+        publish_at: updatedAt,
+        updated_at: updatedAt,
+      })
+      .eq(
+        'id',
+        link.reader_post_id
+      )
+      .eq('user_id', echo.user_id)
+      .is('deleted_at', null)
+
+  if (postError) throw postError
+
+  const { error: linkError } =
+    await supabase
+      .from(
+        'social_echo_reader_posts_v2'
+      )
+      .update({
+        updated_at: updatedAt,
+      })
+      .eq('echo_id', echo.id)
+      .eq(
+        'reader_post_id',
+        link.reader_post_id
+      )
+
+  if (linkError) throw linkError
+}
+
 async function ensureV2EchoLinks(
   echoes
 ) {
@@ -952,7 +1026,9 @@ async function ensureV2EchoLinks(
     .from(
       'social_echo_reader_posts_v2'
     )
-    .select('echo_id, reader_post_id')
+    .select(
+  'echo_id, reader_post_id, updated_at'
+)
     .in('echo_id', echoIds)
 
   if (error) throw error
@@ -963,6 +1039,21 @@ async function ensureV2EchoLinks(
       link,
     ])
   )
+
+  await Promise.all(
+  rows.map((echo) => {
+    const link = linkMap.get(
+      String(echo.id)
+    )
+
+    return link
+      ? syncV2EchoReaderPost(
+          echo,
+          link
+        )
+      : null
+  })
+)
 
   const missing = rows.filter(
     (echo) =>
