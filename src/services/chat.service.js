@@ -1,4 +1,8 @@
 import { supabase } from '../config/supabase.js'
+import {
+  deleteR2ObjectByUrl,
+  uploadFileToR2,
+} from './r2Storage.service.js'
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -9,6 +13,36 @@ const REQUEST_STATUSES = [
   'declined',
   'blocked',
 ]
+
+const CHAT_MESSAGE_FIELDS =
+  'id, conversation_id, sender_user_id, message_type, body, is_request_message, reply_to_message_id, forwarded_from_message_id, forwarded_from_user_id, attachment_url, attachment_name, attachment_mime, attachment_size, attachment_kind, edited_at, deleted_at, created_at'
+
+const CHAT_FILE_MIMES = new Set([
+  'application/pdf',
+  'text/plain',
+  'application/zip',
+  'application/x-zip-compressed',
+  'application/epub+zip',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+])
+
+const CHAT_FILE_EXTENSIONS = new Set([
+  'pdf',
+  'txt',
+  'zip',
+  'epub',
+  'doc',
+  'docx',
+  'xls',
+  'xlsx',
+  'ppt',
+  'pptx',
+])
 
 export class ChatServiceError extends Error {
   constructor(status, code, message) {
@@ -45,6 +79,87 @@ function requireMessage(value) {
   }
 
   return message
+}
+
+function requireChatAttachment(file) {
+  if (!file?.buffer?.length) {
+    fail(400, 'CHAT_ATTACHMENT_REQUIRED', 'Choose a file to send')
+  }
+
+  const mime = String(
+    file.mimetype || 'application/octet-stream'
+  ).toLowerCase()
+
+  const originalName = String(
+    file.originalname || 'file'
+  )
+
+  const extension = originalName.includes('.')
+    ? originalName
+        .split('.')
+        .pop()
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '')
+    : ''
+
+  const imageAllowed =
+    mime.startsWith('image/') &&
+    ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif'].includes(extension)
+
+  const videoAllowed =
+    mime.startsWith('video/') &&
+    ['mp4', 'webm', 'mov'].includes(extension)
+
+  const fileAllowed =
+    CHAT_FILE_EXTENSIONS.has(extension) &&
+    (
+      CHAT_FILE_MIMES.has(mime) ||
+      mime === 'application/octet-stream'
+    )
+
+  if (!imageAllowed && !videoAllowed && !fileAllowed) {
+    fail(
+      400,
+      'CHAT_ATTACHMENT_TYPE_NOT_ALLOWED',
+      'This file type is not supported'
+    )
+  }
+
+  return {
+    kind: imageAllowed
+      ? 'image'
+      : videoAllowed
+        ? 'video'
+        : 'file',
+    name: originalName
+      .replace(/[\u0000-\u001f\u007f/\\]/g, '_')
+      .slice(0, 180),
+    mime,
+    size: Number(
+      file.size || file.buffer.length || 0
+    ),
+  }
+}
+
+function getR2KeyFromUrl(value) {
+  const publicUrl = String(
+    process.env.R2_PUBLIC_URL || ''
+  ).replace(/\/+$/, '')
+
+  const url = String(value || '')
+
+  if (
+    !publicUrl ||
+    !url.startsWith(`${publicUrl}/`)
+  ) {
+    return null
+  }
+
+  return decodeURIComponent(
+    url
+      .slice(publicUrl.length + 1)
+      .split('?')[0]
+  )
 }
 
 function databaseFailure(error, message) {
@@ -262,6 +377,21 @@ function formatDeletedMessage(message) {
     body: isDeleted
       ? ''
       : message?.body || '',
+    attachment_url: isDeleted
+      ? null
+      : message?.attachment_url || null,
+    attachment_name: isDeleted
+      ? null
+      : message?.attachment_name || null,
+    attachment_mime: isDeleted
+      ? null
+      : message?.attachment_mime || null,
+    attachment_size: isDeleted
+      ? null
+      : message?.attachment_size || null,
+    attachment_kind: isDeleted
+      ? null
+      : message?.attachment_kind || null,
     is_deleted: isDeleted,
   }
 }
@@ -273,7 +403,7 @@ async function getLatestMessage(
   let query = supabase
     .from('chat_messages')
     .select(
-      'id, conversation_id, sender_user_id, message_type, body, is_request_message, reply_to_message_id, forwarded_from_message_id, forwarded_from_user_id, edited_at, deleted_at, created_at'
+      CHAT_MESSAGE_FIELDS
     )
     .eq(
       'conversation_id',
@@ -944,7 +1074,7 @@ export async function getConversationMessages({
   let messageQuery = supabase
     .from('chat_messages')
     .select(
-      'id, conversation_id, sender_user_id, message_type, body, is_request_message, reply_to_message_id, forwarded_from_message_id, forwarded_from_user_id, edited_at, deleted_at, created_at'
+      CHAT_MESSAGE_FIELDS
     )
     .eq(
       'conversation_id',
@@ -1017,7 +1147,7 @@ export async function getConversationMessages({
     } = await supabase
       .from('chat_messages')
       .select(
-        'id, conversation_id, sender_user_id, message_type, body, edited_at, deleted_at, created_at'
+        CHAT_MESSAGE_FIELDS
       )
       .eq(
         'conversation_id',
@@ -1248,7 +1378,7 @@ export async function sendConversationMessage({
       is_request_message: false,
     })
     .select(
-      'id, conversation_id, sender_user_id, message_type, body, is_request_message, reply_to_message_id, forwarded_from_message_id, forwarded_from_user_id, edited_at, deleted_at, created_at'
+      CHAT_MESSAGE_FIELDS
     )
     .single()
 
@@ -1292,6 +1422,173 @@ export async function sendConversationMessage({
           name: sender.name,
           username: sender.username,
           avatar_url: sender.avatar_url || null,
+        }
+      : null,
+    is_mine: true,
+  }
+}
+
+export async function sendConversationAttachment({
+  userId,
+  conversationId,
+  message,
+  file,
+}) {
+  const safeUserId = requireUuid(
+    userId,
+    'User ID'
+  )
+  const safeMessage = cleanText(message, 2000)
+  const attachment =
+    requireChatAttachment(file)
+
+  const {
+    conversation,
+    participant,
+  } = await getConversationAccess(
+    conversationId,
+    safeUserId
+  )
+
+  if (conversation.request_status === 'pending') {
+    fail(
+      409,
+      'REQUEST_NOT_ACCEPTED',
+      'The recipient must accept this message request first'
+    )
+  }
+
+  if (conversation.request_status === 'declined') {
+    fail(
+      403,
+      'REQUEST_DECLINED',
+      'This message request was declined'
+    )
+  }
+
+  if (conversation.request_status === 'blocked') {
+    fail(
+      403,
+      'CHAT_BLOCKED',
+      'Messaging is blocked'
+    )
+  }
+
+  const otherParticipant =
+    await getOtherParticipant(
+      conversation.id,
+      safeUserId
+    )
+
+  if (!otherParticipant) {
+    fail(
+      409,
+      'PARTICIPANT_MISSING',
+      'The other participant is unavailable'
+    )
+  }
+
+  const block = await findBlockBetween(
+    safeUserId,
+    otherParticipant.user_id
+  )
+
+  if (block) {
+    fail(
+      403,
+      'CHAT_BLOCKED',
+      'Messaging is blocked'
+    )
+  }
+
+  let attachmentUrl = ''
+
+  try {
+    attachmentUrl = await uploadFileToR2(
+      file,
+      'chat-attachments'
+    )
+  } catch (error) {
+    const wrapped = new ChatServiceError(
+      500,
+      'CHAT_ATTACHMENT_UPLOAD_FAILED',
+      'Failed to upload attachment'
+    )
+
+    wrapped.cause = error
+    throw wrapped
+  }
+
+  const { data, error } = await supabase
+    .from('chat_messages')
+    .insert({
+      conversation_id: conversation.id,
+      sender_user_id: safeUserId,
+      message_type: 'text',
+      body: safeMessage,
+      is_request_message: false,
+      attachment_url: attachmentUrl,
+      attachment_r2_key:
+        getR2KeyFromUrl(attachmentUrl),
+      attachment_name: attachment.name,
+      attachment_mime: attachment.mime,
+      attachment_size: attachment.size,
+      attachment_kind: attachment.kind,
+    })
+    .select(CHAT_MESSAGE_FIELDS)
+    .single()
+
+  if (error) {
+    await deleteR2ObjectByUrl(
+      attachmentUrl
+    ).catch(() => {})
+
+    throw databaseFailure(
+      error,
+      'Failed to send attachment'
+    )
+  }
+
+  const { error: restoreError } =
+    await supabase
+      .from('chat_participants')
+      .update({
+        archived_at: null,
+        deleted_at: null,
+      })
+      .eq('id', otherParticipant.id)
+
+  if (restoreError) {
+    throw databaseFailure(
+      restoreError,
+      'Failed to restore recipient conversation'
+    )
+  }
+
+  const readAt = new Date().toISOString()
+
+  await supabase
+    .from('chat_participants')
+    .update({
+      last_read_at: readAt,
+      archived_at: null,
+      deleted_at: null,
+    })
+    .eq('id', participant.id)
+
+  const sender = await getPublicUser(
+    safeUserId
+  )
+
+  return {
+    ...data,
+    sender: sender
+      ? {
+          id: sender.id,
+          name: sender.name,
+          username: sender.username,
+          avatar_url:
+            sender.avatar_url || null,
         }
       : null,
     is_mine: true,
