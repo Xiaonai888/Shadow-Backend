@@ -1363,6 +1363,292 @@ export async function getEchoV2BySource(
   }
 }
 
+function getEchoV2ListPage(req, fallbackLimit = 20) {
+  const parsedPage = Number.parseInt(req.query.page, 10)
+  const parsedLimit = Number.parseInt(req.query.limit, 10)
+
+  return {
+    page: Number.isFinite(parsedPage)
+      ? Math.max(1, parsedPage)
+      : 1,
+    limit: Number.isFinite(parsedLimit)
+      ? Math.min(50, Math.max(1, parsedLimit))
+      : fallbackLimit,
+  }
+}
+
+async function readEchoV2VisiblePage({
+  viewerId,
+  page,
+  limit,
+  configure,
+}) {
+  const start = (page - 1) * limit
+  const visibleNeeded = start + limit + 1
+  const visibleEchoes = []
+  const batchSize = 100
+  let rawOffset = 0
+  let exhausted = false
+
+  while (
+    visibleEchoes.length < visibleNeeded &&
+    !exhausted
+  ) {
+    let query = supabase
+      .from('social_echoes_v2')
+      .select('*')
+
+    query = configure(query)
+
+    const { data, error } = await query
+      .order('updated_at', {
+        ascending: false,
+      })
+      .range(
+        rawOffset,
+        rawOffset + batchSize - 1
+      )
+
+    if (error) throw error
+
+    const rows = Array.isArray(data)
+      ? data
+      : []
+
+    if (!rows.length) {
+      exhausted = true
+      break
+    }
+
+    rawOffset += rows.length
+
+    if (rows.length < batchSize) {
+      exhausted = true
+    }
+
+    const hydrated = (
+      await Promise.all(
+        rows.map((echo) =>
+          hydrateEcho(
+            echo,
+            viewerId
+          )
+        )
+      )
+    ).filter(Boolean)
+
+    visibleEchoes.push(...hydrated)
+  }
+
+  return {
+    echoes: visibleEchoes.slice(
+      start,
+      start + limit
+    ),
+    hasMore:
+      visibleEchoes.length >
+      start + limit,
+  }
+}
+
+export async function getEchoV2Feed(
+  req,
+  res
+) {
+  try {
+    const viewerId = getUserId(req)
+    const { page, limit } =
+      getEchoV2ListPage(req, 20)
+
+    const { echoes, hasMore } =
+      await readEchoV2VisiblePage({
+        viewerId,
+        page,
+        limit,
+        configure: (query) =>
+          query.eq(
+            'destination',
+            'feed'
+          ),
+      })
+
+    return res.status(200).json({
+      ok: true,
+      page,
+      limit,
+      total: echoes.length,
+      has_more: hasMore,
+      echoes,
+    })
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      'Failed to load echo feed'
+    )
+  }
+}
+
+export async function getMyEchoV2(
+  req,
+  res
+) {
+  try {
+    const userId = getUserId(req)
+    const { page, limit } =
+      getEchoV2ListPage(req, 30)
+
+    const { echoes, hasMore } =
+      await readEchoV2VisiblePage({
+        viewerId: userId,
+        page,
+        limit,
+        configure: (query) =>
+          query
+            .eq('user_id', userId)
+            .in('destination', [
+              'feed',
+              'shadow',
+            ]),
+      })
+
+    return res.status(200).json({
+      ok: true,
+      page,
+      limit,
+      total: echoes.length,
+      has_more: hasMore,
+      echoes,
+    })
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      'Failed to load your echoes'
+    )
+  }
+}
+
+export async function getReceivedEchoV2(
+  req,
+  res
+) {
+  try {
+    const viewerId = getUserId(req)
+    const { page, limit } =
+      getEchoV2ListPage(req, 30)
+
+    const { echoes, hasMore } =
+      await readEchoV2VisiblePage({
+        viewerId,
+        page,
+        limit,
+        configure: (query) =>
+          query
+            .in('destination', [
+              'reader',
+              'circle',
+            ])
+            .contains(
+              'selected_reader_ids',
+              [viewerId]
+            ),
+      })
+
+    return res.status(200).json({
+      ok: true,
+      page,
+      limit,
+      total: echoes.length,
+      has_more: hasMore,
+      echoes,
+    })
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      'Failed to load received echoes'
+    )
+  }
+}
+
+export async function getEchoV2ByUsername(
+  req,
+  res
+) {
+  try {
+    const viewerId = getUserId(req)
+    const username = cleanText(
+      String(
+        req.params.username || ''
+      ).replace(/^@+/, ''),
+      80
+    )
+    const { page, limit } =
+      getEchoV2ListPage(req, 30)
+
+    if (!username) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Username is required',
+      })
+    }
+
+    const { data: user, error } =
+      await supabase
+        .from('users')
+        .select(
+          'id, name, username, avatar_url, is_active'
+        )
+        .ilike('username', username)
+        .eq('is_active', true)
+        .maybeSingle()
+
+    if (error) throw error
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Reader not found',
+      })
+    }
+
+    const { echoes, hasMore } =
+      await readEchoV2VisiblePage({
+        viewerId,
+        page,
+        limit,
+        configure: (query) =>
+          query
+            .eq('user_id', user.id)
+            .in('destination', [
+              'feed',
+              'shadow',
+            ]),
+      })
+
+    return res.status(200).json({
+      ok: true,
+      user: normalizeUser(
+        user,
+        user.id
+      ),
+      page,
+      limit,
+      total: echoes.length,
+      has_more: hasMore,
+      echoes,
+    })
+  } catch (error) {
+    return sendError(
+      res,
+      error,
+      'Failed to load reader echoes'
+    )
+  }
+}
+
+
 export async function deleteEchoV2(
   req,
   res
