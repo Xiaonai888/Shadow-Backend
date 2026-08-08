@@ -838,9 +838,9 @@ async function createV2EchoReaderPost(
     .from(
       'social_echo_reader_posts_v2'
     )
-    .select('echo_id, reader_post_id')
-    .eq('echo_id', echoId)
-    .maybeSingle()
+    .select('echo_id, reader_post_id, updated_at')
+.eq('echo_id', echoId)
+.maybeSingle()
 
   if (existingLinkError) {
     throw existingLinkError
