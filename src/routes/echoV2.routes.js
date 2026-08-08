@@ -4,7 +4,11 @@ import {
   createEchoV2,
   deleteEchoV2,
   getEchoV2BySource,
+  getEchoV2ByUsername,
+  getEchoV2Feed,
   getEchoV2Health,
+  getMyEchoV2,
+  getReceivedEchoV2,
 } from '../controllers/echoV2.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
@@ -50,6 +54,30 @@ router.get(
   '/source/:sourceType/:sourceId',
   optionalUser,
   getEchoV2BySource
+)
+
+router.get(
+  '/feed',
+  requireUser,
+  getEchoV2Feed
+)
+
+router.get(
+  '/me',
+  requireUser,
+  getMyEchoV2
+)
+
+router.get(
+  '/received',
+  requireUser,
+  getReceivedEchoV2
+)
+
+router.get(
+  '/user/:username',
+  requireUser,
+  getEchoV2ByUsername
 )
 
 router.post(
