@@ -214,38 +214,14 @@ export async function uploadStoryImage(req, res) {
       })
     }
 
-    if (
-      isEpisodeContentUpload &&
-      req.file.size > 500 * 1024
-    ) {
-      return res.status(413).json({
-        ok: false,
-        code: 'EPISODE_IMAGE_TOO_LARGE',
-        message: 'Episode image must be 500 KB or smaller',
-      })
-    }
-
     if (isEpisodeContentUpload) {
-      let metadata
-
       try {
-        metadata = await sharp(req.file.buffer).metadata()
+        await sharp(req.file.buffer).metadata()
       } catch {
         return res.status(400).json({
           ok: false,
           code: 'EPISODE_IMAGE_INVALID',
           message: 'Episode image is invalid',
-        })
-      }
-
-      if (
-        req.file.mimetype !== 'image/webp' ||
-        metadata.format !== 'webp'
-      ) {
-        return res.status(400).json({
-          ok: false,
-          code: 'EPISODE_IMAGE_FORMAT_INVALID',
-          message: 'Episode image must be WebP',
         })
       }
     }
@@ -270,6 +246,37 @@ export async function uploadStoryImage(req, res) {
       })
     }
 
+
+    if (isEpisodeContentUpload) {
+      const folder = safeFolder(requestedFolder)
+      const imageUrl = await uploadImageToR2AsWebP(
+        req.file,
+        `${folder}/${userId}`,
+        {
+          width: 1600,
+          quality: 82,
+          minQuality: 40,
+          qualityStep: 6,
+          maxBytes: 500 * 1024,
+          fallbackWidth: 640,
+        }
+      )
+
+      const publicBaseUrl = String(process.env.R2_PUBLIC_URL || '').replace(/\/+$/, '')
+      const storagePath =
+        publicBaseUrl && imageUrl.startsWith(`${publicBaseUrl}/`)
+          ? imageUrl.slice(publicBaseUrl.length + 1)
+          : imageUrl
+
+      return res.status(201).json({
+        ok: true,
+        message: 'Image uploaded successfully',
+        bucket: process.env.R2_BUCKET_NAME,
+        path: storagePath,
+        image_url: imageUrl,
+        imageUrl,
+      })
+    }
 
     if (R2_FOLDERS[requestedFolder]) {
   const missingR2EnvKeys = getMissingR2EnvKeys()
