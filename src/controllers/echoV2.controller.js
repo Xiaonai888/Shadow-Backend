@@ -773,6 +773,61 @@ async function readSourceEchoCount(
   )
 }
 
+async function readLinkedReaderPostId(
+  echoId,
+  userId
+) {
+  const { data, error } = await supabase
+    .from('social_echo_reader_posts_v2')
+    .select('reader_post_id')
+    .eq('echo_id', echoId)
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (error) throw error
+
+  return String(
+    data?.reader_post_id || ''
+  ).trim()
+}
+
+async function setLinkedReaderPostDeleted(
+  readerPostId,
+  userId,
+  deleted
+) {
+  if (!readerPostId) return false
+
+  const updatedAt =
+    new Date().toISOString()
+
+  let query = supabase
+    .from('reader_posts')
+    .update({
+      deleted_at: deleted
+        ? updatedAt
+        : null,
+      updated_at: updatedAt,
+    })
+    .eq('id', readerPostId)
+    .eq('user_id', userId)
+
+  if (deleted) {
+    query = query.is(
+      'deleted_at',
+      null
+    )
+  }
+
+  const { data, error } = await query
+    .select('id')
+    .maybeSingle()
+
+  if (error) throw error
+
+  return Boolean(data?.id)
+}
+
 async function reserveShare({
   userId,
   sourceType,
@@ -1312,8 +1367,13 @@ export async function deleteEchoV2(
   req,
   res
 ) {
+  let linkedReaderPostId = ''
+  let linkedPostDeleted = false
+  let echoDeleted = false
+  let userId = ''
+
   try {
-    const userId = getUserId(req)
+    userId = getUserId(req)
     const echoId = cleanText(
       req.params.echoId,
       120
@@ -1338,6 +1398,21 @@ export async function deleteEchoV2(
       })
     }
 
+    linkedReaderPostId =
+      await readLinkedReaderPostId(
+        current.id,
+        userId
+      )
+
+    if (linkedReaderPostId) {
+      linkedPostDeleted =
+        await setLinkedReaderPostDeleted(
+          linkedReaderPostId,
+          userId,
+          true
+        )
+    }
+
     const { error: deleteError } =
       await supabase
         .from('social_echoes_v2')
@@ -1349,6 +1424,8 @@ export async function deleteEchoV2(
       throw deleteError
     }
 
+    echoDeleted = true
+
     const echoCount =
       await readSourceEchoCount(
         current.source_type,
@@ -1359,8 +1436,30 @@ export async function deleteEchoV2(
       ok: true,
       echo_id: current.id,
       echo_count: echoCount,
+      deleted_reader_post_id:
+        linkedReaderPostId || null,
     })
   } catch (error) {
+    if (
+      linkedPostDeleted &&
+      !echoDeleted &&
+      linkedReaderPostId &&
+      userId
+    ) {
+      try {
+        await setLinkedReaderPostDeleted(
+          linkedReaderPostId,
+          userId,
+          false
+        )
+      } catch (restoreError) {
+        console.error(
+          'RESTORE ECHO V2 READER POST ERROR:',
+          restoreError
+        )
+      }
+    }
+
     console.error(
       'DELETE ECHO V2 ERROR:',
       error
