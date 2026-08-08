@@ -26,6 +26,7 @@ import { requireUser } from '../middleware/user.middleware.js'
 import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
 
 const router = express.Router()
+const CHAT_ATTACHMENTS_ENABLED = false
 
 const chatReadGuard = createSpamGuard({
   scope: 'chat_read',
@@ -127,12 +128,14 @@ router.get(
   getConversationBlockStatusController
 )
 
-router.post(
-  '/conversations/:conversationId/attachments',
-  chatWriteGuard,
-  uploadChatAttachment,
-  sendConversationAttachmentController
-)
+if (CHAT_ATTACHMENTS_ENABLED) {
+  router.post(
+    '/conversations/:conversationId/attachments',
+    chatWriteGuard,
+    uploadChatAttachment,
+    sendConversationAttachmentController
+  )
+}
 
 router.post(
   '/conversations/:conversationId/messages',
