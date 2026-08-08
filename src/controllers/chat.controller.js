@@ -6,6 +6,7 @@ import {
   getConversationMessages,
   listMyConversations,
   markConversationRead,
+  sendConversationAttachment,
   sendConversationMessage,
 } from '../services/chat.service.js'
 
@@ -152,6 +153,31 @@ export async function sendConversationMessageController(
       res,
       error,
       'SEND CHAT MESSAGE ERROR'
+    )
+  }
+}
+
+export async function sendConversationAttachmentController(
+  req,
+  res
+) {
+  try {
+    const message = await sendConversationAttachment({
+      userId: req.user?.user_id,
+      conversationId: req.params.conversationId,
+      message: req.body?.message,
+      file: req.file,
+    })
+
+    return res.status(201).json({
+      ok: true,
+      message,
+    })
+  } catch (error) {
+    return handleChatError(
+      res,
+      error,
+      'SEND CHAT ATTACHMENT ERROR'
     )
   }
 }
