@@ -1,6 +1,7 @@
 import chatConversationManagementRoutes from './chatConversationManagement.routes.js'
 import chatMessageActionsRoutes from './chatMessageActions.routes.js'
 import express from 'express'
+import multer from 'multer'
 import {
   createReaderAuthorRequestController,
   createReaderReaderRequestController,
@@ -8,8 +9,9 @@ import {
   getConversationMessagesController,
   listMyConversationsController,
   markConversationReadController,
+  sendConversationAttachmentController,
   sendConversationMessageController,
-} from '../controllers/chat.controller.js'
+} from '../controllers/chat.controller.js'} from '../controllers/chat.controller.js'
 import {
   blockConversationController,
   getConversationBlockStatusController,
@@ -36,6 +38,36 @@ const chatWriteGuard = createSpamGuard({
   threshold: 30,
   windowSeconds: 60,
 })
+
+const chatAttachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 8 * 1024 * 1024,
+    files: 1,
+  },
+}).single('file')
+
+function uploadChatAttachment(req, res, next) {
+  chatAttachmentUpload(req, res, (error) => {
+    if (!error) {
+      next()
+      return
+    }
+
+    const tooLarge =
+      error.code === 'LIMIT_FILE_SIZE'
+
+    res.status(tooLarge ? 413 : 400).json({
+      ok: false,
+      code: tooLarge
+        ? 'CHAT_ATTACHMENT_TOO_LARGE'
+        : 'CHAT_ATTACHMENT_UPLOAD_INVALID',
+      message: tooLarge
+        ? 'File must be 8 MB or smaller'
+        : 'Unable to read this file',
+    })
+  })
+}
 
 const chatRequestGuard = createSpamGuard({
   scope: 'chat_request',
@@ -93,6 +125,13 @@ router.get(
   '/conversations/:conversationId/block',
   chatReadGuard,
   getConversationBlockStatusController
+)
+
+router.post(
+  '/conversations/:conversationId/attachments',
+  chatWriteGuard,
+  uploadChatAttachment,
+  sendConversationAttachmentController
 )
 
 router.post(
