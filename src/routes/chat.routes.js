@@ -11,7 +11,7 @@ import {
   markConversationReadController,
   sendConversationAttachmentController,
   sendConversationMessageController,
-} from '../controllers/chat.controller.js'} from '../controllers/chat.controller.js'
+} from '../controllers/chat.controller.js'
 import {
   blockConversationController,
   getConversationBlockStatusController,
