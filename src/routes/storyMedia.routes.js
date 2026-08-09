@@ -12,6 +12,12 @@ const upload = multer({
   },
 })
 
-router.post('/upload-image', requireUser, upload.single('image'), uploadStoryImage)
+router.post('/upload-image', requireUser, (req, res, next) => {
+  upload.single('image')(req, res, (error) => {
+    if (!error) return next()
+    const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400
+    return res.status(status).json({ ok: false, code: error.code || 'UPLOAD_ERROR', message: error.message })
+  })
+}, uploadStoryImage)
 
 export default router
