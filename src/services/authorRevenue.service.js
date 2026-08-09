@@ -175,6 +175,40 @@ async function getActiveLifetimeBoost(authorId) {
   return data
 }
 
+async function getActive49DayEvent(authorId) {
+  const { data, error } = await supabase
+    .from('author_49_day_event_progress')
+    .select('*')
+    .eq('author_id', authorId)
+    .eq('status', 'active')
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) return null
+
+  const endsAt = new Date(data.ends_at).getTime()
+
+  if (Number.isFinite(endsAt) && endsAt > Date.now()) {
+    return data
+  }
+
+  const nowIso = new Date().toISOString()
+  const { error: updateError } = await supabase
+    .from('author_49_day_event_progress')
+    .update({
+      status: 'finished',
+      ended_at: nowIso,
+      end_reason: '49_days_completed',
+      updated_at: nowIso,
+    })
+    .eq('author_id', authorId)
+    .eq('status', 'active')
+
+  if (updateError) throw updateError
+
+  return null
+}
+
 async function getAuthorTotals(authorPage) {
   const { data: stories, error: storiesError } =
     await supabase
@@ -300,9 +334,10 @@ async function getAuthorShareContext(
   authorPage,
   settings
 ) {
-  const [activeBoost, stages, totals] =
+  const [activeBoost, active49DayEvent, stages, totals] =
     await Promise.all([
       getActiveLifetimeBoost(authorPage.id),
+      getActive49DayEvent(authorPage.id),
       getQuestStages(),
       getAuthorTotals(authorPage),
     ])
@@ -325,8 +360,14 @@ async function getAuthorShareContext(
       ? percentValue(activeBoost.share_percent)
       : 0
 
+  const eventSharePercent =
+    active49DayEvent?.status === 'active'
+      ? percentValue(active49DayEvent.share_percent)
+      : 0
+
   return {
     quest_share_percent: questSharePercent,
+    event_share_percent: eventSharePercent,
     boost_share_percent: boostSharePercent,
     quest_stage_number: numberValue(
       progress.current_stage_number || 1
@@ -535,7 +576,8 @@ export async function createAuthorEarningsFromDiamondUnlock({
     const eventSharePercent = Math.max(
   percentValue(metadata.event_author_share_percent),
   percentValue(metadata.promotion_author_share_percent),
-  percentValue(metadata.writer_wednesday_author_share_percent)
+  percentValue(metadata.writer_wednesday_author_share_percent),
+  percentValue(shareContext.event_share_percent)
 )
     const shareDecision =
       resolveEffectiveAuthorShare({
