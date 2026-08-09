@@ -431,10 +431,15 @@ async function getStoryAccessSummaries(
     )
 
     const summary = summaries.get(storyId)
+const latestEpisode = access.publishedEpisodes.reduce((latest, episode) =>
+  getEpisodePublishedTime(episode) > getEpisodePublishedTime(latest) ? episode : latest
+, null)
+summary.last_episode_published_at =
+  latestEpisode?.published_at || latestEpisode?.created_at || null
 
-    for (
-      const episode of access.publishedEpisodes
-    ) {
+for (
+  const episode of access.publishedEpisodes
+) {
       if (
         isWaitFreeEpisode(
           episode,
@@ -495,6 +500,7 @@ status: story.status,
     has_free_episode: Boolean(accessSummary?.has_free_episode),
     is_completed: isStoryCompleted(story),
     wait_free_episode_count: Number(accessSummary?.wait_free_episode_count || 0),
+    last_episode_published_at: accessSummary?.last_episode_published_at || null,
     free_episode_count: Number(accessSummary?.free_episode_count || 0),
     created_at: story.created_at,
     updated_at: story.updated_at,
