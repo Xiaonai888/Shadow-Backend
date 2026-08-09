@@ -829,6 +829,145 @@ async function getActiveLifetimeBoost(authorId) {
   return data
 }
 
+async function getAuthor49DayEventState(authorPage) {
+  const now = new Date()
+  const nowIso = now.toISOString()
+
+  const { data: settings, error: settingsError } = await supabase
+    .from('author_49_day_event_settings')
+    .select('*')
+    .eq('id', 1)
+    .maybeSingle()
+
+  if (settingsError) throw settingsError
+
+  const defaultState = {
+    visible: Boolean(settings?.enabled),
+    enabled: Boolean(settings?.enabled),
+    status: 'not_started',
+    share_percent: percentValue(settings?.share_percent || 80),
+    duration_days: numberValue(settings?.duration_days || 49),
+    available_from: settings?.available_from || null,
+    started_at: null,
+    ends_at: null,
+    ended_at: null,
+    end_reason: null,
+    activated_episode_id: null,
+    server_now: nowIso,
+  }
+
+  if (!authorPage) return defaultState
+
+  const [{ data: progress, error: progressError }, activeBoost] =
+    await Promise.all([
+      supabase
+        .from('author_49_day_event_progress')
+        .select('*')
+        .eq('author_id', authorPage.id)
+        .maybeSingle(),
+      getActiveLifetimeBoost(authorPage.id),
+    ])
+
+  if (progressError) throw progressError
+
+  if (!progress) return defaultState
+
+  let currentProgress = progress
+
+  if (progress.status === 'active') {
+    let endReason = ''
+
+    if (activeBoost?.status === 'active') {
+      endReason = '100_day_creator_boost'
+    } else {
+      const endsAt = new Date(progress.ends_at).getTime()
+
+      if (Number.isFinite(endsAt) && endsAt <= now.getTime()) {
+        endReason = '49_days_completed'
+      }
+    }
+
+    if (endReason) {
+      const { data: finished, error: finishError } = await supabase
+        .from('author_49_day_event_progress')
+        .update({
+          status: 'finished',
+          ended_at: nowIso,
+          end_reason: endReason,
+          updated_at: nowIso,
+        })
+        .eq('author_id', authorPage.id)
+        .eq('status', 'active')
+        .select()
+        .maybeSingle()
+
+      if (finishError) throw finishError
+      if (finished) currentProgress = finished
+    }
+  }
+
+  return {
+    visible: currentProgress.status === 'active' || (
+      currentProgress.status === 'not_started' &&
+      Boolean(settings?.enabled)
+    ),
+    enabled: Boolean(settings?.enabled),
+    status: currentProgress.status || 'not_started',
+    share_percent: percentValue(
+      currentProgress.share_percent ||
+      settings?.share_percent ||
+      80
+    ),
+    duration_days: numberValue(settings?.duration_days || 49),
+    available_from: settings?.available_from || null,
+    started_at: currentProgress.started_at || null,
+    ends_at: currentProgress.ends_at || null,
+    ended_at: currentProgress.ended_at || null,
+    end_reason: currentProgress.end_reason || null,
+    activated_episode_id:
+      currentProgress.activated_episode_id || null,
+    server_now: nowIso,
+  }
+}
+
+export async function getMyAuthor49DayEvent(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+    const event = await getAuthor49DayEventState(authorPage)
+
+    return res.status(200).json({
+      ok: true,
+      has_author_page: Boolean(authorPage),
+      author_page: authorPage
+        ? {
+            id: authorPage.id,
+            page_name: authorPage.page_name,
+            page_username: authorPage.page_username,
+            page_slug: authorPage.page_slug,
+          }
+        : null,
+      event,
+    })
+  } catch (error) {
+    console.error('GET MY 49-DAY AUTHOR EVENT ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load 49-Day Author Event',
+      error: error.message,
+    })
+  }
+}
+
 async function getPrimaryPaymentMethod(authorId) {
   const { data, error } = await supabase
     .from('author_payment_methods')
