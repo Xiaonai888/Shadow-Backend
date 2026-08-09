@@ -604,9 +604,10 @@ export async function getAdminCommunityAuthors(req, res) {
     const q = cleanSearch(req.query.q)
     const requestedFilter = String(req.query.filter || 'all').trim().toLowerCase()
     const filter = [
-      'all',
-      'active',
-      'inactive',
+  'all',
+  'new_author',
+  'active',
+  'inactive',
       'with_books',
       'no_books',
     ].includes(requestedFilter)
