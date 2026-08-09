@@ -298,6 +298,8 @@ export async function getAdminCommunityReaders(req, res) {
     const page = toPositiveInt(req.query.page, 1, 100000)
     const limit = toPositiveInt(req.query.limit, 20, 100)
     const q = cleanSearch(req.query.q)
+    const filter = String(req.query.filter || 'all').trim().toLowerCase()
+    const { startIso, nowIso } = getCambodiaDayRange()
     const from = (page - 1) * limit
     const to = from + limit - 1
 
@@ -311,6 +313,12 @@ export async function getAdminCommunityReaders(req, res) {
       query = query.or(`name.ilike.%${q}%,username.ilike.%${q}%,email.ilike.%${q}%`)
     }
 
+    if (filter === 'new_reader') {
+  query = query
+    .gte('created_at', startIso)
+    .lte('created_at', nowIso)
+}
+
     const { data, error, count } = await query
 
     if (error) throw error
@@ -322,6 +330,12 @@ export async function getAdminCommunityReaders(req, res) {
     if (q) {
       genderQuery = genderQuery.or(`name.ilike.%${q}%,username.ilike.%${q}%,email.ilike.%${q}%`)
     }
+
+    if (filter === 'new_reader') {
+  genderQuery = genderQuery
+    .gte('created_at', startIso)
+    .lte('created_at', nowIso)
+}
 
     const { data: genderRows, error: genderError } = await genderQuery
 
