@@ -818,6 +818,66 @@ export async function getAdminCommunityVisitors(req, res) {
   }
 }
 
+export async function getAdminReaderPresence(req, res) {
+  try {
+    const page = toPositiveInt(req.query.page, 1, 100000)
+    const limit = toPositiveInt(req.query.limit, 20, 100)
+    const q = cleanSearch(req.query.q)
+    const requestedStatus = String(req.query.status || 'all').trim().toLowerCase()
+    const requestedSort = String(req.query.sort || 'last_active').trim().toLowerCase()
+    const status = ['all', 'online', 'idle', 'offline'].includes(requestedStatus)
+      ? requestedStatus
+      : 'all'
+    const sort = [
+      'last_active',
+      'online_longest',
+      'most_stories',
+      'most_stories_today',
+      'name',
+    ].includes(requestedSort)
+      ? requestedSort
+      : 'last_active'
+
+    const { data, error } = await supabase.rpc('get_admin_reader_presence', {
+      p_page: page,
+      p_limit: limit,
+      p_search: q,
+      p_status: status,
+      p_sort: sort,
+    })
+
+    if (error) throw error
+
+    return res.status(200).json(
+      data || {
+        ok: true,
+        summary: {
+          total_readers: 0,
+          online: 0,
+          idle: 0,
+          offline: 0,
+          average_session_minutes: 0,
+        },
+        items: [],
+        page,
+        limit,
+        total: 0,
+        total_pages: 1,
+        has_prev: false,
+        has_next: false,
+      }
+    )
+  } catch (error) {
+    console.error('ADMIN READER PRESENCE ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load reader presence',
+      error: error.message,
+    })
+  }
+}
+
+
 const DASHBOARD_MALL_PAID_STATUSES = [
   'under_review',
   'confirmed',
