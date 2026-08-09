@@ -88,6 +88,36 @@ function cleanNullableText(value) {
   return text || null
 }
 
+function extractYouTubeVideoId(value) {
+  const input = cleanText(value)
+  if (!input) return ''
+
+  const source = /^https?:\/\//i.test(input) ? input : `https://${input}`
+
+  try {
+    const url = new URL(source)
+    const host = url.hostname.toLowerCase().replace(/^www\./, '')
+    let videoId = ''
+
+    if (host === 'youtu.be') {
+      videoId = url.pathname.split('/').filter(Boolean)[0] || ''
+    } else if (['youtube.com', 'm.youtube.com', 'music.youtube.com'].includes(host)) {
+      if (url.pathname === '/watch') {
+        videoId = url.searchParams.get('v') || ''
+      } else {
+        const parts = url.pathname.split('/').filter(Boolean)
+        if (['shorts', 'live', 'embed'].includes(parts[0])) {
+          videoId = parts[1] || ''
+        }
+      }
+    }
+
+    return /^[A-Za-z0-9_-]{11}$/.test(videoId) ? videoId : ''
+  } catch {
+    return ''
+  }
+}
+
 function cleanMediaReference(
   value,
   {
@@ -315,6 +345,8 @@ function publicEpisode(
     title: visibleEpisode.title,
     cover_url: visibleEpisode.cover_url,
     content: visibleEpisode.content,
+    youtube_video_id: visibleEpisode.youtube_video_id || null,
+    youtube_title: visibleEpisode.youtube_title || null,
     pages: safePages,
     page_count: Number(
       visibleEpisode.page_count ?? safePages.length ?? 0
@@ -928,6 +960,26 @@ export async function createEpisode(req, res) {
     )
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
 
+    const youtubeUrl = cleanText(req.body.youtube_url || req.body.youtubeUrl)
+    const youtubeVideoId = youtubeUrl ? extractYouTubeVideoId(youtubeUrl) : null
+    const youtubeTitle = youtubeVideoId
+      ? cleanNullableText(req.body.youtube_title || req.body.youtubeTitle)
+      : null
+
+    if (youtubeUrl && !youtubeVideoId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Only valid YouTube video links are supported',
+      })
+    }
+
+    if (youtubeTitle && youtubeTitle.length > 120) {
+      return res.status(400).json({
+        ok: false,
+        message: 'YouTube title must be 120 characters or less',
+      })
+    }
+
 const isFreePublished = cleanBoolean(
   req.body.is_free_published ?? req.body.isFreePublished,
   false
@@ -1022,6 +1074,8 @@ const isLocked =
         title,
         cover_url: coverUrl,
         content,
+        youtube_video_id: youtubeVideoId,
+        youtube_title: youtubeTitle,
         is_adult: isAdult,
         is_free_published: isFreePublished,
         is_locked: isLocked,
@@ -1255,6 +1309,45 @@ export async function updateEpisode(req, res) {
     )
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
 
+    const hasYouTubeUrlPayload =
+      Object.prototype.hasOwnProperty.call(req.body, 'youtube_url') ||
+      Object.prototype.hasOwnProperty.call(req.body, 'youtubeUrl')
+    const hasYouTubeTitlePayload =
+      Object.prototype.hasOwnProperty.call(req.body, 'youtube_title') ||
+      Object.prototype.hasOwnProperty.call(req.body, 'youtubeTitle')
+
+    const youtubeUrl = hasYouTubeUrlPayload
+      ? cleanText(req.body.youtube_url ?? req.body.youtubeUrl)
+      : ''
+
+    const youtubeVideoId = hasYouTubeUrlPayload
+      ? youtubeUrl
+        ? extractYouTubeVideoId(youtubeUrl)
+        : null
+      : episode.youtube_video_id || null
+
+    const youtubeTitle = hasYouTubeTitlePayload
+      ? youtubeVideoId
+        ? cleanNullableText(req.body.youtube_title ?? req.body.youtubeTitle)
+        : null
+      : hasYouTubeUrlPayload && !youtubeVideoId
+        ? null
+        : episode.youtube_title || null
+
+    if (hasYouTubeUrlPayload && youtubeUrl && !youtubeVideoId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Only valid YouTube video links are supported',
+      })
+    }
+
+    if (youtubeTitle && youtubeTitle.length > 120) {
+      return res.status(400).json({
+        ok: false,
+        message: 'YouTube title must be 120 characters or less',
+      })
+    }
+
   const isFreePublished = cleanBoolean(
   req.body.is_free_published ?? req.body.isFreePublished,
   Boolean(episode.is_free_published)
@@ -1355,6 +1448,8 @@ const status = cleanText(req.body.status || episode.status || 'draft')
       title,
       cover_url: coverUrl,
       content,
+      youtube_video_id: youtubeVideoId,
+      youtube_title: youtubeTitle,
       is_adult: isAdult,
       is_free_published: isFreePublished,
       is_locked: isLocked,
@@ -1477,6 +1572,7 @@ export async function updateEpisodeStatus(req, res) {
         { label: 'Story Title', value: story.title },
         { label: 'Story Description', value: story.description },
         { label: 'Episode Title', value: episode.title },
+        { label: 'YouTube Title', value: episode.youtube_title },
         { label: 'Episode Content', value: isManga ? '' : episode.content },
       ])
 
