@@ -298,81 +298,53 @@ export async function getAdminCommunityReaders(req, res) {
     const page = toPositiveInt(req.query.page, 1, 100000)
     const limit = toPositiveInt(req.query.limit, 20, 100)
     const q = cleanSearch(req.query.q)
-    const filter = String(req.query.filter || 'all').trim().toLowerCase()
-    const { startIso, nowIso } = getCambodiaDayRange()
-    const from = (page - 1) * limit
-    const to = from + limit - 1
+    const requestedFilter = String(req.query.filter || 'all').trim().toLowerCase()
+    const filter = [
+      'all',
+      'new_reader',
+      'reader_only',
+      'authors',
+      'active',
+      'inactive',
+    ].includes(requestedFilter)
+      ? requestedFilter
+      : 'all'
 
-    let query = supabase
-      .from('users')
-      .select('id, name, username, email, avatar_url, date_of_birth, gender, custom_gender, is_active, is_author, created_at', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(from, to)
-
-    if (q) {
-      query = query.or(`name.ilike.%${q}%,username.ilike.%${q}%,email.ilike.%${q}%`)
-    }
-
-    if (filter === 'new_reader') {
-  query = query
-    .gte('created_at', startIso)
-    .lte('created_at', nowIso)
-}
-
-    const { data, error, count } = await query
+    const { data, error } = await supabase.rpc('get_admin_community_readers_v2', {
+      p_page: page,
+      p_limit: limit,
+      p_search: q,
+      p_filter: filter,
+    })
 
     if (error) throw error
 
-    let genderQuery = supabase
-      .from('users')
-      .select('gender, custom_gender')
-
-    if (q) {
-      genderQuery = genderQuery.or(`name.ilike.%${q}%,username.ilike.%${q}%,email.ilike.%${q}%`)
-    }
-
-    if (filter === 'new_reader') {
-  genderQuery = genderQuery
-    .gte('created_at', startIso)
-    .lte('created_at', nowIso)
-}
-
-    const { data: genderRows, error: genderError } = await genderQuery
-
-    if (genderError) throw genderError
-
-    const genderSummary = (genderRows || []).reduce(
-      (summary, user) => {
-        const gender = String(user.gender || '').toLowerCase()
-
-        if (gender === 'female') summary.female += 1
-        else if (gender === 'male') summary.male += 1
-        else if (gender === 'custom') summary.custom += 1
-        else summary.not_provided += 1
-
-        summary.total += 1
-        return summary
-      },
-      { total: 0, female: 0, male: 0, custom: 0, not_provided: 0 }
+    return res.status(200).json(
+      data || {
+        ok: true,
+        readers: [],
+        gender_summary: {
+          total: 0,
+          female: 0,
+          male: 0,
+          custom: 0,
+          not_provided: 0,
+        },
+        page,
+        limit,
+        total: 0,
+        total_pages: 1,
+        has_next: false,
+        has_prev: false,
+      }
     )
-
-    const total = count || 0
-    const totalPages = Math.max(1, Math.ceil(total / limit))
-
-    return res.status(200).json({
-      ok: true,
-      readers: (data || []).map(formatReader),
-      gender_summary: genderSummary,
-      page,
-      limit,
-      total,
-      total_pages: totalPages,
-      has_next: page < totalPages,
-      has_prev: page > 1,
-    })
   } catch (error) {
     console.error('ADMIN COMMUNITY READERS ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load readers', error: error.message })
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load readers',
+      error: error.message,
+    })
   }
 }
 
@@ -630,71 +602,45 @@ export async function getAdminCommunityAuthors(req, res) {
     const page = toPositiveInt(req.query.page, 1, 100000)
     const limit = toPositiveInt(req.query.limit, 20, 100)
     const q = cleanSearch(req.query.q)
-    const from = (page - 1) * limit
-    const to = from + limit - 1
+    const requestedFilter = String(req.query.filter || 'all').trim().toLowerCase()
+    const filter = [
+      'all',
+      'active',
+      'inactive',
+      'with_books',
+      'no_books',
+    ].includes(requestedFilter)
+      ? requestedFilter
+      : 'all'
 
-    let query = supabase
-      .from('author_pages')
-      .select('id, user_id, page_name, page_username, page_slug, avatar_url, status, created_at, updated_at', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(from, to)
-
-    if (q) {
-      query = query.or(`page_name.ilike.%${q}%,page_username.ilike.%${q}%,page_slug.ilike.%${q}%`)
-    }
-
-    const { data, error, count } = await query
+    const { data, error } = await supabase.rpc('get_admin_community_authors_v2', {
+      p_page: page,
+      p_limit: limit,
+      p_search: q,
+      p_filter: filter,
+    })
 
     if (error) throw error
 
-    const authorPages = data || []
-    const userIds = [...new Set(authorPages.map((pageItem) => pageItem.user_id).filter(Boolean))]
-    const authorIds = authorPages.map((pageItem) => pageItem.id).filter(Boolean)
-    const userMap = new Map()
-    const storyCountMap = new Map()
-
-    if (userIds.length) {
-      const { data: users, error: usersError } = await supabase
-        .from('users')
-        .select('id, name, username, email, avatar_url, is_active')
-        .in('id', userIds)
-
-      if (usersError) throw usersError
-
-      ;(users || []).forEach((user) => {
-        userMap.set(user.id, user)
-      })
-    }
-
-    if (authorIds.length) {
-      const { data: stories, error: storiesError } = await supabase
-        .from('stories')
-        .select('id, author_id')
-        .in('author_id', authorIds)
-
-      if (!storiesError) {
-        ;(stories || []).forEach((story) => {
-          storyCountMap.set(story.author_id, (storyCountMap.get(story.author_id) || 0) + 1)
-        })
+    return res.status(200).json(
+      data || {
+        ok: true,
+        authors: [],
+        page,
+        limit,
+        total: 0,
+        total_pages: 1,
+        has_next: false,
+        has_prev: false,
       }
-    }
-
-    const total = count || 0
-    const totalPages = Math.max(1, Math.ceil(total / limit))
-
-    return res.status(200).json({
-      ok: true,
-      authors: authorPages.map((pageItem) => formatAuthor(pageItem, userMap, storyCountMap)),
-      page,
-      limit,
-      total,
-      total_pages: totalPages,
-      has_next: page < totalPages,
-      has_prev: page > 1,
-    })
+    )
   } catch (error) {
     console.error('ADMIN COMMUNITY AUTHORS ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load authors', error: error.message })
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load authors',
+      error: error.message,
+    })
   }
 }
 
