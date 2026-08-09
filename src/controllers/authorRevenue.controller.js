@@ -829,25 +829,17 @@ async function getActiveLifetimeBoost(authorId) {
   return data
 }
 
+
+
 async function getAuthor49DayEventState(authorPage) {
   const now = new Date()
   const nowIso = now.toISOString()
 
-  const { data: settings, error: settingsError } = await supabase
-    .from('author_49_day_event_settings')
-    .select('*')
-    .eq('id', 1)
-    .maybeSingle()
-
-  if (settingsError) throw settingsError
-
   const defaultState = {
-    visible: Boolean(settings?.enabled),
-    enabled: Boolean(settings?.enabled),
+    visible: true,
     status: 'not_started',
-    share_percent: percentValue(settings?.share_percent || 80),
-    duration_days: numberValue(settings?.duration_days || 49),
-    available_from: settings?.available_from || null,
+    share_percent: 80,
+    duration_days: 49,
     started_at: null,
     ends_at: null,
     ended_at: null,
@@ -869,7 +861,6 @@ async function getAuthor49DayEventState(authorPage) {
     ])
 
   if (progressError) throw progressError
-
   if (!progress) return defaultState
 
   let currentProgress = progress
@@ -907,19 +898,12 @@ async function getAuthor49DayEventState(authorPage) {
   }
 
   return {
-    visible: currentProgress.status === 'active' || (
-      currentProgress.status === 'not_started' &&
-      Boolean(settings?.enabled)
-    ),
-    enabled: Boolean(settings?.enabled),
+    visible: currentProgress.status === 'active',
     status: currentProgress.status || 'not_started',
     share_percent: percentValue(
-      currentProgress.share_percent ||
-      settings?.share_percent ||
-      80
+      currentProgress.share_percent || 80
     ),
-    duration_days: numberValue(settings?.duration_days || 49),
-    available_from: settings?.available_from || null,
+    duration_days: 49,
     started_at: currentProgress.started_at || null,
     ends_at: currentProgress.ends_at || null,
     ended_at: currentProgress.ended_at || null,
@@ -929,6 +913,7 @@ async function getAuthor49DayEventState(authorPage) {
     server_now: nowIso,
   }
 }
+
 
 export async function getMyAuthor49DayEvent(req, res) {
   try {
