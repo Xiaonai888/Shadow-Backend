@@ -67,6 +67,7 @@ import helpCenterRoutes from './src/routes/helpCenter.routes.js'
 import supportRequestsRoutes from './src/routes/supportRequests.routes.js'
 import readerPostsRoutes from './src/routes/readerPosts.routes.js'
 import readingProgressRoutes from './src/routes/readingProgress.routes.js'
+import readerPresenceRoutes from './src/routes/readerPresence.routes.js'
 import shareProfileRoutes from './src/routes/shareProfile.routes.js'
 import adminChatStoryGalleryRoutes from './src/routes/adminChatStoryGallery.routes.js'
 import adminMediaLibraryRoutes from './src/routes/adminMediaLibrary.routes.js'
@@ -578,6 +579,7 @@ app.use('/api/admin/reports', adminReportsRoutes)
 app.use('/api/admin/chat-evidence', adminChatEvidenceRoutes)
 app.use('/api/reader-posts', communityRouteSpamGuard, readerPostsRoutes)
 app.use('/api/reading-progress', readingProgressSpamGuard, readingProgressRoutes)
+app.use('/api/reader-presence', readerActionSpamGuard, readerPresenceRoutes)
 app.use('/api/share-profile', mediaUploadRouteSpamGuard, shareProfileRoutes)
 
 app.use((req, res) => {
