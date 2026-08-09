@@ -631,6 +631,8 @@ function publicEpisode(
     title: visibleEpisode.title,
     cover_url: visibleEpisode.cover_url,
     content: visibleEpisode.content,
+    youtube_video_id: visibleEpisode.youtube_video_id || null,
+    youtube_title: visibleEpisode.youtube_title || null,
     is_adult: visibleEpisode.is_adult,
     is_locked: !accessible,
     is_free_published: Boolean(
