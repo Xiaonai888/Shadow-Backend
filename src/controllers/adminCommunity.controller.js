@@ -362,6 +362,255 @@ export async function getAdminCommunityReaders(req, res) {
   }
 }
 
+function getAgeFromDateOfBirth(value, now = new Date()) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!match) return null
+
+  const birthYear = Number(match[1])
+  const birthMonth = Number(match[2])
+  const birthDay = Number(match[3])
+  const cambodiaNow = new Date(now.getTime() + CAMBODIA_OFFSET_MS)
+
+  let age = cambodiaNow.getUTCFullYear() - birthYear
+  const currentMonth = cambodiaNow.getUTCMonth() + 1
+  const currentDay = cambodiaNow.getUTCDate()
+
+  if (
+    currentMonth < birthMonth ||
+    (currentMonth === birthMonth && currentDay < birthDay)
+  ) {
+    age -= 1
+  }
+
+  if (!Number.isFinite(age) || age < 0 || age > 130) return null
+  return age
+}
+
+function getReaderAgeGroup(age) {
+  if (!Number.isFinite(age)) return 'unknown'
+  if (age < 13) return 'under_13'
+  if (age < 18) return '13_17'
+  if (age < 25) return '18_24'
+  if (age < 35) return '25_34'
+  if (age < 45) return '35_44'
+  if (age < 55) return '45_54'
+  return '55_plus'
+}
+
+export async function getAdminCommunityReadersToday(req, res) {
+  try {
+    const page = toPositiveInt(req.query.page, 1, 100000)
+    const limit = toPositiveInt(req.query.limit, 20, 100)
+    const q = cleanSearch(req.query.q).toLowerCase()
+    const { startIso, nowIso } = getCambodiaDayRange()
+    const activeStartIso = getActiveStartIso()
+    const progressRows = []
+    let from = 0
+
+    while (true) {
+      const { data, error } = await supabase
+        .from('reading_progress')
+        .select('id, user_id, story_id, episode_id, episode_number, total_episodes, reading_percent, last_read_at')
+        .gte('last_read_at', startIso)
+        .lte('last_read_at', nowIso)
+        .order('last_read_at', { ascending: false })
+        .range(from, from + PAGE_SIZE - 1)
+
+      if (error) throw error
+
+      const rows = Array.isArray(data) ? data : []
+      progressRows.push(...rows)
+
+      if (rows.length < PAGE_SIZE) break
+      from += PAGE_SIZE
+    }
+
+    const latestActivityMap = new Map()
+
+    for (const row of progressRows) {
+      const userId = String(row.user_id || '').trim()
+      const storyId = String(row.story_id || '').trim()
+      if (!userId || !storyId) continue
+
+      const key = `${userId}:${storyId}`
+      if (!latestActivityMap.has(key)) {
+        latestActivityMap.set(key, row)
+      }
+    }
+
+    const activities = [...latestActivityMap.values()]
+    const userIds = [...new Set(activities.map((row) => row.user_id).filter(Boolean))]
+    const storyIds = [...new Set(activities.map((row) => row.story_id).filter(Boolean))]
+    const episodeIds = [...new Set(activities.map((row) => row.episode_id).filter(Boolean))]
+    const userMap = new Map()
+    const storyMap = new Map()
+    const episodeMap = new Map()
+
+    for (let index = 0; index < userIds.length; index += 500) {
+      const { data, error } = await supabase
+        .from('users')
+        .select('id, name, username, email, avatar_url, date_of_birth, gender, custom_gender, is_active, is_author, created_at')
+        .in('id', userIds.slice(index, index + 500))
+
+      if (error) throw error
+      for (const user of data || []) userMap.set(String(user.id), user)
+    }
+
+    for (let index = 0; index < storyIds.length; index += 500) {
+      const { data, error } = await supabase
+        .from('stories')
+        .select('id, title, cover_url, story_type, story_language, main_genre, is_adult, status, deleted_at')
+        .in('id', storyIds.slice(index, index + 500))
+
+      if (error) throw error
+      for (const story of data || []) storyMap.set(String(story.id), story)
+    }
+
+    for (let index = 0; index < episodeIds.length; index += 500) {
+      const { data, error } = await supabase
+        .from('episodes')
+        .select('id, story_id, title, episode_number, status, deleted_at')
+        .in('id', episodeIds.slice(index, index + 500))
+
+      if (error) throw error
+      for (const episode of data || []) episodeMap.set(String(episode.id), episode)
+    }
+
+    let items = activities
+      .map((row) => {
+        const user = userMap.get(String(row.user_id)) || null
+        const story = storyMap.get(String(row.story_id)) || null
+        const episode = episodeMap.get(String(row.episode_id)) || null
+
+        if (!user || !story) return null
+
+        const age = getAgeFromDateOfBirth(user.date_of_birth)
+
+        return {
+          id: row.id,
+          last_read_at: row.last_read_at,
+          reading_percent: Number(row.reading_percent || 0),
+          episode_number: Number(row.episode_number || episode?.episode_number || 0),
+          total_episodes: Number(row.total_episodes || 0),
+          active_last_10_minutes: Boolean(
+            row.last_read_at && row.last_read_at >= activeStartIso
+          ),
+          reader: {
+            id: user.id,
+            name: user.name || user.username || 'Reader',
+            username: user.username || '',
+            email: user.email || '',
+            avatar_url: user.avatar_url || '',
+            date_of_birth: user.date_of_birth || null,
+            age,
+            age_group: getReaderAgeGroup(age),
+            gender: user.gender || '',
+            custom_gender: user.custom_gender || '',
+            status: user.is_active === false ? 'inactive' : 'active',
+            is_author: Boolean(user.is_author),
+            joined_at: user.created_at,
+          },
+          story: {
+            id: story.id,
+            title: story.title || 'Untitled story',
+            cover_url: story.cover_url || '',
+            story_type: story.story_type || '',
+            story_language: story.story_language || '',
+            main_genre: story.main_genre || '',
+            is_adult: Boolean(story.is_adult),
+            status: story.status || '',
+            deleted_at: story.deleted_at || null,
+          },
+          episode: episode
+            ? {
+                id: episode.id,
+                title: episode.title || '',
+                episode_number: Number(episode.episode_number || row.episode_number || 0),
+                status: episode.status || '',
+                deleted_at: episode.deleted_at || null,
+              }
+            : null,
+        }
+      })
+      .filter(Boolean)
+
+    const allItems = items
+    const readerIds = new Set(activities.map((row) => String(row.user_id || '')).filter(Boolean))
+    const activeReaderIds = new Set(
+      activities
+        .filter((row) => row.last_read_at && row.last_read_at >= activeStartIso)
+        .map((row) => String(row.user_id || ''))
+        .filter(Boolean)
+    )
+    const storiesReadToday = new Set(
+      activities.map((row) => String(row.story_id || '')).filter(Boolean)
+    )
+    const distinctAgeByReader = new Map()
+
+    for (const item of allItems) {
+      if (Number.isFinite(item.reader.age) && !distinctAgeByReader.has(item.reader.id)) {
+        distinctAgeByReader.set(item.reader.id, item.reader.age)
+      }
+    }
+
+    const knownAges = [...distinctAgeByReader.values()]
+    const averageAge = knownAges.length
+      ? Math.round((knownAges.reduce((sum, age) => sum + age, 0) / knownAges.length) * 10) / 10
+      : null
+
+    if (q) {
+      items = items.filter((item) => {
+        const values = [
+          item.reader.name,
+          item.reader.username,
+          item.reader.email,
+          item.reader.id,
+          item.story.title,
+          item.story.id,
+          item.episode?.title,
+          item.episode?.id,
+        ]
+
+        return values.some((value) =>
+          String(value || '').toLowerCase().includes(q)
+        )
+      })
+    }
+
+    const total = items.length
+    const totalPages = Math.max(1, Math.ceil(total / limit))
+    const start = (page - 1) * limit
+    const pagedItems = items.slice(start, start + limit)
+
+    return res.status(200).json({
+      ok: true,
+      summary: {
+        readers_today: readerIds.size,
+        active_readers_last_10_minutes: activeReaderIds.size,
+        stories_read_today: storiesReadToday.size,
+        reading_records_today: activities.length,
+        age_known_readers: knownAges.length,
+        average_reader_age: averageAge,
+      },
+      items: pagedItems,
+      page,
+      limit,
+      total,
+      total_pages: totalPages,
+      has_next: page < totalPages,
+      has_prev: page > 1,
+    })
+  } catch (error) {
+    console.error('ADMIN COMMUNITY READERS TODAY ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load readers today',
+      error: error.message,
+    })
+  }
+}
+
+
 export async function getAdminCommunityAuthors(req, res) {
   try {
     const page = toPositiveInt(req.query.page, 1, 100000)
