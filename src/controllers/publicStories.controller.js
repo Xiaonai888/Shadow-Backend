@@ -780,9 +780,9 @@ function applyStorySort(query, sort) {
     return query.order('total_likes', { ascending: false }).order('updated_at', { ascending: false })
   }
 
-  if (sort === 'updated') {
-    return query.order('updated_at', { ascending: false })
-  }
+  if (sort === 'updated' || sort === 'episode_updated') {
+  return query.order('updated_at', { ascending: false })
+}
 
   if (sort === 'new' || sort === 'newest' || sort === 'latest') {
     return query.order('created_at', { ascending: false })
@@ -1077,7 +1077,12 @@ export async function getPublicStories(req, res) {
     const language = String(req.query.language || '').trim()
     const storyType = String(req.query.story_type || req.query.storyType || '').trim().toLowerCase()
     const sort = String(req.query.sort || 'latest').trim()
-    const queryLimit = isDiscoverMoreSort(sort) ? Math.min(Math.max(limit * 8, 24), 48) : limit
+const normalizedSort = sort.toLowerCase()
+const queryLimit = isDiscoverMoreSort(sort)
+  ? Math.min(Math.max(limit * 8, 24), 48)
+  : normalizedSort === 'episode_updated'
+    ? 500
+    : limit
     const authorId = String(req.query.authorId || req.query.author_id || '').trim()
     const exclude = String(req.query.exclude || req.query.excludeId || req.query.exclude_id || '').trim()
     const search = normalizeSearch(req.query.q || req.query.search || req.query.keyword)
@@ -1175,13 +1180,27 @@ for (const result of queryResults) {
   }
 }
 
-const normalizedSort = String(
-  sort || 'latest'
-).toLowerCase()
+const episodeUpdateSummaries =
+  normalizedSort === 'episode_updated'
+    ? await getStoryAccessSummaries(
+        mergedStories.map((story) => story.id)
+      )
+    : null
 
 const sortedStories = [
   ...mergedStories,
 ].sort((first, second) => {
+  if (normalizedSort === 'episode_updated') {
+    const firstTime = new Date(
+      episodeUpdateSummaries?.get(first.id)?.last_episode_published_at || 0
+    ).getTime()
+
+    const secondTime = new Date(
+      episodeUpdateSummaries?.get(second.id)?.last_episode_published_at || 0
+    ).getTime()
+
+    return secondTime - firstTime
+  }
   const firstCreated = new Date(
     first.created_at || 0
   ).getTime()
@@ -1265,9 +1284,11 @@ const stories = isDiscoverMoreSort(sort)
       authorPages.map((page) => [String(page.id), page])
     )
 
-    const accessSummaries = await getStoryAccessSummaries(
-      stories.map((story) => story.id)
-    )
+    const accessSummaries =
+  episodeUpdateSummaries ||
+  await getStoryAccessSummaries(
+    stories.map((story) => story.id)
+  )
 
     return res.status(200).json({
       ok: true,
