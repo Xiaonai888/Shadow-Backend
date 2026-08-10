@@ -279,6 +279,36 @@ async function countVisitorRows(column, value) {
   return count || 0
 }
 
+async function getVisitorsTodayCount() {
+  const { startIso, nowIso } = getCambodiaDayRange()
+  const visitorIds = new Set()
+  let from = 0
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('anonymous_visitor_sessions')
+      .select('visitor_id')
+      .gte('last_seen_at', startIso)
+      .lte('last_seen_at', nowIso)
+      .order('last_seen_at', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1)
+
+    if (error) throw error
+
+    const rows = Array.isArray(data) ? data : []
+
+    for (const row of rows) {
+      const visitorId = String(row.visitor_id || '').trim()
+      if (visitorId) visitorIds.add(visitorId)
+    }
+
+    if (rows.length < PAGE_SIZE) break
+    from += PAGE_SIZE
+  }
+
+  return visitorIds.size
+}
+
 export async function getAdminCommunityOverview(req, res) {
   try {
     const summary = await getOverviewData()
@@ -654,31 +684,33 @@ export async function getAdminCommunityVisitorOverview(req, res) {
     const overview = Array.isArray(overviewRows) ? overviewRows[0] || {} : overviewRows || {}
 
     const [
-      suspectedBots,
-      normalRisk,
-      lowRisk,
-      suspiciousRisk,
-      likelyBotRisk,
-      highRisk,
-      readerActivity,
-      storyUpdates,
-    ] = await Promise.all([
-      countVisitorRows('is_suspected_bot', true),
-      countVisitorRows('risk_level', 'normal'),
-      countVisitorRows('risk_level', 'low_risk'),
-      countVisitorRows('risk_level', 'suspicious'),
-      countVisitorRows('risk_level', 'likely_bot'),
-      countVisitorRows('risk_level', 'high_risk'),
-      getReaderActivityToday(),
-      getStoryUpdatesToday(),
-    ])
+  visitorsToday,
+  suspectedBots,
+  normalRisk,
+  lowRisk,
+  suspiciousRisk,
+  likelyBotRisk,
+  highRisk,
+  readerActivity,
+  storyUpdates,
+] = await Promise.all([
+  getVisitorsTodayCount(),
+  countVisitorRows('is_suspected_bot', true),
+  countVisitorRows('risk_level', 'normal'),
+  countVisitorRows('risk_level', 'low_risk'),
+  countVisitorRows('risk_level', 'suspicious'),
+  countVisitorRows('risk_level', 'likely_bot'),
+  countVisitorRows('risk_level', 'high_risk'),
+  getReaderActivityToday(),
+  getStoryUpdatesToday(),
+])
 
     return res.status(200).json({
       ok: true,
       summary: {
         total_unique_visitors: Number(overview.total_unique_visitors || 0),
         total_sessions: Number(overview.total_sessions || 0),
-        visitors_today: Number(overview.visitors_today || 0),
+        visitors_today: Number(visitorsToday || 0),
         visitors_this_month: Number(overview.visitors_this_month || 0),
         active_last_10_minutes: Number(overview.active_last_10_minutes || 0),
         total_page_views: Number(overview.total_page_views || 0),
@@ -710,6 +742,7 @@ export async function getAdminCommunityVisitors(req, res) {
     const limit = toPositiveInt(req.query.limit, 20, 100)
     const q = cleanSearch(req.query.q)
     const filter = String(req.query.filter || 'all').trim().toLowerCase()
+    const { startIso, nowIso } = getCambodiaDayRange()
     const from = (page - 1) * limit
     const to = from + limit - 1
 
@@ -735,7 +768,9 @@ export async function getAdminCommunityVisitors(req, res) {
     if (filter === 'active') {
       query = query.gte('last_seen_at', getActiveStartIso())
     } else if (filter === 'today') {
-      query = query.gte('first_seen_at', getDayStartIso())
+  query = query
+    .gte('last_seen_at', startIso)
+    .lte('last_seen_at', nowIso)
     } else if (filter === 'bots') {
       query = query.eq('is_suspected_bot', true)
     } else if (filter === 'humans') {
