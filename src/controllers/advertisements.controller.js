@@ -9,7 +9,7 @@ import {
 
 const allowedPlacements = ['splash', 'opening', 'freeUnlock', 'me']
 const allowedFrequencies = ['once_per_session', 'once_per_day', 'every_visit', 'every_unlock']
-const allowedBadges = ['', 'HOT', 'NEW', 'END', 'UP']
+const allowedBadges = ['', 'HOT', 'NEW', 'TOP', 'END', 'UP']
 
 function normalizeText(value) {
   return String(value || '').trim()
@@ -53,11 +53,13 @@ function getAdvertisementAction(payload) {
 }
 
 function getAdvertisementDetails(payload) {
-  const placementLabel = payload.placement === 'freeUnlock'
-    ? 'Free Unlock & Read Ad'
-    : payload.placement === 'opening'
-      ? 'Opening Ad'
-      : 'Splash Logo Ad'
+  const placementLabels = {
+    splash: 'Splash Logo Ad',
+    opening: 'Opening Ad',
+    freeUnlock: 'Free Unlock & Read Ad',
+    me: 'Me Ads',
+  }
+  const placementLabel = placementLabels[payload.placement] || 'Advertisement'
 
   return `${placementLabel} updated. Status: ${payload.enabled ? 'Enabled' : 'Disabled'}. Frequency: ${payload.frequency || 'once_per_session'}.`
 }
@@ -138,7 +140,7 @@ export async function getAdminAdvertisements(req, res) {
   try {
     const { data, error } = await supabase
       .from('shadow_advertisements')
-      .select('placement, enabled, image_url, link_url, duration_seconds, close_after_seconds, frequency, created_at, updated_at')
+      .select('placement, enabled, image_url, link_url, badge, duration_seconds, close_after_seconds, frequency, created_at, updated_at')
       .order('placement', { ascending: true })
 
     if (error) throw error
@@ -247,7 +249,7 @@ export async function updateAdminAdvertisement(req, res) {
     const { data, error } = await supabase
       .from('shadow_advertisements')
       .upsert(payload, { onConflict: 'placement' })
-      .select('placement, enabled, image_url, link_url, duration_seconds, close_after_seconds, frequency, created_at, updated_at')
+      .select('placement, enabled, image_url, link_url, badge, duration_seconds, close_after_seconds, frequency, created_at, updated_at')
       .single()
 
     if (error) throw error
