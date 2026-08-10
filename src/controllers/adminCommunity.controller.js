@@ -634,10 +634,10 @@ export async function getAdminCommunityAuthors(req, res) {
     const q = cleanSearch(req.query.q)
     const requestedFilter = String(req.query.filter || 'all').trim().toLowerCase()
     const filter = [
-  'all',
-  'new_author',
-  'active',
-  'inactive',
+      'all',
+      'new_author',
+      'active',
+      'inactive',
       'with_books',
       'no_books',
     ].includes(requestedFilter)
@@ -684,26 +684,26 @@ export async function getAdminCommunityVisitorOverview(req, res) {
     const overview = Array.isArray(overviewRows) ? overviewRows[0] || {} : overviewRows || {}
 
     const [
-  visitorsToday,
-  suspectedBots,
-  normalRisk,
-  lowRisk,
-  suspiciousRisk,
-  likelyBotRisk,
-  highRisk,
-  readerActivity,
-  storyUpdates,
-] = await Promise.all([
-  getVisitorsTodayCount(),
-  countVisitorRows('is_suspected_bot', true),
-  countVisitorRows('risk_level', 'normal'),
-  countVisitorRows('risk_level', 'low_risk'),
-  countVisitorRows('risk_level', 'suspicious'),
-  countVisitorRows('risk_level', 'likely_bot'),
-  countVisitorRows('risk_level', 'high_risk'),
-  getReaderActivityToday(),
-  getStoryUpdatesToday(),
-])
+      visitorsToday,
+      suspectedBots,
+      normalRisk,
+      lowRisk,
+      suspiciousRisk,
+      likelyBotRisk,
+      highRisk,
+      readerActivity,
+      storyUpdates,
+    ] = await Promise.all([
+      getVisitorsTodayCount(),
+      countVisitorRows('is_suspected_bot', true),
+      countVisitorRows('risk_level', 'normal'),
+      countVisitorRows('risk_level', 'low_risk'),
+      countVisitorRows('risk_level', 'suspicious'),
+      countVisitorRows('risk_level', 'likely_bot'),
+      countVisitorRows('risk_level', 'high_risk'),
+      getReaderActivityToday(),
+      getStoryUpdatesToday(),
+    ])
 
     return res.status(200).json({
       ok: true,
@@ -768,9 +768,9 @@ export async function getAdminCommunityVisitors(req, res) {
     if (filter === 'active') {
       query = query.gte('last_seen_at', getActiveStartIso())
     } else if (filter === 'today') {
-  query = query
-    .gte('last_seen_at', startIso)
-    .lte('last_seen_at', nowIso)
+      query = query
+        .gte('last_seen_at', startIso)
+        .lte('last_seen_at', nowIso)
     } else if (filter === 'bots') {
       query = query.eq('is_suspected_bot', true)
     } else if (filter === 'humans') {
@@ -882,42 +882,6 @@ const DASHBOARD_MALL_PAID_STATUSES = [
   'completed',
 ]
 
-async function getRecentTaskCenterUserIds() {
-  const activeStartIso = getActiveStartIso()
-  const tableNames = [
-    'reader_checkins',
-    'reader_reading_rewards',
-    'reader_reading_mission_progress',
-  ]
-  const userIds = new Set()
-
-  for (const tableName of tableNames) {
-    let from = 0
-
-    while (true) {
-      const { data, error } = await supabase
-        .from(tableName)
-        .select('user_id, updated_at')
-        .gte('updated_at', activeStartIso)
-        .order('updated_at', { ascending: true })
-        .range(from, from + PAGE_SIZE - 1)
-
-      if (error) throw error
-
-      const rows = Array.isArray(data) ? data : []
-
-      for (const row of rows) {
-        if (row.user_id) userIds.add(String(row.user_id))
-      }
-
-      if (rows.length < PAGE_SIZE) break
-      from += PAGE_SIZE
-    }
-  }
-
-  return userIds
-}
-
 function getPaidOrderTime(order) {
   return order.paid_at || order.updated_at || order.created_at || null
 }
@@ -965,13 +929,11 @@ export async function getAdminDashboardGrowth(req, res) {
     const { startIso, nowIso } = getCambodiaDayRange()
 
     const [
-      onlineUserIds,
       newReadersResult,
       newAuthorsResult,
       mallOrdersResult,
       authorStoreOrdersResult,
     ] = await Promise.all([
-      getRecentTaskCenterUserIds(),
       supabase
         .from('users')
         .select('id', { count: 'exact', head: true })
@@ -1011,14 +973,11 @@ export async function getAdminDashboardGrowth(req, res) {
     return res.status(200).json({
       ok: true,
       summary: {
-        reader_online: onlineUserIds.size,
         new_readers: Number(newReadersResult.count || 0),
         new_authors: Number(newAuthorsResult.count || 0),
         new_orders: shadowMallOrders + authorStoreOrders,
         shadow_mall_orders: shadowMallOrders,
         author_store_orders: authorStoreOrders,
-        online_window_minutes: 10,
-        online_source: 'task_center_activity',
       },
     })
   } catch (error) {
