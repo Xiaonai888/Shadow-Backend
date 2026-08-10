@@ -390,9 +390,10 @@ async function getStoryAccessSummaries(
       id,
       {
         has_wait_free_episode: false,
-        has_free_episode: false,
-        wait_free_episode_count: 0,
-        free_episode_count: 0,
+has_free_episode: false,
+wait_free_episode_count: 0,
+free_episode_count: 0,
+daily_update_count: 0,
       },
     ])
   )
@@ -436,6 +437,13 @@ const latestEpisode = access.publishedEpisodes.reduce((latest, episode) =>
 , null)
 summary.last_episode_published_at =
   latestEpisode?.published_at || latestEpisode?.created_at || null
+
+    const latestDay = latestEpisode
+  ? new Date(getEpisodePublishedTime(latestEpisode)).toLocaleDateString('en-CA', { timeZone: 'Asia/Phnom_Penh' })
+  : null
+summary.daily_update_count = latestDay
+  ? access.publishedEpisodes.filter((episode) => new Date(getEpisodePublishedTime(episode)).toLocaleDateString('en-CA', { timeZone: 'Asia/Phnom_Penh' }) === latestDay).length
+  : 0
 
 for (
   const episode of access.publishedEpisodes
@@ -501,6 +509,7 @@ status: story.status,
     is_completed: isStoryCompleted(story),
     wait_free_episode_count: Number(accessSummary?.wait_free_episode_count || 0),
     last_episode_published_at: accessSummary?.last_episode_published_at || null,
+    daily_update_count: Number(accessSummary?.daily_update_count || 0),
     free_episode_count: Number(accessSummary?.free_episode_count || 0),
     created_at: story.created_at,
     updated_at: story.updated_at,
