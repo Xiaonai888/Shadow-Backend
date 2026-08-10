@@ -91,6 +91,7 @@ function publicAuthorPost(post) {
     image_urls: normalizeImageUrls(post.image_urls),
     status: post.status || 'active',
     is_pinned: Boolean(post.is_pinned),
+    pinned_at: post.pinned_at || null,
     like_count: Number(post.like_count || 0),
     comment_count: Number(post.comment_count || 0),
     echo_count: Number(post.echo_count || 0),
@@ -190,6 +191,7 @@ export async function getAuthorPagePosts(req, res) {
 
     const { data: posts, error: postsError } = await postsQuery
       .order('is_pinned', { ascending: false })
+      .order('pinned_at', { ascending: false, nullsFirst: false })
       .order('created_at', { ascending: false })
       .limit(limit)
 
@@ -543,7 +545,7 @@ export async function setMyAuthorPostPinned(req, res) {
 
     const { data: existingPost, error: postError } = await supabase
       .from('author_page_posts')
-      .select('id, author_page_id, status')
+      .select('id, author_page_id, status, is_pinned, pinned_at')
       .eq('id', postId)
       .eq('author_page_id', authorPage.id)
       .eq('status', 'active')
@@ -558,22 +560,44 @@ export async function setMyAuthorPostPinned(req, res) {
     const now = new Date().toISOString()
 
     if (isPinned) {
-      const { error: unpinError } = await supabase
+      const { data: pinnedPosts, error: pinnedError } = await supabase
         .from('author_page_posts')
-        .update({
-          is_pinned: false,
-          updated_at: now,
-        })
+        .select('id, pinned_at, updated_at, created_at')
         .eq('author_page_id', authorPage.id)
+        .eq('status', 'active')
+        .eq('is_pinned', true)
         .neq('id', postId)
 
-      if (unpinError) throw unpinError
+      if (pinnedError) throw pinnedError
+
+      const sortedPinnedPosts = [...(pinnedPosts || [])].sort((a, b) => {
+        const aTime = new Date(a.pinned_at || a.updated_at || a.created_at || 0).getTime()
+        const bTime = new Date(b.pinned_at || b.updated_at || b.created_at || 0).getTime()
+        return aTime - bTime
+      })
+
+      const unpinCount = Math.max(0, sortedPinnedPosts.length - 2)
+      const oldestPinnedIds = sortedPinnedPosts.slice(0, unpinCount).map((item) => item.id)
+
+      if (oldestPinnedIds.length) {
+        const { error: unpinError } = await supabase
+          .from('author_page_posts')
+          .update({
+            is_pinned: false,
+            pinned_at: null,
+            updated_at: now,
+          })
+          .in('id', oldestPinnedIds)
+
+        if (unpinError) throw unpinError
+      }
     }
 
     const { data: updatedPost, error: updateError } = await supabase
       .from('author_page_posts')
       .update({
         is_pinned: isPinned,
+        pinned_at: isPinned ? now : null,
         updated_at: now,
       })
       .eq('id', postId)
@@ -593,6 +617,7 @@ export async function setMyAuthorPostPinned(req, res) {
     return res.status(500).json({ ok: false, message: 'Failed to update pinned post', error: error.message })
   }
 }
+
 
 export async function setMyAuthorPostReaction(req, res) {
   try {
