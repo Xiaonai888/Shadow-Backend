@@ -929,11 +929,11 @@ export async function getAdminDashboardGrowth(req, res) {
     const { startIso, nowIso } = getCambodiaDayRange()
 
     const [
-      newReadersResult,
-      newAuthorsResult,
-      mallOrdersResult,
-      authorStoreOrdersResult,
-    ] = await Promise.all([
+      newReadersSettled,
+      newAuthorsSettled,
+      mallOrdersSettled,
+      authorStoreOrdersSettled,
+    ] = await Promise.allSettled([
       supabase
         .from('users')
         .select('id', { count: 'exact', head: true })
@@ -958,27 +958,75 @@ export async function getAdminDashboardGrowth(req, res) {
         .lte('paid_at', nowIso),
     ])
 
-    const errors = [
-      newReadersResult.error,
-      newAuthorsResult.error,
-      mallOrdersResult.error,
-      authorStoreOrdersResult.error,
-    ].filter(Boolean)
+    const summary = {}
+    const failed = []
 
-    if (errors.length) throw errors[0]
+    const newReadersResult =
+      newReadersSettled.status === 'fulfilled' ? newReadersSettled.value : null
+    const newAuthorsResult =
+      newAuthorsSettled.status === 'fulfilled' ? newAuthorsSettled.value : null
+    const mallOrdersResult =
+      mallOrdersSettled.status === 'fulfilled' ? mallOrdersSettled.value : null
+    const authorStoreOrdersResult =
+      authorStoreOrdersSettled.status === 'fulfilled'
+        ? authorStoreOrdersSettled.value
+        : null
 
-    const shadowMallOrders = Number(mallOrdersResult.count || 0)
-    const authorStoreOrders = Number(authorStoreOrdersResult.count || 0)
+    if (newReadersResult && !newReadersResult.error) {
+      summary.new_readers = Number(newReadersResult.count || 0)
+    } else {
+      failed.push('new_readers')
+      console.error(
+        'GET ADMIN DASHBOARD GROWTH NEW READERS ERROR:',
+        newReadersResult?.error || newReadersSettled.reason
+      )
+    }
+
+    if (newAuthorsResult && !newAuthorsResult.error) {
+      summary.new_authors = Number(newAuthorsResult.count || 0)
+    } else {
+      failed.push('new_authors')
+      console.error(
+        'GET ADMIN DASHBOARD GROWTH NEW AUTHORS ERROR:',
+        newAuthorsResult?.error || newAuthorsSettled.reason
+      )
+    }
+
+    const mallOrdersOk = Boolean(mallOrdersResult && !mallOrdersResult.error)
+    const authorStoreOrdersOk = Boolean(
+      authorStoreOrdersResult && !authorStoreOrdersResult.error
+    )
+
+    if (mallOrdersOk && authorStoreOrdersOk) {
+      const shadowMallOrders = Number(mallOrdersResult.count || 0)
+      const authorStoreOrders = Number(authorStoreOrdersResult.count || 0)
+
+      summary.new_orders = shadowMallOrders + authorStoreOrders
+      summary.shadow_mall_orders = shadowMallOrders
+      summary.author_store_orders = authorStoreOrders
+    } else {
+      if (!mallOrdersOk) {
+        failed.push('shadow_mall_orders')
+        console.error(
+          'GET ADMIN DASHBOARD GROWTH MALL ORDERS ERROR:',
+          mallOrdersResult?.error || mallOrdersSettled.reason
+        )
+      }
+
+      if (!authorStoreOrdersOk) {
+        failed.push('author_store_orders')
+        console.error(
+          'GET ADMIN DASHBOARD GROWTH AUTHOR STORE ORDERS ERROR:',
+          authorStoreOrdersResult?.error || authorStoreOrdersSettled.reason
+        )
+      }
+    }
 
     return res.status(200).json({
       ok: true,
-      summary: {
-        new_readers: Number(newReadersResult.count || 0),
-        new_authors: Number(newAuthorsResult.count || 0),
-        new_orders: shadowMallOrders + authorStoreOrders,
-        shadow_mall_orders: shadowMallOrders,
-        author_store_orders: authorStoreOrders,
-      },
+      summary,
+      partial: failed.length > 0,
+      failed,
     })
   } catch (error) {
     console.error('GET ADMIN DASHBOARD GROWTH ERROR:', error)
@@ -989,6 +1037,7 @@ export async function getAdminDashboardGrowth(req, res) {
     })
   }
 }
+
 
 export async function getAdminDashboardPaidOrders(req, res) {
   try {
