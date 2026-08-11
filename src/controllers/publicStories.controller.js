@@ -106,6 +106,15 @@ function getEpisodePublishedTime(episode) {
   return Number.isFinite(time) ? time : 0
 }
 
+function getCurrentWeekKeys() {
+  const key = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Phnom_Penh' })
+  const monday = new Date(`${key}T00:00:00Z`)
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7))
+  const nextMonday = new Date(monday)
+  nextMonday.setUTCDate(monday.getUTCDate() + 7)
+  return [monday.toISOString().slice(0, 10), nextMonday.toISOString().slice(0, 10)]
+}
+
 function isPublicEpisode(episode, now = Date.now()) {
   const status = String(
     episode?.status || 'published'
@@ -394,6 +403,7 @@ has_free_episode: false,
 wait_free_episode_count: 0,
 free_episode_count: 0,
 daily_update_count: 0,
+weekly_update_count: 0,
       },
     ])
   )
@@ -409,6 +419,7 @@ daily_update_count: 0,
   if (error) throw error
 
   const now = Date.now()
+  const [weekStartKey, nextWeekKey] = getCurrentWeekKeys()
   const episodesByStory = new Map()
 
   for (const episode of data || []) {
@@ -444,6 +455,13 @@ summary.last_episode_published_at =
 summary.daily_update_count = latestDay
   ? access.publishedEpisodes.filter((episode) => new Date(getEpisodePublishedTime(episode)).toLocaleDateString('en-CA', { timeZone: 'Asia/Phnom_Penh' }) === latestDay).length
   : 0
+
+    summary.weekly_update_count = access.publishedEpisodes.filter((episode) => {
+  if (!episode.published_at) return false
+  const dayKey = new Date(episode.published_at)
+    .toLocaleDateString('en-CA', { timeZone: 'Asia/Phnom_Penh' })
+  return dayKey >= weekStartKey && dayKey < nextWeekKey
+}).length
 
 for (
   const episode of access.publishedEpisodes
@@ -510,6 +528,7 @@ status: story.status,
     wait_free_episode_count: Number(accessSummary?.wait_free_episode_count || 0),
     last_episode_published_at: accessSummary?.last_episode_published_at || null,
     daily_update_count: Number(accessSummary?.daily_update_count || 0),
+    weekly_update_count: Number(accessSummary?.weekly_update_count || 0),
     free_episode_count: Number(accessSummary?.free_episode_count || 0),
     created_at: story.created_at,
     updated_at: story.updated_at,
@@ -791,7 +810,7 @@ function applyStorySort(query, sort) {
     return query.order('total_likes', { ascending: false }).order('updated_at', { ascending: false })
   }
 
-  if (sort === 'updated' || sort === 'episode_updated') {
+  if (['updated', 'episode_updated', 'weekly_updates'].includes(sort)) {
   return query.order('updated_at', { ascending: false })
 }
 
@@ -1091,9 +1110,9 @@ export async function getPublicStories(req, res) {
 const normalizedSort = sort.toLowerCase()
 const queryLimit = isDiscoverMoreSort(sort)
   ? Math.min(Math.max(limit * 8, 24), 48)
-  : normalizedSort === 'episode_updated'
-    ? 500
-    : limit
+  : ['episode_updated', 'weekly_updates'].includes(normalizedSort)
+  ? 500
+  : limit
     const authorId = String(req.query.authorId || req.query.author_id || '').trim()
     const exclude = String(req.query.exclude || req.query.excludeId || req.query.exclude_id || '').trim()
     const search = normalizeSearch(req.query.q || req.query.search || req.query.keyword)
@@ -1192,7 +1211,7 @@ for (const result of queryResults) {
 }
 
 const episodeUpdateSummaries =
-  normalizedSort === 'episode_updated'
+  ['episode_updated', 'weekly_updates'].includes(normalizedSort)
     ? await getStoryAccessSummaries(
         mergedStories.map((story) => story.id)
       )
@@ -1201,7 +1220,15 @@ const episodeUpdateSummaries =
 const sortedStories = [
   ...mergedStories,
 ].sort((first, second) => {
-  if (normalizedSort === 'episode_updated') {
+  if (normalizedSort === 'weekly_updates') {
+  const a = Number(episodeUpdateSummaries?.get(first.id)?.weekly_update_count || 0)
+  const b = Number(episodeUpdateSummaries?.get(second.id)?.weekly_update_count || 0)
+  if (a !== b) return b - a
+  const aTime = new Date(episodeUpdateSummaries?.get(first.id)?.last_episode_published_at || 0).getTime()
+  const bTime = new Date(episodeUpdateSummaries?.get(second.id)?.last_episode_published_at || 0).getTime()
+  return bTime - aTime
+}
+  if (['episode_updated', 'weekly_updates'].includes(normalizedSort)) {
     const firstTime = new Date(
       episodeUpdateSummaries?.get(first.id)?.last_episode_published_at || 0
     ).getTime()
@@ -1265,6 +1292,12 @@ const sortedStories = [
 
   return secondCreated - firstCreated
 })
+
+    const rankedStories = normalizedSort === 'weekly_updates'
+  ? sortedStories.filter((story) =>
+      Number(episodeUpdateSummaries?.get(story.id)?.weekly_update_count || 0) > 0
+    )
+  : sortedStories
 
 const stories = isDiscoverMoreSort(sort)
   ? pickDiscoverMoreStories(
