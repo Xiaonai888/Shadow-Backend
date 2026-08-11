@@ -9,6 +9,8 @@ import {
 } from '../controllers/authorStories.controller.js'
 import { getAuthorStoriesFeed } from '../controllers/authorStoriesFeed.controller.js'
 import { recordAuthorStoryView } from '../controllers/authorStoryViews.controller.js'
+import { saveMyAuthorStoryExtras } from '../controllers/storyExtras.controller.js'
+import { enforceAuthorStoryDailyLimit } from '../middleware/storyDailyLimit.middleware.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
@@ -45,12 +47,12 @@ function uploadStoryMedia(req, res, next) {
     if (!error) return next()
 
     if (error.code === 'LIMIT_FILE_SIZE') {
-  return res.status(413).json({
-    ok: false,
-    code: 'STORY_MEDIA_TOO_LARGE',
-    message: 'Story media must be 30 MB or smaller',
-  })
-}
+      return res.status(413).json({
+        ok: false,
+        code: 'STORY_MEDIA_TOO_LARGE',
+        message: 'Story media must be 30 MB or smaller',
+      })
+    }
 
     return res.status(400).json({
       ok: false,
@@ -62,7 +64,14 @@ function uploadStoryMedia(req, res, next) {
 
 router.get('/feed', optionalUser, getAuthorStoriesFeed)
 router.get('/me', requireUser, getMyAuthorStories)
-router.post('/me', requireUser, uploadStoryMedia, createMyAuthorStory)
+router.post(
+  '/me',
+  requireUser,
+  enforceAuthorStoryDailyLimit,
+  uploadStoryMedia,
+  createMyAuthorStory
+)
+router.patch('/me/:storyId/extras', requireUser, saveMyAuthorStoryExtras)
 router.delete('/me/:storyId', requireUser, deleteMyAuthorStory)
 router.post('/:storyId/view', requireUser, recordAuthorStoryView)
 router.get('/page/:pageUsername', getPublicAuthorStories)
