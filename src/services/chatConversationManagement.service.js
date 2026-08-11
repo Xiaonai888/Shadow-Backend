@@ -703,6 +703,50 @@ export async function removeConversationFromFolder({
   }
 }
 
+export async function createChatFolder({
+  userId,
+  name,
+}) {
+  const safeUserId = requireUuid(userId, 'User ID')
+  const safeName = String(name || '')
+    .trim()
+    .slice(0, 40)
+
+  if (!safeName) {
+    fail(
+      400,
+      'CHAT_FOLDER_NAME_REQUIRED',
+      'Folder name is required'
+    )
+  }
+
+  const { data, error } = await supabase
+    .from('chat_folders')
+    .insert({
+      user_id: safeUserId,
+      name: safeName,
+    })
+    .select('id, name, created_at, updated_at')
+    .single()
+
+  if (error?.code === '23505') {
+    fail(
+      409,
+      'CHAT_FOLDER_ALREADY_EXISTS',
+      'Folder name already exists'
+    )
+  }
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to create chat folder'
+    )
+  }
+
+  return data
+}
+
 
 export async function listChatFolders({
   userId,
