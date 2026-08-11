@@ -10,6 +10,7 @@ import {
   deleteConversation,
   getConversationAutoDeleteStatus,
   getConversationMuteStatus,
+  getConversationSoundSettings,
   listChatFolders,
   listManagedConversations,
   markConversationUnread,
@@ -17,6 +18,7 @@ import {
   pinConversation,
   removeConversationFromFolder,
   setConversationAutoDelete,
+  setConversationSoundSettings,
   unarchiveConversation,
   unmuteConversation,
   unpinConversation,
@@ -292,6 +294,62 @@ router.delete(
     }
   }
 )
+
+router.get(
+  '/conversations/:conversationId/sound',
+  conversationReadGuard,
+  async (req, res) => {
+    try {
+      const result =
+        await getConversationSoundSettings({
+          userId: req.user?.user_id,
+          conversationId:
+            req.params.conversationId,
+        })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'GET CHAT SOUND SETTINGS ERROR'
+      )
+    }
+  }
+)
+
+router.patch(
+  '/conversations/:conversationId/sound',
+  conversationWriteGuard,
+  async (req, res) => {
+    try {
+      const result =
+        await setConversationSoundSettings({
+          userId: req.user?.user_id,
+          conversationId:
+            req.params.conversationId,
+          soundEnabled:
+            req.body?.sound_enabled,
+          tone: req.body?.tone,
+        })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'UPDATE CHAT SOUND SETTINGS ERROR'
+      )
+    }
+  }
+)
+
 
 router.get(
   '/conversations/:conversationId/auto-delete',
