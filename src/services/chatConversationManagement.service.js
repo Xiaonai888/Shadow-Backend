@@ -503,6 +503,141 @@ export async function setConversationAutoDelete({
   }
 }
 
+export async function markConversationUnread({
+  userId,
+  conversationId,
+}) {
+  const safeUserId = requireUuid(userId, 'User ID')
+  const participant = await getActiveParticipant(
+    conversationId,
+    safeUserId
+  )
+
+  const {
+    data: conversation,
+    error: conversationError,
+  } = await supabase
+    .from('chat_conversations')
+    .select('id, cleared_for_all_at')
+    .eq('id', participant.conversation_id)
+    .maybeSingle()
+
+  if (conversationError) {
+    throw databaseFailure(
+      conversationError,
+      'Failed to load conversation'
+    )
+  }
+
+  if (!conversation) {
+    fail(
+      404,
+      'CONVERSATION_NOT_FOUND',
+      'Conversation not found'
+    )
+  }
+
+  const cutoffTimes = [
+    participant.cleared_at,
+    conversation.cleared_for_all_at,
+  ]
+    .filter(Boolean)
+    .map((value) => new Date(value).getTime())
+    .filter(Number.isFinite)
+
+  let latestQuery = supabase
+    .from('chat_messages')
+    .select('id, created_at')
+    .eq(
+      'conversation_id',
+      participant.conversation_id
+    )
+    .neq('sender_user_id', safeUserId)
+    .is('deleted_at', null)
+    .order('created_at', {
+      ascending: false,
+    })
+    .limit(1)
+
+  if (cutoffTimes.length) {
+    latestQuery = latestQuery.gt(
+      'created_at',
+      new Date(
+        Math.max(...cutoffTimes)
+      ).toISOString()
+    )
+  }
+
+  const {
+    data: latestIncoming,
+    error: latestError,
+  } = await latestQuery.maybeSingle()
+
+  if (latestError) {
+    throw databaseFailure(
+      latestError,
+      'Failed to find received message'
+    )
+  }
+
+  if (!latestIncoming) {
+    fail(
+      409,
+      'NO_RECEIVED_MESSAGE',
+      'No received message is available to mark as unread'
+    )
+  }
+
+  const latestTime = new Date(
+    latestIncoming.created_at
+  ).getTime()
+
+  const lastReadTime = participant.last_read_at
+    ? new Date(
+        participant.last_read_at
+      ).getTime()
+    : NaN
+
+  if (
+    !Number.isFinite(lastReadTime) ||
+    lastReadTime < latestTime
+  ) {
+    return {
+      conversation_id:
+        participant.conversation_id,
+      is_unread: true,
+      last_read_at:
+        participant.last_read_at || null,
+    }
+  }
+
+  const lastReadAt = new Date(
+    latestTime - 1
+  ).toISOString()
+
+  const { error } = await supabase
+    .from('chat_participants')
+    .update({
+      last_read_at: lastReadAt,
+    })
+    .eq('id', participant.id)
+    .is('deleted_at', null)
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to mark conversation as unread'
+    )
+  }
+
+  return {
+    conversation_id:
+      participant.conversation_id,
+    is_unread: true,
+    last_read_at: lastReadAt,
+  }
+}
+
 export async function pinConversation({
   userId,
   conversationId,
