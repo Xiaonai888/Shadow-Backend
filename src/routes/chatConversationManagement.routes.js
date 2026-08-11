@@ -3,6 +3,7 @@ import {
   ChatServiceError,
 } from '../services/chat.service.js'
 import {
+  addConversationToFolder,
   archiveConversation,
   clearConversationHistory,
   createChatFolder,
@@ -14,6 +15,7 @@ import {
   markConversationUnread,
   muteConversation,
   pinConversation,
+  removeConversationFromFolder,
   setConversationAutoDelete,
   unarchiveConversation,
   unmuteConversation,
@@ -116,6 +118,60 @@ router.post(
         res,
         error,
         'CREATE CHAT FOLDER ERROR'
+      )
+    }
+  }
+)
+
+router.patch(
+  '/folders/:folderId/conversations/:conversationId',
+  conversationWriteGuard,
+  async (req, res) => {
+    try {
+      const result =
+        await addConversationToFolder({
+          userId: req.user?.user_id,
+          folderId: req.params.folderId,
+          conversationId:
+            req.params.conversationId,
+        })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'ADD CHAT TO FOLDER ERROR'
+      )
+    }
+  }
+)
+
+router.delete(
+  '/folders/:folderId/conversations/:conversationId',
+  conversationWriteGuard,
+  async (req, res) => {
+    try {
+      const result =
+        await removeConversationFromFolder({
+          userId: req.user?.user_id,
+          folderId: req.params.folderId,
+          conversationId:
+            req.params.conversationId,
+        })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'REMOVE CHAT FROM FOLDER ERROR'
       )
     }
   }
