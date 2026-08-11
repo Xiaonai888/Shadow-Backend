@@ -1593,9 +1593,12 @@ export async function updateEpisodeStatus(req, res) {
 }
 
     if (status === 'published') {
-      updatePayload.published_at = new Date().toISOString()
-      updatePayload.scheduled_at = null
-    }
+  updatePayload.published_at =
+    episode.status === 'published' && episode.published_at
+      ? episode.published_at
+      : new Date().toISOString()
+  updatePayload.scheduled_at = null
+}
 
     if (status === 'scheduled') {
       const scheduledAt = cleanText(req.body.scheduled_at || req.body.scheduledAt)
