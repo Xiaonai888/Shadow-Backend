@@ -189,7 +189,7 @@ async function getActiveParticipant(
   const { data, error } = await supabase
     .from('chat_participants')
     .select(
-      'id, conversation_id, user_id, participant_role, archived_at, deleted_at, cleared_at, retention_until, last_read_at, is_muted, muted_until'
+      'id, conversation_id, user_id, participant_role, archived_at, deleted_at, cleared_at, retention_until, last_read_at, is_muted, muted_until, pinned_at'
     )
     .eq('conversation_id', safeConversationId)
     .eq('user_id', safeUserId)
@@ -235,7 +235,7 @@ export async function listManagedConversations({
   let participantQuery = supabase
     .from('chat_participants')
     .select(
-      'conversation_id, is_muted, muted_until'
+      'conversation_id, is_muted, muted_until, pinned_at'
     )
     .eq('user_id', safeUserId)
     .is('deleted_at', null)
@@ -282,6 +282,8 @@ export async function listManagedConversations({
         ...conversation,
         is_muted: isParticipantMuted(participant),
         muted_until: participant?.muted_until || null,
+        is_pinned: Boolean(participant?.pinned_at),
+        pinned_at: participant?.pinned_at || null,
         delete_permissions: {
           can_delete_for_me: true,
           can_delete_for_both:
@@ -498,6 +500,104 @@ export async function setConversationAutoDelete({
       data.auto_delete_updated_by_user_id || null,
     updated_at:
       data.auto_delete_updated_at || null,
+  }
+}
+
+export async function pinConversation({
+  userId,
+  conversationId,
+}) {
+  const safeUserId = requireUuid(userId, 'User ID')
+  const participant = await getActiveParticipant(
+    conversationId,
+    safeUserId
+  )
+
+  if (participant.pinned_at) {
+    return {
+      conversation_id: participant.conversation_id,
+      is_pinned: true,
+      pinned_at: participant.pinned_at,
+    }
+  }
+
+  const { count, error: countError } = await supabase
+    .from('chat_participants')
+    .select('id', {
+      count: 'exact',
+      head: true,
+    })
+    .eq('user_id', safeUserId)
+    .is('deleted_at', null)
+    .not('pinned_at', 'is', null)
+
+  if (countError) {
+    throw databaseFailure(
+      countError,
+      'Failed to check pinned chats'
+    )
+  }
+
+  if (Number(count || 0) >= 5) {
+    fail(
+      409,
+      'CHAT_PIN_LIMIT',
+      'You can pin up to 5 chats.'
+    )
+  }
+
+  const pinnedAt = new Date().toISOString()
+
+  const { error } = await supabase
+    .from('chat_participants')
+    .update({
+      pinned_at: pinnedAt,
+    })
+    .eq('id', participant.id)
+    .is('deleted_at', null)
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to pin conversation'
+    )
+  }
+
+  return {
+    conversation_id: participant.conversation_id,
+    is_pinned: true,
+    pinned_at: pinnedAt,
+  }
+}
+
+export async function unpinConversation({
+  userId,
+  conversationId,
+}) {
+  const participant = await getActiveParticipant(
+    conversationId,
+    userId
+  )
+
+  const { error } = await supabase
+    .from('chat_participants')
+    .update({
+      pinned_at: null,
+    })
+    .eq('id', participant.id)
+    .is('deleted_at', null)
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to unpin conversation'
+    )
+  }
+
+  return {
+    conversation_id: participant.conversation_id,
+    is_pinned: false,
+    pinned_at: null,
   }
 }
 
