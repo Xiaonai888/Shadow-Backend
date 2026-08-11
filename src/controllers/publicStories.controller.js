@@ -1106,9 +1106,12 @@ export async function getPublicStories(req, res) {
     const genre = String(req.query.genre || '').trim()
     const language = String(req.query.language || '').trim()
     const storyType = String(req.query.story_type || req.query.storyType || '').trim().toLowerCase()
+    const storyStatus = String(
+  req.query.story_status || req.query.storyStatus || ''
+).trim()
     const sort = String(req.query.sort || 'latest').trim()
-const normalizedSort = sort.toLowerCase()
-const queryLimit = isDiscoverMoreSort(sort)
+    const normalizedSort = sort.toLowerCase()
+    const queryLimit = isDiscoverMoreSort(sort)
   ? Math.min(Math.max(limit * 8, 24), 48)
   : ['episode_updated', 'weekly_updates'].includes(normalizedSort)
   ? 500
@@ -1154,6 +1157,13 @@ const queryLimit = isDiscoverMoreSort(sort)
       storyType
     )
   }
+
+      if (storyStatus) {
+  nextQuery = nextQuery.ilike(
+    'story_status',
+    storyStatus
+  )
+}
 
   if (authorId) {
     nextQuery = nextQuery.eq(
