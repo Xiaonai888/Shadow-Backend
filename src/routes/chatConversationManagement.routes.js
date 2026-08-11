@@ -9,9 +9,11 @@ import {
   getConversationMuteStatus,
   listManagedConversations,
   muteConversation,
+  pinConversation,
   setConversationAutoDelete,
   unarchiveConversation,
   unmuteConversation,
+  unpinConversation,
 } from '../services/chatConversationManagement.service.js'
 import {
   createSpamGuard,
@@ -232,6 +234,56 @@ router.patch(
         res,
         error,
         'UPDATE CHAT AUTO DELETE ERROR'
+      )
+    }
+  }
+)
+
+router.patch(
+  '/conversations/:conversationId/pin',
+  conversationWriteGuard,
+  async (req, res) => {
+    try {
+      const result = await pinConversation({
+        userId: req.user?.user_id,
+        conversationId:
+          req.params.conversationId,
+      })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'PIN CHAT CONVERSATION ERROR'
+      )
+    }
+  }
+)
+
+router.delete(
+  '/conversations/:conversationId/pin',
+  conversationWriteGuard,
+  async (req, res) => {
+    try {
+      const result = await unpinConversation({
+        userId: req.user?.user_id,
+        conversationId:
+          req.params.conversationId,
+      })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'UNPIN CHAT CONVERSATION ERROR'
       )
     }
   }
