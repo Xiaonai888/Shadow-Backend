@@ -4,6 +4,7 @@ import {
 } from '../services/chat.service.js'
 import {
   archiveConversation,
+  clearConversationHistory,
   deleteConversation,
   getConversationAutoDeleteStatus,
   getConversationMuteStatus,
@@ -235,6 +236,32 @@ router.patch(
         res,
         error,
         'UPDATE CHAT AUTO DELETE ERROR'
+      )
+    }
+  }
+)
+
+router.patch(
+  '/conversations/:conversationId/clear-history',
+  conversationWriteGuard,
+  async (req, res) => {
+    try {
+      const result =
+        await clearConversationHistory({
+          userId: req.user?.user_id,
+          conversationId:
+            req.params.conversationId,
+        })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'CLEAR CHAT HISTORY ERROR'
       )
     }
   }
