@@ -8,6 +8,7 @@ import {
   getConversationAutoDeleteStatus,
   getConversationMuteStatus,
   listManagedConversations,
+  markConversationUnread,
   muteConversation,
   pinConversation,
   setConversationAutoDelete,
@@ -234,6 +235,32 @@ router.patch(
         res,
         error,
         'UPDATE CHAT AUTO DELETE ERROR'
+      )
+    }
+  }
+)
+
+router.patch(
+  '/conversations/:conversationId/unread',
+  conversationWriteGuard,
+  async (req, res) => {
+    try {
+      const result =
+        await markConversationUnread({
+          userId: req.user?.user_id,
+          conversationId:
+            req.params.conversationId,
+        })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'MARK CHAT UNREAD ERROR'
       )
     }
   }
