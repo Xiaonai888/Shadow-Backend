@@ -607,7 +607,10 @@ export async function removeConversationFromFolder({
 }
 
 
-export async function listChatFolders({ userId }) {
+export async function listChatFolders({
+  userId,
+  conversationId,
+}) {
   const safeUserId = requireUuid(userId, 'User ID')
 
   const { data, error } = await supabase
@@ -617,39 +620,60 @@ export async function listChatFolders({ userId }) {
     .order('created_at', { ascending: true })
 
   if (error) {
-    throw databaseFailure(error, 'Failed to load chat folders')
+    throw databaseFailure(
+      error,
+      'Failed to load chat folders'
+    )
   }
 
-  return data || []
+  const folders = data || []
+
+  if (!conversationId || !folders.length) {
+    return folders.map((folder) => ({
+      ...folder,
+      is_added: false,
+    }))
+  }
+
+  const participant = await getActiveParticipant(
+    conversationId,
+    safeUserId
+  )
+
+  const { data: memberships, error: membershipError } =
+    await supabase
+      .from('chat_folder_conversations')
+      .select('folder_id')
+      .eq(
+        'conversation_id',
+        participant.conversation_id
+      )
+      .in(
+        'folder_id',
+        folders.map((folder) => folder.id)
+      )
+
+  if (membershipError) {
+    throw databaseFailure(
+      membershipError,
+      'Failed to load chat folder membership'
+    )
+  }
+
+  const addedFolderIds = new Set(
+    (memberships || []).map((item) =>
+      String(item.folder_id)
+    )
+  )
+
+  return folders.map((folder) => ({
+    ...folder,
+    is_added: addedFolderIds.has(
+      String(folder.id)
+    ),
+  }))
 }
 
-export async function createChatFolder({
-  userId,
-  name,
-}) {
-  const safeUserId = requireUuid(userId, 'User ID')
-  const safeName = String(name || '').trim().slice(0, 40)
-
-  if (!safeName) {
-    fail(400, 'CHAT_FOLDER_NAME_REQUIRED', 'Folder name is required')
-  }
-
-  const { data, error } = await supabase
-    .from('chat_folders')
-    .insert({ user_id: safeUserId, name: safeName })
-    .select('id, name, created_at, updated_at')
-    .single()
-
-  if (error?.code === '23505') {
-    fail(409, 'CHAT_FOLDER_ALREADY_EXISTS', 'A folder with this name already exists')
-  }
-
-  if (error) {
-    throw databaseFailure(error, 'Failed to create chat folder')
-  }
-
-  return data
-}
 
 
 export async function clearConversationHistory({
