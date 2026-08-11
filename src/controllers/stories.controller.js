@@ -1594,9 +1594,7 @@ export async function updateEpisodeStatus(req, res) {
 
     if (status === 'published') {
   updatePayload.published_at =
-    episode.status === 'published' && episode.published_at
-      ? episode.published_at
-      : new Date().toISOString()
+  episode.published_at || new Date().toISOString()
   updatePayload.scheduled_at = null
 }
 
@@ -1620,12 +1618,12 @@ export async function updateEpisodeStatus(req, res) {
       }
 
       updatePayload.scheduled_at = scheduleDate.toISOString()
-      updatePayload.published_at = null
+      updatePayload.published_at = episode.published_at || null
     }
 
     if (status === 'draft') {
       updatePayload.scheduled_at = null
-      updatePayload.published_at = null
+      updatePayload.published_at = episode.published_at || null
     }
 
     const { data: updatedEpisode, error: updateError } = await supabase
