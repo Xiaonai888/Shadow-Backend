@@ -7,6 +7,12 @@ import {
   recordReaderStoryView,
 } from '../controllers/readerStories.controller.js'
 import {
+  saveMyReaderStoryExtras,
+} from '../controllers/storyExtras.controller.js'
+import {
+  enforceReaderStoryDailyLimit,
+} from '../middleware/storyDailyLimit.middleware.js'
+import {
   requireUser,
 } from '../middleware/user.middleware.js'
 
@@ -65,8 +71,15 @@ router.get(
 router.post(
   '/me',
   requireUser,
+  enforceReaderStoryDailyLimit,
   uploadStoryMedia,
   createMyReaderStory
+)
+
+router.patch(
+  '/me/:storyId/extras',
+  requireUser,
+  saveMyReaderStoryExtras
 )
 
 router.delete(
