@@ -118,6 +118,7 @@ import {
 const router = express.Router()
 
 router.get('/me/49-day-event', requireUser, getMyAuthor49DayEvent)
+router.get('/me/dashboard', requireUser, getMyAuthorDashboard)
 router.get('/me', requireUser, getMyAuthorPage)
 router.get('/me/quest', requireUser, getMyAuthorQuest)
 router.post('/me/quest/boost/activate', requireUser, activateMyAuthorLifetimeBoost)
