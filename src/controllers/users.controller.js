@@ -27,8 +27,9 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
 }
 
-function isGmailEmail(email) {
-  return /^[^\s@]+@gmail\.com$/.test(email)
+function isAllowedEmail(email) {
+  const domain = String(email).split('@').pop()
+  return ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com'].includes(domain)
 }
 
 function calculateAge(dateOfBirth) {
@@ -233,12 +234,12 @@ export async function registerUser(req, res) {
       })
     }
 
-    if (!isGmailEmail(email)) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Only Gmail accounts are allowed',
-      })
-    }
+    if (!isAllowedEmail(email)) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Only Gmail, Yahoo, Outlook, Hotmail, and iCloud accounts are allowed',
+  })
+}
 
     if (username.length < 3 || username.length > 30) {
   return res.status(400).json({
