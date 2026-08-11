@@ -64,6 +64,10 @@ function makeAuthorStory(
     media_url: story.media_url,
     mime_type: story.mime_type,
     caption: story.caption || '',
+    alt_text: story.alt_text || '',
+    text_overlay: story.text_overlay || '',
+    mention_username: story.mention_username || '',
+    link_url: story.link_url || '',
     allow_messages: Boolean(
       story.allow_messages
     ),
@@ -88,6 +92,10 @@ function makeReaderStory(
     media_url: story.media_url,
     mime_type: story.mime_type,
     caption: story.caption || '',
+    alt_text: story.alt_text || '',
+    text_overlay: story.text_overlay || '',
+    mention_username: story.mention_username || '',
+    link_url: story.link_url || '',
     allow_messages: Boolean(
       story.allow_messages
     ),
@@ -284,7 +292,7 @@ export async function getDiscoverStoriesFeed(
       supabase
         .from('author_page_stories')
         .select(
-          'id, author_page_id, media_type, media_url, mime_type, caption, allow_messages, view_count, created_at, expires_at'
+          'id, author_page_id, media_type, media_url, mime_type, caption, alt_text, text_overlay, mention_username, link_url, allow_messages, view_count, created_at, expires_at'
         )
         .eq('status', 'active')
         .gt('expires_at', now)
@@ -295,7 +303,7 @@ export async function getDiscoverStoriesFeed(
       supabase
         .from('reader_stories')
         .select(
-          'id, user_id, media_type, media_url, mime_type, caption, allow_messages, view_count, created_at, expires_at'
+          'id, user_id, media_type, media_url, mime_type, caption, alt_text, text_overlay, mention_username, link_url, allow_messages, view_count, created_at, expires_at'
         )
         .eq('status', 'active')
         .gt('expires_at', now)
