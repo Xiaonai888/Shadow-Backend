@@ -189,7 +189,7 @@ async function getActiveParticipant(
   const { data, error } = await supabase
     .from('chat_participants')
     .select(
-      'id, conversation_id, user_id, participant_role, archived_at, deleted_at, cleared_at, retention_until, last_read_at, is_muted, muted_until, pinned_at'
+      'id, conversation_id, user_id, participant_role, archived_at, deleted_at, cleared_at, retention_until, last_read_at, is_muted, muted_until, pinned_at, notification_sound_enabled, notification_tone'
     )
     .eq('conversation_id', safeConversationId)
     .eq('user_id', safeUserId)
@@ -235,7 +235,7 @@ export async function listManagedConversations({
   let participantQuery = supabase
     .from('chat_participants')
     .select(
-      'conversation_id, is_muted, muted_until, pinned_at'
+      'conversation_id, is_muted, muted_until, pinned_at, notification_sound_enabled, notification_tone'
     )
     .eq('user_id', safeUserId)
     .is('deleted_at', null)
@@ -284,6 +284,10 @@ export async function listManagedConversations({
         muted_until: participant?.muted_until || null,
         is_pinned: Boolean(participant?.pinned_at),
         pinned_at: participant?.pinned_at || null,
+        notification_sound_enabled:
+  participant?.notification_sound_enabled !== false,
+notification_tone:
+  participant?.notification_tone || 'default',
         delete_permissions: {
           can_delete_for_me: true,
           can_delete_for_both:
@@ -406,6 +410,99 @@ export async function unmuteConversation({
     muted_until: null,
   }
 }
+
+const CHAT_NOTIFICATION_TONES = new Set([
+  'default',
+  'chime',
+  'pop',
+  'bell',
+])
+
+function normalizeNotificationTone(value) {
+  const tone = String(value || 'default')
+    .trim()
+    .toLowerCase()
+
+  if (!CHAT_NOTIFICATION_TONES.has(tone)) {
+    fail(
+      400,
+      'INVALID_NOTIFICATION_TONE',
+      'Notification tone is not valid'
+    )
+  }
+
+  return tone
+}
+
+export async function getConversationSoundSettings({
+  userId,
+  conversationId,
+}) {
+  const participant = await getActiveParticipant(
+    conversationId,
+    userId
+  )
+
+  return {
+    conversation_id: participant.conversation_id,
+    sound_enabled:
+      participant.notification_sound_enabled !== false,
+    tone:
+      participant.notification_tone || 'default',
+  }
+}
+
+export async function setConversationSoundSettings({
+  userId,
+  conversationId,
+  soundEnabled,
+  tone,
+}) {
+  const participant = await getActiveParticipant(
+    conversationId,
+    userId
+  )
+
+  const nextSoundEnabled =
+    typeof soundEnabled === 'boolean'
+      ? soundEnabled
+      : participant.notification_sound_enabled !== false
+
+  const nextTone =
+    tone === undefined || tone === null || tone === ''
+      ? participant.notification_tone || 'default'
+      : normalizeNotificationTone(tone)
+
+  const { data, error } = await supabase
+    .from('chat_participants')
+    .update({
+      notification_sound_enabled:
+        nextSoundEnabled,
+      notification_tone: nextTone,
+    })
+    .eq('id', participant.id)
+    .is('deleted_at', null)
+    .select(
+      'conversation_id, notification_sound_enabled, notification_tone'
+    )
+    .single()
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to update chat sound settings'
+    )
+  }
+
+  return {
+    conversation_id: data.conversation_id,
+    sound_enabled:
+      data.notification_sound_enabled !== false,
+    tone:
+      data.notification_tone || 'default',
+  }
+}
+
 
 export async function getConversationAutoDeleteStatus({
   userId,
