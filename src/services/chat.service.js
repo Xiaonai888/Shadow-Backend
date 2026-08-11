@@ -687,7 +687,43 @@ export async function createReaderAuthorRequest({
   const existing = await getExistingDirectConversation(directKey)
 
   if (existing) {
-    handleExistingRequestStatus(existing)
+    if (existing.request_status === 'blocked') {
+      fail(403, 'CHAT_BLOCKED', 'Messaging is blocked')
+    }
+
+    if (existing.request_status !== 'accepted') {
+      const { error: acceptError } = await supabase
+        .from('chat_conversations')
+        .update({
+          request_status: 'accepted',
+          request_decided_at: new Date().toISOString(),
+        })
+        .eq('id', existing.id)
+
+      if (acceptError) {
+        throw databaseFailure(
+          acceptError,
+          'Failed to open author conversation'
+        )
+      }
+    }
+
+    const { error: messageError } = await supabase
+      .from('chat_messages')
+      .insert({
+        conversation_id: existing.id,
+        sender_user_id: safeReaderUserId,
+        message_type: 'text',
+        body: safeMessage,
+        is_request_message: false,
+      })
+
+    if (messageError) {
+      throw databaseFailure(
+        messageError,
+        'Failed to send author message'
+      )
+    }
 
     return {
       created: false,
@@ -699,6 +735,8 @@ export async function createReaderAuthorRequest({
     }
   }
 
+  const now = new Date().toISOString()
+
   const {
     data: conversation,
     error: conversationError,
@@ -709,7 +747,8 @@ export async function createReaderAuthorRequest({
       direct_key: directKey,
       created_by_user_id: safeReaderUserId,
       author_page_id: safeAuthorPageId,
-      request_status: 'pending',
+      request_status: 'accepted',
+      request_decided_at: now,
     })
     .select(
       'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, cleared_for_all_at, created_at, updated_at'
@@ -722,7 +761,43 @@ export async function createReaderAuthorRequest({
         await getExistingDirectConversation(directKey)
 
       if (racedConversation) {
-        handleExistingRequestStatus(racedConversation)
+        if (racedConversation.request_status === 'blocked') {
+          fail(403, 'CHAT_BLOCKED', 'Messaging is blocked')
+        }
+
+        if (racedConversation.request_status !== 'accepted') {
+          const { error: acceptError } = await supabase
+            .from('chat_conversations')
+            .update({
+              request_status: 'accepted',
+              request_decided_at: now,
+            })
+            .eq('id', racedConversation.id)
+
+          if (acceptError) {
+            throw databaseFailure(
+              acceptError,
+              'Failed to open author conversation'
+            )
+          }
+        }
+
+        const { error: messageError } = await supabase
+          .from('chat_messages')
+          .insert({
+            conversation_id: racedConversation.id,
+            sender_user_id: safeReaderUserId,
+            message_type: 'text',
+            body: safeMessage,
+            is_request_message: false,
+          })
+
+        if (messageError) {
+          throw databaseFailure(
+            messageError,
+            'Failed to send author message'
+          )
+        }
 
         return {
           created: false,
@@ -737,13 +812,11 @@ export async function createReaderAuthorRequest({
 
     throw databaseFailure(
       conversationError,
-      'Failed to create message request'
+      'Failed to create author conversation'
     )
   }
 
   try {
-    const now = new Date().toISOString()
-
     const { error: participantsError } = await supabase
       .from('chat_participants')
       .insert([
@@ -771,7 +844,7 @@ export async function createReaderAuthorRequest({
         sender_user_id: safeReaderUserId,
         message_type: 'text',
         body: safeMessage,
-        is_request_message: true,
+        is_request_message: false,
       })
 
     if (messageError) {
@@ -785,7 +858,7 @@ export async function createReaderAuthorRequest({
 
     throw databaseFailure(
       error,
-      'Failed to save message request'
+      'Failed to save author conversation'
     )
   }
 
