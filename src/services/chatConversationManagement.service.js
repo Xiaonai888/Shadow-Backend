@@ -503,6 +503,110 @@ export async function setConversationAutoDelete({
   }
 }
 
+async function getOwnedChatFolder(folderId, userId) {
+  const safeFolderId = requireUuid(folderId, 'Folder ID')
+  const safeUserId = requireUuid(userId, 'User ID')
+
+  const { data, error } = await supabase
+    .from('chat_folders')
+    .select('id, user_id, name')
+    .eq('id', safeFolderId)
+    .eq('user_id', safeUserId)
+    .maybeSingle()
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to load chat folder'
+    )
+  }
+
+  if (!data) {
+    fail(
+      404,
+      'CHAT_FOLDER_NOT_FOUND',
+      'Chat folder not found'
+    )
+  }
+
+  return data
+}
+
+export async function addConversationToFolder({
+  userId,
+  folderId,
+  conversationId,
+}) {
+  const safeUserId = requireUuid(userId, 'User ID')
+  const participant = await getActiveParticipant(
+    conversationId,
+    safeUserId
+  )
+  const folder = await getOwnedChatFolder(
+    folderId,
+    safeUserId
+  )
+
+  const { error } = await supabase
+    .from('chat_folder_conversations')
+    .insert({
+      folder_id: folder.id,
+      conversation_id: participant.conversation_id,
+    })
+
+  if (error && error.code !== '23505') {
+    throw databaseFailure(
+      error,
+      'Failed to add chat to folder'
+    )
+  }
+
+  return {
+    folder_id: folder.id,
+    conversation_id: participant.conversation_id,
+    added: true,
+  }
+}
+
+export async function removeConversationFromFolder({
+  userId,
+  folderId,
+  conversationId,
+}) {
+  const safeUserId = requireUuid(userId, 'User ID')
+  const participant = await getActiveParticipant(
+    conversationId,
+    safeUserId
+  )
+  const folder = await getOwnedChatFolder(
+    folderId,
+    safeUserId
+  )
+
+  const { error } = await supabase
+    .from('chat_folder_conversations')
+    .delete()
+    .eq('folder_id', folder.id)
+    .eq(
+      'conversation_id',
+      participant.conversation_id
+    )
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to remove chat from folder'
+    )
+  }
+
+  return {
+    folder_id: folder.id,
+    conversation_id: participant.conversation_id,
+    added: false,
+  }
+}
+
+
 export async function listChatFolders({ userId }) {
   const safeUserId = requireUuid(userId, 'User ID')
 
