@@ -503,6 +503,38 @@ export async function setConversationAutoDelete({
   }
 }
 
+export async function clearConversationHistory({
+  userId,
+  conversationId,
+}) {
+  const participant = await getActiveParticipant(
+    conversationId,
+    userId
+  )
+  const clearedAt = new Date().toISOString()
+
+  const { error } = await supabase
+    .from('chat_participants')
+    .update({
+      cleared_at: clearedAt,
+      last_read_at: clearedAt,
+    })
+    .eq('id', participant.id)
+    .is('deleted_at', null)
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to clear conversation history'
+    )
+  }
+
+  return {
+    conversation_id: participant.conversation_id,
+    cleared_at: clearedAt,
+  }
+}
+
 export async function markConversationUnread({
   userId,
   conversationId,
