@@ -1301,10 +1301,10 @@ const sortedStories = [
 
 const stories = isDiscoverMoreSort(sort)
   ? pickDiscoverMoreStories(
-      sortedStories,
+      rankedStories,
       limit
     )
-  : sortedStories.slice(0, limit)
+  : rankedStories.slice(0, limit)
 
     
     const authorIds = [
