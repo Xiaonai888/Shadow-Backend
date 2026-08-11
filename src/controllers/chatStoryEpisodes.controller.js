@@ -503,9 +503,10 @@ export async function updateChatStoryEpisodeStatus(req, res) {
 }
 
     if (status === 'published') {
-      updatePayload.published_at = now
-      updatePayload.scheduled_at = null
-    }
+  updatePayload.published_at =
+    episode.published_at || now
+  updatePayload.scheduled_at = null
+}
 
     if (status === 'scheduled') {
       const scheduledAt = cleanText(req.body.scheduled_at || req.body.scheduledAt)
@@ -519,12 +520,12 @@ export async function updateChatStoryEpisodeStatus(req, res) {
       }
 
       updatePayload.scheduled_at = scheduledDate.toISOString()
-      updatePayload.published_at = null
+      updatePayload.published_at = episode.published_at || null
     }
 
     if (status === 'draft') {
       updatePayload.scheduled_at = null
-      updatePayload.published_at = null
+      updatePayload.published_at = episode.published_at || null
     }
 
     const { data: updatedEpisode, error } = await supabase
