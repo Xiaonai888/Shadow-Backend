@@ -82,8 +82,10 @@ router.get(
   async (req, res) => {
     try {
       const folders = await listChatFolders({
-        userId: req.user?.user_id,
-      })
+  userId: req.user?.user_id,
+  conversationId:
+    req.query?.conversation_id,
+})
 
       return res.status(200).json({
         ok: true,
