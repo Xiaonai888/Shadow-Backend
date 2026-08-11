@@ -5,9 +5,11 @@ import {
 import {
   archiveConversation,
   clearConversationHistory,
+  createChatFolder,
   deleteConversation,
   getConversationAutoDeleteStatus,
   getConversationMuteStatus,
+  listChatFolders,
   listManagedConversations,
   markConversationUnread,
   muteConversation,
@@ -71,6 +73,54 @@ function handleError(
       'Chat is temporarily unavailable',
   })
 }
+
+router.get(
+  '/folders',
+  conversationReadGuard,
+  async (req, res) => {
+    try {
+      const folders = await listChatFolders({
+        userId: req.user?.user_id,
+      })
+
+      return res.status(200).json({
+        ok: true,
+        folders,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'LIST CHAT FOLDERS ERROR'
+      )
+    }
+  }
+)
+
+router.post(
+  '/folders',
+  conversationWriteGuard,
+  async (req, res) => {
+    try {
+      const folder = await createChatFolder({
+        userId: req.user?.user_id,
+        name: req.body?.name,
+      })
+
+      return res.status(201).json({
+        ok: true,
+        folder,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'CREATE CHAT FOLDER ERROR'
+      )
+    }
+  }
+)
+
 
 router.get(
   '/conversations/managed',
