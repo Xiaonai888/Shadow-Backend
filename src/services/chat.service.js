@@ -1028,6 +1028,169 @@ export async function createReaderReaderRequest({
   }
 }
 
+export async function createGroupConversation({
+  creatorUserId,
+  memberUserIds,
+  name,
+}) {
+  const safeCreatorUserId = requireUuid(
+    creatorUserId,
+    'Creator user ID'
+  )
+  const safeName = cleanText(name, 60)
+
+  if (!safeName) {
+    fail(
+      400,
+      'GROUP_NAME_REQUIRED',
+      'Group name is required'
+    )
+  }
+
+  if (!Array.isArray(memberUserIds)) {
+    fail(
+      400,
+      'GROUP_MEMBERS_REQUIRED',
+      'Choose people for the group'
+    )
+  }
+
+  const uniqueMemberIds = [
+    ...new Set(
+      memberUserIds
+        .map((value) =>
+          requireUuid(
+            value,
+            'Group member user ID'
+          )
+        )
+        .filter(
+          (value) =>
+            value !== safeCreatorUserId
+        )
+    ),
+  ]
+
+  if (uniqueMemberIds.length < 2) {
+    fail(
+      400,
+      'GROUP_MIN_MEMBERS',
+      'Choose at least 2 people'
+    )
+  }
+
+  if (uniqueMemberIds.length > 49) {
+    fail(
+      400,
+      'GROUP_MAX_MEMBERS',
+      'A group can have up to 50 people'
+    )
+  }
+
+  const members = await Promise.all(
+    uniqueMemberIds.map((userId) =>
+      getActiveUser(userId)
+    )
+  )
+
+  const blocks = await Promise.all(
+    members.map((member) =>
+      findBlockBetween(
+        safeCreatorUserId,
+        member.id
+      )
+    )
+  )
+
+  if (blocks.some(Boolean)) {
+    fail(
+      403,
+      'GROUP_MEMBER_BLOCKED',
+      'A blocked account cannot be added to this group'
+    )
+  }
+
+  const now = new Date().toISOString()
+  const directKey =
+    `group:${safeCreatorUserId}:${Date.now()}:${Math.random()
+      .toString(36)
+      .slice(2, 10)}`
+
+  const {
+    data: conversation,
+    error: conversationError,
+  } = await supabase
+    .from('chat_conversations')
+    .insert({
+      conversation_type: 'reader_reader',
+      direct_key: directKey,
+      created_by_user_id:
+        safeCreatorUserId,
+      author_page_id: null,
+      request_status: 'accepted',
+      request_decided_at: now,
+      is_group: true,
+      group_name: safeName,
+      group_avatar_url: null,
+    })
+    .select(
+      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, cleared_for_all_at, is_group, group_name, group_avatar_url, created_at, updated_at'
+    )
+    .single()
+
+  if (conversationError) {
+    throw databaseFailure(
+      conversationError,
+      'Failed to create group chat'
+    )
+  }
+
+  try {
+    const participantRows = [
+      {
+        conversation_id: conversation.id,
+        user_id: safeCreatorUserId,
+        participant_role: 'reader',
+        last_read_at: now,
+      },
+      ...members.map((member) => ({
+        conversation_id: conversation.id,
+        user_id: member.id,
+        participant_role: 'reader',
+      })),
+    ]
+
+    const { error: participantsError } =
+      await supabase
+        .from('chat_participants')
+        .insert(participantRows)
+
+    if (participantsError) {
+      throw participantsError
+    }
+  } catch (error) {
+    await supabase
+      .from('chat_conversations')
+      .delete()
+      .eq('id', conversation.id)
+
+    throw databaseFailure(
+      error,
+      'Failed to save group members'
+    )
+  }
+
+  return {
+    created: true,
+    conversation: {
+      ...conversation,
+      member_count:
+        uniqueMemberIds.length + 1,
+    },
+  }
+}
+
+
 export async function listMyConversations({
   userId,
   status,
