@@ -1676,26 +1676,50 @@ export async function sendConversationMessage({
     fail(403, 'CHAT_BLOCKED', 'Messaging is blocked')
   }
 
-  const otherParticipant = await getOtherParticipant(
-    conversation.id,
-    safeUserId
-  )
+  const isGroup =
+    conversation.is_group === true
+  let otherParticipant = null
 
-  if (!otherParticipant) {
-    fail(
-      409,
-      'PARTICIPANT_MISSING',
-      'The other participant is unavailable'
+  if (isGroup) {
+    const memberCount =
+      await getConversationParticipantCount(
+        conversation.id
+      )
+
+    if (memberCount < 2) {
+      fail(
+        409,
+        'PARTICIPANT_MISSING',
+        'Group participants are unavailable'
+      )
+    }
+  } else {
+    otherParticipant =
+      await getOtherParticipant(
+        conversation.id,
+        safeUserId
+      )
+
+    if (!otherParticipant) {
+      fail(
+        409,
+        'PARTICIPANT_MISSING',
+        'The other participant is unavailable'
+      )
+    }
+
+    const block = await findBlockBetween(
+      safeUserId,
+      otherParticipant.user_id
     )
-  }
 
-  const block = await findBlockBetween(
-    safeUserId,
-    otherParticipant.user_id
-  )
-
-  if (block) {
-    fail(403, 'CHAT_BLOCKED', 'Messaging is blocked')
+    if (block) {
+      fail(
+        403,
+        'CHAT_BLOCKED',
+        'Messaging is blocked'
+      )
+    }
   }
 
   const { data, error } = await supabase
@@ -1713,16 +1737,24 @@ export async function sendConversationMessage({
     .single()
 
   if (error) {
-    throw databaseFailure(error, 'Failed to send message')
+    throw databaseFailure(
+      error,
+      'Failed to send message'
+    )
   }
 
-  const { error: restoreError } = await supabase
-    .from('chat_participants')
-    .update({
-      archived_at: null,
-      deleted_at: null,
-    })
-    .eq('id', otherParticipant.id)
+  const { error: restoreError } =
+    await supabase
+      .from('chat_participants')
+      .update({
+        archived_at: null,
+        deleted_at: null,
+      })
+      .eq(
+        'conversation_id',
+        conversation.id
+      )
+      .neq('user_id', safeUserId)
 
   if (restoreError) {
     throw databaseFailure(
@@ -1804,31 +1836,50 @@ export async function sendConversationAttachment({
     )
   }
 
-  const otherParticipant =
-    await getOtherParticipant(
-      conversation.id,
-      safeUserId
+  const isGroup =
+    conversation.is_group === true
+  let otherParticipant = null
+
+  if (isGroup) {
+    const memberCount =
+      await getConversationParticipantCount(
+        conversation.id
+      )
+
+    if (memberCount < 2) {
+      fail(
+        409,
+        'PARTICIPANT_MISSING',
+        'Group participants are unavailable'
+      )
+    }
+  } else {
+    otherParticipant =
+      await getOtherParticipant(
+        conversation.id,
+        safeUserId
+      )
+
+    if (!otherParticipant) {
+      fail(
+        409,
+        'PARTICIPANT_MISSING',
+        'The other participant is unavailable'
+      )
+    }
+
+    const block = await findBlockBetween(
+      safeUserId,
+      otherParticipant.user_id
     )
 
-  if (!otherParticipant) {
-    fail(
-      409,
-      'PARTICIPANT_MISSING',
-      'The other participant is unavailable'
-    )
-  }
-
-  const block = await findBlockBetween(
-    safeUserId,
-    otherParticipant.user_id
-  )
-
-  if (block) {
-    fail(
-      403,
-      'CHAT_BLOCKED',
-      'Messaging is blocked'
-    )
+    if (block) {
+      fail(
+        403,
+        'CHAT_BLOCKED',
+        'Messaging is blocked'
+      )
+    }
   }
 
   let attachmentUrl = ''
@@ -1886,7 +1937,11 @@ export async function sendConversationAttachment({
         archived_at: null,
         deleted_at: null,
       })
-      .eq('id', otherParticipant.id)
+      .eq(
+        'conversation_id',
+        conversation.id
+      )
+      .neq('user_id', safeUserId)
 
   if (restoreError) {
     throw databaseFailure(
