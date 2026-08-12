@@ -93,32 +93,11 @@ router.post(
   createReaderReaderRequestController
 )
 
-export async function createGroupConversationController(
-  req,
-  res
-) {
-  try {
-    const result = await createGroupConversation({
-      creatorUserId: req.user?.user_id,
-      memberUserIds:
-        req.body?.member_user_ids ||
-        req.body?.memberUserIds,
-      name: req.body?.name,
-    })
-
-    return res.status(201).json({
-      ok: true,
-      created: result.created,
-      conversation: result.conversation,
-    })
-  } catch (error) {
-    return handleChatError(
-      res,
-      error,
-      'CREATE GROUP CHAT ERROR'
-    )
-  }
-}
+router.post(
+  '/groups',
+  chatWriteGuard,
+  createGroupConversationController
+)
 
 router.get(
   '/users/search',
