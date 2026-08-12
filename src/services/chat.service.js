@@ -198,7 +198,7 @@ async function getConversation(conversationId) {
   const { data, error } = await supabase
     .from('chat_conversations')
     .select(
-      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, cleared_for_all_at, created_at, updated_at'
+      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, cleared_for_all_at, is_group, group_name, group_avatar_url, created_at, updated_at'
     )
     .eq('id', conversationId)
     .maybeSingle()
@@ -269,6 +269,27 @@ async function getOtherParticipant(conversationId, userId) {
   }
 
   return data || null
+}
+
+async function getConversationParticipantCount(
+  conversationId
+) {
+  const { count, error } = await supabase
+    .from('chat_participants')
+    .select('id', {
+      count: 'exact',
+      head: true,
+    })
+    .eq('conversation_id', conversationId)
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to count group members'
+    )
+  }
+
+  return Number(count || 0)
 }
 
 async function getPublicUser(userId) {
@@ -505,66 +526,139 @@ async function buildConversationSummary(
   conversation,
   viewerParticipant
 ) {
-  const [otherParticipant, authorPage, latestMessage, unreadCount] =
-    await Promise.all([
-      getOtherParticipant(
-        conversation.id,
-        viewerParticipant.user_id
-      ),
-      conversation.author_page_id
-        ? getAuthorPage(conversation.author_page_id)
-        : Promise.resolve(null),
-      getLatestMessage(
-        conversation,
-        viewerParticipant
-      ),
-      getUnreadCount(
-        conversation,
-        viewerParticipant
-      ),
-    ])
+  const isGroup =
+    conversation.is_group === true
 
-  const otherUser = await getPublicUser(otherParticipant?.user_id)
+  const [
+    otherParticipant,
+    authorPage,
+    latestMessage,
+    unreadCount,
+    memberCount,
+  ] = await Promise.all([
+    isGroup
+      ? Promise.resolve(null)
+      : getOtherParticipant(
+          conversation.id,
+          viewerParticipant.user_id
+        ),
+    !isGroup && conversation.author_page_id
+      ? getAuthorPage(
+          conversation.author_page_id
+        )
+      : Promise.resolve(null),
+    getLatestMessage(
+      conversation,
+      viewerParticipant
+    ),
+    getUnreadCount(
+      conversation,
+      viewerParticipant
+    ),
+    isGroup
+      ? getConversationParticipantCount(
+          conversation.id
+        )
+      : Promise.resolve(2),
+  ])
 
-  const counterpart =
-    viewerParticipant.participant_role === 'reader' && authorPage
+  const otherUser = isGroup
+    ? null
+    : await getPublicUser(
+        otherParticipant?.user_id
+      )
+
+  const counterpart = isGroup
+    ? {
+        type: 'group',
+        user_id: null,
+        author_page_id: null,
+        name:
+          conversation.group_name ||
+          'Group chat',
+        username: '',
+        avatar_url:
+          conversation.group_avatar_url ||
+          null,
+        member_count: memberCount,
+      }
+    : viewerParticipant.participant_role ===
+          'reader' && authorPage
       ? {
           type: 'author',
           user_id: authorPage.user_id,
           author_page_id: authorPage.id,
           name: authorPage.page_name,
-          username: authorPage.page_username,
-          avatar_url: authorPage.avatar_url || null,
+          username:
+            authorPage.page_username,
+          avatar_url:
+            authorPage.avatar_url || null,
         }
       : {
-          type: otherParticipant?.participant_role || 'reader',
-          user_id: otherUser?.id || otherParticipant?.user_id || null,
+          type:
+            otherParticipant?.participant_role ||
+            'reader',
+          user_id:
+            otherUser?.id ||
+            otherParticipant?.user_id ||
+            null,
           author_page_id: null,
-          name: otherUser?.name || 'Shadow Reader',
-          username: otherUser?.username || '',
-          avatar_url: otherUser?.avatar_url || null,
+          name:
+            otherUser?.name ||
+            'Shadow Reader',
+          username:
+            otherUser?.username || '',
+          avatar_url:
+            otherUser?.avatar_url || null,
         }
 
   return {
     id: conversation.id,
-    conversation_type: conversation.conversation_type,
-    request_status: conversation.request_status,
-    viewer_role: viewerParticipant.participant_role,
-    created_by_user_id: conversation.created_by_user_id,
-    author_page_id: conversation.author_page_id,
+    conversation_type:
+      conversation.conversation_type,
+    is_group: isGroup,
+    group_name:
+      isGroup
+        ? conversation.group_name || ''
+        : '',
+    group_avatar_url:
+      isGroup
+        ? conversation.group_avatar_url ||
+          null
+        : null,
+    member_count:
+      isGroup ? memberCount : 2,
+    request_status:
+      conversation.request_status,
+    viewer_role:
+      viewerParticipant.participant_role,
+    created_by_user_id:
+      conversation.created_by_user_id,
+    author_page_id:
+      conversation.author_page_id,
     counterpart,
     latest_message: latestMessage,
     unread_count: unreadCount,
-    can_send: conversation.request_status === 'accepted',
+    can_send:
+      conversation.request_status ===
+      'accepted',
     can_decide:
-      conversation.request_status === 'pending' &&
-      String(conversation.created_by_user_id) !==
+      !isGroup &&
+      conversation.request_status ===
+        'pending' &&
+      String(
+        conversation.created_by_user_id
+      ) !==
         String(viewerParticipant.user_id),
-    last_read_at: viewerParticipant.last_read_at,
-    cleared_at: viewerParticipant.cleared_at || null,
+    last_read_at:
+      viewerParticipant.last_read_at,
+    cleared_at:
+      viewerParticipant.cleared_at || null,
     cleared_for_all_at:
-      conversation.cleared_for_all_at || null,
-    last_message_at: conversation.last_message_at,
+      conversation.cleared_for_all_at ||
+      null,
+    last_message_at:
+      conversation.last_message_at,
     created_at: conversation.created_at,
     updated_at: conversation.updated_at,
   }
@@ -1234,7 +1328,7 @@ export async function listMyConversations({
   let conversationQuery = supabase
     .from('chat_conversations')
     .select(
-      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, cleared_for_all_at, created_at, updated_at'
+      'id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, cleared_for_all_at, is_group, group_name, group_avatar_url, created_at, updated_at'
     )
     .in('id', conversationIds)
     .order('last_message_at', {
