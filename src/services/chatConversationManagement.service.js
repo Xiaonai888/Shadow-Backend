@@ -503,6 +503,116 @@ export async function setConversationSoundSettings({
   }
 }
 
+export async function getConversationNicknames({
+  userId,
+  conversationId,
+}) {
+  const viewer = await getActiveParticipant(
+    conversationId,
+    userId
+  )
+
+  const { data, error } = await supabase
+    .from('chat_participants')
+    .select(
+      'user_id, participant_role, nickname'
+    )
+    .eq(
+      'conversation_id',
+      viewer.conversation_id
+    )
+    .is('deleted_at', null)
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to load chat nicknames'
+    )
+  }
+
+  return {
+    conversation_id: viewer.conversation_id,
+    participants: (data || []).map(
+      (participant) => ({
+        user_id: participant.user_id,
+        participant_role:
+          participant.participant_role,
+        nickname:
+          participant.nickname || null,
+        is_self:
+          String(participant.user_id) ===
+          String(viewer.user_id),
+      })
+    ),
+  }
+}
+
+export async function setConversationNickname({
+  userId,
+  conversationId,
+  targetUserId,
+  nickname,
+}) {
+  const viewer = await getActiveParticipant(
+    conversationId,
+    userId
+  )
+  const safeTargetUserId = requireUuid(
+    targetUserId,
+    'Target user ID'
+  )
+  const safeNickname = String(
+    nickname || ''
+  )
+    .trim()
+    .slice(0, 32)
+
+  const { data, error } = await supabase
+    .from('chat_participants')
+    .update({
+      nickname: safeNickname || null,
+    })
+    .eq(
+      'conversation_id',
+      viewer.conversation_id
+    )
+    .eq('user_id', safeTargetUserId)
+    .is('deleted_at', null)
+    .select(
+      'user_id, participant_role, nickname'
+    )
+    .maybeSingle()
+
+  if (error) {
+    throw databaseFailure(
+      error,
+      'Failed to update chat nickname'
+    )
+  }
+
+  if (!data) {
+    fail(
+      404,
+      'CHAT_PARTICIPANT_NOT_FOUND',
+      'Chat participant not found'
+    )
+  }
+
+  return {
+    conversation_id: viewer.conversation_id,
+    participant: {
+      user_id: data.user_id,
+      participant_role:
+        data.participant_role,
+      nickname: data.nickname || null,
+      is_self:
+        String(data.user_id) ===
+        String(viewer.user_id),
+    },
+  }
+}
+
+
 
 export async function getConversationAutoDeleteStatus({
   userId,
