@@ -3,6 +3,8 @@ import {
   ChatServiceError,
 } from '../services/chat.service.js'
 import {
+  getConversationNicknames,
+  setConversationNickname,
   addConversationToFolder,
   archiveConversation,
   clearConversationHistory,
@@ -23,6 +25,7 @@ import {
   unmuteConversation,
   unpinConversation,
 } from '../services/chatConversationManagement.service.js'
+'../services/chatConversationManagement.service.js'
 import {
   createSpamGuard,
 } from '../middleware/spamGuard.middleware.js'
@@ -345,6 +348,62 @@ router.patch(
         res,
         error,
         'UPDATE CHAT SOUND SETTINGS ERROR'
+      )
+    }
+  }
+)
+
+
+router.get(
+  '/conversations/:conversationId/nicknames',
+  conversationReadGuard,
+  async (req, res) => {
+    try {
+      const result =
+        await getConversationNicknames({
+          userId: req.user?.user_id,
+          conversationId:
+            req.params.conversationId,
+        })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'GET CHAT NICKNAMES ERROR'
+      )
+    }
+  }
+)
+
+router.patch(
+  '/conversations/:conversationId/nicknames/:targetUserId',
+  conversationWriteGuard,
+  async (req, res) => {
+    try {
+      const result =
+        await setConversationNickname({
+          userId: req.user?.user_id,
+          conversationId:
+            req.params.conversationId,
+          targetUserId:
+            req.params.targetUserId,
+          nickname: req.body?.nickname,
+        })
+
+      return res.status(200).json({
+        ok: true,
+        ...result,
+      })
+    } catch (error) {
+      return handleError(
+        res,
+        error,
+        'UPDATE CHAT NICKNAME ERROR'
       )
     }
   }
