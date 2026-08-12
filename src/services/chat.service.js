@@ -1173,11 +1173,11 @@ export async function createGroupConversation({
     )
   }
 
-  if (uniqueMemberIds.length > 49) {
+  if (uniqueMemberIds.length > 99) {
     fail(
       400,
       'GROUP_MAX_MEMBERS',
-      'A group can have up to 50 people'
+      'A group can have up to 100 people'
     )
   }
 
