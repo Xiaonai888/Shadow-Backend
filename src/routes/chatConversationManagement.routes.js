@@ -25,7 +25,6 @@ import {
   unmuteConversation,
   unpinConversation,
 } from '../services/chatConversationManagement.service.js'
-'../services/chatConversationManagement.service.js'
 import {
   createSpamGuard,
 } from '../middleware/spamGuard.middleware.js'
