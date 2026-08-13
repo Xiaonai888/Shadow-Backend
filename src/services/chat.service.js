@@ -652,6 +652,10 @@ async function buildConversationSummary(
         String(viewerParticipant.user_id),
     last_read_at:
       viewerParticipant.last_read_at,
+    counterpart_last_read_at:
+  isGroup
+    ? null
+    : otherParticipant?.last_read_at || null,
     cleared_at:
       viewerParticipant.cleared_at || null,
     cleared_for_all_at:
