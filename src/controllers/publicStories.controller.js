@@ -50,6 +50,7 @@ async function getStoryRankByViews(story) {
     .select('id', { count: 'exact', head: true })
     .eq('status', 'published')
     .is('deleted_at', null)
+    .or('ranking_visibility_status.is.null,ranking_visibility_status.eq.visible')
     .gt('total_views', totalViews)
 
   if (error) throw error
@@ -415,6 +416,7 @@ weekly_update_count: 0,
     )
     .in('story_id', ids)
     .is('deleted_at', null)
+  .or('ranking_visibility_status.is.null,ranking_visibility_status.eq.visible')
 
   if (error) throw error
 
