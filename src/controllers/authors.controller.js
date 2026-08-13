@@ -164,12 +164,62 @@ async function getFollowStatus(authorPageId, userId) {
   return Boolean(data)
 }
 
+async function getExactAuthorRank(authorPage) {
+  if (!authorPage?.id || String(authorPage.status || '').toLowerCase() !== 'active') {
+    return null
+  }
+
+  const totalFollowers = Number(authorPage.total_followers || 0)
+  const updatedAt = authorPage.updated_at || authorPage.created_at || new Date(0).toISOString()
+
+  const [
+    greaterFollowersResult,
+    sameFollowersNewerResult,
+    exactTieEarlierIdResult,
+  ] = await Promise.all([
+    supabase
+      .from('author_pages')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'active')
+      .gt('total_followers', totalFollowers),
+
+    supabase
+      .from('author_pages')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'active')
+      .eq('total_followers', totalFollowers)
+      .gt('updated_at', updatedAt),
+
+    supabase
+      .from('author_pages')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'active')
+      .eq('total_followers', totalFollowers)
+      .eq('updated_at', updatedAt)
+      .lt('id', authorPage.id),
+  ])
+
+  if (greaterFollowersResult.error) throw greaterFollowersResult.error
+  if (sameFollowersNewerResult.error) throw sameFollowersNewerResult.error
+  if (exactTieEarlierIdResult.error) throw exactTieEarlierIdResult.error
+
+  return (
+    Number(greaterFollowersResult.count || 0) +
+    Number(sameFollowersNewerResult.count || 0) +
+    Number(exactTieEarlierIdResult.count || 0) +
+    1
+  )
+}
+
 export async function getMyAuthorPage(req, res) {
   try {
     const userId = req.user?.user_id
 
     if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
     }
 
     const { data, error } = await supabase
@@ -189,31 +239,34 @@ export async function getMyAuthorPage(req, res) {
       })
     }
 
-    const works = await getAuthorPageWorks(data.id, true)
-const { count: authorsAhead, error: rankError } = await supabase
-  .from('author_pages')
-  .select('id', { count: 'exact', head: true })
-  .eq('status', 'active')
-  .gt('total_followers', Number(data.total_followers || 0))
+    const [works, rank] = await Promise.all([
+      getAuthorPageWorks(data.id, true),
+      getExactAuthorRank(data),
+    ])
 
-if (rankError) throw rankError
+    const authorPage = {
+      ...publicAuthorPage({
+        ...data,
+        total_stories: works.length,
+      }),
+      rank,
+      works,
+    }
 
-return res.status(200).json({
-  ok: true,
-  has_author_page: true,
-  author_page: {
-    ...publicAuthorPage({
-      ...data,
-      total_stories: works.length,
-    }),
-    rank: Number(authorsAhead || 0) + 1,
-    works,
-  },
-  works,
-})
+    return res.status(200).json({
+      ok: true,
+      has_author_page: true,
+      author_page: authorPage,
+      works,
+    })
   } catch (error) {
     console.error('GET MY AUTHOR PAGE ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to fetch author page', error: error.message })
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to fetch author page',
+      error: error.message,
+    })
   }
 }
 
@@ -292,50 +345,74 @@ export async function getPublicAuthorPage(req, res) {
 
 export async function getTopAuthorPages(req, res) {
   try {
-    const limit = Math.min(20, Math.max(1, Number(req.query.limit || 5)))
+    const rawLimit = Number(req.query.limit || 20)
+    const limit = Math.min(
+      100,
+      Math.max(
+        1,
+        Number.isFinite(rawLimit)
+          ? Math.floor(rawLimit)
+          : 20
+      )
+    )
+
     const userId = getOptionalUserId(req)
     const ageAccess = await getReaderAgeAccess(req)
 
     const { data: pages, error } = await supabase
       .from('author_pages')
-      .select('id, user_id, page_name, page_username, page_slug, bio, avatar_url, cover_url, status, total_stories, total_followers, created_at, updated_at')
+      .select(
+        'id, user_id, page_name, page_username, page_slug, bio, avatar_url, cover_url, status, total_stories, total_followers, created_at, updated_at'
+      )
       .eq('status', 'active')
       .order('total_followers', { ascending: false })
       .order('updated_at', { ascending: false })
+      .order('id', { ascending: true })
       .limit(limit)
 
     if (error) throw error
 
-    const authorPageIds = (pages || []).map((page) => page.id).filter(Boolean)
+    const authorPageIds = (pages || [])
+      .map((page) => page.id)
+      .filter(Boolean)
+
     const storyCountByAuthorId = new Map()
     const followingPageIds = new Set()
 
     if (authorPageIds.length) {
       let storiesQuery = supabase
-  .from('stories')
-  .select('author_id')
-  .in('author_id', authorPageIds)
-  .eq('status', 'published')
-  .is('deleted_at', null)
+        .from('stories')
+        .select('author_id')
+        .in('author_id', authorPageIds)
+        .eq('status', 'published')
+        .is('deleted_at', null)
 
-storiesQuery = applyAdultStoryVisibility(
-  storiesQuery,
-  ageAccess
-)
+      storiesQuery = applyAdultStoryVisibility(
+        storiesQuery,
+        ageAccess
+      )
 
-const {
-  data: stories,
-  error: storiesError,
-} = await storiesQuery
+      const {
+        data: stories,
+        error: storiesError,
+      } = await storiesQuery
 
       if (storiesError) throw storiesError
 
       for (const story of stories || []) {
-        storyCountByAuthorId.set(story.author_id, Number(storyCountByAuthorId.get(story.author_id) || 0) + 1)
+        storyCountByAuthorId.set(
+          story.author_id,
+          Number(
+            storyCountByAuthorId.get(story.author_id) || 0
+          ) + 1
+        )
       }
 
       if (userId) {
-        const { data: follows, error: followsError } = await supabase
+        const {
+          data: follows,
+          error: followsError,
+        } = await supabase
           .from('author_page_follows')
           .select('author_page_id')
           .in('author_page_id', authorPageIds)
@@ -349,14 +426,22 @@ const {
       }
     }
 
-    const authorPages = (pages || []).map((page) => ({
-      ...publicAuthorPage({
-        ...page,
-        total_stories: Number(storyCountByAuthorId.get(page.id) || 0),
-      }),
-      is_following: followingPageIds.has(page.id),
-      is_owner: Boolean(userId && page.user_id === userId),
-    }))
+    const authorPages = (pages || []).map(
+      (page, index) => ({
+        ...publicAuthorPage({
+          ...page,
+          total_stories: Number(
+            storyCountByAuthorId.get(page.id) || 0
+          ),
+        }),
+        rank: index + 1,
+        is_following: followingPageIds.has(page.id),
+        is_owner: Boolean(
+          userId &&
+          String(page.user_id) === String(userId)
+        ),
+      })
+    )
 
     return res.status(200).json({
       ok: true,
@@ -373,6 +458,7 @@ const {
     })
   }
 }
+
 
 export async function getAuthorPageFollowers(req, res) {
   try {
