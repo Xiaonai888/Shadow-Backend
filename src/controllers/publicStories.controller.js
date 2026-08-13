@@ -1113,346 +1113,783 @@ export async function getPublicStories(req, res) {
     const limit = normalizeLimit(req.query.limit, 10, 100)
     const genre = String(req.query.genre || '').trim()
     const language = String(req.query.language || '').trim()
-    const storyType = String(req.query.story_type || req.query.storyType || '').trim().toLowerCase()
+    const storyType = String(
+      req.query.story_type ||
+      req.query.storyType ||
+      ''
+    )
+      .trim()
+      .toLowerCase()
     const storyStatus = String(
-  req.query.story_status || req.query.storyStatus || ''
-).trim()
-    const sort = String(req.query.sort || 'latest').trim()
+      req.query.story_status ||
+      req.query.storyStatus ||
+      ''
+    ).trim()
+    const sort = String(
+      req.query.sort || 'latest'
+    ).trim()
     const normalizedSort = sort.toLowerCase()
     const queryLimit = isDiscoverMoreSort(sort)
-  ? Math.min(Math.max(limit * 8, 24), 48)
-  : ['episode_updated', 'weekly_updates'].includes(normalizedSort)
-  ? 500
-  : limit
-    const authorId = String(req.query.authorId || req.query.author_id || '').trim()
-    const exclude = String(req.query.exclude || req.query.excludeId || req.query.exclude_id || '').trim()
-    const search = normalizeSearch(req.query.q || req.query.search || req.query.keyword)
-    const ageAccess = await getReaderAgeAccess(req)
-    const rankingOnly = String(req.query.ranking || '') === '1'
+      ? Math.min(Math.max(limit * 8, 24), 48)
+      : ['episode_updated', 'weekly_updates'].includes(
+            normalizedSort
+          )
+        ? 500
+        : limit
 
-    const buildStoriesQuery = (genreMode = 'main') => {
-  let nextQuery = supabase
-    .from('stories')
-    .select('*')
-    .eq('status', 'published')
-    .is('deleted_at', null)
-    .or('ranking_visibility_status.is.null,ranking_visibility_status.eq.visible')
-    .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false')
-    .limit(queryLimit)
-    if (rankingOnly) {
-  nextQuery = nextQuery.or('ranking_visibility_status.is.null,ranking_visibility_status.eq.visible')
-}
+    const authorId = String(
+      req.query.authorId ||
+      req.query.author_id ||
+      ''
+    ).trim()
 
-  nextQuery = applyAdultStoryVisibility(
-    nextQuery,
-    ageAccess
-  )
+    const exclude = String(
+      req.query.exclude ||
+      req.query.excludeId ||
+      req.query.exclude_id ||
+      ''
+    ).trim()
 
-  if (genre) {
-    nextQuery =
-      genreMode === 'tag'
-        ? nextQuery.contains('tags', [genre])
-        : nextQuery.ilike('main_genre', genre)
-  }
-
-  if (language) {
-    nextQuery = nextQuery.eq(
-      'story_language',
-      language
+    const search = normalizeSearch(
+      req.query.q ||
+      req.query.search ||
+      req.query.keyword
     )
-  }
 
-  if (
-  ['novel', 'manga', 'chat_story'].includes(storyType)
-) {
-    nextQuery = nextQuery.eq(
-      'story_type',
-      storyType
-    )
-  }
+    const ageAccess =
+      await getReaderAgeAccess(req)
+
+    const rankingOnly =
+      String(req.query.ranking || '') === '1'
+
+    const buildStoriesQuery = (
+      genreMode = 'main'
+    ) => {
+      let nextQuery = supabase
+        .from('stories')
+        .select('*')
+        .eq('status', 'published')
+        .is('deleted_at', null)
+        .or(
+          'is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false'
+        )
+        .limit(queryLimit)
+
+      if (rankingOnly) {
+        nextQuery = nextQuery.or(
+          'ranking_visibility_status.is.null,ranking_visibility_status.eq.visible'
+        )
+      }
+
+      nextQuery = applyAdultStoryVisibility(
+        nextQuery,
+        ageAccess
+      )
+
+      if (genre) {
+        nextQuery =
+          genreMode === 'tag'
+            ? nextQuery.contains(
+                'tags',
+                [genre]
+              )
+            : nextQuery.ilike(
+                'main_genre',
+                genre
+              )
+      }
+
+      if (language) {
+        nextQuery = nextQuery.eq(
+          'story_language',
+          language
+        )
+      }
+
+      if (
+        ['novel', 'manga', 'chat_story']
+          .includes(storyType)
+      ) {
+        nextQuery = nextQuery.eq(
+          'story_type',
+          storyType
+        )
+      }
 
       if (storyStatus) {
-  nextQuery = nextQuery.ilike(
-    'story_status',
-    storyStatus
-  )
-}
+        nextQuery = nextQuery.ilike(
+          'story_status',
+          storyStatus
+        )
+      }
 
-  if (authorId) {
-    nextQuery = nextQuery.eq(
-      'author_id',
-      authorId
-    )
-  }
+      if (authorId) {
+        nextQuery = nextQuery.eq(
+          'author_id',
+          authorId
+        )
+      }
 
-  if (exclude) {
-    nextQuery = nextQuery.neq(
-      'id',
-      exclude
-    )
-  }
+      if (exclude) {
+        nextQuery = nextQuery.neq(
+          'id',
+          exclude
+        )
+      }
 
-  if (search) {
-    nextQuery = nextQuery.or(
-      `title.ilike.%${search}%,description.ilike.%${search}%,main_genre.ilike.%${search}%`
-    )
-  }
+      if (search) {
+        nextQuery = nextQuery.or(
+          `title.ilike.%${search}%,description.ilike.%${search}%,main_genre.ilike.%${search}%`
+        )
+      }
 
-  return applyStorySort(nextQuery, sort)
-}
-
-const queryResults = genre
-  ? await Promise.all([
-      buildStoriesQuery('main'),
-      buildStoriesQuery('tag'),
-    ])
-  : [await buildStoriesQuery()]
-
-const queryError = queryResults.find(
-  (result) => result.error
-)?.error
-
-if (queryError) throw queryError
-
-const mergedStories = []
-const seenStoryIds = new Set()
-
-for (const result of queryResults) {
-  for (const story of result.data || []) {
-    const storyId = String(story.id || '')
-
-    if (
-      !storyId ||
-      seenStoryIds.has(storyId)
-    ) {
-      continue
-    }
-
-    seenStoryIds.add(storyId)
-    mergedStories.push(story)
-  }
-}
-
-const episodeUpdateSummaries =
-  ['episode_updated', 'weekly_updates'].includes(normalizedSort)
-    ? await getStoryAccessSummaries(
-        mergedStories.map((story) => story.id)
+      return applyStorySort(
+        nextQuery,
+        sort
       )
-    : null
-
-const sortedStories = [
-  ...mergedStories,
-].sort((first, second) => {
-  if (normalizedSort === 'weekly_updates') {
-  const a = Number(episodeUpdateSummaries?.get(first.id)?.weekly_update_count || 0)
-  const b = Number(episodeUpdateSummaries?.get(second.id)?.weekly_update_count || 0)
-  if (a !== b) return b - a
-  const aTime = new Date(episodeUpdateSummaries?.get(first.id)?.last_episode_published_at || 0).getTime()
-  const bTime = new Date(episodeUpdateSummaries?.get(second.id)?.last_episode_published_at || 0).getTime()
-  return bTime - aTime
-}
-  if (['episode_updated', 'weekly_updates'].includes(normalizedSort)) {
-    const firstTime = new Date(
-      episodeUpdateSummaries?.get(first.id)?.last_episode_published_at || 0
-    ).getTime()
-
-    const secondTime = new Date(
-      episodeUpdateSummaries?.get(second.id)?.last_episode_published_at || 0
-    ).getTime()
-
-    return secondTime - firstTime
-  }
-  const firstCreated = new Date(
-    first.created_at || 0
-  ).getTime()
-
-  const secondCreated = new Date(
-    second.created_at || 0
-  ).getTime()
-
-  const firstUpdated = new Date(
-    first.updated_at || first.created_at || 0
-  ).getTime()
-
-  const secondUpdated = new Date(
-    second.updated_at || second.created_at || 0
-  ).getTime()
-
-  if (normalizedSort === 'updated') {
-    return secondUpdated - firstUpdated
-  }
-
-  if (normalizedSort === 'views') {
-  const difference = Number(second.total_views || 0) - Number(first.total_views || 0)
-  if (difference) return difference
-  return secondUpdated - firstUpdated
-}
-
-  if (
-    normalizedSort === 'popular' ||
-    normalizedSort === 'likes'
-  ) {
-    const likesDifference =
-      Number(second.total_likes || 0) -
-      Number(first.total_likes || 0)
-
-    if (likesDifference) {
-      return likesDifference
     }
 
-    return secondUpdated - firstUpdated
-  }
+    const queryResults = genre
+      ? await Promise.all([
+          buildStoriesQuery('main'),
+          buildStoriesQuery('tag'),
+        ])
+      : [await buildStoriesQuery()]
 
-  if (normalizedSort === 'comments') {
-  const difference = Number(second.total_comments || 0) - Number(first.total_comments || 0)
-  if (difference) return difference
-  return secondUpdated - firstUpdated
-}
+    const queryError =
+      queryResults.find(
+        (result) => result.error
+      )?.error
 
-  if (
-    normalizedSort === 'weekly_top' ||
-    normalizedSort === 'weekly' ||
-    normalizedSort === 'trending'
-  ) {
-    const viewsDifference =
-      Number(second.total_views || 0) -
-      Number(first.total_views || 0)
-
-    if (viewsDifference) {
-      return viewsDifference
+    if (queryError) {
+      throw queryError
     }
 
-    return secondUpdated - firstUpdated
-  }
+    const mergedStories = []
+    const seenStoryIds = new Set()
 
-  return secondCreated - firstCreated
-})
+    for (const result of queryResults) {
+      for (
+        const story of result.data || []
+      ) {
+        const storyId = String(
+          story.id || ''
+        )
 
-    const rankedStories = normalizedSort === 'weekly_updates'
-  ? sortedStories.filter((story) =>
-      Number(episodeUpdateSummaries?.get(story.id)?.weekly_update_count || 0) > 0
-    )
-  : sortedStories
+        if (
+          !storyId ||
+          seenStoryIds.has(storyId)
+        ) {
+          continue
+        }
 
-const stories = isDiscoverMoreSort(sort)
-  ? pickDiscoverMoreStories(
-      rankedStories,
-      limit
-    )
-  : rankedStories.slice(0, limit)
+        seenStoryIds.add(storyId)
+        mergedStories.push(story)
+      }
+    }
 
-    
+    const episodeUpdateSummaries =
+      [
+        'episode_updated',
+        'weekly_updates',
+      ].includes(normalizedSort)
+        ? await getStoryAccessSummaries(
+            mergedStories.map(
+              (story) => story.id
+            )
+          )
+        : null
+
+    const sortedStories = [
+      ...mergedStories,
+    ].sort((first, second) => {
+      if (
+        normalizedSort ===
+        'weekly_updates'
+      ) {
+        const firstCount = Number(
+          episodeUpdateSummaries
+            ?.get(first.id)
+            ?.weekly_update_count || 0
+        )
+
+        const secondCount = Number(
+          episodeUpdateSummaries
+            ?.get(second.id)
+            ?.weekly_update_count || 0
+        )
+
+        if (
+          firstCount !== secondCount
+        ) {
+          return (
+            secondCount -
+            firstCount
+          )
+        }
+
+        const firstTime =
+          new Date(
+            episodeUpdateSummaries
+              ?.get(first.id)
+              ?.last_episode_published_at ||
+              0
+          ).getTime()
+
+        const secondTime =
+          new Date(
+            episodeUpdateSummaries
+              ?.get(second.id)
+              ?.last_episode_published_at ||
+              0
+          ).getTime()
+
+        return (
+          secondTime -
+          firstTime
+        )
+      }
+
+      if (
+        normalizedSort ===
+        'episode_updated'
+      ) {
+        const firstTime =
+          new Date(
+            episodeUpdateSummaries
+              ?.get(first.id)
+              ?.last_episode_published_at ||
+              0
+          ).getTime()
+
+        const secondTime =
+          new Date(
+            episodeUpdateSummaries
+              ?.get(second.id)
+              ?.last_episode_published_at ||
+              0
+          ).getTime()
+
+        return (
+          secondTime -
+          firstTime
+        )
+      }
+
+      const firstCreated =
+        new Date(
+          first.created_at || 0
+        ).getTime()
+
+      const secondCreated =
+        new Date(
+          second.created_at || 0
+        ).getTime()
+
+      const firstUpdated =
+        new Date(
+          first.updated_at ||
+          first.created_at ||
+          0
+        ).getTime()
+
+      const secondUpdated =
+        new Date(
+          second.updated_at ||
+          second.created_at ||
+          0
+        ).getTime()
+
+      if (
+        normalizedSort === 'updated'
+      ) {
+        return (
+          secondUpdated -
+          firstUpdated
+        )
+      }
+
+      if (
+        normalizedSort === 'views'
+      ) {
+        const difference =
+          Number(
+            second.total_views || 0
+          ) -
+          Number(
+            first.total_views || 0
+          )
+
+        if (difference) {
+          return difference
+        }
+
+        return (
+          secondUpdated -
+          firstUpdated
+        )
+      }
+
+      if (
+        normalizedSort === 'popular' ||
+        normalizedSort === 'likes'
+      ) {
+        const difference =
+          Number(
+            second.total_likes || 0
+          ) -
+          Number(
+            first.total_likes || 0
+          )
+
+        if (difference) {
+          return difference
+        }
+
+        return (
+          secondUpdated -
+          firstUpdated
+        )
+      }
+
+      if (
+        normalizedSort === 'comments'
+      ) {
+        const difference =
+          Number(
+            second.total_comments || 0
+          ) -
+          Number(
+            first.total_comments || 0
+          )
+
+        if (difference) {
+          return difference
+        }
+
+        return (
+          secondUpdated -
+          firstUpdated
+        )
+      }
+
+      if (
+        normalizedSort ===
+          'weekly_top' ||
+        normalizedSort === 'weekly' ||
+        normalizedSort === 'trending'
+      ) {
+        const difference =
+          Number(
+            second.total_views || 0
+          ) -
+          Number(
+            first.total_views || 0
+          )
+
+        if (difference) {
+          return difference
+        }
+
+        return (
+          secondUpdated -
+          firstUpdated
+        )
+      }
+
+      return (
+        secondCreated -
+        firstCreated
+      )
+    })
+
+    const rankedStories =
+      normalizedSort ===
+      'weekly_updates'
+        ? sortedStories.filter(
+            (story) =>
+              Number(
+                episodeUpdateSummaries
+                  ?.get(story.id)
+                  ?.weekly_update_count ||
+                  0
+              ) > 0
+          )
+        : sortedStories
+
+    const stories =
+      isDiscoverMoreSort(sort)
+        ? pickDiscoverMoreStories(
+            rankedStories,
+            limit
+          )
+        : rankedStories.slice(
+            0,
+            limit
+          )
+
     const authorIds = [
-      ...new Set(stories.map((story) => story.author_id).filter(Boolean)),
+      ...new Set(
+        stories
+          .map(
+            (story) =>
+              story.author_id
+          )
+          .filter(Boolean)
+      ),
     ]
 
     let authorPages = []
 
     if (authorIds.length) {
-      const { data: authorPageRows, error: authorPagesError } = await supabase
+      const {
+        data: authorPageRows,
+        error: authorPagesError,
+      } = await supabase
         .from('author_pages')
         .select('*')
         .in('id', authorIds)
 
-      if (authorPagesError) throw authorPagesError
+      if (authorPagesError) {
+        throw authorPagesError
+      }
 
-      authorPages = authorPageRows || []
+      authorPages =
+        authorPageRows || []
     }
 
-    const authorPageMap = new Map(
-      authorPages.map((page) => [String(page.id), page])
-    )
+    const authorPageMap =
+      new Map(
+        authorPages.map(
+          (page) => [
+            String(page.id),
+            page,
+          ]
+        )
+      )
 
     const accessSummaries =
-  episodeUpdateSummaries ||
-  await getStoryAccessSummaries(
-    stories.map((story) => story.id)
-  )
+      episodeUpdateSummaries ||
+      await getStoryAccessSummaries(
+        stories.map(
+          (story) => story.id
+        )
+      )
 
     return res.status(200).json({
       ok: true,
-      stories: stories.map((story) =>
-        publicStoryListItem(
-          {
-            ...story,
-            author_page:
-              authorPageMap.get(String(story.author_id)) || null,
-          },
-          accessSummaries.get(story.id)
-        )
+      stories: stories.map(
+        (story) =>
+          publicStoryListItem(
+            {
+              ...story,
+              author_page:
+                authorPageMap.get(
+                  String(
+                    story.author_id
+                  )
+                ) || null,
+            },
+            accessSummaries.get(
+              story.id
+            )
+          )
       ),
     })
   } catch (error) {
-    console.error('GET PUBLIC STORIES ERROR:', error)
+    console.error(
+      'GET PUBLIC STORIES ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
-      message: 'Failed to load stories',
+      message:
+        'Failed to load stories',
       error: error.message,
     })
   }
 }
 
-export async function getPublicShadowExclusiveStories(req, res) {
+export async function getPublicShadowExclusiveStories(
+  req,
+  res
+) {
   try {
-    const limit = normalizeLimit(req.query.limit)
-    const section = String(req.query.section || '').trim()
-    const genre = String(req.query.genre || '').trim()
-    const language = String(req.query.language || '').trim()
-    const storyType = String(req.query.story_type || req.query.storyType || '').trim().toLowerCase()
-    const storyStatus = String(req.query.story_status || req.query.storyStatus || '').trim()
-    const sort = String(req.query.sort || 'latest').trim()
-    const authorId = String(req.query.authorId || req.query.author_id || '').trim()
-    const ageAccess = await getReaderAgeAccess(req)
-    const rankingOnly = String(req.query.ranking || '') === '1'
+    const limit =
+      normalizeLimit(
+        req.query.limit
+      )
+
+    const section = String(
+      req.query.section || ''
+    ).trim()
+
+    const genre = String(
+      req.query.genre || ''
+    ).trim()
+
+    const language = String(
+      req.query.language || ''
+    ).trim()
+
+    const storyType = String(
+      req.query.story_type ||
+      req.query.storyType ||
+      ''
+    )
+      .trim()
+      .toLowerCase()
+
+    const storyStatus = String(
+      req.query.story_status ||
+      req.query.storyStatus ||
+      ''
+    ).trim()
+
+    const sort = String(
+      req.query.sort || 'latest'
+    ).trim()
+
+    const normalizedSort =
+      sort.toLowerCase()
+
+    const authorId = String(
+      req.query.authorId ||
+      req.query.author_id ||
+      ''
+    ).trim()
+
+    const ageAccess =
+      await getReaderAgeAccess(req)
+
+    const rankingOnly =
+      String(
+        req.query.ranking || ''
+      ) === '1'
+
+    const queryLimit = [
+      'episode_updated',
+      'weekly_updates',
+    ].includes(normalizedSort)
+      ? 500
+      : limit
 
     let query = supabase
       .from('stories')
       .select('*')
-      .eq('status', 'published')
-      .is('deleted_at', null)
-      .eq('is_shadow_exclusive', true)
-      .eq('exclusive_status', 'approved')
-      .limit(limit)
-    query = applyAdultStoryVisibility(
-  query,
-  ageAccess
-)
+      .eq(
+        'status',
+        'published'
+      )
+      .is(
+        'deleted_at',
+        null
+      )
+      .eq(
+        'is_shadow_exclusive',
+        true
+      )
+      .eq(
+        'exclusive_status',
+        'approved'
+      )
+      .limit(queryLimit)
 
-if (rankingOnly) {
-  query = query.or(
-    'ranking_visibility_status.is.null,ranking_visibility_status.eq.visible'
-  )
-}
+    query =
+      applyAdultStoryVisibility(
+        query,
+        ageAccess
+      )
 
-    if (genre) query = query.ilike('main_genre', genre)
-    if (['novel', 'manga', 'chat_story'].includes(storyType)) query = query.eq('story_type', storyType)
-    if (storyStatus) query = query.eq('story_status', storyStatus)
-    if (authorId) query = query.eq('author_id', authorId)
+    if (rankingOnly) {
+      query = query.or(
+        'ranking_visibility_status.is.null,ranking_visibility_status.eq.visible'
+      )
+    }
 
-    query = applyStorySort(query, sort)
+    if (genre) {
+      query = query.ilike(
+        'main_genre',
+        genre
+      )
+    }
 
-    const { data, error } = await query
+    if (language) {
+      query = query.eq(
+        'story_language',
+        language
+      )
+    }
 
-    if (error) throw error
+    if (
+      [
+        'novel',
+        'manga',
+        'chat_story',
+      ].includes(storyType)
+    ) {
+      query = query.eq(
+        'story_type',
+        storyType
+      )
+    }
 
-    const stories = data || []
-    const accessSummaries = await getStoryAccessSummaries(
-      stories.map((story) => story.id)
+    if (storyStatus) {
+      query = query.ilike(
+        'story_status',
+        storyStatus
+      )
+    }
+
+    if (authorId) {
+      query = query.eq(
+        'author_id',
+        authorId
+      )
+    }
+
+    query = applyStorySort(
+      query,
+      sort
     )
+
+    const {
+      data,
+      error,
+    } = await query
+
+    if (error) {
+      throw error
+    }
+
+    let rankedStories =
+      data || []
+
+    let accessSummaries = null
+
+    if (
+      [
+        'episode_updated',
+        'weekly_updates',
+      ].includes(normalizedSort)
+    ) {
+      accessSummaries =
+        await getStoryAccessSummaries(
+          rankedStories.map(
+            (story) => story.id
+          )
+        )
+
+      rankedStories = [
+        ...rankedStories,
+      ].sort((first, second) => {
+        if (
+          normalizedSort ===
+          'weekly_updates'
+        ) {
+          const firstCount =
+            Number(
+              accessSummaries
+                ?.get(first.id)
+                ?.weekly_update_count ||
+                0
+            )
+
+          const secondCount =
+            Number(
+              accessSummaries
+                ?.get(second.id)
+                ?.weekly_update_count ||
+                0
+            )
+
+          if (
+            firstCount !==
+            secondCount
+          ) {
+            return (
+              secondCount -
+              firstCount
+            )
+          }
+        }
+
+        const firstTime =
+          new Date(
+            accessSummaries
+              ?.get(first.id)
+              ?.last_episode_published_at ||
+              0
+          ).getTime()
+
+        const secondTime =
+          new Date(
+            accessSummaries
+              ?.get(second.id)
+              ?.last_episode_published_at ||
+              0
+          ).getTime()
+
+        return (
+          secondTime -
+          firstTime
+        )
+      })
+
+      if (
+        normalizedSort ===
+        'weekly_updates'
+      ) {
+        rankedStories =
+          rankedStories.filter(
+            (story) =>
+              Number(
+                accessSummaries
+                  ?.get(story.id)
+                  ?.weekly_update_count ||
+                  0
+              ) > 0
+          )
+      }
+    }
+
+    const stories =
+      rankedStories.slice(
+        0,
+        limit
+      )
+
+    const finalAccessSummaries =
+      accessSummaries ||
+      await getStoryAccessSummaries(
+        stories.map(
+          (story) => story.id
+        )
+      )
 
     return res.status(200).json({
       ok: true,
-      stories: stories.map((story) =>
-        publicStoryListItem(story, accessSummaries.get(story.id))
+      stories: stories.map(
+        (story) =>
+          publicStoryListItem(
+            story,
+            finalAccessSummaries.get(
+              story.id
+            )
+          )
       ),
     })
   } catch (error) {
-    console.error('GET PUBLIC SHADOW EXCLUSIVE STORIES ERROR:', error)
+    console.error(
+      'GET PUBLIC SHADOW EXCLUSIVE STORIES ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
-      message: 'Failed to load Shadow Exclusive stories',
+      message:
+        'Failed to load Shadow Exclusive stories',
       error: error.message,
     })
   }
