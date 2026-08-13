@@ -1128,6 +1128,7 @@ export async function getPublicStories(req, res) {
     const exclude = String(req.query.exclude || req.query.excludeId || req.query.exclude_id || '').trim()
     const search = normalizeSearch(req.query.q || req.query.search || req.query.keyword)
     const ageAccess = await getReaderAgeAccess(req)
+    const rankingOnly = String(req.query.ranking || '') === '1'
 
     const buildStoriesQuery = (genreMode = 'main') => {
   let nextQuery = supabase
@@ -1138,6 +1139,9 @@ export async function getPublicStories(req, res) {
     .or('ranking_visibility_status.is.null,ranking_visibility_status.eq.visible')
     .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false')
     .limit(queryLimit)
+    if (rankingOnly) {
+  nextQuery = nextQuery.or('ranking_visibility_status.is.null,ranking_visibility_status.eq.visible')
+}
 
   nextQuery = applyAdultStoryVisibility(
     nextQuery,
@@ -1400,13 +1404,13 @@ export async function getPublicShadowExclusiveStories(req, res) {
     const sort = String(req.query.sort || 'latest').trim()
     const authorId = String(req.query.authorId || req.query.author_id || '').trim()
     const ageAccess = await getReaderAgeAccess(req)
+    const rankingOnly = String(req.query.ranking || '') === '1'
 
     let query = supabase
       .from('stories')
       .select('*')
       .eq('status', 'published')
       .is('deleted_at', null)
-      .or('ranking_visibility_status.is.null,ranking_visibility_status.eq.visible')
       .eq('is_shadow_exclusive', true)
       .eq('exclusive_status', 'approved')
       .limit(limit)
