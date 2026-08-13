@@ -1419,6 +1419,12 @@ export async function getPublicShadowExclusiveStories(req, res) {
   ageAccess
 )
 
+if (rankingOnly) {
+  query = query.or(
+    'ranking_visibility_status.is.null,ranking_visibility_status.eq.visible'
+  )
+}
+
     if (genre) query = query.ilike('main_genre', genre)
     if (['novel', 'manga', 'chat_story'].includes(storyType)) query = query.eq('story_type', storyType)
     if (storyStatus) query = query.eq('story_status', storyStatus)
