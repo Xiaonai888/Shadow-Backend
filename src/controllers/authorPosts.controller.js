@@ -1062,6 +1062,92 @@ function publicAuthorPostComment(
   }
 }
 
+export async function getAuthorPostCommentById(req, res) {
+  try {
+    const userId = getRequestUserId(req)
+    const postId = String(req.params.postId || '').trim()
+    const commentId = String(req.params.commentId || '').trim()
+
+    if (!postId || !commentId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Post ID and comment ID are required',
+      })
+    }
+
+    const { data: post, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('id')
+      .eq('id', postId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
+    }
+
+    const { data: comment, error: commentError } = await supabase
+      .from('author_page_post_comments')
+      .select('*, user:users(id, name, username, avatar_url, role)')
+      .eq('id', commentId)
+      .eq('post_id', postId)
+      .eq('is_hidden', false)
+      .is('deleted_at', null)
+      .maybeSingle()
+
+    if (commentError) throw commentError
+
+    if (!comment) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
+
+    let parentComment = null
+
+    if (comment.parent_id) {
+      const { data, error } = await supabase
+        .from('author_page_post_comments')
+        .select('*, user:users(id, name, username, avatar_url, role)')
+        .eq('id', comment.parent_id)
+        .eq('post_id', postId)
+        .eq('is_hidden', false)
+        .maybeSingle()
+
+      if (error) throw error
+      parentComment = data || null
+    }
+
+    const likedIds = await getAuthorPostCommentLikedIds(
+      userId,
+      [comment.id, parentComment?.id].filter(Boolean)
+    )
+
+    return res.status(200).json({
+      ok: true,
+      comment: publicAuthorPostComment(comment, likedIds),
+      parent_comment: parentComment
+        ? publicAuthorPostComment(parentComment, likedIds)
+        : null,
+    })
+  } catch (error) {
+    console.error('GET AUTHOR POST COMMENT BY ID ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load post comment',
+      error: error.message,
+    })
+  }
+}
+
+
 export async function getAuthorPostComments(req, res) {
   try {
     const userId = getRequestUserId(req)
