@@ -410,7 +410,7 @@ weekly_update_count: 0,
   )
 
   const { data, error } = await supabase
-    .from('episodes')
+    .is('deleted_at', null)
     .select(
       'id, story_id, episode_number, is_locked, published_at, created_at, status, deleted_at'
     )
@@ -1133,6 +1133,7 @@ export async function getPublicStories(req, res) {
     .select('*')
     .eq('status', 'published')
     .is('deleted_at', null)
+    .or('ranking_visibility_status.is.null,ranking_visibility_status.eq.visible')
     .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false')
     .limit(queryLimit)
 
@@ -1397,6 +1398,7 @@ export async function getPublicShadowExclusiveStories(req, res) {
       .select('*')
       .eq('status', 'published')
       .is('deleted_at', null)
+      .or('ranking_visibility_status.is.null,ranking_visibility_status.eq.visible')
       .eq('is_shadow_exclusive', true)
       .eq('exclusive_status', 'approved')
       .limit(limit)
