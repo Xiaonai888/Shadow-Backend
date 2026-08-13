@@ -410,13 +410,12 @@ weekly_update_count: 0,
   )
 
   const { data, error } = await supabase
-    .is('deleted_at', null)
-    .select(
-      'id, story_id, episode_number, is_locked, published_at, created_at, status, deleted_at'
-    )
-    .in('story_id', ids)
-    .is('deleted_at', null)
-  .or('ranking_visibility_status.is.null,ranking_visibility_status.eq.visible')
+  .from('episodes')
+  .select(
+    'id, story_id, episode_number, is_locked, published_at, created_at, status, deleted_at'
+  )
+  .in('story_id', ids)
+  .is('deleted_at', null)
 
   if (error) throw error
 
