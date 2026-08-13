@@ -802,6 +802,9 @@ function applyStorySort(query, sort) {
     if (isDiscoverMoreSort(sort)) {
     return query.order('total_views', { ascending: true }).order('updated_at', { ascending: false })
   }
+  if (sort === 'views') {
+  return query.order('total_views', { ascending: false }).order('total_likes', { ascending: false }).order('updated_at', { ascending: false })
+}
 
   if (sort === 'popular') {
     return query.order('total_likes', { ascending: false }).order('total_views', { ascending: false }).order('updated_at', { ascending: false })
@@ -1274,6 +1277,12 @@ const sortedStories = [
   if (normalizedSort === 'updated') {
     return secondUpdated - firstUpdated
   }
+
+  if (normalizedSort === 'views') {
+  const difference = Number(second.total_views || 0) - Number(first.total_views || 0)
+  if (difference) return difference
+  return secondUpdated - firstUpdated
+}
 
   if (
     normalizedSort === 'popular' ||
