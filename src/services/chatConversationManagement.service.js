@@ -512,33 +512,58 @@ export async function getConversationNicknames({
     userId
   )
 
-  const { data, error } = await supabase
-    .from('chat_participants')
-    .select(
-      'user_id, participant_role, nickname'
-    )
-    .eq(
-      'conversation_id',
-      viewer.conversation_id
-    )
-    .is('deleted_at', null)
+  const { data: participants, error: participantError } =
+    await supabase
+      .from('chat_participants')
+      .select('user_id, participant_role')
+      .eq(
+        'conversation_id',
+        viewer.conversation_id
+      )
+      .is('deleted_at', null)
 
-  if (error) {
+  if (participantError) {
     throw databaseFailure(
-      error,
+      participantError,
       'Failed to load chat nicknames'
     )
   }
 
+  const { data: nicknames, error: nicknameError } =
+    await supabase
+      .from('chat_private_nicknames')
+      .select('target_user_id, nickname')
+      .eq(
+        'conversation_id',
+        viewer.conversation_id
+      )
+      .eq('owner_user_id', viewer.user_id)
+
+  if (nicknameError) {
+    throw databaseFailure(
+      nicknameError,
+      'Failed to load chat nicknames'
+    )
+  }
+
+  const nicknameMap = new Map(
+    (nicknames || []).map((item) => [
+      String(item.target_user_id),
+      item.nickname || null,
+    ])
+  )
+
   return {
     conversation_id: viewer.conversation_id,
-    participants: (data || []).map(
+    participants: (participants || []).map(
       (participant) => ({
         user_id: participant.user_id,
         participant_role:
           participant.participant_role,
         nickname:
-          participant.nickname || null,
+          nicknameMap.get(
+            String(participant.user_id)
+          ) || null,
         is_self:
           String(participant.user_id) ===
           String(viewer.user_id),
@@ -567,21 +592,87 @@ export async function setConversationNickname({
     .trim()
     .slice(0, 32)
 
-  const { data, error } = await supabase
+  const {
+    data: targetParticipant,
+    error: participantError,
+  } = await supabase
     .from('chat_participants')
-    .update({
-      nickname: safeNickname || null,
-    })
+    .select('user_id, participant_role')
     .eq(
       'conversation_id',
       viewer.conversation_id
     )
     .eq('user_id', safeTargetUserId)
     .is('deleted_at', null)
-    .select(
-      'user_id, participant_role, nickname'
-    )
     .maybeSingle()
+
+  if (participantError) {
+    throw databaseFailure(
+      participantError,
+      'Failed to update chat nickname'
+    )
+  }
+
+  if (!targetParticipant) {
+    fail(
+      404,
+      'CHAT_PARTICIPANT_NOT_FOUND',
+      'Chat participant not found'
+    )
+  }
+
+  if (!safeNickname) {
+    const { error: deleteError } = await supabase
+      .from('chat_private_nicknames')
+      .delete()
+      .eq(
+        'conversation_id',
+        viewer.conversation_id
+      )
+      .eq('owner_user_id', viewer.user_id)
+      .eq('target_user_id', safeTargetUserId)
+
+    if (deleteError) {
+      throw databaseFailure(
+        deleteError,
+        'Failed to update chat nickname'
+      )
+    }
+
+    return {
+      conversation_id: viewer.conversation_id,
+      participant: {
+        user_id: targetParticipant.user_id,
+        participant_role:
+          targetParticipant.participant_role,
+        nickname: null,
+        is_self:
+          String(targetParticipant.user_id) ===
+          String(viewer.user_id),
+      },
+    }
+  }
+
+  const updatedAt = new Date().toISOString()
+
+  const { data, error } = await supabase
+    .from('chat_private_nicknames')
+    .upsert(
+      {
+        conversation_id:
+          viewer.conversation_id,
+        owner_user_id: viewer.user_id,
+        target_user_id: safeTargetUserId,
+        nickname: safeNickname,
+        updated_at: updatedAt,
+      },
+      {
+        onConflict:
+          'conversation_id,owner_user_id,target_user_id',
+      }
+    )
+    .select('target_user_id, nickname')
+    .single()
 
   if (error) {
     throw databaseFailure(
@@ -590,29 +681,19 @@ export async function setConversationNickname({
     )
   }
 
-  if (!data) {
-    fail(
-      404,
-      'CHAT_PARTICIPANT_NOT_FOUND',
-      'Chat participant not found'
-    )
-  }
-
   return {
     conversation_id: viewer.conversation_id,
     participant: {
-      user_id: data.user_id,
+      user_id: data.target_user_id,
       participant_role:
-        data.participant_role,
+        targetParticipant.participant_role,
       nickname: data.nickname || null,
       is_self:
-        String(data.user_id) ===
+        String(data.target_user_id) ===
         String(viewer.user_id),
     },
   }
 }
-
-
 
 export async function getConversationAutoDeleteStatus({
   userId,
