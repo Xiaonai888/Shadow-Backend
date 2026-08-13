@@ -808,6 +808,10 @@ function applyStorySort(query, sort) {
     return query.order('total_likes', { ascending: false }).order('total_views', { ascending: false }).order('updated_at', { ascending: false })
   }
 
+  if (sort === 'comments') {
+  return query.order('total_comments', { ascending: false }).order('total_likes', { ascending: false }).order('updated_at', { ascending: false })
+}
+
   if (sort === 'likes') {
     return query.order('total_likes', { ascending: false }).order('updated_at', { ascending: false })
   }
@@ -1285,6 +1289,12 @@ const sortedStories = [
 
     return secondUpdated - firstUpdated
   }
+
+  if (normalizedSort === 'comments') {
+  const difference = Number(second.total_comments || 0) - Number(first.total_comments || 0)
+  if (difference) return difference
+  return secondUpdated - firstUpdated
+}
 
   if (
     normalizedSort === 'weekly_top' ||
