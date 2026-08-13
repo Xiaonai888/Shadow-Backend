@@ -37,6 +37,7 @@ import {
   getAuthorPagePosts,
   getAuthorPostById,
   getAuthorPostComments,
+  getAuthorPostCommentById,
   getAuthorPostReactions,
   setMyAuthorPostPinned,
   setMyAuthorPostReaction,
@@ -184,6 +185,7 @@ router.put('/page/posts/:postId/notification-preference', requireUser, updateMyA
 router.get('/page/posts/:postId', getAuthorPostById)
 router.get('/page/posts/:postId/reactions', getAuthorPostReactions)
 router.get('/page/posts/:postId/comments', getAuthorPostComments)
+router.get('/page/posts/:postId/comments/:commentId', getAuthorPostCommentById)
 router.post('/me/posts/:postId/comments', requireUser, createAuthorPostComment)
 router.patch('/me/post-comments/:commentId', requireUser, updateOwnAuthorPostComment)
 router.post('/me/post-comments/:commentId/like', requireUser, toggleAuthorPostCommentLike)
