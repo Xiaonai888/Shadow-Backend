@@ -189,23 +189,28 @@ export async function getMyAuthorPage(req, res) {
       })
     }
 
-    const works = await getAuthorPageWorks(
-      data.id,
-      true
-    )
+    const works = await getAuthorPageWorks(data.id, true)
+const { count: authorsAhead, error: rankError } = await supabase
+  .from('author_pages')
+  .select('id', { count: 'exact', head: true })
+  .eq('status', 'active')
+  .gt('total_followers', Number(data.total_followers || 0))
 
-    return res.status(200).json({
-      ok: true,
-      has_author_page: true,
-      author_page: {
-        ...publicAuthorPage({
-          ...data,
-          total_stories: works.length,
-        }),
-        works,
-      },
-      works,
-    })
+if (rankError) throw rankError
+
+return res.status(200).json({
+  ok: true,
+  has_author_page: true,
+  author_page: {
+    ...publicAuthorPage({
+      ...data,
+      total_stories: works.length,
+    }),
+    rank: Number(authorsAhead || 0) + 1,
+    works,
+  },
+  works,
+})
   } catch (error) {
     console.error('GET MY AUTHOR PAGE ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to fetch author page', error: error.message })
