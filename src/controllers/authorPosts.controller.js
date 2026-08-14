@@ -1152,7 +1152,17 @@ export async function getAuthorPostComments(req, res) {
   try {
     const userId = getRequestUserId(req)
     const postId = String(req.params.postId || '').trim()
-    const limit = Math.min(30, Math.max(1, Number(req.query.limit || 20)))
+    const page = Math.max(1, Number(req.query.page || 1))
+    const limit = Math.min(
+      30,
+      Math.max(1, Number(req.query.limit || 10))
+    )
+    const replyLimit = Math.min(
+      30,
+      Math.max(1, Number(req.query.reply_limit || 10))
+    )
+    const from = (page - 1) * limit
+    const to = from + limit - 1
 
     if (!postId) {
       return res.status(400).json({
@@ -1177,82 +1187,89 @@ export async function getAuthorPostComments(req, res) {
       })
     }
 
-    const { data: parentComments, error: commentsError } = await supabase
+    const {
+      data: parentComments,
+      error: commentsError,
+      count: parentCount,
+    } = await supabase
       .from('author_page_post_comments')
-      .select('*, user:users(id, name, username, avatar_url, role)')
+      .select(
+        '*, user:users(id, name, username, avatar_url, role)',
+        { count: 'exact' }
+      )
       .eq('post_id', postId)
       .eq('is_hidden', false)
       .is('deleted_at', null)
       .is('parent_id', null)
       .order('is_pinned', { ascending: false })
       .order('created_at', { ascending: false })
-      .limit(limit)
+      .range(from, to)
 
     if (commentsError) throw commentsError
 
-    const { data: deletedRows, error: deletedError } = await supabase
-      .from('author_page_post_comments')
-      .select('*, user:users(id, name, username, avatar_url, role)')
-      .eq('post_id', postId)
-      .eq('is_hidden', false)
-      .not('deleted_at', 'is', null)
-      .is('parent_id', null)
-      .order('deleted_at', { ascending: false })
-      .limit(Math.min(100, limit * 5))
+    const parents = parentComments || []
 
-    if (deletedError) throw deletedError
+    const replyGroups = await Promise.all(
+      parents.map(async (parent) => {
+        const {
+          data: replyRows,
+          error: repliesError,
+          count: replyCount,
+        } = await supabase
+          .from('author_page_post_comments')
+          .select(
+            '*, user:users(id, name, username, avatar_url, role)',
+            { count: 'exact' }
+          )
+          .eq('post_id', postId)
+          .eq('parent_id', parent.id)
+          .eq('is_hidden', false)
+          .is('deleted_at', null)
+          .order('created_at', { ascending: true })
+          .range(0, replyLimit - 1)
 
-    const deletedParents = deletedRows || []
-    const candidateParents = [...(parentComments || []), ...deletedParents]
-    const candidateIds = candidateParents
-      .map((comment) => comment.id)
+        if (repliesError) throw repliesError
+
+        return {
+          parentId: String(parent.id),
+          replies: replyRows || [],
+          total: Number(replyCount || 0),
+        }
+      })
+    )
+
+    const repliesByParent = new Map(
+      replyGroups.map((group) => [
+        group.parentId,
+        group,
+      ])
+    )
+
+    const comments = parents.map((parent) => {
+      const group =
+        repliesByParent.get(String(parent.id)) || {
+          replies: [],
+          total: 0,
+        }
+
+      return {
+        ...parent,
+        replies: group.replies,
+        reply_total: group.total,
+        reply_page: 1,
+        reply_has_more:
+          group.replies.length < group.total,
+      }
+    })
+
+    const commentIds = comments
+      .flatMap((comment) => [
+        comment.id,
+        ...(comment.replies || []).map(
+          (reply) => reply.id
+        ),
+      ])
       .filter(Boolean)
-    let replies = []
-
-    if (candidateIds.length) {
-      const { data: replyRows, error: repliesError } = await supabase
-        .from('author_page_post_comments')
-        .select('*, user:users(id, name, username, avatar_url, role)')
-        .eq('post_id', postId)
-        .eq('is_hidden', false)
-        .is('deleted_at', null)
-        .in('parent_id', candidateIds)
-        .order('created_at', { ascending: true })
-
-      if (repliesError) throw repliesError
-      replies = replyRows || []
-    }
-
-    const replyParentIds = new Set(
-      replies.map((reply) => String(reply.parent_id || ''))
-    )
-    const visibleDeletedParents = deletedParents.filter((comment) =>
-      replyParentIds.has(String(comment.id))
-    )
-    const visibleParents = [
-      ...(parentComments || []),
-      ...visibleDeletedParents,
-    ]
-    const repliesByParent = new Map()
-
-    for (const reply of replies) {
-      const key = String(reply.parent_id || '')
-      const current = repliesByParent.get(key) || []
-      current.push(reply)
-      repliesByParent.set(key, current)
-    }
-
-    const comments = visibleParents.map((comment) => ({
-      ...comment,
-      replies: repliesByParent.get(String(comment.id)) || [],
-    }))
-
-    const commentIds = comments.flatMap((comment) => [
-      comment.id,
-      ...(comment.replies || []).map(
-        (reply) => reply.id
-      ),
-    ]).filter(Boolean)
 
     const likedIds =
       await getAuthorPostCommentLikedIds(
@@ -1260,35 +1277,178 @@ export async function getAuthorPostComments(req, res) {
         commentIds
       )
 
-    const { count, error: countError } = await supabase
-      .from('author_page_post_comments')
-      .select('id', {
-        count: 'exact',
-        head: true,
-      })
-      .eq('post_id', postId)
-      .eq('is_hidden', false)
-      .is('deleted_at', null)
+    const { count: totalCount, error: countError } =
+      await supabase
+        .from('author_page_post_comments')
+        .select('id', {
+          count: 'exact',
+          head: true,
+        })
+        .eq('post_id', postId)
+        .eq('is_hidden', false)
+        .is('deleted_at', null)
 
     if (countError) throw countError
 
+    const totalParents = Number(parentCount || 0)
+
     return res.status(200).json({
       ok: true,
-      comments: comments.map((comment) =>
-        publicAuthorPostComment(
+      comments: comments.map((comment) => ({
+        ...publicAuthorPostComment(
           comment,
           likedIds
-        )
-      ),
-      total: Number(count || 0),
-      has_more: false,
+        ),
+        reply_total: Number(
+          comment.reply_total || 0
+        ),
+        reply_page: Number(
+          comment.reply_page || 1
+        ),
+        reply_has_more: Boolean(
+          comment.reply_has_more
+        ),
+      })),
+      total: Number(totalCount || 0),
+      parent_total: totalParents,
+      page,
+      limit,
+      reply_limit: replyLimit,
+      has_more: to + 1 < totalParents,
     })
   } catch (error) {
-    console.error('GET AUTHOR POST COMMENTS ERROR:', error)
+    console.error(
+      'GET AUTHOR POST COMMENTS ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
       message: 'Failed to load post comments',
+      error: error.message,
+    })
+  }
+}
+
+export async function getAuthorPostCommentReplies(
+  req,
+  res
+) {
+  try {
+    const userId = getRequestUserId(req)
+    const postId = String(
+      req.params.postId || ''
+    ).trim()
+    const commentId = String(
+      req.params.commentId || ''
+    ).trim()
+    const page = Math.max(
+      1,
+      Number(req.query.page || 1)
+    )
+    const limit = Math.min(
+      30,
+      Math.max(1, Number(req.query.limit || 10))
+    )
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    if (!postId || !commentId) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          'Post ID and comment ID are required',
+      })
+    }
+
+    const { data: post, error: postError } =
+      await supabase
+        .from('author_page_posts')
+        .select('id, status')
+        .eq('id', postId)
+        .eq('status', 'active')
+        .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
+    }
+
+    const {
+      data: parentComment,
+      error: parentError,
+    } = await supabase
+      .from('author_page_post_comments')
+      .select('id, post_id, parent_id')
+      .eq('id', commentId)
+      .eq('post_id', postId)
+      .is('parent_id', null)
+      .maybeSingle()
+
+    if (parentError) throw parentError
+
+    if (!parentComment) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Parent comment not found',
+      })
+    }
+
+    const {
+      data: replies,
+      error: repliesError,
+      count,
+    } = await supabase
+      .from('author_page_post_comments')
+      .select(
+        '*, user:users(id, name, username, avatar_url, role)',
+        { count: 'exact' }
+      )
+      .eq('post_id', postId)
+      .eq('parent_id', commentId)
+      .eq('is_hidden', false)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true })
+      .range(from, to)
+
+    if (repliesError) throw repliesError
+
+    const replyRows = replies || []
+    const likedIds =
+      await getAuthorPostCommentLikedIds(
+        userId,
+        replyRows
+          .map((reply) => reply.id)
+          .filter(Boolean)
+      )
+    const total = Number(count || 0)
+
+    return res.status(200).json({
+      ok: true,
+      replies: replyRows.map((reply) =>
+        publicAuthorPostComment(
+          reply,
+          likedIds
+        )
+      ),
+      total,
+      page,
+      limit,
+      has_more: to + 1 < total,
+    })
+  } catch (error) {
+    console.error(
+      'GET AUTHOR POST COMMENT REPLIES ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load comment replies',
       error: error.message,
     })
   }
