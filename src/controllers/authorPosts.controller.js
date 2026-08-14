@@ -1062,6 +1062,46 @@ function publicAuthorPostComment(
   }
 }
 
+async function getVisibleAuthorPostCommentCount(postId) {
+  const {
+    data: visibleParents,
+    count: parentCount,
+    error: parentError,
+  } = await supabase
+    .from('author_page_post_comments')
+    .select('id', { count: 'exact' })
+    .eq('post_id', postId)
+    .eq('is_hidden', false)
+    .is('deleted_at', null)
+    .is('parent_id', null)
+
+  if (parentError) throw parentError
+
+  const parentIds = (visibleParents || [])
+    .map((item) => item.id)
+    .filter(Boolean)
+
+  let replyCount = 0
+
+  if (parentIds.length) {
+    const { count, error } = await supabase
+      .from('author_page_post_comments')
+      .select('id', {
+        count: 'exact',
+        head: true,
+      })
+      .eq('post_id', postId)
+      .eq('is_hidden', false)
+      .is('deleted_at', null)
+      .in('parent_id', parentIds)
+
+    if (error) throw error
+    replyCount = Number(count || 0)
+  }
+
+  return Number(parentCount || 0) + replyCount
+}
+
 export async function getAuthorPostCommentById(req, res) {
   try {
     const userId = getRequestUserId(req)
@@ -1077,7 +1117,7 @@ export async function getAuthorPostCommentById(req, res) {
 
     const { data: post, error: postError } = await supabase
       .from('author_page_posts')
-      .select('id')
+      .select('id, user_id, status')
       .eq('id', postId)
       .eq('status', 'active')
       .maybeSingle()
@@ -1091,14 +1131,25 @@ export async function getAuthorPostCommentById(req, res) {
       })
     }
 
-    const { data: comment, error: commentError } = await supabase
+    const isAuthorPageOwner = Boolean(
+      userId &&
+        post.user_id &&
+        String(userId) === String(post.user_id)
+    )
+
+    let commentQuery = supabase
       .from('author_page_post_comments')
       .select('*, user:users(id, name, username, avatar_url, role)')
       .eq('id', commentId)
       .eq('post_id', postId)
-      .eq('is_hidden', false)
       .is('deleted_at', null)
-      .maybeSingle()
+
+    if (!isAuthorPageOwner) {
+      commentQuery = commentQuery.eq('is_hidden', false)
+    }
+
+    const { data: comment, error: commentError } =
+      await commentQuery.maybeSingle()
 
     if (commentError) throw commentError
 
@@ -1112,15 +1163,28 @@ export async function getAuthorPostCommentById(req, res) {
     let parentComment = null
 
     if (comment.parent_id) {
-      const { data, error } = await supabase
+      let parentQuery = supabase
         .from('author_page_post_comments')
         .select('*, user:users(id, name, username, avatar_url, role)')
         .eq('id', comment.parent_id)
         .eq('post_id', postId)
-        .eq('is_hidden', false)
-        .maybeSingle()
+
+      if (!isAuthorPageOwner) {
+        parentQuery = parentQuery.eq('is_hidden', false)
+      }
+
+      const { data, error } =
+        await parentQuery.maybeSingle()
 
       if (error) throw error
+
+      if (!data && !isAuthorPageOwner) {
+        return res.status(404).json({
+          ok: false,
+          message: 'Comment not found',
+        })
+      }
+
       parentComment = data || null
     }
 
@@ -1147,7 +1211,6 @@ export async function getAuthorPostCommentById(req, res) {
   }
 }
 
-
 export async function getAuthorPostComments(req, res) {
   try {
     const userId = getRequestUserId(req)
@@ -1173,7 +1236,7 @@ export async function getAuthorPostComments(req, res) {
 
     const { data: post, error: postError } = await supabase
       .from('author_page_posts')
-      .select('id, status')
+      .select('id, user_id, status')
       .eq('id', postId)
       .eq('status', 'active')
       .maybeSingle()
@@ -1187,20 +1250,31 @@ export async function getAuthorPostComments(req, res) {
       })
     }
 
-    const {
-      data: parentComments,
-      error: commentsError,
-      count: parentCount,
-    } = await supabase
+    const isAuthorPageOwner = Boolean(
+      userId &&
+        post.user_id &&
+        String(userId) === String(post.user_id)
+    )
+
+    let parentQuery = supabase
       .from('author_page_post_comments')
       .select(
         '*, user:users(id, name, username, avatar_url, role)',
         { count: 'exact' }
       )
       .eq('post_id', postId)
-      .eq('is_hidden', false)
       .is('deleted_at', null)
       .is('parent_id', null)
+
+    if (!isAuthorPageOwner) {
+      parentQuery = parentQuery.eq('is_hidden', false)
+    }
+
+    const {
+      data: parentComments,
+      error: commentsError,
+      count: parentCount,
+    } = await parentQuery
       .order('is_pinned', { ascending: false })
       .order('created_at', { ascending: false })
       .range(from, to)
@@ -1211,11 +1285,7 @@ export async function getAuthorPostComments(req, res) {
 
     const replyGroups = await Promise.all(
       parents.map(async (parent) => {
-        const {
-          data: replyRows,
-          error: repliesError,
-          count: replyCount,
-        } = await supabase
+        let replyQuery = supabase
           .from('author_page_post_comments')
           .select(
             '*, user:users(id, name, username, avatar_url, role)',
@@ -1223,8 +1293,17 @@ export async function getAuthorPostComments(req, res) {
           )
           .eq('post_id', postId)
           .eq('parent_id', parent.id)
-          .eq('is_hidden', false)
           .is('deleted_at', null)
+
+        if (!isAuthorPageOwner) {
+          replyQuery = replyQuery.eq('is_hidden', false)
+        }
+
+        const {
+          data: replyRows,
+          error: repliesError,
+          count: replyCount,
+        } = await replyQuery
           .order('created_at', { ascending: true })
           .range(0, replyLimit - 1)
 
@@ -1277,18 +1356,10 @@ export async function getAuthorPostComments(req, res) {
         commentIds
       )
 
-    const { count: totalCount, error: countError } =
-      await supabase
-        .from('author_page_post_comments')
-        .select('id', {
-          count: 'exact',
-          head: true,
-        })
-        .eq('post_id', postId)
-        .eq('is_hidden', false)
-        .is('deleted_at', null)
-
-    if (countError) throw countError
+    const visibleTotal =
+      await getVisibleAuthorPostCommentCount(
+        postId
+      )
 
     const totalParents = Number(parentCount || 0)
 
@@ -1309,7 +1380,7 @@ export async function getAuthorPostComments(req, res) {
           comment.reply_has_more
         ),
       })),
-      total: Number(totalCount || 0),
+      total: visibleTotal,
       parent_total: totalParents,
       page,
       limit,
@@ -1364,7 +1435,7 @@ export async function getAuthorPostCommentReplies(
     const { data: post, error: postError } =
       await supabase
         .from('author_page_posts')
-        .select('id, status')
+        .select('id, user_id, status')
         .eq('id', postId)
         .eq('status', 'active')
         .maybeSingle()
@@ -1378,16 +1449,27 @@ export async function getAuthorPostCommentReplies(
       })
     }
 
-    const {
-      data: parentComment,
-      error: parentError,
-    } = await supabase
+    const isAuthorPageOwner = Boolean(
+      userId &&
+        post.user_id &&
+        String(userId) === String(post.user_id)
+    )
+
+    let parentQuery = supabase
       .from('author_page_post_comments')
-      .select('id, post_id, parent_id')
+      .select('id, post_id, parent_id, is_hidden')
       .eq('id', commentId)
       .eq('post_id', postId)
       .is('parent_id', null)
-      .maybeSingle()
+
+    if (!isAuthorPageOwner) {
+      parentQuery = parentQuery.eq('is_hidden', false)
+    }
+
+    const {
+      data: parentComment,
+      error: parentError,
+    } = await parentQuery.maybeSingle()
 
     if (parentError) throw parentError
 
@@ -1398,11 +1480,7 @@ export async function getAuthorPostCommentReplies(
       })
     }
 
-    const {
-      data: replies,
-      error: repliesError,
-      count,
-    } = await supabase
+    let repliesQuery = supabase
       .from('author_page_post_comments')
       .select(
         '*, user:users(id, name, username, avatar_url, role)',
@@ -1410,8 +1488,17 @@ export async function getAuthorPostCommentReplies(
       )
       .eq('post_id', postId)
       .eq('parent_id', commentId)
-      .eq('is_hidden', false)
       .is('deleted_at', null)
+
+    if (!isAuthorPageOwner) {
+      repliesQuery = repliesQuery.eq('is_hidden', false)
+    }
+
+    const {
+      data: replies,
+      error: repliesError,
+      count,
+    } = await repliesQuery
       .order('created_at', { ascending: true })
       .range(from, to)
 
@@ -1566,19 +1653,10 @@ export async function createAuthorPostComment(req, res) {
 
     if (createError) throw createError
 
-    const { count, error: countError } = await supabase
-      .from('author_page_post_comments')
-      .select('id', {
-        count: 'exact',
-        head: true,
-      })
-      .eq('post_id', postId)
-      .eq('is_hidden', false)
-      .is('deleted_at', null)
-
-    if (countError) throw countError
-
-    const nextCommentCount = Number(count || 0)
+    const nextCommentCount =
+      await getVisibleAuthorPostCommentCount(
+        postId
+      )
 
     const { error: updatePostError } = await supabase
       .from('author_page_posts')
@@ -1636,6 +1714,157 @@ export async function createAuthorPostComment(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to create post comment',
+      error: error.message,
+    })
+  }
+}
+
+export async function setAuthorPostCommentHidden(
+  req,
+  res
+) {
+  try {
+    const userId = req.user?.user_id
+    const commentId = String(
+      req.params.commentId || ''
+    ).trim()
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!commentId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment ID is required',
+      })
+    }
+
+    if (
+      typeof req.body?.is_hidden !==
+      'boolean'
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: 'is_hidden must be boolean',
+      })
+    }
+
+    const isHidden = req.body.is_hidden
+
+    const {
+      data: existingComment,
+      error: commentError,
+    } = await supabase
+      .from('author_page_post_comments')
+      .select(
+        'id, post_id, user_id, parent_id, is_hidden'
+      )
+      .eq('id', commentId)
+      .is('deleted_at', null)
+      .maybeSingle()
+
+    if (commentError) throw commentError
+
+    if (!existingComment) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
+
+    const { data: post, error: postError } =
+      await supabase
+        .from('author_page_posts')
+        .select(
+          'id, author_page_id, user_id, status'
+        )
+        .eq('id', existingComment.post_id)
+        .eq('status', 'active')
+        .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Author Page post not found',
+      })
+    }
+
+    const ownsAuthorPage =
+      String(post.user_id || '') ===
+      String(userId)
+
+    if (!ownsAuthorPage) {
+      return res.status(403).json({
+        ok: false,
+        message:
+          'Only this Page can hide or unhide comments',
+      })
+    }
+
+    const {
+      data: updatedComment,
+      error: updateError,
+    } = await supabase
+      .from('author_page_post_comments')
+      .update({
+        is_hidden: isHidden,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', commentId)
+      .is('deleted_at', null)
+      .select(
+        '*, user:users(id, name, username, avatar_url, role)'
+      )
+      .single()
+
+    if (updateError) throw updateError
+
+    const nextCommentCount =
+      await getVisibleAuthorPostCommentCount(
+        post.id
+      )
+
+    const { error: updatePostError } =
+      await supabase
+        .from('author_page_posts')
+        .update({
+          comment_count: nextCommentCount,
+          updated_at:
+            new Date().toISOString(),
+        })
+        .eq('id', post.id)
+
+    if (updatePostError) {
+      throw updatePostError
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: isHidden
+        ? 'Comment hidden by this Page'
+        : 'Comment unhidden by this Page',
+      comment:
+        publicAuthorPostComment(
+          updatedComment
+        ),
+      comment_count: nextCommentCount,
+    })
+  } catch (error) {
+    console.error(
+      'SET AUTHOR POST COMMENT HIDDEN ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to update comment visibility',
       error: error.message,
     })
   }
