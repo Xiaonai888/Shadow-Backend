@@ -196,6 +196,7 @@ function normalizeUser(user) {
     name: user.name || 'Reader',
     username: user.username || '',
     avatar_url: user.avatar_url || null,
+    is_following: Boolean(user.is_following),
   }
 }
 
@@ -680,7 +681,11 @@ async function attachVisibleUsers(
                 universalCount
               ),
             },
-            user,
+                        {
+              ...user,
+              is_following:
+                relationships.viewerFollowsOwners.has(String(post.user_id)),
+            },
             viewerId
           )
         : null
@@ -2012,7 +2017,11 @@ async function readSocialEchoPosts({
           sourceAuthorPost,
         source_promotion:
           sourcePromotion,
-        user: normalizeUser(user),
+                user: normalizeUser({
+          ...user,
+          is_following:
+            relationships.viewerFollowsOwners.has(String(echo.user_id)),
+        }),
       }
     })
     .filter(Boolean)
