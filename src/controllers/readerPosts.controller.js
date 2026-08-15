@@ -1879,10 +1879,10 @@ async function readSocialEchoPosts({
             'Reader Post',
           content: post.content || '',
           image_url: images[0] || '',
-          image_urls: images,
-          photo_metadata:
-  linkedPost?.photo_metadata || [],
-          url:
+image_urls: images,
+photo_metadata:
+  post.photo_metadata || [],
+url:
             sourceUser.username
               ? `/profile?username=${encodeURIComponent(
                   sourceUser.username
@@ -2095,12 +2095,14 @@ async function readSocialEchoPosts({
           linkedPost?.content ??
           echoText,
         image_urls:
-          Array.isArray(
-            linkedPost?.image_urls
-          )
-            ? linkedPost.image_urls
-            : [],
-        visibility:
+  Array.isArray(
+    linkedPost?.image_urls
+  )
+    ? linkedPost.image_urls
+    : [],
+photo_metadata:
+  linkedPost?.photo_metadata || [],
+visibility:
           linkedPost?.visibility ||
           echoAudienceToVisibility(
             echo.audience
