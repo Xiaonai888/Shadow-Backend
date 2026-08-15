@@ -2,6 +2,8 @@ import { supabase } from '../config/supabase.js'
 
 const MAX_POST_LENGTH = 10000
 const MAX_POST_IMAGES = 5
+const MAX_PHOTO_CAPTION_LENGTH = 2000
+const MAX_PHOTO_ALT_TEXT_LENGTH = 500
 const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 30
 const FEED_SCAN_LIMIT = 120
@@ -114,6 +116,116 @@ function normalizeImageUrls(value) {
   return imageUrls
 }
 
+function normalizePhotoMetadata(
+  value,
+  imageUrls = [],
+  fallback = []
+) {
+  const images = Array.isArray(
+    imageUrls
+  )
+    ? imageUrls
+    : []
+
+  const source =
+    value === undefined
+      ? fallback
+      : value
+
+  if (
+    source !== null &&
+    !Array.isArray(source)
+  ) {
+    const error = new Error(
+      'Photo metadata must be an array'
+    )
+    error.statusCode = 400
+    throw error
+  }
+
+  const items = Array.isArray(source)
+    ? source
+    : []
+
+  const byUrl = new Map()
+
+  for (const item of items) {
+    if (
+      !item ||
+      typeof item !== 'object' ||
+      Array.isArray(item)
+    ) {
+      continue
+    }
+
+    const url = String(
+      item.url || ''
+    ).trim()
+
+    if (url) {
+      byUrl.set(url, item)
+    }
+  }
+
+  return images.map(
+    (url, index) => {
+      const indexedItem =
+        items[index] &&
+        typeof items[index] ===
+          'object' &&
+        !Array.isArray(items[index])
+          ? items[index]
+          : {}
+
+      const item =
+        byUrl.get(url) ||
+        indexedItem
+
+      const caption = String(
+        item.caption || ''
+      )
+        .replace(/\r\n/g, '\n')
+        .trim()
+
+      const altText = String(
+        item.alt_text ??
+          item.alt ??
+          ''
+      )
+        .replace(/\r\n/g, '\n')
+        .trim()
+
+      if (
+        caption.length >
+        MAX_PHOTO_CAPTION_LENGTH
+      ) {
+        const error = new Error(
+          `Photo caption must be ${MAX_PHOTO_CAPTION_LENGTH} characters or fewer`
+        )
+        error.statusCode = 400
+        throw error
+      }
+
+      if (
+        altText.length >
+        MAX_PHOTO_ALT_TEXT_LENGTH
+      ) {
+        const error = new Error(
+          `Photo alt text must be ${MAX_PHOTO_ALT_TEXT_LENGTH} characters or fewer`
+        )
+        error.statusCode = 400
+        throw error
+      }
+
+      return {
+        url,
+        caption,
+        alt_text: altText,
+      }
+    }
+  )
+}
+
 function validateContent(
   value,
   imageUrls = [],
@@ -205,21 +317,28 @@ function normalizePost(
   user,
   viewerId
 ) {
+  const imageUrls = Array.isArray(
+    post.image_urls
+  )
+    ? post.image_urls
+        .filter(
+          (url) =>
+            typeof url === 'string' &&
+            url.trim()
+        )
+        .slice(0, MAX_POST_IMAGES)
+    : []
+
   return {
     id: post.id,
     user_id: post.user_id,
     content: post.content || '',
-    image_urls: Array.isArray(
-      post.image_urls
-    )
-      ? post.image_urls
-          .filter(
-            (url) =>
-              typeof url === 'string' &&
-              url.trim()
-          )
-          .slice(0, MAX_POST_IMAGES)
-      : [],
+    image_urls: imageUrls,
+    photo_metadata:
+      normalizePhotoMetadata(
+        post.photo_metadata,
+        imageUrls
+      ),
     visibility:
       post.visibility || 'public',
     comments_permission:
@@ -2589,10 +2708,17 @@ export async function createMyReaderPost(
   try {
     const userId = getUserId(req)
     const imageUrls =
-      normalizeImageUrls(
-        req.body.image_urls
-      )
-    const content = validateContent(
+  normalizeImageUrls(
+    req.body.image_urls
+  )
+
+const photoMetadata =
+  normalizePhotoMetadata(
+    req.body.photo_metadata,
+    imageUrls
+  )
+
+const content = validateContent(
       req.body.content,
       imageUrls
     )
@@ -2621,6 +2747,8 @@ export async function createMyReaderPost(
           user_id: userId,
           content,
           image_urls: imageUrls,
+          photo_metadata:
+            photoMetadata,
           visibility,
           comments_permission:
             commentsPermission,
@@ -2710,6 +2838,13 @@ export async function updateMyReaderPost(
             req.body.image_urls
           )
 
+    const photoMetadata =
+  normalizePhotoMetadata(
+    req.body.photo_metadata,
+    imageUrls,
+    current.photo_metadata
+  )
+
     const content = validateContent(
       req.body.content === undefined
         ? current.content
@@ -2755,6 +2890,8 @@ export async function updateMyReaderPost(
         .update({
           content,
           image_urls: imageUrls,
+          photo_metadata:
+            photoMetadata,
           visibility,
           comments_permission:
             commentsPermission,
