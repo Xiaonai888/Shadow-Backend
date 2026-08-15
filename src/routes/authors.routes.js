@@ -1,6 +1,7 @@
 import { getMyAuthorDashboard } from '../controllers/authorDashboard.controller.js'
 import { getFollowedAuthorPostsFeed } from '../controllers/followedAuthorPostsFeed.controller.js'
 import { getDiscoverAuthorSuggestions } from '../controllers/authorDiscovery.controller.js'
+import { getDiscoverAuthorPostsFeed } from '../controllers/discoverAuthorPostsFeed.controller.js'
 import { inviteAuthorPageFriend } from '../controllers/authorPageInvites.controller.js'
 import express from 'express'
 
@@ -158,6 +159,7 @@ router.put('/me/story-notification-preferences/:type', requireUser, updateMyAuth
 router.get('/following', requireUser, getFollowedAuthorPages)
 router.get('/following/posts/feed', requireUser, getFollowedAuthorPostsFeed)
 router.get('/discover', requireUser, getDiscoverAuthorSuggestions)
+router.get('/discover/posts/feed', requireUser, getDiscoverAuthorPostsFeed)
 router.get('/top', getTopAuthorPages)
 router.get('/page/:pageUsername/followers', getAuthorPageFollowers)
 router.get('/page/:pageUsername/reviews', getAuthorPageReviews)
