@@ -1087,6 +1087,8 @@ async function ensureV2EchoLinks(
 
 async function readCombinedEchoRows({
   ownerId = '',
+  echoId = '',
+  echoVersion = '',
   feedOnly = false,
   limit = FEED_SCAN_LIMIT,
 }) {
@@ -1141,10 +1143,28 @@ async function readCombinedEchoRows({
     )
   }
 
+  if (echoId && echoVersion !== 'legacy') {
+    v2Query = v2Query.eq('id', echoId)
+  }
+
+  if (echoId && echoVersion !== 'v2') {
+    legacyQuery = legacyQuery.eq('id', echoId)
+  }
+
   const [v2Result, legacyResult] =
     await Promise.all([
-      v2Query,
-      legacyQuery,
+      echoVersion === 'legacy'
+        ? Promise.resolve({
+            data: [],
+            error: null,
+          })
+        : v2Query,
+      echoVersion === 'v2'
+        ? Promise.resolve({
+            data: [],
+            error: null,
+          })
+        : legacyQuery,
     ])
 
   if (v2Result.error) {
@@ -1232,12 +1252,16 @@ async function readCombinedEchoRows({
 async function readSocialEchoPosts({
   viewerId,
   ownerId = '',
+  echoId = '',
+  echoVersion = '',
   feedOnly = false,
   limit = FEED_SCAN_LIMIT,
 }) {
   const echoes =
     await readCombinedEchoRows({
       ownerId,
+      echoId,
+      echoVersion,
       feedOnly,
       limit,
     })
@@ -2120,6 +2144,168 @@ async function readOwnedPost(
   if (error) throw error
 
   return data
+}
+
+export async function getReaderPostById(
+  req,
+  res
+) {
+  try {
+    const viewerId = getUserId(req)
+    const postId = String(
+      req.params.postId || ''
+    ).trim()
+
+    if (!postId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Post ID is required',
+      })
+    }
+
+    const syntheticMatch = postId.match(
+      /^(echo-v2|social-echo):(.+)$/
+    )
+
+    if (syntheticMatch) {
+      const echoVersion =
+        syntheticMatch[1] === 'echo-v2'
+          ? 'v2'
+          : 'legacy'
+      const echoId =
+        syntheticMatch[2]
+
+      const posts =
+        await readSocialEchoPosts({
+          viewerId,
+          echoId,
+          echoVersion,
+          limit: 1,
+        })
+
+      const post = posts.find(
+        (item) =>
+          String(item?.echo_id || '') ===
+          String(echoId)
+      )
+
+      if (!post) {
+        return res.status(404).json({
+          ok: false,
+          message: 'Post not found',
+        })
+      }
+
+      return res.status(200).json({
+        ok: true,
+        post,
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('reader_posts')
+      .select('*')
+      .eq('id', postId)
+      .is('deleted_at', null)
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!data) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
+    }
+
+    const isOwner =
+      Boolean(viewerId) &&
+      String(data.user_id) ===
+        String(viewerId)
+    const publishTime = new Date(
+      data.publish_at ||
+        data.created_at ||
+        0
+    ).getTime()
+
+    if (
+      !isOwner &&
+      publishTime &&
+      publishTime > Date.now()
+    ) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
+    }
+
+    const linkedEcho =
+      await readLinkedEchoByPostId(
+        data.id,
+        data.user_id
+      )
+
+    if (linkedEcho?.id) {
+      const posts =
+        await readSocialEchoPosts({
+          viewerId,
+          echoId: String(linkedEcho.id),
+          echoVersion:
+            linkedEcho.echo_version ||
+            'legacy',
+          limit: 1,
+        })
+
+      const post = posts.find(
+        (item) =>
+          String(item?.echo_id || '') ===
+          String(linkedEcho.id)
+      )
+
+      if (!post) {
+        return res.status(404).json({
+          ok: false,
+          message: 'Post not found',
+        })
+      }
+
+      return res.status(200).json({
+        ok: true,
+        post,
+      })
+    }
+
+    const posts =
+      await attachVisibleUsers(
+        [data],
+        viewerId
+      )
+    const post = posts[0] || null
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      post,
+    })
+  } catch (error) {
+    console.error(
+      'GET READER POST BY ID ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        error.message ||
+        'Failed to load reader post',
+    })
+  }
 }
 
 export async function getReaderPostsFeed(
