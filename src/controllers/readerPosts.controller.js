@@ -1461,7 +1461,7 @@ async function readSocialEchoPosts({
       ? supabase
           .from('reader_posts')
           .select(
-            'id, user_id, content, image_urls, visibility, publish_at, created_at, deleted_at'
+            'id, user_id, content, image_urls, photo_metadata, visibility, publish_at, created_at, deleted_at'
           )
           .in('id', readerPostIds)
           .is('deleted_at', null)
@@ -1497,7 +1497,7 @@ async function readSocialEchoPosts({
       ? supabase
           .from('reader_posts')
           .select(
-            'id, user_id, content, image_urls, visibility, comments_permission, story_sharing, publish_at, like_count, comment_count, echo_count, created_at, updated_at, deleted_at'
+            'id, user_id, content, image_urls, photo_metadata, visibility, comments_permission, story_sharing, publish_at, like_count, comment_count, echo_count, created_at, updated_at, deleted_at'
           )
           .in(
             'id',
@@ -1860,6 +1860,8 @@ async function readSocialEchoPosts({
           user_id: post.user_id,
           content: post.content || '',
           image_urls: images,
+          photo_metadata:
+          post.photo_metadata || [],
           visibility:
             post.visibility || 'public',
           publish_at:
@@ -1878,6 +1880,8 @@ async function readSocialEchoPosts({
           content: post.content || '',
           image_url: images[0] || '',
           image_urls: images,
+          photo_metadata:
+  linkedPost?.photo_metadata || [],
           url:
             sourceUser.username
               ? `/profile?username=${encodeURIComponent(
