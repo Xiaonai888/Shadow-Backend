@@ -3,10 +3,12 @@ import {
   createMyReaderPost,
   deleteMyReaderPost,
   getMyReaderPosts,
+  getReaderPostById,
   getReaderPostsByUsername,
   getReaderPostsFeed,
   updateMyReaderPost,
 } from '../controllers/readerPosts.controller.js'
+
 import {
   getReaderPostReactionStatus,
   getReaderPostReactions,
@@ -29,6 +31,7 @@ const router = express.Router()
 
 router.get('/feed', requireUser, getReaderPostsFeed)
 router.get('/me', requireUser, getMyReaderPosts)
+router.get('/:postId', requireUser, getReaderPostById)
 router.post('/me', requireUser, createMyReaderPost)
 router.patch('/me/:postId', requireUser, updateMyReaderPost)
 router.delete('/me/:postId', requireUser, deleteMyReaderPost)
