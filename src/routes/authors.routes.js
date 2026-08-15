@@ -39,6 +39,7 @@ import {
   getAuthorPostComments,
   getAuthorPostCommentById,
   getAuthorPostCommentReplies,
+  setAuthorPostCommentHidden,
   getAuthorPostReactions,
   setMyAuthorPostPinned,
   setMyAuthorPostReaction,
@@ -191,6 +192,7 @@ router.get('/page/posts/:postId/comments/:commentId/replies', getAuthorPostComme
 router.post('/me/posts/:postId/comments', requireUser, createAuthorPostComment)
 router.patch('/me/post-comments/:commentId', requireUser, updateOwnAuthorPostComment)
 router.post('/me/post-comments/:commentId/like', requireUser, toggleAuthorPostCommentLike)
+router.patch('/me/post-comments/:commentId/visibility', requireUser, setAuthorPostCommentHidden)
 router.delete('/me/post-comments/:commentId', requireUser, deleteOwnAuthorPostComment)
 router.get('/page/posts/:postId/echoes', requireUser, getAuthorPostEchoes)
 router.post('/page/posts/:postId/echoes', requireUser, createAuthorPostEcho)
