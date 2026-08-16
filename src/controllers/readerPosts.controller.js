@@ -941,6 +941,164 @@ function mergeTimelinePosts(
     .slice(0, limit)
 }
 
+function getReaderRecommendationScore(
+  post,
+  snapshotAt
+) {
+  const snapshotTime =
+    new Date(snapshotAt).getTime()
+
+  const postTime =
+    new Date(
+      post?.publish_at ||
+        post?.updated_at ||
+        post?.created_at ||
+        0
+    ).getTime()
+
+  const ageMs =
+    Number.isFinite(snapshotTime) &&
+    Number.isFinite(postTime)
+      ? Math.max(
+          0,
+          snapshotTime - postTime
+        )
+      : 0
+
+  const ageDays =
+    ageMs /
+    (24 * 60 * 60 * 1000)
+
+  const likes = Math.max(
+    0,
+    Number(post?.like_count || 0)
+  )
+
+  const comments = Math.max(
+    0,
+    Number(
+      post?.comment_count || 0
+    )
+  )
+
+  const echoes = Math.max(
+    0,
+    Number(post?.echo_count || 0)
+  )
+
+  const engagement =
+    likes +
+    comments * 2 +
+    echoes * 3
+
+  const engagementScore =
+    Math.log1p(engagement) * 12
+
+  const recencyScore =
+    Math.max(
+      0,
+      18 - ageDays * 0.6
+    )
+
+  const discoveryBoost =
+    post?.user?.is_following
+      ? 0
+      : 2
+
+  const ownerBoost =
+    post?.is_owner
+      ? 1
+      : 0
+
+  return (
+    engagementScore +
+    recencyScore +
+    discoveryBoost +
+    ownerBoost
+  )
+}
+
+function mergeRecommendedReaderPosts(
+  groups,
+  limit,
+  snapshotAt
+) {
+  const seen = new Set()
+
+  return groups
+    .flat()
+    .filter(Boolean)
+    .sort((first, second) => {
+      const firstScore =
+        getReaderRecommendationScore(
+          first,
+          snapshotAt
+        )
+
+      const secondScore =
+        getReaderRecommendationScore(
+          second,
+          snapshotAt
+        )
+
+      const scoreDifference =
+        secondScore - firstScore
+
+      if (
+        Math.abs(scoreDifference) >
+        0.000001
+      ) {
+        return scoreDifference
+      }
+
+      const secondTime =
+        new Date(
+          second.publish_at ||
+            second.updated_at ||
+            second.created_at ||
+            0
+        ).getTime()
+
+      const firstTime =
+        new Date(
+          first.publish_at ||
+            first.updated_at ||
+            first.created_at ||
+            0
+        ).getTime()
+
+      if (
+        secondTime !== firstTime
+      ) {
+        return (
+          secondTime - firstTime
+        )
+      }
+
+      return String(
+        second.id || ''
+      ).localeCompare(
+        String(first.id || '')
+      )
+    })
+    .filter((post) => {
+      const id = String(
+        post.id || ''
+      )
+
+      if (
+        !id ||
+        seen.has(id)
+      ) {
+        return false
+      }
+
+      seen.add(id)
+      return true
+    })
+    .slice(0, limit)
+}
+
 async function createV2EchoReaderPost(
   echo
 ) {
@@ -2522,6 +2680,9 @@ export async function getMyReaderPosts(
       req.query.limit
     )
 
+    const snapshotAt =
+  new Date().toISOString()
+
     const { data, error } = await supabase
       .from('reader_posts')
       .select('*')
@@ -2642,9 +2803,9 @@ export async function getReaderPostsByUsername(
         .eq('user_id', user.id)
         .is('deleted_at', null)
         .lte(
-          'publish_at',
-          new Date().toISOString()
-        )
+  'publish_at',
+  snapshotAt
+)
         .order('publish_at', {
           ascending: false,
         })
@@ -2681,10 +2842,15 @@ export async function getReaderPostsByUsername(
           )
       )
 
-    const posts = mergeTimelinePosts(
-      [standardPosts, echoPosts],
-      limit
-    )
+    const posts =
+  mergeRecommendedReaderPosts(
+    [
+      standardPosts,
+      echoPosts,
+    ],
+    limit,
+    snapshotAt
+  )
 
     return res.status(200).json({
       ok: true,
