@@ -1341,24 +1341,76 @@ export async function getAuthorPostComments(req, res) {
     }
 
     const isAuthorPageOwner = Boolean(
-      userId &&
-        post.user_id &&
-        String(userId) === String(post.user_id)
+  userId &&
+    post.user_id &&
+    String(userId) === String(post.user_id)
+)
+
+let replyParentQuery = supabase
+  .from('author_page_post_comments')
+  .select('parent_id')
+  .eq('post_id', postId)
+  .not('parent_id', 'is', null)
+  .is('deleted_at', null)
+
+if (!isAuthorPageOwner) {
+  replyParentQuery =
+    replyParentQuery.eq(
+      'is_hidden',
+      false
     )
+}
 
-    let parentQuery = supabase
-      .from('author_page_post_comments')
-      .select(
-        '*, user:users(id, name, username, avatar_url, role)',
-        { count: 'exact' }
+const {
+  data: replyParentRows,
+  error: replyParentError,
+} = await replyParentQuery
+
+if (replyParentError) {
+  throw replyParentError
+}
+
+const replyParentIds = [
+  ...new Set(
+    (replyParentRows || [])
+      .map((item) =>
+        String(
+          item.parent_id || ''
+        ).trim()
       )
-      .eq('post_id', postId)
-      .is('deleted_at', null)
-      .is('parent_id', null)
+      .filter(Boolean)
+  ),
+]
 
-    if (!isAuthorPageOwner) {
-      parentQuery = parentQuery.eq('is_hidden', false)
-    }
+let parentQuery = supabase
+  .from('author_page_post_comments')
+  .select(
+    '*, user:users(id, name, username, avatar_url, role)',
+    { count: 'exact' }
+  )
+  .eq('post_id', postId)
+  .is('parent_id', null)
+
+if (replyParentIds.length) {
+  parentQuery = parentQuery.or(
+    `deleted_at.is.null,id.in.(${replyParentIds.join(
+      ','
+    )})`
+  )
+} else {
+  parentQuery =
+    parentQuery.is(
+      'deleted_at',
+      null
+    )
+}
+
+if (!isAuthorPageOwner) {
+  parentQuery = parentQuery.eq(
+    'is_hidden',
+    false
+  )
+}
 
     const {
       data: parentComments,
