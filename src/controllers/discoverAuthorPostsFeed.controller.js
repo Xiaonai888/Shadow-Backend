@@ -90,6 +90,131 @@ function compareNewest(first, second) {
     )
 }
 
+function getRecommendationScore(
+  post,
+  authorPage,
+  snapshotAt
+) {
+  const snapshotTime =
+    new Date(snapshotAt).getTime()
+
+  const createdTime =
+    new Date(
+      post?.created_at || 0
+    ).getTime()
+
+  const ageMs =
+    Number.isFinite(snapshotTime) &&
+    Number.isFinite(createdTime)
+      ? Math.max(
+          0,
+          snapshotTime - createdTime
+        )
+      : 0
+
+  const ageDays =
+    ageMs /
+    (24 * 60 * 60 * 1000)
+
+  const likes = Math.max(
+    0,
+    Number(post?.like_count || 0)
+  )
+
+  const comments = Math.max(
+    0,
+    Number(
+      post?.comment_count || 0
+    )
+  )
+
+  const echoes = Math.max(
+    0,
+    Number(post?.echo_count || 0)
+  )
+
+  const engagement =
+    likes +
+    comments * 2 +
+    echoes * 3
+
+  const engagementScore =
+    Math.log1p(engagement) * 12
+
+  const recencyScore =
+    Math.max(
+      0,
+      18 - ageDays * 0.6
+    )
+
+  const discoveryBoost =
+    authorPage?.is_following
+      ? 0
+      : 2
+
+  const ownerBoost =
+    authorPage?.is_owner
+      ? 1
+      : 0
+
+  return (
+    engagementScore +
+    recencyScore +
+    discoveryBoost +
+    ownerBoost
+  )
+}
+
+function compareRecommended(
+  first,
+  second,
+  authorById,
+  snapshotAt
+) {
+  const firstAuthor =
+    authorById.get(
+      String(
+        first.author_page_id
+      )
+    )
+
+  const secondAuthor =
+    authorById.get(
+      String(
+        second.author_page_id
+      )
+    )
+
+  const firstScore =
+    getRecommendationScore(
+      first,
+      firstAuthor,
+      snapshotAt
+    )
+
+  const secondScore =
+    getRecommendationScore(
+      second,
+      secondAuthor,
+      snapshotAt
+    )
+
+  const scoreDifference =
+    secondScore - firstScore
+
+  if (
+    Math.abs(scoreDifference) >
+    0.000001
+  ) {
+    return scoreDifference
+  }
+
+  return compareNewest(
+    first,
+    second
+  )
+}
+
 function buildReactionData(
   rows,
   userId
@@ -458,8 +583,14 @@ export async function getDiscoverAuthorPostsFeed(
             )
           )
         )
-        .sort(compareNewest)
-
+        .sort((first, second) =>
+  compareRecommended(
+    first,
+    second,
+    authorById,
+    snapshotAt
+  )
+)
     const selectedPosts =
       visiblePosts.slice(
         offset,
