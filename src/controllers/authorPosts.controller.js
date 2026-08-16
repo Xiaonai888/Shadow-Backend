@@ -229,14 +229,20 @@ export async function getAuthorPagePosts(req, res) {
 export async function getAuthorPostById(req, res) {
   try {
     const postId = req.params.postId
+    const viewerUserId = getRequestUserId(req)
 
     if (!postId) {
-      return res.status(400).json({ ok: false, message: 'Post ID is required' })
+      return res.status(400).json({
+        ok: false,
+        message: 'Post ID is required',
+      })
     }
 
     const { data: post, error } = await supabase
       .from('author_page_posts')
-      .select('*, author_page:author_pages(id, page_name, page_username, avatar_url)')
+      .select(
+        '*, author_page:author_pages(id, user_id, page_name, page_username, avatar_url, total_followers)'
+      )
       .eq('id', postId)
       .eq('status', 'active')
       .maybeSingle()
@@ -244,22 +250,106 @@ export async function getAuthorPostById(req, res) {
     if (error) throw error
 
     if (!post) {
-      return res.status(404).json({ ok: false, message: 'Post not found' })
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
     }
+
+    const authorPage = Array.isArray(post.author_page)
+      ? post.author_page[0] || null
+      : post.author_page || null
+
+    const {
+      data: reactionRows,
+      error: reactionsError,
+    } = await supabase
+      .from('author_page_post_reactions')
+      .select('post_id, user_id, reaction_type')
+      .eq('post_id', postId)
+
+    if (reactionsError) throw reactionsError
+
+    const reactionSummary =
+      buildReactionSummaryMap(
+        reactionRows || []
+      ).get(postId) || []
+
+    const myReaction = viewerUserId
+      ? (
+          reactionRows || []
+        ).find(
+          (item) =>
+            String(item.user_id) ===
+            String(viewerUserId)
+        )?.reaction_type || null
+      : null
+
+    let isFollowing = false
+
+    if (viewerUserId && authorPage?.id) {
+      const {
+        data: followRow,
+        error: followError,
+      } = await supabase
+        .from('author_page_follows')
+        .select('id')
+        .eq('author_page_id', authorPage.id)
+        .eq('follower_user_id', viewerUserId)
+        .maybeSingle()
+
+      if (followError) throw followError
+
+      isFollowing = Boolean(followRow)
+    }
+
+    const isOwner = Boolean(
+      viewerUserId &&
+      authorPage?.user_id &&
+      String(authorPage.user_id) ===
+        String(viewerUserId)
+    )
+
+    const normalizedAuthorPage = authorPage
+      ? {
+          ...authorPage,
+          is_following: isFollowing,
+          is_owner: isOwner,
+        }
+      : null
 
     return res.status(200).json({
       ok: true,
       post: {
-        ...publicAuthorPost(post),
-        author_page: post.author_page || null,
+        ...publicAuthorPost({
+          ...post,
+          like_count: Number(
+            (reactionRows || []).length
+          ),
+          reaction_summary:
+            reactionSummary,
+        }),
+        my_reaction: myReaction,
+        is_following: isFollowing,
+        is_owner: isOwner,
+        author_page:
+          normalizedAuthorPage,
       },
     })
   } catch (error) {
-    console.error('GET AUTHOR POST BY ID ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load author post', error: error.message })
+    console.error(
+      'GET AUTHOR POST BY ID ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to load author post',
+      error: error.message,
+    })
   }
 }
-
 
 export async function createMyAuthorPost(req, res) {
   try {
