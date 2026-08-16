@@ -767,7 +767,12 @@ export async function upsertMyAuthorPageReview(req, res) {
       return res.status(404).json({ ok: false, message: 'Author page not found' })
     }
 
-  
+  if (String(authorPage.user_id) === String(userId)) {
+  return res.status(400).json({
+    ok: false,
+    message: 'You cannot review your own author page',
+  })
+}
 
     const { data: review, error: reviewError } = await supabase
       .from('author_page_reviews')
