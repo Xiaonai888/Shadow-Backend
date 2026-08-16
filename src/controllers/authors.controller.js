@@ -767,12 +767,7 @@ export async function upsertMyAuthorPageReview(req, res) {
       return res.status(404).json({ ok: false, message: 'Author page not found' })
     }
 
-    if (String(authorPage.user_id) === String(userId)) {
-      return res.status(400).json({
-        ok: false,
-        message: 'You cannot review your own author page',
-      })
-    }
+  
 
     const { data: review, error: reviewError } = await supabase
       .from('author_page_reviews')
@@ -981,7 +976,11 @@ export async function followAuthorPage(req, res) {
       )
     }
 
-    if (followCreated) {
+    if (
+  followCreated &&
+  String(authorPage.user_id) !==
+    String(userId)
+) {
   const { data: reader, error: readerError } = await supabase
     .from('users')
     .select('id, name, username, avatar_url')
