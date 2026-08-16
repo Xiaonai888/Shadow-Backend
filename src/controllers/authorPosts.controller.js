@@ -1155,19 +1155,24 @@ function publicAuthorPostComment(
 async function getVisibleAuthorPostCommentCount(postId) {
   const {
     data: visibleParents,
-    count: parentCount,
     error: parentError,
   } = await supabase
     .from('author_page_post_comments')
-    .select('id', { count: 'exact' })
+    .select('id, deleted_at')
     .eq('post_id', postId)
     .eq('is_hidden', false)
-    .is('deleted_at', null)
     .is('parent_id', null)
 
   if (parentError) throw parentError
 
-  const parentIds = (visibleParents || [])
+  const parents = visibleParents || []
+
+  const activeParentCount =
+    parents.filter(
+      (item) => !item.deleted_at
+    ).length
+
+  const parentIds = parents
     .map((item) => item.id)
     .filter(Boolean)
 
@@ -1186,10 +1191,11 @@ async function getVisibleAuthorPostCommentCount(postId) {
       .in('parent_id', parentIds)
 
     if (error) throw error
+
     replyCount = Number(count || 0)
   }
 
-  return Number(parentCount || 0) + replyCount
+  return activeParentCount + replyCount
 }
 
 export async function getAuthorPostCommentById(req, res) {
