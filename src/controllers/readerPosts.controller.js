@@ -2601,13 +2601,16 @@ export async function getReaderPostsFeed(
       req.query.limit
     )
 
+    const snapshotAt =
+      new Date().toISOString()
+
     const { data, error } = await supabase
       .from('reader_posts')
       .select('*')
       .is('deleted_at', null)
       .lte(
         'publish_at',
-        new Date().toISOString()
+        snapshotAt
       )
       .order('publish_at', {
         ascending: false,
@@ -2645,10 +2648,15 @@ export async function getReaderPostsFeed(
           )
       )
 
-    const posts = mergeTimelinePosts(
-      [standardPosts, echoPosts],
-      limit
-    )
+    const posts =
+      mergeRecommendedReaderPosts(
+        [
+          standardPosts,
+          echoPosts,
+        ],
+        limit,
+        snapshotAt
+      )
 
     return res.status(200).json({
       ok: true,
@@ -2679,9 +2687,6 @@ export async function getMyReaderPosts(
     const limit = getLimit(
       req.query.limit
     )
-
-    const snapshotAt =
-  new Date().toISOString()
 
     const { data, error } = await supabase
       .from('reader_posts')
@@ -2803,9 +2808,9 @@ export async function getReaderPostsByUsername(
         .eq('user_id', user.id)
         .is('deleted_at', null)
         .lte(
-  'publish_at',
-  snapshotAt
-)
+          'publish_at',
+          new Date().toISOString()
+        )
         .order('publish_at', {
           ascending: false,
         })
@@ -2842,15 +2847,10 @@ export async function getReaderPostsByUsername(
           )
       )
 
-    const posts =
-  mergeRecommendedReaderPosts(
-    [
-      standardPosts,
-      echoPosts,
-    ],
-    limit,
-    snapshotAt
-  )
+    const posts = mergeTimelinePosts(
+      [standardPosts, echoPosts],
+      limit
+    )
 
     return res.status(200).json({
       ok: true,
