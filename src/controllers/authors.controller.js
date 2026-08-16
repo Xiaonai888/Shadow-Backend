@@ -940,12 +940,7 @@ export async function followAuthorPage(req, res) {
       })
     }
 
-    if (String(authorPage.user_id) === String(userId)) {
-      return res.status(400).json({
-        ok: false,
-        message: 'You cannot follow your own author page',
-      })
-    }
+    
 
     const alreadyFollowing = await getFollowStatus(
       authorPage.id,
