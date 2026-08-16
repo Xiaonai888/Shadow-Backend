@@ -1257,32 +1257,71 @@ export async function getAuthorPostCommentById(req, res) {
     }
 
     let parentComment = null
+let parentReplyTotal = 0
 
-    if (comment.parent_id) {
-      let parentQuery = supabase
-        .from('author_page_post_comments')
-        .select('*, user:users(id, name, username, avatar_url, role)')
-        .eq('id', comment.parent_id)
-        .eq('post_id', postId)
+if (comment.parent_id) {
+  let parentQuery = supabase
+    .from('author_page_post_comments')
+    .select('*, user:users(id, name, username, avatar_url, role)')
+    .eq('id', comment.parent_id)
+    .eq('post_id', postId)
 
-      if (!isAuthorPageOwner) {
-        parentQuery = parentQuery.eq('is_hidden', false)
-      }
+  if (!isAuthorPageOwner) {
+    parentQuery = parentQuery.eq(
+      'is_hidden',
+      false
+    )
+  }
 
-      const { data, error } =
-        await parentQuery.maybeSingle()
+  const { data, error } =
+    await parentQuery.maybeSingle()
 
-      if (error) throw error
+  if (error) throw error
 
-      if (!data && !isAuthorPageOwner) {
-        return res.status(404).json({
-          ok: false,
-          message: 'Comment not found',
-        })
-      }
+  if (!data && !isAuthorPageOwner) {
+    return res.status(404).json({
+      ok: false,
+      message: 'Comment not found',
+    })
+  }
 
-      parentComment = data || null
+  parentComment = data || null
+
+  if (parentComment) {
+    let replyCountQuery = supabase
+      .from('author_page_post_comments')
+      .select('id', {
+        count: 'exact',
+        head: true,
+      })
+      .eq('post_id', postId)
+      .eq(
+        'parent_id',
+        parentComment.id
+      )
+      .is('deleted_at', null)
+
+    if (!isAuthorPageOwner) {
+      replyCountQuery =
+        replyCountQuery.eq(
+          'is_hidden',
+          false
+        )
     }
+
+    const {
+      count,
+      error: replyCountError,
+    } = await replyCountQuery
+
+    if (replyCountError) {
+      throw replyCountError
+    }
+
+    parentReplyTotal =
+      Number(count || 0)
+  }
+}
 
     const likedIds = await getAuthorPostCommentLikedIds(
       userId,
@@ -1293,8 +1332,17 @@ export async function getAuthorPostCommentById(req, res) {
       ok: true,
       comment: publicAuthorPostComment(comment, likedIds),
       parent_comment: parentComment
-        ? publicAuthorPostComment(parentComment, likedIds)
-        : null,
+  ? {
+      ...publicAuthorPostComment(
+        parentComment,
+        likedIds
+      ),
+      reply_total: parentReplyTotal,
+      reply_page: 0,
+      reply_has_more:
+        parentReplyTotal > 1,
+    }
+  : null,
     })
   } catch (error) {
     console.error('GET AUTHOR POST COMMENT BY ID ERROR:', error)
