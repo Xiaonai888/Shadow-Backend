@@ -356,10 +356,33 @@ export async function getTopAuthorPages(req, res) {
       )
     )
 
+    const maxResults = 100
+    const maxPage = Math.max(
+      1,
+      Math.ceil(maxResults / limit)
+    )
+    const rawPage = Number(req.query.page || 1)
+    const page = Math.min(
+      maxPage,
+      Math.max(
+        1,
+        Number.isFinite(rawPage)
+          ? Math.floor(rawPage)
+          : 1
+      )
+    )
+
+    const offset = (page - 1) * limit
+    const canHaveMore =
+      offset + limit < maxResults
+    const rangeEnd = canHaveMore
+      ? offset + limit
+      : offset + limit - 1
+
     const userId = getOptionalUserId(req)
     const ageAccess = await getReaderAgeAccess(req)
 
-    const { data: pages, error } = await supabase
+    const { data: pageRows, error } = await supabase
       .from('author_pages')
       .select(
         'id, user_id, page_name, page_username, page_slug, bio, avatar_url, cover_url, status, total_stories, total_followers, created_at, updated_at'
@@ -368,12 +391,21 @@ export async function getTopAuthorPages(req, res) {
       .order('total_followers', { ascending: false })
       .order('updated_at', { ascending: false })
       .order('id', { ascending: true })
-      .limit(limit)
+      .range(offset, rangeEnd)
 
     if (error) throw error
 
-    const authorPageIds = (pages || [])
-      .map((page) => page.id)
+    const hasMore =
+      canHaveMore &&
+      (pageRows || []).length > limit
+
+    const pages = (pageRows || []).slice(
+      0,
+      limit
+    )
+
+    const authorPageIds = pages
+      .map((authorPage) => authorPage.id)
       .filter(Boolean)
 
     const storyCountByAuthorId = new Map()
@@ -403,7 +435,9 @@ export async function getTopAuthorPages(req, res) {
         storyCountByAuthorId.set(
           story.author_id,
           Number(
-            storyCountByAuthorId.get(story.author_id) || 0
+            storyCountByAuthorId.get(
+              story.author_id
+            ) || 0
           ) + 1
         )
       }
@@ -421,24 +455,32 @@ export async function getTopAuthorPages(req, res) {
         if (followsError) throw followsError
 
         for (const follow of follows || []) {
-          followingPageIds.add(follow.author_page_id)
+          followingPageIds.add(
+            follow.author_page_id
+          )
         }
       }
     }
 
-    const authorPages = (pages || []).map(
-      (page, index) => ({
+    const authorPages = pages.map(
+      (authorPage, index) => ({
         ...publicAuthorPage({
-          ...page,
+          ...authorPage,
           total_stories: Number(
-            storyCountByAuthorId.get(page.id) || 0
+            storyCountByAuthorId.get(
+              authorPage.id
+            ) || 0
           ),
         }),
-        rank: index + 1,
-        is_following: followingPageIds.has(page.id),
+        rank: offset + index + 1,
+        is_following:
+          followingPageIds.has(
+            authorPage.id
+          ),
         is_owner: Boolean(
           userId &&
-          String(page.user_id) === String(userId)
+          String(authorPage.user_id) ===
+            String(userId)
         ),
       })
     )
@@ -446,10 +488,16 @@ export async function getTopAuthorPages(req, res) {
     return res.status(200).json({
       ok: true,
       author_pages: authorPages,
+      page,
       limit,
+      has_more: hasMore,
+      max_results: maxResults,
     })
   } catch (error) {
-    console.error('GET TOP AUTHOR PAGES ERROR:', error)
+    console.error(
+      'GET TOP AUTHOR PAGES ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
@@ -458,7 +506,6 @@ export async function getTopAuthorPages(req, res) {
     })
   }
 }
-
 
 export async function getAuthorPageFollowers(req, res) {
   try {
