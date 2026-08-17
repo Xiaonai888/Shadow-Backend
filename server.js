@@ -73,6 +73,7 @@ import adminChatStoryGalleryRoutes from './src/routes/adminChatStoryGallery.rout
 import adminMediaLibraryRoutes from './src/routes/adminMediaLibrary.routes.js'
 import adminChatEvidenceRoutes from './src/routes/adminChatEvidence.routes.js'
 import { startChatRetentionCleanup } from './src/services/chatRetentionCleanup.service.js'
+import monthlyVoteRoutes from './src/routes/monthlyVote.routes.js'
 
 dotenv.config()
 
@@ -581,6 +582,7 @@ app.use('/api/reader-posts', communityRouteSpamGuard, readerPostsRoutes)
 app.use('/api/reading-progress', readingProgressSpamGuard, readingProgressRoutes)
 app.use('/api/reader-presence', readerActionSpamGuard, readerPresenceRoutes)
 app.use('/api/share-profile', mediaUploadRouteSpamGuard, shareProfileRoutes)
+app.use('/api/monthly-vote', taskSpamGuard, monthlyVoteRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
