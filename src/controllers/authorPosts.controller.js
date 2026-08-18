@@ -89,7 +89,11 @@ function publicAuthorPost(post) {
     post_type: post.post_type || 'article',
     content: post.content || '',
     image_urls: normalizeImageUrls(post.image_urls),
-    status: post.status || 'active',
+photo_metadata: normalizePhotoMetadata(
+  post.photo_metadata,
+  normalizeImageUrls(post.image_urls)
+),
+status: post.status || 'active',
     is_pinned: Boolean(post.is_pinned),
     pinned_at: post.pinned_at || null,
     like_count: Number(post.like_count || 0),
@@ -104,6 +108,109 @@ function publicAuthorPost(post) {
 const AUTHOR_POSTS_DAILY_LIMIT = 5
 const AUTHOR_POST_IMAGES_LIMIT = 5
 const AUTHOR_POST_CONTENT_LIMIT = 10000
+const AUTHOR_PHOTO_CAPTION_LIMIT = 2000
+const AUTHOR_PHOTO_ALT_TEXT_LIMIT = 500
+
+function normalizePhotoMetadata(
+  value,
+  imageUrls = [],
+  fallback = []
+) {
+  const source =
+    value === undefined
+      ? fallback
+      : value
+
+  if (
+    source !== null &&
+    !Array.isArray(source)
+  ) {
+    const error = new Error(
+      'Photo metadata must be an array'
+    )
+    error.statusCode = 400
+    throw error
+  }
+
+  const items = Array.isArray(source)
+    ? source
+    : []
+
+  const byUrl = new Map()
+
+  for (const item of items) {
+    if (
+      !item ||
+      typeof item !== 'object' ||
+      Array.isArray(item)
+    ) {
+      continue
+    }
+
+    const url = String(
+      item.url || ''
+    ).trim()
+
+    if (url) {
+      byUrl.set(url, item)
+    }
+  }
+
+  return imageUrls.map((url, index) => {
+    const indexedItem =
+      items[index] &&
+      typeof items[index] === 'object' &&
+      !Array.isArray(items[index])
+        ? items[index]
+        : {}
+
+    const item =
+      byUrl.get(url) ||
+      indexedItem
+
+    const caption = String(
+      item.caption || ''
+    )
+      .replace(/\r\n/g, '\n')
+      .trim()
+
+    const altText = String(
+      item.alt_text ??
+        item.alt ??
+        ''
+    )
+      .replace(/\r\n/g, '\n')
+      .trim()
+
+    if (
+      caption.length >
+      AUTHOR_PHOTO_CAPTION_LIMIT
+    ) {
+      const error = new Error(
+        `Photo caption must be ${AUTHOR_PHOTO_CAPTION_LIMIT} characters or fewer`
+      )
+      error.statusCode = 400
+      throw error
+    }
+
+    if (
+      altText.length >
+      AUTHOR_PHOTO_ALT_TEXT_LIMIT
+    ) {
+      const error = new Error(
+        `Photo alt text must be ${AUTHOR_PHOTO_ALT_TEXT_LIMIT} characters or fewer`
+      )
+      error.statusCode = 400
+      throw error
+    }
+
+    return {
+      url,
+      caption,
+      alt_text: altText,
+    }
+  })
+}
 
 function getUtcDayRange(date = new Date()) {
   const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0))
@@ -367,7 +474,11 @@ export async function createMyAuthorPost(req, res) {
         ? req.body.imageUrls
         : []
     const imageUrls = normalizeImageUrls(imageUrlsRaw)
-    const allowedTypes = new Set(['article', 'announcement', 'update'])
+const photoMetadata = normalizePhotoMetadata(
+  req.body.photo_metadata,
+  imageUrls
+)
+const allowedTypes = new Set(['article', 'announcement', 'update'])
 
     if (!content && !imageUrls.length) {
       return res.status(400).json({ ok: false, message: 'Post content or photo is required' })
@@ -434,6 +545,7 @@ export async function createMyAuthorPost(req, res) {
         post_type: allowedTypes.has(postType) ? postType : 'article',
         content,
         image_urls: imageUrls,
+        photo_metadata: photoMetadata,
         status: 'active',
         is_pinned: false,
         updated_at: new Date().toISOString(),
@@ -462,9 +574,11 @@ export async function updateMyAuthorPost(req, res) {
     const postId = String(req.params.postId || '').trim()
     const body = req.body || {}
     const hasContent = Object.prototype.hasOwnProperty.call(body, 'content')
-    const hasImageUrls =
-      Object.prototype.hasOwnProperty.call(body, 'image_urls') ||
-      Object.prototype.hasOwnProperty.call(body, 'imageUrls')
+const hasImageUrls =
+  Object.prototype.hasOwnProperty.call(body, 'image_urls') ||
+  Object.prototype.hasOwnProperty.call(body, 'imageUrls')
+const hasPhotoMetadata =
+  Object.prototype.hasOwnProperty.call(body, 'photo_metadata')
 
     if (!userId) {
       return res.status(401).json({ ok: false, message: 'Unauthorized' })
@@ -474,7 +588,7 @@ export async function updateMyAuthorPost(req, res) {
       return res.status(400).json({ ok: false, message: 'Post ID is required' })
     }
 
-    if (!hasContent && !hasImageUrls) {
+    if (!hasContent && !hasImageUrls && !hasPhotoMetadata) {
       return res.status(400).json({ ok: false, message: 'Nothing to update' })
     }
 
@@ -561,10 +675,19 @@ export async function updateMyAuthorPost(req, res) {
       : String(existingPost.content || '').trim()
 
     const finalImageUrls = hasImageUrls
-      ? imageUrls
-      : normalizeImageUrls(existingPost.image_urls)
+  ? imageUrls
+  : normalizeImageUrls(existingPost.image_urls)
 
-    if (!finalContent && !finalImageUrls.length) {
+const finalPhotoMetadata =
+  normalizePhotoMetadata(
+    hasPhotoMetadata
+      ? body.photo_metadata
+      : undefined,
+    finalImageUrls,
+    existingPost.photo_metadata
+  )
+
+if (!finalContent && !finalImageUrls.length) {
       return res.status(400).json({
         ok: false,
         message: 'Post content or photo is required',
@@ -576,7 +699,11 @@ export async function updateMyAuthorPost(req, res) {
     }
 
     if (hasContent) updates.content = finalContent
-    if (hasImageUrls) updates.image_urls = finalImageUrls
+if (hasImageUrls) updates.image_urls = finalImageUrls
+if (hasImageUrls || hasPhotoMetadata) {
+  updates.photo_metadata =
+    finalPhotoMetadata
+}
 
     const { data: updatedPost, error: updateError } = await supabase
       .from('author_page_posts')
@@ -598,7 +725,7 @@ export async function updateMyAuthorPost(req, res) {
   } catch (error) {
     console.error('UPDATE MY AUTHOR POST ERROR:', error)
 
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       ok: false,
       message: 'Failed to update author post',
       error: error.message,
