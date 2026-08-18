@@ -17,6 +17,19 @@ function normalizeCandidate(candidate, rank) {
   }
 }
 
+function normalizeWinner(candidate) {
+  return {
+    id: candidate.id,
+    candidate_type: candidate.candidate_type,
+    entity_id: candidate.entity_id,
+    display_name: candidate.display_name || '',
+    display_subtitle: candidate.display_subtitle || '',
+    image_url: candidate.image_url || '',
+    vote_count: Number(candidate.vote_count || 0),
+    rank: Number(candidate.final_rank || 0),
+  }
+}
+
 function getVoteErrorStatus(message) {
   if (message.includes('INSUFFICIENT_BALANCE')) return 409
   if (message.includes('NOT_ACTIVE')) return 409
@@ -98,6 +111,85 @@ export async function getActiveMonthlyVote(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to load Monthly Vote',
+    })
+  }
+}
+
+export async function getPreviousMonthlyVoteWinners(req, res) {
+  try {
+    const requestedLimit = Number.parseInt(String(req.query?.limit || '6'), 10)
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.max(1, Math.min(requestedLimit, 12))
+      : 6
+
+    const { data: campaigns, error: campaignsError } = await supabase
+      .from('monthly_vote_campaigns')
+      .select('id, month_key, title, starts_at, ends_at, status')
+      .eq('status', 'ended')
+      .order('month_key', { ascending: false })
+      .limit(limit)
+
+    if (campaignsError) throw campaignsError
+
+    if (!campaigns?.length) {
+      return res.status(200).json({
+        ok: true,
+        campaigns: [],
+      })
+    }
+
+    const campaignIds = campaigns.map((campaign) => campaign.id)
+
+    const { data: winners, error: winnersError } = await supabase
+      .from('monthly_vote_candidates')
+      .select(
+        'id, campaign_id, candidate_type, entity_id, display_name, display_subtitle, image_url, vote_count, final_rank'
+      )
+      .in('campaign_id', campaignIds)
+      .not('final_rank', 'is', null)
+      .order('final_rank', { ascending: true })
+
+    if (winnersError) throw winnersError
+
+    const grouped = new Map()
+
+    for (const campaign of campaigns) {
+      grouped.set(campaign.id, {
+        ...campaign,
+        winners: {
+          story: [],
+          author: [],
+        },
+      })
+    }
+
+    for (const winner of winners || []) {
+      const campaign = grouped.get(winner.campaign_id)
+      if (!campaign) continue
+
+      const list =
+        winner.candidate_type === 'author'
+          ? campaign.winners.author
+          : campaign.winners.story
+
+      list.push(normalizeWinner(winner))
+    }
+
+    for (const campaign of grouped.values()) {
+      campaign.winners.story.sort((a, b) => a.rank - b.rank)
+      campaign.winners.author.sort((a, b) => a.rank - b.rank)
+    }
+
+    return res.status(200).json({
+      ok: true,
+      campaigns: campaigns.map((campaign) => grouped.get(campaign.id)),
+    })
+  } catch (error) {
+    console.error('GET PREVIOUS MONTHLY VOTE WINNERS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load previous Monthly Vote winners',
     })
   }
 }
