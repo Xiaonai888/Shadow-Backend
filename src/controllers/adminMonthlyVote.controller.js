@@ -620,3 +620,75 @@ export async function removeMonthlyVoteCandidate(req, res) {
     })
   }
 }
+
+export async function finalizeMonthlyVoteCampaign(req, res) {
+  try {
+    const campaignId = cleanText(req.params?.campaignId)
+
+    if (!isUuid(campaignId)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Campaign id is not valid',
+      })
+    }
+
+    const { data, error } = await supabase.rpc('finalize_monthly_vote', {
+      p_campaign_id: campaignId,
+    })
+
+    if (error) {
+      const message = String(error.message || '')
+
+      if (message.includes('CAMPAIGN_NOT_FOUND')) {
+        return res.status(404).json({
+          ok: false,
+          message: 'Monthly Vote campaign not found',
+        })
+      }
+
+      if (message.includes('CAMPAIGN_CANCELLED')) {
+        return res.status(409).json({
+          ok: false,
+          message: 'Cancelled campaign cannot be finalized',
+        })
+      }
+
+      if (message.includes('CAMPAIGN_NOT_STARTED')) {
+        return res.status(409).json({
+          ok: false,
+          message: 'Draft campaign cannot be finalized',
+        })
+      }
+
+      if (message.includes('NOT_FINISHED')) {
+        return res.status(409).json({
+          ok: false,
+          message: 'Monthly Vote has not reached its end time yet',
+        })
+      }
+
+      throw error
+    }
+
+    const result = Array.isArray(data) ? data[0] : data
+
+    return res.status(200).json({
+      ok: true,
+      result: {
+        campaign_id: result?.campaign_id || campaignId,
+        campaign_status: result?.campaign_status || 'ended',
+        story_winners: Number(result?.story_winners || 0),
+        author_winners: Number(result?.author_winners || 0),
+      },
+    })
+  } catch (error) {
+    console.error('ADMIN FINALIZE MONTHLY VOTE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to finalize Monthly Vote',
+      error: error.message,
+    })
+  }
+}
+
