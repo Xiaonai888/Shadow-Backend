@@ -564,7 +564,7 @@ const allowedTypes = new Set(['article', 'announcement', 'update'])
     })
   } catch (error) {
     console.error('CREATE MY AUTHOR POST ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to create author post', error: error.message })
+    return res.status(error.statusCode || 500).json({ ok: false, message: error.message || 'Failed to create author post' })
   }
 }
 
