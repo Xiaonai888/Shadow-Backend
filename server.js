@@ -75,7 +75,7 @@ import adminChatEvidenceRoutes from './src/routes/adminChatEvidence.routes.js'
 import { startChatRetentionCleanup } from './src/services/chatRetentionCleanup.service.js'
 import monthlyVoteRoutes from './src/routes/monthlyVote.routes.js'
 import adminMonthlyVoteRoutes from './src/routes/adminMonthlyVote.routes.js'
-
+import adminRolesRoutes from './src/routes/adminRoles.routes.js'
 dotenv.config()
 
 const app = express()
@@ -585,6 +585,7 @@ app.use('/api/reader-presence', readerActionSpamGuard, readerPresenceRoutes)
 app.use('/api/share-profile', mediaUploadRouteSpamGuard, shareProfileRoutes)
 app.use('/api/monthly-vote', taskSpamGuard, monthlyVoteRoutes)
 app.use('/api/admin/monthly-vote', adminMonthlyVoteRoutes)
+app.use('/api/admin/roles', adminRolesRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
