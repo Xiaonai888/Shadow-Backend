@@ -692,3 +692,610 @@ export async function finalizeMonthlyVoteCampaign(req, res) {
   }
 }
 
+const MONTHLY_VOTE_BACKGROUND_TYPES = ['solid', 'gradient', 'image']
+
+function limitedMonthlyVoteText(value, maxLength) {
+  return cleanText(value).slice(0, maxLength)
+}
+
+function normalizeMonthlyVoteBoolean(value) {
+  if (typeof value === 'boolean') return value
+  if (value === 'true' || value === 1 || value === '1') return true
+  if (value === 'false' || value === 0 || value === '0') return false
+  return null
+}
+
+function normalizeMonthlyVoteColor(value) {
+  const color = cleanText(value)
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : ''
+}
+
+function normalizeMonthlyVoteUrl(value) {
+  const raw = cleanText(value)
+  if (!raw) return ''
+  if (raw.startsWith('/') && !raw.startsWith('//')) return raw
+
+  try {
+    const url = new URL(raw)
+    return ['http:', 'https:'].includes(url.protocol) ? raw : null
+  } catch {
+    return null
+  }
+}
+
+function normalizeMonthlyVoteDate(value) {
+  if (value === null || value === undefined || value === '') return null
+  const raw = cleanText(value)
+  return Number.isFinite(new Date(raw).getTime()) ? raw : undefined
+}
+
+async function requireMonthlyVoteCampaign(campaignId) {
+  const { data, error } = await supabase
+    .from('monthly_vote_campaigns')
+    .select('id, title, month_key, status')
+    .eq('id', campaignId)
+    .maybeSingle()
+
+  if (error) throw error
+  return data || null
+}
+
+function publicMonthlyVoteDesign(row) {
+  if (!row) return null
+
+  return {
+    id: row.id,
+    campaign_id: row.campaign_id,
+    badge_text: row.badge_text || '',
+    hero_title: row.hero_title || '',
+    hero_description: row.hero_description || '',
+    hero_image_url: row.hero_image_url || '',
+    hero_image_storage_key: row.hero_image_storage_key || '',
+    background_type: row.background_type || 'gradient',
+    background_value: row.background_value || '',
+    text_color: row.text_color || '#111827',
+    accent_color: row.accent_color || '#ff3f70',
+    cta_text: row.cta_text || '',
+    cta_url: row.cta_url || '',
+    show_hero_image: Boolean(row.show_hero_image),
+    show_countdown: Boolean(row.show_countdown),
+    show_vote_balance: Boolean(row.show_vote_balance),
+    show_top_three: Boolean(row.show_top_three),
+    show_candidate_list: Boolean(row.show_candidate_list),
+    is_published: Boolean(row.is_published),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
+}
+
+function publicMonthlyVoteAnnouncement(row) {
+  return {
+    id: row.id,
+    campaign_id: row.campaign_id,
+    badge_text: row.badge_text || '',
+    title: row.title || '',
+    description: row.description || '',
+    image_url: row.image_url || '',
+    image_storage_key: row.image_storage_key || '',
+    button_text: row.button_text || '',
+    button_url: row.button_url || '',
+    background_color: row.background_color || '#ffffff',
+    text_color: row.text_color || '#111827',
+    accent_color: row.accent_color || '#ff3f70',
+    starts_at: row.starts_at || null,
+    ends_at: row.ends_at || null,
+    sort_order: Number(row.sort_order || 0),
+    is_visible: Boolean(row.is_visible),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
+}
+
+function buildMonthlyVoteDesignPatch(body) {
+  const patch = {}
+
+  if (body?.badge_text !== undefined) {
+    patch.badge_text = limitedMonthlyVoteText(body.badge_text, 50)
+  }
+
+  if (body?.hero_title !== undefined) {
+    patch.hero_title = limitedMonthlyVoteText(body.hero_title, 120)
+  }
+
+  if (body?.hero_description !== undefined) {
+    patch.hero_description = limitedMonthlyVoteText(body.hero_description, 600)
+  }
+
+  if (body?.hero_image_url !== undefined) {
+    const value = normalizeMonthlyVoteUrl(body.hero_image_url)
+    if (value === null) return { error: 'hero_image_url is not valid' }
+    patch.hero_image_url = value
+  }
+
+  if (body?.hero_image_storage_key !== undefined) {
+    patch.hero_image_storage_key = limitedMonthlyVoteText(body.hero_image_storage_key, 500)
+  }
+
+  if (body?.background_type !== undefined) {
+    const value = cleanText(body.background_type).toLowerCase()
+    if (!MONTHLY_VOTE_BACKGROUND_TYPES.includes(value)) {
+      return { error: 'background_type must be solid, gradient, or image' }
+    }
+    patch.background_type = value
+  }
+
+  if (body?.background_value !== undefined) {
+    patch.background_value = limitedMonthlyVoteText(body.background_value, 500)
+  }
+
+  for (const field of ['text_color', 'accent_color']) {
+    if (body?.[field] !== undefined) {
+      const value = normalizeMonthlyVoteColor(body[field])
+      if (!value) return { error: `${field} must be a 6-digit hex color` }
+      patch[field] = value
+    }
+  }
+
+  if (body?.cta_text !== undefined) {
+    patch.cta_text = limitedMonthlyVoteText(body.cta_text, 80)
+  }
+
+  if (body?.cta_url !== undefined) {
+    const value = normalizeMonthlyVoteUrl(body.cta_url)
+    if (value === null) return { error: 'cta_url is not valid' }
+    patch.cta_url = value
+  }
+
+  for (const field of [
+    'show_hero_image',
+    'show_countdown',
+    'show_vote_balance',
+    'show_top_three',
+    'show_candidate_list',
+  ]) {
+    if (body?.[field] !== undefined) {
+      const value = normalizeMonthlyVoteBoolean(body[field])
+      if (value === null) return { error: `${field} must be true or false` }
+      patch[field] = value
+    }
+  }
+
+  return { patch }
+}
+
+function buildMonthlyVoteAnnouncementPatch(body) {
+  const patch = {}
+
+  for (const [field, maxLength] of [
+    ['badge_text', 50],
+    ['title', 140],
+    ['description', 800],
+    ['image_storage_key', 500],
+    ['button_text', 80],
+  ]) {
+    if (body?.[field] !== undefined) {
+      patch[field] = limitedMonthlyVoteText(body[field], maxLength)
+    }
+  }
+
+  for (const field of ['image_url', 'button_url']) {
+    if (body?.[field] !== undefined) {
+      const value = normalizeMonthlyVoteUrl(body[field])
+      if (value === null) return { error: `${field} is not valid` }
+      patch[field] = value
+    }
+  }
+
+  for (const field of ['background_color', 'text_color', 'accent_color']) {
+    if (body?.[field] !== undefined) {
+      const value = normalizeMonthlyVoteColor(body[field])
+      if (!value) return { error: `${field} must be a 6-digit hex color` }
+      patch[field] = value
+    }
+  }
+
+  if (body?.starts_at !== undefined) {
+    const value = normalizeMonthlyVoteDate(body.starts_at)
+    if (value === undefined) return { error: 'starts_at is not valid' }
+    patch.starts_at = value
+  }
+
+  if (body?.ends_at !== undefined) {
+    const value = normalizeMonthlyVoteDate(body.ends_at)
+    if (value === undefined) return { error: 'ends_at is not valid' }
+    patch.ends_at = value
+  }
+
+  if (body?.sort_order !== undefined) {
+    const value = Number(body.sort_order)
+    if (!Number.isInteger(value) || value < -10000 || value > 10000) {
+      return { error: 'sort_order must be an integer between -10000 and 10000' }
+    }
+    patch.sort_order = value
+  }
+
+  if (body?.is_visible !== undefined) {
+    const value = normalizeMonthlyVoteBoolean(body.is_visible)
+    if (value === null) return { error: 'is_visible must be true or false' }
+    patch.is_visible = value
+  }
+
+  return { patch }
+}
+
+export async function getMonthlyVoteDesign(req, res) {
+  try {
+    const campaignId = cleanText(req.params?.campaignId)
+
+    if (!isUuid(campaignId)) {
+      return res.status(400).json({ ok: false, message: 'Campaign id is not valid' })
+    }
+
+    const campaign = await requireMonthlyVoteCampaign(campaignId)
+
+    if (!campaign) {
+      return res.status(404).json({ ok: false, message: 'Monthly Vote campaign not found' })
+    }
+
+    const { data, error } = await supabase
+      .from('monthly_vote_campaign_designs')
+      .select('*')
+      .eq('campaign_id', campaignId)
+      .maybeSingle()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      campaign,
+      design: publicMonthlyVoteDesign(data),
+    })
+  } catch (error) {
+    console.error('ADMIN GET MONTHLY VOTE DESIGN ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load Monthly Vote design',
+      error: error.message,
+    })
+  }
+}
+
+export async function saveMonthlyVoteDesign(req, res) {
+  try {
+    const campaignId = cleanText(req.params?.campaignId)
+
+    if (!isUuid(campaignId)) {
+      return res.status(400).json({ ok: false, message: 'Campaign id is not valid' })
+    }
+
+    const campaign = await requireMonthlyVoteCampaign(campaignId)
+
+    if (!campaign) {
+      return res.status(404).json({ ok: false, message: 'Monthly Vote campaign not found' })
+    }
+
+    const result = buildMonthlyVoteDesignPatch(req.body || {})
+
+    if (result.error) {
+      return res.status(400).json({ ok: false, message: result.error })
+    }
+
+    if (!Object.keys(result.patch).length) {
+      return res.status(400).json({ ok: false, message: 'No design changes were provided' })
+    }
+
+    const { data, error } = await supabase
+      .from('monthly_vote_campaign_designs')
+      .upsert(
+        {
+          campaign_id: campaignId,
+          ...result.patch,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'campaign_id' }
+      )
+      .select('*')
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      design: publicMonthlyVoteDesign(data),
+    })
+  } catch (error) {
+    console.error('ADMIN SAVE MONTHLY VOTE DESIGN ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to save Monthly Vote design',
+      error: error.message,
+    })
+  }
+}
+
+async function setMonthlyVoteDesignPublished(req, res, isPublished) {
+  try {
+    const campaignId = cleanText(req.params?.campaignId)
+
+    if (!isUuid(campaignId)) {
+      return res.status(400).json({ ok: false, message: 'Campaign id is not valid' })
+    }
+
+    const campaign = await requireMonthlyVoteCampaign(campaignId)
+
+    if (!campaign) {
+      return res.status(404).json({ ok: false, message: 'Monthly Vote campaign not found' })
+    }
+
+    const { data: existing, error: existingError } = await supabase
+      .from('monthly_vote_campaign_designs')
+      .select('id')
+      .eq('campaign_id', campaignId)
+      .maybeSingle()
+
+    if (existingError) throw existingError
+
+    if (!existing) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Save the Monthly Vote design before publishing it',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('monthly_vote_campaign_designs')
+      .update({
+        is_published: isPublished,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('campaign_id', campaignId)
+      .select('*')
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      design: publicMonthlyVoteDesign(data),
+    })
+  } catch (error) {
+    console.error('ADMIN PUBLISH MONTHLY VOTE DESIGN ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update Monthly Vote publish state',
+      error: error.message,
+    })
+  }
+}
+
+export async function publishMonthlyVoteDesign(req, res) {
+  return setMonthlyVoteDesignPublished(req, res, true)
+}
+
+export async function unpublishMonthlyVoteDesign(req, res) {
+  return setMonthlyVoteDesignPublished(req, res, false)
+}
+
+export async function listMonthlyVoteAnnouncements(req, res) {
+  try {
+    const campaignId = cleanText(req.params?.campaignId)
+
+    if (!isUuid(campaignId)) {
+      return res.status(400).json({ ok: false, message: 'Campaign id is not valid' })
+    }
+
+    const campaign = await requireMonthlyVoteCampaign(campaignId)
+
+    if (!campaign) {
+      return res.status(404).json({ ok: false, message: 'Monthly Vote campaign not found' })
+    }
+
+    const { data, error } = await supabase
+      .from('monthly_vote_announcements')
+      .select('*')
+      .eq('campaign_id', campaignId)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: true })
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      announcements: (data || []).map(publicMonthlyVoteAnnouncement),
+    })
+  } catch (error) {
+    console.error('ADMIN LIST MONTHLY VOTE ANNOUNCEMENTS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load Monthly Vote announcements',
+      error: error.message,
+    })
+  }
+}
+
+export async function createMonthlyVoteAnnouncement(req, res) {
+  try {
+    const campaignId = cleanText(req.params?.campaignId)
+
+    if (!isUuid(campaignId)) {
+      return res.status(400).json({ ok: false, message: 'Campaign id is not valid' })
+    }
+
+    const campaign = await requireMonthlyVoteCampaign(campaignId)
+
+    if (!campaign) {
+      return res.status(404).json({ ok: false, message: 'Monthly Vote campaign not found' })
+    }
+
+    const result = buildMonthlyVoteAnnouncementPatch(req.body || {})
+
+    if (result.error) {
+      return res.status(400).json({ ok: false, message: result.error })
+    }
+
+    const contentExists =
+      result.patch.badge_text ||
+      result.patch.title ||
+      result.patch.description ||
+      result.patch.image_url ||
+      result.patch.button_text
+
+    if (!contentExists) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Announcement needs a title, description, image, badge, or button',
+      })
+    }
+
+    const startsAt = result.patch.starts_at ?? null
+    const endsAt = result.patch.ends_at ?? null
+
+    if (
+      startsAt &&
+      endsAt &&
+      new Date(endsAt).getTime() <= new Date(startsAt).getTime()
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Announcement end time must be after start time',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('monthly_vote_announcements')
+      .insert({
+        campaign_id: campaignId,
+        ...result.patch,
+        updated_at: new Date().toISOString(),
+      })
+      .select('*')
+      .single()
+
+    if (error) throw error
+
+    return res.status(201).json({
+      ok: true,
+      announcement: publicMonthlyVoteAnnouncement(data),
+    })
+  } catch (error) {
+    console.error('ADMIN CREATE MONTHLY VOTE ANNOUNCEMENT ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to create Monthly Vote announcement',
+      error: error.message,
+    })
+  }
+}
+
+export async function updateMonthlyVoteAnnouncement(req, res) {
+  try {
+    const announcementId = cleanText(req.params?.announcementId)
+
+    if (!isUuid(announcementId)) {
+      return res.status(400).json({ ok: false, message: 'Announcement id is not valid' })
+    }
+
+    const { data: current, error: currentError } = await supabase
+      .from('monthly_vote_announcements')
+      .select('*')
+      .eq('id', announcementId)
+      .maybeSingle()
+
+    if (currentError) throw currentError
+
+    if (!current) {
+      return res.status(404).json({ ok: false, message: 'Announcement not found' })
+    }
+
+    const result = buildMonthlyVoteAnnouncementPatch(req.body || {})
+
+    if (result.error) {
+      return res.status(400).json({ ok: false, message: result.error })
+    }
+
+    if (!Object.keys(result.patch).length) {
+      return res.status(400).json({ ok: false, message: 'No announcement changes were provided' })
+    }
+
+    const finalStartsAt =
+      result.patch.starts_at !== undefined ? result.patch.starts_at : current.starts_at
+    const finalEndsAt =
+      result.patch.ends_at !== undefined ? result.patch.ends_at : current.ends_at
+
+    if (
+      finalStartsAt &&
+      finalEndsAt &&
+      new Date(finalEndsAt).getTime() <= new Date(finalStartsAt).getTime()
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Announcement end time must be after start time',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('monthly_vote_announcements')
+      .update({
+        ...result.patch,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', announcementId)
+      .select('*')
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      announcement: publicMonthlyVoteAnnouncement(data),
+    })
+  } catch (error) {
+    console.error('ADMIN UPDATE MONTHLY VOTE ANNOUNCEMENT ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update Monthly Vote announcement',
+      error: error.message,
+    })
+  }
+}
+
+export async function deleteMonthlyVoteAnnouncement(req, res) {
+  try {
+    const announcementId = cleanText(req.params?.announcementId)
+
+    if (!isUuid(announcementId)) {
+      return res.status(400).json({ ok: false, message: 'Announcement id is not valid' })
+    }
+
+    const { data: current, error: currentError } = await supabase
+      .from('monthly_vote_announcements')
+      .select('id')
+      .eq('id', announcementId)
+      .maybeSingle()
+
+    if (currentError) throw currentError
+
+    if (!current) {
+      return res.status(404).json({ ok: false, message: 'Announcement not found' })
+    }
+
+    const { error } = await supabase
+      .from('monthly_vote_announcements')
+      .delete()
+      .eq('id', announcementId)
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      deleted_id: announcementId,
+    })
+  } catch (error) {
+    console.error('ADMIN DELETE MONTHLY VOTE ANNOUNCEMENT ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to delete Monthly Vote announcement',
+      error: error.message,
+    })
+  }
+}
