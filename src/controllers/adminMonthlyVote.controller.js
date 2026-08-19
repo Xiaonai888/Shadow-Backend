@@ -151,6 +151,13 @@ export async function createMonthlyVoteCampaign(req, res) {
       })
     }
 
+    if (status === 'ended') {
+      return res.status(400).json({
+        ok: false,
+        message: 'Ended status can only be created by Finalize Winners',
+      })
+    }
+
     const startMs = new Date(startsAt).getTime()
     const endMs = new Date(endsAt).getTime()
 
@@ -299,6 +306,20 @@ export async function updateMonthlyVoteCampaign(req, res) {
         return res.status(400).json({
           ok: false,
           message: 'Status is not valid',
+        })
+      }
+
+      if (status === 'ended' && current.status !== 'ended') {
+        return res.status(409).json({
+          ok: false,
+          message: 'Use Finalize Winners to end a Monthly Vote campaign',
+        })
+      }
+
+      if (current.status === 'ended' && status !== 'ended') {
+        return res.status(409).json({
+          ok: false,
+          message: 'A finalized Monthly Vote campaign cannot be reopened',
         })
       }
 
@@ -629,6 +650,28 @@ export async function finalizeMonthlyVoteCampaign(req, res) {
       return res.status(400).json({
         ok: false,
         message: 'Campaign id is not valid',
+      })
+    }
+
+    const { data: campaign, error: campaignError } = await supabase
+      .from('monthly_vote_campaigns')
+      .select('id, status')
+      .eq('id', campaignId)
+      .maybeSingle()
+
+    if (campaignError) throw campaignError
+
+    if (!campaign) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Monthly Vote campaign not found',
+      })
+    }
+
+    if (campaign.status === 'ended') {
+      return res.status(409).json({
+        ok: false,
+        message: 'Monthly Vote campaign is already finalized',
       })
     }
 
