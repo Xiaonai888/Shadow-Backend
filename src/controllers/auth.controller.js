@@ -1223,55 +1223,22 @@ export async function adminResetPassword(req, res) {
 }
 
 export async function checkAdmin(req, res) {
-  try {
-    const adminId = req.admin?.admin_id || ''
-    const adminEmail = req.admin?.email || ''
+  const admin = req.admin || {}
 
-    let query = supabase
-      .from('admin_users')
-      .select('id, email, name, role, password_changed_at')
-      .limit(1)
-
-    if (adminId) {
-      query = query.eq('id', adminId)
-    } else if (adminEmail) {
-      query = query.eq('email', adminEmail)
-    } else {
-      return res.status(401).json({
-        ok: false,
-        message: 'Admin identity missing from token',
-      })
-    }
-
-    const { data, error } = await query.maybeSingle()
-
-    if (error) throw error
-
-    if (!data) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Admin account not found',
-      })
-    }
-
-    return res.status(200).json({
-      ok: true,
-      admin: {
-        id: data.id,
-        email: data.email,
-        name: data.name,
-        role: data.role,
-        password_changed_at: data.password_changed_at,
-      },
-    })
-  } catch (error) {
-    console.error('CHECK ADMIN ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load admin profile',
-    })
-  }
+  return res.status(200).json({
+    ok: true,
+    admin: {
+      id: admin.admin_id || '',
+      email: admin.email || '',
+      name: admin.name || admin.actor || '',
+      role: admin.role || '',
+      role_id: admin.role_id || null,
+      role_name: admin.role_name || '',
+      status: admin.status || 'active',
+      permission_keys: Array.isArray(admin.permission_keys) ? admin.permission_keys : [],
+      has_all_permissions: Boolean(admin.has_all_permissions),
+    },
+  })
 }
 
 export async function changeAdminPassword(req, res) {
