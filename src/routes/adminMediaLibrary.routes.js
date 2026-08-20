@@ -1,6 +1,6 @@
 import express from 'express'
 import multer from 'multer'
-import { requireAdmin } from '../middleware/auth.middleware.js'
+import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import {
   createMediaFolder,
   createMediaItem,
@@ -42,9 +42,12 @@ function runUpload(handler) {
   }
 }
 
-router.get('/', requireAdmin, getAdminMediaLibrary)
+const viewMediaLibrary = requireAdminPermission('media_library.view')
+const manageMediaLibrary = requireAdminPermission('media_library.manage')
 
-router.post('/upload', requireAdmin, runUpload(upload.array('images', 20)), async (req, res) => {
+router.get('/', viewMediaLibrary, getAdminMediaLibrary)
+
+router.post('/upload', manageMediaLibrary, runUpload(upload.array('images', 20)), async (req, res) => {
   const uploaded = []
 
   try {
@@ -70,14 +73,14 @@ router.post('/upload', requireAdmin, runUpload(upload.array('images', 20)), asyn
   }
 })
 
-router.post('/folders', requireAdmin, createMediaFolder)
-router.patch('/folders/:folderId', requireAdmin, updateMediaFolder)
-router.post('/folders/:folderId/cover', requireAdmin, runUpload(upload.single('cover')), uploadMediaFolderCover)
-router.delete('/folders/:folderId/cover', requireAdmin, removeMediaFolderCover)
-router.delete('/folders/:folderId', requireAdmin, deleteMediaFolder)
+router.post('/folders', manageMediaLibrary, createMediaFolder)
+router.patch('/folders/:folderId', manageMediaLibrary, updateMediaFolder)
+router.post('/folders/:folderId/cover', manageMediaLibrary, runUpload(upload.single('cover')), uploadMediaFolderCover)
+router.delete('/folders/:folderId/cover', manageMediaLibrary, removeMediaFolderCover)
+router.delete('/folders/:folderId', manageMediaLibrary, deleteMediaFolder)
 
-router.post('/images', requireAdmin, createMediaItem)
-router.patch('/images/:imageId', requireAdmin, updateMediaItem)
-router.delete('/images/:imageId', requireAdmin, deleteMediaItem)
+router.post('/images', manageMediaLibrary, createMediaItem)
+router.patch('/images/:imageId', manageMediaLibrary, updateMediaItem)
+router.delete('/images/:imageId', manageMediaLibrary, deleteMediaItem)
 
 export default router
