@@ -15,13 +15,13 @@ import { requireAdminPermission } from '../middleware/adminPermission.middleware
 
 const router = express.Router()
 
-router.get('/overview', requireAdmin, getAdminCommunityOverview)
-router.get('/readers', requireAdmin, getAdminCommunityReaders)
+router.get('/overview', requireAdminPermission('community.view'), getAdminCommunityOverview)
+router.get('/readers', requireAdminPermission('community.view'), getAdminCommunityReaders)
 router.get('/readers/today', requireAdminPermission('readers.view'), getAdminCommunityReadersToday)
 router.get('/reader-presence', requireAdmin, getAdminReaderPresence)
-router.get('/authors', requireAdmin, getAdminCommunityAuthors)
-router.get('/visitors/overview', requireAdmin, getAdminCommunityVisitorOverview)
-router.get('/visitors', requireAdmin, getAdminCommunityVisitors)
+router.get('/authors', requireAdminPermission('community.view'), getAdminCommunityAuthors)
+router.get('/visitors/overview', requireAdminPermission('community.view'), getAdminCommunityVisitorOverview)
+router.get('/visitors', requireAdminPermission('community.view'), getAdminCommunityVisitors)
 router.get('/dashboard/growth', requireAdmin, getAdminDashboardGrowth)
 router.get('/dashboard/orders', requireAdmin, getAdminDashboardPaidOrders)
 
