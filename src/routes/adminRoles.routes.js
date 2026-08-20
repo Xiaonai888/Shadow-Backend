@@ -1,9 +1,11 @@
 import express from 'express'
 import { supabase } from '../config/supabase.js'
-import { requireAdmin } from '../middleware/auth.middleware.js'
+import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { getAdminActor, logAdminActivity } from '../services/adminActivity.service.js'
 
 const router = express.Router()
+const viewRoles = requireAdminPermission('roles.view')
+const manageRoles = requireAdminPermission('roles.manage')
 
 const OWNER_ONLY_PERMISSION_KEYS = new Set([
   'roles.manage',
@@ -235,7 +237,7 @@ async function replaceRolePermissions(roleId, permissionIds) {
   throw insertError
 }
 
-router.get('/permissions', requireAdmin, async (req, res) => {
+router.get('/permissions', viewRoles, async (req, res) => {
   try {
     const permissions = await loadAllPermissions()
 
@@ -255,7 +257,7 @@ router.get('/permissions', requireAdmin, async (req, res) => {
   }
 })
 
-router.get('/', requireAdmin, async (req, res) => {
+router.get('/', viewRoles, async (req, res) => {
   try {
     const roles = await loadRolesWithPermissions()
 
@@ -273,7 +275,7 @@ router.get('/', requireAdmin, async (req, res) => {
   }
 })
 
-router.post('/', requireAdmin, requireOwner, async (req, res) => {
+router.post('/', manageRoles, requireOwner, async (req, res) => {
   let createdRole = null
 
   try {
@@ -367,7 +369,7 @@ router.post('/', requireAdmin, requireOwner, async (req, res) => {
   }
 })
 
-router.patch('/:roleId', requireAdmin, requireOwner, async (req, res) => {
+router.patch('/:roleId', manageRoles, requireOwner, async (req, res) => {
   try {
     const role = await loadRole(req.params.roleId)
 
@@ -463,7 +465,7 @@ router.patch('/:roleId', requireAdmin, requireOwner, async (req, res) => {
   }
 })
 
-router.delete('/:roleId', requireAdmin, requireOwner, async (req, res) => {
+router.delete('/:roleId', manageRoles, requireOwner, async (req, res) => {
   try {
     const role = await loadRole(req.params.roleId)
 
