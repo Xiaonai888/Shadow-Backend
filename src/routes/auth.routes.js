@@ -12,6 +12,7 @@ import {
   adminLoginPasskeyPinResetEmailSend,
 } from '../controllers/auth.controller.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
+import { requireAdminSession } from '../middleware/adminPermission.middleware.js'
 import { verifyTurnstile } from '../middleware/turnstile.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 
@@ -45,6 +46,7 @@ router.post('/login/2fa/email/send', adminLoginLimit, adminLoginTwoFactorEmailSe
 router.post('/admin-forgot-password', adminResetRequestLimit, verifyTurnstile, adminForgotPassword)
 router.post('/admin-reset-password', adminResetConfirmLimit, verifyTurnstile, adminResetPassword)
 router.get('/me', requireAdmin, checkAdmin)
+router.get('/me', requireAdminSession, checkAdmin)
 router.patch('/change-password', requireAdmin, changeAdminPassword)
 router.post('/login/passkey-pin/reset/email/send', adminLoginLimit, adminLoginPasskeyPinResetEmailSend)
 router.post('/login/passkey-pin/reset/confirm', adminLoginLimit, adminLoginPasskeyPinResetConfirm)
