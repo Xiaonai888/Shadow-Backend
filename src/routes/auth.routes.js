@@ -46,7 +46,6 @@ router.post('/login/2fa/email/send', adminLoginLimit, adminLoginTwoFactorEmailSe
 router.post('/admin-forgot-password', adminResetRequestLimit, verifyTurnstile, adminForgotPassword)
 router.post('/admin-reset-password', adminResetConfirmLimit, verifyTurnstile, adminResetPassword)
 router.get('/me', requireAdmin, checkAdmin)
-router.get('/me', requireAdminSession, checkAdmin)
 router.patch('/change-password', requireAdmin, changeAdminPassword)
 router.post('/login/passkey-pin/reset/email/send', adminLoginLimit, adminLoginPasskeyPinResetEmailSend)
 router.post('/login/passkey-pin/reset/confirm', adminLoginLimit, adminLoginPasskeyPinResetConfirm)
