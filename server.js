@@ -130,8 +130,8 @@ function startStorageMigrationCleanupScheduler() {
   const enabled =
     String(
       process.env
-        .STORAGE_MIGRATION_CLEANUP_ENABLED ??
-        'true'
+  .STORAGE_MIGRATION_CLEANUP_ENABLED ??
+  'false'
     )
       .trim()
       .toLowerCase() !== 'false'
