@@ -7,17 +7,18 @@ import {
   requestShadowExclusive,
   updateShadowExclusiveSections,
 } from '../controllers/adminExclusive.controller.js'
-import { requireAdmin } from '../middleware/auth.middleware.js'
+import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 
 const router = express.Router()
 
-router.use(requireAdmin)
+const viewExclusive = requireAdminPermission('shadow_exclusive.view')
+const manageExclusive = requireAdminPermission('shadow_exclusive.manage')
 
-router.get('/stories', listAdminExclusiveStories)
-router.patch('/stories/:storyId/request', requestShadowExclusive)
-router.patch('/stories/:storyId/approve', approveShadowExclusive)
-router.patch('/stories/:storyId/reject', rejectShadowExclusive)
-router.patch('/stories/:storyId/remove', removeShadowExclusive)
-router.patch('/stories/:storyId/sections', updateShadowExclusiveSections)
+router.get('/stories', viewExclusive, listAdminExclusiveStories)
+router.patch('/stories/:storyId/request', manageExclusive, requestShadowExclusive)
+router.patch('/stories/:storyId/approve', manageExclusive, approveShadowExclusive)
+router.patch('/stories/:storyId/reject', manageExclusive, rejectShadowExclusive)
+router.patch('/stories/:storyId/remove', manageExclusive, removeShadowExclusive)
+router.patch('/stories/:storyId/sections', manageExclusive, updateShadowExclusiveSections)
 
 export default router
