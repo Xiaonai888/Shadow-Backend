@@ -53,7 +53,7 @@ function cleanupEnabled() {
   return (
     clean(
       process.env.STORAGE_MIGRATION_CLEANUP_ENABLED ||
-        'true'
+  'false'
     ).toLowerCase() !== 'false'
   )
 }
