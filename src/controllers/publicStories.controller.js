@@ -1131,11 +1131,11 @@ export async function getPublicStories(req, res) {
     const normalizedSort = sort.toLowerCase()
     const queryLimit = isDiscoverMoreSort(sort)
       ? Math.min(Math.max(limit * 8, 24), 48)
-      : ['episode_updated', 'weekly_updates'].includes(
-            normalizedSort
-          )
-        ? 500
-        : limit
+      : normalizedSort === 'episode_updated'
+  ? Math.min(Math.max(limit * 2, 30), 150)
+  : normalizedSort === 'weekly_updates'
+    ? 500
+    : limit
 
     const authorId = String(
       req.query.authorId ||
