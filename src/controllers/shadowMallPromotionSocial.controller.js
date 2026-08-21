@@ -171,13 +171,18 @@ function publicUser(user, fallbackId = null) {
 
 function publicComment(
   comment,
-  likedIds = new Set()
+  reactionMap = new Map()
 ) {
   if (!comment) return null
 
   const user = Array.isArray(comment.user)
     ? comment.user[0]
     : comment.user
+
+  const reactionType =
+    reactionMap.get(
+      String(comment.id)
+    ) || null
 
   return {
     id: comment.id,
@@ -189,9 +194,8 @@ function publicComment(
     parent_id: comment.parent_id || null,
     text: comment.text || '',
     likes: Number(comment.likes || 0),
-    liked: likedIds.has(
-      String(comment.id)
-    ),
+    liked: Boolean(reactionType),
+    reaction_type: reactionType,
     is_hidden: Boolean(
       comment.is_hidden
     ),
@@ -221,7 +225,10 @@ function publicComment(
       comment.replies
     )
       ? comment.replies.map((reply) =>
-          publicComment(reply, likedIds)
+          publicComment(
+            reply,
+            reactionMap
+          )
         )
       : [],
   }
@@ -357,7 +364,7 @@ async function updatePromotionCommentCount(
   if (error) throw error
 }
 
-async function readLikedCommentIds(
+async function readCommentReactionMap(
   userId,
   commentIds
 ) {
@@ -365,24 +372,42 @@ async function readLikedCommentIds(
     !userId ||
     !commentIds.length
   ) {
-    return new Set()
+    return new Map()
   }
 
   const { data, error } = await supabase
     .from(
       'shadow_mall_promotion_comment_likes'
     )
-    .select('comment_id')
+    .select(
+      'comment_id, reaction_type'
+    )
     .eq('user_id', userId)
     .in('comment_id', commentIds)
 
   if (error) throw error
 
-  return new Set(
-    (data || []).map((item) =>
-      String(item.comment_id)
-    )
-  )
+  const reactionMap = new Map()
+
+  for (const item of data || []) {
+    const reactionType =
+      normalizeReactionType(
+        item.reaction_type
+      )
+
+    if (
+      ALLOWED_REACTIONS.has(
+        reactionType
+      )
+    ) {
+      reactionMap.set(
+        String(item.comment_id),
+        reactionType
+      )
+    }
+  }
+
+  return reactionMap
 }
 
 async function readEchoCount(
@@ -824,8 +849,8 @@ export async function getShadowMallPromotionComments(
         ),
       ])
 
-    const likedIds =
-      await readLikedCommentIds(
+    const reactionMap =
+      await readCommentReactionMap(
         userId,
         allCommentIds
       )
@@ -862,7 +887,7 @@ export async function getShadowMallPromotionComments(
         (comment) =>
           publicComment(
             comment,
-            likedIds
+            reactionMap
           )
       ),
       page,
@@ -1132,12 +1157,14 @@ export async function updateOwnShadowMallPromotionComment(
       throw updateError
     }
 
-    const { data: liked } =
+    const { data: reaction } =
       await supabase
         .from(
           'shadow_mall_promotion_comment_likes'
         )
-        .select('id')
+        .select(
+          'comment_id, reaction_type'
+        )
         .eq(
           'comment_id',
           commentId
@@ -1145,13 +1172,31 @@ export async function updateOwnShadowMallPromotionComment(
         .eq('user_id', userId)
         .maybeSingle()
 
+    const reactionMap = new Map()
+
+    if (reaction?.comment_id) {
+      const reactionType =
+        normalizeReactionType(
+          reaction.reaction_type
+        )
+
+      if (
+        ALLOWED_REACTIONS.has(
+          reactionType
+        )
+      ) {
+        reactionMap.set(
+          String(reaction.comment_id),
+          reactionType
+        )
+      }
+    }
+
     return res.status(200).json({
       ok: true,
       comment: publicComment(
         updatedComment,
-        liked
-          ? new Set([commentId])
-          : new Set()
+        reactionMap
       ),
     })
   } catch (error) {
@@ -1273,11 +1318,28 @@ export async function toggleShadowMallPromotionCommentLike(
     const commentId = String(
       req.params.commentId || ''
     ).trim()
+    const reactionType =
+      normalizeReactionType(
+        req.body?.reaction_type ||
+          req.body?.reactionType
+      )
 
     if (!userId) {
       return res.status(401).json({
         ok: false,
         message: 'Unauthorized',
+      })
+    }
+
+    if (
+      !ALLOWED_REACTIONS.has(
+        reactionType
+      )
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          'Invalid reaction type',
       })
     }
 
@@ -1314,7 +1376,9 @@ export async function toggleShadowMallPromotionCommentLike(
       .from(
         'shadow_mall_promotion_comment_likes'
       )
-      .select('id')
+      .select(
+        'id, reaction_type'
+      )
       .eq('comment_id', commentId)
       .eq('user_id', userId)
       .maybeSingle()
@@ -1323,15 +1387,36 @@ export async function toggleShadowMallPromotionCommentLike(
       throw likeLookupError
     }
 
-    let liked = false
+    let liked = true
+    let activeReactionType =
+      reactionType
 
-    if (existingLike?.id) {
+    if (
+      existingLike?.reaction_type ===
+      reactionType
+    ) {
       const { error } =
         await supabase
           .from(
             'shadow_mall_promotion_comment_likes'
           )
           .delete()
+          .eq('id', existingLike.id)
+
+      if (error) throw error
+
+      liked = false
+      activeReactionType = null
+    } else if (existingLike?.id) {
+      const { error } =
+        await supabase
+          .from(
+            'shadow_mall_promotion_comment_likes'
+          )
+          .update({
+            reaction_type:
+              reactionType,
+          })
           .eq('id', existingLike.id)
 
       if (error) throw error
@@ -1344,11 +1429,11 @@ export async function toggleShadowMallPromotionCommentLike(
           .insert({
             comment_id: commentId,
             user_id: userId,
+            reaction_type:
+              reactionType,
           })
 
       if (error) throw error
-
-      liked = true
     }
 
     const {
@@ -1386,11 +1471,13 @@ export async function toggleShadowMallPromotionCommentLike(
       ok: true,
       comment_id: commentId,
       liked,
+      reaction_type:
+        activeReactionType,
       likes,
     })
   } catch (error) {
     console.error(
-      'TOGGLE SHADOW MALL PROMOTION COMMENT LIKE ERROR:',
+      'TOGGLE SHADOW MALL PROMOTION COMMENT REACTION ERROR:',
       error
     )
 
@@ -1398,7 +1485,7 @@ export async function toggleShadowMallPromotionCommentLike(
       ok: false,
       message:
         error.message ||
-        'Failed to update like',
+        'Failed to update reaction',
     })
   }
 }
