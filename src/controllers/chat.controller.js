@@ -145,6 +145,7 @@ export async function getConversationMessagesController(
       userId: req.user?.user_id,
       conversationId: req.params.conversationId,
       before: req.query?.before,
+      after: req.query?.after,
       limit: req.query?.limit,
     })
 
