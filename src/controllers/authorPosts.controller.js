@@ -40,26 +40,53 @@ function getRequestUserId(req) {
   }
 }
 
-async function getAuthorPostCommentLikedIds(
+const AUTHOR_POST_COMMENT_REACTION_TYPES = new Set([
+  'love',
+  'haha',
+  'wow',
+  'sad',
+  'angry',
+  'support',
+  'touched',
+])
+
+function normalizeAuthorPostCommentReactionType(value) {
+  const reactionType = String(
+    value || 'love'
+  )
+    .trim()
+    .toLowerCase()
+
+  return AUTHOR_POST_COMMENT_REACTION_TYPES.has(
+    reactionType
+  )
+    ? reactionType
+    : 'love'
+}
+
+async function getAuthorPostCommentReactionMap(
   userId,
   commentIds
 ) {
   if (!userId || !commentIds.length) {
-    return new Set()
+    return new Map()
   }
 
   const { data, error } = await supabase
     .from('author_page_post_comment_likes')
-    .select('comment_id')
+    .select('comment_id, reaction_type')
     .eq('user_id', userId)
     .in('comment_id', commentIds)
 
   if (error) throw error
 
-  return new Set(
-    (data || []).map((item) =>
-      String(item.comment_id)
-    )
+  return new Map(
+    (data || []).map((item) => [
+      String(item.comment_id),
+      normalizeAuthorPostCommentReactionType(
+        item.reaction_type
+      ),
+    ])
   )
 }
 
@@ -1209,12 +1236,15 @@ export async function getAuthorPostReactions(req, res) {
 
 function publicAuthorPostComment(
   comment,
-  likedIds = new Set()
+  reactionMap = new Map()
 ) {
   const isDeleted = Boolean(comment.deleted_at)
   const relatedUser = Array.isArray(comment.user)
     ? comment.user[0]
     : comment.user
+  const reactionType = !isDeleted
+    ? reactionMap.get(String(comment.id)) || null
+    : null
 
   return {
     id: comment.id,
@@ -1234,9 +1264,8 @@ function publicAuthorPostComment(
     likes: isDeleted
       ? 0
       : Number(comment.likes || 0),
-    liked:
-      !isDeleted &&
-      likedIds.has(String(comment.id)),
+    liked: Boolean(reactionType),
+    reaction_type: reactionType,
     created_at: comment.created_at,
     updated_at: comment.updated_at,
     user: isDeleted
@@ -1272,7 +1301,7 @@ function publicAuthorPostComment(
       ? comment.replies.map((reply) =>
           publicAuthorPostComment(
             reply,
-            likedIds
+            reactionMap
           )
         )
       : [],
@@ -1450,19 +1479,23 @@ if (comment.parent_id) {
   }
 }
 
-    const likedIds = await getAuthorPostCommentLikedIds(
-      userId,
-      [comment.id, parentComment?.id].filter(Boolean)
-    )
+    const reactionMap =
+      await getAuthorPostCommentReactionMap(
+        userId,
+        [comment.id, parentComment?.id].filter(Boolean)
+      )
 
     return res.status(200).json({
       ok: true,
-      comment: publicAuthorPostComment(comment, likedIds),
+      comment: publicAuthorPostComment(
+        comment,
+        reactionMap
+      ),
       parent_comment: parentComment
   ? {
       ...publicAuthorPostComment(
         parentComment,
-        likedIds
+        reactionMap
       ),
       reply_total: parentReplyTotal,
       reply_page: 0,
@@ -1673,8 +1706,8 @@ if (!isAuthorPageOwner) {
       ])
       .filter(Boolean)
 
-    const likedIds =
-      await getAuthorPostCommentLikedIds(
+    const reactionMap =
+      await getAuthorPostCommentReactionMap(
         userId,
         commentIds
       )
@@ -1691,7 +1724,7 @@ if (!isAuthorPageOwner) {
       comments: comments.map((comment) => ({
         ...publicAuthorPostComment(
           comment,
-          likedIds
+          reactionMap
         ),
         reply_total: Number(
           comment.reply_total || 0
@@ -1828,8 +1861,8 @@ export async function getAuthorPostCommentReplies(
     if (repliesError) throw repliesError
 
     const replyRows = replies || []
-    const likedIds =
-      await getAuthorPostCommentLikedIds(
+    const reactionMap =
+      await getAuthorPostCommentReactionMap(
         userId,
         replyRows
           .map((reply) => reply.id)
@@ -1842,7 +1875,7 @@ export async function getAuthorPostCommentReplies(
       replies: replyRows.map((reply) =>
         publicAuthorPostComment(
           reply,
-          likedIds
+          reactionMap
         )
       ),
       total,
@@ -2167,6 +2200,12 @@ export async function setAuthorPostCommentHidden(
       throw updatePostError
     }
 
+    const reactionMap =
+      await getAuthorPostCommentReactionMap(
+        userId,
+        [commentId]
+      )
+
     return res.status(200).json({
       ok: true,
       message: isHidden
@@ -2174,7 +2213,8 @@ export async function setAuthorPostCommentHidden(
         : 'Comment unhidden by this Page',
       comment:
         publicAuthorPostComment(
-          updatedComment
+          updatedComment,
+          reactionMap
         ),
       comment_count: nextCommentCount,
     })
@@ -2264,9 +2304,18 @@ export async function updateOwnAuthorPostComment(req, res) {
 
     if (updateError) throw updateError
 
+    const reactionMap =
+      await getAuthorPostCommentReactionMap(
+        userId,
+        [commentId]
+      )
+
     return res.status(200).json({
       ok: true,
-      comment: publicAuthorPostComment(updatedComment),
+      comment: publicAuthorPostComment(
+        updatedComment,
+        reactionMap
+      ),
     })
   } catch (error) {
     console.error('UPDATE OWN AUTHOR POST COMMENT ERROR:', error)
@@ -2288,6 +2337,11 @@ export async function toggleAuthorPostCommentLike(
     const commentId = String(
       req.params.commentId || ''
     ).trim()
+    const reactionType =
+      normalizeAuthorPostCommentReactionType(
+        req.body?.reaction_type ??
+          req.body?.reactionType
+      )
 
     if (!userId) {
       return res.status(401).json({
@@ -2346,7 +2400,7 @@ export async function toggleAuthorPostCommentLike(
       error: lookupError,
     } = await supabase
       .from('author_page_post_comment_likes')
-      .select('id')
+      .select('id, reaction_type')
       .eq('comment_id', commentId)
       .eq('user_id', userId)
       .maybeSingle()
@@ -2354,17 +2408,42 @@ export async function toggleAuthorPostCommentLike(
     if (lookupError) throw lookupError
 
     let liked = false
+    let activeReactionType = null
 
     if (existingLike?.id) {
-      const { error: deleteError } =
-        await supabase
-          .from(
-            'author_page_post_comment_likes'
-          )
-          .delete()
-          .eq('id', existingLike.id)
+      const existingReactionType =
+        normalizeAuthorPostCommentReactionType(
+          existingLike.reaction_type
+        )
 
-      if (deleteError) throw deleteError
+      if (existingReactionType !== reactionType) {
+        const { error: updateReactionError } =
+          await supabase
+            .from(
+              'author_page_post_comment_likes'
+            )
+            .update({
+              reaction_type: reactionType,
+            })
+            .eq('id', existingLike.id)
+
+        if (updateReactionError) {
+          throw updateReactionError
+        }
+
+        liked = true
+        activeReactionType = reactionType
+      } else {
+        const { error: deleteError } =
+          await supabase
+            .from(
+              'author_page_post_comment_likes'
+            )
+            .delete()
+            .eq('id', existingLike.id)
+
+        if (deleteError) throw deleteError
+      }
     } else {
       const { error: insertError } =
         await supabase
@@ -2374,10 +2453,13 @@ export async function toggleAuthorPostCommentLike(
           .insert({
             comment_id: commentId,
             user_id: userId,
+            reaction_type: reactionType,
           })
 
       if (insertError) throw insertError
+
       liked = true
+      activeReactionType = reactionType
     }
 
     const { count, error: countError } =
@@ -2412,7 +2494,7 @@ export async function toggleAuthorPostCommentLike(
     const commentBelongsToAuthor =
       String(comment.user_id || '') ===
       String(post.user_id || '')
-    const isSelfLike =
+    const isSelfReaction =
       String(comment.user_id || '') ===
       String(userId)
     const sourceKey =
@@ -2420,7 +2502,7 @@ export async function toggleAuthorPostCommentLike(
 
     if (
       commentBelongsToAuthor &&
-      !isSelfLike &&
+      !isSelfReaction &&
       post.author_page_id
     ) {
       if (!liked) {
@@ -2449,13 +2531,20 @@ export async function toggleAuthorPostCommentLike(
           reader?.username ||
           'A reader'
 
+        await deleteAuthorPageNotificationBySourceKeySafely({
+          authorPageId:
+            post.author_page_id,
+          type: 'reaction',
+          sourceKey,
+        })
+
         await createAuthorPageNotificationSafely({
           authorPageId:
             post.author_page_id,
           authorUserId: post.user_id,
           type: 'reaction',
           title:
-            `${readerName} liked your comment`,
+            `${readerName} reacted ${reactionType} to your comment`,
           message: String(
             comment.text || ''
           ).slice(0, 160),
@@ -2465,8 +2554,7 @@ export async function toggleAuthorPostCommentLike(
           metadata: {
             post_id: post.id,
             comment_id: commentId,
-            reaction_type:
-              'comment_like',
+            reaction_type: reactionType,
             reader_id: userId,
             reader_name: readerName,
             reader_username:
@@ -2480,19 +2568,21 @@ export async function toggleAuthorPostCommentLike(
 
     return res.status(200).json({
       ok: true,
+      comment_id: commentId,
       liked,
+      reaction_type: activeReactionType,
       likes,
     })
   } catch (error) {
     console.error(
-      'TOGGLE AUTHOR POST COMMENT LIKE ERROR:',
+      'TOGGLE AUTHOR POST COMMENT REACTION ERROR:',
       error
     )
 
     return res.status(500).json({
       ok: false,
       message:
-        'Failed to update comment like',
+        'Failed to update comment reaction',
       error: error.message,
     })
   }
