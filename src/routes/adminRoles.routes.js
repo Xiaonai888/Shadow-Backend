@@ -168,7 +168,24 @@ async function loadRolesWithPermissions() {
 
   if (linksError) throw linksError
 
-  const permissionById = new Map(
+const { data: assignedAccounts, error: accountsError } = await supabase
+  .from('admin_users')
+  .select('role_id')
+  .in('role_id', roleIds)
+
+if (accountsError) throw accountsError
+
+const staffCountByRole = new Map()
+
+for (const account of assignedAccounts || []) {
+  if (!account.role_id) continue
+  staffCountByRole.set(
+    account.role_id,
+    (staffCountByRole.get(account.role_id) || 0) + 1
+  )
+}
+
+const permissionById = new Map(
     permissions.map((permission) => [permission.id, permission])
   )
 
@@ -192,7 +209,7 @@ async function loadRolesWithPermissions() {
       ...role,
       permission_keys: rolePermissions.map((permission) => permission.permission_key),
       permissions: rolePermissions,
-      staff_count: 0,
+      staff_count: staffCountByRole.get(role.id) || 0,
     }
   })
 }
