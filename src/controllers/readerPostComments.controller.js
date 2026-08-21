@@ -4,6 +4,30 @@ const COMMENT_LIMIT = 1000
 const DEFAULT_PAGE_SIZE = 20
 const MAX_PAGE_SIZE = 30
 
+const COMMENT_REACTION_TYPES = new Set([
+  'love',
+  'haha',
+  'wow',
+  'sad',
+  'angry',
+  'support',
+  'touched',
+])
+
+function normalizeReactionType(value) {
+  const reactionType = String(
+    value || 'love'
+  )
+    .trim()
+    .toLowerCase()
+
+  return COMMENT_REACTION_TYPES.has(
+    reactionType
+  )
+    ? reactionType
+    : 'love'
+}
+
 function getUserId(req) {
   return String(
     req.user?.user_id ||
@@ -40,12 +64,20 @@ function getPagination(req) {
   }
 }
 
-function publicComment(comment, likedIds = new Set()) {
+function publicComment(
+  comment,
+  reactionMap = new Map()
+) {
   if (!comment) return null
 
   const user = Array.isArray(comment.user)
     ? comment.user[0]
     : comment.user
+
+  const reactionType =
+    reactionMap.get(
+      String(comment.id)
+    ) || null
 
   return {
     id: comment.id,
@@ -54,7 +86,8 @@ function publicComment(comment, likedIds = new Set()) {
     parent_id: comment.parent_id || null,
     text: comment.text || '',
     likes: Number(comment.likes || 0),
-    liked: likedIds.has(String(comment.id)),
+    liked: Boolean(reactionType),
+    reaction_type: reactionType,
     is_hidden: Boolean(comment.is_hidden),
     created_at: comment.created_at,
     updated_at: comment.updated_at,
@@ -78,7 +111,10 @@ function publicComment(comment, likedIds = new Set()) {
         },
     replies: Array.isArray(comment.replies)
       ? comment.replies.map((reply) =>
-          publicComment(reply, likedIds)
+          publicComment(
+            reply,
+            reactionMap
+          )
         )
       : [],
   }
@@ -180,23 +216,31 @@ async function updatePostCommentCount(
   if (error) throw error
 }
 
-async function readLikedIds(userId, commentIds) {
+async function readReactionMap(
+  userId,
+  commentIds
+) {
   if (!userId || !commentIds.length) {
-    return new Set()
+    return new Map()
   }
 
   const { data, error } = await supabase
     .from('reader_post_comment_likes')
-    .select('comment_id')
+    .select(
+      'comment_id, reaction_type'
+    )
     .eq('user_id', userId)
     .in('comment_id', commentIds)
 
   if (error) throw error
 
-  return new Set(
-    (data || []).map((item) =>
-      String(item.comment_id)
-    )
+  return new Map(
+    (data || []).map((item) => [
+      String(item.comment_id),
+      normalizeReactionType(
+        item.reaction_type
+      ),
+    ])
   )
 }
 
@@ -322,10 +366,11 @@ export async function getReaderPostComments(
       ]
     )
 
-    const likedIds = await readLikedIds(
-      userId,
-      allCommentIds
-    )
+    const reactionMap =
+      await readReactionMap(
+        userId,
+        allCommentIds
+      )
 
     const total =
       await countVisibleComments(postId)
@@ -350,7 +395,10 @@ export async function getReaderPostComments(
     return res.status(200).json({
       ok: true,
       comments: combined.map((comment) =>
-        publicComment(comment, likedIds)
+        publicComment(
+          comment,
+          reactionMap
+        )
       ),
       page,
       limit,
@@ -591,20 +639,39 @@ export async function updateOwnReaderPostComment(
 
     if (updateError) throw updateError
 
-    const { data: liked } = await supabase
-      .from('reader_post_comment_likes')
-      .select('id')
-      .eq('comment_id', commentId)
-      .eq('user_id', userId)
-      .maybeSingle()
+    const { data: reaction } =
+      await supabase
+        .from(
+          'reader_post_comment_likes'
+        )
+        .select(
+          'comment_id, reaction_type'
+        )
+        .eq(
+          'comment_id',
+          commentId
+        )
+        .eq('user_id', userId)
+        .maybeSingle()
+
+    const reactionMap = new Map()
+
+    if (reaction?.comment_id) {
+      reactionMap.set(
+        String(
+          reaction.comment_id
+        ),
+        normalizeReactionType(
+          reaction.reaction_type
+        )
+      )
+    }
 
     return res.status(200).json({
       ok: true,
       comment: publicComment(
         updatedComment,
-        liked
-          ? new Set([commentId])
-          : new Set()
+        reactionMap
       ),
     })
   } catch (error) {
@@ -717,6 +784,10 @@ export async function toggleReaderPostCommentLike(
     const commentId = String(
       req.params.commentId || ''
     ).trim()
+    const reactionType =
+      normalizeReactionType(
+        req.body?.reaction_type
+      )
 
     if (!userId) {
       return res.status(401).json({
@@ -734,7 +805,9 @@ export async function toggleReaderPostCommentLike(
       .eq('id', commentId)
       .maybeSingle()
 
-    if (commentError) throw commentError
+    if (commentError) {
+      throw commentError
+    }
 
     if (!comment || comment.is_hidden) {
       return res.status(404).json({
@@ -747,9 +820,16 @@ export async function toggleReaderPostCommentLike(
       data: existingLike,
       error: likeLookupError,
     } = await supabase
-      .from('reader_post_comment_likes')
-      .select('id')
-      .eq('comment_id', commentId)
+      .from(
+        'reader_post_comment_likes'
+      )
+      .select(
+        'id, reaction_type'
+      )
+      .eq(
+        'comment_id',
+        commentId
+      )
       .eq('user_id', userId)
       .maybeSingle()
 
@@ -758,56 +838,119 @@ export async function toggleReaderPostCommentLike(
     }
 
     let liked = false
+    let activeReactionType = null
 
     if (existingLike?.id) {
-      const { error } = await supabase
-        .from('reader_post_comment_likes')
-        .delete()
-        .eq('id', existingLike.id)
+      const existingReactionType =
+        normalizeReactionType(
+          existingLike.reaction_type
+        )
 
-      if (error) throw error
+      if (
+        existingReactionType !==
+        reactionType
+      ) {
+        const { error } =
+          await supabase
+            .from(
+              'reader_post_comment_likes'
+            )
+            .update({
+              reaction_type:
+                reactionType,
+            })
+            .eq(
+              'id',
+              existingLike.id
+            )
+
+        if (error) throw error
+
+        liked = true
+        activeReactionType =
+          reactionType
+      } else {
+        const { error } =
+          await supabase
+            .from(
+              'reader_post_comment_likes'
+            )
+            .delete()
+            .eq(
+              'id',
+              existingLike.id
+            )
+
+        if (error) throw error
+      }
     } else {
-      const { error } = await supabase
-        .from('reader_post_comment_likes')
-        .insert({
-          comment_id: commentId,
-          user_id: userId,
-        })
+      const { error } =
+        await supabase
+          .from(
+            'reader_post_comment_likes'
+          )
+          .insert({
+            comment_id:
+              commentId,
+            user_id:
+              userId,
+            reaction_type:
+              reactionType,
+          })
 
       if (error) throw error
+
       liked = true
+      activeReactionType =
+        reactionType
     }
 
-    const { count, error: countError } =
-      await supabase
-        .from('reader_post_comment_likes')
-        .select('id', {
-          count: 'exact',
-          head: true,
-        })
-        .eq('comment_id', commentId)
+    const {
+      count,
+      error: countError,
+    } = await supabase
+      .from(
+        'reader_post_comment_likes'
+      )
+      .select('id', {
+        count: 'exact',
+        head: true,
+      })
+      .eq(
+        'comment_id',
+        commentId
+      )
 
-    if (countError) throw countError
+    if (countError) {
+      throw countError
+    }
 
-    const likes = Number(count || 0)
+    const likes =
+      Number(count || 0)
 
     const { error: updateError } =
       await supabase
-        .from('reader_post_comments')
+        .from(
+          'reader_post_comments'
+        )
         .update({ likes })
         .eq('id', commentId)
 
-    if (updateError) throw updateError
+    if (updateError) {
+      throw updateError
+    }
 
     return res.status(200).json({
       ok: true,
       comment_id: commentId,
       liked,
+      reaction_type:
+        activeReactionType,
       likes,
     })
   } catch (error) {
     console.error(
-      'TOGGLE READER POST COMMENT LIKE ERROR:',
+      'TOGGLE READER POST COMMENT REACTION ERROR:',
       error
     )
 
@@ -815,7 +958,7 @@ export async function toggleReaderPostCommentLike(
       ok: false,
       message:
         error.message ||
-        'Failed to update like',
+        'Failed to update reaction',
     })
   }
 }
