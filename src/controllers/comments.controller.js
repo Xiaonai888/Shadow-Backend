@@ -284,6 +284,7 @@ async function getPublicComment(
     data,
     reactionMap
   )
+  }
 
   
 async function getUser(userId) {
