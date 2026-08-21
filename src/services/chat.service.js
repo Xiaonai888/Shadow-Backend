@@ -1381,6 +1381,7 @@ export async function getConversationMessages({
   userId,
   conversationId,
   before,
+  after,
   limit,
 }) {
   const safeUserId = requireUuid(
@@ -1395,9 +1396,21 @@ export async function getConversationMessages({
     safeUserId
   )
 
+  if (before && after) {
+    fail(
+      400,
+      'INVALID_CURSOR_MODE',
+      'Use either before or after, not both'
+    )
+  }
+
+  const isIncremental = Boolean(after)
   const safeLimit = Math.min(
-    100,
-    Math.max(1, Number(limit) || 50)
+    isIncremental ? 50 : 100,
+    Math.max(
+      1,
+      Number(limit) || (isIncremental ? 20 : 50)
+    )
   )
   const visibilityCutoff =
     getVisibilityCutoff(
@@ -1415,7 +1428,7 @@ export async function getConversationMessages({
       conversation.id
     )
     .order('created_at', {
-      ascending: false,
+      ascending: isIncremental,
     })
     .limit(safeLimit)
 
@@ -1447,6 +1460,27 @@ export async function getConversationMessages({
     )
   }
 
+  if (after) {
+    const afterDate = new Date(after)
+
+    if (
+      Number.isNaN(
+        afterDate.getTime()
+      )
+    ) {
+      fail(
+        400,
+        'INVALID_CURSOR',
+        'Message cursor is not valid'
+      )
+    }
+
+    messageQuery = messageQuery.gt(
+      'created_at',
+      afterDate.toISOString()
+    )
+  }
+
   const {
     data: messageRows,
     error: messageError,
@@ -1459,9 +1493,10 @@ export async function getConversationMessages({
     )
   }
 
-  const messages = [
-    ...(messageRows || []),
-  ].reverse()
+  const messages = isIncremental
+    ? [...(messageRows || [])]
+    : [...(messageRows || [])].reverse()
+
   const replyMessageIds = [
     ...new Set(
       messages
@@ -1631,6 +1666,16 @@ export async function getConversationMessages({
       }
     })
 
+  if (isIncremental) {
+    return {
+      conversation: null,
+      messages: formattedMessages,
+      selection_limit: 100,
+      next_before: null,
+      incremental: true,
+    }
+  }
+
   return {
     conversation:
       await buildConversationSummary(
@@ -1643,8 +1688,10 @@ export async function getConversationMessages({
       messageRows?.length === safeLimit
         ? messages[0]?.created_at || null
         : null,
+    incremental: false,
   }
 }
+
 export async function sendConversationMessage({
   userId,
   conversationId,
