@@ -1,9 +1,11 @@
 import express from 'express'
 import { supabase } from '../config/supabase.js'
-import { requireAdmin } from '../middleware/auth.middleware.js'
+import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { getAdminActor, logAdminActivity } from '../services/adminActivity.service.js'
 
 const router = express.Router()
+const viewAccounts = requireAdminPermission('accounts.view')
+const manageAccounts = requireAdminPermission('accounts.manage')
 
 function cleanText(value, maxLength = 200) {
   return String(value || '').trim().slice(0, maxLength)
@@ -127,7 +129,7 @@ function canManageTarget(req, account) {
   return { ok: true }
 }
 
-router.get('/', requireAdmin, async (req, res) => {
+router.get('/', viewAccounts, async (req, res) => {
   try {
     const accounts = await loadAccounts()
 
@@ -146,7 +148,7 @@ router.get('/', requireAdmin, async (req, res) => {
   }
 })
 
-router.post('/', requireAdmin, async (req, res) => {
+router.post('/', manageAccounts, async (req, res) => {
   try {
     const name = cleanText(req.body?.name, 120)
     const email = cleanEmail(req.body?.email)
@@ -262,7 +264,7 @@ router.post('/', requireAdmin, async (req, res) => {
   }
 })
 
-router.patch('/:accountId', requireAdmin, async (req, res) => {
+router.patch('/:accountId', manageAccounts, async (req, res) => {
   try {
     const account = await loadAccount(req.params.accountId)
 
