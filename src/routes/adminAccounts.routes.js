@@ -64,6 +64,18 @@ async function loadRole(roleId) {
   return data || null
 }
 
+async function loadAvailableRoles() {
+  const { data, error } = await supabase
+    .from('admin_roles')
+    .select('id, system_key, name, description, is_system, is_protected')
+    .order('is_system', { ascending: false })
+    .order('name', { ascending: true })
+
+  if (error) throw error
+
+  return data || []
+}
+
 async function loadAccount(accountId) {
   const { data, error } = await supabase
     .from('admin_users')
@@ -128,6 +140,24 @@ function canManageTarget(req, account) {
 
   return { ok: true }
 }
+
+router.get('/roles', viewAccounts, async (req, res) => {
+  try {
+    const roles = await loadAvailableRoles()
+
+    return res.status(200).json({
+      ok: true,
+      roles,
+    })
+  } catch (error) {
+    console.error('GET ACCOUNT ROLES ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load saved roles',
+    })
+  }
+})
 
 router.get('/', viewAccounts, async (req, res) => {
   try {
