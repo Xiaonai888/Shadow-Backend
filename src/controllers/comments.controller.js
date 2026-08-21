@@ -127,11 +127,18 @@ function publicUser(user) {
 
 function publicComment(
   comment,
-  likedIds = new Set()
+  reactionMap = new Map()
 ) {
   const isDeleted = Boolean(
     comment.deleted_at
   )
+
+  const reactionType =
+    !isDeleted
+      ? reactionMap.get(
+          String(comment.id)
+        ) || null
+      : null
 
   return {
     id: comment.id,
@@ -182,10 +189,9 @@ function publicComment(
             comment.likes || 0
           ),
     liked:
-      !isDeleted &&
-      likedIds.has(
-        String(comment.id)
-      ),
+      Boolean(reactionType),
+    reaction_type:
+      reactionType,
   }
 }
 
@@ -248,13 +254,15 @@ async function getPublicComment(
   if (error) throw error
   if (!data) return null
 
-  const likedIds = new Set()
+  const reactionMap = new Map()
 
   if (userId) {
     const { data: like } =
       await supabase
         .from('comment_likes')
-        .select('comment_id')
+        .select(
+          'comment_id, reaction_type'
+        )
         .eq(
           'comment_id',
           commentId
@@ -263,18 +271,21 @@ async function getPublicComment(
         .maybeSingle()
 
     if (like?.comment_id) {
-      likedIds.add(
-        String(like.comment_id)
+      reactionMap.set(
+        String(like.comment_id),
+        normalizeReactionType(
+          like.reaction_type
+        )
       )
     }
   }
 
   return publicComment(
     data,
-    likedIds
+    reactionMap
   )
-}
 
+  
 async function getUser(userId) {
   const { data, error } =
     await supabase
@@ -533,7 +544,7 @@ async function canModerateStory(
   }
 }
 
-async function getLikedIds(
+async function getReactionMap(
   commentIds,
   userId
 ) {
@@ -541,13 +552,15 @@ async function getLikedIds(
     !userId ||
     !commentIds.length
   ) {
-    return new Set()
+    return new Map()
   }
 
   const { data, error } =
     await supabase
       .from('comment_likes')
-      .select('comment_id')
+      .select(
+        'comment_id, reaction_type'
+      )
       .eq('user_id', userId)
       .in(
         'comment_id',
@@ -556,14 +569,18 @@ async function getLikedIds(
 
   if (error) throw error
 
-  return new Set(
+  return new Map(
     (data || []).map(
-      (item) =>
-        String(item.comment_id)
+      (item) => [
+        String(item.comment_id),
+        normalizeReactionType(
+          item.reaction_type
+        ),
+      ]
     )
   )
 }
-
+  
 function attachReplies(
   parentComments,
   replies
@@ -795,8 +812,8 @@ async function loadComments({
       (reply) => reply.id
     ),
   ]
-  const likedIds =
-    await getLikedIds(
+  const reactionMap =
+    await getReactionMap(
       allIds,
       userId
     )
@@ -805,7 +822,7 @@ async function loadComments({
       (comment) =>
         publicComment(
           comment,
-          likedIds
+          reactionMap
         )
     )
   const publicReplies =
@@ -813,7 +830,7 @@ async function loadComments({
       (reply) =>
         publicComment(
           reply,
-          likedIds
+          reactionMap
         )
     )
 
