@@ -35,6 +35,30 @@ const COMMENT_BAN_PREFIX = '[TEMP_UNTIL:'
 const LEGACY_BAN_MILLISECONDS =
   7 * 24 * 60 * 60 * 1000
 
+const COMMENT_REACTION_TYPES = new Set([
+  'love',
+  'haha',
+  'wow',
+  'sad',
+  'angry',
+  'support',
+  'touched',
+])
+
+function normalizeReactionType(value) {
+  const reactionType = String(
+    value || 'love'
+  )
+    .trim()
+    .toLowerCase()
+
+  return COMMENT_REACTION_TYPES.has(
+    reactionType
+  )
+    ? reactionType
+    : 'love'
+}
+
 function normalizeText(value) {
   return String(value || '').trim()
 }
