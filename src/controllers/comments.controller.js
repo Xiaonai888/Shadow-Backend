@@ -1518,6 +1518,10 @@ export async function toggleCommentLike(
       ).trim()
     const userId =
       req.user?.user_id
+    const reactionType =
+      normalizeReactionType(
+        req.body?.reaction_type
+      )
 
     if (!userId) {
       return res.status(401).json({
@@ -1545,7 +1549,9 @@ export async function toggleCommentLike(
       error: lookupError,
     } = await supabase
       .from('comment_likes')
-      .select('id')
+      .select(
+        'id, reaction_type'
+      )
       .eq(
         'comment_id',
         commentId
@@ -1558,20 +1564,51 @@ export async function toggleCommentLike(
     }
 
     let liked = false
+    let activeReactionType = null
 
     if (existingLike?.id) {
-      const { error } =
-        await supabase
-          .from(
-            'comment_likes'
-          )
-          .delete()
-          .eq(
-            'id',
-            existingLike.id
-          )
+      const existingReactionType =
+        normalizeReactionType(
+          existingLike.reaction_type
+        )
 
-      if (error) throw error
+      if (
+        existingReactionType !==
+        reactionType
+      ) {
+        const { error } =
+          await supabase
+            .from(
+              'comment_likes'
+            )
+            .update({
+              reaction_type:
+                reactionType,
+            })
+            .eq(
+              'id',
+              existingLike.id
+            )
+
+        if (error) throw error
+
+        liked = true
+        activeReactionType =
+          reactionType
+      } else {
+        const { error } =
+          await supabase
+            .from(
+              'comment_likes'
+            )
+            .delete()
+            .eq(
+              'id',
+              existingLike.id
+            )
+
+        if (error) throw error
+      }
     } else {
       const { error } =
         await supabase
@@ -1582,11 +1619,15 @@ export async function toggleCommentLike(
             comment_id:
               commentId,
             user_id: userId,
+            reaction_type:
+              reactionType,
           })
 
       if (error) throw error
 
       liked = true
+      activeReactionType =
+        reactionType
     }
 
     const {
@@ -1635,6 +1676,8 @@ export async function toggleCommentLike(
       ok: true,
       comment_id: commentId,
       liked,
+      reaction_type:
+        activeReactionType,
       likes,
     })
   } catch (error) {
@@ -1646,7 +1689,7 @@ export async function toggleCommentLike(
     return res.status(500).json({
       ok: false,
       message:
-        'Failed to update like',
+        'Failed to update reaction',
       error: error.message,
     })
   }
