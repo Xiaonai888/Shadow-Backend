@@ -16,9 +16,11 @@ import {
   trackReadingSessionProgress,
   claimDailyVoteReward,
   getDailyVoteReward,
+  getTaskOverview,
 } from '../controllers/tasks.controller.js'
 
 const router = express.Router()
+router.get('/overview', requireUser, getTaskOverview)
 
 router.get('/check-in', requireUser, getTaskCheckIn)
 router.post('/check-in/claim', requireUser, claimTaskCheckIn)
