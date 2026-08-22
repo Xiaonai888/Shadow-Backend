@@ -64,7 +64,7 @@ export async function heartbeatReaderPresence(req, res) {
       ? nowIso
       : existing?.last_activity_at || nowIso
 
-    const { data: presence, error } = await supabase
+    const { error } = await supabase
       .from('reader_presence')
       .upsert(
         {
@@ -82,17 +82,11 @@ export async function heartbeatReaderPresence(req, res) {
           onConflict: 'user_id',
         }
       )
-      .select(
-        'user_id, session_id, session_started_at, last_seen_at, last_activity_at, current_path, visibility_state'
-      )
-      .single()
+      
 
     if (error) throw error
 
-    return res.status(200).json({
-      ok: true,
-      presence,
-    })
+    return res.status(200).json({ ok: true })
   } catch (error) {
     console.error('READER PRESENCE HEARTBEAT ERROR:', error)
     return res.status(500).json({
