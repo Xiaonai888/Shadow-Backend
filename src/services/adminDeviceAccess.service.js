@@ -609,6 +609,32 @@ export async function validateAdminSession({ decoded, req }) {
   }
 }
 
+export async function listAdminDevices({ admin }) {
+  const adminId = admin?.admin_id || admin?.id || ''
+  const adminEmail = admin?.email || ''
+
+  let query = supabase
+    .from('admin_devices')
+    .select('*')
+    .order('updated_at', { ascending: false })
+
+  if (adminId) query = query.eq('admin_id', adminId)
+  else query = query.eq('admin_email', normalizeEmail(adminEmail))
+
+  const { data, error } = await query
+  if (error) throw error
+
+  const activeCount = (data || []).filter(
+    (device) => device.status === 'active'
+  ).length
+
+  return {
+    devices: data || [],
+    active_devices: activeCount,
+    max_devices: MAX_ADMIN_ACTIVE_DEVICES,
+  }
+}
+
 
 export async function logoutCurrentAdminDevice({ admin, req }) {
   const sessionId = admin?.session_id || ''
