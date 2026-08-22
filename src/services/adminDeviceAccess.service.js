@@ -5,6 +5,7 @@ import { supabase } from '../config/supabase.js'
 export const ADMIN_DEVICE_COOKIE = 'shadow_admin_device_access'
 export const MAX_ADMIN_ACTIVE_DEVICES = 2
 const SESSION_DAYS = 7
+const SESSION_ACTIVITY_TOUCH_MS = 5 * 60 * 1000
 
 function cleanText(value, maxLength = 1000) {
   return String(value || '').trim().slice(0, maxLength)
@@ -545,29 +546,61 @@ export async function validateAdminSession({ decoded, req }) {
     }
   }
 
-  const now = new Date().toISOString()
+  const nowDate = new Date()
+  const now = nowDate.toISOString()
+  const nowMs = nowDate.getTime()
   const ipAddress = getAdminDeviceClientIp(req)
   const userAgent = getUserAgent(req)
 
-  await Promise.all([
-    supabase
-      .from('admin_sessions')
-      .update({
-        last_seen_at: now,
-        ip_address: ipAddress,
-        user_agent: userAgent,
-      })
-      .eq('id', session.id),
-    supabase
-      .from('admin_devices')
-      .update({
-        last_seen_at: now,
-        last_ip: ipAddress,
-        last_user_agent: userAgent,
-        updated_at: now,
-      })
-      .eq('id', device.id),
-  ])
+  const sessionLastSeenMs =
+    new Date(session.last_seen_at || 0).getTime()
+  const deviceLastSeenMs =
+    new Date(device.last_seen_at || 0).getTime()
+
+  const shouldTouchSession =
+    !Number.isFinite(sessionLastSeenMs) ||
+    nowMs - sessionLastSeenMs >= SESSION_ACTIVITY_TOUCH_MS ||
+    session.ip_address !== ipAddress ||
+    session.user_agent !== userAgent
+
+  const shouldTouchDevice =
+    !Number.isFinite(deviceLastSeenMs) ||
+    nowMs - deviceLastSeenMs >= SESSION_ACTIVITY_TOUCH_MS ||
+    device.last_ip !== ipAddress ||
+    device.last_user_agent !== userAgent
+
+  const touchOperations = []
+
+  if (shouldTouchSession) {
+    touchOperations.push(
+      supabase
+        .from('admin_sessions')
+        .update({
+          last_seen_at: now,
+          ip_address: ipAddress,
+          user_agent: userAgent,
+        })
+        .eq('id', session.id)
+    )
+  }
+
+  if (shouldTouchDevice) {
+    touchOperations.push(
+      supabase
+        .from('admin_devices')
+        .update({
+          last_seen_at: now,
+          last_ip: ipAddress,
+          last_user_agent: userAgent,
+          updated_at: now,
+        })
+        .eq('id', device.id)
+    )
+  }
+
+  if (touchOperations.length) {
+    await Promise.all(touchOperations)
+  }
 
   return {
     ok: true,
@@ -576,29 +609,6 @@ export async function validateAdminSession({ decoded, req }) {
   }
 }
 
-export async function listAdminDevices({ admin }) {
-  const adminId = admin?.admin_id || admin?.id || ''
-  const adminEmail = admin?.email || ''
-
-  let query = supabase
-    .from('admin_devices')
-    .select('*')
-    .order('updated_at', { ascending: false })
-
-  if (adminId) query = query.eq('admin_id', adminId)
-  else query = query.eq('admin_email', normalizeEmail(adminEmail))
-
-  const { data, error } = await query
-  if (error) throw error
-
-  const activeCount = (data || []).filter((device) => device.status === 'active').length
-
-  return {
-    devices: data || [],
-    active_devices: activeCount,
-    max_devices: MAX_ADMIN_ACTIVE_DEVICES,
-  }
-}
 
 export async function logoutCurrentAdminDevice({ admin, req }) {
   const sessionId = admin?.session_id || ''
