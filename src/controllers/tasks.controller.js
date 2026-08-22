@@ -499,6 +499,52 @@ async function getReaderReadingMissions(userId) {
   )
 }
 
+function buildDailyVoteRewardState({
+  user,
+  wallet,
+  checkInRow,
+  readingRewardRow,
+  readingMissions,
+  claimRow,
+  rewardDate = getPhnomPenhDateKey(),
+}) {
+  const isPremium = isPremiumRole(user?.role)
+  const checkInCompleted = publicCheckIn(checkInRow, isPremium).claimed_today
+  const readingReward = publicReadingReward(readingRewardRow)
+  const missionList = Array.isArray(readingMissions) ? readingMissions : []
+
+  const completedReadingMissions = missionList.filter(
+    (mission) => mission.completed
+  ).length
+
+  const dailyReadingCompleted =
+    Number(readingReward.active_seconds || 0) >=
+    Number(readingReward.target_seconds || 1800)
+
+  const totalMissions = missionList.length + 2
+
+  const completedMissions =
+    Number(checkInCompleted) +
+    completedReadingMissions +
+    Number(dailyReadingCompleted)
+
+  const claimed = Boolean(claimRow)
+  const rewardVotes = isPremium ? 2 : 1
+
+  return {
+    reward_date: rewardDate,
+    completed_missions: completedMissions,
+    total_missions: totalMissions,
+    completed: completedMissions >= totalMissions,
+    claimed,
+    claimable: completedMissions >= totalMissions && !claimed,
+    reward_votes: rewardVotes,
+    is_premium: isPremium,
+    premium_multiplier: isPremium ? 2 : 1,
+    vote_balance: Number(wallet?.vote_balance || 0),
+  }
+}
+
 async function getDailyVoteRewardState(userId) {
   const todayKey = getPhnomPenhDateKey()
 
@@ -525,42 +571,98 @@ async function getDailyVoteRewardState(userId) {
 
   if (claimResult.error) throw claimResult.error
 
-  const isPremium = isPremiumRole(user?.role)
-  const checkInCompleted = publicCheckIn(checkInRow, isPremium).claimed_today
-  const readingReward = publicReadingReward(readingRewardRow)
-  const missionList = Array.isArray(readingMissions) ? readingMissions : []
+  return buildDailyVoteRewardState({
+    user,
+    wallet,
+    checkInRow,
+    readingRewardRow,
+    readingMissions,
+    claimRow: claimResult.data || null,
+    rewardDate: todayKey,
+  })
+}
 
-  const completedReadingMissions = missionList.filter(
-    (mission) => mission.completed
-  ).length
+export async function getTaskOverview(req, res) {
+  try {
+    const userId = getUserId(req)
 
-  const dailyReadingCompleted =
-    Number(readingReward.active_seconds || 0) >=
-    Number(readingReward.target_seconds || 1800)
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'User is required',
+      })
+    }
 
-  const totalMissions = missionList.length + 2
+    const todayKey = getPhnomPenhDateKey()
+    const user = await getUserProfile(userId)
+    const isPremium = isPremiumRole(user?.role)
 
-  const completedMissions =
-    Number(checkInCompleted) +
-    completedReadingMissions +
-    Number(dailyReadingCompleted)
+    let [
+      wallet,
+      checkInRow,
+      rewardChest,
+      readingRewardRow,
+      readingMissions,
+      claimResult,
+    ] = await Promise.all([
+      getOrCreateWallet(userId),
+      getCheckInRow(userId),
+      getOrCreateRewardChest(userId),
+      getOrCreateReadingReward(userId),
+      getReaderReadingMissions(userId),
+      supabase
+        .from('reader_daily_vote_rewards')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('reward_date', todayKey)
+        .maybeSingle(),
+    ])
 
-  const claimed = Boolean(claimResult.data)
-  const rewardVotes = isPremium ? 2 : 1
+    if (claimResult.error) throw claimResult.error
 
-  return {
-    reward_date: todayKey,
-    completed_missions: completedMissions,
-    total_missions: totalMissions,
-    completed: completedMissions >= totalMissions,
-    claimed,
-    claimable: completedMissions >= totalMissions && !claimed,
-    reward_votes: rewardVotes,
-    is_premium: isPremium,
-    premium_multiplier: isPremium ? 2 : 1,
-    vote_balance: Number(wallet?.vote_balance || 0),
+    if (
+      isPremium &&
+      !publicCheckIn(checkInRow, isPremium).claimed_today
+    ) {
+      const claimed = await claimCheckInReward(
+        userId,
+        'premium_auto_claim'
+      )
+
+      wallet = claimed.wallet
+      checkInRow = claimed.check_in
+    }
+
+    const dailyVoteReward = buildDailyVoteRewardState({
+      user,
+      wallet,
+      checkInRow,
+      readingRewardRow,
+      readingMissions,
+      claimRow: claimResult.data || null,
+      rewardDate: todayKey,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      wallet: publicWallet(wallet),
+      check_in: publicCheckIn(checkInRow, isPremium),
+      chest: publicRewardChest(rewardChest),
+      reading_reward: publicReadingReward(readingRewardRow),
+      missions: readingMissions,
+      daily_vote_reward: dailyVoteReward,
+    })
+  } catch (error) {
+    console.error('GET TASK OVERVIEW ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load task overview',
+      error: error.message,
+    })
   }
 }
+
 
 async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
   const todayKey = getPhnomPenhDateKey()
