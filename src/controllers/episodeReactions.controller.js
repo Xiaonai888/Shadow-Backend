@@ -119,8 +119,10 @@ export async function getEpisodeReactionStatus(req, res) {
       myReaction = data || null
     }
 
-    const totalLikes = await syncEpisodeTotalLikes(episodeId)
-
+    const totalLikes = Math.max(
+  0,
+  Number(episode.total_likes || 0)
+)
     return res.status(200).json({
       ok: true,
       episode_id: episodeId,
