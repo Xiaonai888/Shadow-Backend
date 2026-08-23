@@ -628,6 +628,161 @@ export async function resetPassword(req, res) {
   }
 }
 
+export async function getMeSummary(req, res) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const mailCutoff = new Date()
+    mailCutoff.setDate(mailCutoff.getDate() - 365)
+
+    const reminderCutoff = new Date()
+    reminderCutoff.setDate(
+      reminderCutoff.getDate() - 7
+    )
+
+    const [
+      userResult,
+      walletResult,
+      authorPageResult,
+      unreadResult,
+      expiredReminderResult,
+    ] = await Promise.all([
+      supabase
+        .from('users')
+        .select(
+          'id, name, username, email, avatar_url, bio, work, location, social_links, date_of_birth, gender, custom_gender, role, is_author, is_active, is_email_verified, created_at, updated_at'
+        )
+        .eq('id', userId)
+        .eq('is_active', true)
+        .maybeSingle(),
+
+      supabase
+        .from('user_wallets')
+        .select(
+          'diamond_balance, gem_balance, voucher_balance'
+        )
+        .eq('user_id', userId)
+        .maybeSingle(),
+
+      supabase
+        .from('author_pages')
+        .select(
+          'id, user_id, page_name, page_username, page_slug, bio, avatar_url, cover_url, status, total_stories, total_followers, created_at, updated_at'
+        )
+        .eq('user_id', userId)
+        .maybeSingle(),
+
+      supabase
+        .from('reader_mails')
+        .select('id', {
+          count: 'exact',
+          head: true,
+        })
+        .eq('user_id', userId)
+        .eq('is_read', false)
+        .is('deleted_at', null)
+        .gte(
+          'created_at',
+          mailCutoff.toISOString()
+        ),
+
+      supabase
+        .from('reader_mails')
+        .select('id', {
+          count: 'exact',
+          head: true,
+        })
+        .eq('user_id', userId)
+        .eq('is_read', false)
+        .is('deleted_at', null)
+        .gte(
+          'created_at',
+          mailCutoff.toISOString()
+        )
+        .lt(
+          'created_at',
+          reminderCutoff.toISOString()
+        )
+        .ilike(
+          'reference_id',
+          'daily_checkin_reminder_%'
+        ),
+    ])
+
+    const error =
+      userResult.error ||
+      walletResult.error ||
+      authorPageResult.error ||
+      unreadResult.error ||
+      expiredReminderResult.error
+
+    if (error) throw error
+
+    if (!userResult.data) {
+      return res.status(404).json({
+        ok: false,
+        message: 'User not found',
+      })
+    }
+
+    const wallet = walletResult.data || {}
+    const coinBalance = Number(
+      wallet.gem_balance || 0
+    )
+    const authorPage =
+      authorPageResult.data || null
+    const inboxUnreadCount = Math.max(
+      0,
+      Number(unreadResult.count || 0) -
+        Number(
+          expiredReminderResult.count || 0
+        )
+    )
+
+    res.setHeader(
+      'Cache-Control',
+      'private, no-store'
+    )
+
+    return res.status(200).json({
+      ok: true,
+      user: publicUser(userResult.data),
+      wallet: {
+        diamond_balance: Number(
+          wallet.diamond_balance || 0
+        ),
+        gem_balance: coinBalance,
+        coin_balance: coinBalance,
+        voucher_balance: Number(
+          wallet.voucher_balance || 0
+        ),
+      },
+      has_author_page: Boolean(authorPage),
+      author_page: authorPage,
+      inbox_unread_count: inboxUnreadCount,
+    })
+  } catch (error) {
+    console.error(
+      'GET ME SUMMARY ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load account summary',
+      error: error.message,
+    })
+  }
+}
+
+
 export async function getCurrentUser(req, res) {
   try {
     const userId = req.user?.user_id
