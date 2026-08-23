@@ -602,30 +602,66 @@ export async function getDiscoverAuthorPostsFeed(
       )
 
     let reactionRows = []
+const echoCountByPost = new Map()
 
-    if (
-      selectedPostIds.length
-    ) {
-      const {
-        data,
-        error,
-      } = await supabase
-        .from(
-          'author_page_post_reactions'
-        )
-        .select(
-          'post_id, user_id, reaction_type'
-        )
-        .in(
-          'post_id',
-          selectedPostIds
-        )
+if (selectedPostIds.length) {
+  const [
+    reactionResult,
+    echoResult,
+  ] = await Promise.all([
+    supabase
+      .from('author_page_post_reactions')
+      .select(
+        'post_id, user_id, reaction_type'
+      )
+      .in(
+        'post_id',
+        selectedPostIds
+      ),
 
-      if (error) throw error
+    supabase
+      .from('social_echoes_v2')
+      .select(
+        'source_id, share_count'
+      )
+      .eq(
+        'source_type',
+        'author_post'
+      )
+      .in(
+        'source_id',
+        selectedPostIds
+      ),
+  ])
 
-      reactionRows =
-        data || []
-    }
+  if (reactionResult.error) {
+    throw reactionResult.error
+  }
+
+  if (echoResult.error) {
+    throw echoResult.error
+  }
+
+  reactionRows =
+    reactionResult.data || []
+
+  for (const row of echoResult.data || []) {
+    const postId = String(
+      row.source_id || ''
+    )
+
+    echoCountByPost.set(
+      postId,
+      Number(
+        echoCountByPost.get(postId) || 0
+      ) +
+        Math.max(
+          1,
+          Number(row.share_count || 1)
+        )
+    )
+  }
+}
 
     const {
       summaryByPost,
@@ -671,10 +707,12 @@ export async function getDiscoverAuthorPostsFeed(
                   0
               ),
             echo_count:
-              Number(
-                post.echo_count ||
-                  0
-              ),
+  Number(
+    echoCountByPost.get(
+      String(post.id)
+    ) || 0
+  ),
+echo_state_loaded: true,
             reaction_summary:
               summaryByPost.get(
                 post.id
