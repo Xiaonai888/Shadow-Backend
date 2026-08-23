@@ -121,6 +121,13 @@ if (reactionResult.error) {
 
 const myReaction =
   reactionResult.data || null
+    if (!episode) {
+  return res.status(404).json({
+    ok: false,
+    message: 'Episode not found',
+  })
+}
+    
 
     const totalLikes = Math.max(
   0,
