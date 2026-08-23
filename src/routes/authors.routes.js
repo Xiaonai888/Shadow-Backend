@@ -1,4 +1,5 @@
 import { getMyAuthorDashboard } from '../controllers/authorDashboard.controller.js'
+import { getMyAuthorDashboardBadges } from '../controllers/authorDashboardBadges.controller.js'
 import { getFollowedAuthorPostsFeed } from '../controllers/followedAuthorPostsFeed.controller.js'
 import { getDiscoverAuthorSuggestions } from '../controllers/authorDiscovery.controller.js'
 import { getDiscoverAuthorPostsFeed } from '../controllers/discoverAuthorPostsFeed.controller.js'
@@ -123,6 +124,7 @@ const router = express.Router()
 
 router.get('/me/49-day-event', requireUser, getMyAuthor49DayEvent)
 router.get('/me/dashboard', requireUser, getMyAuthorDashboard)
+router.get('/me/dashboard-badges', requireUser, getMyAuthorDashboardBadges)
 router.get('/me', requireUser, getMyAuthorPage)
 router.get('/me/quest', requireUser, getMyAuthorQuest)
 router.post('/me/quest/boost/activate', requireUser, activateMyAuthorLifetimeBoost)
