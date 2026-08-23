@@ -8,20 +8,36 @@ import {
   getSlides,
   updateSlide,
 } from '../controllers/slides.controller.js'
+import { getHomeSlidesBatch } from '../controllers/homeSlides.controller.js'
 
 const router = express.Router()
 
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB max for one slide image
+    fileSize: 5 * 1024 * 1024,
   },
 })
 
 router.get('/', getSlides)
-router.get('/records', requireAdmin, getSlideActivityLogs)
-router.post('/', requireAdmin, upload.single('image'), createSlide)
-router.put('/:id', requireAdmin, upload.single('image'), updateSlide)
+router.get('/home-batch', getHomeSlidesBatch)
+router.get(
+  '/records',
+  requireAdmin,
+  getSlideActivityLogs
+)
+router.post(
+  '/',
+  requireAdmin,
+  upload.single('image'),
+  createSlide
+)
+router.put(
+  '/:id',
+  requireAdmin,
+  upload.single('image'),
+  updateSlide
+)
 router.delete('/:id', requireAdmin, deleteSlide)
 
 export default router
