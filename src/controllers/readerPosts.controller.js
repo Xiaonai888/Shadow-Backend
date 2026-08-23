@@ -811,6 +811,288 @@ async function attachVisibleUsers(
     })
     .filter(Boolean)
 }
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(value || '').trim()
+  )
+}
+
+function getInteractionEchoSource(post) {
+  const isEcho = Boolean(post?.is_echo)
+
+  const type = String(
+    isEcho
+      ? post?.source_type ||
+          post?.echo_type ||
+          ''
+      : 'reader_post'
+  )
+    .trim()
+    .toLowerCase()
+    .replaceAll('-', '_')
+
+  const id = String(
+    isEcho
+      ? post?.source_id || ''
+      : post?.id || ''
+  ).trim()
+
+  return { type, id }
+}
+
+async function attachProfileInteractionState(
+  posts,
+  viewerId
+) {
+  const rows = Array.isArray(posts)
+    ? posts
+    : []
+
+  if (!rows.length || !viewerId) {
+    return rows
+  }
+
+  const postIds = uniqueStrings(
+    rows.map((post) => post?.id)
+  )
+
+  const reactionPostIds =
+    postIds.filter(isUuid)
+
+  const reactionPostIdSet =
+    new Set(reactionPostIds)
+
+  const echoSources = rows
+    .map(getInteractionEchoSource)
+    .filter(
+      (source) =>
+        source.type && source.id
+    )
+
+  const echoSourceTypes =
+    uniqueStrings(
+      echoSources.map(
+        (source) => source.type
+      )
+    )
+
+  const echoSourceIds =
+    uniqueStrings(
+      echoSources.map(
+        (source) => source.id
+      )
+    )
+
+  const wantedEchoKeys = new Set(
+    echoSources.map(
+      (source) =>
+        `${source.type}:${source.id}`
+    )
+  )
+
+  const [
+    reactionResult,
+    savedResult,
+    echoResult,
+  ] = await Promise.all([
+    reactionPostIds.length
+      ? supabase
+          .from(
+            'reader_post_reactions'
+          )
+          .select(
+            'post_id, user_id, reaction_type'
+          )
+          .in(
+            'post_id',
+            reactionPostIds
+          )
+      : Promise.resolve({
+          data: [],
+          error: null,
+        }),
+
+    postIds.length
+      ? supabase
+          .from('saved_posts')
+          .select('source_id')
+          .eq('user_id', viewerId)
+          .eq(
+            'source_type',
+            'reader_post'
+          )
+          .in('source_id', postIds)
+      : Promise.resolve({
+          data: [],
+          error: null,
+        }),
+
+    echoSourceIds.length &&
+    echoSourceTypes.length
+      ? supabase
+          .from('social_echoes_v2')
+          .select(
+            'source_type, source_id, share_count'
+          )
+          .in(
+            'source_type',
+            echoSourceTypes
+          )
+          .in(
+            'source_id',
+            echoSourceIds
+          )
+      : Promise.resolve({
+          data: [],
+          error: null,
+        }),
+  ])
+
+  if (reactionResult.error) {
+    throw reactionResult.error
+  }
+
+  if (savedResult.error) {
+    throw savedResult.error
+  }
+
+  if (echoResult.error) {
+    throw echoResult.error
+  }
+
+  const reactions = new Map()
+
+  for (
+    const row of
+      reactionResult.data || []
+  ) {
+    const postId = String(
+      row.post_id || ''
+    )
+
+    if (!reactions.has(postId)) {
+      reactions.set(postId, {
+        count: 0,
+        myReaction: null,
+      })
+    }
+
+    const state =
+      reactions.get(postId)
+
+    state.count += 1
+
+    if (
+      String(row.user_id || '') ===
+      String(viewerId)
+    ) {
+      state.myReaction =
+        row.reaction_type || null
+    }
+  }
+
+  const savedIds = new Set(
+    (savedResult.data || [])
+      .map((row) =>
+        String(row.source_id || '')
+      )
+      .filter(Boolean)
+  )
+
+  const echoCounts = new Map()
+
+  for (
+    const row of echoResult.data || []
+  ) {
+    const key =
+      `${String(
+        row.source_type || ''
+      )}:${String(
+        row.source_id || ''
+      )}`
+
+    if (!wantedEchoKeys.has(key)) {
+      continue
+    }
+
+    echoCounts.set(
+      key,
+      Number(
+        echoCounts.get(key) || 0
+      ) +
+        Math.max(
+          1,
+          Number(
+            row.share_count || 1
+          )
+        )
+    )
+  }
+
+  return rows.map((post) => {
+    const postId = String(
+      post?.id || ''
+    )
+
+    const source =
+      getInteractionEchoSource(post)
+
+    const echoKey =
+      `${source.type}:${source.id}`
+
+    const reaction =
+      reactions.get(postId)
+
+    const hasReactionState =
+      reactionPostIdSet.has(postId)
+
+    const hasEchoState =
+      Boolean(
+        source.type &&
+          source.id
+      )
+
+    return {
+      ...post,
+
+      like_count: hasReactionState
+        ? Number(
+            reaction?.count || 0
+          )
+        : Number(
+            post?.like_count || 0
+          ),
+
+      my_reaction:
+        hasReactionState
+          ? reaction?.myReaction ||
+            null
+          : post?.my_reaction ||
+            null,
+
+      reaction_state_loaded:
+        hasReactionState,
+
+      is_saved:
+        savedIds.has(postId),
+
+      saved_state_loaded: true,
+
+      echo_count: hasEchoState
+        ? Number(
+            echoCounts.get(
+              echoKey
+            ) || 0
+          )
+        : Number(
+            post?.echo_count || 0
+          ),
+
+      echo_state_loaded:
+        hasEchoState,
+    }
+  })
+}
 
 function echoAudienceToVisibility(
   audience
@@ -2729,10 +3011,16 @@ export async function getMyReaderPosts(
           )
       )
 
-    const posts = mergeTimelinePosts(
-      [standardPosts, echoPosts],
-      limit
-    )
+    const timelinePosts = mergeTimelinePosts(
+  [standardPosts, echoPosts],
+  limit
+)
+
+const posts =
+  await attachProfileInteractionState(
+    timelinePosts,
+    userId
+  )
 
     return res.status(200).json({
       ok: true,
@@ -2847,10 +3135,16 @@ export async function getReaderPostsByUsername(
           )
       )
 
-    const posts = mergeTimelinePosts(
-      [standardPosts, echoPosts],
-      limit
-    )
+    const timelinePosts = mergeTimelinePosts(
+  [standardPosts, echoPosts],
+  limit
+)
+
+const posts =
+  await attachProfileInteractionState(
+    timelinePosts,
+    viewerId
+  )
 
     return res.status(200).json({
       ok: true,
