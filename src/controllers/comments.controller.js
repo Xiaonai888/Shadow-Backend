@@ -865,7 +865,7 @@ export async function getStoryComments(
       Math.min(
         30,
         Math.max(
-          5,
+          1,
           Number(
             req.query.limit || 20
           )
