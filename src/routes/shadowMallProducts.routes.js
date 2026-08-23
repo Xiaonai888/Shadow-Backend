@@ -36,6 +36,7 @@ import {
 } from '../controllers/shadowMallPromotionSocial.controller.js'
 import {
   getShadowMallStorySaleStatus,
+  getShadowMallStorySaleStatuses,
   purchaseShadowMallStory,
 } from '../controllers/shadowMallStorySales.controller.js'
 import {
@@ -95,6 +96,12 @@ router.get('/home', getShadowMallHome)
 router.get('/promotion', getPublicShadowMallPromotion)
 router.get('/promotions', getPublicShadowMallPromotions)
 router.get('/products', getShadowMallProducts)
+
+router.get(
+  '/promotions/story-sale/statuses',
+  requireUser,
+  getShadowMallStorySaleStatuses
+)
 
 router.get(
   '/promotions/:promotionId/story-sale/status',
