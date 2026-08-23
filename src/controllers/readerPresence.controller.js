@@ -48,7 +48,7 @@ export async function heartbeatReaderPresence(req, res) {
     ).slice(0, 1000)
 
     const { error } = await supabase.rpc(
-      'upsert_reader_presence_heartbeat',
+      'touch_reader_presence',
       {
         p_user_id: userId,
         p_session_id: sessionId,
