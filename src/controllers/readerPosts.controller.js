@@ -2930,16 +2930,19 @@ export async function getReaderPostsFeed(
           )
       )
 
-    const posts =
-      mergeRecommendedReaderPosts(
-        [
-          standardPosts,
-          echoPosts,
-        ],
-        limit,
-        snapshotAt
-      )
+    const timelinePosts =
+  mergeRecommendedReaderPosts(
+    [standardPosts, echoPosts],
+    limit,
+    snapshotAt
+  )
 
+const posts =
+  await attachProfileInteractionState(
+    timelinePosts,
+    viewerId
+  )
+    
     return res.status(200).json({
       ok: true,
       posts,
