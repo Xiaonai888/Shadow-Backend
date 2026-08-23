@@ -111,8 +111,6 @@ export async function getMyNotificationUnreadCount(req, res) {
       return res.status(401).json({ ok: false, message: 'Unauthorized' })
     }
 
-    await cleanupOldNotifications(userId)
-
     const { count, error } = await supabase
       .from('notifications')
       .select('id', { count: 'exact', head: true })
