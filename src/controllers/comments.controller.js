@@ -902,6 +902,92 @@ export async function getLatestStoryComment(
   }
 }
 
+export async function getEpisodeCommentTotals(
+  req,
+  res
+) {
+  try {
+    const episodeIds = [
+      ...new Set(
+        String(req.query.ids || '')
+          .split(',')
+          .map((item) => item.trim())
+          .filter((item) =>
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+              item
+            )
+          )
+          .slice(0, 200)
+      ),
+    ]
+
+    if (!episodeIds.length) {
+      return res.status(200).json({
+        ok: true,
+        totals: {},
+      })
+    }
+
+    const { data, error } =
+      await supabase.rpc(
+        'get_episode_comment_totals',
+        {
+          p_episode_ids: episodeIds,
+        }
+      )
+
+    if (error) throw error
+
+    const totals = Object.fromEntries(
+      episodeIds.map((episodeId) => [
+        episodeId,
+        0,
+      ])
+    )
+
+    for (const row of data || []) {
+      const episodeId = String(
+        row.episode_id || ''
+      )
+
+      if (
+        Object.prototype.hasOwnProperty.call(
+          totals,
+          episodeId
+        )
+      ) {
+        totals[episodeId] = Math.max(
+          0,
+          Number(row.total || 0)
+        )
+      }
+    }
+
+    res.setHeader(
+      'Cache-Control',
+      'no-store'
+    )
+
+    return res.status(200).json({
+      ok: true,
+      totals,
+    })
+  } catch (error) {
+    console.error(
+      'GET EPISODE COMMENT TOTALS ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to load episode comment totals',
+      error: error.message,
+    })
+  }
+}
+
+
 export async function getStoryComments(
   req,
   res
