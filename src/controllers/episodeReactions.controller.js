@@ -96,28 +96,31 @@ export async function getEpisodeReactionStatus(req, res) {
   try {
     const episodeId = String(req.params.episodeId || '').trim()
     const user = getOptionalReader(req)
-    const episode = await getEpisode(episodeId)
 
-    if (!episode) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Episode not found',
-      })
-    }
+const reactionPromise = user?.user_id
+  ? supabase
+      .from('episode_reactions')
+      .select('id, reaction_type, created_at')
+      .eq('episode_id', episodeId)
+      .eq('user_id', user.user_id)
+      .maybeSingle()
+  : Promise.resolve({
+      data: null,
+      error: null,
+    })
 
-    let myReaction = null
+const [episode, reactionResult] =
+  await Promise.all([
+    getEpisode(episodeId),
+    reactionPromise,
+  ])
 
-    if (user?.user_id) {
-      const { data, error } = await supabase
-        .from('episode_reactions')
-        .select('id, reaction_type, created_at')
-        .eq('episode_id', episodeId)
-        .eq('user_id', user.user_id)
-        .maybeSingle()
+if (reactionResult.error) {
+  throw reactionResult.error
+}
 
-      if (error) throw error
-      myReaction = data || null
-    }
+const myReaction =
+  reactionResult.data || null
 
     const totalLikes = Math.max(
   0,
