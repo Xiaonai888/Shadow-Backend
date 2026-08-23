@@ -390,7 +390,11 @@ async function getStoryAccessSummaries(
   storyIds = []
 ) {
   const ids = [
-    ...new Set(storyIds.filter(Boolean)),
+    ...new Set(
+      storyIds
+        .filter(Boolean)
+        .map((id) => String(id))
+    ),
   ]
 
   if (!ids.length) return new Map()
@@ -400,95 +404,52 @@ async function getStoryAccessSummaries(
       id,
       {
         has_wait_free_episode: false,
-has_free_episode: false,
-wait_free_episode_count: 0,
-free_episode_count: 0,
-daily_update_count: 0,
-weekly_update_count: 0,
+        has_free_episode: false,
+        wait_free_episode_count: 0,
+        free_episode_count: 0,
+        daily_update_count: 0,
+        weekly_update_count: 0,
+        last_episode_published_at: null,
       },
     ])
   )
 
-  const { data, error } = await supabase
-  .from('episodes')
-  .select(
-    'id, story_id, episode_number, is_locked, published_at, created_at, status, deleted_at'
+  const { data, error } = await supabase.rpc(
+    'get_public_story_access_summaries',
+    {
+      p_story_ids: ids,
+    }
   )
-  .in('story_id', ids)
-  .is('deleted_at', null)
 
   if (error) throw error
 
-  const now = Date.now()
-  const [weekStartKey, nextWeekKey] = getCurrentWeekKeys()
-  const episodesByStory = new Map()
+  for (const row of data || []) {
+    const storyId = String(row.story_id || '')
 
-  for (const episode of data || []) {
-    const key = String(episode.story_id)
-    const current =
-      episodesByStory.get(key) || []
+    if (!summaries.has(storyId)) continue
 
-    current.push(episode)
-    episodesByStory.set(key, current)
-  }
-
-  for (const storyId of ids) {
-    const storyEpisodes =
-      episodesByStory.get(
-        String(storyId)
-      ) || []
-
-    const access = buildEpisodeAccess(
-      storyEpisodes,
-      now
-    )
-
-    const summary = summaries.get(storyId)
-const latestEpisode = access.publishedEpisodes.reduce((latest, episode) =>
-  getEpisodePublishedTime(episode) > getEpisodePublishedTime(latest) ? episode : latest
-, null)
-summary.last_episode_published_at =
-  latestEpisode?.published_at || latestEpisode?.created_at || null
-
-    const latestDay = latestEpisode
-  ? new Date(getEpisodePublishedTime(latestEpisode)).toLocaleDateString('en-CA', { timeZone: 'Asia/Phnom_Penh' })
-  : null
-summary.daily_update_count = latestDay
-  ? access.publishedEpisodes.filter((episode) => new Date(getEpisodePublishedTime(episode)).toLocaleDateString('en-CA', { timeZone: 'Asia/Phnom_Penh' }) === latestDay).length
-  : 0
-
-    summary.weekly_update_count = access.publishedEpisodes.filter((episode) => {
-  if (!episode.published_at) return false
-  const dayKey = new Date(episode.published_at)
-    .toLocaleDateString('en-CA', { timeZone: 'Asia/Phnom_Penh' })
-  return dayKey >= weekStartKey && dayKey < nextWeekKey
-}).length
-
-for (
-  const episode of access.publishedEpisodes
-) {
-      if (
-        isWaitFreeEpisode(
-          episode,
-          access,
-          now
-        )
-      ) {
-        summary.has_wait_free_episode = true
-        summary.wait_free_episode_count += 1
-      }
-
-      if (
-        isFreeEpisode(
-          episode,
-          null,
-          access
-        )
-      ) {
-        summary.has_free_episode = true
-        summary.free_episode_count += 1
-      }
-    }
+    summaries.set(storyId, {
+      has_wait_free_episode: Boolean(
+        row.has_wait_free_episode
+      ),
+      has_free_episode: Boolean(
+        row.has_free_episode
+      ),
+      wait_free_episode_count: Number(
+        row.wait_free_episode_count || 0
+      ),
+      free_episode_count: Number(
+        row.free_episode_count || 0
+      ),
+      daily_update_count: Number(
+        row.daily_update_count || 0
+      ),
+      weekly_update_count: Number(
+        row.weekly_update_count || 0
+      ),
+      last_episode_published_at:
+        row.last_episode_published_at || null,
+    })
   }
 
   return summaries
