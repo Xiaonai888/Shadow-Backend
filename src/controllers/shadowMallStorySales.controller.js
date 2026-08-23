@@ -312,6 +312,246 @@ export async function getShadowMallStorySaleStatus(
   }
 }
 
+export async function getShadowMallStorySaleStatuses(
+  req,
+  res
+) {
+  try {
+    const userId = getUserId(req)
+
+    const promotionIds = [
+      ...new Set(
+        String(req.query.ids || '')
+          .split(',')
+          .map((value) => Number(value))
+          .filter(
+            (value) =>
+              Number.isInteger(value) &&
+              value > 0
+          )
+      ),
+    ].slice(0, 100)
+
+    if (!promotionIds.length) {
+      return res.status(200).json({
+        ok: true,
+        statuses: {},
+      })
+    }
+
+    const {
+      data: promotions,
+      error: promotionsError,
+    } = await supabase
+      .from('shadow_mall_ads')
+      .select(
+        'id, story_id, original_price_diamonds, sale_price_diamonds'
+      )
+      .in('id', promotionIds)
+      .eq('is_active', true)
+      .eq('promotion_type', 'story_sale')
+
+    if (promotionsError) {
+      throw promotionsError
+    }
+
+    const storyIds = [
+      ...new Set(
+        (promotions || [])
+          .map((item) => item.story_id)
+          .filter(Boolean)
+      ),
+    ]
+
+    const [
+      storiesResult,
+      walletResult,
+      purchasesResult,
+    ] = await Promise.all([
+      storyIds.length
+        ? supabase
+            .from('stories')
+            .select(
+              'id, user_id, title, cover_url, author_id, story_language, main_genre, total_episodes, story_status, admin_visibility_status'
+            )
+            .in('id', storyIds)
+            .is('deleted_at', null)
+        : Promise.resolve({
+            data: [],
+            error: null,
+          }),
+
+      supabase
+        .from('user_wallets')
+        .select(
+          'diamond_balance, gem_balance, voucher_balance, story_card_balance'
+        )
+        .eq('user_id', userId)
+        .maybeSingle(),
+
+      storyIds.length
+        ? supabase
+            .from('story_purchases')
+            .select(
+              'id, story_id, promotion_id, original_price_diamonds, paid_price_diamonds, discount_percent, purchased_at'
+            )
+            .eq('user_id', userId)
+            .eq('purchase_status', 'active')
+            .in('story_id', storyIds)
+            .order('purchased_at', {
+              ascending: false,
+            })
+        : Promise.resolve({
+            data: [],
+            error: null,
+          }),
+    ])
+
+    if (storiesResult.error) {
+      throw storiesResult.error
+    }
+
+    if (walletResult.error) {
+      throw walletResult.error
+    }
+
+    if (purchasesResult.error) {
+      throw purchasesResult.error
+    }
+
+    const storiesById = new Map(
+      (storiesResult.data || []).map(
+        (story) => [
+          String(story.id),
+          story,
+        ]
+      )
+    )
+
+    const purchasesByStory = new Map()
+
+    for (
+      const purchase of
+        purchasesResult.data || []
+    ) {
+      const key = String(
+        purchase.story_id || ''
+      )
+
+      if (
+        key &&
+        !purchasesByStory.has(key)
+      ) {
+        purchasesByStory.set(
+          key,
+          purchase
+        )
+      }
+    }
+
+    const statuses = {}
+
+    for (const promotion of promotions || []) {
+      const story = storiesById.get(
+        String(promotion.story_id)
+      )
+
+      if (
+        !story ||
+        String(
+          story.admin_visibility_status ||
+            'active'
+        ) !== 'active'
+      ) {
+        continue
+      }
+
+      const purchase =
+        purchasesByStory.get(
+          String(story.id)
+        ) || null
+
+      const isStoryOwner =
+        String(story.user_id || '') ===
+        String(userId || '')
+
+      const owned =
+        isStoryOwner ||
+        Boolean(purchase)
+
+      const originalPrice = Number(
+        promotion.original_price_diamonds ||
+          0
+      )
+
+      const salePrice = Number(
+        promotion.sale_price_diamonds ||
+          0
+      )
+
+      statuses[promotion.id] = {
+        promotion_id: promotion.id,
+        promotion_type: 'story_sale',
+        owned,
+        purchased: Boolean(purchase),
+        is_story_owner: isStoryOwner,
+        button_state:
+          owned ? 'read' : 'buy',
+        story_url:
+          `/story/${story.id}`,
+        story: {
+          id: story.id,
+          title: story.title || '',
+          cover_url:
+            story.cover_url || '',
+          author_id:
+            story.author_id || null,
+          story_language:
+            story.story_language || '',
+          main_genre:
+            story.main_genre || '',
+          total_episodes: Number(
+            story.total_episodes || 0
+          ),
+          story_status:
+            story.story_status || '',
+        },
+        price: {
+          currency: 'diamond',
+          original: originalPrice,
+          sale: salePrice,
+          discount_percent:
+            discountPercent(
+              originalPrice,
+              salePrice
+            ),
+        },
+        purchase,
+        wallet: publicWallet(
+          walletResult.data
+        ),
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      statuses,
+    })
+  } catch (error) {
+    console.error(
+      'GET SHADOW MALL STORY SALE STATUSES ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to check story purchase statuses',
+      error: error.message,
+    })
+  }
+}
+
 export async function purchaseShadowMallStory(
   req,
   res
