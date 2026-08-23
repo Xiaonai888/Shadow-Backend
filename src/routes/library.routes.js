@@ -1,6 +1,7 @@
 import express from 'express'
 import { requireUser } from '../middleware/user.middleware.js'
 import {
+  getStoryDetailReaderStatus,
   addStoryToLibrary,
   addStoryToSubscriptions,
   getReaderLibrary,
@@ -11,6 +12,12 @@ import {
 } from '../controllers/library.controller.js'
 
 const router = express.Router()
+
+router.get(
+  '/story-detail-status/:storyId',
+  requireUser,
+  getStoryDetailReaderStatus
+)
 
 router.get('/library', requireUser, getReaderLibrary)
 router.post('/library/:storyId', requireUser, addStoryToLibrary)
