@@ -2180,19 +2180,22 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
   return hideAdultStory(res)
 }
 
-    const [{ data: slides, error: slidesError }, authorPage] = await Promise.all([
-      supabase
-        .from('story_carousel_slides')
-        .select('*')
-        .eq('story_id', storyId)
-        .eq('is_active', true)
-        .order('sort_order', { ascending: true }),
-      getAuthorPageById(story.author_id),
-    ])
+    const [
+  { data: slides, error: slidesError },
+  authorPage,
+  rankByViews,
+] = await Promise.all([
+  supabase
+    .from('story_carousel_slides')
+    .select('*')
+    .eq('story_id', storyId)
+    .eq('is_active', true)
+    .order('sort_order', { ascending: true }),
+  getAuthorPageById(story.author_id),
+  getStoryRankByViews(story),
+])
 
-    if (slidesError) throw slidesError
-
-    const rankByViews = await getStoryRankByViews(story)
+if (slidesError) throw slidesError
 
 return res.status(200).json({
   ok: true,
@@ -2222,19 +2225,22 @@ export async function getPublicShadowExclusiveStoryById(req, res) {
       })
     }
 
-    const [{ data: slides, error: slidesError }, authorPage] = await Promise.all([
-      supabase
-        .from('story_carousel_slides')
-        .select('*')
-        .eq('story_id', storyId)
-        .eq('is_active', true)
-        .order('sort_order', { ascending: true }),
-      getAuthorPageById(story.author_id),
-    ])
+    const [
+  { data: slides, error: slidesError },
+  authorPage,
+  rankByViews,
+] = await Promise.all([
+  supabase
+    .from('story_carousel_slides')
+    .select('*')
+    .eq('story_id', storyId)
+    .eq('is_active', true)
+    .order('sort_order', { ascending: true }),
+  getAuthorPageById(story.author_id),
+  getStoryRankByViews(story),
+])
 
-    if (slidesError) throw slidesError
-
-    const rankByViews = await getStoryRankByViews(story)
+if (slidesError) throw slidesError
 
     return res.status(200).json({
       ok: true,
