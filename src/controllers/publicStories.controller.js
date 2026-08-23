@@ -1032,9 +1032,7 @@ async function getAuthorPageById(authorId) {
   if (!authorId) return null
 
   const { data, error } = await supabase
-    .from('author_pages')
-    .select('*')
-    .eq('id', authorId)
+    .select('id, user_id, page_name, page_username, page_slug, bio, avatar_url, cover_url, status, total_stories, total_followers, created_at, updated_at')
     .maybeSingle()
 
   if (error) throw error
