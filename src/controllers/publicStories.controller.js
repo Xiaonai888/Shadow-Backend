@@ -832,7 +832,7 @@ function applyStorySort(query, sort) {
 async function getPlatformUnlockRules() {
   const { data, error } = await supabase
     .from('platform_unlock_rules')
-    .select('*')
+    .select('id, user_id, page_name, page_username, page_slug, bio, avatar_url, cover_url, status, total_stories, total_followers, created_at, updated_at')
     .eq('id', 1)
     .maybeSingle()
 
