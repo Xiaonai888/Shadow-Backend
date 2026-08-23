@@ -1,5 +1,6 @@
 import express from 'express'
 import {
+  getMeSummary,
   followUser,
   getCurrentUser,
   getPublicUserProfile,
@@ -54,6 +55,7 @@ router.post('/login', readerLoginLimit, loginUser)
 router.post('/forgot-password', readerPasswordRequestLimit, requestPasswordReset)
 router.post('/reset-password', readerPasswordResetLimit, resetPassword)
 router.get('/me', requireUser, getCurrentUser)
+router.get('/me/summary', requireUser, getMeSummary)
 router.get('/suggestions', requireUser, getUserSuggestions)
 router.put('/avatar', requireUser, updateUserAvatar)
 router.put('/profile', requireUser, updateUserProfile)
