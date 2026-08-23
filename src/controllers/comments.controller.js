@@ -1164,12 +1164,9 @@ async function createComment({
       String(
         parent.story_id
       ) === String(story.id)
-    const sameEpisode =
-      episodeId
-        ? String(
-            parent?.episode_id || ''
-          ) === String(episodeId)
-        : true
+    const sameEpisode = episodeId
+  ? String(parent?.episode_id || '') === String(episodeId)
+  : !parent?.episode_id
 
     if (
       !sameStory ||
