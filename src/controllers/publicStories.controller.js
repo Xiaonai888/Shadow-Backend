@@ -1628,7 +1628,7 @@ export async function getPublicStoryRecommendations(
     ] = await Promise.all([
       authorId
         ? applyStorySort(
-            buildBaseQuery(3).eq(
+            buildBaseQuery(12).eq(
               'author_id',
               authorId
             ),
@@ -1685,7 +1685,13 @@ export async function getPublicStoryRecommendations(
     }
 
     const authorStories =
-      (authorResult.data || []).slice(0, 3)
+  [...(authorResult.data || [])]
+    .sort(
+      (a, b) =>
+        Number(b.total_views || 0) -
+        Number(a.total_views || 0)
+    )
+    .slice(0, 3)
 
     const similarMerged = []
     const seenSimilarIds = new Set()
