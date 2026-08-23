@@ -43,19 +43,30 @@ function publicAuthorPage(page) {
 }
 
 async function getStoryRankByViews(story) {
-  const totalViews = Number(story?.total_views || 0)
+  const totalViews = Number(
+    story?.total_views || 0
+  )
 
-  const { count, error } = await supabase
+  const { data, error } = await supabase
     .from('stories')
-    .select('id', { count: 'exact', head: true })
+    .select('id')
     .eq('status', 'published')
     .is('deleted_at', null)
-    .or('ranking_visibility_status.is.null,ranking_visibility_status.eq.visible')
+    .or(
+      'ranking_visibility_status.is.null,ranking_visibility_status.eq.visible'
+    )
     .gt('total_views', totalViews)
+    .limit(100)
 
   if (error) throw error
 
-  return Number(count || 0) + 1
+  const higherCount = (
+    data || []
+  ).length
+
+  return higherCount >= 100
+    ? 101
+    : higherCount + 1
 }
 
 function publicStory(story, slides = [], authorPage = null, rankByViews = null) {
