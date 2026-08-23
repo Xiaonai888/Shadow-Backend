@@ -2374,7 +2374,9 @@ export async function getPublicEpisodeById(req, res) {
       })
     }
 
-    const { data: episode, error } = await supabase
+    const authorPage = await getAuthorPageById(story.author_id)
+
+const { data: episode, error } = await supabase
       .from('episodes')
       .select('*')
       .eq('id', episodeId)
@@ -2443,7 +2445,7 @@ export async function getPublicEpisodeById(req, res) {
         code: 'EPISODE_LOCKED',
         message: 'This episode is locked',
         locked: true,
-        story: publicStory(story),
+        story: publicStory(story, [], authorPage),
         episode: {
           ...publicEpisodeListItem(
             episode,
@@ -2465,7 +2467,7 @@ export async function getPublicEpisodeById(req, res) {
       free_published_episode_ids: [
         ...access.freePublishedEpisodeIds,
       ],
-      story: publicStory(story),
+      story: publicStory(story, [], authorPage),
       episode: publicEpisode(
         episode,
         story,
