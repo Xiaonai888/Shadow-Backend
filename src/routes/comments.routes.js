@@ -1,6 +1,6 @@
 import express from 'express'
 import {
-
+  getLatestStoryComment,
   createEpisodeComment,
   getEpisodeComments,
   createStoryComment,
@@ -17,6 +17,10 @@ const router = express.Router()
 router.get('/episode/:episodeId', getEpisodeComments)
 router.post('/episode/:episodeId', requireUser, createEpisodeComment)
 router.get('/me/activities', requireUser, getMyCommentActivities)
+router.get(
+  '/story/:storyId/latest',
+  getLatestStoryComment
+)
 router.get('/story/:storyId', getStoryComments)
 router.post('/story/:storyId', requireUser, createStoryComment)
 router.post('/:commentId/like', requireUser, toggleCommentLike)
