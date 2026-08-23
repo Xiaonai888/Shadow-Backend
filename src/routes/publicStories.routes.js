@@ -1,6 +1,7 @@
 import express from 'express'
 import { getLatestPublicEpisodes } from '../controllers/latestEpisodes.controller.js'
 import {
+  getPublicStoryRecommendations,
   countQualifiedEpisodeView,
   getPublicEpisodeById,
   getPublicShadowExclusiveStories,
@@ -17,6 +18,11 @@ router.get('/stories', getPublicStories)
 router.get('/weekly-updates', getPublicWeeklyUpdates)
 router.get('/shadow-exclusive/stories', getPublicShadowExclusiveStories)
 router.get('/shadow-exclusive/stories/:storyId', getPublicShadowExclusiveStoryById)
+
+router.get(
+  '/stories/:storyId/recommendations',
+  getPublicStoryRecommendations
+)
 
 router.get('/stories/:storyId', getPublicStoryById)
 router.get('/stories/:storyId/episodes', getPublicStoryEpisodes)
