@@ -1573,6 +1573,297 @@ export async function getPublicStories(req, res) {
   }
 }
 
+export async function getPublicStoryRecommendations(
+  req,
+  res
+) {
+  try {
+    const storyId = String(
+      req.params.storyId || ''
+    ).trim()
+
+    const authorId = String(
+      req.query.authorId ||
+        req.query.author_id ||
+        ''
+    ).trim()
+
+    const genre = String(
+      req.query.genre || ''
+    ).trim()
+
+    if (!storyId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Story ID is required',
+      })
+    }
+
+    const ageAccess =
+      await getReaderAgeAccess(req)
+
+    const buildBaseQuery = (limit) => {
+      let query = supabase
+        .from('stories')
+        .select('*')
+        .eq('status', 'published')
+        .is('deleted_at', null)
+        .or(
+          'is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false'
+        )
+        .neq('id', storyId)
+        .limit(limit)
+
+      return applyAdultStoryVisibility(
+        query,
+        ageAccess
+      )
+    }
+
+    const [
+      authorResult,
+      similarMainResult,
+      similarTagResult,
+      topResult,
+    ] = await Promise.all([
+      authorId
+        ? applyStorySort(
+            buildBaseQuery(3).eq(
+              'author_id',
+              authorId
+            ),
+            'popular'
+          )
+        : Promise.resolve({
+            data: [],
+            error: null,
+          }),
+
+      genre
+        ? applyStorySort(
+            buildBaseQuery(6).ilike(
+              'main_genre',
+              genre
+            ),
+            'popular'
+          )
+        : Promise.resolve({
+            data: [],
+            error: null,
+          }),
+
+      genre
+        ? applyStorySort(
+            buildBaseQuery(6).contains(
+              'tags',
+              [genre]
+            ),
+            'popular'
+          )
+        : Promise.resolve({
+            data: [],
+            error: null,
+          }),
+
+      applyStorySort(
+        buildBaseQuery(6),
+        'popular'
+      ),
+    ])
+
+    const queryError = [
+      authorResult,
+      similarMainResult,
+      similarTagResult,
+      topResult,
+    ].find(
+      (result) => result.error
+    )?.error
+
+    if (queryError) {
+      throw queryError
+    }
+
+    const authorStories =
+      (authorResult.data || []).slice(0, 3)
+
+    const similarMerged = []
+    const seenSimilarIds = new Set()
+
+    for (const result of [
+      similarMainResult,
+      similarTagResult,
+    ]) {
+      for (const story of result.data || []) {
+        const id = String(story.id || '')
+
+        if (
+          !id ||
+          seenSimilarIds.has(id)
+        ) {
+          continue
+        }
+
+        seenSimilarIds.add(id)
+        similarMerged.push(story)
+      }
+    }
+
+    similarMerged.sort(
+      (first, second) => {
+        const likesDifference =
+          Number(
+            second.total_likes || 0
+          ) -
+          Number(
+            first.total_likes || 0
+          )
+
+        if (likesDifference) {
+          return likesDifference
+        }
+
+        return (
+          new Date(
+            second.updated_at || 0
+          ).getTime() -
+          new Date(
+            first.updated_at || 0
+          ).getTime()
+        )
+      }
+    )
+
+    const authorStoryIds = new Set(
+      authorStories.map((story) =>
+        String(story.id)
+      )
+    )
+
+    const recommendationMap =
+      new Map()
+
+    for (const story of [
+      ...similarMerged,
+      ...(topResult.data || []),
+    ]) {
+      const id = String(story.id || '')
+
+      if (
+        !id ||
+        authorStoryIds.has(id) ||
+        recommendationMap.has(id)
+      ) {
+        continue
+      }
+
+      recommendationMap.set(
+        id,
+        story
+      )
+    }
+
+    const similarStories = [
+      ...recommendationMap.values(),
+    ].slice(0, 3)
+
+    const finalStories = [
+      ...authorStories,
+      ...similarStories,
+    ]
+
+    const authorPageIds = [
+      ...new Set(
+        finalStories
+          .map(
+            (story) =>
+              story.author_id
+          )
+          .filter(Boolean)
+      ),
+    ]
+
+    const [
+      authorPagesResult,
+      accessSummaries,
+    ] = await Promise.all([
+      authorPageIds.length
+        ? supabase
+            .from('author_pages')
+            .select(
+              'id, user_id, page_name, page_username, page_slug, bio, avatar_url, cover_url, status, total_stories, total_followers, created_at, updated_at'
+            )
+            .in(
+              'id',
+              authorPageIds
+            )
+        : Promise.resolve({
+            data: [],
+            error: null,
+          }),
+
+      getStoryAccessSummaries(
+        finalStories.map(
+          (story) => story.id
+        )
+      ),
+    ])
+
+    if (authorPagesResult.error) {
+      throw authorPagesResult.error
+    }
+
+    const authorPageMap = new Map(
+      (
+        authorPagesResult.data || []
+      ).map((page) => [
+        String(page.id),
+        page,
+      ])
+    )
+
+    const serializeStory = (story) =>
+      publicStoryListItem(
+        {
+          ...story,
+          author_page:
+            authorPageMap.get(
+              String(
+                story.author_id
+              )
+            ) || null,
+        },
+        accessSummaries.get(
+          String(story.id)
+        )
+      )
+
+    return res.status(200).json({
+      ok: true,
+      author_stories:
+        authorStories.map(
+          serializeStory
+        ),
+      similar_stories:
+        similarStories.map(
+          serializeStory
+        ),
+    })
+  } catch (error) {
+    console.error(
+      'GET STORY RECOMMENDATIONS ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to load story recommendations',
+      error: error.message,
+    })
+  }
+}
+
 export async function getPublicShadowExclusiveStories(
   req,
   res
