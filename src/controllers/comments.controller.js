@@ -636,11 +636,10 @@ async function loadComments({
     .range(from, to)
 
   if (episodeId) {
-    query = query.eq(
-      'episode_id',
-      episodeId
-    )
-  }
+  query = query.eq('episode_id', episodeId)
+} else {
+  query = query.is('episode_id', null)
+}
 
   if (sort === 'top') {
     query = query
@@ -713,12 +712,10 @@ async function loadComments({
     )
 
   if (episodeId) {
-    deletedQuery =
-      deletedQuery.eq(
-        'episode_id',
-        episodeId
-      )
-  }
+  deletedQuery = deletedQuery.eq('episode_id', episodeId)
+} else {
+  deletedQuery = deletedQuery.is('episode_id', null)
+}
 
   let deletedParents = []
 
@@ -766,12 +763,10 @@ async function loadComments({
       )
 
     if (episodeId) {
-      replyQuery =
-        replyQuery.eq(
-          'episode_id',
-          episodeId
-        )
-    }
+  replyQuery = replyQuery.eq('episode_id', episodeId)
+} else {
+  replyQuery = replyQuery.is('episode_id', null)
+}
 
     const {
       data: replyData,
@@ -868,6 +863,7 @@ export async function getLatestStoryComment(
           '*, user:users(id, name, username, avatar_url, role)'
         )
         .eq('story_id', storyId)
+        .is('episode_id', null)
         .eq('is_hidden', false)
         .is('deleted_at', null)
         .is('parent_id', null)
