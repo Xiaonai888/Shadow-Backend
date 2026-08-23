@@ -400,6 +400,164 @@ export async function removeStoryFromSubscriptions(req, res) {
   }
 }
 
+export async function getStoryDetailReaderStatus(
+  req,
+  res
+) {
+  try {
+    const userId = getUserId(req)
+    const storyId = normalizeStoryId(
+      req.params.storyId
+    )
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!storyId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Story id is required',
+      })
+    }
+
+    const {
+      data: story,
+      error: storyError,
+    } = await supabase
+      .from('stories')
+      .select('id, author_id, user_id')
+      .eq('id', storyId)
+      .eq('status', 'published')
+      .is('deleted_at', null)
+      .maybeSingle()
+
+    if (storyError) throw storyError
+
+    if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    const authorPageId =
+      story.author_id || null
+
+    const [
+      libraryResult,
+      subscriptionResult,
+      authorPageResult,
+      followResult,
+    ] = await Promise.all([
+      supabase
+        .from('reader_library')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('story_id', storyId)
+        .maybeSingle(),
+
+      supabase
+        .from('reader_subscriptions')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('story_id', storyId)
+        .maybeSingle(),
+
+      authorPageId
+        ? supabase
+            .from('author_pages')
+            .select(
+              'id, user_id, total_followers'
+            )
+            .eq('id', authorPageId)
+            .eq('status', 'active')
+            .maybeSingle()
+        : Promise.resolve({
+            data: null,
+            error: null,
+          }),
+
+      authorPageId
+        ? supabase
+            .from('author_page_follows')
+            .select('id')
+            .eq(
+              'author_page_id',
+              authorPageId
+            )
+            .eq(
+              'follower_user_id',
+              userId
+            )
+            .maybeSingle()
+        : Promise.resolve({
+            data: null,
+            error: null,
+          }),
+    ])
+
+    const error =
+      libraryResult.error ||
+      subscriptionResult.error ||
+      authorPageResult.error ||
+      followResult.error
+
+    if (error) throw error
+
+    const authorPage =
+      authorPageResult.data || null
+
+    const ownerId =
+      authorPage?.user_id ||
+      story.user_id ||
+      null
+
+    res.setHeader(
+      'Cache-Control',
+      'private, no-store'
+    )
+
+    return res.status(200).json({
+      ok: true,
+      bookmarked: Boolean(
+        libraryResult.data
+      ),
+      subscribed: Boolean(
+        subscriptionResult.data
+      ),
+      author_state_loaded:
+        Boolean(authorPage),
+      author_following: Boolean(
+        followResult.data
+      ),
+      author_follower_count: Number(
+        authorPage?.total_followers || 0
+      ),
+      author_is_owner: Boolean(
+        ownerId &&
+          String(ownerId) ===
+            String(userId)
+      ),
+    })
+  } catch (error) {
+    console.error(
+      'GET STORY DETAIL READER STATUS ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to load story detail status',
+      error: error.message,
+    })
+  }
+}
+
 export async function getStoryCollectionStatus(req, res) {
   try {
     const userId = getUserId(req)
