@@ -1979,10 +1979,9 @@ export async function getPublicStoryEpisodes(req, res) {
     const { data, error } = await supabase
       .from('episodes')
       .select(
-        'id, story_id, title, cover_url, is_adult, is_locked, unlock_methods, status, episode_number, page_count, character_count, published_at, created_at, updated_at'
+        'id, story_id, title, cover_url, is_adult, is_locked, is_free_published, unlock_methods, status, episode_number, page_count, character_count, published_at, created_at, updated_at, deleted_at'
       )
       .eq('story_id', storyId)
-      .eq('status', 'published')
       .is('deleted_at', null)
       .order('episode_number', { ascending: true })
       .order('created_at', { ascending: true })
@@ -1990,10 +1989,11 @@ export async function getPublicStoryEpisodes(req, res) {
     if (error) throw error
 
     const now = Date.now()
-    const visibleEpisodes = (data || []).filter((episode) =>
+    const allEpisodes = data || []
+    const visibleEpisodes = allEpisodes.filter((episode) =>
       isPublicEpisode(episode, now)
     )
-    const access = await getStoryEpisodeAccess(storyId, now)
+    const access = buildEpisodeAccess(allEpisodes, now)
     const firstVisibleEpisodeId =
       access.publishedEpisodes[0]?.id ||
       getFirstVisibleEpisodeId(visibleEpisodes, now)
