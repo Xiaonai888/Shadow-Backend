@@ -444,6 +444,162 @@ async function updatePromotionEchoCount(
   if (error) throw error
 }
 
+export async function getShadowMallPromotionSocialStatuses(
+  req,
+  res
+) {
+  try {
+    const userId = getUserId(req)
+
+    const promotionIds = [
+      ...new Set(
+        String(req.query.ids || '')
+          .split(',')
+          .map((value) => Number(value))
+          .filter(
+            (value) =>
+              Number.isInteger(value) &&
+              value > 0
+          )
+      ),
+    ].slice(0, 100)
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!promotionIds.length) {
+      return res.status(200).json({
+        ok: true,
+        statuses: {},
+      })
+    }
+
+    const sourceIds =
+      promotionIds.map(String)
+
+    const [
+      reactionsResult,
+      echoesResult,
+    ] = await Promise.all([
+      supabase
+        .from(
+          'shadow_mall_promotion_reactions'
+        )
+        .select(
+          'promotion_id, reaction_type'
+        )
+        .eq('user_id', userId)
+        .in(
+          'promotion_id',
+          promotionIds
+        ),
+
+      supabase
+        .from('social_echoes_v2')
+        .select(
+          'source_id, share_count'
+        )
+        .eq(
+          'source_type',
+          'shadow_mall_promotion'
+        )
+        .in(
+          'source_id',
+          sourceIds
+        ),
+    ])
+
+    if (reactionsResult.error) {
+      throw reactionsResult.error
+    }
+
+    if (echoesResult.error) {
+      throw echoesResult.error
+    }
+
+    const reactionByPromotion =
+      new Map()
+
+    for (
+      const row of
+        reactionsResult.data || []
+    ) {
+      reactionByPromotion.set(
+        String(row.promotion_id),
+        row.reaction_type || null
+      )
+    }
+
+    const echoCountByPromotion =
+      new Map()
+
+    for (
+      const row of
+        echoesResult.data || []
+    ) {
+      const key = String(
+        row.source_id || ''
+      )
+
+      echoCountByPromotion.set(
+        key,
+        Number(
+          echoCountByPromotion.get(
+            key
+          ) || 0
+        ) +
+          Math.max(
+            1,
+            Number(
+              row.share_count || 1
+            )
+          )
+      )
+    }
+
+    const statuses = {}
+
+    for (const promotionId of promotionIds) {
+      const key = String(promotionId)
+
+      statuses[key] = {
+        my_reaction:
+          reactionByPromotion.get(
+            key
+          ) || null,
+        echo_count: Number(
+          echoCountByPromotion.get(
+            key
+          ) || 0
+        ),
+        reaction_state_loaded: true,
+        echo_state_loaded: true,
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      statuses,
+    })
+  } catch (error) {
+    console.error(
+      'GET SHADOW MALL PROMOTION SOCIAL STATUSES ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to load promotion social statuses',
+      error: error.message,
+    })
+  }
+}
+
 export async function getShadowMallPromotionReactionStatus(
   req,
   res
