@@ -845,6 +845,63 @@ async function loadComments({
   }
 }
 
+export async function getLatestStoryComment(
+  req,
+  res
+) {
+  try {
+    const storyId = String(
+      req.params.storyId || ''
+    ).trim()
+
+    if (!storyId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Story id is required',
+      })
+    }
+
+    const { data, error } =
+      await supabase
+        .from('comments')
+        .select(
+          '*, user:users(id, name, username, avatar_url, role)'
+        )
+        .eq('story_id', storyId)
+        .eq('is_hidden', false)
+        .is('deleted_at', null)
+        .is('parent_id', null)
+        .order('is_pinned', {
+          ascending: false,
+        })
+        .order('created_at', {
+          ascending: false,
+        })
+        .limit(1)
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      comment: data?.[0]
+        ? publicComment(data[0])
+        : null,
+    })
+  } catch (error) {
+    console.error(
+      'GET LATEST STORY COMMENT ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to load latest comment',
+      error: error.message,
+    })
+  }
+}
+
 export async function getStoryComments(
   req,
   res
