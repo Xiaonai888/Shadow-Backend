@@ -30,6 +30,7 @@ import {
   getShadowMallPromotionComments,
   getShadowMallPromotionEchoes,
   getShadowMallPromotionReactionStatus,
+  getShadowMallPromotionSocialStatuses,
   setShadowMallPromotionReaction,
   toggleShadowMallPromotionCommentLike,
   updateOwnShadowMallPromotionComment,
@@ -112,6 +113,11 @@ router.post(
   '/promotions/:promotionId/story-sale/purchase',
   requireUser,
   purchaseShadowMallStory
+)
+router.get(
+  '/promotions/social-statuses',
+  requireUser,
+  getShadowMallPromotionSocialStatuses
 )
 
 router.get(
