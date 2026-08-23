@@ -126,6 +126,7 @@ status: post.status || 'active',
     like_count: Number(post.like_count || 0),
     comment_count: Number(post.comment_count || 0),
     echo_count: Number(post.echo_count || 0),
+    echo_state_loaded: Boolean(post.echo_state_loaded),
     reaction_summary: Array.isArray(post.reaction_summary) ? post.reaction_summary.slice(0, 3) : [],
     created_at: post.created_at,
     updated_at: post.updated_at,
@@ -331,27 +332,77 @@ export async function getAuthorPagePosts(req, res) {
 
     if (postsError) throw postsError
 
-    const postIds = (posts || []).map((post) => post.id).filter(Boolean)
-    let reactionSummaryByPost = new Map()
+    const postIds = (posts || [])
+  .map((post) => post.id)
+  .filter(Boolean)
 
-    if (postIds.length) {
-      const { data: reactionRows, error: reactionSummaryError } = await supabase
-        .from('author_page_post_reactions')
-        .select('post_id, reaction_type')
-        .in('post_id', postIds)
+let reactionSummaryByPost = new Map()
+const echoCountByPost = new Map()
 
-      if (reactionSummaryError) throw reactionSummaryError
+if (postIds.length) {
+  const [
+    reactionResult,
+    echoResult,
+  ] = await Promise.all([
+    supabase
+      .from('author_page_post_reactions')
+      .select('post_id, reaction_type')
+      .in('post_id', postIds),
 
-      reactionSummaryByPost = buildReactionSummaryMap(reactionRows || [])
-    }
+    supabase
+      .from('social_echoes_v2')
+      .select('source_id, share_count')
+      .eq('source_type', 'author_post')
+      .in('source_id', postIds),
+  ])
+
+  if (reactionResult.error) {
+    throw reactionResult.error
+  }
+
+  if (echoResult.error) {
+    throw echoResult.error
+  }
+
+  reactionSummaryByPost =
+    buildReactionSummaryMap(
+      reactionResult.data || []
+    )
+
+  for (const row of echoResult.data || []) {
+    const postId = String(
+      row.source_id || ''
+    )
+
+    echoCountByPost.set(
+      postId,
+      Number(
+        echoCountByPost.get(postId) || 0
+      ) +
+        Math.max(
+          1,
+          Number(row.share_count || 1)
+        )
+    )
+  }
+}
 
     return res.status(200).json({
       ok: true,
       posts: (posts || []).map((post) =>
         publicAuthorPost({
-          ...post,
-          reaction_summary: reactionSummaryByPost.get(post.id) || [],
-        })
+  ...post,
+  echo_count: Number(
+    echoCountByPost.get(
+      String(post.id)
+    ) || 0
+  ),
+  echo_state_loaded: true,
+  reaction_summary:
+    reactionSummaryByPost.get(
+      post.id
+    ) || [],
+})
       ),
     })
   } catch (error) {
