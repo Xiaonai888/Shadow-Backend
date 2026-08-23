@@ -594,17 +594,17 @@ export async function getTaskOverview(req, res) {
     }
 
     const todayKey = getPhnomPenhDateKey()
-    const user = await getUserProfile(userId)
-    const isPremium = isPremiumRole(user?.role)
 
-    let [
-      wallet,
-      checkInRow,
-      rewardChest,
-      readingRewardRow,
-      readingMissions,
+    const [
+      userResult,
+      walletResult,
+      checkInResult,
+      rewardChestResult,
+      readingRewardResult,
+      readingMissionsResult,
       claimResult,
-    ] = await Promise.all([
+    ] = await Promise.allSettled([
+      getUserProfile(userId),
       getOrCreateWallet(userId),
       getCheckInRow(userId),
       getOrCreateRewardChest(userId),
@@ -618,10 +618,42 @@ export async function getTaskOverview(req, res) {
         .maybeSingle(),
     ])
 
-    if (claimResult.error) throw claimResult.error
+    const user =
+      userResult.status === 'fulfilled' ? userResult.value : null
+
+    const isPremium = isPremiumRole(user?.role)
+
+    let wallet =
+      walletResult.status === 'fulfilled' ? walletResult.value : null
+
+    let checkInRow =
+      checkInResult.status === 'fulfilled' ? checkInResult.value : null
+
+    const rewardChest =
+      rewardChestResult.status === 'fulfilled'
+        ? rewardChestResult.value
+        : null
+
+    const readingRewardRow =
+      readingRewardResult.status === 'fulfilled'
+        ? readingRewardResult.value
+        : null
+
+    const readingMissions =
+      readingMissionsResult.status === 'fulfilled'
+        ? readingMissionsResult.value
+        : []
+
+    const claimRow =
+      claimResult.status === 'fulfilled' &&
+      !claimResult.value?.error
+        ? claimResult.value?.data || null
+        : null
 
     if (
       isPremium &&
+      walletResult.status === 'fulfilled' &&
+      checkInResult.status === 'fulfilled' &&
       !publicCheckIn(checkInRow, isPremium).claimed_today
     ) {
       const claimed = await claimCheckInReward(
@@ -639,7 +671,7 @@ export async function getTaskOverview(req, res) {
       checkInRow,
       readingRewardRow,
       readingMissions,
-      claimRow: claimResult.data || null,
+      claimRow,
       rewardDate: todayKey,
     })
 
