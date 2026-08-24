@@ -142,12 +142,9 @@ async function loadTrash({
     .limit(fetchLimit)
 
   if (ownerUserId) {
-    storyQuery = storyQuery.eq('trash_owner_user_id', ownerUserId)
-    authorPageQuery = authorPageQuery.eq(
-      'trash_owner_user_id',
-      ownerUserId
-    )
-  }
+  storyQuery = storyQuery.eq('trash_owner_user_id', ownerUserId).eq('deleted_by_type', 'author').eq('deleted_by_id', ownerUserId)
+  authorPageQuery = authorPageQuery.eq('trash_owner_user_id', ownerUserId).eq('deleted_by_type', 'author').eq('deleted_by_id', ownerUserId)
+}
 
   const [
     { data: storyRows, error: storyError, count: storyCount },
