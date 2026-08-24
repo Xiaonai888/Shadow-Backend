@@ -3,6 +3,7 @@ import {
   applyAdultStoryVisibility,
   getReaderAgeAccess,
 } from '../services/storyAgeAccess.service.js'
+import { recordSearchAnalytics } from '../services/searchAnalytics.service.js'
 
 const VALID_TYPES = new Set([
   'all',
@@ -1115,6 +1116,12 @@ export async function searchDiscover(req, res) {
       pdfs: sections.pdfs.length,
       posts: sections.posts.length,
     }
+
+    const analyticsResultCount = type === 'all'
+  ? Object.values(shownCounts).reduce((sum, value) => sum + Number(value || 0), 0)
+  : Number(shownCounts[type] || 0)
+
+void recordSearchAnalytics({ req, keyword, type, resultCount: analyticsResultCount })
 
     return res.status(200).json({
       ok: true,
