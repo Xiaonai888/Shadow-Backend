@@ -4,6 +4,7 @@ import {
   mergeAdminSearchGroups,
   renameAdminSearchGroup,
   setAdminSearchGroupIgnored,
+  splitAdminSearchGroupAlias,
 } from '../controllers/adminSearchInsights.controller.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 
@@ -28,6 +29,11 @@ router.post(
   '/groups/:groupId/merge',
   viewSearchInsights,
   mergeAdminSearchGroups
+)
+router.post(
+  '/groups/:groupId/split',
+  viewSearchInsights,
+  splitAdminSearchGroupAlias
 )
 
 export default router
