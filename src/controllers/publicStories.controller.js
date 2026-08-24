@@ -559,6 +559,7 @@ function publicEpisodeListItem(
     ),
     character_count:
       visibleEpisode.character_count,
+    total_comments: Number(visibleEpisode.total_comments || 0),
     published_at:
       visibleEpisode.published_at,
     created_at: visibleEpisode.created_at,
@@ -2308,6 +2309,35 @@ export async function getPublicStoryEpisodes(req, res) {
     const visibleEpisodes = allEpisodes.filter((episode) =>
       isPublicEpisode(episode, now)
     )
+
+        const commentCounts = new Map()
+    const visibleEpisodeIds = visibleEpisodes.map((episode) => episode.id).filter(Boolean)
+
+    if (visibleEpisodeIds.length) {
+      const { data: comments, error: commentError } = await supabase
+        .from('comments')
+        .select('episode_id')
+        .eq('story_id', storyId)
+        .in('episode_id', visibleEpisodeIds)
+        .eq('is_hidden', false)
+        .is('deleted_at', null)
+        .is('parent_id', null)
+
+      if (commentError) throw commentError
+
+      for (const comment of comments || []) {
+        const key = String(comment.episode_id || '')
+        if (!key) continue
+        commentCounts.set(key, Number(commentCounts.get(key) || 0) + 1)
+      }
+    }
+
+    for (const episode of visibleEpisodes) {
+      episode.total_comments = Number(
+        commentCounts.get(String(episode.id)) || 0
+      )
+    }
+
     const access = buildEpisodeAccess(allEpisodes, now)
     const firstVisibleEpisodeId =
       access.publishedEpisodes[0]?.id ||
