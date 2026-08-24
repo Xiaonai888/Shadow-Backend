@@ -719,7 +719,7 @@ async function loadComments({
 
   let deletedParents = []
 
-  if (page === 1) {
+  if (page === 1 && !episodeId) {
     const {
       data: deletedRows,
       error: deletedError,
