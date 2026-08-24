@@ -31,7 +31,7 @@ const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 30
 const ALL_SECTION_LIMIT = 8
 const MAX_SCAN_LIMIT = 80
-const MAX_SEARCH_TERMS = 18
+const MAX_SEARCH_TERMS = 28
 
 const SEARCH_SYNONYM_GROUPS = [
   ['ប្រលោមលោក', 'novel'],
@@ -118,8 +118,43 @@ function getSearchTerms(value) {
   if (!keyword) return []
 
   const normalizedQuery = keyword.toLocaleLowerCase()
-  const compactQuery = normalizedQuery.replace(/\s+/g, '')
-  const candidates = [keyword, ...keyword.split(/\s+/)]
+  const compactQuery = normalizedQuery.replace(/[\s._-]+/g, '')
+  const tokens = keyword.split(/\s+/).filter(Boolean)
+  const candidates = [
+    keyword,
+    compactQuery !== normalizedQuery ? compactQuery : '',
+    ...tokens,
+  ]
+
+  const addFuzzyFragments = (valueToSplit) => {
+    const normalized = cleanFilterKeyword(valueToSplit)
+      .toLocaleLowerCase()
+      .replace(/[\s._-]+/g, '')
+    const chars = Array.from(normalized)
+
+    if (chars.length < 5) return
+
+    const fragmentLength = chars.length >= 10 ? 5 : 4
+    const middleStart = Math.max(
+      0,
+      Math.floor((chars.length - fragmentLength) / 2)
+    )
+    const starts = new Set([
+      0,
+      middleStart,
+      Math.max(0, chars.length - fragmentLength),
+    ])
+
+    for (const start of starts) {
+      candidates.push(
+        chars.slice(start, start + fragmentLength).join('')
+      )
+    }
+  }
+
+  for (const token of tokens) {
+    addFuzzyFragments(token)
+  }
 
   for (const group of SEARCH_SYNONYM_GROUPS) {
     if (
@@ -188,14 +223,70 @@ function uniqueById(items) {
 
 function textScore(keyword, values) {
   const target = cleanKeyword(keyword).toLocaleLowerCase()
-  const terms = getSearchTerms(keyword).map((term) =>
-    term.toLocaleLowerCase()
-  )
+  const terms = getSearchTerms(keyword)
+    .map((term) => term.toLocaleLowerCase())
+    .filter((term) => term.length >= 2)
   const texts = (values || [])
-    .map((value) => String(value || '').trim().toLocaleLowerCase())
+    .map((value) => cleanKeyword(value).toLocaleLowerCase())
     .filter(Boolean)
 
   if (!target || !texts.length) return 0
+
+  const editDistance = (left, right) => {
+    const a = Array.from(left)
+    const b = Array.from(right)
+    const row = Array.from(
+      { length: b.length + 1 },
+      (_, index) => index
+    )
+
+    for (let i = 1; i <= a.length; i += 1) {
+      let previous = row[0]
+      row[0] = i
+
+      for (let j = 1; j <= b.length; j += 1) {
+        const current = row[j]
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1
+
+        row[j] = Math.min(
+          row[j] + 1,
+          row[j - 1] + 1,
+          previous + cost
+        )
+
+        previous = current
+      }
+    }
+
+    return row[b.length]
+  }
+
+  const fuzzyScore = (left, right) => {
+    const a = left.replace(/[\s._-]+/g, '')
+    const b = right.replace(/[\s._-]+/g, '')
+
+    if (a.length < 4 || b.length < 4) return 0
+
+    const distance = editDistance(a, b)
+    const maxLength = Math.max(a.length, b.length)
+    const allowedDistance =
+      maxLength <= 5 ? 1 : maxLength <= 10 ? 2 : 3
+
+    if (distance > allowedDistance) return 0
+
+    const similarity = 1 - distance / maxLength
+
+    if (similarity >= 0.9) return 440
+    if (similarity >= 0.8) return 320
+    if (similarity >= 0.7) return 220
+
+    return 0
+  }
+
+  const targetParts = [
+    target,
+    ...target.split(/\s+/).filter(Boolean),
+  ]
 
   let score = 0
 
@@ -206,6 +297,20 @@ function textScore(keyword, values) {
       score = Math.max(score, 700)
     } else if (text.includes(target)) {
       score = Math.max(score, 500)
+    }
+
+    const textParts = [
+      text,
+      ...text.split(/\s+/).filter(Boolean),
+    ]
+
+    for (const targetPart of targetParts) {
+      for (const textPart of textParts) {
+        score = Math.max(
+          score,
+          fuzzyScore(targetPart, textPart)
+        )
+      }
     }
   }
 
