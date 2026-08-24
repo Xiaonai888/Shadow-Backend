@@ -289,6 +289,7 @@ function buildReactionSummaryMap(reactions = []) {
 export async function getAuthorPagePosts(req, res) {
   try {
     const pageUsername = normalizePageUsername(req.params.pageUsername)
+    const viewerUserId = getRequestUserId(req)
     const limit = Math.min(30, Math.max(1, Number(req.query.limit || 20)))
 
     if (!pageUsername) {
@@ -337,6 +338,7 @@ export async function getAuthorPagePosts(req, res) {
   .filter(Boolean)
 
 let reactionSummaryByPost = new Map()
+const myReactionByPost = new Map()
 const echoCountByPost = new Map()
 
 if (postIds.length) {
@@ -346,7 +348,7 @@ if (postIds.length) {
   ] = await Promise.all([
     supabase
       .from('author_page_post_reactions')
-      .select('post_id, reaction_type')
+      .select('post_id, user_id, reaction_type')
       .in('post_id', postIds),
 
     supabase
@@ -369,6 +371,18 @@ if (postIds.length) {
       reactionResult.data || []
     )
 
+  for (const row of reactionResult.data || []) {
+  if (
+    viewerUserId &&
+    String(row.user_id) === String(viewerUserId)
+  ) {
+    myReactionByPost.set(
+      String(row.post_id),
+      String(row.reaction_type || '').trim().toLowerCase()
+    )
+  }
+}
+
   for (const row of echoResult.data || []) {
     const postId = String(
       row.source_id || ''
@@ -389,21 +403,19 @@ if (postIds.length) {
 
     return res.status(200).json({
       ok: true,
-      posts: (posts || []).map((post) =>
-        publicAuthorPost({
-  ...post,
-  echo_count: Number(
-    echoCountByPost.get(
-      String(post.id)
-    ) || 0
-  ),
-  echo_state_loaded: true,
-  reaction_summary:
-    reactionSummaryByPost.get(
-      post.id
-    ) || [],
-})
-      ),
+      posts: (posts || []).map((post) => ({
+  ...publicAuthorPost({
+    ...post,
+    echo_count: Number(
+      echoCountByPost.get(String(post.id)) || 0
+    ),
+    echo_state_loaded: true,
+    reaction_summary:
+      reactionSummaryByPost.get(post.id) || [],
+  }),
+  my_reaction:
+    myReactionByPost.get(String(post.id)) || null,
+})),
     })
   } catch (error) {
     console.error('GET AUTHOR PAGE POSTS ERROR:', error)
