@@ -69,7 +69,9 @@ const SEARCH_SYNONYM_GROUPS = [
 
 function cleanKeyword(value) {
   return String(value || '')
+    .normalize('NFKC')
     .trim()
+    .replace(/^@+/, '')
     .replace(/\s+/g, ' ')
     .slice(0, 120)
 }
