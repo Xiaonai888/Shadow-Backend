@@ -11,9 +11,6 @@ const VALID_SEARCH_TYPES = new Set([
   'posts',
 ])
 
-const PURGE_INTERVAL_MS = 6 * 60 * 60 * 1000
-let lastPurgeAt = 0
-
 function cleanDisplayTerm(value) {
   return String(value || '')
     .normalize('NFKC')
@@ -50,53 +47,48 @@ function getClientIp(req) {
   return forwarded || String(req?.ip || req?.socket?.remoteAddress || '')
 }
 
-function getSearcherIdentity(req) {
+function getSearcherContext(req) {
   const token = getBearerToken(req)
+  let readerId = ''
 
   if (token && process.env.JWT_SECRET) {
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET)
 
       if (decoded?.type === 'reader' && decoded?.user_id) {
-        return `reader:${String(decoded.user_id)}`
+        readerId = String(decoded.user_id).trim().slice(0, 160)
       }
     } catch {
     }
   }
 
-  const day = new Date().toISOString().slice(0, 10)
-  const ip = getClientIp(req)
-  const userAgent = String(req?.headers?.['user-agent'] || '').slice(0, 300)
+  const identity = readerId
+    ? `reader:${readerId}`
+    : [
+        'anonymous',
+        new Date().toISOString().slice(0, 10),
+        getClientIp(req),
+        String(req?.headers?.['user-agent'] || '').slice(0, 300),
+      ].join(':')
 
-  return `anonymous:${day}:${ip}:${userAgent}`
-}
-
-function hashSearcher(req) {
   const secret =
     process.env.SEARCH_ANALYTICS_HASH_SALT ||
     process.env.JWT_SECRET ||
     process.env.SUPABASE_SERVICE_ROLE_KEY
 
-  if (!secret) return ''
+  if (!secret) {
+    return {
+      readerId: readerId || null,
+      searcherHash: '',
+    }
+  }
 
-  return crypto
-    .createHmac('sha256', secret)
-    .update(getSearcherIdentity(req))
-    .digest('hex')
-}
-
-async function maybePurgeSearchAnalytics() {
-  const now = Date.now()
-
-  if (now - lastPurgeAt < PURGE_INTERVAL_MS) return
-
-  lastPurgeAt = now
-
-  const { error } = await supabase.rpc('purge_search_analytics')
-
-  if (error) {
-    lastPurgeAt = 0
-    throw error
+  return {
+    readerId: readerId || null,
+    searcherHash: crypto
+      .createHmac('sha256', secret)
+      .update(identity)
+      .digest('hex'),
   }
 }
 
@@ -106,42 +98,38 @@ export async function recordSearchAnalytics({
   type,
   resultCount,
 }) {
-  try {
-    const displayTerm = cleanDisplayTerm(keyword)
-    const normalizedTerm = normalizeSearchTerm(keyword)
-    const searcherHash = hashSearcher(req)
-    const searchType = normalizeSearchType(type)
-    const safeResultCount = Math.max(
-      0,
-      Number.parseInt(resultCount, 10) || 0
-    )
+  const displayTerm = cleanDisplayTerm(keyword)
+  const normalizedTerm = normalizeSearchTerm(keyword)
+  const searchType = normalizeSearchType(type)
+  const safeResultCount = Math.min(
+    1000,
+    Math.max(0, Number.parseInt(resultCount, 10) || 0)
+  )
+  const { readerId, searcherHash } = getSearcherContext(req)
 
-    if (normalizedTerm.length < 2 || !searcherHash) return
+  if (normalizedTerm.length < 2 || !searcherHash) {
+    return {
+      counted: false,
+      reason: 'invalid_search',
+    }
+  }
 
-    const { error } = await supabase.rpc(
-      'record_search_analytics_event',
-      {
-        p_display_term: displayTerm,
-        p_normalized_term: normalizedTerm,
-        p_search_type: searchType,
-        p_searcher_hash: searcherHash,
-        p_result_count: safeResultCount,
-      }
-    )
+  const { data, error } = await supabase.rpc(
+    'record_search_analytics_event',
+    {
+      p_display_term: displayTerm,
+      p_normalized_term: normalizedTerm,
+      p_search_type: searchType,
+      p_searcher_hash: searcherHash,
+      p_result_count: safeResultCount,
+      p_reader_id: readerId,
+    }
+  )
 
-    if (error) throw error
+  if (error) throw error
 
-    void maybePurgeSearchAnalytics().catch((purgeError) => {
-      console.error(
-        'SEARCH ANALYTICS PURGE ERROR:',
-        purgeError?.message || purgeError
-      )
-    })
-  } catch (error) {
-    console.error(
-      'SEARCH ANALYTICS RECORD ERROR:',
-      error?.message || error
-    )
+  return data || {
+    counted: false,
   }
 }
 
@@ -153,10 +141,10 @@ export async function recordSearchClick({
   resultId,
 }) {
   const normalizedTerm = normalizeSearchTerm(keyword)
-  const searcherHash = hashSearcher(req)
   const searchType = normalizeSearchType(type)
   const clickedType = normalizeSearchType(resultType)
   const clickedId = String(resultId || '').trim().slice(0, 160)
+  const { searcherHash } = getSearcherContext(req)
 
   if (
     normalizedTerm.length < 2 ||
@@ -170,26 +158,17 @@ export async function recordSearchClick({
     }
   }
 
-  const targetKey = `${clickedType}:${clickedId}`
-
   const { data, error } = await supabase.rpc(
     'record_search_analytics_click',
     {
       p_normalized_term: normalizedTerm,
       p_search_type: searchType,
       p_searcher_hash: searcherHash,
-      p_target_key: targetKey,
+      p_target_key: `${clickedType}:${clickedId}`,
     }
   )
 
   if (error) throw error
-
-  void maybePurgeSearchAnalytics().catch((purgeError) => {
-    console.error(
-      'SEARCH ANALYTICS PURGE ERROR:',
-      purgeError?.message || purgeError
-    )
-  })
 
   return data || {
     counted: false,
