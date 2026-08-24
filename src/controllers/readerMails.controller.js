@@ -1,5 +1,4 @@
 import { supabase } from '../config/supabase.js'
-import { createNotification } from './notifications.controller.js'
 const MAIL_RETENTION_DAYS = 365
 const REMINDER_MAIL_RETENTION_DAYS = 7
 const DAILY_CHECKIN_REMINDER_PREFIX = 'daily_checkin_reminder_'
@@ -255,16 +254,6 @@ export async function sendDailyCheckInReminderMails() {
   const todayKey = getPhnomPenhDateKey(now)
   const referenceId = `${DAILY_CHECKIN_REMINDER_PREFIX}${todayKey}`
 
-  const cleanupCutoffDate = new Date()
-  cleanupCutoffDate.setDate(cleanupCutoffDate.getDate() - REMINDER_MAIL_RETENTION_DAYS)
-
-  await supabase
-    .from('reader_mails')
-    .update({ deleted_at: now.toISOString() })
-    .is('deleted_at', null)
-    .ilike('reference_id', `${DAILY_CHECKIN_REMINDER_PREFIX}%`)
-    .lt('created_at', cleanupCutoffDate.toISOString())
-
   const { data: settings, error: settingsError } = await supabase
     .from('reader_daily_checkin_reminders')
     .select('user_id')
@@ -273,79 +262,116 @@ export async function sendDailyCheckInReminderMails() {
 
   if (settingsError) throw settingsError
 
-  let created = 0
-  let skippedClaimed = 0
-  let skippedDuplicate = 0
+  const enabledUserIds = (settings || [])
+    .map((item) => item.user_id)
+    .filter(Boolean)
 
-  for (const setting of settings || []) {
-    const userId = setting.user_id
+  if (!enabledUserIds.length) {
+    return {
+      ok: true,
+      date: todayKey,
+      created: 0,
+      notifications_created: 0,
+      skipped_claimed: 0,
+      skipped_duplicate: 0,
+    }
+  }
 
-    const { data: checkIn, error: checkInError } = await supabase
+  const [
+    { data: claimedRows, error: claimedError },
+    { data: existingMails, error: existingMailsError },
+    { data: existingNotifications, error: existingNotificationsError },
+  ] = await Promise.all([
+    supabase
       .from('reader_checkins')
-      .select('last_claim_date')
-      .eq('user_id', userId)
-      .maybeSingle()
-
-    if (checkInError) {
-      console.error('DAILY CHECKIN REMINDER CHECKIN ERROR:', checkInError)
-      continue
-    }
-
-    if (checkIn?.last_claim_date === todayKey) {
-      skippedClaimed += 1
-      continue
-    }
-
-    const { data: existingMail, error: existingMailError } = await supabase
+      .select('user_id')
+      .eq('last_claim_date', todayKey),
+    supabase
       .from('reader_mails')
-      .select('id')
-      .eq('user_id', userId)
+      .select('user_id')
       .eq('reference_id', referenceId)
-      .is('deleted_at', null)
-      .maybeSingle()
+      .is('deleted_at', null),
+    supabase
+      .from('notifications')
+      .select('user_id')
+      .eq('reference_id', referenceId)
+      .is('deleted_at', null),
+  ])
 
-    if (existingMailError) {
-      console.error('DAILY CHECKIN REMINDER DUPLICATE CHECK ERROR:', existingMailError)
-      continue
-    }
+  if (claimedError) throw claimedError
+  if (existingMailsError) throw existingMailsError
+  if (existingNotificationsError) throw existingNotificationsError
 
-    if (existingMail) {
-      skippedDuplicate += 1
-      continue
-    }
+  const claimedUserIds = new Set((claimedRows || []).map((item) => item.user_id))
+  const existingMailUserIds = new Set((existingMails || []).map((item) => item.user_id))
+  const existingNotificationUserIds = new Set(
+    (existingNotifications || []).map((item) => item.user_id)
+  )
 
-    const mail = await createReaderMail({
-      userId,
-      senderType: 'system',
-      mailType: 'system',
+  const eligibleUserIds = enabledUserIds.filter(
+    (userId) => !claimedUserIds.has(userId)
+  )
+
+  const mailRows = eligibleUserIds
+    .filter((userId) => !existingMailUserIds.has(userId))
+    .map((userId) => ({
+      user_id: userId,
+      sender_type: 'system',
+      mail_type: 'system',
       title: 'Daily check-in reminder',
       message: 'Your daily coin reward is ready.',
       detail: 'Open Task Center and tap today’s reward to keep your check-in streak active.',
+      action_type: '',
+      reward_type: '',
+      reward_amount: 0,
       link: '/tasks',
-      referenceId,
-    })
+      image_url: '',
+      reference_id: referenceId,
+      is_read: false,
+    }))
 
-    if (mail) {
-  created += 1
-  await createNotification({
-    userId,
-    type: 'announcements',
-    title: 'Daily check-in reminder',
-    message: 'Your daily coin reward is ready. Open Task Center and claim today’s reward.',
-    link: '/tasks',
-    referenceId,
-  })
-}
-  }
+  const notificationRows = eligibleUserIds
+    .filter((userId) => !existingNotificationUserIds.has(userId))
+    .map((userId) => ({
+      user_id: userId,
+      type: 'announcements',
+      title: 'Daily check-in reminder',
+      message: 'Your daily coin reward is ready. Open Task Center and claim today’s reward.',
+      image_url: '',
+      link: '/tasks',
+      reference_id: referenceId,
+      is_read: false,
+    }))
+
+  const [{ error: mailInsertError }, { error: notificationInsertError }] =
+    await Promise.all([
+      mailRows.length
+        ? supabase.from('reader_mails').insert(mailRows)
+        : Promise.resolve({ error: null }),
+      notificationRows.length
+        ? supabase.from('notifications').insert(notificationRows)
+        : Promise.resolve({ error: null }),
+    ])
+
+  if (mailInsertError) throw mailInsertError
+  if (notificationInsertError) throw notificationInsertError
+
+  const skippedDuplicate = eligibleUserIds.filter(
+    (userId) =>
+      existingMailUserIds.has(userId) &&
+      existingNotificationUserIds.has(userId)
+  ).length
 
   return {
     ok: true,
     date: todayKey,
-    created,
-    skipped_claimed: skippedClaimed,
+    created: mailRows.length,
+    notifications_created: notificationRows.length,
+    skipped_claimed: enabledUserIds.length - eligibleUserIds.length,
     skipped_duplicate: skippedDuplicate,
   }
 }
+
 
 export async function runDailyCheckInReminderMails(req, res) {
   try {
