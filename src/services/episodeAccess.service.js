@@ -31,8 +31,8 @@ export function compareActiveEpisodeOrder(first, second) {
 }
 
 export function comparePublishedEpisodeOrder(first, second) {
-  const firstPublished = safeTime(first?.published_at || first?.created_at)
-  const secondPublished = safeTime(second?.published_at || second?.created_at)
+  const firstPublished = safeTime(first?.first_published_at)
+const secondPublished = safeTime(second?.first_published_at)
 
   if (firstPublished !== secondPublished) return firstPublished - secondPublished
 
@@ -58,7 +58,7 @@ export function buildEpisodeAccess(
         return false
       }
 
-      const publishedTime = safeTime(episode?.published_at || episode?.created_at)
+      const publishedTime = safeTime(episode?.first_published_at)
       return !publishedTime || publishedTime <= now
     })
     .sort(comparePublishedEpisodeOrder)
@@ -123,7 +123,7 @@ export async function getStoryEpisodeAccess(
   const { data, error } = await supabase
     .from('episodes')
     .select(
-      'id, story_id, episode_number, status, is_locked, is_free_published, published_at, created_at, deleted_at'
+      'id, story_id, episode_number, status, is_locked, is_free_published, published_at, first_published_at, created_at, deleted_at'
     )
     .eq('story_id', storyId)
     .is('deleted_at', null)
