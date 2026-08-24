@@ -77,6 +77,7 @@ import monthlyVoteRoutes from './src/routes/monthlyVote.routes.js'
 import adminMonthlyVoteRoutes from './src/routes/adminMonthlyVote.routes.js'
 import adminRolesRoutes from './src/routes/adminRoles.routes.js'
 import adminAccountsRoutes from './src/routes/adminAccounts.routes.js'
+import adminSearchInsightsRoutes from './src/routes/adminSearchInsights.routes.js'
 dotenv.config()
 
 const app = express()
@@ -588,6 +589,7 @@ app.use('/api/monthly-vote', taskSpamGuard, monthlyVoteRoutes)
 app.use('/api/admin/monthly-vote', adminMonthlyVoteRoutes)
 app.use('/api/admin/roles', adminRolesRoutes)
 app.use('/api/admin/accounts', adminAccountsRoutes)
+app.use('/api/admin/search-insights', adminSearchInsightsRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
