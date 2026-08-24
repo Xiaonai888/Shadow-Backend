@@ -32,7 +32,6 @@ import adminStoriesRoutes from './src/routes/adminStories.routes.js'
 import adminRankingRoutes from './src/routes/adminRanking.routes.js'
 import notificationsRoutes from './src/routes/notifications.routes.js'
 import readerMailsRoutes from './src/routes/readerMails.routes.js'
-import { sendDailyCheckInReminderMails } from './src/controllers/readerMails.controller.js'
 import chatRoutes from './src/routes/chat.routes.js'
 import adminNotificationsRoutes from './src/routes/adminNotifications.routes.js'
 import advertisementsRoutes from './src/routes/advertisements.routes.js'
@@ -85,21 +84,6 @@ const app = express()
 const STORAGE_CLEANUP_INTERVAL_MS =
   24 * 60 * 60 * 1000
 let storageCleanupRunning = false
-let dailyCheckInReminderRunDate = ''
-async function runDailyCheckInReminderJob() {
-  const now = new Date()
-  const hour = Number(now.toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh', hour: '2-digit', hour12: false }))
-  const dateKey = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Phnom_Penh' })
-  if (hour !== 7 || dailyCheckInReminderRunDate === dateKey) return
-  dailyCheckInReminderRunDate = dateKey
-  try { await sendDailyCheckInReminderMails() } catch (error) { dailyCheckInReminderRunDate = ''; console.error('DAILY_CHECKIN_REMINDER_ERROR:', error) }
-}
-
-function startDailyCheckInReminderScheduler() {
-  runDailyCheckInReminderJob()
-  const timer = setInterval(runDailyCheckInReminderJob, 60 * 1000)
-  timer.unref?.()
-}
 
 async function runStorageMigrationCleanupJob() {
   if (storageCleanupRunning) return
@@ -624,7 +608,6 @@ app.listen(PORT, () => {
   startAuthorPostCleanup()
   startChatRetentionCleanup()
   startStorageMigrationCleanupScheduler()
-  startDailyCheckInReminderScheduler()
 
   if (process.env.ENABLE_TELEGRAM_USER_LISTENER === 'true') {
     startTelegramUserListener().catch((error) => {
