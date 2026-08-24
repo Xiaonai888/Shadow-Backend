@@ -219,6 +219,29 @@ begin
       coalesce(sum(searches), 0)::numeric
         as total_searches
     from type_rows
+  ),
+  recent_activity_rows as (
+    select
+      a.id,
+      case
+        when g.status = 'merged'
+          and g.merged_into is not null
+        then g.merged_into
+        else a.group_id
+      end as effective_group_id,
+      a.search_type,
+      a.display_term,
+      a.reader_id,
+      a.result_count,
+      a.searched_at
+    from public.search_analytics_recent_activity a
+    join public.search_term_groups g
+      on g.id = a.group_id
+    where g.status <> 'ignored'
+      and a.searched_at >=
+        v_current_start::timestamptz
+    order by a.searched_at desc
+    limit 30
   )
   select jsonb_build_object(
     'period',
@@ -400,6 +423,32 @@ begin
         from group_rows gr
       ),
       '[]'::jsonb
+    ),
+    'recent_activity',
+    coalesce(
+      (
+        select jsonb_agg(
+          jsonb_build_object(
+            'id',
+            r.id,
+            'group_id',
+            r.effective_group_id,
+            'reader_id',
+            r.reader_id,
+            'search_term',
+            r.display_term,
+            'search_type',
+            r.search_type,
+            'result_count',
+            r.result_count,
+            'searched_at',
+            r.searched_at
+          )
+          order by r.searched_at desc
+        )
+        from recent_activity_rows r
+      ),
+      '[]'::jsonb
     )
   )
   into v_result
@@ -436,6 +485,8 @@ begin
       'types',
       '[]'::jsonb,
       'groups',
+      '[]'::jsonb,
+      'recent_activity',
       '[]'::jsonb
     )
   );
