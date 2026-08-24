@@ -18,7 +18,7 @@ function sendActionError(res, error, fallbackMessage) {
   const message = error?.message || fallbackMessage
   const status = /not found/i.test(message)
     ? 404
-    : /required|invalid|cannot|same group/i.test(message)
+    : /required|invalid|cannot|same group|must|belongs/i.test(message)
       ? 400
       : 500
 
@@ -297,7 +297,7 @@ export async function getAdminSearchInsights(req, res) {
     const days = getDays(req.query.days)
 
     const { data, error } = await supabase.rpc(
-      'get_search_analytics_admin',
+      'get_search_analytics_admin_complete',
       {
         p_days: days,
       }
@@ -453,6 +453,48 @@ export async function mergeAdminSearchGroups(req, res) {
       res,
       error,
       'Failed to merge search groups'
+    )
+  }
+}
+
+export async function splitAdminSearchGroupAlias(req, res) {
+  try {
+    const sourceGroupId = getGroupId(req.params.groupId)
+    const normalizedAlias = String(
+      req.body?.normalized_alias || ''
+    )
+      .normalize('NFKC')
+      .trim()
+      .toLocaleLowerCase()
+      .slice(0, 120)
+
+    if (!sourceGroupId || !normalizedAlias) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Valid group id and alias are required',
+      })
+    }
+
+    const { data, error } = await supabase.rpc(
+      'split_search_analytics_alias',
+      {
+        p_source_group_id: sourceGroupId,
+        p_normalized_alias: normalizedAlias,
+      }
+    )
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      ...(data || {}),
+    })
+  } catch (error) {
+    console.error('SPLIT SEARCH GROUP ERROR:', error)
+    return sendActionError(
+      res,
+      error,
+      'Failed to split search alias'
     )
   }
 }
