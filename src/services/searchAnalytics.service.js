@@ -144,3 +144,54 @@ export async function recordSearchAnalytics({
     )
   }
 }
+
+export async function recordSearchClick({
+  req,
+  keyword,
+  type,
+  resultType,
+  resultId,
+}) {
+  const normalizedTerm = normalizeSearchTerm(keyword)
+  const searcherHash = hashSearcher(req)
+  const searchType = normalizeSearchType(type)
+  const clickedType = normalizeSearchType(resultType)
+  const clickedId = String(resultId || '').trim().slice(0, 160)
+
+  if (
+    normalizedTerm.length < 2 ||
+    !searcherHash ||
+    !clickedId ||
+    clickedType === 'all'
+  ) {
+    return {
+      counted: false,
+      reason: 'invalid_click',
+    }
+  }
+
+  const targetKey = `${clickedType}:${clickedId}`
+
+  const { data, error } = await supabase.rpc(
+    'record_search_analytics_click',
+    {
+      p_normalized_term: normalizedTerm,
+      p_search_type: searchType,
+      p_searcher_hash: searcherHash,
+      p_target_key: targetKey,
+    }
+  )
+
+  if (error) throw error
+
+  void maybePurgeSearchAnalytics().catch((purgeError) => {
+    console.error(
+      'SEARCH ANALYTICS PURGE ERROR:',
+      purgeError?.message || purgeError
+    )
+  })
+
+  return data || {
+    counted: false,
+  }
+}
