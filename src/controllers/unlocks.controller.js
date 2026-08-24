@@ -339,20 +339,11 @@ function getGemMonthlyStoryLimit(rules, tier) {
   return getRuleNumber(rules, 'standard_gem_monthly_story_limit')
 }
 
-function getEpisodeAvailableForGemAt(episode, rules, tier = 'standard') {
-  if (tier === 'premium') {
-    return {
-      available: true,
-      available_at: null,
-      wait_seconds: 0,
-      reason: 'premium',
-    }
-  }
-
+function getEpisodeAvailableForGemAt(episode, rules) {
   const waitDays = getRuleNumber(rules, 'gem_new_episode_wait_days')
-  const publishedAt = episode?.published_at || episode?.created_at
+  const firstPublishedAt = episode?.first_published_at
 
-  if (!publishedAt || waitDays <= 0) {
+  if (waitDays <= 0) {
     return {
       available: true,
       available_at: null,
@@ -361,17 +352,35 @@ function getEpisodeAvailableForGemAt(episode, rules, tier = 'standard') {
     }
   }
 
-  const availableAtMs = new Date(publishedAt).getTime() + waitDays * 24 * 60 * 60 * 1000
-  const nowMs = Date.now()
-  const waitSeconds = Math.max(0, Math.ceil((availableAtMs - nowMs) / 1000))
+  const firstPublishedMs = firstPublishedAt
+    ? new Date(firstPublishedAt).getTime()
+    : NaN
+
+  if (!Number.isFinite(firstPublishedMs)) {
+    return {
+      available: false,
+      available_at: null,
+      wait_seconds: 0,
+      reason: 'first_publish_missing',
+    }
+  }
+
+  const availableAtMs =
+    firstPublishedMs + waitDays * 24 * 60 * 60 * 1000
+  const waitSeconds = Math.max(
+    0,
+    Math.ceil((availableAtMs - Date.now()) / 1000)
+  )
 
   return {
     available: waitSeconds <= 0,
     available_at: new Date(availableAtMs).toISOString(),
     wait_seconds: waitSeconds,
-    reason: waitSeconds <= 0 ? 'wait_finished' : 'wait_required',
+    reason:
+      waitSeconds <= 0 ? 'wait_finished' : 'wait_required',
   }
 }
+
 
 function calculateDiamondCost({
   count,
@@ -581,7 +590,7 @@ async function getStory(storyId) {
 async function getEpisode({ storyId, episodeId }) {
   const { data, error } = await supabase
     .from('episodes')
-    .select('id, story_id, author_id, user_id, title, episode_number, is_locked, status, published_at, created_at')
+    .select('id, story_id, author_id, user_id, title, episode_number, is_locked, status, published_at, first_published_at, created_at')
     .eq('id', episodeId)
     .eq('story_id', storyId)
     .maybeSingle()
