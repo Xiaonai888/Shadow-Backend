@@ -1,5 +1,5 @@
 import { supabase } from '../config/supabase.js'
-
+import { createNotification } from './notifications.controller.js'
 const MAIL_RETENTION_DAYS = 365
 const REMINDER_MAIL_RETENTION_DAYS = 7
 const DAILY_CHECKIN_REMINDER_PREFIX = 'daily_checkin_reminder_'
@@ -248,8 +248,8 @@ export async function sendDailyCheckInReminderMails() {
   const now = new Date()
   const time = getPhnomPenhTimeParts(now)
 
-  if (time.hour !== 9) {
-    return { ok: true, skipped: true, reason: 'Not 9 AM Cambodia time' }
+  if (time.hour !== 7) {
+    return { ok: true, skipped: true, reason: 'Not 7 AM Cambodia time' }
   }
 
   const todayKey = getPhnomPenhDateKey(now)
@@ -325,7 +325,17 @@ export async function sendDailyCheckInReminderMails() {
       referenceId,
     })
 
-    if (mail) created += 1
+    if (mail) {
+  created += 1
+  await createNotification({
+    userId,
+    type: 'announcements',
+    title: 'Daily check-in reminder',
+    message: 'Your daily coin reward is ready. Open Task Center and claim today’s reward.',
+    link: '/tasks',
+    referenceId,
+  })
+}
   }
 
   return {
