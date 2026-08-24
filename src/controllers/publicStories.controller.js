@@ -112,7 +112,7 @@ function isStoryCompleted(story) {
 }
 
 function getEpisodePublishedTime(episode) {
-  const value = episode?.published_at || episode?.created_at
+  const value = episode?.first_published_at
   const time = value ? new Date(value).getTime() : 0
 
   return Number.isFinite(time) ? time : 0
@@ -2295,7 +2295,7 @@ export async function getPublicStoryEpisodes(req, res) {
     const { data, error } = await supabase
       .from('episodes')
       .select(
-        'id, story_id, title, cover_url, is_adult, is_locked, is_free_published, unlock_methods, status, episode_number, page_count, character_count, published_at, created_at, updated_at, deleted_at'
+        'id, story_id, title, cover_url, is_adult, is_locked, is_free_published, unlock_methods, status, episode_number, page_count, character_count, published_at, first_published_at, created_at, updated_at, deleted_at'
       )
       .eq('story_id', storyId)
       .is('deleted_at', null)
