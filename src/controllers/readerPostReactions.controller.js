@@ -176,7 +176,10 @@ async function readReactionRows(postId) {
 export async function getReaderPostReactionStatus(req, res) {
   try {
     const userId = getUserId(req)
-    const postId = String(req.params.postId || '').trim()
+    const rawPostId =
+      String(req.params.postId || '').trim()
+    const postId =
+      await resolveReaderPostId(rawPostId)
 
     if (!userId) {
       return res.status(401).json({
@@ -224,7 +227,10 @@ export async function getReaderPostReactionStatus(req, res) {
 
 export async function getReaderPostReactions(req, res) {
   try {
-    const postId = String(req.params.postId || '').trim()
+    const rawPostId =
+      String(req.params.postId || '').trim()
+    const postId =
+      await resolveReaderPostId(rawPostId)
     const page = Math.max(1, Number(req.query.page || 1))
     const limit = Math.min(100, Math.max(1, Number(req.query.limit || 50)))
     const from = (page - 1) * limit
@@ -342,7 +348,10 @@ export async function getReaderPostReactions(req, res) {
 export async function setReaderPostReaction(req, res) {
   try {
     const userId = getUserId(req)
-    const postId = String(req.params.postId || '').trim()
+    const rawPostId =
+      String(req.params.postId || '').trim()
+    const postId =
+      await resolveReaderPostId(rawPostId)
     const reactionType = normalizeReactionType(
       req.body?.reaction_type || req.body?.reactionType
     )
