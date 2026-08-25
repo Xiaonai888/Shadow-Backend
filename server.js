@@ -275,7 +275,7 @@ const authorContentSpamGuard = createSpamGuard({
 
 const mediaUploadSpamGuard = createSpamGuard({
   scope: 'media_upload',
-  threshold: 30,
+  threshold: 40,
   windowSeconds: 60,
 })
 
