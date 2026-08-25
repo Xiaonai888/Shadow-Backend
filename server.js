@@ -79,6 +79,7 @@ import adminMonthlyVoteRoutes from './src/routes/adminMonthlyVote.routes.js'
 import adminRolesRoutes from './src/routes/adminRoles.routes.js'
 import adminAccountsRoutes from './src/routes/adminAccounts.routes.js'
 import adminSearchInsightsRoutes from './src/routes/adminSearchInsights.routes.js'
+import { startMangaR2DeleteRetryWorker } from './src/services/mangaR2DeleteRetry.service.js'
 dotenv.config()
 
 const app = express()
@@ -612,6 +613,7 @@ app.listen(PORT, () => {
   startCommentTrashCleanup()
   startChatRetentionCleanup()
   startStorageMigrationCleanupScheduler()
+  void startMangaR2DeleteRetryWorker()
 
   if (process.env.ENABLE_TELEGRAM_USER_LISTENER === 'true') {
     startTelegramUserListener().catch((error) => {
