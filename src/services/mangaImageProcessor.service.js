@@ -6,6 +6,11 @@ export const MANGA_PROCESSOR_LIMITS = Object.freeze({
   maxPixels: 120_000_000,
   targetWidth: 1600,
   partMaxHeight: 5000,
+  partMinHeight: 1800,
+  cutSearchRadius: 800,
+  cutAnalysisWidth: 160,
+  cutBandHeight: 220,
+  cutStep: 24,
   targetPartBytes: 1536 * 1024,
   hardPartBytes: 2 * 1024 * 1024,
 })
@@ -63,6 +68,228 @@ function widthProfiles(sourceWidth) {
       (width, index, list) =>
         width > 0 && list.indexOf(width) === index
     )
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, value))
+}
+
+async function buildCutAnalysis({
+  fileBuffer,
+  pageWidth,
+  pageHeight,
+}) {
+  const analysisWidth = Math.max(
+    1,
+    Math.min(MANGA_PROCESSOR_LIMITS.cutAnalysisWidth, pageWidth)
+  )
+  const analysisHeight = Math.max(
+    1,
+    Math.round(pageHeight * (analysisWidth / pageWidth))
+  )
+
+  const raw = await sharp(fileBuffer, {
+    limitInputPixels: MANGA_PROCESSOR_LIMITS.maxPixels,
+    sequentialRead: true,
+  })
+    .rotate()
+    .resize({
+      width: analysisWidth,
+      height: analysisHeight,
+      fit: 'fill',
+      withoutEnlargement: true,
+    })
+    .greyscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+
+  return {
+    data: raw.data,
+    width: raw.info.width,
+    height: raw.info.height,
+    scaleY: raw.info.height / pageHeight,
+  }
+}
+
+function scoreCutCandidate({ analysis, pageY, targetY }) {
+  const { data, width, height, scaleY } = analysis
+
+  if (!data?.length || !width || height < 3) {
+    return Number.POSITIVE_INFINITY
+  }
+
+  const centerY = clamp(Math.round(pageY * scaleY), 1, height - 2)
+  const bandRadius = Math.max(
+    1,
+    Math.round((MANGA_PROCESSOR_LIMITS.cutBandHeight / 2) * scaleY)
+  )
+  const startY = clamp(centerY - bandRadius, 1, height - 2)
+  const endY = clamp(centerY + bandRadius, 1, height - 2)
+
+  let valueSum = 0
+  let valueSquareSum = 0
+  let pixelCount = 0
+  let horizontalDifference = 0
+  let horizontalCount = 0
+  let verticalDifference = 0
+  let verticalCount = 0
+  let busyCount = 0
+  let nearWhiteCount = 0
+
+  for (let y = startY; y <= endY; y += 1) {
+    const rowOffset = y * width
+    const previousRowOffset = (y - 1) * width
+
+    for (let x = 0; x < width; x += 1) {
+      const value = data[rowOffset + x]
+      valueSum += value
+      valueSquareSum += value * value
+      pixelCount += 1
+
+      if (value >= 242) nearWhiteCount += 1
+
+      if (x > 0) {
+        const difference = Math.abs(value - data[rowOffset + x - 1])
+        horizontalDifference += difference
+        horizontalCount += 1
+        if (difference >= 24) busyCount += 1
+      }
+
+      const vertical = Math.abs(value - data[previousRowOffset + x])
+      verticalDifference += vertical
+      verticalCount += 1
+      if (vertical >= 24) busyCount += 1
+    }
+  }
+
+  if (!pixelCount) return Number.POSITIVE_INFINITY
+
+  const mean = valueSum / pixelCount
+  const variance = Math.max(
+    0,
+    valueSquareSum / pixelCount - mean * mean
+  )
+  const standardDeviation = Math.sqrt(variance)
+  const horizontalEdge =
+    horizontalDifference / Math.max(1, horizontalCount) / 255
+  const verticalEdge =
+    verticalDifference / Math.max(1, verticalCount) / 255
+  const busyRatio =
+    busyCount / Math.max(1, horizontalCount + verticalCount)
+  const whiteRatio = nearWhiteCount / pixelCount
+  const varianceScore = Math.min(1, standardDeviation / 96)
+  const distancePenalty =
+    Math.abs(pageY - targetY) /
+    Math.max(1, MANGA_PROCESSOR_LIMITS.cutSearchRadius)
+
+  return (
+    varianceScore * 0.38 +
+    horizontalEdge * 0.7 +
+    verticalEdge * 0.8 +
+    busyRatio * 0.9 +
+    distancePenalty * 0.12 -
+    whiteRatio * 0.16
+  )
+}
+
+function findSafestCut({ analysis, targetY, minimumY, maximumY }) {
+  const minimum = Math.ceil(minimumY)
+  const maximum = Math.floor(maximumY)
+
+  if (minimum >= maximum) {
+    return clamp(Math.round(targetY), minimum, maximum)
+  }
+
+  let bestY = clamp(Math.round(targetY), minimum, maximum)
+  let bestScore = scoreCutCandidate({ analysis, pageY: bestY, targetY })
+
+  for (
+    let candidateY = minimum;
+    candidateY <= maximum;
+    candidateY += MANGA_PROCESSOR_LIMITS.cutStep
+  ) {
+    const score = scoreCutCandidate({
+      analysis,
+      pageY: candidateY,
+      targetY,
+    })
+
+    if (score < bestScore) {
+      bestScore = score
+      bestY = candidateY
+    }
+  }
+
+  if ((maximum - minimum) % MANGA_PROCESSOR_LIMITS.cutStep !== 0) {
+    const score = scoreCutCandidate({
+      analysis,
+      pageY: maximum,
+      targetY,
+    })
+
+    if (score < bestScore) bestY = maximum
+  }
+
+  return bestY
+}
+
+async function buildSmartPartRanges({
+  fileBuffer,
+  pageWidth,
+  pageHeight,
+}) {
+  const { partMaxHeight, partMinHeight, cutSearchRadius } =
+    MANGA_PROCESSOR_LIMITS
+
+  if (pageHeight <= partMaxHeight) {
+    return [{ top: 0, height: pageHeight }]
+  }
+
+  const partCount = Math.ceil(pageHeight / partMaxHeight)
+  const analysis = await buildCutAnalysis({
+    fileBuffer,
+    pageWidth,
+    pageHeight,
+  })
+  const cuts = []
+  let previousCut = 0
+
+  for (let cutIndex = 1; cutIndex < partCount; cutIndex += 1) {
+    const remainingParts = partCount - cutIndex
+    const targetY = Math.round((pageHeight * cutIndex) / partCount)
+    const minimumY = Math.max(
+      previousCut + partMinHeight,
+      targetY - cutSearchRadius,
+      pageHeight - remainingParts * partMaxHeight
+    )
+    const maximumY = Math.min(
+      previousCut + partMaxHeight,
+      targetY + cutSearchRadius,
+      pageHeight - remainingParts * partMinHeight
+    )
+
+    const cutY = findSafestCut({
+      analysis,
+      targetY,
+      minimumY,
+      maximumY,
+    })
+
+    cuts.push(cutY)
+    previousCut = cutY
+  }
+
+  const ranges = []
+  let top = 0
+
+  for (const cutY of cuts) {
+    ranges.push({ top, height: cutY - top })
+    top = cutY
+  }
+
+  ranges.push({ top, height: pageHeight - top })
+
+  return ranges.filter((range) => range.height > 0)
 }
 
 async function renderRawPart({
@@ -129,23 +356,21 @@ async function compressRawPart(rawData, rawInfo) {
 async function processAtWidth(fileBuffer, sourceWidth, sourceHeight, pageWidth) {
   const ratio = pageWidth / sourceWidth
   const pageHeight = Math.max(1, Math.round(sourceHeight * ratio))
-  const partCount = Math.ceil(
-    pageHeight / MANGA_PROCESSOR_LIMITS.partMaxHeight
-  )
+  const ranges = await buildSmartPartRanges({
+    fileBuffer,
+    pageWidth,
+    pageHeight,
+  })
   const parts = []
 
-  for (let partIndex = 0; partIndex < partCount; partIndex += 1) {
-    const top = partIndex * MANGA_PROCESSOR_LIMITS.partMaxHeight
-    const height = Math.min(
-      MANGA_PROCESSOR_LIMITS.partMaxHeight,
-      pageHeight - top
-    )
+  for (let partIndex = 0; partIndex < ranges.length; partIndex += 1) {
+    const range = ranges[partIndex]
     const raw = await renderRawPart({
       fileBuffer,
       pageWidth,
       pageHeight,
-      top,
-      height,
+      top: range.top,
+      height: range.height,
     })
     const compressed = await compressRawPart(raw.data, raw.info)
 
