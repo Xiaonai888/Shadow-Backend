@@ -4,6 +4,9 @@ import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 const NOVEL_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 const MANGA_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 const OUTPUT_MAX_BYTES = 500 * 1024
+const MANGA_MAX_WIDTH = 8000
+const MANGA_MAX_HEIGHT = 30000
+const MANGA_MAX_PIXELS = 120_000_000
 
 function cleanHeader(value, maxLength = 300) {
   return String(value || '').trim().slice(0, maxLength)
@@ -160,6 +163,14 @@ async function uploadRawImage({
 
   try {
     const metadata = await inspectImage(file)
+        if (
+      kind === 'manga' &&
+      (metadata.width > MANGA_MAX_WIDTH ||
+        metadata.height > MANGA_MAX_HEIGHT ||
+        metadata.width * metadata.height > MANGA_MAX_PIXELS)
+    ) {
+      return res.status(422).json({ ok: false, code: 'MANGA_PAGE_DIMENSIONS_TOO_LARGE', stage: 'validate', message: 'Manga image is too large. Max: 8000×30000px and 120MP.' })
+    }
 
     const imageUrl = await uploadImageToR2AsWebP(
       file,
