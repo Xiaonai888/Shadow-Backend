@@ -339,12 +339,13 @@ export async function runMangaR2DeleteRetryBatch() {
           item.error
         )
       } catch (error) {
-        console.error(
-          'MANGA_R2_DELETE_RETRY_UPDATE_ERROR:',
-          item.row?.id,
-          error
-        )
-      }
+  console.error(
+    'MANGA_R2_DELETE_RETRY_UPDATE_ERROR:',
+    item.row?.id,
+    error
+  )
+  throw error
+}
     }
 
     return summary
