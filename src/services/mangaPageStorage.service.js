@@ -1,7 +1,10 @@
+import { supabase } from '../config/supabase.js'
 import {
   deleteR2ObjectByUrl,
   uploadFileToR2,
 } from './r2Storage.service.js'
+
+const DELETE_RETRY_DELAY_MS = 60 * 1000
 
 function getStoragePath(imageUrl) {
   const publicBaseUrl = String(process.env.R2_PUBLIC_URL || '').replace(/\/+$/, '')
@@ -39,21 +42,174 @@ function buildPartFile(part) {
   }
 }
 
+function cleanDeleteError(error) {
+  return String(
+    error?.message ||
+    error?.code ||
+    'R2_DELETE_FAILED'
+  )
+    .trim()
+    .slice(0, 1000)
+}
+
+async function queueMangaR2DeleteRetry(imageUrl, error) {
+  const url = String(imageUrl || '').trim()
+  if (!url) return false
+
+  const now = new Date()
+  const nextRetryAt = new Date(
+    now.getTime() + DELETE_RETRY_DELAY_MS
+  ).toISOString()
+  const lastError = cleanDeleteError(error)
+
+  try {
+    const { data: existing, error: lookupError } = await supabase
+      .from('manga_r2_delete_retry_queue')
+      .select('id')
+      .eq('image_url', url)
+      .maybeSingle()
+
+    if (lookupError) throw lookupError
+
+    if (existing?.id) {
+      const { error: updateError } = await supabase
+        .from('manga_r2_delete_retry_queue')
+        .update({
+          last_error: lastError,
+          last_attempt_at: now.toISOString(),
+          next_retry_at: nextRetryAt,
+          updated_at: now.toISOString(),
+        })
+        .eq('id', existing.id)
+
+      if (updateError) throw updateError
+      return true
+    }
+
+    const { error: insertError } = await supabase
+      .from('manga_r2_delete_retry_queue')
+      .insert({
+        image_url: url,
+        attempts: 0,
+        last_error: lastError,
+        last_attempt_at: now.toISOString(),
+        next_retry_at: nextRetryAt,
+        updated_at: now.toISOString(),
+      })
+
+    if (!insertError) return true
+
+    if (String(insertError.code || '') === '23505') {
+      const { error: raceUpdateError } = await supabase
+        .from('manga_r2_delete_retry_queue')
+        .update({
+          last_error: lastError,
+          last_attempt_at: now.toISOString(),
+          next_retry_at: nextRetryAt,
+          updated_at: now.toISOString(),
+        })
+        .eq('image_url', url)
+
+      if (raceUpdateError) throw raceUpdateError
+      return true
+    }
+
+    throw insertError
+  } catch (queueError) {
+    console.error(
+      'MANGA R2 DELETE RETRY QUEUE ERROR:',
+      queueError
+    )
+    return false
+  }
+}
+
+async function clearMangaR2DeleteRetry(imageUrl) {
+  const url = String(imageUrl || '').trim()
+  if (!url) return false
+
+  try {
+    const { error } = await supabase
+      .from('manga_r2_delete_retry_queue')
+      .delete()
+      .eq('image_url', url)
+
+    if (error) throw error
+    return true
+  } catch (queueError) {
+    console.error(
+      'MANGA R2 DELETE RETRY CLEAR ERROR:',
+      queueError
+    )
+    return false
+  }
+}
+
 export async function deleteStoredMangaParts(parts = []) {
-  const urls = (Array.isArray(parts) ? parts : [])
-    .map((part) => part?.image_url || part?.imageUrl)
-    .filter(Boolean)
+  const urls = [
+    ...new Set(
+      (Array.isArray(parts) ? parts : [])
+        .map((part) => part?.image_url || part?.imageUrl)
+        .map((url) => String(url || '').trim())
+        .filter(Boolean)
+    ),
+  ]
 
   const results = await Promise.allSettled(
     urls.map((url) => deleteR2ObjectByUrl(url))
   )
 
+  const deletedUrls = []
+  const failedDeletes = []
+  let ignored = 0
+
+  results.forEach((result, index) => {
+    const url = urls[index]
+
+    if (
+      result.status === 'fulfilled' &&
+      result.value === true
+    ) {
+      deletedUrls.push(url)
+      return
+    }
+
+    if (result.status === 'rejected') {
+      failedDeletes.push({
+        url,
+        error: result.reason,
+      })
+      return
+    }
+
+    ignored += 1
+  })
+
+  await Promise.allSettled(
+    deletedUrls.map((url) =>
+      clearMangaR2DeleteRetry(url)
+    )
+  )
+
+  const queueResults = await Promise.allSettled(
+    failedDeletes.map(({ url, error }) =>
+      queueMangaR2DeleteRetry(url, error)
+    )
+  )
+
+  const queued = queueResults.filter(
+    (result) =>
+      result.status === 'fulfilled' &&
+      result.value === true
+  ).length
+
   return {
     requested: urls.length,
-    deleted: results.filter(
-      (result) => result.status === 'fulfilled' && result.value === true
-    ).length,
-    failed: results.filter((result) => result.status === 'rejected').length,
+    deleted: deletedUrls.length,
+    failed: failedDeletes.length,
+    queued,
+    queue_failed: failedDeletes.length - queued,
+    ignored,
   }
 }
 
