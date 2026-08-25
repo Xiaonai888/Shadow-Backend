@@ -490,9 +490,8 @@ export async function getShadowMallPromotionSocialStatuses(
           'shadow_mall_promotion_reactions'
         )
         .select(
-          'promotion_id, reaction_type'
+          'promotion_id, user_id, reaction_type'
         )
-        .eq('user_id', userId)
         .in(
           'promotion_id',
           promotionIds
@@ -523,15 +522,41 @@ export async function getShadowMallPromotionSocialStatuses(
 
     const reactionByPromotion =
       new Map()
+    const reactionRowsByPromotion =
+      new Map()
 
     for (
       const row of
         reactionsResult.data || []
     ) {
-      reactionByPromotion.set(
-        String(row.promotion_id),
-        row.reaction_type || null
+      const key = String(
+        row.promotion_id
       )
+
+      if (
+        String(row.user_id || '') ===
+        String(userId)
+      ) {
+        reactionByPromotion.set(
+          key,
+          row.reaction_type || null
+        )
+      }
+
+      if (
+        !reactionRowsByPromotion.has(
+          key
+        )
+      ) {
+        reactionRowsByPromotion.set(
+          key,
+          []
+        )
+      }
+
+      reactionRowsByPromotion
+        .get(key)
+        .push(row)
     }
 
     const echoCountByPromotion =
@@ -565,12 +590,22 @@ export async function getShadowMallPromotionSocialStatuses(
 
     for (const promotionId of promotionIds) {
       const key = String(promotionId)
+      const reactionRows =
+        reactionRowsByPromotion.get(
+          key
+        ) || []
 
       statuses[key] = {
         my_reaction:
           reactionByPromotion.get(
             key
           ) || null,
+        like_count:
+          reactionRows.length,
+        reaction_summary:
+          buildReactionSummary(
+            reactionRows
+          ),
         echo_count: Number(
           echoCountByPromotion.get(
             key
