@@ -1,3 +1,4 @@
+import { wakeMangaR2DeleteRetryWorker } from './mangaR2DeleteRetry.service.js'
 import { supabase } from '../config/supabase.js'
 import {
   deleteR2ObjectByUrl,
@@ -211,6 +212,10 @@ export async function deleteStoredMangaParts(parts = []) {
     queue_failed: failedDeletes.length - queued,
     ignored,
   }
+}
+
+if (queued > 0) {
+  wakeMangaR2DeleteRetryWorker(DELETE_RETRY_DELAY_MS)
 }
 
 export async function uploadProcessedMangaParts({
