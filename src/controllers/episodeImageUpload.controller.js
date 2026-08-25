@@ -2,7 +2,7 @@ import sharp from 'sharp'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 
 const NOVEL_IMAGE_MAX_BYTES = 5 * 1024 * 1024
-const MANGA_IMAGE_MAX_BYTES = 2 * 1024 * 1024
+const MANGA_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 const OUTPUT_MAX_BYTES = 500 * 1024
 
 function cleanHeader(value, maxLength = 300) {
@@ -152,7 +152,7 @@ async function uploadRawImage({
       message:
         kind === 'novel'
           ? 'Novel image must be 5 MB or smaller.'
-          : 'Manga page must be 2 MB or smaller.',
+          : 'Manga page must be 5 MB or smaller.',
       received_bytes: file.size,
       max_bytes: maxBytes,
     })
