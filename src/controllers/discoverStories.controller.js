@@ -292,7 +292,7 @@ export async function getDiscoverStoriesFeed(
       supabase
         .from('author_page_stories')
         .select(
-          'id, author_page_id, media_type, media_url, mime_type, caption, allow_messages, view_count, created_at, expires_at'
+          'id, author_page_id, media_type, media_url, mime_type, caption, alt_text, text_overlay, mention_username, link_url, allow_messages, view_count, created_at, expires_at'
         )
         .eq('status', 'active')
         .gt('expires_at', now)
