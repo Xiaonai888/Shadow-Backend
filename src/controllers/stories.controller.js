@@ -1,5 +1,9 @@
 import { supabase } from '../config/supabase.js'
 import { assertR2MediaReference } from '../services/mediaStoragePolicy.service.js'
+import {
+  attachEpisodePageParts,
+  syncEpisodePageParts,
+} from '../services/episodePageParts.service.js'
 import { blockedWordsWarningPayload, findBlockedWordsInContent } from '../utils/blockedWords.js'
 import {
   applyEpisodeAccess,
@@ -219,21 +223,36 @@ function cleanEpisodePages(value, allowedLegacyValues = []) {
 
   return value
     .slice(0, MAX_MANGA_PAGES)
-    .map((page, index) => ({
-      image_url: cleanMediaReference(
-        page?.image_url || page?.imageUrl,
-        {
-          field: `episode_pages[${index}].image_url`,
-          allowedLegacyValues,
-        }
-      ),
-      storage_path: cleanNullableText(page?.storage_path || page?.storagePath),
-      sort_order: index,
-      width: cleanOptionalPositiveInteger(page?.width),
-      height: cleanOptionalPositiveInteger(page?.height),
-      file_size: cleanOptionalPositiveInteger(page?.file_size || page?.fileSize),
-      mime_type: cleanNullableText(page?.mime_type || page?.mimeType),
-    }))
+    .map((page, index) => {
+      const cleanedPage = {
+        image_url: cleanMediaReference(
+          page?.image_url || page?.imageUrl,
+          {
+            field: `episode_pages[${index}].image_url`,
+            allowedLegacyValues,
+          }
+        ),
+        storage_path: cleanNullableText(page?.storage_path || page?.storagePath),
+        sort_order: index,
+        width: cleanOptionalPositiveInteger(page?.width),
+        height: cleanOptionalPositiveInteger(page?.height),
+        file_size: cleanOptionalPositiveInteger(page?.file_size || page?.fileSize),
+        mime_type: cleanNullableText(page?.mime_type || page?.mimeType),
+      }
+
+      if (
+        Object.prototype.hasOwnProperty.call(
+          page || {},
+          'parts'
+        )
+      ) {
+        cleanedPage.parts = Array.isArray(page.parts)
+          ? page.parts
+          : []
+      }
+
+      return cleanedPage
+    })
     .filter((page) => page.image_url)
 }
 
@@ -271,6 +290,19 @@ function publicEpisodePage(page) {
     height: page.height || null,
     file_size: page.file_size || null,
     mime_type: page.mime_type || null,
+    parts: Array.isArray(page.parts)
+      ? page.parts.map((part) => ({
+          id: part.id,
+          episode_page_id: part.episode_page_id,
+          part_index: Number(part.part_index || 0),
+          image_url: part.image_url,
+          storage_path: part.storage_path || null,
+          width: part.width || null,
+          height: part.height || null,
+          file_size: part.file_size || null,
+          mime_type: part.mime_type || null,
+        }))
+      : [],
     created_at: page.created_at,
     updated_at: page.updated_at,
   }
@@ -426,7 +458,8 @@ async function getEpisodePages(episodeId) {
     .order('sort_order', { ascending: true })
 
   if (error) throw error
-  return data || []
+
+  return attachEpisodePageParts(data || [])
 }
 
 async function saveEpisodePages({ episodeId, storyId, pages }) {
@@ -472,7 +505,12 @@ async function saveEpisodePages({ episodeId, storyId, pages }) {
 
   if (staleError) throw staleError
 
-  return getEpisodePages(episodeId)
+  const savedPages = await getEpisodePages(episodeId)
+
+return syncEpisodePageParts({
+  savedPages,
+  requestedPages: cleanPages,
+})
 }
 
 async function getNextEpisodeNumber(storyId) {
