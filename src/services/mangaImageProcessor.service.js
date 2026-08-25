@@ -118,13 +118,42 @@ function scoreCutCandidate({ analysis, pageY, targetY }) {
     return Number.POSITIVE_INFINITY
   }
 
-  const centerY = clamp(Math.round(pageY * scaleY), 1, height - 2)
+  const centerY = clamp(
+    Math.round(pageY * scaleY),
+    1,
+    height - 2
+  )
   const bandRadius = Math.max(
     1,
-    Math.round((MANGA_PROCESSOR_LIMITS.cutBandHeight / 2) * scaleY)
+    Math.round(
+      (MANGA_PROCESSOR_LIMITS.cutBandHeight / 2) *
+        scaleY
+    )
   )
-  const startY = clamp(centerY - bandRadius, 1, height - 2)
-  const endY = clamp(centerY + bandRadius, 1, height - 2)
+  const guardRadius = Math.max(
+    1,
+    Math.round(60 * scaleY)
+  )
+  const startY = clamp(
+    centerY - bandRadius,
+    1,
+    height - 2
+  )
+  const endY = clamp(
+    centerY + bandRadius,
+    1,
+    height - 2
+  )
+  const guardStartY = clamp(
+    centerY - guardRadius,
+    1,
+    height - 2
+  )
+  const guardEndY = clamp(
+    centerY + guardRadius,
+    1,
+    height - 2
+  )
 
   let valueSum = 0
   let valueSquareSum = 0
@@ -142,27 +171,96 @@ function scoreCutCandidate({ analysis, pageY, targetY }) {
 
     for (let x = 0; x < width; x += 1) {
       const value = data[rowOffset + x]
+
       valueSum += value
       valueSquareSum += value * value
       pixelCount += 1
 
-      if (value >= 242) nearWhiteCount += 1
-
-      if (x > 0) {
-        const difference = Math.abs(value - data[rowOffset + x - 1])
-        horizontalDifference += difference
-        horizontalCount += 1
-        if (difference >= 24) busyCount += 1
+      if (value >= 242) {
+        nearWhiteCount += 1
       }
 
-      const vertical = Math.abs(value - data[previousRowOffset + x])
+      if (x > 0) {
+        const difference = Math.abs(
+          value - data[rowOffset + x - 1]
+        )
+
+        horizontalDifference += difference
+        horizontalCount += 1
+
+        if (difference >= 24) {
+          busyCount += 1
+        }
+      }
+
+      const vertical = Math.abs(
+        value - data[previousRowOffset + x]
+      )
+
       verticalDifference += vertical
       verticalCount += 1
-      if (vertical >= 24) busyCount += 1
+
+      if (vertical >= 24) {
+        busyCount += 1
+      }
     }
   }
 
-  if (!pixelCount) return Number.POSITIVE_INFINITY
+  if (!pixelCount) {
+    return Number.POSITIVE_INFINITY
+  }
+
+  const sectionCount = Math.min(8, width)
+  const sectionWidth = Math.max(
+    1,
+    Math.ceil(width / sectionCount)
+  )
+  const sectionBusy = Array(sectionCount).fill(0)
+  const sectionSamples = Array(sectionCount).fill(0)
+
+  let guardDifference = 0
+  let guardSamples = 0
+  let guardBusy = 0
+
+  for (
+    let y = guardStartY;
+    y <= guardEndY;
+    y += 1
+  ) {
+    const rowOffset = y * width
+    const previousRowOffset = (y - 1) * width
+
+    for (let x = 0; x < width; x += 1) {
+      const value = data[rowOffset + x]
+      const vertical = Math.abs(
+        value - data[previousRowOffset + x]
+      )
+      const horizontal =
+        x > 0
+          ? Math.abs(
+              value - data[rowOffset + x - 1]
+            )
+          : 0
+
+      const localDifference = Math.max(
+        horizontal,
+        vertical
+      )
+      const sectionIndex = Math.min(
+        sectionCount - 1,
+        Math.floor(x / sectionWidth)
+      )
+
+      guardDifference += localDifference
+      guardSamples += 1
+      sectionSamples[sectionIndex] += 1
+
+      if (localDifference >= 22) {
+        guardBusy += 1
+        sectionBusy[sectionIndex] += 1
+      }
+    }
+  }
 
   const mean = valueSum / pixelCount
   const variance = Math.max(
@@ -170,25 +268,74 @@ function scoreCutCandidate({ analysis, pageY, targetY }) {
     valueSquareSum / pixelCount - mean * mean
   )
   const standardDeviation = Math.sqrt(variance)
+
   const horizontalEdge =
-    horizontalDifference / Math.max(1, horizontalCount) / 255
+    horizontalDifference /
+    Math.max(1, horizontalCount) /
+    255
   const verticalEdge =
-    verticalDifference / Math.max(1, verticalCount) / 255
+    verticalDifference /
+    Math.max(1, verticalCount) /
+    255
   const busyRatio =
-    busyCount / Math.max(1, horizontalCount + verticalCount)
-  const whiteRatio = nearWhiteCount / pixelCount
-  const varianceScore = Math.min(1, standardDeviation / 96)
+    busyCount /
+    Math.max(
+      1,
+      horizontalCount + verticalCount
+    )
+  const whiteRatio =
+    nearWhiteCount / pixelCount
+  const varianceScore = Math.min(
+    1,
+    standardDeviation / 96
+  )
   const distancePenalty =
     Math.abs(pageY - targetY) /
-    Math.max(1, MANGA_PROCESSOR_LIMITS.cutSearchRadius)
+    Math.max(
+      1,
+      MANGA_PROCESSOR_LIMITS.cutSearchRadius
+    )
+
+  const guardEdge =
+    guardDifference /
+    Math.max(1, guardSamples) /
+    255
+  const guardBusyRatio =
+    guardBusy / Math.max(1, guardSamples)
+
+  const peakSectionBusyRatio = sectionBusy.reduce(
+    (peak, count, index) => {
+      const ratio =
+        count /
+        Math.max(1, sectionSamples[index])
+
+      return Math.max(peak, ratio)
+    },
+    0
+  )
+
+  const unsafeGuardPenalty =
+    guardBusyRatio > 0.16
+      ? (guardBusyRatio - 0.16) * 2.4
+      : 0
+
+  const unsafeSectionPenalty =
+    peakSectionBusyRatio > 0.28
+      ? (peakSectionBusyRatio - 0.28) * 2.8
+      : 0
 
   return (
-    varianceScore * 0.38 +
-    horizontalEdge * 0.7 +
-    verticalEdge * 0.8 +
-    busyRatio * 0.9 +
-    distancePenalty * 0.12 -
-    whiteRatio * 0.16
+    varianceScore * 0.32 +
+    horizontalEdge * 0.55 +
+    verticalEdge * 0.65 +
+    busyRatio * 0.72 +
+    guardEdge * 1.15 +
+    guardBusyRatio * 1.5 +
+    peakSectionBusyRatio * 1.25 +
+    unsafeGuardPenalty +
+    unsafeSectionPenalty +
+    distancePenalty * 0.1 -
+    whiteRatio * 0.14
   )
 }
 
