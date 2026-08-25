@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
+import { attachEpisodePageParts } from '../services/episodePageParts.service.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import {
   applyEpisodeAccess,
@@ -579,9 +580,19 @@ function publicEpisodePage(page) {
     height: page.height || null,
     file_size: page.file_size || null,
     mime_type: page.mime_type || null,
+    parts: Array.isArray(page.parts)
+      ? page.parts.map((part) => ({
+          id: part.id,
+          part_index: Number(part.part_index || 0),
+          image_url: part.image_url,
+          width: part.width || null,
+          height: part.height || null,
+          file_size: part.file_size || null,
+          mime_type: part.mime_type || null,
+        }))
+      : [],
   }
 }
-
 async function getPublicEpisodePages({ episodeId, storyId }) {
   const { data, error } = await supabase
     .from('episode_pages')
@@ -591,7 +602,7 @@ async function getPublicEpisodePages({ episodeId, storyId }) {
     .order('sort_order', { ascending: true })
 
   if (error) throw error
-  return data || []
+return attachEpisodePageParts(data || [])
 }
 
 function publicEpisode(
