@@ -10,7 +10,7 @@ import { requireUser } from '../middleware/user.middleware.js'
 const router = express.Router()
 
 const NOVEL_IMAGE_MAX_BYTES = 5 * 1024 * 1024
-const MANGA_PAGE_MAX_BYTES = 2 * 1024 * 1024
+const MANGA_PAGE_MAX_BYTES = 5 * 1024 * 1024
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -33,7 +33,7 @@ function readImageStream(kind, maxBytes) {
         stage: 'receive',
         message: isNovel
           ? 'Novel image must be 5 MB or smaller.'
-          : 'Manga page must be 2 MB or smaller.',
+          : 'Manga page must be 5 MB or smaller.',
         expected_bytes: expectedBytes,
         max_bytes: maxBytes,
       })
@@ -81,7 +81,7 @@ function readImageStream(kind, maxBytes) {
           stage: 'receive',
           message: isNovel
             ? 'Novel image must be 5 MB or smaller.'
-            : 'Manga page must be 2 MB or smaller.',
+            : 'Manga page must be 5 MB or smaller.',
           received_bytes: receivedBytes,
           max_bytes: maxBytes,
         })
