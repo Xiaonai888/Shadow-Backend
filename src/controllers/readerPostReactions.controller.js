@@ -48,6 +48,106 @@ function buildReactionSummary(rows = []) {
     })
     .slice(0, 3)
 }
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function isUuid(value) {
+  return UUID_PATTERN.test(
+    String(value || '').trim()
+  )
+}
+
+async function resolveReaderPostId(value) {
+  const rawId = String(value || '').trim()
+
+  if (isUuid(rawId)) {
+    return rawId
+  }
+
+  const syntheticMatch = rawId.match(
+    /^(echo-v2|social-echo):(.+)$/i
+  )
+
+  if (!syntheticMatch) {
+    return ''
+  }
+
+  const echoVersion =
+    syntheticMatch[1].toLowerCase()
+  const echoId =
+    String(syntheticMatch[2] || '').trim()
+
+  if (!isUuid(echoId)) {
+    return ''
+  }
+
+  if (echoVersion === 'echo-v2') {
+    const { data, error } = await supabase
+      .from('social_echoes_v2')
+      .select('source_type, source_id')
+      .eq('id', echoId)
+      .maybeSingle()
+
+    if (error) throw error
+    if (!data) return ''
+
+    const sourceType = String(
+      data.source_type || ''
+    )
+      .trim()
+      .toLowerCase()
+      .replaceAll('-', '_')
+
+    const sourceId = String(
+      data.source_id || ''
+    ).trim()
+
+    return (
+      sourceType === 'reader_post' &&
+      isUuid(sourceId)
+    )
+      ? sourceId
+      : ''
+  }
+
+  const { data, error } = await supabase
+    .from('social_echoes')
+    .select(
+      'source_type, source_id, reader_post_id'
+    )
+    .eq('id', echoId)
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) return ''
+
+  const linkedPostId = String(
+    data.reader_post_id || ''
+  ).trim()
+
+  if (isUuid(linkedPostId)) {
+    return linkedPostId
+  }
+
+  const sourceType = String(
+    data.source_type || ''
+  )
+    .trim()
+    .toLowerCase()
+    .replaceAll('-', '_')
+
+  const sourceId = String(
+    data.source_id || ''
+  ).trim()
+
+  return (
+    sourceType === 'reader_post' &&
+    isUuid(sourceId)
+  )
+    ? sourceId
+    : ''
+}
+
 
 async function readReaderPost(postId) {
   const { data, error } = await supabase
