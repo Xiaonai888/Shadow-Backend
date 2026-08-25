@@ -193,6 +193,73 @@ export async function createAuthorPageNotification({
   return normalizeNotification(data)
 }
 
+export async function getMyAuthorPageNotificationUnreadCount(
+  req,
+  res
+) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const authorPage =
+      await getMyAuthorPageByUserId(userId)
+
+    if (!authorPage) {
+      res.setHeader(
+        'Cache-Control',
+        'private, no-store'
+      )
+
+      return res.status(200).json({
+        ok: true,
+        has_author_page: false,
+        unread_count: 0,
+      })
+    }
+
+    const { count, error } = await supabase
+      .from('author_page_notifications')
+      .select('id', {
+        count: 'exact',
+        head: true,
+      })
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .eq('is_read', false)
+
+    if (error) throw error
+
+    res.setHeader(
+      'Cache-Control',
+      'private, no-store'
+    )
+
+    return res.status(200).json({
+      ok: true,
+      has_author_page: true,
+      unread_count: Number(count || 0),
+    })
+  } catch (error) {
+    console.error(
+      'GET AUTHOR PAGE NOTIFICATION UNREAD COUNT ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to load notification unread count',
+      error: error.message,
+    })
+  }
+}
+
 export async function getMyAuthorPageNotifications(
   req,
   res
