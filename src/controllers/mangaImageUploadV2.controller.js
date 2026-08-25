@@ -1,5 +1,9 @@
 import { processMangaImage } from '../services/mangaImageProcessor.service.js'
-import { uploadProcessedMangaParts } from '../services/mangaPageStorage.service.js'
+import { supabase } from '../config/supabase.js'
+import {
+  deleteStoredMangaParts,
+  uploadProcessedMangaParts,
+} from '../services/mangaPageStorage.service.js'
 
 const MANGA_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 
@@ -133,6 +137,113 @@ export async function uploadMangaPageImageV2(req, res) {
         error?.message ||
         'The manga page could not be processed or stored.',
       rollback: error?.rollback || null,
+    })
+  }
+}
+
+export async function cleanupTemporaryMangaPartsV2(req, res) {
+  const userId = String(req.user?.user_id || '').trim()
+
+  if (!userId) {
+    return res.status(401).json({
+      ok: false,
+      code: 'UNAUTHORIZED',
+      message: 'Please sign in again.',
+    })
+  }
+
+  const urls = [
+    ...new Set(
+      (Array.isArray(req.body?.urls) ? req.body.urls : [])
+        .slice(0, 10)
+        .map((url) => String(url || '').trim())
+        .filter(Boolean)
+    ),
+  ]
+
+  if (!urls.length) {
+    return res.json({
+      ok: true,
+      requested: 0,
+      protected: 0,
+      deleted: 0,
+      failed: 0,
+    })
+  }
+
+  const publicBaseUrl = String(
+    process.env.R2_PUBLIC_URL || ''
+  ).replace(/\/+$/, '')
+
+  if (!publicBaseUrl) {
+    return res.status(500).json({
+      ok: false,
+      code: 'R2_PUBLIC_URL_MISSING',
+      message: 'Storage configuration is unavailable.',
+    })
+  }
+
+  const ownedPrefix =
+    `${publicBaseUrl}/episode-content/${userId}/manga-v2/`
+
+  if (urls.some((url) => !url.startsWith(ownedPrefix))) {
+    return res.status(400).json({
+      ok: false,
+      code: 'INVALID_MANGA_CLEANUP_URL',
+      message: 'One or more manga files cannot be removed.',
+    })
+  }
+
+  try {
+    const [
+      { data: partRows, error: partError },
+      { data: pageRows, error: pageError },
+    ] = await Promise.all([
+      supabase
+        .from('episode_page_parts')
+        .select('image_url')
+        .in('image_url', urls),
+      supabase
+        .from('episode_pages')
+        .select('image_url')
+        .in('image_url', urls),
+    ])
+
+    if (partError) throw partError
+    if (pageError) throw pageError
+
+    const protectedUrls = new Set([
+      ...(partRows || []).map((row) => row.image_url),
+      ...(pageRows || []).map((row) => row.image_url),
+    ])
+
+    const removableUrls = urls.filter(
+      (url) => !protectedUrls.has(url)
+    )
+
+    const result = await deleteStoredMangaParts(
+      removableUrls.map((imageUrl) => ({
+        image_url: imageUrl,
+      }))
+    )
+
+    return res.json({
+      ok: true,
+      requested: urls.length,
+      protected: protectedUrls.size,
+      deleted: result.deleted,
+      failed: result.failed,
+    })
+  } catch (error) {
+    console.error(
+      'MANGA V2 TEMP CLEANUP ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      code: 'MANGA_V2_TEMP_CLEANUP_FAILED',
+      message: 'Temporary manga files could not be cleaned up.',
     })
   }
 }
