@@ -1,3 +1,4 @@
+import { deleteStoredMangaParts } from '../services/mangaPageStorage.service.js'
 import { supabase } from '../config/supabase.js'
 import { assertR2MediaReference } from '../services/mediaStoragePolicy.service.js'
 import {
@@ -462,8 +463,47 @@ async function getEpisodePages(episodeId) {
   return attachEpisodePageParts(data || [])
 }
 
+function getMangaPageMediaUrls(pages = []) {
+  const urls = new Set()
+
+  for (const page of Array.isArray(pages) ? pages : []) {
+    const parts = Array.isArray(page?.parts)
+      ? page.parts.filter((part) => part?.image_url || part?.imageUrl)
+      : []
+
+    if (parts.length) {
+      parts.forEach((part) => {
+        const url = cleanText(part?.image_url || part?.imageUrl)
+        if (url) urls.add(url)
+      })
+      continue
+    }
+
+    const imageUrl = cleanText(page?.image_url || page?.imageUrl)
+    if (imageUrl) urls.add(imageUrl)
+  }
+
+  return urls
+}
+
+async function cleanupStaleMangaMedia(previousPages = [], nextPages = []) {
+  const previousUrls = getMangaPageMediaUrls(previousPages)
+  const nextUrls = getMangaPageMediaUrls(nextPages)
+
+  const staleUrls = [...previousUrls].filter(
+    (url) => !nextUrls.has(url)
+  )
+
+  if (!staleUrls.length) return
+
+  await deleteStoredMangaParts(
+    staleUrls.map((imageUrl) => ({ image_url: imageUrl }))
+  )
+}
+
 async function saveEpisodePages({ episodeId, storyId, pages }) {
   const cleanPages = Array.isArray(pages) ? pages : []
+  const previousPages = await getEpisodePages(episodeId)
   const now = new Date().toISOString()
 
   if (!cleanPages.length) {
@@ -473,6 +513,7 @@ async function saveEpisodePages({ episodeId, storyId, pages }) {
       .eq('episode_id', episodeId)
 
     if (error) throw error
+    await cleanupStaleMangaMedia(previousPages, [])
     return []
   }
 
@@ -507,10 +548,14 @@ async function saveEpisodePages({ episodeId, storyId, pages }) {
 
   const savedPages = await getEpisodePages(episodeId)
 
-return syncEpisodePageParts({
+const syncedPages = await syncEpisodePageParts({
   savedPages,
   requestedPages: cleanPages,
 })
+
+await cleanupStaleMangaMedia(previousPages, syncedPages)
+
+return syncedPages
 }
 
 async function getNextEpisodeNumber(storyId) {
