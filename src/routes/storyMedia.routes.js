@@ -1,3 +1,4 @@
+import { uploadMangaPageImageV2 } from '../controllers/mangaImageUploadV2.controller.js'
 import express from 'express'
 import multer from 'multer'
 import { uploadStoryImage } from '../controllers/storyMedia.controller.js'
@@ -180,6 +181,13 @@ router.post(
   requireUser,
   readImageStream('manga', MANGA_PAGE_MAX_BYTES),
   uploadMangaPageImage
+)
+
+router.post(
+  '/upload-manga-page-v2',
+  requireUser,
+  readImageStream('manga', MANGA_PAGE_MAX_BYTES),
+  uploadMangaPageImageV2
 )
 
 router.post('/upload-image', requireUser, (req, res, next) => {
