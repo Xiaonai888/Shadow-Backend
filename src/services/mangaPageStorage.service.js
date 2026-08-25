@@ -214,10 +214,6 @@ export async function deleteStoredMangaParts(parts = []) {
   }
 }
 
-if (queued > 0) {
-  wakeMangaR2DeleteRetryWorker(DELETE_RETRY_DELAY_MS)
-}
-
 export async function uploadProcessedMangaParts({
   processed,
   folder,
@@ -264,6 +260,10 @@ export async function uploadProcessedMangaParts({
         quality: part.quality,
       })
     }
+
+    if (queued > 0) {
+  wakeMangaR2DeleteRetryWorker(DELETE_RETRY_DELAY_MS)
+}
 
     return {
       source_width: Number(processed?.sourceWidth || 0) || null,
