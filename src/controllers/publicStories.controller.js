@@ -1019,8 +1019,8 @@ async function recordEpisodeView({
 
 
 
-async function hasActiveEpisodeUnlock({ userId, episodeId }) {
-  if (!userId || !episodeId) return false
+async function getActiveEpisodeUnlock({ userId, episodeId }) {
+  if (!userId || !episodeId) return null
 
   const { data, error } = await supabase
     .from('episode_unlocks')
@@ -1031,13 +1031,20 @@ async function hasActiveEpisodeUnlock({ userId, episodeId }) {
     .maybeSingle()
 
   if (error) throw error
-  if (!data) return false
+  if (!data) return null
 
-  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now()) {
-    return false
+  if (
+    data.expires_at &&
+    new Date(data.expires_at).getTime() < Date.now()
+  ) {
+    return null
   }
 
-  return true
+  return data
+}
+
+async function hasActiveEpisodeUnlock(args) {
+  return Boolean(await getActiveEpisodeUnlock(args))
 }
 
 async function getAuthorPageById(authorId) {
@@ -2452,11 +2459,12 @@ const { data: episode, error } = await supabase
       access
     )
     const activeUnlock =
-      await hasActiveEpisodeUnlock({
+      await getActiveEpisodeUnlock({
         userId,
         episodeId,
       })
-    const unlocked = freeEpisode || activeUnlock
+    const unlocked =
+      freeEpisode || Boolean(activeUnlock)
     const isManga =
       String(story.story_type || 'novel')
         .trim()
@@ -2519,6 +2527,15 @@ const { data: episode, error } = await supabase
               month_key: getMonthKey(),
             }
           : null,
+      cache_access: {
+        private_access: Boolean(!freeEpisode && activeUnlock),
+        access_type: freeEpisode
+          ? 'public'
+          : activeUnlock?.access_type || null,
+        expires_at: freeEpisode
+          ? null
+          : activeUnlock?.expires_at || null,
+      },
       view: {
         counted: false,
         reason: 'qualified_view_required',
