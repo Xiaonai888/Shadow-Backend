@@ -423,7 +423,7 @@ export async function updateAdminReadingMission(req, res) {
 
       payload = {
         is_active: Boolean(existingMission.is_active),
-        title: existingMission.title,
+        title: `Read ${requestedPayload.target_minutes} minutes`,
         subtitle: existingMission.subtitle,
         reward_coins: requestedPayload.reward_coins,
         target_minutes: requestedPayload.target_minutes,
