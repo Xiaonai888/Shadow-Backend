@@ -5,6 +5,7 @@ const REPORT_TYPES = new Set([
   'comment',
   'author_page',
   'author_post',
+  'reader_post',
 ])
 
 const REASON_CODES = new Set([
@@ -171,12 +172,30 @@ async function getAuthorPostTarget(targetId) {
   }
 }
 
+async function getReaderPostTarget(targetId) {
+  const { data, error } = await supabase
+    .from('reader_posts')
+    .select('id, content')
+    .eq('id', targetId)
+    .is('deleted_at', null)
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) return null
+
+  return {
+    title: 'Reader Post',
+    excerpt: excerpt(data.content),
+  }
+}
+
 async function resolveTarget(reportType, targetId) {
   if (reportType === 'story') return getStoryTarget(targetId)
   if (reportType === 'comment') return getCommentTarget(targetId)
   if (reportType === 'author_page') return getAuthorPageTarget(targetId)
   if (reportType === 'author_post') return getAuthorPostTarget(targetId)
-  return null
+if (reportType === 'reader_post') return getReaderPostTarget(targetId)
+return null
 }
 
 export async function createContentReport(req, res) {
