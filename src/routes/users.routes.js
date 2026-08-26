@@ -12,6 +12,8 @@ import {
   requestPasswordReset,
   resetPassword,
   changePassword,
+  requestEmailChange,
+  confirmEmailChange,
   unfollowUser,
   updatePaymentProfile,
   updateDateOfBirth,
@@ -59,6 +61,20 @@ const readerChangePasswordLimit = createRateLimit({
   message: 'Too many password change attempts. Please wait and try again.',
 })
 
+const readerEmailChangeRequestLimit = createRateLimit({
+  key: 'reader-email-change-request',
+  windowMs: 600000,
+  max: 5,
+  message: 'Too many email change requests. Please wait and try again.',
+})
+
+const readerEmailChangeConfirmLimit = createRateLimit({
+  key: 'reader-email-change-confirm',
+  windowMs: 600000,
+  max: 10,
+  message: 'Too many email verification attempts. Please wait and try again.',
+})
+
 router.post('/register', readerRegisterLimit, verifyTurnstile, registerUser)
 router.post('/login', readerLoginLimit, loginUser)
 router.post('/forgot-password', readerPasswordRequestLimit, requestPasswordReset)
@@ -70,6 +86,18 @@ router.put('/avatar', requireUser, updateUserAvatar)
 router.put('/profile', requireUser, updateUserProfile)
 router.put('/date-of-birth', requireUser, updateDateOfBirth)
 router.put('/change-password', readerChangePasswordLimit, requireUser, changePassword)
+router.post(
+  '/email-change/request',
+  readerEmailChangeRequestLimit,
+  requireUser,
+  requestEmailChange
+)
+router.post(
+  '/email-change/confirm',
+  readerEmailChangeConfirmLimit,
+  requireUser,
+  confirmEmailChange
+)
 router.put('/payment-profile', requireUser, updatePaymentProfile)
 router.get('/:username/profile', requireUser, getPublicUserProfile)
 router.get('/:username/followers', requireUser, getUserFollowers)
