@@ -116,6 +116,58 @@ async function sendPasswordResetOtpEmail({ to, otp }) {
   return true
 }
 
+const EMAIL_CHANGE_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000
+
+function hashEmailChangeOtp(userId, email, otp) {
+  return crypto
+    .createHash('sha256')
+    .update(
+      `${String(userId || '')}:${normalizeEmail(email)}:${String(otp || '').trim()}`
+    )
+    .digest('hex')
+}
+
+async function sendEmailChangeOtpEmail({ to, otp }) {
+  const apiKey = String(process.env.RESEND_API_KEY || '').trim()
+  const from = String(
+    process.env.EMAIL_FROM ||
+      process.env.RESET_FROM_EMAIL ||
+      'Shadow Era Book <onboarding@resend.dev>'
+  ).trim()
+
+  if (!apiKey) return false
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from,
+      to,
+      subject: 'Verify your new Shadow Era Book email',
+      html: `
+        <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111827">
+          <h2>Verify your new email</h2>
+          <p>Use this 6-digit code to confirm your new Shadow Era Book email address.</p>
+          <div style="font-size:32px;font-weight:800;letter-spacing:8px;background:#f5f3fa;border-radius:14px;padding:18px 22px;display:inline-block">${otp}</div>
+          <p>This code expires in 10 minutes.</p>
+          <p>If you did not request this change, you can ignore this email.</p>
+        </div>
+      `,
+      text: `Your Shadow Era Book email verification code is ${otp}. This code expires in 10 minutes.`,
+    }),
+  })
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '')
+    throw new Error(body || 'Failed to send email verification code')
+  }
+
+  return true
+}
+
 function createUserToken(user) {
   return jwt.sign(
     {
@@ -140,6 +192,7 @@ function publicUser(user) {
     name: user.name,
     username: user.username,
     email: user.email,
+    email_changed_at: user.email_changed_at || null,
     avatar_url: user.avatar_url || null,
     bio: user.bio || '',
     work: user.work || '',
@@ -159,7 +212,13 @@ function publicUser(user) {
 }
 
 function publicUserProfile(user, counts = {}, isFollowing = false) {
-  const { email, date_of_birth, date_of_birth_updated_at, ...profile } = publicUser(user)
+  const {
+    email,
+    email_changed_at,
+    date_of_birth,
+    date_of_birth_updated_at,
+    ...profile
+  } = publicUser(user)
   return {
     ...profile,
     followers_count: Number(counts.followers_count || 0),
@@ -722,6 +781,355 @@ export async function changePassword(req, res) {
 }
 
 
+export async function requestEmailChange(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const currentPassword = String(
+      req.body.current_password || req.body.currentPassword || ''
+    )
+    const newEmail = normalizeEmail(req.body.new_email || req.body.newEmail)
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!currentPassword || !newEmail) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Current password and new email are required',
+      })
+    }
+
+    if (!isValidEmail(newEmail)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Email is not valid',
+      })
+    }
+
+    if (!isAllowedEmail(newEmail)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Only Gmail, Yahoo, Outlook, Hotmail, and iCloud accounts are allowed',
+      })
+    }
+
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email, password_hash, email_changed_at, is_active')
+      .eq('id', userId)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (userError) throw userError
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        message: 'User not found',
+      })
+    }
+
+    if (!verifyPassword(currentPassword, user.password_hash)) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Current password is incorrect',
+      })
+    }
+
+    if (newEmail === normalizeEmail(user.email)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'New email must be different from current email',
+      })
+    }
+
+    if (user.email_changed_at) {
+      const lastChangedAt = new Date(user.email_changed_at).getTime()
+      const nextChangeAt = lastChangedAt + EMAIL_CHANGE_COOLDOWN_MS
+
+      if (Number.isFinite(lastChangedAt) && Date.now() < nextChangeAt) {
+        return res.status(429).json({
+          ok: false,
+          code: 'EMAIL_CHANGE_COOLDOWN',
+          message: 'Email can only be changed once every 30 days',
+          next_change_at: new Date(nextChangeAt).toISOString(),
+        })
+      }
+    }
+
+    const { data: existingUser, error: existingUserError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', newEmail)
+      .neq('id', userId)
+      .maybeSingle()
+
+    if (existingUserError) throw existingUserError
+
+    if (existingUser) {
+      return res.status(409).json({
+        ok: false,
+        message: 'Email already exists',
+      })
+    }
+
+    const nowIso = new Date().toISOString()
+
+    const { error: invalidateError } = await supabase
+      .from('email_change_tokens')
+      .update({ used_at: nowIso })
+      .eq('user_id', userId)
+      .is('used_at', null)
+
+    if (invalidateError) throw invalidateError
+
+    const otp = createResetOtp()
+    const otpHash = hashEmailChangeOtp(userId, newEmail, otp)
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString()
+
+    const { data: tokenRow, error: insertError } = await supabase
+      .from('email_change_tokens')
+      .insert({
+        user_id: userId,
+        new_email: newEmail,
+        token_hash: otpHash,
+        expires_at: expiresAt,
+        attempt_count: 0,
+      })
+      .select('id')
+      .single()
+
+    if (insertError) throw insertError
+
+    const emailSent = await sendEmailChangeOtpEmail({
+      to: newEmail,
+      otp,
+    })
+
+    if (!emailSent) {
+      await supabase
+        .from('email_change_tokens')
+        .update({ used_at: new Date().toISOString() })
+        .eq('id', tokenRow.id)
+
+      return res.status(503).json({
+        ok: false,
+        message: 'Email service is not available right now',
+      })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Verification code sent to your new email',
+      email_sent: true,
+      new_email: newEmail,
+      expires_at: expiresAt,
+    })
+  } catch (error) {
+    console.error('REQUEST EMAIL CHANGE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to request email change',
+      error: error.message,
+    })
+  }
+}
+
+export async function confirmEmailChange(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const newEmail = normalizeEmail(req.body.new_email || req.body.newEmail)
+    const otp = String(req.body.otp || '').trim()
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!isValidEmail(newEmail)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Email is not valid',
+      })
+    }
+
+    if (!/^\d{6}$/.test(otp)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'A valid 6-digit code is required',
+      })
+    }
+
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (userError) throw userError
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        message: 'User not found',
+      })
+    }
+
+    if (newEmail === normalizeEmail(user.email)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'New email must be different from current email',
+      })
+    }
+
+    if (user.email_changed_at) {
+      const lastChangedAt = new Date(user.email_changed_at).getTime()
+      const nextChangeAt = lastChangedAt + EMAIL_CHANGE_COOLDOWN_MS
+
+      if (Number.isFinite(lastChangedAt) && Date.now() < nextChangeAt) {
+        return res.status(429).json({
+          ok: false,
+          code: 'EMAIL_CHANGE_COOLDOWN',
+          message: 'Email can only be changed once every 30 days',
+          next_change_at: new Date(nextChangeAt).toISOString(),
+        })
+      }
+    }
+
+    const { data: tokenRow, error: tokenError } = await supabase
+      .from('email_change_tokens')
+      .select('id, new_email, token_hash, expires_at, used_at, attempt_count')
+      .eq('user_id', userId)
+      .eq('new_email', newEmail)
+      .is('used_at', null)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (tokenError) throw tokenError
+
+    if (!tokenRow || new Date(tokenRow.expires_at).getTime() < Date.now()) {
+      if (tokenRow?.id) {
+        await supabase
+          .from('email_change_tokens')
+          .update({ used_at: new Date().toISOString() })
+          .eq('id', tokenRow.id)
+      }
+
+      return res.status(400).json({
+        ok: false,
+        message: 'Verification code is invalid or expired',
+      })
+    }
+
+    if (Number(tokenRow.attempt_count || 0) >= 5) {
+      await supabase
+        .from('email_change_tokens')
+        .update({ used_at: new Date().toISOString() })
+        .eq('id', tokenRow.id)
+
+      return res.status(400).json({
+        ok: false,
+        message: 'Too many wrong attempts. Please request a new code.',
+      })
+    }
+
+    const otpHash = hashEmailChangeOtp(userId, newEmail, otp)
+
+    if (tokenRow.token_hash !== otpHash) {
+      const nextAttemptCount = Number(tokenRow.attempt_count || 0) + 1
+      const updatePayload = {
+        attempt_count: nextAttemptCount,
+      }
+
+      if (nextAttemptCount >= 5) {
+        updatePayload.used_at = new Date().toISOString()
+      }
+
+      await supabase
+        .from('email_change_tokens')
+        .update(updatePayload)
+        .eq('id', tokenRow.id)
+
+      return res.status(400).json({
+        ok: false,
+        message:
+          nextAttemptCount >= 5
+            ? 'Too many wrong attempts. Please request a new code.'
+            : 'Verification code is incorrect',
+      })
+    }
+
+    const { data: existingUser, error: existingUserError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', newEmail)
+      .neq('id', userId)
+      .maybeSingle()
+
+    if (existingUserError) throw existingUserError
+
+    if (existingUser) {
+      return res.status(409).json({
+        ok: false,
+        message: 'Email already exists',
+      })
+    }
+
+    const now = new Date()
+    const nowIso = now.toISOString()
+
+    const { data: updatedUser, error: updateUserError } = await supabase
+      .from('users')
+      .update({
+        email: newEmail,
+        email_changed_at: nowIso,
+        is_email_verified: true,
+        updated_at: nowIso,
+      })
+      .eq('id', userId)
+      .eq('is_active', true)
+      .select()
+      .single()
+
+    if (updateUserError) throw updateUserError
+
+    const { error: usedError } = await supabase
+      .from('email_change_tokens')
+      .update({ used_at: nowIso })
+      .eq('user_id', userId)
+      .is('used_at', null)
+
+    if (usedError) throw usedError
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Email changed successfully',
+      user: publicUser(updatedUser),
+      token: createUserToken(updatedUser),
+      next_change_at: new Date(
+        now.getTime() + EMAIL_CHANGE_COOLDOWN_MS
+      ).toISOString(),
+    })
+  } catch (error) {
+    console.error('CONFIRM EMAIL CHANGE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to change email',
+      error: error.message,
+    })
+  }
+}
+
 export async function getMeSummary(req, res) {
   try {
     const userId = req.user?.user_id
@@ -751,7 +1159,7 @@ export async function getMeSummary(req, res) {
       supabase
         .from('users')
         .select(
-          'id, name, username, email, avatar_url, bio, work, location, social_links, date_of_birth, date_of_birth_updated_at, gender, custom_gender, role, is_author, is_active, is_email_verified, created_at, updated_at'
+          'id, name, username, email, email_changed_at, avatar_url, bio, work, location, social_links, date_of_birth, date_of_birth_updated_at, gender, custom_gender, role, is_author, is_active, is_email_verified, created_at, updated_at'
         )
         .eq('id', userId)
         .eq('is_active', true)
