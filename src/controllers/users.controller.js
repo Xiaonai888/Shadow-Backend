@@ -146,6 +146,7 @@ function publicUser(user) {
     location: user.location || '',
     social_links: Array.isArray(user.social_links) ? user.social_links : [],
     date_of_birth: user.date_of_birth,
+    date_of_birth_updated_at: user.date_of_birth_updated_at || null,
     gender: user.gender,
     custom_gender: user.custom_gender,
     role: user.role,
