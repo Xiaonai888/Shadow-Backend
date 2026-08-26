@@ -56,7 +56,7 @@ async function getMissionRows() {
     .from('task_center_reading_missions')
     .select('*')
     .order('sort_order', { ascending: true })
-    .order('created_at', { ascending: true })
+    .order('created_at', { ascending: false })
     .limit(MISSION_LIMIT)
 
   if (error) throw error
@@ -269,6 +269,14 @@ function publicSelection(selection) {
     story_link: `/story/${selection.story.id}`,
     selection_source: selection.source,
   }
+}
+
+export async function ensureTaskCenterAutoRotation() {
+  const settings = await getAutoSettings()
+  const dateKey = getPhnomPenhDateKey()
+  if (settings.reading_mission_mode !== 'auto') return
+  if (String(settings.auto_last_rotation_date || '') === dateKey) return
+  return rotateTaskCenterAutoStories()
 }
 
 export async function rotateTaskCenterAutoStories({ force = false } = {}) {
