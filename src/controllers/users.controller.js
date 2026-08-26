@@ -630,6 +630,98 @@ export async function resetPassword(req, res) {
   }
 }
 
+export async function changePassword(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const currentPassword = String(req.body.current_password || req.body.currentPassword || '')
+    const newPassword = String(req.body.new_password || req.body.newPassword || '')
+    const confirmPassword = String(req.body.confirm_password || req.body.confirmPassword || '')
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Current password, new password, and confirmation are required',
+      })
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        ok: false,
+        message: 'New password must be at least 6 characters',
+      })
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({
+        ok: false,
+        message: 'New password and confirm password do not match',
+      })
+    }
+
+    if (currentPassword === newPassword) {
+      return res.status(400).json({
+        ok: false,
+        message: 'New password must be different from current password',
+      })
+    }
+
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, password_hash')
+      .eq('id', userId)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (userError) throw userError
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        message: 'User not found',
+      })
+    }
+
+    if (!verifyPassword(currentPassword, user.password_hash)) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Current password is incorrect',
+      })
+    }
+
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({
+        password_hash: hashPassword(newPassword),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', userId)
+      .eq('is_active', true)
+
+    if (updateError) throw updateError
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Password changed successfully',
+    })
+  } catch (error) {
+    console.error('CHANGE PASSWORD ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to change password',
+      error: error.message,
+    })
+  }
+}
+
+
 export async function getMeSummary(req, res) {
   try {
     const userId = req.user?.user_id
