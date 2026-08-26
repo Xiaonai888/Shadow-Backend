@@ -768,7 +768,11 @@ export async function getAdminReaderActivity(req, res) {
 
     await runTaskCenterActivityMaintenanceSafe()
 
-    const summary = await getTaskCenterActivitySummary(activityDate)
+    if (req.query.refresh === '1') {
+  await supabase.rpc('task_center_refresh_daily_summary', { p_activity_date: activityDate })
+}
+
+const summary = await getTaskCenterActivitySummary(activityDate)
     const detailAvailable = activityDate >= oldestUserDetailDate
 
     if (!detailAvailable) {
