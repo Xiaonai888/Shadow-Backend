@@ -1306,11 +1306,15 @@ function mergeRecommendedReaderPosts(
   snapshotAt
 ) {
   const seen = new Set()
+const candidates = groups.flat().filter(Boolean)
 
-  return groups
-    .flat()
-    .filter(Boolean)
-    .sort((first, second) => {
+const newestPostId = [...candidates]
+  .sort((a, b) => new Date(b.publish_at || b.updated_at || b.created_at || 0) - new Date(a.publish_at || a.updated_at || a.created_at || 0))[0]?.id
+
+return candidates
+  .sort((first, second) => {
+    if (first.id === newestPostId) return -1
+    if (second.id === newestPostId) return 1
       const firstScore =
         getReaderRecommendationScore(
           first,
