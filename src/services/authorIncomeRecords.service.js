@@ -3,6 +3,10 @@ import { supabase } from '../config/supabase.js'
 const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
 const PAGE_SIZE = 1000
 const RECORD_LIMIT = 100
+const AUTHOR_INCOME_SOURCE_TYPES = [
+  'diamond_unlock',
+  'diamond_gift',
+]
 
 function numberValue(value) {
   const number = Number(value || 0)
@@ -131,16 +135,23 @@ function isInsideRange(value, range) {
 }
 
 function totalRows(rows) {
+  const items = rows || []
+
   return {
-    total_usd: (rows || []).reduce(
+    total_usd: items.reduce(
       (sum, item) => sum + numberValue(item.author_net_payout_usd),
       0
     ),
-    total_diamonds: (rows || []).reduce(
+    total_diamonds: items.reduce(
       (sum, item) => sum + numberValue(item.author_earned_diamonds),
       0
     ),
-    unlock_count: (rows || []).length,
+    unlock_count: items.filter(
+      (item) => item.source_type === 'diamond_unlock'
+    ).length,
+    gift_count: items.filter(
+      (item) => item.source_type === 'diamond_gift'
+    ).length,
   }
 }
 
@@ -151,10 +162,12 @@ async function fetchAllSummaryRows(authorId, startIso, endIso) {
   while (true) {
     const { data, error } = await supabase
       .from('author_earnings')
-      .select('author_net_payout_usd, author_earned_diamonds, created_at')
+      .select(
+        'source_type, author_net_payout_usd, author_earned_diamonds, created_at'
+      )
       .eq('author_id', authorId)
       .eq('currency', 'diamond')
-      .eq('source_type', 'diamond_unlock')
+      .in('source_type', AUTHOR_INCOME_SOURCE_TYPES)
       .neq('earning_status', 'void')
       .gte('created_at', startIso)
       .lt('created_at', endIso)
@@ -177,11 +190,11 @@ async function fetchRecordRows(authorId, range) {
   const { data, error } = await supabase
     .from('author_earnings')
     .select(
-      'id, reader_id, story_id, episode_id, paid_diamonds, author_earned_diamonds, author_net_payout_usd, author_share_percent, earning_status, metadata, created_at'
+      'id, reader_id, story_id, episode_id, source_type, paid_diamonds, author_earned_diamonds, author_net_payout_usd, author_share_percent, earning_status, metadata, created_at'
     )
     .eq('author_id', authorId)
     .eq('currency', 'diamond')
-    .eq('source_type', 'diamond_unlock')
+    .in('source_type', AUTHOR_INCOME_SOURCE_TYPES)
     .neq('earning_status', 'void')
     .gte('created_at', range.startIso)
     .lt('created_at', range.endIso)
@@ -206,9 +219,27 @@ function metadataObject(value) {
 }
 
 async function enrichRecords(rows) {
-  const readerIds = [...new Set((rows || []).map((item) => item.reader_id).filter(Boolean))]
-  const storyIds = [...new Set((rows || []).map((item) => item.story_id).filter(Boolean))]
-  const episodeIds = [...new Set((rows || []).map((item) => item.episode_id).filter(Boolean))]
+  const readerIds = [
+    ...new Set(
+      (rows || [])
+        .map((item) => item.reader_id)
+        .filter(Boolean)
+    ),
+  ]
+  const storyIds = [
+    ...new Set(
+      (rows || [])
+        .map((item) => item.story_id)
+        .filter(Boolean)
+    ),
+  ]
+  const episodeIds = [
+    ...new Set(
+      (rows || [])
+        .map((item) => item.episode_id)
+        .filter(Boolean)
+    ),
+  ]
 
   const [
     { data: readers, error: readersError },
@@ -239,25 +270,40 @@ async function enrichRecords(rows) {
   if (storiesError) throw storiesError
   if (episodesError) throw episodesError
 
-  const readerMap = new Map((readers || []).map((item) => [item.id, item]))
-  const storyMap = new Map((stories || []).map((item) => [item.id, item]))
-  const episodeMap = new Map((episodes || []).map((item) => [item.id, item]))
+  const readerMap = new Map(
+    (readers || []).map((item) => [item.id, item])
+  )
+  const storyMap = new Map(
+    (stories || []).map((item) => [item.id, item])
+  )
+  const episodeMap = new Map(
+    (episodes || []).map((item) => [item.id, item])
+  )
 
   return (rows || []).map((item) => {
     const metadata = metadataObject(item.metadata)
     const reader = readerMap.get(item.reader_id) || {}
     const story = storyMap.get(item.story_id) || {}
     const episode = episodeMap.get(item.episode_id) || {}
+    const isGift = item.source_type === 'diamond_gift'
+    const giftName = String(
+      metadata.gift_name || 'Diamond Gift'
+    )
 
     return {
       id: item.id,
+      source_type: item.source_type || 'diamond_unlock',
+      earning_type: isGift ? 'gift' : 'unlock',
       reader_id: item.reader_id,
       reader_name:
         reader.name ||
         reader.username ||
         metadata.reader_name ||
         'Reader',
-      reader_username: reader.username || metadata.reader_username || '',
+      reader_username:
+        reader.username ||
+        metadata.reader_username ||
+        '',
       reader_avatar_url:
         reader.avatar_url ||
         metadata.reader_avatar_url ||
@@ -267,20 +313,46 @@ async function enrichRecords(rows) {
         story.title ||
         metadata.story_title ||
         'Story',
-      episode_id: item.episode_id,
-      episode_title:
-        episode.title ||
-        metadata.episode_title ||
-        'Episode unlock',
-      episode_number: numberValue(
-        episode.episode_number ||
-        metadata.episode_number
-      ),
-      reader_paid_diamonds: numberValue(item.paid_diamonds),
-      author_earned_diamonds: numberValue(item.author_earned_diamonds),
-      author_net_payout_usd: numberValue(item.author_net_payout_usd),
-      author_share_percent: numberValue(item.author_share_percent),
-      earning_status: item.earning_status || 'available',
+      episode_id: isGift ? null : item.episode_id,
+      episode_title: isGift
+        ? ''
+        : episode.title ||
+          metadata.episode_title ||
+          'Episode unlock',
+      episode_number: isGift
+        ? 0
+        : numberValue(
+            episode.episode_number ||
+            metadata.episode_number
+          ),
+      gift_key: isGift
+        ? String(metadata.gift_key || '')
+        : '',
+      gift_name: isGift ? giftName : '',
+      gift_quantity: isGift
+        ? Math.max(
+            1,
+            numberValue(metadata.gift_quantity)
+          )
+        : 0,
+      gift_support_points: isGift
+        ? numberValue(metadata.gift_support_points)
+        : 0,
+      display_title: isGift
+        ? giftName
+        : episode.title ||
+          metadata.episode_title ||
+          'Episode unlock',
+      reader_paid_diamonds:
+        numberValue(item.paid_diamonds),
+      author_earned_diamonds:
+        numberValue(item.author_earned_diamonds),
+      author_net_payout_usd:
+        numberValue(item.author_net_payout_usd),
+      author_share_percent:
+        numberValue(item.author_share_percent),
+      earning_status:
+        item.earning_status || 'available',
       created_at: item.created_at,
     }
   })
@@ -302,7 +374,10 @@ export async function getAuthorIncomeRecordData({
   const weekRange = periodRange('week', todayText)
   const monthRange = periodRange('month', todayText)
   const yearRange = periodRange('year', todayText)
-  const selectedRange = periodRange(period, date || todayText)
+  const selectedRange = periodRange(
+    period,
+    date || todayText
+  )
 
   const summaryStartTime = Math.min(
     new Date(todayRange.startIso).getTime(),
@@ -317,7 +392,11 @@ export async function getAuthorIncomeRecordData({
     new Date(yearRange.endIso).getTime()
   )
 
-  const [summaryRows, selectedSummaryRows, selectedRecordRows] = await Promise.all([
+  const [
+    summaryRows,
+    selectedSummaryRows,
+    selectedRecordRows,
+  ] = await Promise.all([
     fetchAllSummaryRows(
       authorId,
       new Date(summaryStartTime).toISOString(),
@@ -331,21 +410,30 @@ export async function getAuthorIncomeRecordData({
     fetchRecordRows(authorId, selectedRange),
   ])
 
-  const selectedRecords = await enrichRecords(selectedRecordRows)
+  const selectedRecords =
+    await enrichRecords(selectedRecordRows)
 
   return {
     summary: {
       today_usd: totalRows(
-        summaryRows.filter((item) => isInsideRange(item.created_at, todayRange))
+        summaryRows.filter((item) =>
+          isInsideRange(item.created_at, todayRange)
+        )
       ).total_usd,
       this_week_usd: totalRows(
-        summaryRows.filter((item) => isInsideRange(item.created_at, weekRange))
+        summaryRows.filter((item) =>
+          isInsideRange(item.created_at, weekRange)
+        )
       ).total_usd,
       this_month_usd: totalRows(
-        summaryRows.filter((item) => isInsideRange(item.created_at, monthRange))
+        summaryRows.filter((item) =>
+          isInsideRange(item.created_at, monthRange)
+        )
       ).total_usd,
       this_year_usd: totalRows(
-        summaryRows.filter((item) => isInsideRange(item.created_at, yearRange))
+        summaryRows.filter((item) =>
+          isInsideRange(item.created_at, yearRange)
+        )
       ).total_usd,
     },
     record: {
@@ -353,7 +441,9 @@ export async function getAuthorIncomeRecordData({
       label: dateLabel(selectedRange),
       ...totalRows(selectedSummaryRows),
       records: selectedRecords,
-      has_more: selectedSummaryRows.length > selectedRecordRows.length,
+      has_more:
+        selectedSummaryRows.length >
+        selectedRecordRows.length,
     },
   }
 }
