@@ -668,3 +668,330 @@ export async function getAdminIncomeSummary(
     })
   }
 }
+
+function normalizePayoutMonth(value) {
+  const month = String(value || '').trim()
+
+  if (!month) return ''
+
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+    const error = new Error('Invalid payout month')
+    error.statusCode = 400
+    throw error
+  }
+
+  return month
+}
+
+function normalizePayoutStatus(value) {
+  const status = String(value || '').trim()
+
+  if (!status || status === 'all') return ''
+
+  const allowed = [
+    'scheduled',
+    'paid',
+    'failed',
+    'missing_payment_method',
+    'cancelled',
+  ]
+
+  if (!allowed.includes(status)) {
+    const error = new Error('Invalid payout status')
+    error.statusCode = 400
+    throw error
+  }
+
+  return status
+}
+
+async function enrichAuthorPayouts(rows) {
+  const authorIds = [
+    ...new Set(
+      (rows || [])
+        .map((item) => item.author_id)
+        .filter(Boolean)
+    ),
+  ]
+
+  const userIds = [
+    ...new Set(
+      (rows || [])
+        .map((item) => item.user_id)
+        .filter(Boolean)
+    ),
+  ]
+
+  const [
+    { data: authorPages, error: authorPagesError },
+    { data: users, error: usersError },
+  ] = await Promise.all([
+    authorIds.length
+      ? supabase
+          .from('author_pages')
+          .select(
+            'id, page_name, page_username, page_slug, user_id'
+          )
+          .in('id', authorIds)
+      : Promise.resolve({
+          data: [],
+          error: null,
+        }),
+    userIds.length
+      ? supabase
+          .from('users')
+          .select(
+            'id, name, username, email'
+          )
+          .in('id', userIds)
+      : Promise.resolve({
+          data: [],
+          error: null,
+        }),
+  ])
+
+  if (authorPagesError) throw authorPagesError
+  if (usersError) throw usersError
+
+  const authorMap = new Map(
+    (authorPages || []).map(
+      (item) => [String(item.id), item]
+    )
+  )
+
+  const userMap = new Map(
+    (users || []).map(
+      (item) => [String(item.id), item]
+    )
+  )
+
+  return (rows || []).map((item) => ({
+    ...item,
+    author_page:
+      authorMap.get(String(item.author_id)) ||
+      null,
+    author_user:
+      userMap.get(String(item.user_id)) ||
+      null,
+  }))
+}
+
+function buildPayoutSummary(rows) {
+  const summary = {
+    total_count: 0,
+    total_usd: 0,
+    scheduled_count: 0,
+    scheduled_usd: 0,
+    paid_count: 0,
+    paid_usd: 0,
+    missing_payment_method_count: 0,
+    missing_payment_method_usd: 0,
+    failed_count: 0,
+    failed_usd: 0,
+    cancelled_count: 0,
+    cancelled_usd: 0,
+  }
+
+  for (const row of rows || []) {
+    const status = String(row.status || '')
+    const amount = numberValue(row.net_payout_usd)
+
+    summary.total_count += 1
+    summary.total_usd += amount
+
+    if (status === 'scheduled') {
+      summary.scheduled_count += 1
+      summary.scheduled_usd += amount
+    } else if (status === 'paid') {
+      summary.paid_count += 1
+      summary.paid_usd += amount
+    } else if (
+      status === 'missing_payment_method'
+    ) {
+      summary.missing_payment_method_count += 1
+      summary.missing_payment_method_usd += amount
+    } else if (status === 'failed') {
+      summary.failed_count += 1
+      summary.failed_usd += amount
+    } else if (status === 'cancelled') {
+      summary.cancelled_count += 1
+      summary.cancelled_usd += amount
+    }
+  }
+
+  return {
+    total_count: summary.total_count,
+    total_usd: roundMoney(summary.total_usd),
+    scheduled_count: summary.scheduled_count,
+    scheduled_usd:
+      roundMoney(summary.scheduled_usd),
+    paid_count: summary.paid_count,
+    paid_usd: roundMoney(summary.paid_usd),
+    missing_payment_method_count:
+      summary.missing_payment_method_count,
+    missing_payment_method_usd:
+      roundMoney(
+        summary.missing_payment_method_usd
+      ),
+    failed_count: summary.failed_count,
+    failed_usd: roundMoney(summary.failed_usd),
+    cancelled_count: summary.cancelled_count,
+    cancelled_usd:
+      roundMoney(summary.cancelled_usd),
+  }
+}
+
+export async function getAdminAuthorPayouts(
+  req,
+  res
+) {
+  try {
+    const payoutMonth =
+      normalizePayoutMonth(req.query.month)
+    const status =
+      normalizePayoutStatus(req.query.status)
+
+    let query = supabase
+      .from('author_payouts')
+      .select('*')
+      .order('payout_month', {
+        ascending: false,
+      })
+      .order('created_at', {
+        ascending: false,
+      })
+      .limit(1000)
+
+    if (payoutMonth) {
+      query = query.eq(
+        'payout_month',
+        payoutMonth
+      )
+    }
+
+    if (status) {
+      query = query.eq('status', status)
+    }
+
+    const { data, error } = await query
+
+    if (error) throw error
+
+    const rows = data || []
+    const payouts =
+      await enrichAuthorPayouts(rows)
+
+    return res.status(200).json({
+      ok: true,
+      filters: {
+        month: payoutMonth || null,
+        status: status || 'all',
+      },
+      summary: buildPayoutSummary(rows),
+      payouts,
+    })
+  } catch (error) {
+    console.error(
+      'GET ADMIN AUTHOR PAYOUTS ERROR:',
+      error
+    )
+
+    return res
+      .status(error.statusCode || 500)
+      .json({
+        ok: false,
+        message:
+          error.message ||
+          'Failed to load author payouts',
+      })
+  }
+}
+
+export async function generateAdminAuthorPayouts(
+  req,
+  res
+) {
+  try {
+    const payoutMonth =
+      normalizePayoutMonth(
+        req.body?.payout_month
+      )
+
+    const { data, error } = await supabase.rpc(
+      'generate_author_payouts',
+      {
+        p_payout_month:
+          payoutMonth || null,
+      }
+    )
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      result: data || null,
+    })
+  } catch (error) {
+    console.error(
+      'GENERATE ADMIN AUTHOR PAYOUTS ERROR:',
+      error
+    )
+
+    return res
+      .status(error.statusCode || 500)
+      .json({
+        ok: false,
+        message:
+          error.message ||
+          'Failed to generate author payouts',
+      })
+  }
+}
+
+export async function markAdminAuthorPayoutPaid(
+  req,
+  res
+) {
+  try {
+    const payoutId =
+      String(req.params.id || '').trim()
+
+    if (!payoutId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Payout ID is required',
+      })
+    }
+
+    const adminNote =
+      String(req.body?.admin_note || '').trim()
+
+    const { data, error } = await supabase.rpc(
+      'mark_author_payout_paid',
+      {
+        p_payout_id: payoutId,
+        p_admin_note:
+          adminNote || null,
+      }
+    )
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      result: data || null,
+    })
+  } catch (error) {
+    console.error(
+      'MARK ADMIN AUTHOR PAYOUT PAID ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        error.message ||
+        'Failed to mark author payout paid',
+    })
+  }
+}
