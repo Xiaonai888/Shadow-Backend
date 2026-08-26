@@ -249,6 +249,151 @@ async function getEpisodeIncome(range) {
   }
 }
 
+async function getDiamondGiftIncome(range) {
+  let query = supabase
+    .from('author_earnings')
+    .select(
+      [
+        'paid_diamonds',
+        'net_paid_diamonds',
+        'author_earned_diamonds',
+        'platform_earned_diamonds',
+        'author_net_payout_usd',
+        'withholding_amount_usd',
+        'diamond_to_usd_rate',
+        'earning_status',
+        'created_at',
+      ].join(', ')
+    )
+    .eq('currency', 'diamond')
+    .eq('source_type', 'diamond_gift')
+    .neq('earning_status', 'void')
+
+  query = applyCreatedAtRange(query, range)
+
+  const { data, error } = await query
+
+  if (error) throw error
+
+  const rows = data || []
+
+  const grossSalesUsd = rows.reduce(
+    (total, row) =>
+      total + earningUsd(row, 'paid_diamonds'),
+    0
+  )
+
+  const distributableRevenueUsd = rows.reduce(
+    (total, row) =>
+      total +
+      earningUsd(row, 'net_paid_diamonds'),
+    0
+  )
+
+  const authorEarningsUsd = rows.reduce(
+    (total, row) =>
+      total +
+      earningUsd(
+        row,
+        'author_earned_diamonds'
+      ),
+    0
+  )
+
+  const platformIncomeUsd = rows.reduce(
+    (total, row) =>
+      total +
+      earningUsd(
+        row,
+        'platform_earned_diamonds'
+      ),
+    0
+  )
+
+  const withholdingUsd = sumRows(
+    rows,
+    'withholding_amount_usd'
+  )
+
+  const authorNetPayoutUsd = sumRows(
+    rows,
+    'author_net_payout_usd'
+  )
+
+  const pendingPayoutUsd = rows
+    .filter((row) =>
+      UNPAID_EARNING_STATUSES.includes(
+        String(row.earning_status || '')
+      )
+    )
+    .reduce(
+      (total, row) =>
+        total +
+        numberValue(row.author_net_payout_usd),
+      0
+    )
+
+  const paidPayoutUsd = rows
+    .filter((row) =>
+      PAID_EARNING_STATUSES.includes(
+        String(row.earning_status || '')
+      )
+    )
+    .reduce(
+      (total, row) =>
+        total +
+        numberValue(row.author_net_payout_usd),
+      0
+    )
+
+  const directCostUsd = Math.max(
+    0,
+    grossSalesUsd - distributableRevenueUsd
+  )
+
+  const splitTotalUsd =
+    authorEarningsUsd + platformIncomeUsd
+
+  const reconciliationDifferenceUsd =
+    distributableRevenueUsd - splitTotalUsd
+
+  const reconciliationStatus =
+    Math.abs(reconciliationDifferenceUsd) <=
+    REVENUE_TOLERANCE
+      ? 'passed'
+      : 'failed'
+
+  return {
+    source: 'diamond_gifts',
+    gross_sales_usd:
+      roundMoney(grossSalesUsd),
+    direct_cost_usd:
+      roundMoney(directCostUsd),
+    distributable_revenue_usd:
+      roundMoney(distributableRevenueUsd),
+    platform_income_usd:
+      roundMoney(platformIncomeUsd),
+    author_earnings_usd:
+      roundMoney(authorEarningsUsd),
+    author_net_payout_usd:
+      roundMoney(authorNetPayoutUsd),
+    withholding_usd:
+      roundMoney(withholdingUsd),
+    pending_payout_usd:
+      roundMoney(pendingPayoutUsd),
+    paid_payout_usd:
+      roundMoney(paidPayoutUsd),
+    order_count: 0,
+    gift_transaction_count: rows.length,
+    earning_row_count: rows.length,
+    revenue_source: 'author_earnings',
+    reconciliation_status:
+      reconciliationStatus,
+    reconciliation_difference_usd:
+      roundAmount(reconciliationDifferenceUsd),
+  }
+}
+
 async function getAuthorStoreIncome(range) {
   let query = supabase
     .from('author_store_orders')
@@ -391,11 +536,13 @@ export async function getAdminIncomeSummary(
 
     const [
       episode,
+      diamondGift,
       authorStore,
       shadowMall,
       withdrawals,
     ] = await Promise.all([
       getEpisodeIncome(range),
+      getDiamondGiftIncome(range),
       getAuthorStoreIncome(range),
       getShadowMallIncome(range),
       getAuthorStoreWithdrawals(range),
@@ -403,6 +550,7 @@ export async function getAdminIncomeSummary(
 
     const sources = [
       episode,
+      diamondGift,
       authorStore,
       shadowMall,
     ]
@@ -430,6 +578,9 @@ export async function getAdminIncomeSummary(
 
     const pendingPayoutUsd =
       numberValue(episode.pending_payout_usd) +
+      numberValue(
+        diamondGift.pending_payout_usd
+      ) +
       numberValue(
         authorStore.pending_payout_usd
       )
@@ -476,6 +627,26 @@ export async function getAdminIncomeSummary(
           episode.reconciliation_status,
         episode_reconciliation_difference_usd:
           episode.reconciliation_difference_usd,
+        diamond_gift_gross_usd:
+          diamondGift.gross_sales_usd,
+        diamond_gift_platform_income_usd:
+          diamondGift.platform_income_usd,
+        diamond_gift_author_earnings_usd:
+          diamondGift.author_earnings_usd,
+        diamond_gift_author_payout_usd:
+          diamondGift.author_net_payout_usd,
+        diamond_gift_pending_payout_usd:
+          diamondGift.pending_payout_usd,
+        diamond_gift_paid_payout_usd:
+          diamondGift.paid_payout_usd,
+        diamond_gift_withholding_usd:
+          diamondGift.withholding_usd,
+        diamond_gift_transaction_count:
+          diamondGift.gift_transaction_count,
+        diamond_gift_reconciliation_status:
+          diamondGift.reconciliation_status,
+        diamond_gift_reconciliation_difference_usd:
+          diamondGift.reconciliation_difference_usd,
         shipping_fee_excluded_usd:
           shadowMall.shipping_fee_usd,
         total_orders: totalOrders,
