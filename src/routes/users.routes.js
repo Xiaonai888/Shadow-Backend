@@ -11,6 +11,7 @@ import {
   registerUser,
   requestPasswordReset,
   resetPassword,
+  changePassword,
   unfollowUser,
   updatePaymentProfile,
   updateDateOfBirth,
@@ -51,6 +52,13 @@ const readerPasswordResetLimit = createRateLimit({
   message: 'Too many password reset attempts. Please wait and try again.',
 })
 
+const readerChangePasswordLimit = createRateLimit({
+  key: 'reader-change-password',
+  windowMs: 600000,
+  max: 10,
+  message: 'Too many password change attempts. Please wait and try again.',
+})
+
 router.post('/register', readerRegisterLimit, verifyTurnstile, registerUser)
 router.post('/login', readerLoginLimit, loginUser)
 router.post('/forgot-password', readerPasswordRequestLimit, requestPasswordReset)
@@ -61,12 +69,12 @@ router.get('/suggestions', requireUser, getUserSuggestions)
 router.put('/avatar', requireUser, updateUserAvatar)
 router.put('/profile', requireUser, updateUserProfile)
 router.put('/date-of-birth', requireUser, updateDateOfBirth)
+router.put('/change-password', readerChangePasswordLimit, requireUser, changePassword)
 router.put('/payment-profile', requireUser, updatePaymentProfile)
 router.get('/:username/profile', requireUser, getPublicUserProfile)
 router.get('/:username/followers', requireUser, getUserFollowers)
 router.get('/:username/following', requireUser, getUserFollowing)
 router.post('/:username/follow', requireUser, followUser)
 router.delete('/:username/follow', requireUser, unfollowUser)
-
 
 export default router
