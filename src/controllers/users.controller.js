@@ -751,7 +751,7 @@ export async function getMeSummary(req, res) {
       supabase
         .from('users')
         .select(
-          'id, name, username, email, avatar_url, bio, work, location, social_links, date_of_birth, gender, custom_gender, role, is_author, is_active, is_email_verified, created_at, updated_at'
+          'id, name, username, email, avatar_url, bio, work, location, social_links, date_of_birth, date_of_birth_updated_at, gender, custom_gender, role, is_author, is_active, is_email_verified, created_at, updated_at'
         )
         .eq('id', userId)
         .eq('is_active', true)
