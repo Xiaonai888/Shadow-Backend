@@ -204,9 +204,6 @@ export async function deleteStoredMangaParts(parts = []) {
       result.value === true
   ).length
 
-  if (queued > 0) {
-  wakeMangaR2DeleteRetryWorker(DELETE_RETRY_DELAY_MS)
-}
 
   return {
     requested: urls.length,
