@@ -126,7 +126,7 @@ async function getHistoryRows() {
   const { data, error } = await supabase
     .from('task_center_auto_story_history')
     .select('id, featured_date, slot, story_id, mission_id, selection_source, story_status, story_updated_at, selected_at')
-    .order('selected_at', { ascending: true })
+    .order('selected_at', { ascending: false })
     .limit(10000)
 
   if (error) throw error
