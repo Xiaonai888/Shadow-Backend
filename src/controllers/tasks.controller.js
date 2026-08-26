@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { ensureTaskCenterAutoRotation } from '../services/taskCenterAuto.service.js'
 
 const DAILY_REWARDS = [
   { day: 1, gems: 50, coins: 50, vouchers: 0, story_cards: 0, gift: false },
@@ -128,6 +129,11 @@ function publicWallet(wallet) {
 
 function publicCheckIn(row, isPremium = false) {
   const todayKey = getPhnomPenhDateKey()
+  try {
+  await ensureTaskCenterAutoRotation()
+} catch (error) {
+  console.error('TASK CENTER AUTO CATCH-UP ERROR:', error)
+}
   const yesterdayKey = addDays(todayKey, -1)
   const lastClaimDate = row?.last_claim_date || ''
   const lastCurrentDay = Number(row?.current_day || 0)
