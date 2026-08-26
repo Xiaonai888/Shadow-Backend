@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { getAuthorGiftIncomeSummary } from './authorGiftIncome.service.js'
 
 const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
 
@@ -87,9 +88,11 @@ export async function getAuthorProfileSummary(authorId) {
     getCambodiaBoundaries()
 
   const [
-    todayDiamonds,
-    thisMonthUsd,
+    todayUnlockDiamonds,
+    thisMonthUnlockUsd,
     monthlyGifts,
+    todayGiftIncome,
+    monthGiftIncome,
   ] = await Promise.all([
     sumDiamondField({
       authorId,
@@ -102,11 +105,23 @@ export async function getAuthorProfileSummary(authorId) {
       from: monthStartIso,
     }),
     getMonthlyGiftCount(authorId, monthStartIso),
+    getAuthorGiftIncomeSummary({
+      authorId,
+      from: todayStartIso,
+    }),
+    getAuthorGiftIncomeSummary({
+      authorId,
+      from: monthStartIso,
+    }),
   ])
 
   return {
-    today_diamonds: todayDiamonds,
-    this_month_usd: thisMonthUsd,
+    today_diamonds:
+      todayUnlockDiamonds +
+      numberValue(todayGiftIncome.total_diamonds),
+    this_month_usd:
+      thisMonthUnlockUsd +
+      numberValue(monthGiftIncome.net_usd),
     monthly_gifts: monthlyGifts,
   }
 }
