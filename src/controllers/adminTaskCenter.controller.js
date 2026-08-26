@@ -1,7 +1,7 @@
 import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
-
+import { rotateTaskCenterAutoStories } from '../services/taskCenterAuto.service.js'
 
 const SETTING_KEY = 'main'
 
@@ -219,6 +219,9 @@ export async function getAdminTaskCenterSettings(req, res) {
       ok: true,
       settings: {
         ...publicSettings(row),
+        reading_mission_mode: row?.reading_mission_mode || 'manual',
+        auto_last_rotation_date: row?.auto_last_rotation_date || null,
+        auto_last_rotated_at: row?.auto_last_rotated_at || null,
         reading_missions: readingMissions,
       },
       reading_missions: readingMissions,
@@ -466,3 +469,128 @@ export async function deleteAdminReadingMission(req, res) {
   }
 }
 
+function hasValidTaskCenterAutoSecret(req) {
+  const expected = String(process.env.TASK_CENTER_AUTO_SECRET || '')
+  const supplied = String(req.get('x-task-center-auto-secret') || '')
+
+  if (!expected || !supplied) return false
+
+  const expectedBuffer = Buffer.from(expected)
+  const suppliedBuffer = Buffer.from(supplied)
+
+  return (
+    expectedBuffer.length === suppliedBuffer.length &&
+    crypto.timingSafeEqual(expectedBuffer, suppliedBuffer)
+  )
+}
+
+export async function updateAdminReadingMissionMode(req, res) {
+  try {
+    const mode = String(req.body?.mode || '').trim().toLowerCase()
+
+    if (!['manual', 'auto'].includes(mode)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Reading mission mode must be manual or auto',
+      })
+    }
+
+    await getSettingsRow()
+
+    if (mode === 'auto') {
+      const missions = await getReadingMissionRows()
+
+      if (missions.length !== 2) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Auto mode requires exactly 2 reading missions',
+        })
+      }
+    }
+
+    const now = new Date().toISOString()
+    const { error } = await supabase
+      .from('task_center_settings')
+      .update({
+        reading_mission_mode: mode,
+        updated_at: now,
+      })
+      .eq('setting_key', SETTING_KEY)
+
+    if (error) throw error
+
+    const rotation = mode === 'auto'
+      ? await rotateTaskCenterAutoStories()
+      : null
+
+    const settings = await getSettingsRow()
+
+    return res.status(200).json({
+      ok: true,
+      mode,
+      settings: {
+        ...publicSettings(settings),
+        reading_mission_mode: settings.reading_mission_mode || 'manual',
+        auto_last_rotation_date: settings.auto_last_rotation_date || null,
+        auto_last_rotated_at: settings.auto_last_rotated_at || null,
+      },
+      rotation,
+      message: mode === 'auto' ? 'Auto reading mission enabled' : 'Manual reading mission enabled',
+    })
+  } catch (error) {
+    console.error('UPDATE ADMIN READING MISSION MODE ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update reading mission mode',
+      error: error.message,
+    })
+  }
+}
+
+export async function rotateAdminTaskCenterAutoStories(req, res) {
+  try {
+    const result = await rotateTaskCenterAutoStories({
+      force: Boolean(req.body?.force),
+    })
+
+    return res.status(200).json({
+      ok: true,
+      ...result,
+    })
+  } catch (error) {
+    console.error('ADMIN TASK CENTER AUTO ROTATION ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to rotate Task Center auto stories',
+      error: error.message,
+    })
+  }
+}
+
+export async function runTaskCenterAutoRotation(req, res) {
+  if (!hasValidTaskCenterAutoSecret(req)) {
+    return res.status(401).json({
+      ok: false,
+      message: 'Unauthorized',
+    })
+  }
+
+  try {
+    const result = await rotateTaskCenterAutoStories()
+
+    return res.status(200).json({
+      ok: true,
+      ...result,
+    })
+  } catch (error) {
+    console.error('TASK CENTER AUTO ROTATION RUN ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to run Task Center auto rotation',
+      error: error.message,
+    })
+  }
+}
