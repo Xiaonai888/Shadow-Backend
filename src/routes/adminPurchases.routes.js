@@ -1,3 +1,4 @@
+import { streamAdminPaymentEvents } from '../services/adminPaymentSse.service.js'
 import express from 'express'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
@@ -14,6 +15,7 @@ const router = express.Router()
 
 router.get('/', requireAdmin, getAdminPayments)
 router.get('/manual', requireAdmin, getAdminManualPayments)
+router.get('/manual/stream', requireAdmin, streamAdminPaymentEvents)
 router.post('/manual/:paymentId/confirm', requireAdmin, confirmAdminManualPayment)
 router.post('/manual/:paymentId/reject', requireAdmin, rejectAdminManualPayment)
 router.get('/:paymentId', requireAdmin, getAdminPayment)
