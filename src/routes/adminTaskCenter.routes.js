@@ -11,6 +11,9 @@ import {
   deleteAdminReadingMission,
   updateAdminReadingTask,
   updateAdminTaskCenterCover,
+  updateAdminReadingMissionMode,
+  rotateAdminTaskCenterAutoStories,
+  runTaskCenterAutoRotation,
 } from '../controllers/adminTaskCenter.controller.js'
 
 const router = express.Router()
@@ -30,6 +33,9 @@ router.post('/admin/reading-missions', requireAdmin, createAdminReadingMission)
 router.put('/admin/reading-missions/:missionId', requireAdmin, updateAdminReadingMission)
 router.delete('/admin/reading-missions/:missionId', requireAdmin, deleteAdminReadingMission)
 router.put('/admin/reading-task', requireAdmin, updateAdminReadingTask)
+router.put('/admin/reading-mode', requireAdmin, updateAdminReadingMissionMode)
+router.post('/admin/auto-rotate', requireAdmin, rotateAdminTaskCenterAutoStories)
+router.post('/auto-rotate/run', runTaskCenterAutoRotation)
 router.put('/admin/cover', requireAdmin, upload.single('cover'), updateAdminTaskCenterCover)
 
 export default router
