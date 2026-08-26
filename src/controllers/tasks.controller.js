@@ -128,17 +128,7 @@ function publicWallet(wallet) {
 }
 
 function publicCheckIn(row, isPremium = false) {
-  try {
-  await ensureTaskCenterAutoRotation()
-} catch (error) {
-  console.error('TASK CENTER AUTO CATCH-UP ERROR:', error)
-}
   const todayKey = getPhnomPenhDateKey()
-  try {
-  await ensureTaskCenterAutoRotation()
-} catch (error) {
-  console.error('TASK CENTER AUTO CATCH-UP ERROR:', error)
-}
   const yesterdayKey = addDays(todayKey, -1)
   const lastClaimDate = row?.last_claim_date || ''
   const lastCurrentDay = Number(row?.current_day || 0)
@@ -602,6 +592,12 @@ export async function getTaskOverview(req, res) {
         ok: false,
         message: 'User is required',
       })
+    }
+
+    try {
+      await ensureTaskCenterAutoRotation()
+    } catch (error) {
+      console.error('TASK CENTER AUTO CATCH-UP ERROR:', error)
     }
 
     const todayKey = getPhnomPenhDateKey()
@@ -1188,15 +1184,16 @@ export async function claimReadingReward(req, res) {
 
 export async function getReadingMissions(req, res) {
   try {
-  await ensureTaskCenterAutoRotation()
-} catch (error) {
-  console.error('TASK CENTER AUTO CATCH-UP ERROR:', error)
-}
-  try {
     const userId = getUserId(req)
 
     if (!userId) {
       return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
+    try {
+      await ensureTaskCenterAutoRotation()
+    } catch (error) {
+      console.error('TASK CENTER AUTO CATCH-UP ERROR:', error)
     }
 
     const missions = await getReaderReadingMissions(userId)
