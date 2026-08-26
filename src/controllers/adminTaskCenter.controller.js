@@ -346,6 +346,13 @@ export async function getAdminReadingMissions(req, res) {
 
 export async function createAdminReadingMission(req, res) {
   try {
+    const settingsRow = await getSettingsRow()
+if (String(settingsRow?.reading_mission_mode || 'manual') === 'auto') {
+  return res.status(409).json({
+    ok: false,
+    message: 'Switch to Manual mode before adding missions',
+  })
+}
     const existingRows = await getReadingMissionRows()
 
     if (existingRows.length >= 2) {
@@ -401,7 +408,31 @@ export async function updateAdminReadingMission(req, res) {
       })
     }
 
-    const payload = buildReadingMissionPayload(req.body, 0)
+    const settingsRow = await getSettingsRow()
+    const requestedPayload = buildReadingMissionPayload(req.body, 0)
+    let payload = requestedPayload
+
+    if (String(settingsRow?.reading_mission_mode || 'manual') === 'auto') {
+      const { data: existingMission, error: existingError } = await supabase
+        .from('task_center_reading_missions')
+        .select('*')
+        .eq('id', missionId)
+        .single()
+
+      if (existingError) throw existingError
+
+      payload = {
+        is_active: Boolean(existingMission.is_active),
+        title: existingMission.title,
+        subtitle: existingMission.subtitle,
+        reward_coins: requestedPayload.reward_coins,
+        target_minutes: requestedPayload.target_minutes,
+        story_link: existingMission.story_link,
+        button_text: existingMission.button_text,
+        sort_order: Number(existingMission.sort_order || 0),
+        updated_at: new Date().toISOString(),
+      }
+    }
 
     const { data, error } = await supabase
       .from('task_center_reading_missions')
@@ -419,7 +450,10 @@ export async function updateAdminReadingMission(req, res) {
       mission: publicReadingMission(data),
       reading_missions: readingMissions,
       missions: readingMissions,
-      message: 'Reading mission updated',
+      message:
+        String(settingsRow?.reading_mission_mode || 'manual') === 'auto'
+          ? 'Auto mission reward and minutes updated'
+          : 'Reading mission updated',
     })
   } catch (error) {
     console.error('UPDATE ADMIN READING MISSION ERROR:', error)
@@ -432,8 +466,16 @@ export async function updateAdminReadingMission(req, res) {
   }
 }
 
+
 export async function deleteAdminReadingMission(req, res) {
   try {
+    const settingsRow = await getSettingsRow()
+if (String(settingsRow?.reading_mission_mode || 'manual') === 'auto') {
+  return res.status(409).json({
+    ok: false,
+    message: 'Switch to Manual mode before deleting missions',
+  })
+}
     const missionId = cleanMissionId(req.params.missionId)
 
     if (!missionId) {
