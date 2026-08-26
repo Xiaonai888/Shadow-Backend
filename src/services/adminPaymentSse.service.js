@@ -45,6 +45,23 @@ function broadcast(eventName, payload) {
   }
 }
 
+async function getPublicUser(userId) {
+  if (!userId) return null
+
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, name, username, email, avatar_url')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (error) {
+    console.error('ADMIN PAYMENT SSE USER ERROR:', error)
+    return null
+  }
+
+  return data || null
+}
+
 function startHeartbeat() {
   if (heartbeatTimer) return
 
@@ -82,15 +99,23 @@ function startRealtimeChannel() {
         table: 'payment_transactions',
         filter: 'payment_method=eq.aba_payment_link',
       },
-      (payload) => {
+      async (payload) => {
+        const action = String(payload.eventType || 'UPDATE').toLowerCase()
         const row = payload.new || payload.old || {}
 
+        if (!row?.id) return
+
+        const user =
+          action === 'insert'
+            ? await getPublicUser(row.user_id)
+            : null
+
         broadcast('payment-change', {
-          action: String(payload.eventType || 'UPDATE').toLowerCase(),
-          id: row.id || null,
-          order_id: row.order_id || null,
-          status: row.status || null,
-          updated_at: row.updated_at || row.created_at || null,
+          action,
+          payment: {
+            ...row,
+            ...(user ? { user } : {}),
+          },
         })
       }
     )
