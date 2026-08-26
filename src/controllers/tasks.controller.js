@@ -128,6 +128,11 @@ function publicWallet(wallet) {
 }
 
 function publicCheckIn(row, isPremium = false) {
+  try {
+  await ensureTaskCenterAutoRotation()
+} catch (error) {
+  console.error('TASK CENTER AUTO CATCH-UP ERROR:', error)
+}
   const todayKey = getPhnomPenhDateKey()
   try {
   await ensureTaskCenterAutoRotation()
@@ -1182,6 +1187,11 @@ export async function claimReadingReward(req, res) {
 }
 
 export async function getReadingMissions(req, res) {
+  try {
+  await ensureTaskCenterAutoRotation()
+} catch (error) {
+  console.error('TASK CENTER AUTO CATCH-UP ERROR:', error)
+}
   try {
     const userId = getUserId(req)
 
