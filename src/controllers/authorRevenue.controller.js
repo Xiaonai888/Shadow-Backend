@@ -48,6 +48,10 @@ function progressPercent(current, required) {
 }
 
 const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
+const AUTHOR_INCOME_SOURCE_TYPES = [
+  'diamond_unlock',
+  'diamond_gift',
+]
 
 function getCambodiaDate(date = new Date()) {
   return new Date(date.getTime() + CAMBODIA_OFFSET_MS)
@@ -973,7 +977,7 @@ async function sumAuthorIncome({ authorId, from }) {
     .select('author_net_payout_usd')
     .eq('author_id', authorId)
     .eq('currency', 'diamond')
-    .eq('source_type', 'diamond_unlock')
+    .in('source_type', AUTHOR_INCOME_SOURCE_TYPES)
     .neq('earning_status', 'void')
 
   if (from) {
@@ -1337,7 +1341,7 @@ export async function getMyAuthorIncome(req, res) {
       .select('author_net_payout_usd')
       .eq('author_id', authorPage.id)
       .eq('currency', 'diamond')
-      .eq('source_type', 'diamond_unlock')
+      .in('source_type', AUTHOR_INCOME_SOURCE_TYPES)
       .eq('earning_month', thisMonthKey)
       .neq('earning_status', 'void')
     if (thisMonthError) throw thisMonthError
@@ -1347,7 +1351,7 @@ export async function getMyAuthorIncome(req, res) {
       .select('author_net_payout_usd')
       .eq('author_id', authorPage.id)
       .eq('currency', 'diamond')
-      .eq('source_type', 'diamond_unlock')
+      .in('source_type', AUTHOR_INCOME_SOURCE_TYPES)
       .eq('earning_month', lastMonthKey)
       .neq('earning_status', 'void')
 
