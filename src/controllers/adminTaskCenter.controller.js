@@ -636,3 +636,270 @@ export async function runTaskCenterAutoRotation(req, res) {
     })
   }
 }
+
+
+function getTaskCenterActivityDateKey(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Phnom_Penh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+
+  const year = parts.find((part) => part.type === 'year')?.value
+  const month = parts.find((part) => part.type === 'month')?.value
+  const day = parts.find((part) => part.type === 'day')?.value
+
+  return `${year}-${month}-${day}`
+}
+
+function shiftTaskCenterActivityDate(dateKey, days) {
+  const date = new Date(`${dateKey}T00:00:00.000Z`)
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+
+function cleanTaskCenterActivityDate(value) {
+  const text = String(value || '').trim()
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    return getTaskCenterActivityDateKey()
+  }
+
+  const date = new Date(`${text}T00:00:00.000Z`)
+
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== text) {
+    return getTaskCenterActivityDateKey()
+  }
+
+  return text
+}
+
+function emptyTaskCenterActivitySummary(activityDate) {
+  return {
+    activity_date: activityDate,
+    active_readers: 0,
+    manual_claims: 0,
+    premium_auto_claims: 0,
+    mission_starters: 0,
+    all_completed_users: 0,
+    completion_rate: 0,
+    updated_at: null,
+  }
+}
+
+async function runTaskCenterActivityMaintenanceSafe() {
+  const { error } = await supabase.rpc('task_center_run_activity_retention')
+
+  if (error) {
+    console.error('TASK CENTER ACTIVITY RETENTION ERROR:', error)
+  }
+}
+
+async function getTaskCenterActivitySummary(activityDate) {
+  const todayKey = getTaskCenterActivityDateKey()
+  const fullDetailCutoff = shiftTaskCenterActivityDate(todayKey, -14)
+
+  let { data: summary, error } = await supabase
+    .from('task_center_daily_summaries')
+    .select('*')
+    .eq('activity_date', activityDate)
+    .maybeSingle()
+
+  if (error) throw error
+
+  const canRefreshFromFullDetail = activityDate >= fullDetailCutoff && activityDate <= todayKey
+  const updatedAtMs = summary?.updated_at ? new Date(summary.updated_at).getTime() : 0
+  const summaryIsStale =
+    !summary ||
+    !Number.isFinite(updatedAtMs) ||
+    Date.now() - updatedAtMs >= 6 * 60 * 60 * 1000
+
+  if (canRefreshFromFullDetail && summaryIsStale) {
+    const { error: refreshError } = await supabase.rpc(
+      'task_center_refresh_daily_summary',
+      { p_activity_date: activityDate }
+    )
+
+    if (refreshError) throw refreshError
+
+    const refreshed = await supabase
+      .from('task_center_daily_summaries')
+      .select('*')
+      .eq('activity_date', activityDate)
+      .maybeSingle()
+
+    if (refreshed.error) throw refreshed.error
+    summary = refreshed.data || null
+  }
+
+  return summary || emptyTaskCenterActivitySummary(activityDate)
+}
+
+export async function getAdminReaderActivity(req, res) {
+  try {
+    const activityDate = cleanTaskCenterActivityDate(req.query.date)
+    const todayKey = getTaskCenterActivityDateKey()
+    const oldestUserDetailDate = shiftTaskCenterActivityDate(todayKey, -365)
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1)
+    const limit = Math.min(50, Math.max(1, Number.parseInt(req.query.limit, 10) || 50))
+    const filter = String(req.query.filter || 'all').trim().toLowerCase()
+    const allowedFilters = new Set([
+      'all',
+      'manual',
+      'premium',
+      'completed',
+      'incomplete',
+    ])
+
+    if (!allowedFilters.has(filter)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid activity filter',
+      })
+    }
+
+    if (activityDate > todayKey) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Activity date cannot be in the future',
+      })
+    }
+
+    await runTaskCenterActivityMaintenanceSafe()
+
+    const summary = await getTaskCenterActivitySummary(activityDate)
+    const detailAvailable = activityDate >= oldestUserDetailDate
+
+    if (!detailAvailable) {
+      return res.status(200).json({
+        ok: true,
+        activity_date: activityDate,
+        summary,
+        readers: [],
+        pagination: {
+          page: 1,
+          limit,
+          total: 0,
+          total_pages: 0,
+        },
+        retention: {
+          full_detail_days: 14,
+          user_summary_days: 365,
+          platform_summary_days: 1095,
+          detail_available: false,
+        },
+      })
+    }
+
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    let snapshotsQuery = supabase
+      .from('task_center_reader_daily_snapshots')
+      .select(
+        'activity_date,user_id,checkin_claimed,checkin_source_key,streak_day,reading_seconds,reading_target_seconds,reading_percent,mission_progress,missions_completed,missions_total,all_completed,last_activity_at,created_at,updated_at',
+        { count: 'exact' }
+      )
+      .eq('activity_date', activityDate)
+
+    if (filter === 'manual') {
+      snapshotsQuery = snapshotsQuery.eq('checkin_source_key', 'daily_bonus')
+    } else if (filter === 'premium') {
+      snapshotsQuery = snapshotsQuery.eq('checkin_source_key', 'premium_auto_claim')
+    } else if (filter === 'completed') {
+      snapshotsQuery = snapshotsQuery.eq('all_completed', true)
+    } else if (filter === 'incomplete') {
+      snapshotsQuery = snapshotsQuery.eq('all_completed', false)
+    }
+
+    const {
+      data: snapshotRows,
+      error: snapshotError,
+      count,
+    } = await snapshotsQuery
+      .order('last_activity_at', { ascending: false, nullsFirst: false })
+      .range(from, to)
+
+    if (snapshotError) throw snapshotError
+
+    const rows = snapshotRows || []
+    const userIds = [...new Set(rows.map((row) => row.user_id).filter(Boolean))]
+    let users = []
+
+    if (userIds.length > 0) {
+      const { data: userRows, error: userError } = await supabase
+        .from('users')
+        .select('id,name,username,email,role')
+        .in('id', userIds)
+
+      if (userError) throw userError
+      users = userRows || []
+    }
+
+    const userMap = new Map(users.map((user) => [user.id, user]))
+
+    const readers = rows.map((row) => {
+      const user = userMap.get(row.user_id) || null
+      const missionProgress = Array.isArray(row.mission_progress)
+        ? row.mission_progress
+        : []
+
+      return {
+        activity_date: row.activity_date,
+        user_id: row.user_id,
+        user: user
+          ? {
+              id: user.id,
+              name: user.name || '',
+              username: user.username || '',
+              email: user.email || '',
+              role: user.role || '',
+            }
+          : null,
+        checkin_claimed: Boolean(row.checkin_claimed),
+        claim_type: row.checkin_source_key || null,
+        premium_auto_claim: row.checkin_source_key === 'premium_auto_claim',
+        streak_day: Number(row.streak_day || 0),
+        reading_seconds: Number(row.reading_seconds || 0),
+        reading_minutes: Math.floor(Number(row.reading_seconds || 0) / 60),
+        reading_target_seconds: Number(row.reading_target_seconds || 1800),
+        reading_percent: Number(row.reading_percent || 0),
+        mission_progress: missionProgress,
+        missions_completed: Number(row.missions_completed || 0),
+        missions_total: Number(row.missions_total || 0),
+        all_completed: Boolean(row.all_completed),
+        last_activity_at: row.last_activity_at || null,
+        updated_at: row.updated_at || null,
+      }
+    })
+
+    return res.status(200).json({
+      ok: true,
+      activity_date: activityDate,
+      filter,
+      summary,
+      readers,
+      pagination: {
+        page,
+        limit,
+        total: Number(count || 0),
+        total_pages: Math.ceil(Number(count || 0) / limit),
+      },
+      retention: {
+        full_detail_days: 14,
+        user_summary_days: 365,
+        platform_summary_days: 1095,
+        detail_available: true,
+      },
+    })
+  } catch (error) {
+    console.error('GET ADMIN TASK CENTER READER ACTIVITY ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load reader activity',
+      error: error.message,
+    })
+  }
+}
