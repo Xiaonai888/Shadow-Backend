@@ -262,10 +262,6 @@ export async function uploadProcessedMangaParts({
       })
     }
 
-    if (queued > 0) {
-  wakeMangaR2DeleteRetryWorker(DELETE_RETRY_DELAY_MS)
-}
-
     return {
       source_width: Number(processed?.sourceWidth || 0) || null,
       source_height: Number(processed?.sourceHeight || 0) || null,
@@ -284,4 +280,8 @@ export async function uploadProcessedMangaParts({
     error.rollback = rollback
     throw error
   }
+}
+
+if (queued > 0) {
+  wakeMangaR2DeleteRetryWorker(DELETE_RETRY_DELAY_MS)
 }
