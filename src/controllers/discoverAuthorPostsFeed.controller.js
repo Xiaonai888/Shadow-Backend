@@ -574,6 +574,16 @@ export async function getDiscoverAuthorPostsFeed(
           ])
       )
 
+    const newestVisiblePostId =
+      (candidatePosts || []).find(
+        (post) =>
+          authorById.has(
+            String(
+              post.author_page_id
+            )
+          )
+      )?.id
+
     const visiblePosts =
       (candidatePosts || [])
         .filter((post) =>
@@ -583,14 +593,26 @@ export async function getDiscoverAuthorPostsFeed(
             )
           )
         )
-        .sort((first, second) =>
-  compareRecommended(
-    first,
-    second,
-    authorById,
-    snapshotAt
-  )
-)
+        .sort((first, second) => {
+          if (
+            first.id === newestVisiblePostId
+          ) {
+            return -1
+          }
+
+          if (
+            second.id === newestVisiblePostId
+          ) {
+            return 1
+          }
+
+          return compareRecommended(
+            first,
+            second,
+            authorById,
+            snapshotAt
+          )
+        })
     const selectedPosts =
       visiblePosts.slice(
         offset,
