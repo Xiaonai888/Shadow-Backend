@@ -9,6 +9,9 @@ import {
   isR2PublicUrl,
   isSupabaseStorageUrl,
 } from './mediaStoragePolicy.service.js'
+import {
+  publishAuthorPageNotificationCreated,
+} from './authorPageNotificationSse.service.js'
 
 const AUTHOR_PAGE_NOTIFICATION_TYPES = new Set([
   'comment',
@@ -613,6 +616,11 @@ async function insertNotification({
     .single()
 
   if (error) throw error
+
+  publishAuthorPageNotificationCreated({
+    userId: authorUserId,
+    notification: data,
+  })
 
   return data
 }
