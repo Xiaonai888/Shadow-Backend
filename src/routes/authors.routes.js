@@ -107,6 +107,7 @@ import { requireUser } from '../middleware/user.middleware.js'
 
 import {
   deleteMyAuthorPageNotification,
+  getMyAuthorPageNotificationUnreadCount,
   getMyAuthorPageNotifications,
   markAllMyAuthorPageNotificationsRead,
   markMyAuthorPageNotificationRead,
@@ -147,6 +148,7 @@ router.post('/me/comment-protection/cleanup/run', requireUser, runMyAuthorCommen
 router.get('/me/comment-protection/moderation-history', requireUser, getMyAuthorModerationHistory)
 router.get('/me/payment-methods', requireUser, getMyAuthorPaymentMethods)
 router.get('/me/page-notifications', requireUser, getMyAuthorPageNotifications)
+router.get('/me/page-notifications/unread-count', requireUser, getMyAuthorPageNotificationUnreadCount)
 router.patch('/me/page-notifications/read-all', requireUser, markAllMyAuthorPageNotificationsRead)
 router.patch('/me/page-notifications/:id/read', requireUser, markMyAuthorPageNotificationRead)
 router.patch('/me/page-notifications/:id/unread', requireUser, markMyAuthorPageNotificationUnread)
