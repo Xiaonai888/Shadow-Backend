@@ -159,8 +159,9 @@ function publicUser(user) {
 }
 
 function publicUserProfile(user, counts = {}, isFollowing = false) {
+  const { email, date_of_birth, date_of_birth_updated_at, ...profile } = publicUser(user)
   return {
-    ...publicUser(user),
+    ...profile,
     followers_count: Number(counts.followers_count || 0),
     following_count: Number(counts.following_count || 0),
     is_following: Boolean(isFollowing),
