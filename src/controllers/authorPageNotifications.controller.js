@@ -1,4 +1,7 @@
 import { supabase } from '../config/supabase.js'
+import {
+  subscribeAuthorPageNotificationSse,
+} from '../services/authorPageNotificationSse.service.js'
 
 const NOTIFICATION_TYPES = new Set([
   'comment',
@@ -191,6 +194,55 @@ export async function createAuthorPageNotification({
   if (error) throw error
 
   return normalizeNotification(data)
+}
+
+export function streamMyAuthorPageNotifications(
+  req,
+  res
+) {
+  const userId = req.user?.user_id
+
+  if (!userId) {
+    return res.status(401).json({
+      ok: false,
+      message: 'Unauthorized',
+    })
+  }
+
+  res.status(200)
+  res.setHeader(
+    'Content-Type',
+    'text/event-stream; charset=utf-8'
+  )
+  res.setHeader(
+    'Cache-Control',
+    'private, no-cache, no-transform'
+  )
+  res.setHeader(
+    'Connection',
+    'keep-alive'
+  )
+  res.setHeader(
+    'X-Accel-Buffering',
+    'no'
+  )
+  res.flushHeaders?.()
+  res.write('retry: 5000\n\n')
+
+  const unsubscribe =
+    subscribeAuthorPageNotificationSse(
+      userId,
+      res
+    )
+
+  const close = () => {
+    unsubscribe()
+  }
+
+  req.once('close', close)
+  req.once('aborted', close)
+
+  return undefined
 }
 
 export async function getMyAuthorPageNotificationUnreadCount(
