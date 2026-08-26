@@ -1046,6 +1046,123 @@ if (!/^[A-Za-z0-9_]+$/.test(username)) {
   }
 }
 
+export async function updateDateOfBirth(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const dateOfBirth = String(
+      req.body.date_of_birth || req.body.dateOfBirth || ''
+    ).trim()
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Date of birth is not valid',
+      })
+    }
+
+    const birthDate = new Date(`${dateOfBirth}T00:00:00Z`)
+    const normalizedDate = Number.isNaN(birthDate.getTime())
+      ? ''
+      : birthDate.toISOString().slice(0, 10)
+    const age = calculateAge(dateOfBirth)
+
+    if (
+      normalizedDate !== dateOfBirth ||
+      age === null ||
+      age < 0 ||
+      age > 120
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Date of birth is not valid',
+      })
+    }
+
+    const { data: currentUser, error: currentUserError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (currentUserError) throw currentUserError
+
+    if (!currentUser) {
+      return res.status(404).json({
+        ok: false,
+        message: 'User not found',
+      })
+    }
+
+    if (String(currentUser.date_of_birth || '') === dateOfBirth) {
+      return res.status(200).json({
+        ok: true,
+        message: 'Date of birth is unchanged',
+        user: publicUser(currentUser),
+      })
+    }
+
+    const now = new Date()
+    const nowIso = now.toISOString()
+    const cooldownMs = 7 * 24 * 60 * 60 * 1000
+
+    if (currentUser.date_of_birth_updated_at) {
+      const lastChangedAt = new Date(
+        currentUser.date_of_birth_updated_at
+      ).getTime()
+      const nextChangeAt = lastChangedAt + cooldownMs
+
+      if (Number.isFinite(lastChangedAt) && now.getTime() < nextChangeAt) {
+        return res.status(429).json({
+          ok: false,
+          code: 'DATE_OF_BIRTH_CHANGE_COOLDOWN',
+          message: 'Date of birth can only be changed once every 7 days',
+          next_change_at: new Date(nextChangeAt).toISOString(),
+        })
+      }
+    }
+
+    const { data, error } = await supabase
+      .from('users')
+      .update({
+        date_of_birth: dateOfBirth,
+        date_of_birth_updated_at: nowIso,
+        updated_at: nowIso,
+      })
+      .eq('id', userId)
+      .eq('is_active', true)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Date of birth updated',
+      user: publicUser(data),
+      next_change_at: new Date(
+        now.getTime() + cooldownMs
+      ).toISOString(),
+    })
+  } catch (error) {
+    console.error('UPDATE DATE OF BIRTH ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update date of birth',
+      error: error.message,
+    })
+  }
+}
+
+
 
 export async function updatePaymentProfile(req, res) {
   try {
