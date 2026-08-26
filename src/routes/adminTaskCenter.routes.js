@@ -14,6 +14,7 @@ import {
   updateAdminReadingMissionMode,
   rotateAdminTaskCenterAutoStories,
   runTaskCenterAutoRotation,
+  getAdminReaderActivity,
 } from '../controllers/adminTaskCenter.controller.js'
 
 const router = express.Router()
@@ -28,6 +29,7 @@ const upload = multer({
 router.get('/public/version', getPublicTaskCenterVersion)
 router.get('/public', getPublicTaskCenterSettings)
 router.get('/admin', requireAdmin, getAdminTaskCenterSettings)
+router.get('/admin/reader-activity', requireAdmin, getAdminReaderActivity)
 router.get('/admin/reading-missions', requireAdmin, getAdminReadingMissions)
 router.post('/admin/reading-missions', requireAdmin, createAdminReadingMission)
 router.put('/admin/reading-missions/:missionId', requireAdmin, updateAdminReadingMission)
