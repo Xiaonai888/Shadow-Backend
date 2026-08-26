@@ -13,6 +13,7 @@ import {
   resetPassword,
   unfollowUser,
   updatePaymentProfile,
+  updateDateOfBirth,
   updateUserAvatar,
   updateUserProfile,
 } from '../controllers/users.controller.js'
@@ -59,7 +60,6 @@ router.get('/me/summary', requireUser, getMeSummary)
 router.get('/suggestions', requireUser, getUserSuggestions)
 router.put('/avatar', requireUser, updateUserAvatar)
 router.put('/profile', requireUser, updateUserProfile)
-updateDateOfBirth,
 router.put('/date-of-birth', requireUser, updateDateOfBirth)
 router.put('/payment-profile', requireUser, updatePaymentProfile)
 router.get('/:username/profile', requireUser, getPublicUserProfile)
