@@ -3,6 +3,10 @@ import { supabase } from '../config/supabase.js'
 const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
 const PAGE_SIZE = 1000
 const HISTORY_LIMIT = 100
+const AUTHOR_INCOME_SOURCE_TYPES = [
+  'diamond_unlock',
+  'diamond_gift',
+]
 
 function numberValue(value) {
   const number = Number(value || 0)
@@ -14,17 +18,21 @@ function getUserId(req) {
 }
 
 function getCambodiaBoundaries(date = new Date()) {
-  const cambodiaDate = new Date(date.getTime() + CAMBODIA_OFFSET_MS)
+  const cambodiaDate = new Date(
+    date.getTime() + CAMBODIA_OFFSET_MS
+  )
   const year = cambodiaDate.getUTCFullYear()
   const month = cambodiaDate.getUTCMonth()
   const day = cambodiaDate.getUTCDate()
 
   return {
     todayStartIso: new Date(
-      Date.UTC(year, month, day) - CAMBODIA_OFFSET_MS
+      Date.UTC(year, month, day) -
+        CAMBODIA_OFFSET_MS
     ).toISOString(),
     monthStartIso: new Date(
-      Date.UTC(year, month, 1) - CAMBODIA_OFFSET_MS
+      Date.UTC(year, month, 1) -
+        CAMBODIA_OFFSET_MS
     ).toISOString(),
   }
 }
@@ -32,7 +40,9 @@ function getCambodiaBoundaries(date = new Date()) {
 async function getMyAuthorPage(userId) {
   const { data, error } = await supabase
     .from('author_pages')
-    .select('id, user_id, page_name, page_username, page_slug')
+    .select(
+      'id, user_id, page_name, page_username, page_slug'
+    )
     .eq('user_id', userId)
     .maybeSingle()
 
@@ -49,11 +59,11 @@ async function fetchAllAuthorEarnings(authorId) {
     const { data, error } = await supabase
       .from('author_earnings')
       .select(
-        'author_earned_diamonds, author_net_payout_usd, created_at'
+        'source_type, author_earned_diamonds, author_net_payout_usd, created_at'
       )
       .eq('author_id', authorId)
       .eq('currency', 'diamond')
-      .eq('source_type', 'diamond_unlock')
+      .in('source_type', AUTHOR_INCOME_SOURCE_TYPES)
       .neq('earning_status', 'void')
       .order('created_at', { ascending: true })
       .range(from, from + PAGE_SIZE - 1)
@@ -74,11 +84,11 @@ async function fetchRecentAuthorEarnings(authorId) {
   const { data, error } = await supabase
     .from('author_earnings')
     .select(
-      'id, reader_id, story_id, episode_id, author_earned_diamonds, author_net_payout_usd, author_share_percent, earning_status, created_at'
+      'id, reader_id, story_id, episode_id, source_type, author_earned_diamonds, author_net_payout_usd, author_share_percent, earning_status, metadata, created_at'
     )
     .eq('author_id', authorId)
     .eq('currency', 'diamond')
-    .eq('source_type', 'diamond_unlock')
+    .in('source_type', AUTHOR_INCOME_SOURCE_TYPES)
     .neq('earning_status', 'void')
     .order('created_at', { ascending: false })
     .limit(HISTORY_LIMIT)
@@ -86,6 +96,18 @@ async function fetchRecentAuthorEarnings(authorId) {
   if (error) throw error
 
   return data || []
+}
+
+function metadataObject(value) {
+  if (!value) return {}
+
+  if (typeof value === 'object') return value
+
+  try {
+    return JSON.parse(value)
+  } catch {
+    return {}
+  }
 }
 
 async function enrichDiamondHistory(rows) {
@@ -141,38 +163,90 @@ async function enrichDiamondHistory(rows) {
   if (episodesResult.error) throw episodesResult.error
 
   const readerMap = new Map(
-    (readersResult.data || []).map((item) => [item.id, item])
+    (readersResult.data || []).map(
+      (item) => [item.id, item]
+    )
   )
   const storyMap = new Map(
-    (storiesResult.data || []).map((item) => [item.id, item])
+    (storiesResult.data || []).map(
+      (item) => [item.id, item]
+    )
   )
   const episodeMap = new Map(
-    (episodesResult.data || []).map((item) => [item.id, item])
+    (episodesResult.data || []).map(
+      (item) => [item.id, item]
+    )
   )
 
   return (rows || []).map((item) => {
-    const reader = readerMap.get(item.reader_id) || {}
-    const story = storyMap.get(item.story_id) || {}
-    const episode = episodeMap.get(item.episode_id) || {}
+    const metadata = metadataObject(item.metadata)
+    const reader =
+      readerMap.get(item.reader_id) || {}
+    const story =
+      storyMap.get(item.story_id) || {}
+    const episode =
+      episodeMap.get(item.episode_id) || {}
+    const isGift =
+      item.source_type === 'diamond_gift'
+    const giftName = String(
+      metadata.gift_name || 'Diamond Gift'
+    )
 
     return {
       id: item.id,
+      source_type:
+        item.source_type || 'diamond_unlock',
+      earning_type: isGift ? 'gift' : 'unlock',
       reader_id: item.reader_id,
       reader_name:
         reader.name ||
         reader.username ||
+        metadata.reader_name ||
         'Reader',
-      reader_username: reader.username || '',
-      reader_avatar_url: reader.avatar_url || '',
+      reader_username:
+        reader.username ||
+        metadata.reader_username ||
+        '',
+      reader_avatar_url:
+        reader.avatar_url ||
+        metadata.reader_avatar_url ||
+        '',
       story_id: item.story_id,
-      story_title: story.title || 'Story',
-      episode_id: item.episode_id,
-      episode_title: episode.title || 'Episode unlock',
-      episode_number: numberValue(episode.episode_number),
-      diamonds: numberValue(item.author_earned_diamonds),
-      usd: numberValue(item.author_net_payout_usd),
-      share_percent: numberValue(item.author_share_percent),
-      status: item.earning_status || 'available',
+      story_title:
+        story.title ||
+        metadata.story_title ||
+        'Story',
+      episode_id: isGift ? null : item.episode_id,
+      episode_title: isGift
+        ? ''
+        : episode.title || 'Episode unlock',
+      episode_number: isGift
+        ? 0
+        : numberValue(episode.episode_number),
+      gift_key: isGift
+        ? String(metadata.gift_key || '')
+        : '',
+      gift_name: isGift ? giftName : '',
+      gift_quantity: isGift
+        ? Math.max(
+            1,
+            numberValue(metadata.gift_quantity)
+          )
+        : 0,
+      gift_support_points: isGift
+        ? numberValue(metadata.gift_support_points)
+        : 0,
+      display_title: isGift
+        ? giftName
+        : episode.title || 'Episode unlock',
+      diamonds:
+        numberValue(item.author_earned_diamonds),
+      usd:
+        numberValue(item.author_net_payout_usd),
+      share_percent:
+        numberValue(item.author_share_percent),
+      status:
+        item.earning_status || 'available',
       created_at: item.created_at,
     }
   })
@@ -221,36 +295,49 @@ async function fetchRecentAuthorGifts(authorId) {
     reader_id: item.reader_id,
     reader_name: item.reader_name || 'Reader',
     reader_username: item.reader_username || '',
-    reader_avatar_url: item.reader_avatar_url || '',
+    reader_avatar_url:
+      item.reader_avatar_url || '',
     story_id: item.story_id,
     story_title: item.story_title || 'Story',
     gift_key: item.gift_key || '',
     gift_name: item.gift_name || 'Gift',
     gift_image_path: item.gift_image_path || '',
-    quantity: Math.max(1, numberValue(item.quantity)),
+    quantity: Math.max(
+      1,
+      numberValue(item.quantity)
+    ),
     currency: item.currency || '',
     price: numberValue(item.price),
-    support_points: numberValue(item.support_points),
+    support_points:
+      numberValue(item.support_points),
     created_at: item.created_at,
   }))
 }
 
 function sumField(rows, field) {
   return (rows || []).reduce(
-    (total, item) => total + numberValue(item[field]),
+    (total, item) =>
+      total + numberValue(item[field]),
     0
   )
 }
 
 function isOnOrAfter(value, boundaryIso) {
   const time = new Date(value).getTime()
-  const boundary = new Date(boundaryIso).getTime()
+  const boundary =
+    new Date(boundaryIso).getTime()
 
   return (
     Number.isFinite(time) &&
     Number.isFinite(boundary) &&
     time >= boundary
   )
+}
+
+function countSource(rows, sourceType) {
+  return (rows || []).filter(
+    (item) => item.source_type === sourceType
+  ).length
 }
 
 export async function getMyAuthorDiamonds(req, res) {
@@ -264,7 +351,8 @@ export async function getMyAuthorDiamonds(req, res) {
       })
     }
 
-    const authorPage = await getMyAuthorPage(userId)
+    const authorPage =
+      await getMyAuthorPage(userId)
 
     if (!authorPage) {
       return res.status(403).json({
@@ -281,17 +369,24 @@ export async function getMyAuthorDiamonds(req, res) {
       fetchRecentAuthorEarnings(authorPage.id),
     ])
 
-    const history = await enrichDiamondHistory(recentRows)
+    const history =
+      await enrichDiamondHistory(recentRows)
     const {
       todayStartIso,
       monthStartIso,
     } = getCambodiaBoundaries()
 
     const todayRows = rows.filter((item) =>
-      isOnOrAfter(item.created_at, todayStartIso)
+      isOnOrAfter(
+        item.created_at,
+        todayStartIso
+      )
     )
     const monthRows = rows.filter((item) =>
-      isOnOrAfter(item.created_at, monthStartIso)
+      isOnOrAfter(
+        item.created_at,
+        monthStartIso
+      )
     )
 
     return res.status(200).json({
@@ -314,18 +409,37 @@ export async function getMyAuthorDiamonds(req, res) {
           rows,
           'author_earned_diamonds'
         ),
-        today_unlocks: todayRows.length,
-        total_unlocks: rows.length,
+        today_unlocks: countSource(
+          todayRows,
+          'diamond_unlock'
+        ),
+        total_unlocks: countSource(
+          rows,
+          'diamond_unlock'
+        ),
+        today_gifts: countSource(
+          todayRows,
+          'diamond_gift'
+        ),
+        total_gifts: countSource(
+          rows,
+          'diamond_gift'
+        ),
       },
       history,
-      has_more: rows.length > recentRows.length,
+      has_more:
+        rows.length > recentRows.length,
     })
   } catch (error) {
-    console.error('GET MY AUTHOR DIAMONDS ERROR:', error)
+    console.error(
+      'GET MY AUTHOR DIAMONDS ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
-      message: 'Failed to load author Diamonds',
+      message:
+        'Failed to load author Diamonds',
       error: error.message,
     })
   }
@@ -342,7 +456,8 @@ export async function getMyAuthorGifts(req, res) {
       })
     }
 
-    const authorPage = await getMyAuthorPage(userId)
+    const authorPage =
+      await getMyAuthorPage(userId)
 
     if (!authorPage) {
       return res.status(403).json({
@@ -363,7 +478,10 @@ export async function getMyAuthorGifts(req, res) {
       monthStartIso,
     } = getCambodiaBoundaries()
     const monthRows = rows.filter((item) =>
-      isOnOrAfter(item.created_at, monthStartIso)
+      isOnOrAfter(
+        item.created_at,
+        monthStartIso
+      )
     )
     const uniqueSenders = new Set(
       rows
@@ -375,29 +493,36 @@ export async function getMyAuthorGifts(req, res) {
       ok: true,
       author_page: authorPage,
       summary: {
-        total_gifts: sumField(rows, 'quantity'),
-        this_month_gifts: sumField(
-          monthRows,
-          'quantity'
-        ),
+        total_gifts:
+          sumField(rows, 'quantity'),
+        this_month_gifts:
+          sumField(monthRows, 'quantity'),
         unique_senders: uniqueSenders.size,
         total_support_points: rows.reduce(
           (total, item) =>
             total +
             numberValue(item.support_points) *
-              Math.max(1, numberValue(item.quantity)),
+              Math.max(
+                1,
+                numberValue(item.quantity)
+              ),
           0
         ),
       },
       history,
-      has_more: rows.length > history.length,
+      has_more:
+        rows.length > history.length,
     })
   } catch (error) {
-    console.error('GET MY AUTHOR GIFTS ERROR:', error)
+    console.error(
+      'GET MY AUTHOR GIFTS ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
-      message: 'Failed to load author Gifts',
+      message:
+        'Failed to load author Gifts',
       error: error.message,
     })
   }
