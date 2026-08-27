@@ -76,6 +76,8 @@ import adminChatEvidenceRoutes from './src/routes/adminChatEvidence.routes.js'
 import { startChatRetentionCleanup } from './src/services/chatRetentionCleanup.service.js'
 import monthlyVoteRoutes from './src/routes/monthlyVote.routes.js'
 import adminMonthlyVoteRoutes from './src/routes/adminMonthlyVote.routes.js'
+import eventsRoutes from './src/routes/events.routes.js'
+import adminEventsRoutes from './src/routes/adminEvents.routes.js'
 import adminRolesRoutes from './src/routes/adminRoles.routes.js'
 import adminAccountsRoutes from './src/routes/adminAccounts.routes.js'
 import adminSearchInsightsRoutes from './src/routes/adminSearchInsights.routes.js'
@@ -589,6 +591,8 @@ app.use('/api/reader-presence', readerActionSpamGuard, readerPresenceRoutes)
 app.use('/api/share-profile', mediaUploadRouteSpamGuard, shareProfileRoutes)
 app.use('/api/monthly-vote', taskSpamGuard, monthlyVoteRoutes)
 app.use('/api/admin/monthly-vote', adminMonthlyVoteRoutes)
+app.use('/api/events', readerReadSpamGuard, eventsRoutes)
+app.use('/api/admin/events', adminEventsRoutes)
 app.use('/api/admin/roles', adminRolesRoutes)
 app.use('/api/admin/accounts', adminAccountsRoutes)
 app.use('/api/admin/search-insights', adminSearchInsightsRoutes)
