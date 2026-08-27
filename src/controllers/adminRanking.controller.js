@@ -32,7 +32,24 @@ const DEFAULT_RANKING_SETTINGS = {
   episode_rank_enabled: true,
 }
 
-async function getRankingSettings() {
+const PUBLIC_RANK_CACHE_MS = 6 * 60 * 60 * 1000
+const RANKING_SETTINGS_CACHE_MS = PUBLIC_RANK_CACHE_MS
+
+let rankingSettingsCache = {
+  expiresAt: 0,
+  value: null,
+}
+
+export async function getRankingSettings() {
+  const now = Date.now()
+
+  if (
+    rankingSettingsCache.value &&
+    rankingSettingsCache.expiresAt > now
+  ) {
+    return rankingSettingsCache.value
+  }
+
   const { data, error } = await supabase
     .from('ranking_settings')
     .select('*')
@@ -41,10 +58,31 @@ async function getRankingSettings() {
 
   if (error) throw error
 
-  return {
+  const settings = {
     ...DEFAULT_RANKING_SETTINGS,
     ...(data || {}),
   }
+
+  rankingSettingsCache = {
+    expiresAt: now + RANKING_SETTINGS_CACHE_MS,
+    value: settings,
+  }
+
+  return settings
+}
+
+export function setAdminRankingSettingsCache(settings) {
+  rankingSettingsCache = {
+    expiresAt: Date.now() + RANKING_SETTINGS_CACHE_MS,
+    value: {
+      ...DEFAULT_RANKING_SETTINGS,
+      ...(settings || {}),
+    },
+  }
+
+  genreRankCache = { expiresAt: 0, payload: null, settingsKey: '' }
+  authorRankCache = { expiresAt: 0, rows: null, settingsKey: '' }
+  episodeRankCache = { expiresAt: 0, rows: null, settingsKey: '' }
 }
 
 function rankingSettingsKey(settings) {
@@ -93,7 +131,7 @@ function episodeRankFormula(settings) {
   return `score = views*${formatWeight(settings.episode_view_weight)} + likes*${formatWeight(settings.episode_like_weight)} + comments*${formatWeight(settings.episode_comment_weight)}`
 }
 
-const GENRE_RANK_CACHE_MS = 15 * 60 * 1000
+const GENRE_RANK_CACHE_MS = PUBLIC_RANK_CACHE_MS
 let genreRankCache = { expiresAt: 0, payload: null, settingsKey: '' }
 
 export async function getAdminGenreRanking(req, res) {
@@ -218,8 +256,8 @@ export async function getAdminGenreRanking(req, res) {
   }
 }
 
-const AUTHOR_RANK_CACHE_MS = 15 * 60 * 1000
-let authorRankCache = { expiresAt: 0, rows: [], settingsKey: '' }
+const AUTHOR_RANK_CACHE_MS = PUBLIC_RANK_CACHE_MS
+let authorRankCache = { expiresAt: 0, rows: null, settingsKey: '' }
 
 function scoreAuthorRank(row, settings = DEFAULT_RANKING_SETTINGS) {
   return Number(row.total_views || 0) * Number(settings.author_view_weight || 0)
@@ -263,7 +301,7 @@ export async function getAdminAuthorRanking(req, res) {
     let rows = authorRankCache.rows
     let cached =
       authorRankCache.expiresAt > now &&
-      rows.length > 0 &&
+      rows !== null &&
       authorRankCache.settingsKey === settingsKey
 
     if (!cached) {
@@ -405,8 +443,8 @@ export async function getAdminAuthorRanking(req, res) {
   }
 }
 
-const EPISODE_RANK_CACHE_MS = 15 * 60 * 1000
-let episodeRankCache = { expiresAt: 0, rows: [], settingsKey: '' }
+const EPISODE_RANK_CACHE_MS = PUBLIC_RANK_CACHE_MS
+let episodeRankCache = { expiresAt: 0, rows: null, settingsKey: '' }
 
 function scoreEpisodeRank(row, settings = DEFAULT_RANKING_SETTINGS) {
   return Number(row.total_views || 0) * Number(settings.episode_view_weight || 0)
@@ -448,7 +486,7 @@ export async function getAdminEpisodeRanking(req, res) {
     let rows = episodeRankCache.rows
     let cached =
       episodeRankCache.expiresAt > now &&
-      rows.length > 0 &&
+      rows !== null &&
       episodeRankCache.settingsKey === settingsKey
 
     if (!cached) {
@@ -653,7 +691,7 @@ const INCOME_RANK_UNPAID_STATUSES = ['pending', 'available']
 const INCOME_RANK_PAID_STATUSES = ['paid']
 const INCOME_RANK_PAGE_SIZE = 1000
 const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
-let incomeRankCache = { expiresAt: 0, rows: [] }
+let incomeRankCache = { expiresAt: 0, rows: null }
 
 function getIncomeRankMonthStartIso(date = new Date()) {
   const cambodiaDate = new Date(date.getTime() + CAMBODIA_OFFSET_MS)
@@ -707,7 +745,7 @@ export async function getAdminIncomeRanking(req, res) {
     const monthStartTime = new Date(monthStartIso).getTime()
 
     let rows = incomeRankCache.rows
-    let cached = incomeRankCache.expiresAt > now && rows.length > 0
+    let cached = incomeRankCache.expiresAt > now && rows !== null
 
     if (!cached) {
       const earningRows = await fetchAllIncomeRankRows()
@@ -1000,55 +1038,111 @@ function applySort(
   )
 }
 
-function buildStoryRankingQuery({
-  search,
-  status,
-  visibility,
-  rankingVisibility,
-  genre,
-}) {
-  let query = supabase
+const STORY_RANK_CACHE_MS = PUBLIC_RANK_CACHE_MS
+let storyRankCache = {
+  expiresAt: 0,
+  rows: null,
+  authors: null,
+  generatedAt: null,
+}
+
+async function getStoryRankSource(now = Date.now()) {
+  if (
+    storyRankCache.expiresAt > now &&
+    storyRankCache.rows !== null &&
+    storyRankCache.authors !== null
+  ) {
+    return {
+      rows: storyRankCache.rows,
+      authors: storyRankCache.authors,
+      generatedAt: storyRankCache.generatedAt,
+      cached: true,
+    }
+  }
+
+  const { data, error } = await supabase
     .from('stories')
     .select('*')
     .is('deleted_at', null)
 
-  if (status !== 'all') {
-    query = query.eq('status', status)
+  if (error) throw error
+
+  const rows = data || []
+  const authors = await fetchAuthors(
+    rows.map((story) => story.author_id)
+  )
+  const generatedAt = new Date(now).toISOString()
+
+  storyRankCache = {
+    expiresAt: now + STORY_RANK_CACHE_MS,
+    rows,
+    authors,
+    generatedAt,
   }
 
-  if (visibility !== 'all') {
-    query = query.eq(
-      'admin_visibility_status',
-      visibility
-    )
+  return {
+    rows,
+    authors,
+    generatedAt,
+    cached: false,
   }
+}
 
-  if (rankingVisibility !== 'all') {
-    query = query.eq(
-      'ranking_visibility_status',
-      rankingVisibility
-    )
+function filterStoryRankRows(
+  rows,
+  {
+    search,
+    status,
+    visibility,
+    rankingVisibility,
+    genre,
   }
+) {
+  const normalizedSearch = cleanText(search).toLowerCase()
 
-  if (genre !== 'all') {
-    query = query.eq('main_genre', genre)
-  }
-
-  if (search) {
-    if (isUuid(search)) {
-      query = query.eq('id', search)
-    } else {
-      const safeSearch = search.replace(
-        /[%_]/g,
-        '\\$&'
-      )
-      query = query.or(
-        `title.ilike.%${safeSearch}%,main_genre.ilike.%${safeSearch}%,story_language.ilike.%${safeSearch}%`
-      )
+  return (rows || []).filter((story) => {
+    if (
+      status !== 'all' &&
+      String(story.status || '').toLowerCase() !== status
+    ) {
+      return false
     }
-  }
 
-  return query
+    if (
+      visibility !== 'all' &&
+      String(story.admin_visibility_status || '').toLowerCase() !== visibility
+    ) {
+      return false
+    }
+
+    if (
+      rankingVisibility !== 'all' &&
+      String(story.ranking_visibility_status || '').toLowerCase() !== rankingVisibility
+    ) {
+      return false
+    }
+
+    if (
+      genre !== 'all' &&
+      String(story.main_genre || '') !== genre
+    ) {
+      return false
+    }
+
+    if (!normalizedSearch) return true
+
+    if (isUuid(normalizedSearch)) {
+      return String(story.id || '').toLowerCase() === normalizedSearch
+    }
+
+    return [
+      story.title,
+      story.main_genre,
+      story.story_language,
+    ].some((value) =>
+      String(value || '').toLowerCase().includes(normalizedSearch)
+    )
+  })
 }
 
 export async function getAdminStoryRanking(req, res) {
@@ -1077,6 +1171,7 @@ export async function getAdminStoryRanking(req, res) {
     const genre = cleanText(
       req.query.genre || 'all'
     )
+    const now = Date.now()
     const settings = await getRankingSettings()
 
     if (!settings.story_rank_enabled) {
@@ -1100,21 +1195,24 @@ export async function getAdminStoryRanking(req, res) {
           genres: [],
         },
         formula: storyRankFormula(settings),
+        cache_ttl_seconds: STORY_RANK_CACHE_MS / 1000,
+        cached: false,
       })
     }
 
-    const { data, error } =
-      await buildStoryRankingQuery({
+    const source = await getStoryRankSource(now)
+    const filteredSource = filterStoryRankRows(
+      source.rows,
+      {
         search,
         status,
         visibility,
         rankingVisibility,
         genre,
-      })
+      }
+    )
 
-    if (error) throw error
-
-    const qualifiedRows = (data || []).filter(
+    const qualifiedRows = filteredSource.filter(
       (story) =>
         Number(story.total_views || 0) >=
           Number(settings.min_story_views || 0) &&
@@ -1141,21 +1239,18 @@ export async function getAdminStoryRanking(req, res) {
       from,
       from + limit
     )
-    const authors = await fetchAuthors(
-      pageRows.map((story) => story.author_id)
-    )
     const stories = pageRows.map(
       (story, index) =>
         publicStoryRank(
           story,
-          authors.get(story.author_id),
+          source.authors.get(story.author_id),
           from + index + 1,
           settings
         )
     )
     const genreValues = [
       ...new Set(
-        qualifiedRows
+        filteredSource
           .map((story) => story.main_genre)
           .filter(Boolean)
       ),
@@ -1196,6 +1291,9 @@ export async function getAdminStoryRanking(req, res) {
         ),
       },
       formula: storyRankFormula(settings),
+      cache_ttl_seconds: STORY_RANK_CACHE_MS / 1000,
+      generated_at: source.generatedAt,
+      cached: source.cached,
     })
   } catch (error) {
     console.error(
@@ -1472,9 +1570,15 @@ export async function updateStoryRankingVisibility(req, res) {
 
     if (updateError) throw updateError
 
-    genreRankCache = { expiresAt: 0, payload: null }
-    authorRankCache = { expiresAt: 0, rows: [] }
-    episodeRankCache = { expiresAt: 0, rows: [] }
+    storyRankCache = {
+      expiresAt: 0,
+      rows: null,
+      authors: null,
+      generatedAt: null,
+    }
+    genreRankCache = { expiresAt: 0, payload: null, settingsKey: '' }
+    authorRankCache = { expiresAt: 0, rows: null, settingsKey: '' }
+    episodeRankCache = { expiresAt: 0, rows: null, settingsKey: '' }
 
     await supabase.from('ranking_moderation_logs').insert({
       item_type: 'story',
@@ -1550,7 +1654,7 @@ export async function updateAuthorRankingVisibility(req, res) {
 
     if (updateError) throw updateError
 
-    authorRankCache = { expiresAt: 0, rows: [] }
+    authorRankCache = { expiresAt: 0, rows: null, settingsKey: '' }
 
     await supabase.from('ranking_moderation_logs').insert({
       item_type: 'author',
@@ -1638,7 +1742,7 @@ export async function updateEpisodeRankingVisibility(req, res) {
 
     if (updateError) throw updateError
 
-    episodeRankCache = { expiresAt: 0, rows: [] }
+    episodeRankCache = { expiresAt: 0, rows: null, settingsKey: '' }
 
     const { data: story, error: storyError } = await supabase
       .from('stories')
