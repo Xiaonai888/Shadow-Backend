@@ -48,8 +48,8 @@ function getEventStatus(row) {
   const start = row.starts_at ? new Date(row.starts_at).getTime() : null
   const end = row.ends_at ? new Date(row.ends_at).getTime() : null
 
-  if (end !== null && Number.isFinite(end) && now >= end) return 'ended'
   if (!row.is_published) return 'draft'
+  if (end !== null && Number.isFinite(end) && now >= end) return 'ended'
   if (start !== null && Number.isFinite(start) && now < start) return 'scheduled'
 
   return 'live'
@@ -113,6 +113,13 @@ export async function createEvent(req, res) {
     const endsAt = normalizeTimestamp(req.body?.ends_at)
     const sortOrder = normalizeSortOrder(req.body?.sort_order, 0)
     const isPublished = normalizeBoolean(req.body?.is_published, false)
+
+    if (!title) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Title is required',
+  })
+}
 
     if (!imageUrl) {
   return res.status(400).json({
