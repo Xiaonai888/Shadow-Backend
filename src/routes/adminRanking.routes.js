@@ -1,6 +1,7 @@
 import express from 'express'
 import {
   getAdminAuthorRanking,
+  getAdminEpisodeRanking,
   getAdminGenreRanking,
   getAdminStoryRanking,
   getHiddenRankingItems,
@@ -13,6 +14,7 @@ const router = express.Router()
 router.get('/stories', requireAdmin, getAdminStoryRanking)
 router.get('/genres', requireAdmin, getAdminGenreRanking)
 router.get('/authors', requireAdmin, getAdminAuthorRanking)
+router.get('/episodes', requireAdmin, getAdminEpisodeRanking)
 router.get('/hidden', requireAdmin, getHiddenRankingItems)
 router.patch('/stories/:storyId/visibility', requireAdmin, updateStoryRankingVisibility)
 
