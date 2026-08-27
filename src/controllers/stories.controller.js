@@ -716,20 +716,6 @@ const landscapeThumbnailUrl = cleanMediaReference(
   { field: 'stories.landscape_thumbnail_url' }
 )
 const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
-const autoFreeOldEpisodesEnabled = cleanBoolean(
-  req.body.auto_free_old_episodes_enabled ?? req.body.autoFreeOldEpisodesEnabled,
-  false
-)
-const autoFreeAfterDays = cleanPositiveInteger(
-  req.body.auto_free_after_days ?? req.body.autoFreeAfterDays,
-  30,
-  365
-)
-const autoFreeMaxEpisodes = cleanPositiveInteger(
-  req.body.auto_free_max_episodes ?? req.body.autoFreeMaxEpisodes,
-  5,
-  100
-)
 const autoFreeMaxPercent = cleanPositiveInteger(
   req.body.auto_free_max_percent ?? req.body.autoFreeMaxPercent,
   10,
@@ -762,10 +748,6 @@ const slides = cleanStorySlides(req.body.slides)
         cover_url: coverUrl,
         landscape_thumbnail_url: landscapeThumbnailUrl,
         update_days: updateDays,
-        auto_free_old_episodes_enabled: autoFreeOldEpisodesEnabled,
-        auto_free_after_days: autoFreeAfterDays,
-        auto_free_max_episodes: autoFreeMaxEpisodes,
-        auto_free_max_percent: autoFreeMaxPercent,
         status: 'draft',
       })
       .select()
@@ -843,25 +825,6 @@ const landscapeThumbnailUrl = cleanMediaReference(
   }
 )
 const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
-const autoFreeOldEpisodesEnabled = cleanBoolean(
-  req.body.auto_free_old_episodes_enabled ?? req.body.autoFreeOldEpisodesEnabled,
-  Boolean(oldStory.auto_free_old_episodes_enabled)
-)
-const autoFreeAfterDays = cleanPositiveInteger(
-  req.body.auto_free_after_days ?? req.body.autoFreeAfterDays,
-  Number(oldStory.auto_free_after_days || 30),
-  365
-)
-const autoFreeMaxEpisodes = cleanPositiveInteger(
-  req.body.auto_free_max_episodes ?? req.body.autoFreeMaxEpisodes,
-  Number(oldStory.auto_free_max_episodes || 5),
-  100
-)
-const autoFreeMaxPercent = cleanPositiveInteger(
-  req.body.auto_free_max_percent ?? req.body.autoFreeMaxPercent,
-  Number(oldStory.auto_free_max_percent || 10),
-  100
-)
 const existingSlides = await getStorySlides(storyId)
 const legacySlideUrls = existingSlides
   .map((slide) => slide.image_url)
@@ -891,10 +854,6 @@ const slides = cleanStorySlides(req.body.slides, legacySlideUrls)
         cover_url: coverUrl,
         landscape_thumbnail_url: landscapeThumbnailUrl,
         update_days: updateDays,
-        auto_free_old_episodes_enabled: autoFreeOldEpisodesEnabled,
-        auto_free_after_days: autoFreeAfterDays,
-        auto_free_max_episodes: autoFreeMaxEpisodes,
-        auto_free_max_percent: autoFreeMaxPercent,
         updated_at: new Date().toISOString(),
       })
       .eq('id', storyId)
