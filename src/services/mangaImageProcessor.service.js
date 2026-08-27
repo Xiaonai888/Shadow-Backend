@@ -1,4 +1,5 @@
 import sharp from 'sharp'
+import { loadOpenCV } from '@opencvjs/node'
 
 export const MANGA_PROCESSOR_LIMITS = Object.freeze({
   maxWidth: 8000,
@@ -7,7 +8,9 @@ export const MANGA_PROCESSOR_LIMITS = Object.freeze({
   targetWidth: 1600,
   partPreferredHeight: 5000,
   partMaxHeight: 6200,
+  partEmergencyMaxHeight: 7600,
   partMinHeight: 1600,
+  partEmergencyMinHeight: 1000,
   cutSearchRadius: 1800,
   cutAnalysisWidth: 480,
   cutBandHeight: 260,
@@ -73,6 +76,206 @@ function widthProfiles(sourceWidth) {
 
 function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value))
+}
+
+const ANIME_FACE_CASCADE_URL =
+  'https://raw.githubusercontent.com/nagadomi/lbpcascade_animeface/master/lbpcascade_animeface.xml'
+const ANIME_FACE_CASCADE_FILE = 'lbpcascade_animeface.xml'
+const FACE_DETECTION_MAX_WIDTH = 720
+
+let animeFaceDetectorPromise = null
+
+async function getAnimeFaceDetector() {
+  if (!animeFaceDetectorPromise) {
+    animeFaceDetectorPromise = (async () => {
+      const cv = await loadOpenCV()
+      const response = await fetch(ANIME_FACE_CASCADE_URL)
+
+      if (!response.ok) {
+        throw new Error(
+          `Anime face model download failed: ${response.status}`
+        )
+      }
+
+      const bytes = new Uint8Array(
+        await response.arrayBuffer()
+      )
+
+      try {
+        cv.FS_createDataFile(
+          '/',
+          ANIME_FACE_CASCADE_FILE,
+          bytes,
+          true,
+          false,
+          false
+        )
+      } catch {
+      }
+
+      const classifier = new cv.CascadeClassifier()
+      classifier.load(ANIME_FACE_CASCADE_FILE)
+
+      if (classifier.empty()) {
+        classifier.delete()
+        throw new Error('Anime face classifier could not be loaded.')
+      }
+
+      return { cv, classifier }
+    })().catch((error) => {
+      animeFaceDetectorPromise = null
+      throw error
+    })
+  }
+
+  return animeFaceDetectorPromise
+}
+
+function mergeFaceZones(zones) {
+  const sorted = [...zones].sort(
+    (a, b) => a.top - b.top
+  )
+  const merged = []
+
+  for (const zone of sorted) {
+    const previous = merged[merged.length - 1]
+
+    if (
+      previous &&
+      zone.top <= previous.bottom + 24
+    ) {
+      previous.bottom = Math.max(
+        previous.bottom,
+        zone.bottom
+      )
+      continue
+    }
+
+    merged.push({ ...zone })
+  }
+
+  return merged
+}
+
+async function detectMangaFaceZones({
+  fileBuffer,
+  pageWidth,
+  pageHeight,
+}) {
+  let src = null
+  let gray = null
+  let equalized = null
+  let faces = null
+
+  try {
+    const { cv, classifier } =
+      await getAnimeFaceDetector()
+
+    const detectionWidth = Math.max(
+      1,
+      Math.min(
+        FACE_DETECTION_MAX_WIDTH,
+        pageWidth
+      )
+    )
+
+    const detectionHeight = Math.max(
+      1,
+      Math.round(
+        pageHeight *
+          (detectionWidth / pageWidth)
+      )
+    )
+
+    const raw = await sharp(fileBuffer, {
+      limitInputPixels:
+        MANGA_PROCESSOR_LIMITS.maxPixels,
+      sequentialRead: true,
+    })
+      .rotate()
+      .resize({
+        width: detectionWidth,
+        height: detectionHeight,
+        fit: 'fill',
+        withoutEnlargement: true,
+      })
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true })
+
+    src = new cv.Mat(
+      raw.info.height,
+      raw.info.width,
+      cv.CV_8UC4
+    )
+    src.data.set(raw.data)
+
+    gray = new cv.Mat()
+    equalized = new cv.Mat()
+    faces = new cv.RectVector()
+
+    cv.cvtColor(
+      src,
+      gray,
+      cv.COLOR_RGBA2GRAY,
+      0
+    )
+    cv.equalizeHist(gray, equalized)
+
+    classifier.detectMultiScale(
+      equalized,
+      faces,
+      1.1,
+      5,
+      0,
+      new cv.Size(24, 24),
+      new cv.Size(0, 0)
+    )
+
+    const scaleY =
+      pageHeight / raw.info.height
+    const zones = []
+
+    for (let index = 0; index < faces.size(); index += 1) {
+      const face = faces.get(index)
+
+      const faceTop = face.y * scaleY
+      const faceHeight = face.height * scaleY
+      const padding = Math.max(
+        48,
+        Math.round(faceHeight * 0.35)
+      )
+
+      zones.push({
+        top: Math.max(
+          0,
+          Math.floor(faceTop - padding)
+        ),
+        bottom: Math.min(
+          pageHeight,
+          Math.ceil(
+            faceTop +
+              faceHeight +
+              padding
+          )
+        ),
+      })
+    }
+
+    return mergeFaceZones(zones)
+  } catch (error) {
+    console.error(
+      'MANGA FACE DETECTION ERROR:',
+      error
+    )
+
+    return []
+  } finally {
+    if (faces) faces.delete()
+    if (equalized) equalized.delete()
+    if (gray) gray.delete()
+    if (src) src.delete()
+  }
 }
 
 async function buildCutAnalysis({
@@ -340,36 +543,77 @@ function scoreCutCandidate({ analysis, pageY, targetY }) {
   )
 }
 
-function findSafestCut({ analysis, targetY, minimumY, maximumY }) {
+function cutCrossesFace(faceZones, pageY) {
+  return faceZones.some(
+    (zone) =>
+      pageY >= zone.top &&
+      pageY <= zone.bottom
+  )
+}
+
+function findSafestCut({
+  analysis,
+  faceZones = [],
+  targetY,
+  minimumY,
+  maximumY,
+}) {
   const minimum = Math.ceil(minimumY)
   const maximum = Math.floor(maximumY)
 
   if (minimum >= maximum) {
-    return clamp(Math.round(targetY), minimum, maximum)
+    const candidateY = clamp(
+      Math.round(targetY),
+      minimum,
+      maximum
+    )
+
+    return cutCrossesFace(
+      faceZones,
+      candidateY
+    )
+      ? null
+      : candidateY
   }
 
-  let bestY = clamp(Math.round(targetY), minimum, maximum)
-  let bestScore = scoreCutCandidate({
-    analysis,
-    pageY: bestY,
-    targetY,
-  })
+  let bestY = null
+  let bestScore = Number.POSITIVE_INFINITY
+
+  const evaluate = (candidateY) => {
+    const y = clamp(
+      Math.round(candidateY),
+      minimum,
+      maximum
+    )
+
+    if (cutCrossesFace(faceZones, y)) {
+      return
+    }
+
+    const score = scoreCutCandidate({
+      analysis,
+      pageY: y,
+      targetY,
+    })
+
+    if (score < bestScore) {
+      bestScore = score
+      bestY = y
+    }
+  }
+
+  evaluate(targetY)
 
   for (
     let candidateY = minimum;
     candidateY <= maximum;
     candidateY += MANGA_PROCESSOR_LIMITS.cutStep
   ) {
-    const score = scoreCutCandidate({
-      analysis,
-      pageY: candidateY,
-      targetY,
-    })
+    evaluate(candidateY)
+  }
 
-    if (score < bestScore) {
-      bestScore = score
-      bestY = candidateY
-    }
+  if (bestY === null) {
+    return null
   }
 
   const refineStart = Math.max(
@@ -381,17 +625,12 @@ function findSafestCut({ analysis, targetY, minimumY, maximumY }) {
     bestY + MANGA_PROCESSOR_LIMITS.cutStep
   )
 
-  for (let candidateY = refineStart; candidateY <= refineEnd; candidateY += 1) {
-    const score = scoreCutCandidate({
-      analysis,
-      pageY: candidateY,
-      targetY,
-    })
-
-    if (score < bestScore) {
-      bestScore = score
-      bestY = candidateY
-    }
+  for (
+    let candidateY = refineStart;
+    candidateY <= refineEnd;
+    candidateY += 1
+  ) {
+    evaluate(candidateY)
   }
 
   return bestY
@@ -405,7 +644,9 @@ async function buildSmartPartRanges({
   const {
     partPreferredHeight,
     partMaxHeight,
+    partEmergencyMaxHeight,
     partMinHeight,
+    partEmergencyMinHeight,
   } = MANGA_PROCESSOR_LIMITS
 
   if (pageHeight <= partMaxHeight) {
@@ -418,6 +659,13 @@ async function buildSmartPartRanges({
     pageWidth,
     pageHeight,
   })
+
+  const faceZones = await detectMangaFaceZones({
+    fileBuffer,
+    pageWidth,
+    pageHeight,
+  })
+
   const cuts = []
   let previousCut = 0
 
@@ -435,12 +683,46 @@ async function buildSmartPartRanges({
       pageHeight - remainingParts * partMinHeight
     )
 
-    const cutY = findSafestCut({
+    let cutY = findSafestCut({
       analysis,
+      faceZones,
       targetY,
       minimumY,
       maximumY,
     })
+
+    if (cutY === null) {
+      const emergencyMinimumY = Math.max(
+        previousCut + partEmergencyMinHeight,
+        pageHeight -
+          remainingParts *
+            partEmergencyMaxHeight
+      )
+
+      const emergencyMaximumY = Math.min(
+        previousCut + partEmergencyMaxHeight,
+        pageHeight -
+          remainingParts *
+            partEmergencyMinHeight
+      )
+
+      cutY = findSafestCut({
+        analysis,
+        faceZones,
+        targetY,
+        minimumY: emergencyMinimumY,
+        maximumY: emergencyMaximumY,
+      })
+    }
+
+    if (cutY === null) {
+      const error = new Error(
+        'No face-safe manga cut position could be found.'
+      )
+      error.code = 'MANGA_FACE_SAFE_CUT_NOT_FOUND'
+      error.statusCode = 422
+      throw error
+    }
 
     cuts.push(cutY)
     previousCut = cutY
