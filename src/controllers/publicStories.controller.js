@@ -186,15 +186,6 @@ async function getFirstVisibleEpisodeIdForStory(storyId) {
   return access.publishedEpisodes[0]?.id || null
 }
 
-function getPositiveInteger(value, fallback, max = 365) {
-  const number = Number(value)
-
-  if (!Number.isFinite(number) || number <= 0) {
-    return fallback
-  }
-
-  return Math.min(Math.floor(number), max)
-}
 
 
 function isWaitFreeEpisode(
@@ -257,9 +248,15 @@ function isFreeEpisode(
 }
 
 function isEpisodeFreeForReader(
-  episode, story, now, firstVisibleEpisodeId, autoFreeEpisodeIds, access
+  episode,
+  firstVisibleEpisodeId,
+  access
 ) {
-  return isFreeEpisode(episode, firstVisibleEpisodeId, access)
+  return isFreeEpisode(
+    episode,
+    firstVisibleEpisodeId,
+    access
+  )
 }
 
 async function getStoryAccessSummaries(
@@ -377,7 +374,6 @@ function publicEpisodeListItem(
   episode,
   story = null,
   firstVisibleEpisodeId = null,
-  autoFreeEpisodeIds = new Set(),
   access = null
 ) {
   if (!episode) return null
@@ -388,10 +384,7 @@ function publicEpisodeListItem(
   const freeForReader = story
     ? isEpisodeFreeForReader(
         visibleEpisode,
-        story,
-        Date.now(),
         firstVisibleEpisodeId,
-        autoFreeEpisodeIds,
         access
       )
     : isFreeEpisode(
@@ -474,7 +467,6 @@ function publicEpisode(
   story = null,
   unlocked = false,
   firstVisibleEpisodeId = null,
-  autoFreeEpisodeIds = new Set(),
   pages = [],
   access = null
 ) {
@@ -486,10 +478,7 @@ function publicEpisode(
   const freeForReader = story
     ? isEpisodeFreeForReader(
         visibleEpisode,
-        story,
-        Date.now(),
         firstVisibleEpisodeId,
-        autoFreeEpisodeIds,
         access
       )
     : isFreeEpisode(
@@ -2224,8 +2213,6 @@ export async function getPublicStoryEpisodes(req, res) {
     const firstVisibleEpisodeId =
       access.publishedEpisodes[0]?.id ||
       getFirstVisibleEpisodeId(visibleEpisodes, now)
-    const autoFreeEpisodeIds = new Set()
-
     return res.status(200).json({
       ok: true,
       first_visible_episode_id: firstVisibleEpisodeId,
@@ -2237,7 +2224,6 @@ export async function getPublicStoryEpisodes(req, res) {
           episode,
           story,
           firstVisibleEpisodeId,
-          autoFreeEpisodeIds,
           access
         )
       ),
@@ -2311,13 +2297,9 @@ const { data: episode, error } = await supabase
       (await getFirstVisibleEpisodeIdForStory(
         storyId
       ))
-    const autoFreeEpisodeIds = new Set()
     const freeEpisode = isEpisodeFreeForReader(
       episode,
-      story,
-      now,
       firstVisibleEpisodeId,
-      autoFreeEpisodeIds,
       access
     )
     const activeUnlock =
@@ -2351,7 +2333,6 @@ const { data: episode, error } = await supabase
             episode,
             story,
             firstVisibleEpisodeId,
-            autoFreeEpisodeIds,
             access
           ),
           content: '',
@@ -2373,7 +2354,6 @@ const { data: episode, error } = await supabase
         story,
         unlocked,
         firstVisibleEpisodeId,
-        autoFreeEpisodeIds,
         episodePages,
         access
       ),
@@ -2470,13 +2450,9 @@ export async function countQualifiedEpisodeView(req, res) {
       (await getFirstVisibleEpisodeIdForStory(
         storyId
       ))
-    const autoFreeEpisodeIds = new Set()
     const freeEpisode = isEpisodeFreeForReader(
       episode,
-      story,
-      now,
       firstVisibleEpisodeId,
-      autoFreeEpisodeIds,
       access
     )
     const activeUnlock = await hasActiveEpisodeUnlock({
