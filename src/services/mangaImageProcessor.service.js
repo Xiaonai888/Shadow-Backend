@@ -265,8 +265,7 @@ async function detectMangaFaceZones({
   detectionError.code = 'MANGA_FACE_DETECTION_FAILED'
   detectionError.statusCode = 503
   throw detectionError
-}
-  } finally {
+} finally {
     if (faces) faces.delete()
     if (equalized) equalized.delete()
     if (gray) gray.delete()
