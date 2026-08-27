@@ -46,10 +46,14 @@ function errorStage(error) {
   }
 
   if (code.includes('COMPRESSION')) {
-    return 'compress'
-  }
+  return 'compress'
+}
 
-  return 'storage'
+if (code.includes('FACE')) {
+  return 'process'
+}
+
+return 'storage'
 }
 
 export async function uploadMangaPageImageV2(req, res) {
