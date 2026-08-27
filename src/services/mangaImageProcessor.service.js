@@ -467,37 +467,47 @@ async function renderRawPart({
     .toBuffer({ resolveWithObject: true })
 }
 
-async function compressRawPart(rawData, rawInfo) {
-  let hardCandidate = null
+async function encodeRawPart(rawData, rawInfo, quality) {
+  return sharp(rawData, {
+    raw: {
+      width: rawInfo.width,
+      height: rawInfo.height,
+      channels: rawInfo.channels,
+    },
+  })
+    .webp({
+      quality,
+      effort: 4,
+      smartSubsample: true,
+    })
+    .toBuffer()
+}
+
+async function measureRawPartQualities(rawData, rawInfo) {
+  let hardQuality = null
 
   for (const quality of QUALITY_LEVELS) {
-    const buffer = await sharp(rawData, {
-      raw: {
-        width: rawInfo.width,
-        height: rawInfo.height,
-        channels: rawInfo.channels,
-      },
-    })
-      .webp({
-        quality,
-        effort: 4,
-        smartSubsample: true,
-      })
-      .toBuffer()
+    const buffer = await encodeRawPart(rawData, rawInfo, quality)
 
     if (
-      !hardCandidate &&
+      hardQuality === null &&
       buffer.length <= MANGA_PROCESSOR_LIMITS.hardPartBytes
     ) {
-      hardCandidate = { buffer, quality }
+      hardQuality = quality
     }
 
     if (buffer.length <= MANGA_PROCESSOR_LIMITS.targetPartBytes) {
-      return { buffer, quality }
+      return {
+        targetQuality: quality,
+        hardQuality: hardQuality ?? quality,
+      }
     }
   }
 
-  return hardCandidate
+  return {
+    targetQuality: null,
+    hardQuality,
+  }
 }
 
 async function processAtWidth(fileBuffer, sourceWidth, sourceHeight, pageWidth) {
@@ -508,6 +518,37 @@ async function processAtWidth(fileBuffer, sourceWidth, sourceHeight, pageWidth) 
     pageWidth,
     pageHeight,
   })
+  const qualityChecks = []
+
+  for (const range of ranges) {
+    const raw = await renderRawPart({
+      fileBuffer,
+      pageWidth,
+      pageHeight,
+      top: range.top,
+      height: range.height,
+    })
+    const check = await measureRawPartQualities(raw.data, raw.info)
+
+    if (check.hardQuality === null) return null
+
+    qualityChecks.push(check)
+  }
+
+  const targetReady = qualityChecks.every(
+    (check) => check.targetQuality !== null
+  )
+
+  const commonQuality = Math.min(
+    ...qualityChecks.map((check) =>
+      targetReady ? check.targetQuality : check.hardQuality
+    )
+  )
+
+  const maximumBytes = targetReady
+    ? MANGA_PROCESSOR_LIMITS.targetPartBytes
+    : MANGA_PROCESSOR_LIMITS.hardPartBytes
+
   const parts = []
 
   for (let partIndex = 0; partIndex < ranges.length; partIndex += 1) {
@@ -519,18 +560,22 @@ async function processAtWidth(fileBuffer, sourceWidth, sourceHeight, pageWidth) 
       top: range.top,
       height: range.height,
     })
-    const compressed = await compressRawPart(raw.data, raw.info)
+    const buffer = await encodeRawPart(
+      raw.data,
+      raw.info,
+      commonQuality
+    )
 
-    if (!compressed) return null
+    if (buffer.length > maximumBytes) return null
 
     parts.push({
       partIndex,
-      buffer: compressed.buffer,
+      buffer,
       width: raw.info.width,
       height: raw.info.height,
-      fileSize: compressed.buffer.length,
+      fileSize: buffer.length,
       mimeType: 'image/webp',
-      quality: compressed.quality,
+      quality: commonQuality,
     })
   }
 
