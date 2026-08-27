@@ -112,14 +112,6 @@ function isEpisodeFree(episode, access = null) {
   )
 }
 
-function getPositiveInteger(value, fallback, max = 365) {
-  const number = Number(value)
-
-  if (!Number.isFinite(number) || number <= 0) return fallback
-
-  return Math.min(Math.floor(number), max)
-}
-
 function formatWaitDuration(seconds) {
   const total = Math.max(0, Number(seconds || 0))
   const days = Math.floor(total / 86400)
@@ -145,67 +137,6 @@ function formatUnlockDateTime(value) {
     minute: '2-digit',
     hour12: true,
   })
-}
-
-function getEpisodePublishedTime(episode) {
-  const value = episode?.published_at || episode?.created_at
-  const time = value ? new Date(value).getTime() : 0
-
-  return Number.isFinite(time) ? time : 0
-}
-
-function getAutoFreeOldEpisodeLimit(story) {
-  const totalEpisodes = Number(story?.total_episodes || 0)
-  const maxEpisodes = getPositiveInteger(story?.auto_free_max_episodes, 5, 100)
-  const maxPercent = getPositiveInteger(story?.auto_free_max_percent, 10, 100)
-  const percentLimit = Math.ceil(totalEpisodes * (maxPercent / 100))
-
-  return Math.max(0, Math.min(maxEpisodes, percentLimit))
-}
-
-function isAutoFreeOldEpisodeForStory(
-  episode,
-  story,
-  access = null,
-  now = Date.now()
-) {
-  if (!story?.auto_free_old_episodes_enabled) return false
-  if (!episode?.is_locked) return false
-
-  if (
-    access?.freePublishedEpisodeIds?.has(
-      String(episode?.id)
-    )
-  ) {
-    return false
-  }
-
-  const publishedRank =
-    access?.publishedRankById?.get(
-      String(episode?.id)
-    ) || 0
-
-  if (publishedRank <= 5) return false
-
-  const limit = getAutoFreeOldEpisodeLimit(story)
-
-  if (limit <= 0) return false
-  if (publishedRank > limit + 5) return false
-
-  const publishedTime =
-    getEpisodePublishedTime(episode)
-
-  if (!publishedTime) return false
-
-  const freeAfterDays = getPositiveInteger(
-    story?.auto_free_after_days,
-    30,
-    365
-  )
-  const freeAfterMs =
-    freeAfterDays * 24 * 60 * 60 * 1000
-
-  return now - publishedTime >= freeAfterMs
 }
 
 function isEpisodeFreeForReader(
