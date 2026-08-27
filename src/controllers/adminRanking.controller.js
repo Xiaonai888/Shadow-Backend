@@ -401,6 +401,196 @@ export async function getAdminEpisodeRanking(req, res) {
   }
 }
 
+const INCOME_RANK_CACHE_MS = 15 * 60 * 1000
+const INCOME_RANK_SOURCE_TYPES = ['diamond_unlock', 'diamond_gift']
+const INCOME_RANK_UNPAID_STATUSES = ['pending', 'available']
+const INCOME_RANK_PAID_STATUSES = ['paid']
+const INCOME_RANK_PAGE_SIZE = 1000
+const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
+let incomeRankCache = { expiresAt: 0, rows: [] }
+
+function getIncomeRankMonthStartIso(date = new Date()) {
+  const cambodiaDate = new Date(date.getTime() + CAMBODIA_OFFSET_MS)
+
+  return new Date(
+    Date.UTC(
+      cambodiaDate.getUTCFullYear(),
+      cambodiaDate.getUTCMonth(),
+      1
+    ) - CAMBODIA_OFFSET_MS
+  ).toISOString()
+}
+
+async function fetchAllIncomeRankRows() {
+  const rows = []
+  let from = 0
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('author_earnings')
+      .select(
+        'author_id, source_type, author_earned_diamonds, author_net_payout_usd, earning_status, created_at'
+      )
+      .eq('currency', 'diamond')
+      .in('source_type', INCOME_RANK_SOURCE_TYPES)
+      .neq('earning_status', 'void')
+      .order('created_at', { ascending: true })
+      .range(from, from + INCOME_RANK_PAGE_SIZE - 1)
+
+    if (error) throw error
+
+    rows.push(...(data || []))
+
+    if (!data || data.length < INCOME_RANK_PAGE_SIZE) break
+
+    from += INCOME_RANK_PAGE_SIZE
+  }
+
+  return rows
+}
+
+export async function getAdminIncomeRanking(req, res) {
+  try {
+    const page = normalizePage(req.query.page)
+    const limit = normalizeLimit(req.query.limit)
+    const search = cleanText(
+      req.query.q || req.query.search || req.query.keyword
+    ).toLowerCase()
+    const now = Date.now()
+    const monthStartIso = getIncomeRankMonthStartIso(new Date(now))
+    const monthStartTime = new Date(monthStartIso).getTime()
+
+    let rows = incomeRankCache.rows
+    let cached = incomeRankCache.expiresAt > now && rows.length > 0
+
+    if (!cached) {
+      const earningRows = await fetchAllIncomeRankRows()
+      const grouped = new Map()
+
+      for (const earning of earningRows) {
+        if (!earning.author_id) continue
+
+        const current = grouped.get(earning.author_id) || {
+          author_id: earning.author_id,
+          total_income_usd: 0,
+          this_month_usd: 0,
+          pending_usd: 0,
+          paid_usd: 0,
+          total_diamonds: 0,
+          transaction_count: 0,
+        }
+
+        const payoutUsd = Number(earning.author_net_payout_usd || 0)
+        const earnedDiamonds = Number(earning.author_earned_diamonds || 0)
+        const status = String(earning.earning_status || '')
+        const createdTime = new Date(earning.created_at || 0).getTime()
+
+        current.total_income_usd += payoutUsd
+        current.total_diamonds += earnedDiamonds
+        current.transaction_count += 1
+
+        if (Number.isFinite(createdTime) && createdTime >= monthStartTime) {
+          current.this_month_usd += payoutUsd
+        }
+
+        if (INCOME_RANK_UNPAID_STATUSES.includes(status)) {
+          current.pending_usd += payoutUsd
+        }
+
+        if (INCOME_RANK_PAID_STATUSES.includes(status)) {
+          current.paid_usd += payoutUsd
+        }
+
+        grouped.set(earning.author_id, current)
+      }
+
+      const authorIds = [...grouped.keys()]
+      const authors = await fetchAuthors(authorIds)
+
+      rows = [...grouped.values()]
+        .map((row) => {
+          const author = authors.get(row.author_id) || {}
+
+          return {
+            id: row.author_id,
+            author_id: row.author_id,
+            user_id: author.user_id || null,
+            page_name: author.page_name || 'Unknown Author',
+            page_username: author.page_username || '',
+            avatar_url: author.avatar_url || '',
+            status: author.status || 'unknown',
+            admin_status: author.admin_status || 'active',
+            total_income_usd: Number(row.total_income_usd.toFixed(2)),
+            this_month_usd: Number(row.this_month_usd.toFixed(2)),
+            pending_usd: Number(row.pending_usd.toFixed(2)),
+            paid_usd: Number(row.paid_usd.toFixed(2)),
+            total_diamonds: Number(row.total_diamonds || 0),
+            transaction_count: Number(row.transaction_count || 0),
+          }
+        })
+        .sort(
+          (a, b) =>
+            b.total_income_usd - a.total_income_usd ||
+            b.this_month_usd - a.this_month_usd ||
+            b.pending_usd - a.pending_usd ||
+            String(a.page_name || '').localeCompare(String(b.page_name || ''))
+        )
+        .map((row, index) => ({ rank: index + 1, ...row }))
+
+      incomeRankCache = {
+        expiresAt: now + INCOME_RANK_CACHE_MS,
+        rows,
+      }
+      cached = false
+    }
+
+    const filtered = search
+      ? rows.filter((row) =>
+          [
+            row.id,
+            row.user_id,
+            row.page_name,
+            row.page_username,
+          ].some((value) =>
+            String(value || '').toLowerCase().includes(search)
+          )
+        )
+      : rows
+
+    const total = filtered.length
+    const totalPages = Math.max(1, Math.ceil(total / limit))
+    const from = (page - 1) * limit
+    const authors = filtered.slice(from, from + limit)
+
+    return res.status(200).json({
+      ok: true,
+      authors,
+      rankings: authors,
+      page,
+      limit,
+      total,
+      total_pages: totalPages,
+      has_next: page < totalPages,
+      has_prev: page > 1,
+      metric: 'author_net_payout_usd',
+      scope: 'all_time',
+      sources: INCOME_RANK_SOURCE_TYPES,
+      month_start: monthStartIso,
+      cache_ttl_seconds: INCOME_RANK_CACHE_MS / 1000,
+      generated_at: new Date(now).toISOString(),
+      cached,
+    })
+  } catch (error) {
+    console.error('GET ADMIN INCOME RANKING ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load income ranking',
+      error: error.message,
+    })
+  }
+}
+
+
 function cleanText(value) {
   return String(value || '').trim()
 }
