@@ -1,5 +1,5 @@
 import express from 'express'
-import { requireAdmin } from '../middleware/auth.middleware.js'
+import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import {
   createEvent,
   deleteEvent,
@@ -9,9 +9,11 @@ import {
 
 const router = express.Router()
 
-router.get('/', requireAdmin, listAdminEvents)
-router.post('/', requireAdmin, createEvent)
-router.patch('/:eventId', requireAdmin, updateEvent)
-router.delete('/:eventId', requireAdmin, deleteEvent)
+const eventPermission = requireAdminPermission('monthly_vote.view')
+
+router.get('/', eventPermission, listAdminEvents)
+router.post('/', eventPermission, createEvent)
+router.patch('/:eventId', eventPermission, updateEvent)
+router.delete('/:eventId', eventPermission, deleteEvent)
 
 export default router
