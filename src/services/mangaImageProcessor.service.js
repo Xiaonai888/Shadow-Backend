@@ -259,12 +259,13 @@ async function detectMangaFaceZones({
 
     return mergeFaceZones(zones)
   } catch (error) {
-    console.error(
-      'MANGA FACE DETECTION ERROR:',
-      error
-    )
+  console.error('MANGA FACE DETECTION ERROR:', error)
 
-    return []
+  const detectionError = new Error('Manga face detection failed.')
+  detectionError.code = 'MANGA_FACE_DETECTION_FAILED'
+  detectionError.statusCode = 503
+  throw detectionError
+}
   } finally {
     if (faces) faces.delete()
     if (equalized) equalized.delete()
