@@ -16,7 +16,7 @@ export const MANGA_PROCESSOR_LIMITS = Object.freeze({
   cutAnalysisWidth: 480,
   cutBandHeight: 260,
   cutStep: 16,
-  targetPartBytes: 1536 * 1024,
+  targetPartBytes: 1792 * 1024,
   hardPartBytes: 2 * 1024 * 1024,
 })
 
