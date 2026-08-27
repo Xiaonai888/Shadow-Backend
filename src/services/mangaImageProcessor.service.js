@@ -5,12 +5,13 @@ export const MANGA_PROCESSOR_LIMITS = Object.freeze({
   maxHeight: 30000,
   maxPixels: 120_000_000,
   targetWidth: 1600,
-  partMaxHeight: 5000,
-  partMinHeight: 1800,
-  cutSearchRadius: 800,
-  cutAnalysisWidth: 160,
-  cutBandHeight: 220,
-  cutStep: 24,
+  partPreferredHeight: 5000,
+  partMaxHeight: 6200,
+  partMinHeight: 1600,
+  cutSearchRadius: 1800,
+  cutAnalysisWidth: 480,
+  cutBandHeight: 260,
+  cutStep: 16,
   targetPartBytes: 1536 * 1024,
   hardPartBytes: 2 * 1024 * 1024,
 })
@@ -348,7 +349,11 @@ function findSafestCut({ analysis, targetY, minimumY, maximumY }) {
   }
 
   let bestY = clamp(Math.round(targetY), minimum, maximum)
-  let bestScore = scoreCutCandidate({ analysis, pageY: bestY, targetY })
+  let bestScore = scoreCutCandidate({
+    analysis,
+    pageY: bestY,
+    targetY,
+  })
 
   for (
     let candidateY = minimum;
@@ -367,14 +372,26 @@ function findSafestCut({ analysis, targetY, minimumY, maximumY }) {
     }
   }
 
-  if ((maximum - minimum) % MANGA_PROCESSOR_LIMITS.cutStep !== 0) {
+  const refineStart = Math.max(
+    minimum,
+    bestY - MANGA_PROCESSOR_LIMITS.cutStep
+  )
+  const refineEnd = Math.min(
+    maximum,
+    bestY + MANGA_PROCESSOR_LIMITS.cutStep
+  )
+
+  for (let candidateY = refineStart; candidateY <= refineEnd; candidateY += 1) {
     const score = scoreCutCandidate({
       analysis,
-      pageY: maximum,
+      pageY: candidateY,
       targetY,
     })
 
-    if (score < bestScore) bestY = maximum
+    if (score < bestScore) {
+      bestScore = score
+      bestY = candidateY
+    }
   }
 
   return bestY
@@ -385,14 +402,17 @@ async function buildSmartPartRanges({
   pageWidth,
   pageHeight,
 }) {
-  const { partMaxHeight, partMinHeight, cutSearchRadius } =
-    MANGA_PROCESSOR_LIMITS
+  const {
+    partPreferredHeight,
+    partMaxHeight,
+    partMinHeight,
+  } = MANGA_PROCESSOR_LIMITS
 
   if (pageHeight <= partMaxHeight) {
     return [{ top: 0, height: pageHeight }]
   }
 
-  const partCount = Math.ceil(pageHeight / partMaxHeight)
+  const partCount = Math.ceil(pageHeight / partPreferredHeight)
   const analysis = await buildCutAnalysis({
     fileBuffer,
     pageWidth,
@@ -404,14 +424,14 @@ async function buildSmartPartRanges({
   for (let cutIndex = 1; cutIndex < partCount; cutIndex += 1) {
     const remainingParts = partCount - cutIndex
     const targetY = Math.round((pageHeight * cutIndex) / partCount)
+
     const minimumY = Math.max(
       previousCut + partMinHeight,
-      targetY - cutSearchRadius,
       pageHeight - remainingParts * partMaxHeight
     )
+
     const maximumY = Math.min(
       previousCut + partMaxHeight,
-      targetY + cutSearchRadius,
       pageHeight - remainingParts * partMinHeight
     )
 
