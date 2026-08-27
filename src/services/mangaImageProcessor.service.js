@@ -21,7 +21,7 @@ export const MANGA_PROCESSOR_LIMITS = Object.freeze({
 })
 
 const WIDTH_FALLBACKS = [1600, 1440, 1280, 1120]
-const QUALITY_LEVELS = [88, 85, 82, 79, 76, 73, 70, 67, 64]
+const QUALITY_LEVELS = [92, 90, 88, 85, 82, 79, 76, 73, 70, 67, 64]
 
 function positiveInteger(value, fallback = 0) {
   const number = Number(value)
@@ -749,12 +749,13 @@ async function renderRawPart({
   })
     .rotate()
     .resize({
-      width: pageWidth,
-      height: pageHeight,
-      fit: 'fill',
-      withoutEnlargement: true,
-    })
-    .extract({
+  width: pageWidth,
+  height: pageHeight,
+  fit: 'fill',
+  withoutEnlargement: true,
+})
+.sharpen({ sigma: 0.5 })
+.extract({
       left: 0,
       top,
       width: pageWidth,
