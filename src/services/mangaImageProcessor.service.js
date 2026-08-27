@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises'
 import sharp from 'sharp'
 import { loadOpenCV } from '@opencvjs/node'
 
@@ -78,9 +79,11 @@ function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value))
 }
 
-const ANIME_FACE_CASCADE_URL =
-  'https://raw.githubusercontent.com/nagadomi/lbpcascade_animeface/master/lbpcascade_animeface.xml'
 const ANIME_FACE_CASCADE_FILE = 'lbpcascade_animeface.xml'
+const ANIME_FACE_CASCADE_URL = new URL(
+  '../models/lbpcascade_animeface.xml',
+  import.meta.url
+)
 const FACE_DETECTION_MAX_WIDTH = 720
 
 let animeFaceDetectorPromise = null
@@ -89,16 +92,8 @@ async function getAnimeFaceDetector() {
   if (!animeFaceDetectorPromise) {
     animeFaceDetectorPromise = (async () => {
       const cv = await loadOpenCV()
-      const response = await fetch(ANIME_FACE_CASCADE_URL)
-
-      if (!response.ok) {
-        throw new Error(
-          `Anime face model download failed: ${response.status}`
-        )
-      }
-
       const bytes = new Uint8Array(
-        await response.arrayBuffer()
+        await readFile(ANIME_FACE_CASCADE_URL)
       )
 
       try {
