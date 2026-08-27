@@ -50,14 +50,6 @@ function cleanBoolean(value, fallback = false) {
   return fallback
 }
 
-function cleanPositiveInteger(value, fallback, max = 365) {
-  const number = Number(value)
-
-  if (!Number.isFinite(number) || number <= 0) return fallback
-
-  return Math.min(Math.floor(number), max)
-}
-
 function addDays(date, days) {
   const nextDate = new Date(date)
   nextDate.setDate(nextDate.getDate() + days)
@@ -716,11 +708,6 @@ const landscapeThumbnailUrl = cleanMediaReference(
   { field: 'stories.landscape_thumbnail_url' }
 )
 const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
-const autoFreeMaxPercent = cleanPositiveInteger(
-  req.body.auto_free_max_percent ?? req.body.autoFreeMaxPercent,
-  10,
-  100
-)
 const slides = cleanStorySlides(req.body.slides)
 
     const payloadError = validateStoryPayload({ title, storyLanguage, mainGenre, description })
