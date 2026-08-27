@@ -1,4 +1,8 @@
 import { supabase } from '../config/supabase.js'
+import {
+  getRankingSettings,
+  setAdminRankingSettingsCache,
+} from './adminRanking.controller.js'
 
 const NUMERIC_FIELDS = [
   'story_view_weight',
@@ -47,30 +51,9 @@ function adminActor(req) {
   )
 }
 
-async function loadSettings() {
-  const { data, error } = await supabase
-    .from('ranking_settings')
-    .select('*')
-    .eq('id', 1)
-    .maybeSingle()
-
-  if (error) throw error
-
-  if (data) return data
-
-  const { data: created, error: createError } = await supabase
-    .from('ranking_settings')
-    .insert({ id: 1 })
-    .select()
-    .single()
-
-  if (createError) throw createError
-  return created
-}
-
 export async function getAdminRankingSettings(req, res) {
   try {
-    const settings = await loadSettings()
+    const settings = await getRankingSettings()
 
     return res.status(200).json({
       ok: true,
@@ -135,6 +118,8 @@ export async function updateAdminRankingSettings(req, res) {
       .single()
 
     if (error) throw error
+
+    setAdminRankingSettingsCache(settings)
 
     return res.status(200).json({
       ok: true,
