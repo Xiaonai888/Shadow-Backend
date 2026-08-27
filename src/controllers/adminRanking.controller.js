@@ -4,15 +4,129 @@ const PAGE_SIZE_DEFAULT = 20
 const PAGE_SIZE_MAX = 100
 const RANKING_VISIBILITY_STATUSES = ['visible', 'hidden']
 
+const DEFAULT_RANKING_SETTINGS = {
+  story_view_weight: 1,
+  story_like_weight: 5,
+  story_comment_weight: 10,
+  story_episode_weight: 3,
+  author_view_weight: 1,
+  author_like_weight: 5,
+  author_comment_weight: 10,
+  author_follower_weight: 20,
+  author_story_weight: 3,
+  episode_view_weight: 1,
+  episode_like_weight: 5,
+  episode_comment_weight: 10,
+  min_story_views: 0,
+  min_story_likes: 0,
+  min_story_comments: 0,
+  min_story_episodes: 0,
+  min_author_stories: 1,
+  min_author_followers: 0,
+  min_episode_views: 0,
+  min_episode_likes: 0,
+  min_episode_comments: 0,
+  story_rank_enabled: true,
+  genre_rank_enabled: true,
+  author_rank_enabled: true,
+  episode_rank_enabled: true,
+}
+
+async function getRankingSettings() {
+  const { data, error } = await supabase
+    .from('ranking_settings')
+    .select('*')
+    .eq('id', 1)
+    .maybeSingle()
+
+  if (error) throw error
+
+  return {
+    ...DEFAULT_RANKING_SETTINGS,
+    ...(data || {}),
+  }
+}
+
+function rankingSettingsKey(settings) {
+  return JSON.stringify({
+    story_view_weight: Number(settings.story_view_weight),
+    story_like_weight: Number(settings.story_like_weight),
+    story_comment_weight: Number(settings.story_comment_weight),
+    story_episode_weight: Number(settings.story_episode_weight),
+    author_view_weight: Number(settings.author_view_weight),
+    author_like_weight: Number(settings.author_like_weight),
+    author_comment_weight: Number(settings.author_comment_weight),
+    author_follower_weight: Number(settings.author_follower_weight),
+    author_story_weight: Number(settings.author_story_weight),
+    episode_view_weight: Number(settings.episode_view_weight),
+    episode_like_weight: Number(settings.episode_like_weight),
+    episode_comment_weight: Number(settings.episode_comment_weight),
+    min_story_views: Number(settings.min_story_views),
+    min_story_likes: Number(settings.min_story_likes),
+    min_story_comments: Number(settings.min_story_comments),
+    min_story_episodes: Number(settings.min_story_episodes),
+    min_author_stories: Number(settings.min_author_stories),
+    min_author_followers: Number(settings.min_author_followers),
+    min_episode_views: Number(settings.min_episode_views),
+    min_episode_likes: Number(settings.min_episode_likes),
+    min_episode_comments: Number(settings.min_episode_comments),
+    story_rank_enabled: Boolean(settings.story_rank_enabled),
+    genre_rank_enabled: Boolean(settings.genre_rank_enabled),
+    author_rank_enabled: Boolean(settings.author_rank_enabled),
+    episode_rank_enabled: Boolean(settings.episode_rank_enabled),
+  })
+}
+
+function formatWeight(value) {
+  return Number(value || 0).toString()
+}
+
+function storyRankFormula(settings) {
+  return `score = views*${formatWeight(settings.story_view_weight)} + likes*${formatWeight(settings.story_like_weight)} + comments*${formatWeight(settings.story_comment_weight)} + episodes*${formatWeight(settings.story_episode_weight)}`
+}
+
+function authorRankFormula(settings) {
+  return `score = views*${formatWeight(settings.author_view_weight)} + likes*${formatWeight(settings.author_like_weight)} + comments*${formatWeight(settings.author_comment_weight)} + followers*${formatWeight(settings.author_follower_weight)} + stories*${formatWeight(settings.author_story_weight)}`
+}
+
+function episodeRankFormula(settings) {
+  return `score = views*${formatWeight(settings.episode_view_weight)} + likes*${formatWeight(settings.episode_like_weight)} + comments*${formatWeight(settings.episode_comment_weight)}`
+}
+
 const GENRE_RANK_CACHE_MS = 15 * 60 * 1000
-let genreRankCache = { expiresAt: 0, payload: null }
+let genreRankCache = { expiresAt: 0, payload: null, settingsKey: '' }
 
 export async function getAdminGenreRanking(req, res) {
   try {
     const now = Date.now()
+    const settings = await getRankingSettings()
+    const settingsKey = rankingSettingsKey(settings)
 
-    if (genreRankCache.payload && genreRankCache.expiresAt > now) {
-      return res.status(200).json({ ...genreRankCache.payload, cached: true })
+    if (!settings.genre_rank_enabled) {
+      return res.status(200).json({
+        ok: true,
+        enabled: false,
+        genres: [],
+        rankings: [],
+        total: 0,
+        total_views: 0,
+        metric: 'total_views',
+        scope: 'all_time',
+        cache_ttl_seconds: GENRE_RANK_CACHE_MS / 1000,
+        generated_at: new Date(now).toISOString(),
+        cached: false,
+      })
+    }
+
+    if (
+      genreRankCache.payload &&
+      genreRankCache.expiresAt > now &&
+      genreRankCache.settingsKey === settingsKey
+    ) {
+      return res.status(200).json({
+        ...genreRankCache.payload,
+        cached: true,
+      })
     }
 
     const { data, error } = await supabase
@@ -73,6 +187,7 @@ export async function getAdminGenreRanking(req, res) {
 
     const payload = {
       ok: true,
+      enabled: true,
       genres,
       rankings: genres,
       total: genres.length,
@@ -86,9 +201,13 @@ export async function getAdminGenreRanking(req, res) {
     genreRankCache = {
       expiresAt: now + GENRE_RANK_CACHE_MS,
       payload,
+      settingsKey,
     }
 
-    return res.status(200).json({ ...payload, cached: false })
+    return res.status(200).json({
+      ...payload,
+      cached: false,
+    })
   } catch (error) {
     console.error('GET ADMIN GENRE RANKING ERROR:', error)
     return res.status(500).json({
@@ -100,25 +219,52 @@ export async function getAdminGenreRanking(req, res) {
 }
 
 const AUTHOR_RANK_CACHE_MS = 15 * 60 * 1000
-let authorRankCache = { expiresAt: 0, rows: [] }
+let authorRankCache = { expiresAt: 0, rows: [], settingsKey: '' }
 
-function scoreAuthorRank(row) {
-  return Number(row.total_views || 0)
-    + Number(row.total_likes || 0) * 5
-    + Number(row.total_comments || 0) * 10
-    + Number(row.total_followers || 0) * 20
-    + Number(row.story_count || 0) * 3
+function scoreAuthorRank(row, settings = DEFAULT_RANKING_SETTINGS) {
+  return Number(row.total_views || 0) * Number(settings.author_view_weight || 0)
+    + Number(row.total_likes || 0) * Number(settings.author_like_weight || 0)
+    + Number(row.total_comments || 0) * Number(settings.author_comment_weight || 0)
+    + Number(row.total_followers || 0) * Number(settings.author_follower_weight || 0)
+    + Number(row.story_count || 0) * Number(settings.author_story_weight || 0)
 }
 
 export async function getAdminAuthorRanking(req, res) {
   try {
     const page = normalizePage(req.query.page)
     const limit = normalizeLimit(req.query.limit)
-    const search = cleanText(req.query.q || req.query.search || req.query.keyword).toLowerCase()
+    const search = cleanText(
+      req.query.q || req.query.search || req.query.keyword
+    ).toLowerCase()
     const now = Date.now()
+    const settings = await getRankingSettings()
+    const settingsKey = rankingSettingsKey(settings)
+
+    if (!settings.author_rank_enabled) {
+      return res.status(200).json({
+        ok: true,
+        enabled: false,
+        authors: [],
+        rankings: [],
+        page,
+        limit,
+        total: 0,
+        total_pages: 1,
+        has_next: false,
+        has_prev: page > 1,
+        metric: 'score',
+        scope: 'all_time',
+        formula: authorRankFormula(settings),
+        cache_ttl_seconds: AUTHOR_RANK_CACHE_MS / 1000,
+        cached: false,
+      })
+    }
 
     let rows = authorRankCache.rows
-    let cached = authorRankCache.expiresAt > now && rows.length > 0
+    let cached =
+      authorRankCache.expiresAt > now &&
+      rows.length > 0 &&
+      authorRankCache.settingsKey === settingsKey
 
     if (!cached) {
       const [pagesResult, storiesResult] = await Promise.all([
@@ -187,9 +333,16 @@ export async function getAdminAuthorRanking(req, res) {
             total_comments: stat.total_comments,
           }
 
-          return { ...row, score: scoreAuthorRank(row) }
+          return {
+            ...row,
+            score: scoreAuthorRank(row, settings),
+          }
         })
-        .filter((row) => row.story_count > 0)
+        .filter(
+          (row) =>
+            row.story_count >= Number(settings.min_author_stories || 0) &&
+            row.total_followers >= Number(settings.min_author_followers || 0)
+        )
         .sort(
           (a, b) =>
             b.score - a.score ||
@@ -202,6 +355,7 @@ export async function getAdminAuthorRanking(req, res) {
       authorRankCache = {
         expiresAt: now + AUTHOR_RANK_CACHE_MS,
         rows,
+        settingsKey,
       }
       cached = false
     }
@@ -209,7 +363,9 @@ export async function getAdminAuthorRanking(req, res) {
     const filtered = search
       ? rows.filter((row) =>
           [row.id, row.user_id, row.page_name, row.page_username]
-            .some((value) => String(value || '').toLowerCase().includes(search))
+            .some((value) =>
+              String(value || '').toLowerCase().includes(search)
+            )
         )
       : rows
 
@@ -220,6 +376,7 @@ export async function getAdminAuthorRanking(req, res) {
 
     return res.status(200).json({
       ok: true,
+      enabled: true,
       authors,
       rankings: authors,
       page,
@@ -230,7 +387,11 @@ export async function getAdminAuthorRanking(req, res) {
       has_prev: page > 1,
       metric: 'score',
       scope: 'all_time',
-      formula: 'score = views + likes*5 + comments*10 + followers*20 + stories*3',
+      formula: authorRankFormula(settings),
+      minimum_activity: {
+        stories: Number(settings.min_author_stories || 0),
+        followers: Number(settings.min_author_followers || 0),
+      },
       cache_ttl_seconds: AUTHOR_RANK_CACHE_MS / 1000,
       cached,
     })
@@ -244,25 +405,51 @@ export async function getAdminAuthorRanking(req, res) {
   }
 }
 
-
 const EPISODE_RANK_CACHE_MS = 15 * 60 * 1000
-let episodeRankCache = { expiresAt: 0, rows: [] }
+let episodeRankCache = { expiresAt: 0, rows: [], settingsKey: '' }
 
-function scoreEpisodeRank(row) {
-  return Number(row.total_views || 0)
-    + Number(row.total_likes || 0) * 5
-    + Number(row.total_comments || 0) * 10
+function scoreEpisodeRank(row, settings = DEFAULT_RANKING_SETTINGS) {
+  return Number(row.total_views || 0) * Number(settings.episode_view_weight || 0)
+    + Number(row.total_likes || 0) * Number(settings.episode_like_weight || 0)
+    + Number(row.total_comments || 0) * Number(settings.episode_comment_weight || 0)
 }
 
 export async function getAdminEpisodeRanking(req, res) {
   try {
     const page = normalizePage(req.query.page)
     const limit = normalizeLimit(req.query.limit)
-    const search = cleanText(req.query.q || req.query.search || req.query.keyword).toLowerCase()
+    const search = cleanText(
+      req.query.q || req.query.search || req.query.keyword
+    ).toLowerCase()
     const now = Date.now()
+    const settings = await getRankingSettings()
+    const settingsKey = rankingSettingsKey(settings)
+
+    if (!settings.episode_rank_enabled) {
+      return res.status(200).json({
+        ok: true,
+        enabled: false,
+        episodes: [],
+        rankings: [],
+        page,
+        limit,
+        total: 0,
+        total_pages: 1,
+        has_next: false,
+        has_prev: page > 1,
+        metric: 'score',
+        scope: 'all_time',
+        formula: episodeRankFormula(settings),
+        cache_ttl_seconds: EPISODE_RANK_CACHE_MS / 1000,
+        cached: false,
+      })
+    }
 
     let rows = episodeRankCache.rows
-    let cached = episodeRankCache.expiresAt > now && rows.length > 0
+    let cached =
+      episodeRankCache.expiresAt > now &&
+      rows.length > 0 &&
+      episodeRankCache.settingsKey === settingsKey
 
     if (!cached) {
       const { data: stories, error: storyError } = await supabase
@@ -275,7 +462,9 @@ export async function getAdminEpisodeRanking(req, res) {
 
       if (storyError) throw storyError
 
-      const storyIds = (stories || []).map((story) => story.id).filter(Boolean)
+      const storyIds = (stories || [])
+        .map((story) => story.id)
+        .filter(Boolean)
 
       if (!storyIds.length) {
         rows = []
@@ -290,8 +479,16 @@ export async function getAdminEpisodeRanking(req, res) {
 
         if (episodeError) throw episodeError
 
-        const episodeIds = (episodes || []).map((episode) => episode.id).filter(Boolean)
-        const authorIds = [...new Set((stories || []).map((story) => story.author_id).filter(Boolean))]
+        const episodeIds = (episodes || [])
+          .map((episode) => episode.id)
+          .filter(Boolean)
+        const authorIds = [
+          ...new Set(
+            (stories || [])
+              .map((story) => story.author_id)
+              .filter(Boolean)
+          ),
+        ]
 
         const [commentsResult, authorsResult] = await Promise.all([
           episodeIds.length
@@ -317,11 +514,21 @@ export async function getAdminEpisodeRanking(req, res) {
         for (const comment of commentsResult.data || []) {
           const key = String(comment.episode_id || '')
           if (!key) continue
-          commentCounts.set(key, Number(commentCounts.get(key) || 0) + 1)
+          commentCounts.set(
+            key,
+            Number(commentCounts.get(key) || 0) + 1
+          )
         }
 
-        const storyMap = new Map((stories || []).map((story) => [story.id, story]))
-        const authorMap = new Map((authorsResult.data || []).map((author) => [author.id, author]))
+        const storyMap = new Map(
+          (stories || []).map((story) => [story.id, story])
+        )
+        const authorMap = new Map(
+          (authorsResult.data || []).map((author) => [
+            author.id,
+            author,
+          ])
+        )
 
         rows = (episodes || [])
           .map((episode) => {
@@ -340,17 +547,32 @@ export async function getAdminEpisodeRanking(req, res) {
               episode_number: Number(episode.episode_number || 0),
               total_views: Number(episode.total_views || 0),
               total_likes: Number(episode.total_likes || 0),
-              total_comments: Number(commentCounts.get(String(episode.id)) || 0),
+              total_comments: Number(
+                commentCounts.get(String(episode.id)) || 0
+              ),
               status: episode.status || 'published',
-              ranking_visibility_status: episode.ranking_visibility_status || 'visible',
-              ranking_hidden_reason: episode.ranking_hidden_reason || '',
-              ranking_hidden_at: episode.ranking_hidden_at || null,
-              ranking_hidden_by: episode.ranking_hidden_by || '',
+              ranking_visibility_status:
+                episode.ranking_visibility_status || 'visible',
+              ranking_hidden_reason:
+                episode.ranking_hidden_reason || '',
+              ranking_hidden_at:
+                episode.ranking_hidden_at || null,
+              ranking_hidden_by:
+                episode.ranking_hidden_by || '',
               ranking_note: episode.ranking_note || '',
             }
 
-            return { ...row, score: scoreEpisodeRank(row) }
+            return {
+              ...row,
+              score: scoreEpisodeRank(row, settings),
+            }
           })
+          .filter(
+            (row) =>
+              row.total_views >= Number(settings.min_episode_views || 0) &&
+              row.total_likes >= Number(settings.min_episode_likes || 0) &&
+              row.total_comments >= Number(settings.min_episode_comments || 0)
+          )
           .sort(
             (a, b) =>
               b.score - a.score ||
@@ -358,12 +580,16 @@ export async function getAdminEpisodeRanking(req, res) {
               b.total_likes - a.total_likes ||
               a.episode_number - b.episode_number
           )
-          .map((row, index) => ({ rank: index + 1, ...row }))
+          .map((row, index) => ({
+            rank: index + 1,
+            ...row,
+          }))
       }
 
       episodeRankCache = {
         expiresAt: now + EPISODE_RANK_CACHE_MS,
         rows,
+        settingsKey,
       }
       cached = false
     }
@@ -378,7 +604,9 @@ export async function getAdminEpisodeRanking(req, res) {
             row.author_id,
             row.author_name,
             row.author_username,
-          ].some((value) => String(value || '').toLowerCase().includes(search))
+          ].some((value) =>
+            String(value || '').toLowerCase().includes(search)
+          )
         )
       : rows
 
@@ -389,6 +617,7 @@ export async function getAdminEpisodeRanking(req, res) {
 
     return res.status(200).json({
       ok: true,
+      enabled: true,
       episodes,
       rankings: episodes,
       page,
@@ -399,7 +628,12 @@ export async function getAdminEpisodeRanking(req, res) {
       has_prev: page > 1,
       metric: 'score',
       scope: 'all_time',
-      formula: 'score = views + likes*5 + comments*10',
+      formula: episodeRankFormula(settings),
+      minimum_activity: {
+        views: Number(settings.min_episode_views || 0),
+        likes: Number(settings.min_episode_likes || 0),
+        comments: Number(settings.min_episode_comments || 0),
+      },
       cache_ttl_seconds: EPISODE_RANK_CACHE_MS / 1000,
       cached,
     })
@@ -633,8 +867,11 @@ function adminActor(req) {
   return cleanText(req.admin?.email || req.admin?.username || req.admin?.admin_name || req.admin?.user_id || req.headers['x-admin-name'] || req.headers['x-admin-actor'] || 'Admin')
 }
 
-function scoreStory(story) {
-  return Number(story.total_views || 0) + Number(story.total_likes || 0) * 5 + Number(story.total_comments || 0) * 10 + Number(story.total_episodes || 0) * 3
+function scoreStory(story, settings = DEFAULT_RANKING_SETTINGS) {
+  return Number(story.total_views || 0) * Number(settings.story_view_weight || 0)
+    + Number(story.total_likes || 0) * Number(settings.story_like_weight || 0)
+    + Number(story.total_comments || 0) * Number(settings.story_comment_weight || 0)
+    + Number(story.total_episodes || 0) * Number(settings.story_episode_weight || 0)
 }
 
 function publicAuthor(author) {
@@ -652,7 +889,14 @@ function publicAuthor(author) {
   }
 }
 
-function publicStoryRank(story, author, rank) {
+function publicStoryRank(
+  story,
+  author,
+  rank,
+  settings = DEFAULT_RANKING_SETTINGS
+) {
+  const score = scoreStory(story, settings)
+
   return {
     rank,
     id: story.id,
@@ -663,18 +907,23 @@ function publicStoryRank(story, author, rank) {
     main_genre: story.main_genre,
     cover_url: story.cover_url,
     status: story.status,
-    admin_visibility_status: story.admin_visibility_status || 'active',
-    ranking_visibility_status: story.ranking_visibility_status || 'visible',
-    ranking_hidden_reason: story.ranking_hidden_reason || '',
-    ranking_hidden_at: story.ranking_hidden_at || null,
-    ranking_hidden_by: story.ranking_hidden_by || '',
+    admin_visibility_status:
+      story.admin_visibility_status || 'active',
+    ranking_visibility_status:
+      story.ranking_visibility_status || 'visible',
+    ranking_hidden_reason:
+      story.ranking_hidden_reason || '',
+    ranking_hidden_at:
+      story.ranking_hidden_at || null,
+    ranking_hidden_by:
+      story.ranking_hidden_by || '',
     ranking_note: story.ranking_note || '',
     total_episodes: Number(story.total_episodes || 0),
     total_views: Number(story.total_views || 0),
     total_likes: Number(story.total_likes || 0),
     total_comments: Number(story.total_comments || 0),
-    score: scoreStory(story),
-    rank_score: scoreStory(story),
+    score,
+    rank_score: score,
     author_page: publicAuthor(author),
     created_at: story.created_at,
     updated_at: story.updated_at,
@@ -692,38 +941,110 @@ async function fetchAuthors(authorIds) {
 
   if (error) throw error
 
-  return new Map((data || []).map((author) => [author.id, author]))
+  return new Map(
+    (data || []).map((author) => [author.id, author])
+  )
 }
 
-function applySort(rows, sort) {
+function applySort(
+  rows,
+  sort,
+  settings = DEFAULT_RANKING_SETTINGS
+) {
   const sorted = [...rows]
 
-  if (sort === 'views') return sorted.sort((a, b) => Number(b.total_views || 0) - Number(a.total_views || 0))
-  if (sort === 'likes') return sorted.sort((a, b) => Number(b.total_likes || 0) - Number(a.total_likes || 0))
-  if (sort === 'comments') return sorted.sort((a, b) => Number(b.total_comments || 0) - Number(a.total_comments || 0))
-  if (sort === 'episodes') return sorted.sort((a, b) => Number(b.total_episodes || 0) - Number(a.total_episodes || 0))
-  if (sort === 'newest') return sorted.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
+  if (sort === 'views') {
+    return sorted.sort(
+      (a, b) =>
+        Number(b.total_views || 0) -
+        Number(a.total_views || 0)
+    )
+  }
 
-  return sorted.sort((a, b) => scoreStory(b) - scoreStory(a))
+  if (sort === 'likes') {
+    return sorted.sort(
+      (a, b) =>
+        Number(b.total_likes || 0) -
+        Number(a.total_likes || 0)
+    )
+  }
+
+  if (sort === 'comments') {
+    return sorted.sort(
+      (a, b) =>
+        Number(b.total_comments || 0) -
+        Number(a.total_comments || 0)
+    )
+  }
+
+  if (sort === 'episodes') {
+    return sorted.sort(
+      (a, b) =>
+        Number(b.total_episodes || 0) -
+        Number(a.total_episodes || 0)
+    )
+  }
+
+  if (sort === 'newest') {
+    return sorted.sort(
+      (a, b) =>
+        new Date(b.created_at || 0).getTime() -
+        new Date(a.created_at || 0).getTime()
+    )
+  }
+
+  return sorted.sort(
+    (a, b) =>
+      scoreStory(b, settings) -
+      scoreStory(a, settings)
+  )
 }
 
-function buildStoryRankingQuery({ search, status, visibility, rankingVisibility, genre }) {
+function buildStoryRankingQuery({
+  search,
+  status,
+  visibility,
+  rankingVisibility,
+  genre,
+}) {
   let query = supabase
     .from('stories')
     .select('*')
     .is('deleted_at', null)
 
-  if (status !== 'all') query = query.eq('status', status)
-  if (visibility !== 'all') query = query.eq('admin_visibility_status', visibility)
-  if (rankingVisibility !== 'all') query = query.eq('ranking_visibility_status', rankingVisibility)
-  if (genre !== 'all') query = query.eq('main_genre', genre)
+  if (status !== 'all') {
+    query = query.eq('status', status)
+  }
+
+  if (visibility !== 'all') {
+    query = query.eq(
+      'admin_visibility_status',
+      visibility
+    )
+  }
+
+  if (rankingVisibility !== 'all') {
+    query = query.eq(
+      'ranking_visibility_status',
+      rankingVisibility
+    )
+  }
+
+  if (genre !== 'all') {
+    query = query.eq('main_genre', genre)
+  }
 
   if (search) {
     if (isUuid(search)) {
       query = query.eq('id', search)
     } else {
-      const safeSearch = search.replace(/[%_]/g, '\\$&')
-      query = query.or(`title.ilike.%${safeSearch}%,main_genre.ilike.%${safeSearch}%,story_language.ilike.%${safeSearch}%`)
+      const safeSearch = search.replace(
+        /[%_]/g,
+        '\\$&'
+      )
+      query = query.or(
+        `title.ilike.%${safeSearch}%,main_genre.ilike.%${safeSearch}%,story_language.ilike.%${safeSearch}%`
+      )
     }
   }
 
@@ -734,28 +1055,115 @@ export async function getAdminStoryRanking(req, res) {
   try {
     const page = normalizePage(req.query.page)
     const limit = normalizeLimit(req.query.limit)
-    const sort = normalizeSort(req.query.sort || req.query.metric)
-    const search = cleanText(req.query.q || req.query.search || req.query.keyword)
-    const status = cleanText(req.query.status || 'published').toLowerCase()
-    const visibility = cleanText(req.query.visibility || 'active').toLowerCase()
-    const rankingVisibility = cleanText(req.query.ranking_visibility || req.query.rankingVisibility || 'visible').toLowerCase()
-    const genre = cleanText(req.query.genre || 'all')
+    const sort = normalizeSort(
+      req.query.sort || req.query.metric
+    )
+    const search = cleanText(
+      req.query.q ||
+        req.query.search ||
+        req.query.keyword
+    )
+    const status = cleanText(
+      req.query.status || 'published'
+    ).toLowerCase()
+    const visibility = cleanText(
+      req.query.visibility || 'active'
+    ).toLowerCase()
+    const rankingVisibility = cleanText(
+      req.query.ranking_visibility ||
+        req.query.rankingVisibility ||
+        'visible'
+    ).toLowerCase()
+    const genre = cleanText(
+      req.query.genre || 'all'
+    )
+    const settings = await getRankingSettings()
 
-    const { data, error } = await buildStoryRankingQuery({ search, status, visibility, rankingVisibility, genre })
+    if (!settings.story_rank_enabled) {
+      return res.status(200).json({
+        ok: true,
+        enabled: false,
+        stories: [],
+        rankings: [],
+        page,
+        limit,
+        total: 0,
+        total_pages: 1,
+        has_next: false,
+        has_prev: page > 1,
+        sort,
+        filters: {
+          status,
+          visibility,
+          ranking_visibility: rankingVisibility,
+          genre,
+          genres: [],
+        },
+        formula: storyRankFormula(settings),
+      })
+    }
+
+    const { data, error } =
+      await buildStoryRankingQuery({
+        search,
+        status,
+        visibility,
+        rankingVisibility,
+        genre,
+      })
 
     if (error) throw error
 
-    const rows = applySort(data || [], sort)
+    const qualifiedRows = (data || []).filter(
+      (story) =>
+        Number(story.total_views || 0) >=
+          Number(settings.min_story_views || 0) &&
+        Number(story.total_likes || 0) >=
+          Number(settings.min_story_likes || 0) &&
+        Number(story.total_comments || 0) >=
+          Number(settings.min_story_comments || 0) &&
+        Number(story.total_episodes || 0) >=
+          Number(settings.min_story_episodes || 0)
+    )
+
+    const rows = applySort(
+      qualifiedRows,
+      sort,
+      settings
+    )
     const total = rows.length
-    const totalPages = Math.max(1, Math.ceil(total / limit))
+    const totalPages = Math.max(
+      1,
+      Math.ceil(total / limit)
+    )
     const from = (page - 1) * limit
-    const pageRows = rows.slice(from, from + limit)
-    const authors = await fetchAuthors(pageRows.map((story) => story.author_id))
-    const stories = pageRows.map((story, index) => publicStoryRank(story, authors.get(story.author_id), from + index + 1))
-    const genreValues = [...new Set((data || []).map((story) => story.main_genre).filter(Boolean))].sort()
+    const pageRows = rows.slice(
+      from,
+      from + limit
+    )
+    const authors = await fetchAuthors(
+      pageRows.map((story) => story.author_id)
+    )
+    const stories = pageRows.map(
+      (story, index) =>
+        publicStoryRank(
+          story,
+          authors.get(story.author_id),
+          from + index + 1,
+          settings
+        )
+    )
+    const genreValues = [
+      ...new Set(
+        qualifiedRows
+          .map((story) => story.main_genre)
+          .filter(Boolean)
+      ),
+    ].sort()
 
     return res.status(200).json({
       ok: true,
+      enabled: true,
       stories,
       rankings: stories,
       page,
@@ -768,15 +1176,37 @@ export async function getAdminStoryRanking(req, res) {
       filters: {
         status,
         visibility,
-        ranking_visibility: rankingVisibility,
+        ranking_visibility:
+          rankingVisibility,
         genre,
         genres: genreValues,
       },
-      formula: 'score = views + likes*5 + comments*10 + episodes*3',
+      minimum_activity: {
+        views: Number(
+          settings.min_story_views || 0
+        ),
+        likes: Number(
+          settings.min_story_likes || 0
+        ),
+        comments: Number(
+          settings.min_story_comments || 0
+        ),
+        episodes: Number(
+          settings.min_story_episodes || 0
+        ),
+      },
+      formula: storyRankFormula(settings),
     })
   } catch (error) {
-    console.error('GET ADMIN STORY RANKING ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load story ranking', error: error.message })
+    console.error(
+      'GET ADMIN STORY RANKING ERROR:',
+      error
+    )
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load story ranking',
+      error: error.message,
+    })
   }
 }
 
