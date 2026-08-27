@@ -1,5 +1,6 @@
 import express from 'express'
 import {
+  getAdminGenreRanking,
   getAdminStoryRanking,
   getHiddenRankingItems,
   updateStoryRankingVisibility,
@@ -9,6 +10,7 @@ import { requireAdmin } from '../middleware/auth.middleware.js'
 const router = express.Router()
 
 router.get('/stories', requireAdmin, getAdminStoryRanking)
+router.get('/genres', requireAdmin, getAdminGenreRanking)
 router.get('/hidden', requireAdmin, getHiddenRankingItems)
 router.patch('/stories/:storyId/visibility', requireAdmin, updateStoryRankingVisibility)
 
