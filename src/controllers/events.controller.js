@@ -114,12 +114,12 @@ export async function createEvent(req, res) {
     const sortOrder = normalizeSortOrder(req.body?.sort_order, 0)
     const isPublished = normalizeBoolean(req.body?.is_published, false)
 
-    if (!title) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Title is required',
-      })
-    }
+    if (!imageUrl) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Event image is required',
+  })
+}
 
     if (!endsAt) {
       return res.status(400).json({
@@ -307,6 +307,18 @@ export async function updateEvent(req, res) {
       patch.is_published !== undefined
         ? patch.is_published
         : current.is_published
+
+    const finalImageUrl =
+  patch.image_url !== undefined
+    ? patch.image_url
+    : current.image_url
+
+if (!finalImageUrl) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Event image is required',
+  })
+}
 
     if (finalPublished && !finalStartsAt) {
       return res.status(400).json({
