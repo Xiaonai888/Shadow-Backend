@@ -196,86 +196,6 @@ function getPositiveInteger(value, fallback, max = 365) {
   return Math.min(Math.floor(number), max)
 }
 
-function getAutoFreeOldEpisodeLimit(
-  story,
-  totalVisibleEpisodes = null
-) {
-  const totalEpisodes = Number(
-    totalVisibleEpisodes ??
-    story?.total_episodes ??
-    0
-  )
-
-  const maxEpisodes = getPositiveInteger(
-    story?.auto_free_max_episodes,
-    5,
-    100
-  )
-
-  const maxPercent = getPositiveInteger(
-    story?.auto_free_max_percent,
-    10,
-    100
-  )
-
-  const percentLimit = Math.ceil(
-    totalEpisodes * (maxPercent / 100)
-  )
-
-  return Math.max(
-    0,
-    Math.min(maxEpisodes, percentLimit)
-  )
-}
-
-function isOldEnoughForAutoFree(
-  episode,
-  story,
-  now = Date.now()
-) {
-  if (!story?.auto_free_old_episodes_enabled) {
-    return false
-  }
-
-  if (!episode?.is_locked) return false
-
-  const publishedTime = getEpisodePublishedTime(episode)
-
-  if (!publishedTime) return false
-
-  const freeAfterDays = getPositiveInteger(
-    story?.auto_free_after_days,
-    30,
-    365
-  )
-
-  const freeAfterMs =
-    freeAfterDays * 24 * 60 * 60 * 1000
-
-  return now - publishedTime >= freeAfterMs
-}
-
-function getAutoFreeVisibleEpisodeIds() {
-  return new Set()
-}
-
-async function getAutoFreeVisibleEpisodeIdsForStory(
-  storyId,
-  story,
-  now = Date.now(),
-  access = null
-) {
-  const resolvedAccess =
-    access ||
-    (await getStoryEpisodeAccess(storyId, now))
-
-  return getAutoFreeVisibleEpisodeIds(
-    resolvedAccess.publishedEpisodes,
-    story,
-    now,
-    resolvedAccess
-  )
-}
 
 function isWaitFreeEpisode(
   episode,
@@ -2304,13 +2224,7 @@ export async function getPublicStoryEpisodes(req, res) {
     const firstVisibleEpisodeId =
       access.publishedEpisodes[0]?.id ||
       getFirstVisibleEpisodeId(visibleEpisodes, now)
-    const autoFreeEpisodeIds =
-      getAutoFreeVisibleEpisodeIds(
-        visibleEpisodes,
-        story,
-        now,
-        access
-      )
+    const autoFreeEpisodeIds = new Set()
 
     return res.status(200).json({
       ok: true,
@@ -2318,7 +2232,6 @@ export async function getPublicStoryEpisodes(req, res) {
       free_published_episode_ids: [
         ...access.freePublishedEpisodeIds,
       ],
-      auto_free_episode_ids: [...autoFreeEpisodeIds],
       episodes: visibleEpisodes.map((episode) =>
         publicEpisodeListItem(
           episode,
@@ -2398,13 +2311,7 @@ const { data: episode, error } = await supabase
       (await getFirstVisibleEpisodeIdForStory(
         storyId
       ))
-    const autoFreeEpisodeIds =
-      await getAutoFreeVisibleEpisodeIdsForStory(
-        storyId,
-        story,
-        now,
-        access
-      )
+    const autoFreeEpisodeIds = new Set()
     const freeEpisode = isEpisodeFreeForReader(
       episode,
       story,
@@ -2563,13 +2470,7 @@ export async function countQualifiedEpisodeView(req, res) {
       (await getFirstVisibleEpisodeIdForStory(
         storyId
       ))
-    const autoFreeEpisodeIds =
-      await getAutoFreeVisibleEpisodeIdsForStory(
-        storyId,
-        story,
-        now,
-        access
-      )
+    const autoFreeEpisodeIds = new Set()
     const freeEpisode = isEpisodeFreeForReader(
       episode,
       story,
