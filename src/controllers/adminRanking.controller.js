@@ -4,6 +4,102 @@ const PAGE_SIZE_DEFAULT = 20
 const PAGE_SIZE_MAX = 100
 const RANKING_VISIBILITY_STATUSES = ['visible', 'hidden']
 
+const GENRE_RANK_CACHE_MS = 15 * 60 * 1000
+let genreRankCache = { expiresAt: 0, payload: null }
+
+export async function getAdminGenreRanking(req, res) {
+  try {
+    const now = Date.now()
+
+    if (genreRankCache.payload && genreRankCache.expiresAt > now) {
+      return res.status(200).json({ ...genreRankCache.payload, cached: true })
+    }
+
+    const { data, error } = await supabase
+      .from('stories')
+      .select('id, main_genre, total_views, total_likes, total_comments')
+      .is('deleted_at', null)
+      .eq('status', 'published')
+      .eq('admin_visibility_status', 'active')
+      .eq('ranking_visibility_status', 'visible')
+
+    if (error) throw error
+
+    const grouped = new Map()
+
+    for (const story of data || []) {
+      const genre = cleanText(story.main_genre)
+      if (!genre) continue
+
+      const key = genre.toLowerCase()
+      const current = grouped.get(key) || {
+        genre,
+        story_count: 0,
+        total_views: 0,
+        total_likes: 0,
+        total_comments: 0,
+      }
+
+      current.story_count += 1
+      current.total_views += Number(story.total_views || 0)
+      current.total_likes += Number(story.total_likes || 0)
+      current.total_comments += Number(story.total_comments || 0)
+      grouped.set(key, current)
+    }
+
+    const totalViews = [...grouped.values()].reduce(
+      (sum, row) => sum + row.total_views,
+      0
+    )
+
+    const genres = [...grouped.values()]
+      .map((row) => ({
+        ...row,
+        average_views: row.story_count
+          ? Math.round(row.total_views / row.story_count)
+          : 0,
+        view_share_percent: totalViews
+          ? Number(((row.total_views / totalViews) * 100).toFixed(2))
+          : 0,
+      }))
+      .sort(
+        (a, b) =>
+          b.total_views - a.total_views ||
+          b.average_views - a.average_views ||
+          b.total_likes - a.total_likes ||
+          a.genre.localeCompare(b.genre)
+      )
+      .map((row, index) => ({ rank: index + 1, ...row }))
+
+    const payload = {
+      ok: true,
+      genres,
+      rankings: genres,
+      total: genres.length,
+      total_views: totalViews,
+      metric: 'total_views',
+      scope: 'all_time',
+      cache_ttl_seconds: GENRE_RANK_CACHE_MS / 1000,
+      generated_at: new Date(now).toISOString(),
+    }
+
+    genreRankCache = {
+      expiresAt: now + GENRE_RANK_CACHE_MS,
+      payload,
+    }
+
+    return res.status(200).json({ ...payload, cached: false })
+  } catch (error) {
+    console.error('GET ADMIN GENRE RANKING ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load genre ranking',
+      error: error.message,
+    })
+  }
+}
+
+
 function cleanText(value) {
   return String(value || '').trim()
 }
