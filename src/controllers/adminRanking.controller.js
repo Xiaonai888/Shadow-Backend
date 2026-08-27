@@ -239,6 +239,168 @@ export async function getAdminAuthorRanking(req, res) {
 }
 
 
+const EPISODE_RANK_CACHE_MS = 15 * 60 * 1000
+let episodeRankCache = { expiresAt: 0, rows: [] }
+
+function scoreEpisodeRank(row) {
+  return Number(row.total_views || 0)
+    + Number(row.total_likes || 0) * 5
+    + Number(row.total_comments || 0) * 10
+}
+
+export async function getAdminEpisodeRanking(req, res) {
+  try {
+    const page = normalizePage(req.query.page)
+    const limit = normalizeLimit(req.query.limit)
+    const search = cleanText(req.query.q || req.query.search || req.query.keyword).toLowerCase()
+    const now = Date.now()
+
+    let rows = episodeRankCache.rows
+    let cached = episodeRankCache.expiresAt > now && rows.length > 0
+
+    if (!cached) {
+      const { data: stories, error: storyError } = await supabase
+        .from('stories')
+        .select('id, title, author_id')
+        .is('deleted_at', null)
+        .eq('status', 'published')
+        .eq('admin_visibility_status', 'active')
+        .eq('ranking_visibility_status', 'visible')
+
+      if (storyError) throw storyError
+
+      const storyIds = (stories || []).map((story) => story.id).filter(Boolean)
+
+      if (!storyIds.length) {
+        rows = []
+      } else {
+        const { data: episodes, error: episodeError } = await supabase
+          .from('episodes')
+          .select('id, story_id, title, episode_number, total_views, total_likes, status')
+          .in('story_id', storyIds)
+          .is('deleted_at', null)
+          .eq('status', 'published')
+
+        if (episodeError) throw episodeError
+
+        const episodeIds = (episodes || []).map((episode) => episode.id).filter(Boolean)
+        const authorIds = [...new Set((stories || []).map((story) => story.author_id).filter(Boolean))]
+
+        const [commentsResult, authorsResult] = await Promise.all([
+          episodeIds.length
+            ? supabase
+                .from('comments')
+                .select('episode_id')
+                .in('episode_id', episodeIds)
+                .eq('is_hidden', false)
+                .is('deleted_at', null)
+            : Promise.resolve({ data: [], error: null }),
+          authorIds.length
+            ? supabase
+                .from('author_pages')
+                .select('id, page_name, page_username')
+                .in('id', authorIds)
+            : Promise.resolve({ data: [], error: null }),
+        ])
+
+        if (commentsResult.error) throw commentsResult.error
+        if (authorsResult.error) throw authorsResult.error
+
+        const commentCounts = new Map()
+        for (const comment of commentsResult.data || []) {
+          const key = String(comment.episode_id || '')
+          if (!key) continue
+          commentCounts.set(key, Number(commentCounts.get(key) || 0) + 1)
+        }
+
+        const storyMap = new Map((stories || []).map((story) => [story.id, story]))
+        const authorMap = new Map((authorsResult.data || []).map((author) => [author.id, author]))
+
+        rows = (episodes || [])
+          .map((episode) => {
+            const story = storyMap.get(episode.story_id) || {}
+            const author = authorMap.get(story.author_id) || {}
+
+            const row = {
+              id: episode.id,
+              episode_id: episode.id,
+              story_id: episode.story_id,
+              story_title: story.title || 'Untitled Story',
+              author_id: story.author_id || null,
+              author_name: author.page_name || 'Unknown Author',
+              author_username: author.page_username || '',
+              title: episode.title || 'Untitled Episode',
+              episode_number: Number(episode.episode_number || 0),
+              total_views: Number(episode.total_views || 0),
+              total_likes: Number(episode.total_likes || 0),
+              total_comments: Number(commentCounts.get(String(episode.id)) || 0),
+              status: episode.status || 'published',
+            }
+
+            return { ...row, score: scoreEpisodeRank(row) }
+          })
+          .sort(
+            (a, b) =>
+              b.score - a.score ||
+              b.total_views - a.total_views ||
+              b.total_likes - a.total_likes ||
+              a.episode_number - b.episode_number
+          )
+          .map((row, index) => ({ rank: index + 1, ...row }))
+      }
+
+      episodeRankCache = {
+        expiresAt: now + EPISODE_RANK_CACHE_MS,
+        rows,
+      }
+      cached = false
+    }
+
+    const filtered = search
+      ? rows.filter((row) =>
+          [
+            row.id,
+            row.title,
+            row.story_id,
+            row.story_title,
+            row.author_id,
+            row.author_name,
+            row.author_username,
+          ].some((value) => String(value || '').toLowerCase().includes(search))
+        )
+      : rows
+
+    const total = filtered.length
+    const totalPages = Math.max(1, Math.ceil(total / limit))
+    const from = (page - 1) * limit
+    const episodes = filtered.slice(from, from + limit)
+
+    return res.status(200).json({
+      ok: true,
+      episodes,
+      rankings: episodes,
+      page,
+      limit,
+      total,
+      total_pages: totalPages,
+      has_next: page < totalPages,
+      has_prev: page > 1,
+      metric: 'score',
+      scope: 'all_time',
+      formula: 'score = views + likes*5 + comments*10',
+      cache_ttl_seconds: EPISODE_RANK_CACHE_MS / 1000,
+      cached,
+    })
+  } catch (error) {
+    console.error('GET ADMIN EPISODE RANKING ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load episode ranking',
+      error: error.message,
+    })
+  }
+}
+
 function cleanText(value) {
   return String(value || '').trim()
 }
