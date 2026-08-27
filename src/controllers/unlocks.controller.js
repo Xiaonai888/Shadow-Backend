@@ -214,15 +214,7 @@ function isEpisodeFreeForReader(
   access = null,
   now = Date.now()
 ) {
-  return (
-    isEpisodeFree(episode, access) ||
-    isAutoFreeOldEpisodeForStory(
-      episode,
-      story,
-      access,
-      now
-    )
-  )
+  return isEpisodeFree(episode, access)
 }
 
 function normalizeTier(value) {
