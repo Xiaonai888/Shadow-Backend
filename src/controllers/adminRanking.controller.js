@@ -99,6 +99,145 @@ export async function getAdminGenreRanking(req, res) {
   }
 }
 
+const AUTHOR_RANK_CACHE_MS = 15 * 60 * 1000
+let authorRankCache = { expiresAt: 0, rows: [] }
+
+function scoreAuthorRank(row) {
+  return Number(row.total_views || 0)
+    + Number(row.total_likes || 0) * 5
+    + Number(row.total_comments || 0) * 10
+    + Number(row.total_followers || 0) * 20
+    + Number(row.story_count || 0) * 3
+}
+
+export async function getAdminAuthorRanking(req, res) {
+  try {
+    const page = normalizePage(req.query.page)
+    const limit = normalizeLimit(req.query.limit)
+    const search = cleanText(req.query.q || req.query.search || req.query.keyword).toLowerCase()
+    const now = Date.now()
+
+    let rows = authorRankCache.rows
+    let cached = authorRankCache.expiresAt > now && rows.length > 0
+
+    if (!cached) {
+      const [pagesResult, storiesResult] = await Promise.all([
+        supabase
+          .from('author_pages')
+          .select('id, user_id, page_name, page_username, avatar_url, total_followers, status')
+          .eq('status', 'active'),
+        supabase
+          .from('stories')
+          .select('author_id, total_views, total_likes, total_comments')
+          .is('deleted_at', null)
+          .eq('status', 'published')
+          .eq('admin_visibility_status', 'active')
+          .eq('ranking_visibility_status', 'visible'),
+      ])
+
+      if (pagesResult.error) throw pagesResult.error
+      if (storiesResult.error) throw storiesResult.error
+
+      const stats = new Map()
+
+      for (const story of storiesResult.data || []) {
+        if (!story.author_id) continue
+
+        const current = stats.get(story.author_id) || {
+          story_count: 0,
+          total_views: 0,
+          total_likes: 0,
+          total_comments: 0,
+        }
+
+        current.story_count += 1
+        current.total_views += Number(story.total_views || 0)
+        current.total_likes += Number(story.total_likes || 0)
+        current.total_comments += Number(story.total_comments || 0)
+        stats.set(story.author_id, current)
+      }
+
+      rows = (pagesResult.data || [])
+        .map((author) => {
+          const stat = stats.get(author.id) || {
+            story_count: 0,
+            total_views: 0,
+            total_likes: 0,
+            total_comments: 0,
+          }
+
+          const row = {
+            id: author.id,
+            author_id: author.id,
+            user_id: author.user_id,
+            page_name: author.page_name,
+            page_username: author.page_username,
+            avatar_url: author.avatar_url,
+            status: author.status,
+            story_count: stat.story_count,
+            total_followers: Number(author.total_followers || 0),
+            total_views: stat.total_views,
+            total_likes: stat.total_likes,
+            total_comments: stat.total_comments,
+          }
+
+          return { ...row, score: scoreAuthorRank(row) }
+        })
+        .filter((row) => row.story_count > 0)
+        .sort(
+          (a, b) =>
+            b.score - a.score ||
+            b.total_views - a.total_views ||
+            b.total_followers - a.total_followers ||
+            String(a.page_name || '').localeCompare(String(b.page_name || ''))
+        )
+        .map((row, index) => ({ rank: index + 1, ...row }))
+
+      authorRankCache = {
+        expiresAt: now + AUTHOR_RANK_CACHE_MS,
+        rows,
+      }
+      cached = false
+    }
+
+    const filtered = search
+      ? rows.filter((row) =>
+          [row.id, row.user_id, row.page_name, row.page_username]
+            .some((value) => String(value || '').toLowerCase().includes(search))
+        )
+      : rows
+
+    const total = filtered.length
+    const totalPages = Math.max(1, Math.ceil(total / limit))
+    const from = (page - 1) * limit
+    const authors = filtered.slice(from, from + limit)
+
+    return res.status(200).json({
+      ok: true,
+      authors,
+      rankings: authors,
+      page,
+      limit,
+      total,
+      total_pages: totalPages,
+      has_next: page < totalPages,
+      has_prev: page > 1,
+      metric: 'score',
+      scope: 'all_time',
+      formula: 'score = views + likes*5 + comments*10 + followers*20 + stories*3',
+      cache_ttl_seconds: AUTHOR_RANK_CACHE_MS / 1000,
+      cached,
+    })
+  } catch (error) {
+    console.error('GET ADMIN AUTHOR RANKING ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load author ranking',
+      error: error.message,
+    })
+  }
+}
+
 
 function cleanText(value) {
   return String(value || '').trim()
