@@ -255,52 +255,8 @@ function isOldEnoughForAutoFree(
   return now - publishedTime >= freeAfterMs
 }
 
-function getAutoFreeVisibleEpisodeIds(
-  visibleEpisodes = [],
-  story,
-  now = Date.now(),
-  access = null
-) {
-  if (!story?.auto_free_old_episodes_enabled) {
-    return new Set()
-  }
-
-  const resolvedAccess =
-    access ||
-    buildEpisodeAccess(visibleEpisodes, now)
-
-  const orderedEpisodes =
-    resolvedAccess.publishedEpisodes || []
-
-  const freePublishedEpisodeIds =
-    resolvedAccess.freePublishedEpisodeIds ||
-    new Set()
-
-  const limit = getAutoFreeOldEpisodeLimit(
-    story,
-    orderedEpisodes.length
-  )
-
-  if (limit <= 0) return new Set()
-
-  return new Set(
-    orderedEpisodes
-      .filter(
-        (episode) =>
-          !freePublishedEpisodeIds.has(
-            String(episode.id)
-          )
-      )
-      .filter((episode) =>
-        isOldEnoughForAutoFree(
-          episode,
-          story,
-          now
-        )
-      )
-      .slice(0, limit)
-      .map((episode) => episode.id)
-  )
+function getAutoFreeVisibleEpisodeIds() {
+  return new Set()
 }
 
 async function getAutoFreeVisibleEpisodeIdsForStory(
@@ -381,21 +337,9 @@ function isFreeEpisode(
 }
 
 function isEpisodeFreeForReader(
-  episode,
-  story,
-  now = Date.now(),
-  firstVisibleEpisodeId = null,
-  autoFreeEpisodeIds = new Set(),
-  access = null
+  episode, story, now, firstVisibleEpisodeId, autoFreeEpisodeIds, access
 ) {
-  return (
-    isFreeEpisode(
-      episode,
-      firstVisibleEpisodeId,
-      access
-    ) ||
-    autoFreeEpisodeIds.has(episode?.id)
-  )
+  return isFreeEpisode(episode, firstVisibleEpisodeId, access)
 }
 
 async function getStoryAccessSummaries(
