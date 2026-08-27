@@ -124,8 +124,9 @@ export async function getAdminAuthorRanking(req, res) {
       const [pagesResult, storiesResult] = await Promise.all([
         supabase
           .from('author_pages')
-          .select('id, user_id, page_name, page_username, avatar_url, total_followers, status')
-          .eq('status', 'active'),
+          .select('id, user_id, page_name, page_username, avatar_url, total_followers, status, ranking_visibility_status, ranking_hidden_reason, ranking_hidden_at, ranking_hidden_by, ranking_note')
+          .eq('status', 'active')
+          .eq('ranking_visibility_status', 'visible'),
         supabase
           .from('stories')
           .select('author_id, total_views, total_likes, total_comments')
@@ -174,6 +175,11 @@ export async function getAdminAuthorRanking(req, res) {
             page_username: author.page_username,
             avatar_url: author.avatar_url,
             status: author.status,
+            ranking_visibility_status: author.ranking_visibility_status || 'visible',
+            ranking_hidden_reason: author.ranking_hidden_reason || '',
+            ranking_hidden_at: author.ranking_hidden_at || null,
+            ranking_hidden_by: author.ranking_hidden_by || '',
+            ranking_note: author.ranking_note || '',
             story_count: stat.story_count,
             total_followers: Number(author.total_followers || 0),
             total_views: stat.total_views,
@@ -276,10 +282,11 @@ export async function getAdminEpisodeRanking(req, res) {
       } else {
         const { data: episodes, error: episodeError } = await supabase
           .from('episodes')
-          .select('id, story_id, title, episode_number, total_views, total_likes, status')
+          .select('id, story_id, title, episode_number, total_views, total_likes, status, ranking_visibility_status, ranking_hidden_reason, ranking_hidden_at, ranking_hidden_by, ranking_note')
           .in('story_id', storyIds)
           .is('deleted_at', null)
           .eq('status', 'published')
+          .eq('ranking_visibility_status', 'visible')
 
         if (episodeError) throw episodeError
 
@@ -335,6 +342,11 @@ export async function getAdminEpisodeRanking(req, res) {
               total_likes: Number(episode.total_likes || 0),
               total_comments: Number(commentCounts.get(String(episode.id)) || 0),
               status: episode.status || 'published',
+              ranking_visibility_status: episode.ranking_visibility_status || 'visible',
+              ranking_hidden_reason: episode.ranking_hidden_reason || '',
+              ranking_hidden_at: episode.ranking_hidden_at || null,
+              ranking_hidden_by: episode.ranking_hidden_by || '',
+              ranking_note: episode.ranking_note || '',
             }
 
             return { ...row, score: scoreEpisodeRank(row) }
@@ -772,70 +784,232 @@ export async function getHiddenRankingItems(req, res) {
   try {
     const page = normalizePage(req.query.page)
     const limit = normalizeLimit(req.query.limit)
-    const search = cleanText(req.query.q || req.query.search || req.query.keyword)
-    const genre = cleanText(req.query.genre || 'all')
-    const from = (page - 1) * limit
-    const to = from + limit - 1
+    const search = cleanText(req.query.q || req.query.search || req.query.keyword).toLowerCase()
 
-    let query = supabase
-      .from('stories')
-      .select('*', { count: 'exact' })
-      .eq('ranking_visibility_status', 'hidden')
+    const [storiesResult, authorsResult, episodesResult] = await Promise.all([
+      supabase
+        .from('stories')
+        .select('*')
+        .eq('ranking_visibility_status', 'hidden'),
+      supabase
+        .from('author_pages')
+        .select('id, user_id, page_name, page_username, avatar_url, status, admin_status, ranking_visibility_status, ranking_hidden_reason, ranking_hidden_at, ranking_hidden_by, ranking_note')
+        .eq('ranking_visibility_status', 'hidden'),
+      supabase
+        .from('episodes')
+        .select('id, story_id, title, episode_number, cover_url, status, ranking_visibility_status, ranking_hidden_reason, ranking_hidden_at, ranking_hidden_by, ranking_note')
+        .eq('ranking_visibility_status', 'hidden')
+        .is('deleted_at', null),
+    ])
 
-    if (genre !== 'all') query = query.eq('main_genre', genre)
+    if (storiesResult.error) throw storiesResult.error
+    if (authorsResult.error) throw authorsResult.error
+    if (episodesResult.error) throw episodesResult.error
 
-    if (search) {
-      if (isUuid(search)) {
-        query = query.eq('id', search)
-      } else {
-        const safeSearch = search.replace(/[%_]/g, '\\$&')
-        query = query.or(`title.ilike.%${safeSearch}%,main_genre.ilike.%${safeSearch}%,story_language.ilike.%${safeSearch}%,ranking_hidden_reason.ilike.%${safeSearch}%`)
+    const hiddenStories = storiesResult.data || []
+    const hiddenAuthors = authorsResult.data || []
+    const hiddenEpisodes = episodesResult.data || []
+
+    const episodeStoryIds = [...new Set(hiddenEpisodes.map((episode) => episode.story_id).filter(Boolean))]
+    const authorIds = [
+      ...new Set([
+        ...hiddenStories.map((story) => story.author_id),
+        ...hiddenAuthors.map((author) => author.id),
+      ].filter(Boolean)),
+    ]
+
+    let episodeStories = []
+    if (episodeStoryIds.length) {
+      const { data, error } = await supabase
+        .from('stories')
+        .select('id, title, author_id')
+        .in('id', episodeStoryIds)
+
+      if (error) throw error
+      episodeStories = data || []
+
+      for (const story of episodeStories) {
+        if (story.author_id) authorIds.push(story.author_id)
       }
     }
 
-    const { data, count, error } = await query
-      .order('ranking_hidden_at', { ascending: false, nullsFirst: false })
-      .range(from, to)
+    const authorMap = await fetchAuthors(authorIds)
+    const storyMap = new Map(episodeStories.map((story) => [story.id, story]))
 
-    if (error) throw error
+    const items = [
+      ...hiddenStories.map((story) => ({
+        item_type: 'story',
+        type: 'story',
+        id: story.id,
+        story_id: story.id,
+        author_id: story.author_id,
+        name: story.title || 'Untitled Story',
+        title: story.title || 'Untitled Story',
+        cover_url: story.cover_url || '',
+        author_page: publicAuthor(authorMap.get(story.author_id)),
+        ranking_visibility_status: 'hidden',
+        ranking_hidden_reason: story.ranking_hidden_reason || '',
+        ranking_hidden_at: story.ranking_hidden_at || null,
+        ranking_hidden_by: story.ranking_hidden_by || '',
+        ranking_note: story.ranking_note || '',
+      })),
+      ...hiddenAuthors.map((author) => ({
+        item_type: 'author',
+        type: 'author',
+        id: author.id,
+        author_id: author.id,
+        user_id: author.user_id,
+        name: author.page_name || 'Unknown Author',
+        title: author.page_name || 'Unknown Author',
+        page_name: author.page_name || 'Unknown Author',
+        page_username: author.page_username || '',
+        avatar_url: author.avatar_url || '',
+        status: author.status || 'active',
+        admin_status: author.admin_status || 'active',
+        ranking_visibility_status: 'hidden',
+        ranking_hidden_reason: author.ranking_hidden_reason || '',
+        ranking_hidden_at: author.ranking_hidden_at || null,
+        ranking_hidden_by: author.ranking_hidden_by || '',
+        ranking_note: author.ranking_note || '',
+      })),
+      ...hiddenEpisodes.map((episode) => {
+        const story = storyMap.get(episode.story_id) || {}
+        const author = authorMap.get(story.author_id) || {}
 
-    const authors = await fetchAuthors((data || []).map((story) => story.author_id))
-    const stories = (data || []).map((story, index) => publicStoryRank(story, authors.get(story.author_id), from + index + 1))
-    const total = count || 0
+        return {
+          item_type: 'episode',
+          type: 'episode',
+          id: episode.id,
+          episode_id: episode.id,
+          story_id: episode.story_id,
+          story_title: story.title || 'Untitled Story',
+          author_id: story.author_id || null,
+          author_name: author.page_name || 'Unknown Author',
+          author_username: author.page_username || '',
+          name: episode.title || 'Untitled Episode',
+          title: episode.title || 'Untitled Episode',
+          episode_number: Number(episode.episode_number || 0),
+          cover_url: episode.cover_url || '',
+          status: episode.status || 'published',
+          ranking_visibility_status: 'hidden',
+          ranking_hidden_reason: episode.ranking_hidden_reason || '',
+          ranking_hidden_at: episode.ranking_hidden_at || null,
+          ranking_hidden_by: episode.ranking_hidden_by || '',
+          ranking_note: episode.ranking_note || '',
+        }
+      }),
+    ]
+
+    const filtered = search
+      ? items.filter((item) =>
+          [
+            item.id,
+            item.name,
+            item.title,
+            item.page_name,
+            item.page_username,
+            item.story_id,
+            item.story_title,
+            item.author_id,
+            item.author_name,
+            item.author_username,
+            item.ranking_hidden_reason,
+            item.ranking_hidden_by,
+          ].some((value) => String(value || '').toLowerCase().includes(search))
+        )
+      : items
+
+    filtered.sort(
+      (a, b) =>
+        new Date(b.ranking_hidden_at || 0).getTime() -
+        new Date(a.ranking_hidden_at || 0).getTime()
+    )
+
+    const total = filtered.length
     const totalPages = Math.max(1, Math.ceil(total / limit))
+    const from = (page - 1) * limit
+    const pageItems = filtered.slice(from, from + limit)
 
     return res.status(200).json({
       ok: true,
-      items: stories,
-      stories,
+      items: pageItems,
       page,
       limit,
       total,
       total_pages: totalPages,
       has_next: page < totalPages,
       has_prev: page > 1,
+      counts: {
+        stories: hiddenStories.length,
+        authors: hiddenAuthors.length,
+        episodes: hiddenEpisodes.length,
+      },
     })
   } catch (error) {
     console.error('GET HIDDEN RANKING ITEMS ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load hidden ranking items', error: error.message })
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load hidden ranking items',
+      error: error.message,
+    })
+  }
+}
+
+function rankingVisibilityInput(req) {
+  return {
+    rankingVisibility: cleanText(
+      req.body.ranking_visibility_status ||
+        req.body.ranking_visibility ||
+        req.body.visibility
+    ).toLowerCase(),
+    reason: cleanText(req.body.reason || req.body.ranking_hidden_reason),
+    note: cleanText(req.body.note || req.body.ranking_note),
+    actor: adminActor(req),
+  }
+}
+
+function rankingVisibilityValidation(res, rankingVisibility, reason) {
+  if (!RANKING_VISIBILITY_STATUSES.includes(rankingVisibility)) {
+    res.status(400).json({
+      ok: false,
+      message: 'Invalid ranking visibility status',
+    })
+    return false
+  }
+
+  if (rankingVisibility === 'hidden' && reason.length < 5) {
+    res.status(400).json({
+      ok: false,
+      message: 'Hidden reason is required',
+    })
+    return false
+  }
+
+  return true
+}
+
+function rankingVisibilityPayload(oldItem, rankingVisibility, reason, note, actor) {
+  const now = new Date().toISOString()
+
+  return {
+    now,
+    payload: {
+      ranking_visibility_status: rankingVisibility,
+      ranking_hidden_reason: rankingVisibility === 'hidden' ? reason : '',
+      ranking_hidden_at: rankingVisibility === 'hidden' ? now : null,
+      ranking_hidden_by: rankingVisibility === 'hidden' ? actor : '',
+      ranking_note: note || oldItem.ranking_note || '',
+      updated_at: now,
+    },
   }
 }
 
 export async function updateStoryRankingVisibility(req, res) {
   try {
     const { storyId } = req.params
-    const rankingVisibility = cleanText(req.body.ranking_visibility_status || req.body.ranking_visibility || req.body.visibility).toLowerCase()
-    const reason = cleanText(req.body.reason || req.body.ranking_hidden_reason)
-    const note = cleanText(req.body.note || req.body.ranking_note)
-    const actor = adminActor(req)
+    const { rankingVisibility, reason, note, actor } = rankingVisibilityInput(req)
 
-    if (!RANKING_VISIBILITY_STATUSES.includes(rankingVisibility)) {
-      return res.status(400).json({ ok: false, message: 'Invalid ranking visibility status' })
-    }
-
-    if (rankingVisibility === 'hidden' && reason.length < 5) {
-      return res.status(400).json({ ok: false, message: 'Hidden reason is required' })
-    }
+    if (!rankingVisibilityValidation(res, rankingVisibility, reason)) return
 
     const { data: oldStory, error: oldStoryError } = await supabase
       .from('stories')
@@ -844,34 +1018,47 @@ export async function updateStoryRankingVisibility(req, res) {
       .maybeSingle()
 
     if (oldStoryError) throw oldStoryError
-    if (!oldStory) return res.status(404).json({ ok: false, message: 'Story not found' })
-
-    const now = new Date().toISOString()
-    const updatePayload = {
-      ranking_visibility_status: rankingVisibility,
-      ranking_hidden_reason: rankingVisibility === 'hidden' ? reason : '',
-      ranking_hidden_at: rankingVisibility === 'hidden' ? now : null,
-      ranking_hidden_by: rankingVisibility === 'hidden' ? actor : '',
-      ranking_note: note || oldStory.ranking_note || '',
-      updated_at: now,
+    if (!oldStory) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
     }
+
+    const { payload } = rankingVisibilityPayload(
+      oldStory,
+      rankingVisibility,
+      reason,
+      note,
+      actor
+    )
 
     const { data: story, error: updateError } = await supabase
       .from('stories')
-      .update(updatePayload)
+      .update(payload)
       .eq('id', storyId)
       .select()
       .single()
 
     if (updateError) throw updateError
 
+    genreRankCache = { expiresAt: 0, payload: null }
+    authorRankCache = { expiresAt: 0, rows: [] }
+    episodeRankCache = { expiresAt: 0, rows: [] }
+
     await supabase.from('ranking_moderation_logs').insert({
       item_type: 'story',
       item_id: storyId,
       story_id: storyId,
       author_id: story.author_id,
-      action: rankingVisibility === 'hidden' ? 'story_hidden_from_ranking' : 'story_unhidden_from_ranking',
-      reason: rankingVisibility === 'hidden' ? reason : 'Story restored to ranking by admin',
+      action:
+        rankingVisibility === 'hidden'
+          ? 'story_hidden_from_ranking'
+          : 'story_unhidden_from_ranking',
+      reason:
+        rankingVisibility === 'hidden'
+          ? reason
+          : 'Story restored to ranking by admin',
       admin_actor: actor,
     })
 
@@ -879,11 +1066,203 @@ export async function updateStoryRankingVisibility(req, res) {
 
     return res.status(200).json({
       ok: true,
-      message: rankingVisibility === 'hidden' ? 'Story hidden from ranking' : 'Story restored to ranking',
+      message:
+        rankingVisibility === 'hidden'
+          ? 'Story hidden from ranking'
+          : 'Story restored to ranking',
       story: publicStoryRank(story, authors.get(story.author_id), null),
     })
   } catch (error) {
     console.error('UPDATE STORY RANKING VISIBILITY ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to update ranking visibility', error: error.message })
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update ranking visibility',
+      error: error.message,
+    })
+  }
+}
+
+export async function updateAuthorRankingVisibility(req, res) {
+  try {
+    const { authorId } = req.params
+    const { rankingVisibility, reason, note, actor } = rankingVisibilityInput(req)
+
+    if (!rankingVisibilityValidation(res, rankingVisibility, reason)) return
+
+    const { data: oldAuthor, error: oldAuthorError } = await supabase
+      .from('author_pages')
+      .select('*')
+      .eq('id', authorId)
+      .maybeSingle()
+
+    if (oldAuthorError) throw oldAuthorError
+    if (!oldAuthor) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Author not found',
+      })
+    }
+
+    const { payload } = rankingVisibilityPayload(
+      oldAuthor,
+      rankingVisibility,
+      reason,
+      note,
+      actor
+    )
+
+    const { data: author, error: updateError } = await supabase
+      .from('author_pages')
+      .update(payload)
+      .eq('id', authorId)
+      .select()
+      .single()
+
+    if (updateError) throw updateError
+
+    authorRankCache = { expiresAt: 0, rows: [] }
+
+    await supabase.from('ranking_moderation_logs').insert({
+      item_type: 'author',
+      item_id: authorId,
+      author_id: authorId,
+      action:
+        rankingVisibility === 'hidden'
+          ? 'author_hidden_from_ranking'
+          : 'author_unhidden_from_ranking',
+      reason:
+        rankingVisibility === 'hidden'
+          ? reason
+          : 'Author restored to ranking by admin',
+      admin_actor: actor,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      message:
+        rankingVisibility === 'hidden'
+          ? 'Author hidden from ranking'
+          : 'Author restored to ranking',
+      author: {
+        id: author.id,
+        author_id: author.id,
+        user_id: author.user_id,
+        page_name: author.page_name,
+        page_username: author.page_username,
+        avatar_url: author.avatar_url,
+        status: author.status,
+        admin_status: author.admin_status || 'active',
+        ranking_visibility_status:
+          author.ranking_visibility_status || 'visible',
+        ranking_hidden_reason: author.ranking_hidden_reason || '',
+        ranking_hidden_at: author.ranking_hidden_at || null,
+        ranking_hidden_by: author.ranking_hidden_by || '',
+        ranking_note: author.ranking_note || '',
+      },
+    })
+  } catch (error) {
+    console.error('UPDATE AUTHOR RANKING VISIBILITY ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update author ranking visibility',
+      error: error.message,
+    })
+  }
+}
+
+export async function updateEpisodeRankingVisibility(req, res) {
+  try {
+    const { episodeId } = req.params
+    const { rankingVisibility, reason, note, actor } = rankingVisibilityInput(req)
+
+    if (!rankingVisibilityValidation(res, rankingVisibility, reason)) return
+
+    const { data: oldEpisode, error: oldEpisodeError } = await supabase
+      .from('episodes')
+      .select('*')
+      .eq('id', episodeId)
+      .maybeSingle()
+
+    if (oldEpisodeError) throw oldEpisodeError
+    if (!oldEpisode) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Episode not found',
+      })
+    }
+
+    const { payload } = rankingVisibilityPayload(
+      oldEpisode,
+      rankingVisibility,
+      reason,
+      note,
+      actor
+    )
+
+    const { data: episode, error: updateError } = await supabase
+      .from('episodes')
+      .update(payload)
+      .eq('id', episodeId)
+      .select()
+      .single()
+
+    if (updateError) throw updateError
+
+    episodeRankCache = { expiresAt: 0, rows: [] }
+
+    const { data: story, error: storyError } = await supabase
+      .from('stories')
+      .select('id, author_id, title')
+      .eq('id', episode.story_id)
+      .maybeSingle()
+
+    if (storyError) throw storyError
+
+    await supabase.from('ranking_moderation_logs').insert({
+      item_type: 'episode',
+      item_id: episodeId,
+      story_id: episode.story_id,
+      author_id: story?.author_id || null,
+      action:
+        rankingVisibility === 'hidden'
+          ? 'episode_hidden_from_ranking'
+          : 'episode_unhidden_from_ranking',
+      reason:
+        rankingVisibility === 'hidden'
+          ? reason
+          : 'Episode restored to ranking by admin',
+      admin_actor: actor,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      message:
+        rankingVisibility === 'hidden'
+          ? 'Episode hidden from ranking'
+          : 'Episode restored to ranking',
+      episode: {
+        id: episode.id,
+        episode_id: episode.id,
+        story_id: episode.story_id,
+        story_title: story?.title || 'Untitled Story',
+        author_id: story?.author_id || null,
+        title: episode.title || 'Untitled Episode',
+        episode_number: Number(episode.episode_number || 0),
+        status: episode.status || 'published',
+        ranking_visibility_status:
+          episode.ranking_visibility_status || 'visible',
+        ranking_hidden_reason: episode.ranking_hidden_reason || '',
+        ranking_hidden_at: episode.ranking_hidden_at || null,
+        ranking_hidden_by: episode.ranking_hidden_by || '',
+        ranking_note: episode.ranking_note || '',
+      },
+    })
+  } catch (error) {
+    console.error('UPDATE EPISODE RANKING VISIBILITY ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update episode ranking visibility',
+      error: error.message,
+    })
   }
 }
