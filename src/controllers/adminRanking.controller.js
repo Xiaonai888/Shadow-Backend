@@ -167,36 +167,54 @@ export async function getAdminGenreRanking(req, res) {
       })
     }
 
-    const { data, error } = await supabase
-      .from('stories')
-      .select('id, main_genre, total_views, total_likes, total_comments')
-      .is('deleted_at', null)
-      .eq('status', 'published')
-      .eq('admin_visibility_status', 'active')
-      .eq('ranking_visibility_status', 'visible')
+    const [genresResult, storiesResult] = await Promise.all([
+      supabase
+        .from('genres')
+        .select('id, name, slug, sort_order, is_active')
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true })
+        .order('name', { ascending: true }),
+      supabase
+        .from('stories')
+        .select('id, main_genre, total_views, total_likes, total_comments')
+        .is('deleted_at', null)
+        .eq('status', 'published')
+        .eq('admin_visibility_status', 'active')
+        .eq('ranking_visibility_status', 'visible'),
+    ])
 
-    if (error) throw error
+    if (genresResult.error) throw genresResult.error
+    if (storiesResult.error) throw storiesResult.error
 
     const grouped = new Map()
 
-    for (const story of data || []) {
-      const genre = cleanText(story.main_genre)
-      if (!genre) continue
+    for (const genreRow of genresResult.data || []) {
+      const genreName = cleanText(genreRow.name)
+      if (!genreName) continue
 
-      const key = genre.toLowerCase()
-      const current = grouped.get(key) || {
-        genre,
+      grouped.set(genreName.toLowerCase(), {
+        genre_id: genreRow.id,
+        genre: genreName,
+        slug: cleanText(genreRow.slug),
+        sort_order: Number(genreRow.sort_order || 0),
         story_count: 0,
         total_views: 0,
         total_likes: 0,
         total_comments: 0,
-      }
+      })
+    }
+
+    for (const story of storiesResult.data || []) {
+      const key = cleanText(story.main_genre).toLowerCase()
+      if (!key) continue
+
+      const current = grouped.get(key)
+      if (!current) continue
 
       current.story_count += 1
       current.total_views += Number(story.total_views || 0)
       current.total_likes += Number(story.total_likes || 0)
       current.total_comments += Number(story.total_comments || 0)
-      grouped.set(key, current)
     }
 
     const totalViews = [...grouped.values()].reduce(
@@ -219,9 +237,13 @@ export async function getAdminGenreRanking(req, res) {
           b.total_views - a.total_views ||
           b.average_views - a.average_views ||
           b.total_likes - a.total_likes ||
+          a.sort_order - b.sort_order ||
           a.genre.localeCompare(b.genre)
       )
-      .map((row, index) => ({ rank: index + 1, ...row }))
+      .map((row, index) => ({
+        rank: index + 1,
+        ...row,
+      }))
 
     const payload = {
       ok: true,
@@ -255,6 +277,7 @@ export async function getAdminGenreRanking(req, res) {
     })
   }
 }
+
 
 const AUTHOR_RANK_CACHE_MS = PUBLIC_RANK_CACHE_MS
 let authorRankCache = { expiresAt: 0, rows: null, settingsKey: '' }
