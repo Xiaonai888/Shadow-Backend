@@ -1,3 +1,4 @@
+import { getReaderStoreHome } from '../controllers/readerStore.controller.js'
 import express from 'express'
 import multer from 'multer'
 import {
@@ -120,6 +121,7 @@ router.get('/orders/status/:orderId', requireUser, getAuthorStoreOrderStatus)
 router.post('/orders/callback', handleAuthorStoreAbaCallback)
 router.put('/me/products/:productId', requireUser, updateMyAuthorStoreProduct)
 router.delete('/me/products/:productId', requireUser, deleteMyAuthorStoreProduct)
+router.get('/store/home', getReaderStoreHome)
 router.get('/page/:pageUsername/products', getPublicAuthorStoreProducts)
 router.post('/admin/orders/:orderId/resend-telegram', requireAdmin, resendAdminAuthorStoreOrderTelegram)
 router.get('/admin/stores', requireAdmin, getAdminAuthorStoreStores)
