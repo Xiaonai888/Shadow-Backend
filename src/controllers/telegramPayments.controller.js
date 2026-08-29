@@ -1,3 +1,4 @@
+import { publishPaymentStatus } from '../services/paymentEvents.service.js'
 import { supabase } from '../config/supabase.js'
 import {
   createAuthorStorePaidNotificationsSafely,
@@ -608,8 +609,10 @@ async function releaseMatchedOrder(payment, telegramPayment) {
     p_payer_name: telegramPayment.payer_name || null,
   })
 
-  if (error) throw error
-  return Array.isArray(data) ? data[0] : data
+ if (error) throw error
+const released = Array.isArray(data) ? data[0] : data
+if (released) publishPaymentStatus(released)
+return released
 }
 
 async function getPaymentForAction(paymentId) {
