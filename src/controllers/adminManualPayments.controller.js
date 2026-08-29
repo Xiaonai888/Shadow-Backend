@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { publishPaymentStatus } from '../services/paymentEvents.service.js'
 
 function normalizeStatus(status) {
   const value = String(status || '').trim().toLowerCase()
@@ -130,7 +131,8 @@ export async function confirmAdminManualPayment(req, res) {
     if (error) throw error
 
     const payment = Array.isArray(data) ? data[0] : data
-    const userMap = await getUsersMap([payment?.user_id])
+if (payment) publishPaymentStatus(payment)
+const userMap = await getUsersMap([payment?.user_id])
 
     return res.status(200).json({ ok: true, payment: publicManualPayment(payment, userMap) })
   } catch (error) {
@@ -165,7 +167,8 @@ export async function rejectAdminManualPayment(req, res) {
 
     if (error) throw error
 
-    const userMap = await getUsersMap([data.user_id])
+if (data) publishPaymentStatus(data)
+const userMap = await getUsersMap([data.user_id])
     return res.status(200).json({ ok: true, payment: publicManualPayment(data, userMap) })
   } catch (error) {
     console.error('REJECT ADMIN MANUAL PAYMENT ERROR:', error)
