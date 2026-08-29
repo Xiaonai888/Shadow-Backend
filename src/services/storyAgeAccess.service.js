@@ -106,8 +106,9 @@ export function applyAdultStoryVisibility(query, access) {
 }
 
 export function hideAdultStory(res) {
-  return res.status(404).json({
+  return res.status(403).json({
     ok: false,
-    message: 'Story not found',
+    code: 'ADULT_RESTRICTED',
+    message: 'This story is restricted to readers aged 18 or older.',
   })
 }
