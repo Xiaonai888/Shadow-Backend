@@ -6,7 +6,7 @@ const MISSION_LIMIT = 2
 const RECENT_COOLDOWN_DAYS = 7
 const MIN_EPISODES = 5
 
-function gធetPhnomPenhDateKey(date = new Date()) {
+function getPhnomPenhDateKey(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Phnom_Penh',
     year: 'numeric',
@@ -161,6 +161,46 @@ function pickStory({
   const available = stories.filter((story) => !selectedStoryIds.has(String(story.id)))
 
   const unseen = available.filter((story) => !lastSelectedMap.has(String(story.id)))
+
+  const unseenUpdated = unseen.filter((story) => recentUpdateMap.has(String(story.id)))
+  const unseenUpdatedPick = randomItem(unseenUpdated)
+  if (unseenUpdatedPick) return { story: unseenUpdatedPick, source: 'unseen' }
+
+  const unseenCompleted = unseen.filter(
+    (story) => normalizeStoryStatus(story.story_status) === 'completed'
+  )
+  const unseenCompletedPick = randomItem(unseenCompleted)
+  if (unseenCompletedPick) return { story: unseenCompletedPick, source: 'unseen' }
+
+  const outsideCooldown = available.filter((story) => {
+    const history = lastSelectedMap.get(String(story.id))
+    return !history || toTime(history.selected_at) < cooldownCutoff
+  })
+
+  const updated = outsideCooldown.filter((story) => recentUpdateMap.has(String(story.id)))
+  const updatedPick = randomItem(updated)
+  if (updatedPick) return { story: updatedPick, source: 'updated' }
+
+  const completed = outsideCooldown.filter(
+    (story) => normalizeStoryStatus(story.story_status) === 'completed'
+  )
+  const completedPick = randomItem(completed)
+  if (completedPick) return { story: completedPick, source: 'completed' }
+
+  const recyclePool = [...available].sort((a, b) => {
+    const aTime = toTime(lastSelectedMap.get(String(a.id))?.selected_at)
+    const bTime = toTime(lastSelectedMap.get(String(b.id))?.selected_at)
+
+    if (aTime !== bTime) return aTime - bTime
+    return Math.random() - 0.5
+  })
+
+  const recyclePick = recyclePool[0] || null
+  return recyclePick ? { story: recyclePick, source: 'recycle' } : null
+}) {
+  const available = stories.filter((story) => !selectedStoryIds.has(String(story.id)))
+
+  const unseen = available.filter((story) => !lastSelectedMap.has(String(story.id)))
   const unseenPick = randomItem(unseen)
   if (unseenPick) return { story: unseenPick, source: 'unseen' }
 
@@ -302,16 +342,19 @@ export async function rotateTaskCenterAutoStories({ force = false } = {}) {
     getHistoryRows(),
   ])
 
+  const recommendationStories = stories.filter(
+    (story) =>
+      normalizeStoryStatus(story.story_status) === 'completed' ||
+      recentUpdateMap.has(String(story.id))
+  )
+
   if (recommendationStories.length < MISSION_LIMIT) {
     throw new Error('Auto reading mission requires at least 2 eligible published stories')
   }
 
-  const recommendationStories = stories.filter(
-  (story) =>
-    normalizeStoryStatus(story.story_status) === 'completed' ||
-    recentUpdateMap.has(String(story.id))
-)
-const storyMap = new Map(recommendationStories.map((story) => [String(story.id), story]))
+  const storyMap = new Map(
+    recommendationStories.map((story) => [String(story.id), story])
+  )
   const todayRows = historyRows.filter((row) => String(row.featured_date) === dateKey)
   const validTodayRows = []
   const invalidTodayRows = []
