@@ -15,9 +15,10 @@ import {
   updateAdminRankingSettings,
 } from '../controllers/adminRankingSettings.controller.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
-
+import { getAdminSectionRanking } from '../controllers/adminSectionRank.controller.js'
 const router = express.Router()
 
+router.get('/sections', requireAdmin, getAdminSectionRanking)
 router.get('/stories', requireAdmin, getAdminStoryRanking)
 router.get('/genres', requireAdmin, getAdminGenreRanking)
 router.get('/authors', requireAdmin, getAdminAuthorRanking)
