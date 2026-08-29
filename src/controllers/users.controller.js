@@ -470,12 +470,10 @@ export async function loginUser(req, res) {
     const token = createUserToken(data)
 
     return res.status(200).json({
-  ok: true,
-  user: {
-    ...publicUser(data),
-    payment_account_name: data.payment_account_name || '',
-  },
-})
+      ok: true,
+      token,
+      user: publicUser(data),
+    })
   } catch (error) {
     console.error('LOGIN USER ERROR:', error)
 
@@ -509,13 +507,10 @@ export async function requestPasswordReset(req, res) {
 
     if (!user) {
       return res.status(200).json({
-  ok: true,
-  message: 'Payment profile saved',
-  user: {
-    ...publicUser(data),
-    payment_account_name: data.payment_account_name || '',
-  },
-})
+        ok: true,
+        message: 'If this email exists, a reset code has been sent.',
+        email_sent: true,
+      })
     }
 
     await supabase
@@ -1319,7 +1314,10 @@ export async function getCurrentUser(req, res) {
 
     return res.status(200).json({
       ok: true,
-      user: publicUser(data),
+      user: {
+        ...publicUser(data),
+        payment_account_name: data.payment_account_name || '',
+      },
     })
   } catch (error) {
     console.error('GET CURRENT USER ERROR:', error)
@@ -1704,7 +1702,10 @@ export async function updatePaymentProfile(req, res) {
     return res.status(200).json({
       ok: true,
       message: 'Payment profile saved',
-      user: publicUser(data),
+      user: {
+        ...publicUser(data),
+        payment_account_name: data.payment_account_name || '',
+      },
     })
   } catch (error) {
     console.error('UPDATE PAYMENT PROFILE ERROR:', error)
