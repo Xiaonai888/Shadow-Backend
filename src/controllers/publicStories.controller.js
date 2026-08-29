@@ -2163,6 +2163,12 @@ export async function getPublicStoryEpisodes(req, res) {
       })
     }
 
+    const ageAccess = await getReaderAgeAccess(req)
+
+if (!isStoryVisibleToReader(story, ageAccess)) {
+  return hideAdultStory(res)
+}
+
     const { data, error } = await supabase
       .from('episodes')
       .select(
@@ -2264,6 +2270,12 @@ export async function getPublicEpisodeById(req, res) {
         message: 'Story not found',
       })
     }
+
+    const ageAccess = await getReaderAgeAccess(req)
+
+if (!isStoryVisibleToReader(story, ageAccess)) {
+  return hideAdultStory(res)
+}
 
     const authorPage = await getAuthorPageById(story.author_id)
 
