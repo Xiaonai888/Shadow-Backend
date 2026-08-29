@@ -197,42 +197,6 @@ function pickStory({
 
   const recyclePick = recyclePool[0] || null
   return recyclePick ? { story: recyclePick, source: 'recycle' } : null
-}) {
-  const available = stories.filter((story) => !selectedStoryIds.has(String(story.id)))
-
-  const unseen = available.filter((story) => !lastSelectedMap.has(String(story.id)))
-  const unseenPick = randomItem(unseen)
-  if (unseenPick) return { story: unseenPick, source: 'unseen' }
-
-  const outsideCooldown = available.filter((story) => {
-    const history = lastSelectedMap.get(String(story.id))
-    return !history || toTime(history.selected_at) < cooldownCutoff
-  })
-
-  const updated = outsideCooldown.filter((story) => recentUpdateMap.has(String(story.id)))
-  const updatedPick = randomItem(updated)
-  if (updatedPick) return { story: updatedPick, source: 'updated' }
-
-  const fresh = outsideCooldown.filter((story) => normalizeStoryStatus(story.story_status) === 'new')
-  const freshPick = randomItem(fresh)
-  if (freshPick) return { story: freshPick, source: 'new' }
-
-  const completed = outsideCooldown.filter(
-    (story) => normalizeStoryStatus(story.story_status) === 'completed'
-  )
-  const completedPick = randomItem(completed)
-  if (completedPick) return { story: completedPick, source: 'completed' }
-
-  const recyclePool = [...available].sort((a, b) => {
-    const aTime = toTime(lastSelectedMap.get(String(a.id))?.selected_at)
-    const bTime = toTime(lastSelectedMap.get(String(b.id))?.selected_at)
-
-    if (aTime !== bTime) return aTime - bTime
-    return Math.random() - 0.5
-  })
-
-  const recyclePick = recyclePool[0] || null
-  return recyclePick ? { story: recyclePick, source: 'recycle' } : null
 }
 
 async function deleteInvalidTodayRows(rows = []) {
