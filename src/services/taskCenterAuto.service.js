@@ -4,8 +4,9 @@ const SETTING_KEY = 'main'
 const AUTO_MODE = 'auto'
 const MISSION_LIMIT = 2
 const RECENT_COOLDOWN_DAYS = 7
+const MIN_EPISODES = 5
 
-function getPhnomPenhDateKey(date = new Date()) {
+function gធetPhnomPenhDateKey(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Phnom_Penh',
     year: 'numeric',
@@ -85,7 +86,7 @@ async function getEligibleStories() {
     if (!String(story.title || '').trim()) return false
     if (Boolean(story.is_shadow_exclusive)) return false
     if (Boolean(story.is_adult)) return false
-    if (Number(story.total_episodes || 0) <= 0) return false
+    if (Number(story.total_episodes || 0) < MIN_EPISODES) return false
     return true
   })
 }
@@ -301,11 +302,16 @@ export async function rotateTaskCenterAutoStories({ force = false } = {}) {
     getHistoryRows(),
   ])
 
-  if (stories.length < MISSION_LIMIT) {
+  if (recommendationStories.length < MISSION_LIMIT) {
     throw new Error('Auto reading mission requires at least 2 eligible published stories')
   }
 
-  const storyMap = new Map(stories.map((story) => [String(story.id), story]))
+  const recommendationStories = stories.filter(
+  (story) =>
+    normalizeStoryStatus(story.story_status) === 'completed' ||
+    recentUpdateMap.has(String(story.id))
+)
+const storyMap = new Map(recommendationStories.map((story) => [String(story.id), story]))
   const todayRows = historyRows.filter((row) => String(row.featured_date) === dateKey)
   const validTodayRows = []
   const invalidTodayRows = []
@@ -352,7 +358,7 @@ export async function rotateTaskCenterAutoStories({ force = false } = {}) {
     if (selections.some((selection) => selection.slot === slot)) continue
 
     const picked = pickStory({
-      stories,
+      stories: recommendationStories,
       selectedStoryIds: new Set(selections.map((selection) => String(selection.story.id))),
       lastSelectedMap,
       recentUpdateMap,
