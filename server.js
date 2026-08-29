@@ -84,6 +84,8 @@ import adminSearchInsightsRoutes from './src/routes/adminSearchInsights.routes.j
 import musicRoutes from './src/routes/music.routes.js'
 import { startMangaR2DeleteRetryWorker } from './src/services/mangaR2DeleteRetry.service.js'
 import storyTranslationRoutes from './src/routes/storyTranslation.routes.js'
+import { startMusicYoutubeViewsSync } from './src/services/musicYoutubeViews.service.js'
+
 dotenv.config()
 
 const app = express()
@@ -627,7 +629,9 @@ app.listen(PORT, () => {
   startCommentTrashCleanup()
   startChatRetentionCleanup()
   startStorageMigrationCleanupScheduler()
+  startMusicYoutubeViewsSync()
   void startMangaR2DeleteRetryWorker()
+  
 
   if (process.env.ENABLE_TELEGRAM_USER_LISTENER === 'true') {
     startTelegramUserListener().catch((error) => {
