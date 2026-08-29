@@ -63,9 +63,12 @@ function parseAbaDate(value) {
 
 function parseAbaPaywayMessage(text) {
   const source = String(text || '').replace(/\s+/g, ' ').trim()
-  const pattern = /\$\s*([0-9]+(?:\.[0-9]{1,2})?)\s+paid by\s+(.+?)\s+\(\*(\d+)\)\s+on\s+(.+?)\s+via\s+(.+?)\s+\((.+?)\)\s+at\s+(.+?)\.\s*Trx\.\s*ID:\s*([A-Za-z0-9_-]+)\s*,\s*APV:\s*([A-Za-z0-9_-]+)/i
+  const pattern = /\$\s*([0-9]+(?:\.[0-9]{1,2})?)\s+paid by\s+(.+?)\s+\(\*(\d+)\)\s+on\s+(.+?)\s+via\s+(.+?)\s+at\s+(.+?)\.\s*Trx\.\s*ID:\s*([A-Za-z0-9_-]+)\s*,\s*APV:\s*([A-Za-z0-9_-]+)/i
   const match = source.match(pattern)
   if (!match) return null
+
+  const viaText = match[5].trim()
+  const bankMatch = viaText.match(/^(.*?)\s+\((.+)\)$/)
 
   return {
     amount: Number(match[1]),
@@ -75,12 +78,12 @@ function parseAbaPaywayMessage(text) {
     payer_phone_last: match[3].trim(),
     transaction_time: parseAbaDate(match[4]),
     transaction_time_text: match[4].trim(),
-    payment_method_text: match[5].trim(),
-    bank_name: match[6].trim(),
-    outlet_name: match[7].trim(),
-    outlet_name_normalized: normalizeName(match[7]),
-    trx_id: match[8].trim(),
-    apv: match[9].trim(),
+    payment_method_text: (bankMatch ? bankMatch[1] : viaText).trim(),
+    bank_name: bankMatch ? bankMatch[2].trim() : '',
+    outlet_name: match[6].trim(),
+    outlet_name_normalized: normalizeName(match[6]),
+    trx_id: match[7].trim(),
+    apv: match[8].trim(),
     raw_text: source,
   }
 }
