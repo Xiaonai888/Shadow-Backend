@@ -19,6 +19,7 @@ import {
   getManualPaymentStatus,
   submitManualPaymentProof,
 } from '../controllers/manualPayments.controller.js'
+import { openPaymentEventStream } from '../services/paymentEvents.service.js'
 
 const router = express.Router()
 const upload = multer({
@@ -36,6 +37,7 @@ router.post('/manual/create', requireUser, createManualPayment)
 router.post('/manual/cancel/:orderId', requireUser, cancelManualPayment)
 router.post('/manual/proof/:orderId', requireUser, upload.single('proof_image'), submitManualPaymentProof)
 router.get('/manual/status/:orderId', requireUser, getManualPaymentStatus)
+router.get('/manual/events/:orderId', requireUser, openPaymentEventStream)
 
 router.post('/aba/create', requireUser, createAbaPayment)
 router.get('/aba/status/:orderId', requireUser, getAbaPaymentStatus)
