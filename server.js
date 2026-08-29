@@ -82,6 +82,7 @@ import adminRolesRoutes from './src/routes/adminRoles.routes.js'
 import adminAccountsRoutes from './src/routes/adminAccounts.routes.js'
 import adminSearchInsightsRoutes from './src/routes/adminSearchInsights.routes.js'
 import { startMangaR2DeleteRetryWorker } from './src/services/mangaR2DeleteRetry.service.js'
+import storyTranslationRoutes from './src/routes/storyTranslation.routes.js'
 dotenv.config()
 
 const app = express()
@@ -267,6 +268,12 @@ const supportActionSpamGuard = createSpamGuard({
 const reportActionSpamGuard = createSpamGuard({
   scope: 'report_actions',
   threshold: 20,
+  windowSeconds: 60,
+})
+
+const storyTranslationSpamGuard = createSpamGuard({
+  scope: 'story_translation',
+  threshold: 12,
   windowSeconds: 60,
 })
 
@@ -596,6 +603,7 @@ app.use('/api/admin/events', adminEventsRoutes)
 app.use('/api/admin/roles', adminRolesRoutes)
 app.use('/api/admin/accounts', adminAccountsRoutes)
 app.use('/api/admin/search-insights', adminSearchInsightsRoutes)
+app.use('/api/story-translation', storyTranslationSpamGuard, storyTranslationRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
