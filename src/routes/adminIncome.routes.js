@@ -1,5 +1,6 @@
 import express from 'express'
 import { requireAdmin } from '../middleware/auth.middleware.js'
+import { getAdminDiamondGifts } from '../controllers/adminDiamondGifts.controller.js'
 import {
   generateAdminAuthorPayouts,
   getAdminAuthorPayouts,
@@ -12,6 +13,7 @@ const router = express.Router()
 
 router.get('/summary', requireAdmin, getAdminIncomeSummary)
 router.get('/episode-sales', requireAdmin, getAdminEpisodeSales)
+router.get('/diamond-gifts', requireAdmin, getAdminDiamondGifts)
 router.get('/payouts', requireAdmin, getAdminAuthorPayouts)
 router.post(
   '/payouts/generate',
