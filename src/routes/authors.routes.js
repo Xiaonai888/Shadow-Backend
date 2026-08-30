@@ -4,7 +4,10 @@ import { getFollowedAuthorPostsFeed } from '../controllers/followedAuthorPostsFe
 import { getDiscoverAuthorSuggestions } from '../controllers/authorDiscovery.controller.js'
 import { getDiscoverAuthorPostsFeed } from '../controllers/discoverAuthorPostsFeed.controller.js'
 import { inviteAuthorPageFriend } from '../controllers/authorPageInvites.controller.js'
-import { getAuthorHashtagSuggestions } from '../controllers/authorHashtags.controller.js'
+import {
+  getAuthorHashtagSuggestions,
+  recordAuthorHashtagInterest,
+} from '../controllers/authorHashtags.controller.js'
 import express from 'express'
 
 import {
@@ -172,6 +175,7 @@ router.get('/following', requireUser, getFollowedAuthorPages)
 router.get('/following/posts/feed', requireUser, getFollowedAuthorPostsFeed)
 router.get('/discover', requireUser, getDiscoverAuthorSuggestions)
 router.get('/hashtags/suggest', requireUser, getAuthorHashtagSuggestions)
+router.post('/hashtags/interest', requireUser, recordAuthorHashtagInterest)
 router.get('/discover/posts/feed', requireUser, getDiscoverAuthorPostsFeed)
 router.get('/top', getTopAuthorPages)
 router.get('/page/:pageUsername/followers', getAuthorPageFollowers)
