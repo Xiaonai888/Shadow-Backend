@@ -994,10 +994,40 @@ export async function followAuthorPage(req, res) {
 
     
 
-    const alreadyFollowing = await getFollowStatus(
-      authorPage.id,
-      userId
-    )
+    const sourcePostId = String(
+  req.body?.source_post_id || ''
+).trim()
+
+let attributedPostId = null
+
+if (sourcePostId) {
+  const {
+    data: sourcePost,
+    error: sourcePostError,
+  } = await supabase
+    .from('author_page_posts')
+    .select('id')
+    .eq('id', sourcePostId)
+    .eq('author_page_id', authorPage.id)
+    .eq('status', 'active')
+    .maybeSingle()
+
+  if (sourcePostError) throw sourcePostError
+
+  if (!sourcePost) {
+    return res.status(400).json({
+      ok: false,
+      message: 'Invalid source post',
+    })
+  }
+
+  attributedPostId = String(sourcePost.id)
+}
+
+const alreadyFollowing = await getFollowStatus(
+  authorPage.id,
+  userId
+)
 
     let followCreated = false
 
@@ -1005,9 +1035,10 @@ export async function followAuthorPage(req, res) {
       const { error: followError } = await supabase
         .from('author_page_follows')
         .insert({
-          author_page_id: authorPage.id,
-          follower_user_id: userId,
-        })
+  author_page_id: authorPage.id,
+  follower_user_id: userId,
+  source_post_id: attributedPostId,
+})
 
       if (followError && followError.code !== '23505') {
         throw followError
