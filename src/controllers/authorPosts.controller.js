@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
+import { recordPostHashtagInterestSignalSafely } from '../services/userHashtagInterest.service.js'
 import {
   createAuthorPageNotificationSafely,
   deleteAuthorPageNotificationBySourceKeySafely,
@@ -1060,6 +1061,14 @@ export async function setMyAuthorPostReaction(req, res) {
 
     const isOwner =
       String(post.user_id || '') === String(userId)
+
+    if (interactionCreated && !isOwner) {
+  await recordPostHashtagInterestSignalSafely({
+    userId,
+    postId,
+    signal: 'reaction',
+  })
+}
 
     if (!isOwner && post.author_page_id) {
       const sourceKey = `author-post-reaction:${postId}:${userId}`
