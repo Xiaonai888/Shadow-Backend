@@ -1,4 +1,10 @@
 import { supabase } from '../config/supabase.js'
+import { recordHashtagInterestSignalSafely } from '../services/userHashtagInterest.service.js'
+
+const HASHTAG_INTEREST_SIGNALS = new Set([
+  'hashtag_click',
+  'search',
+])
 
 function normalizePrefix(value) {
   return String(value || '')
@@ -53,4 +59,44 @@ export async function getAuthorHashtagSuggestions(req, res) {
       message: 'Failed to load hashtag suggestions',
     })
   }
+}
+
+export async function recordAuthorHashtagInterest(req, res) {
+  const userId = String(req.user?.user_id || '').trim()
+  const tag = normalizePrefix(req.body?.tag)
+  const signal = String(req.body?.signal || '')
+    .trim()
+    .toLowerCase()
+
+  if (!userId) {
+    return res.status(401).json({
+      ok: false,
+      message: 'Unauthorized',
+    })
+  }
+
+  if (!tag) {
+    return res.status(400).json({
+      ok: false,
+      message: 'Hashtag is required',
+    })
+  }
+
+  if (!HASHTAG_INTEREST_SIGNALS.has(signal)) {
+    return res.status(400).json({
+      ok: false,
+      message: 'Invalid interest signal',
+    })
+  }
+
+  const score = await recordHashtagInterestSignalSafely({
+    userId,
+    tag,
+    signal,
+  })
+
+  return res.status(200).json({
+    ok: true,
+    recorded: score > 0,
+  })
 }
