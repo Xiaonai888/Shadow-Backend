@@ -207,6 +207,121 @@ export async function recordAuthorPostView(req, res, next) {
   next()
 }
 
+export async function recordAuthorPostClick(req, res) {
+  try {
+    const postId = String(req.params.postId || '').trim()
+    const targetUrl = String(req.body?.target_url || '').trim()
+
+    if (!postId || !targetUrl || targetUrl.length > 2000) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Valid post ID and target URL are required',
+      })
+    }
+
+    let parsedUrl
+
+    try {
+      parsedUrl = new URL(targetUrl)
+    } catch {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid target URL',
+      })
+    }
+
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid target URL',
+      })
+    }
+
+    const clickerUserId = getRequestUserId(req)
+    const clickerKey = getViewerKey(req, clickerUserId)
+
+    const { data: post, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('id, user_id, content')
+      .eq('id', postId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
+    }
+
+    if (!String(post.content || '').includes(targetUrl)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Link does not belong to this post',
+      })
+    }
+
+    if (
+      clickerUserId &&
+      String(post.user_id) === String(clickerUserId)
+    ) {
+      return res.status(200).json({
+        ok: true,
+        recorded: false,
+      })
+    }
+
+    const recentSince = new Date(
+      Date.now() - 2000
+    ).toISOString()
+
+    const { data: recent, error: recentError } = await supabase
+      .from('author_page_post_clicks')
+      .select('id')
+      .eq('post_id', postId)
+      .eq('clicker_key', clickerKey)
+      .eq('target_url', targetUrl)
+      .gte('clicked_at', recentSince)
+      .limit(1)
+
+    if (recentError) throw recentError
+
+    if (recent?.length) {
+      return res.status(200).json({
+        ok: true,
+        recorded: false,
+      })
+    }
+
+    const { error: clickError } = await supabase
+      .from('author_page_post_clicks')
+      .insert({
+        post_id: postId,
+        clicker_user_id: clickerUserId
+          ? String(clickerUserId)
+          : null,
+        clicker_key: clickerKey,
+        target_url: targetUrl,
+      })
+
+    if (clickError) throw clickError
+
+    return res.status(201).json({
+      ok: true,
+      recorded: true,
+    })
+  } catch (error) {
+    console.error('RECORD AUTHOR POST CLICK ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to record post click',
+    })
+  }
+}
+
 export async function getMyAuthorPostInsights(req, res) {
   try {
     const userId = String(
@@ -275,6 +390,7 @@ export async function getMyAuthorPostInsights(req, res) {
   commentsResult,
   echoesResult,
   savesResult,
+  clicksResult,
   followsResult,
 ] = await Promise.all([
       supabase
