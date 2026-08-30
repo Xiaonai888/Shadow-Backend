@@ -37,7 +37,7 @@ create table if not exists public.music_songs (
   title text not null,
   youtube_url text not null,
   youtube_video_id text not null,
-  youtube_view_count bigint not null default 0 check (youtube_view_count >= 0),
+  view_count bigint not null default 0 check (view_count >= 0),
   duration_seconds integer not null default 0 check (duration_seconds >= 0),
   track_number integer not null default 1 check (track_number >= 1),
   is_active boolean not null default true,
@@ -46,10 +46,41 @@ create table if not exists public.music_songs (
   updated_at timestamptz not null default now()
 );
 
-create index if not exists idx_music_artists_active_sort on public.music_artists (is_active, sort_order, name);
-create index if not exists idx_music_releases_artist_active on public.music_releases (artist_id, is_active, sort_order);
-create index if not exists idx_music_songs_release_active on public.music_songs (release_id, is_active, track_number, sort_order);
-create index if not exists idx_music_songs_popular on public.music_songs (artist_id, youtube_view_count desc) where is_active = true;
+alter table public.music_songs
+add column if not exists view_count bigint not null default 0 check (view_count >= 0);
+
+create table if not exists public.music_listens (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.users(id) on delete cascade,
+  song_id uuid not null references public.music_songs(id) on delete cascade,
+  listened_seconds integer not null default 5 check (listened_seconds >= 5),
+  counted_view boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_music_artists_active_sort
+on public.music_artists (is_active, sort_order, name);
+
+create index if not exists idx_music_releases_artist_active
+on public.music_releases (artist_id, is_active, sort_order);
+
+create index if not exists idx_music_songs_release_active
+on public.music_songs (release_id, is_active, track_number, sort_order);
+
+drop index if exists public.idx_music_songs_popular;
+
+create index if not exists idx_music_songs_popular
+on public.music_songs (artist_id, view_count desc)
+where is_active = true;
+
+create index if not exists idx_music_listens_user_song_created
+on public.music_listens (user_id, song_id, created_at desc);
+
+create index if not exists idx_music_listens_song_created
+on public.music_listens (song_id, created_at desc);
+
+create index if not exists idx_music_listens_user_created
+on public.music_listens (user_id, created_at desc);
 
 create or replace function public.set_music_updated_at()
 returns trigger
@@ -79,3 +110,99 @@ for each row execute function public.set_music_updated_at();
 alter table public.music_artists enable row level security;
 alter table public.music_releases enable row level security;
 alter table public.music_songs enable row level security;
+alter table public.music_listens enable row level security;
+
+revoke all on public.music_listens from public, anon, authenticated;
+grant all on public.music_listens to service_role;
+
+create or replace function public.record_music_listen(
+  p_user_id uuid,
+  p_song_id uuid,
+  p_listened_seconds integer default 5
+)
+returns table (
+  counted boolean,
+  current_view_count bigint
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_last_counted_at timestamptz;
+  v_counted boolean := false;
+  v_view_count bigint := 0;
+begin
+  if p_listened_seconds < 5 then
+    raise exception 'A valid music listen requires at least 5 seconds';
+  end if;
+
+  if not exists (
+    select 1
+    from public.users
+    where id = p_user_id
+      and is_active = true
+  ) then
+    raise exception 'Reader account not found or inactive';
+  end if;
+
+  if not exists (
+    select 1
+    from public.music_songs
+    where id = p_song_id
+      and is_active = true
+  ) then
+    raise exception 'Music song not found or inactive';
+  end if;
+
+  perform pg_advisory_xact_lock(
+    hashtextextended(p_user_id::text || ':' || p_song_id::text, 0)
+  );
+
+  select created_at
+  into v_last_counted_at
+  from public.music_listens
+  where user_id = p_user_id
+    and song_id = p_song_id
+    and counted_view = true
+  order by created_at desc
+  limit 1;
+
+  if v_last_counted_at is null
+     or v_last_counted_at <= now() - interval '30 minutes' then
+    update public.music_songs
+    set view_count = view_count + 1
+    where id = p_song_id
+    returning view_count into v_view_count;
+
+    v_counted := true;
+  else
+    select view_count
+    into v_view_count
+    from public.music_songs
+    where id = p_song_id;
+  end if;
+
+  insert into public.music_listens (
+    user_id,
+    song_id,
+    listened_seconds,
+    counted_view
+  )
+  values (
+    p_user_id,
+    p_song_id,
+    p_listened_seconds,
+    v_counted
+  );
+
+  return query
+  select v_counted, coalesce(v_view_count, 0);
+end;
+$$;
+
+revoke all on function public.record_music_listen(uuid, uuid, integer)
+from public, anon, authenticated;
+
+grant execute on function public.record_music_listen(uuid, uuid, integer)
+to service_role;
