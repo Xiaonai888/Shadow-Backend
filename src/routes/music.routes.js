@@ -1,5 +1,7 @@
 import express from 'express'
 import { requireAdmin } from '../middleware/auth.middleware.js'
+import { requireUser } from '../middleware/user.middleware.js'
+import { recordMusicListen } from '../controllers/musicListen.controller.js'
 import {
   createMusicArtist,
   createMusicRelease,
@@ -20,6 +22,7 @@ const router = express.Router()
 
 router.get('/artists', getPublicMusicArtists)
 router.get('/artists/:artistId', getPublicMusicArtist)
+router.post('/songs/:songId/listen', requireUser, recordMusicListen)
 
 router.get('/admin/artists', requireAdmin, getAdminMusicOverview)
 router.get('/admin/artists/:artistId', requireAdmin, getAdminMusicArtist)
