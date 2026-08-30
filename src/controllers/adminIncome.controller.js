@@ -28,13 +28,33 @@ function roundAmount(value) {
   return Number(numberValue(value).toFixed(6))
 }
 
-function getDateRange(query) {
-  const from = String(query.from || '').trim()
-  const to = String(query.to || '').trim()
+function parseBoundary(value, endExclusive = false) {
+  const text = String(value || '').trim()
 
+  if (!text) return null
+
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(text)
+  const date = new Date(
+    dateOnly ? `${text}T00:00:00+07:00` : text
+  )
+
+  if (Number.isNaN(date.getTime())) {
+    const error = new Error('Invalid date range')
+    error.statusCode = 400
+    throw error
+  }
+
+  if (dateOnly && endExclusive) {
+    date.setTime(date.getTime() + 24 * 60 * 60 * 1000)
+  }
+
+  return date.toISOString()
+}
+
+function getDateRange(query) {
   return {
-    from: from ? new Date(from).toISOString() : null,
-    to: to ? new Date(to).toISOString() : null,
+    from: parseBoundary(query.from, false),
+    to: parseBoundary(query.to, true),
   }
 }
 
