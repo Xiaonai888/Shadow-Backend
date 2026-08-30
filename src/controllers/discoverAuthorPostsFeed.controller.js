@@ -4,6 +4,10 @@ const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 30
 const CANDIDATE_LIMIT = 300
 const POST_WINDOW_DAYS = 30
+const USER_INTEREST_LIMIT = 100
+const INTEREST_HALF_LIFE_DAYS = 30
+const MAX_MATCHED_INTERESTS = 3
+const MAX_PERSONALIZATION_BOOST = 12
 
 function clampLimit(value) {
   const number = Number(value || DEFAULT_LIMIT)
@@ -90,10 +94,185 @@ function compareNewest(first, second) {
     )
 }
 
+function getDecayedInterestScore(
+  interest,
+  snapshotAt
+) {
+  const score = Math.max(
+    0,
+    Number(
+      interest?.interest_score || 0
+    )
+  )
+
+  if (!score) {
+    return 0
+  }
+
+  const snapshotTime =
+    new Date(snapshotAt).getTime()
+  const signalTime =
+    new Date(
+      interest?.last_signal_at || 0
+    ).getTime()
+
+  if (
+    !Number.isFinite(snapshotTime) ||
+    !Number.isFinite(signalTime)
+  ) {
+    return score
+  }
+
+  const ageDays =
+    Math.max(
+      0,
+      snapshotTime - signalTime
+    ) /
+    (24 * 60 * 60 * 1000)
+
+  return (
+    score *
+    Math.pow(
+      0.5,
+      ageDays /
+        INTEREST_HALF_LIFE_DAYS
+    )
+  )
+}
+
+function buildPersonalizationByPost(
+  userInterests,
+  postHashtags,
+  snapshotAt
+) {
+  const interestByHashtag =
+    new Map()
+
+  for (const item of userInterests || []) {
+    const hashtagId =
+      String(
+        item?.hashtag_id || ''
+      )
+
+    if (!hashtagId) {
+      continue
+    }
+
+    const score =
+      getDecayedInterestScore(
+        item,
+        snapshotAt
+      )
+
+    if (score <= 0.01) {
+      continue
+    }
+
+    interestByHashtag.set(
+      hashtagId,
+      score
+    )
+  }
+
+  if (!interestByHashtag.size) {
+    return new Map()
+  }
+
+  const matchedScoresByPost =
+    new Map()
+
+  for (const row of postHashtags || []) {
+    const postId =
+      String(row?.post_id || '')
+    const hashtagId =
+      String(
+        row?.hashtag_id || ''
+      )
+
+    if (!postId || !hashtagId) {
+      continue
+    }
+
+    const score =
+      interestByHashtag.get(
+        hashtagId
+      )
+
+    if (!score) {
+      continue
+    }
+
+    if (
+      !matchedScoresByPost.has(
+        postId
+      )
+    ) {
+      matchedScoresByPost.set(
+        postId,
+        []
+      )
+    }
+
+    matchedScoresByPost
+      .get(postId)
+      .push(score)
+  }
+
+  const personalizationByPost =
+    new Map()
+
+  for (
+    const [postId, scores] of
+    matchedScoresByPost.entries()
+  ) {
+    const strongestMatches =
+      [...scores]
+        .sort(
+          (first, second) =>
+            second - first
+        )
+        .slice(
+          0,
+          MAX_MATCHED_INTERESTS
+        )
+
+    const matchedInterest =
+      Math.min(
+        100,
+        strongestMatches.reduce(
+          (sum, score) =>
+            sum + score,
+          0
+        )
+      )
+
+    const boost =
+      matchedInterest > 0
+        ? (
+            Math.log1p(
+              matchedInterest
+            ) /
+            Math.log1p(100)
+          ) *
+          MAX_PERSONALIZATION_BOOST
+        : 0
+
+    if (boost > 0) {
+      personalizationByPost.set(
+        postId,
+        boost
+      )
+    }
+  }
+
+  return personalizationByPost
+}
+
 function getRecommendationScore(
   post,
   authorPage,
-  snapshotAt
+  snapshotAt,
+  personalizationBoost = 0
 ) {
   const snapshotTime =
     new Date(snapshotAt).getTime()
@@ -157,11 +336,25 @@ function getRecommendationScore(
       ? 1
       : 0
 
+  const personalizationScore =
+    authorPage?.is_owner
+      ? 0
+      : Math.min(
+          MAX_PERSONALIZATION_BOOST,
+          Math.max(
+            0,
+            Number(
+              personalizationBoost || 0
+            )
+          )
+        )
+
   return (
     engagementScore +
     recencyScore +
     discoveryBoost +
-    ownerBoost
+    ownerBoost +
+    personalizationScore
   )
 }
 
@@ -169,7 +362,8 @@ function compareRecommended(
   first,
   second,
   authorById,
-  snapshotAt
+  snapshotAt,
+  personalizationByPost
 ) {
   const firstAuthor =
     authorById.get(
@@ -189,14 +383,20 @@ function compareRecommended(
     getRecommendationScore(
       first,
       firstAuthor,
-      snapshotAt
+      snapshotAt,
+      personalizationByPost.get(
+        String(first.id)
+      ) || 0
     )
 
   const secondScore =
     getRecommendationScore(
       second,
       secondAuthor,
-      snapshotAt
+      snapshotAt,
+      personalizationByPost.get(
+        String(second.id)
+      ) || 0
     )
 
   const scoreDifference =
@@ -373,6 +573,17 @@ export async function getDiscoverAuthorPostsFeed(
       throw postsError
     }
 
+    const candidatePostIds = [
+      ...new Set(
+        (candidatePosts || [])
+          .map(
+            (post) =>
+              post.id
+          )
+          .filter(Boolean)
+      ),
+    ]
+
     const authorPageIds = [
       ...new Set(
         (candidatePosts || [])
@@ -400,6 +611,8 @@ export async function getDiscoverAuthorPostsFeed(
       pagesResult,
       followsResult,
       pageBlocksResult,
+      interestsResult,
+      postHashtagsResult,
     ] = await Promise.all([
       supabase
         .from('author_pages')
@@ -444,6 +657,41 @@ export async function getDiscoverAuthorPostsFeed(
           'author_page_id',
           authorPageIds
         ),
+      supabase
+        .from(
+          'user_hashtag_interests'
+        )
+        .select(
+          'hashtag_id, interest_score, last_signal_at'
+        )
+        .eq(
+          'user_id',
+          userId
+        )
+        .gt(
+          'interest_score',
+          0
+        )
+        .order(
+          'interest_score',
+          {
+            ascending: false,
+          }
+        )
+        .limit(
+          USER_INTEREST_LIMIT
+        ),
+      supabase
+        .from(
+          'author_post_hashtags'
+        )
+        .select(
+          'post_id, hashtag_id'
+        )
+        .in(
+          'post_id',
+          candidatePostIds
+        ),
     ])
 
     if (pagesResult.error) {
@@ -457,6 +705,21 @@ export async function getDiscoverAuthorPostsFeed(
     if (pageBlocksResult.error) {
       throw pageBlocksResult.error
     }
+
+    if (interestsResult.error) {
+      throw interestsResult.error
+    }
+
+    if (postHashtagsResult.error) {
+      throw postHashtagsResult.error
+    }
+
+    const personalizationByPost =
+      buildPersonalizationByPost(
+        interestsResult.data || [],
+        postHashtagsResult.data || [],
+        snapshotAt
+      )
 
     const pages =
       pagesResult.data || []
@@ -610,9 +873,11 @@ export async function getDiscoverAuthorPostsFeed(
             first,
             second,
             authorById,
-            snapshotAt
+            snapshotAt,
+            personalizationByPost
           )
         })
+
     const selectedPosts =
       visiblePosts.slice(
         offset,
@@ -624,66 +889,76 @@ export async function getDiscoverAuthorPostsFeed(
       )
 
     let reactionRows = []
-const echoCountByPost = new Map()
+    const echoCountByPost =
+      new Map()
 
-if (selectedPostIds.length) {
-  const [
-    reactionResult,
-    echoResult,
-  ] = await Promise.all([
-    supabase
-      .from('author_page_post_reactions')
-      .select(
-        'post_id, user_id, reaction_type'
-      )
-      .in(
-        'post_id',
-        selectedPostIds
-      ),
+    if (selectedPostIds.length) {
+      const [
+        reactionResult,
+        echoResult,
+      ] = await Promise.all([
+        supabase
+          .from(
+            'author_page_post_reactions'
+          )
+          .select(
+            'post_id, user_id, reaction_type'
+          )
+          .in(
+            'post_id',
+            selectedPostIds
+          ),
+        supabase
+          .from('social_echoes_v2')
+          .select(
+            'source_id, share_count'
+          )
+          .eq(
+            'source_type',
+            'author_post'
+          )
+          .in(
+            'source_id',
+            selectedPostIds
+          ),
+      ])
 
-    supabase
-      .from('social_echoes_v2')
-      .select(
-        'source_id, share_count'
-      )
-      .eq(
-        'source_type',
-        'author_post'
-      )
-      .in(
-        'source_id',
-        selectedPostIds
-      ),
-  ])
+      if (reactionResult.error) {
+        throw reactionResult.error
+      }
 
-  if (reactionResult.error) {
-    throw reactionResult.error
-  }
+      if (echoResult.error) {
+        throw echoResult.error
+      }
 
-  if (echoResult.error) {
-    throw echoResult.error
-  }
+      reactionRows =
+        reactionResult.data || []
 
-  reactionRows =
-    reactionResult.data || []
+      for (
+        const row of
+        echoResult.data || []
+      ) {
+        const postId =
+          String(
+            row.source_id || ''
+          )
 
-  for (const row of echoResult.data || []) {
-    const postId = String(
-      row.source_id || ''
-    )
-
-    echoCountByPost.set(
-      postId,
-      Number(
-        echoCountByPost.get(postId) || 0
-      ) +
-        Math.max(
-          1,
-          Number(row.share_count || 1)
+        echoCountByPost.set(
+          postId,
+          Number(
+            echoCountByPost.get(
+              postId
+            ) || 0
+          ) +
+            Math.max(
+              1,
+              Number(
+                row.share_count || 1
+              )
+            )
         )
-    )
-  }
-}
+      }
+    }
 
     const {
       summaryByPost,
@@ -729,12 +1004,12 @@ if (selectedPostIds.length) {
                   0
               ),
             echo_count:
-  Number(
-    echoCountByPost.get(
-      String(post.id)
-    ) || 0
-  ),
-echo_state_loaded: true,
+              Number(
+                echoCountByPost.get(
+                  String(post.id)
+                ) || 0
+              ),
+            echo_state_loaded: true,
             reaction_summary:
               summaryByPost.get(
                 post.id
