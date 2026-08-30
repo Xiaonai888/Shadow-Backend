@@ -292,15 +292,18 @@ export async function getAuthorPagePosts(req, res) {
   try {
     const pageUsername = normalizePageUsername(req.params.pageUsername)
     const viewerUserId = getRequestUserId(req)
-    const limit = Math.min(30, Math.max(1, Number(req.query.limit || 20)))
+    const requestedLimit = Math.max(1, Number(req.query.limit || 20))
 
     if (!pageUsername) {
-      return res.status(400).json({ ok: false, message: 'Page username is required' })
+      return res.status(400).json({
+        ok: false,
+        message: 'Page username is required',
+      })
     }
 
     const { data: authorPage, error: pageError } = await supabase
       .from('author_pages')
-      .select('id')
+      .select('id, user_id')
       .eq('page_username', pageUsername)
       .eq('status', 'active')
       .maybeSingle()
@@ -308,8 +311,24 @@ export async function getAuthorPagePosts(req, res) {
     if (pageError) throw pageError
 
     if (!authorPage) {
-      return res.status(404).json({ ok: false, message: 'Author page not found' })
+      return res.status(404).json({
+        ok: false,
+        message: 'Author page not found',
+      })
     }
+
+    const isOwner = Boolean(
+      viewerUserId &&
+        authorPage.user_id &&
+        String(viewerUserId) === String(authorPage.user_id)
+    )
+    const contentLibrary =
+      isOwner &&
+      String(req.query.content_library || '').trim() === '1'
+    const limit = Math.min(
+      contentLibrary ? 100 : 30,
+      requestedLimit
+    )
 
     let postsQuery = supabase
       .from('author_page_posts')
@@ -320,110 +339,192 @@ export async function getAuthorPagePosts(req, res) {
     const before = String(req.query.before || '').trim()
 
     if (before) {
-      const beforeDate = new Date(`${before}T23:59:59.999Z`)
+      if (/^\d{4}-\d{2}-\d{2}$/.test(before)) {
+        const beforeDate = new Date(`${before}T23:59:59.999Z`)
 
-      if (!Number.isNaN(beforeDate.getTime())) {
-        postsQuery = postsQuery.lte('created_at', beforeDate.toISOString())
+        if (!Number.isNaN(beforeDate.getTime())) {
+          postsQuery = postsQuery.lte(
+            'created_at',
+            beforeDate.toISOString()
+          )
+        }
+      } else {
+        const beforeDate = new Date(before)
+
+        if (!Number.isNaN(beforeDate.getTime())) {
+          postsQuery = postsQuery.lt(
+            'created_at',
+            beforeDate.toISOString()
+          )
+        }
       }
     }
 
-    const { data: posts, error: postsError } = await postsQuery
-      .order('is_pinned', { ascending: false })
-      .order('pinned_at', { ascending: false, nullsFirst: false })
-      .order('created_at', { ascending: false })
-      .limit(limit)
+    let orderedQuery = postsQuery
+
+    if (contentLibrary) {
+      orderedQuery = orderedQuery.order(
+        'created_at',
+        { ascending: false }
+      )
+    } else {
+      orderedQuery = orderedQuery
+        .order('is_pinned', { ascending: false })
+        .order('pinned_at', {
+          ascending: false,
+          nullsFirst: false,
+        })
+        .order('created_at', { ascending: false })
+    }
+
+    const { data: posts, error: postsError } =
+      await orderedQuery.limit(limit)
 
     if (postsError) throw postsError
 
     const postIds = (posts || [])
-  .map((post) => post.id)
-  .filter(Boolean)
+      .map((post) => post.id)
+      .filter(Boolean)
 
-let reactionSummaryByPost = new Map()
-const myReactionByPost = new Map()
-const echoCountByPost = new Map()
+    let reactionSummaryByPost = new Map()
+    const myReactionByPost = new Map()
+    const echoCountByPost = new Map()
+    const viewSourcesByPost = new Map()
 
-if (postIds.length) {
-  const [
-    reactionResult,
-    echoResult,
-  ] = await Promise.all([
-    supabase
-      .from('author_page_post_reactions')
-      .select('post_id, user_id, reaction_type')
-      .in('post_id', postIds),
+    if (postIds.length) {
+      const [
+        reactionResult,
+        echoResult,
+        viewSourceResult,
+      ] = await Promise.all([
+        supabase
+          .from('author_page_post_reactions')
+          .select('post_id, user_id, reaction_type')
+          .in('post_id', postIds),
 
-    supabase
-      .from('social_echoes_v2')
-      .select('source_id, share_count')
-      .eq('source_type', 'author_post')
-      .in('source_id', postIds),
-  ])
+        supabase
+          .from('social_echoes_v2')
+          .select('source_id, share_count')
+          .eq('source_type', 'author_post')
+          .in('source_id', postIds),
 
-  if (reactionResult.error) {
-    throw reactionResult.error
-  }
+        contentLibrary
+          ? supabase
+              .from('author_page_post_views')
+              .select('post_id, source')
+              .in(
+                'post_id',
+                postIds.map((id) => String(id))
+              )
+          : Promise.resolve({
+              data: [],
+              error: null,
+            }),
+      ])
 
-  if (echoResult.error) {
-    throw echoResult.error
-  }
+      if (reactionResult.error) {
+        throw reactionResult.error
+      }
 
-  reactionSummaryByPost =
-    buildReactionSummaryMap(
-      reactionResult.data || []
-    )
+      if (echoResult.error) {
+        throw echoResult.error
+      }
 
-  for (const row of reactionResult.data || []) {
-  if (
-    viewerUserId &&
-    String(row.user_id) === String(viewerUserId)
-  ) {
-    myReactionByPost.set(
-      String(row.post_id),
-      String(row.reaction_type || '').trim().toLowerCase()
-    )
-  }
-}
+      if (viewSourceResult.error) {
+        throw viewSourceResult.error
+      }
 
-  for (const row of echoResult.data || []) {
-    const postId = String(
-      row.source_id || ''
-    )
-
-    echoCountByPost.set(
-      postId,
-      Number(
-        echoCountByPost.get(postId) || 0
-      ) +
-        Math.max(
-          1,
-          Number(row.share_count || 1)
+      reactionSummaryByPost =
+        buildReactionSummaryMap(
+          reactionResult.data || []
         )
-    )
-  }
-}
+
+      for (const row of reactionResult.data || []) {
+        if (
+          viewerUserId &&
+          String(row.user_id) === String(viewerUserId)
+        ) {
+          myReactionByPost.set(
+            String(row.post_id),
+            String(row.reaction_type || '')
+              .trim()
+              .toLowerCase()
+          )
+        }
+      }
+
+      for (const row of echoResult.data || []) {
+        const postId = String(row.source_id || '')
+
+        echoCountByPost.set(
+          postId,
+          Number(
+            echoCountByPost.get(postId) || 0
+          ) +
+            Math.max(
+              1,
+              Number(row.share_count || 1)
+            )
+        )
+      }
+
+      for (const row of viewSourceResult.data || []) {
+        const postId = String(row.post_id || '')
+        const source = String(row.source || 'direct')
+          .trim()
+          .toLowerCase()
+
+        if (!postId || !source) continue
+
+        if (!viewSourcesByPost.has(postId)) {
+          viewSourcesByPost.set(postId, new Set())
+        }
+
+        viewSourcesByPost
+          .get(postId)
+          .add(source)
+      }
+    }
 
     return res.status(200).json({
       ok: true,
       posts: (posts || []).map((post) => ({
-  ...publicAuthorPost({
-    ...post,
-    echo_count: Number(
-      echoCountByPost.get(String(post.id)) || 0
-    ),
-    echo_state_loaded: true,
-    reaction_summary:
-      reactionSummaryByPost.get(post.id) || [],
-  }),
-  my_reaction:
-    myReactionByPost.get(String(post.id)) || null,
-})),
+        ...publicAuthorPost({
+          ...post,
+          echo_count: Number(
+            echoCountByPost.get(String(post.id)) || 0
+          ),
+          echo_state_loaded: true,
+          reaction_summary:
+            reactionSummaryByPost.get(post.id) || [],
+        }),
+        my_reaction:
+          myReactionByPost.get(String(post.id)) || null,
+        view_sources: contentLibrary
+          ? [
+              ...(
+                viewSourcesByPost.get(
+                  String(post.id)
+                ) || new Set()
+              ),
+            ]
+          : [],
+      })),
     })
   } catch (error) {
-    console.error('GET AUTHOR PAGE POSTS ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load author posts', error: error.message })
+    console.error(
+      'GET AUTHOR PAGE POSTS ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load author posts',
+      error: error.message,
+    })
   }
 }
+
 
 export async function getAuthorPostById(req, res) {
   try {
