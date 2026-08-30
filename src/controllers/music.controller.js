@@ -170,8 +170,8 @@ export async function getPublicMusicArtist(req, res) {
     const songs = songsResult.data || []
     const releases = attachSongs(releasesResult.data || [], songs)
     const popular = songs
-      .filter((song) => Number(song.youtube_view_count || 0) >= 1000)
-      .sort((a, b) => Number(b.youtube_view_count || 0) - Number(a.youtube_view_count || 0))
+      .filter((song) => Number(song.view_count || 0) >= 1000)
+      .sort((a, b) => Number(b.view_count || 0) - Number(a.view_count || 0))
       .slice(0, 10)
 
     return res.json({
@@ -438,7 +438,6 @@ export async function createMusicSong(req, res) {
       release_id: release.id,
       title,
       ...youtube,
-      youtube_view_count: integer(req.body.youtube_view_count, 0, 0),
       duration_seconds: integer(req.body.duration_seconds, 0, 0, 86400),
       track_number: integer(req.body.track_number, 1, 1, 10000),
       is_active: boolean(req.body.is_active, true),
@@ -482,7 +481,6 @@ export async function updateMusicSong(req, res) {
     }
 
     if (req.body.youtube_url !== undefined) Object.assign(payload, parseYoutubeUrl(req.body.youtube_url))
-    if (req.body.youtube_view_count !== undefined) payload.youtube_view_count = integer(req.body.youtube_view_count, current.youtube_view_count, 0)
     if (req.body.duration_seconds !== undefined) payload.duration_seconds = integer(req.body.duration_seconds, current.duration_seconds, 0, 86400)
     if (req.body.track_number !== undefined) payload.track_number = integer(req.body.track_number, current.track_number, 1, 10000)
     if (req.body.is_active !== undefined) payload.is_active = boolean(req.body.is_active, current.is_active)
