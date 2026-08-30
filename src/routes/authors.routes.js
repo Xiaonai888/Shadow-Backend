@@ -59,6 +59,7 @@ import {
 
 import {
   getMyAuthorPostInsights,
+  recordAuthorPostClick,
   recordAuthorPostView,
 } from '../controllers/authorPostInsights.controller.js'
 
@@ -204,6 +205,7 @@ router.post('/me/posts/:postId/react', requireUser, setMyAuthorPostReaction)
 router.get('/page/posts/:postId/notification-preference', requireUser, getMyAuthorPostNotificationPreference)
 router.put('/page/posts/:postId/notification-preference', requireUser, updateMyAuthorPostNotificationPreference)
 router.get('/me/posts/:postId/insights', requireUser, getMyAuthorPostInsights)
+router.post('/page/posts/:postId/clicks', recordAuthorPostClick)
 router.get('/page/posts/:postId', recordAuthorPostView, getAuthorPostById)
 router.get('/page/posts/:postId/reactions', getAuthorPostReactions)
 router.get('/page/posts/:postId/comments', getAuthorPostComments)
