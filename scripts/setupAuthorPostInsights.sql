@@ -17,6 +17,14 @@ create index if not exists author_page_post_views_viewer_time_idx
 create index if not exists author_page_post_views_source_idx
   on public.author_page_post_views (post_id, source);
 
+
+alter table public.author_page_follows
+  add column if not exists source_post_id text;
+
+create index if not exists author_page_follows_source_post_idx
+  on public.author_page_follows (source_post_id)
+  where source_post_id is not null;
+
 alter table public.author_page_post_views enable row level security;
 
 create or replace function public.record_author_post_view(
