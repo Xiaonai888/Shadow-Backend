@@ -385,14 +385,14 @@ export async function getMyAuthorPostInsights(req, res) {
     }
 
     const [
-  viewsResult,
-  reactionsResult,
-  commentsResult,
-  echoesResult,
-  savesResult,
-  clicksResult,
-  followsResult,
-] = await Promise.all([
+      viewsResult,
+      reactionsResult,
+      commentsResult,
+      echoesResult,
+      savesResult,
+      followsResult,
+      clicksResult,
+    ] = await Promise.all([
       supabase
         .from('author_page_post_views')
         .select(
@@ -416,22 +416,28 @@ export async function getMyAuthorPostInsights(req, res) {
         .eq('source_type', 'author_post')
         .eq('source_id', postId),
       supabase
-  .from('saved_posts')
-  .select('id', {
-    count: 'exact',
-    head: true,
-  })
-  .eq('source_type', 'author_post')
-  .eq('source_id', postId),
-
-supabase
-  .from('author_page_follows')
-  .select('id', {
-    count: 'exact',
-    head: true,
-  })
-  .eq('author_page_id', post.author_page_id)
-  .eq('source_post_id', postId),
+        .from('saved_posts')
+        .select('id', {
+          count: 'exact',
+          head: true,
+        })
+        .eq('source_type', 'author_post')
+        .eq('source_id', postId),
+      supabase
+        .from('author_page_follows')
+        .select('id', {
+          count: 'exact',
+          head: true,
+        })
+        .eq('author_page_id', post.author_page_id)
+        .eq('source_post_id', postId),
+      supabase
+        .from('author_page_post_clicks')
+        .select('id', {
+          count: 'exact',
+          head: true,
+        })
+        .eq('post_id', postId),
     ])
 
     if (viewsResult.error) throw viewsResult.error
@@ -439,7 +445,8 @@ supabase
     if (commentsResult.error) throw commentsResult.error
     if (echoesResult.error) throw echoesResult.error
     if (savesResult.error) throw savesResult.error
-if (followsResult.error) throw followsResult.error
+    if (followsResult.error) throw followsResult.error
+    if (clicksResult.error) throw clicksResult.error
 
     const views = viewsResult.data || []
     const reactions = reactionsResult.data || []
@@ -453,9 +460,8 @@ if (followsResult.error) throw followsResult.error
     )
 
     const saveTotal = Number(savesResult.count || 0)
-const netFollowTotal = Number(
-  followsResult.count || 0
-)
+    const netFollowTotal = Number(followsResult.count || 0)
+    const clickTotal = Number(clicksResult.count || 0)
     const audience = buildAudience(views)
 
     return res.status(200).json({
@@ -469,22 +475,24 @@ const netFollowTotal = Number(
         created_at: post.created_at,
       },
       overview: {
-  views: views.length,
-  viewers: audience.viewers,
-  engagement:
-    reactionTotal +
-    commentTotal +
-    shareTotal +
-    saveTotal,
-  net_follows: netFollowTotal,
-},
-engagement: {
-  reactions: reactionTotal,
-  reaction_by_type: reactionCounts,
-  comments: commentTotal,
-  shares: shareTotal,
-  saves: saveTotal,
-},
+        views: views.length,
+        viewers: audience.viewers,
+        engagement:
+          reactionTotal +
+          commentTotal +
+          shareTotal +
+          saveTotal +
+          clickTotal,
+        net_follows: netFollowTotal,
+      },
+      engagement: {
+        reactions: reactionTotal,
+        reaction_by_type: reactionCounts,
+        comments: commentTotal,
+        shares: shareTotal,
+        saves: saveTotal,
+        clicks: clickTotal,
+      },
       audience: {
         followers: audience.followers,
         non_followers: audience.non_followers,
