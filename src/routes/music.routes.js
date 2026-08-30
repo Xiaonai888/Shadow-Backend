@@ -1,3 +1,4 @@
+import { getAdminMusicListens } from '../controllers/musicListenAdmin.controller.js'
 import express from 'express'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { requireUser } from '../middleware/user.middleware.js'
@@ -26,6 +27,7 @@ router.post('/songs/:songId/listen', requireUser, recordMusicListen)
 
 router.get('/admin/artists', requireAdmin, getAdminMusicOverview)
 router.get('/admin/artists/:artistId', requireAdmin, getAdminMusicArtist)
+router.get('/admin/listens', requireAdmin, getAdminMusicListens)
 router.post('/admin/artists', requireAdmin, createMusicArtist)
 router.patch('/admin/artists/:artistId', requireAdmin, updateMusicArtist)
 router.delete('/admin/artists/:artistId', requireAdmin, deleteMusicArtist)
