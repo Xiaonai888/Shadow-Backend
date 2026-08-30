@@ -71,7 +71,7 @@ export async function getReaderStoreHome(req, res) {
     const { data: authorPages, error: authorPagesError } = await supabase
       .from('author_pages')
       .select(
-        'id, page_name, page_username, avatar_url, profile_image_url, logo_url, status, updated_at'
+        'id, page_name, page_username, avatar_url, status, updated_at'
       )
       .in('id', authorPageIds)
       .eq('status', 'active')
