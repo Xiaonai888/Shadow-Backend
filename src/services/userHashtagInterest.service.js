@@ -92,7 +92,7 @@ export async function recordHashtagInterestSignalSafely({
     if (!hashtag?.id) return 0
 
     const { data, error } = await supabase.rpc(
-      'apply_user_hashtag_interest_signal',
+      'apply_user_hashtag_direct_interest_signal',
       {
         p_user_id: normalizedUserId,
         p_hashtag_id: hashtag.id,
@@ -102,8 +102,7 @@ export async function recordHashtagInterestSignalSafely({
 
     if (error) throw error
 
-    const row = Array.isArray(data) ? data[0] : data
-    return Math.max(0, Number(row?.interest_score || 0))
+    return Math.max(0, Number(data || 0))
   } catch (error) {
     console.error('HASHTAG INTEREST SIGNAL ERROR:', {
       userId: normalizedUserId,
