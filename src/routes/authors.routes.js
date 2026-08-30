@@ -55,6 +55,11 @@ import {
 } from '../controllers/authorPostMediaGuard.controller.js'
 
 import {
+  getMyAuthorPostInsights,
+  recordAuthorPostView,
+} from '../controllers/authorPostInsights.controller.js'
+
+import {
   getMyAuthorPostNotificationPreference,
   updateMyAuthorPostNotificationPreference,
 } from '../controllers/authorPostNotifications.controller.js'
@@ -194,7 +199,8 @@ router.patch('/me/posts/:postId/restore', requireUser, restoreMyAuthorPostFromTr
 router.post('/me/posts/:postId/react', requireUser, setMyAuthorPostReaction)
 router.get('/page/posts/:postId/notification-preference', requireUser, getMyAuthorPostNotificationPreference)
 router.put('/page/posts/:postId/notification-preference', requireUser, updateMyAuthorPostNotificationPreference)
-router.get('/page/posts/:postId', getAuthorPostById)
+router.get('/me/posts/:postId/insights', requireUser, getMyAuthorPostInsights)
+router.get('/page/posts/:postId', recordAuthorPostView, getAuthorPostById)
 router.get('/page/posts/:postId/reactions', getAuthorPostReactions)
 router.get('/page/posts/:postId/comments', getAuthorPostComments)
 router.get('/page/posts/:postId/comments/:commentId', getAuthorPostCommentById)
