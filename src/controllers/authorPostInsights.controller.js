@@ -270,11 +270,13 @@ export async function getMyAuthorPostInsights(req, res) {
     }
 
     const [
-      viewsResult,
-      reactionsResult,
-      commentsResult,
-      echoesResult,
-    ] = await Promise.all([
+  viewsResult,
+  reactionsResult,
+  commentsResult,
+  echoesResult,
+  savesResult,
+  followsResult,
+] = await Promise.all([
       supabase
         .from('author_page_post_views')
         .select(
@@ -297,12 +299,31 @@ export async function getMyAuthorPostInsights(req, res) {
         .select('share_count')
         .eq('source_type', 'author_post')
         .eq('source_id', postId),
+      supabase
+  .from('saved_posts')
+  .select('id', {
+    count: 'exact',
+    head: true,
+  })
+  .eq('source_type', 'author_post')
+  .eq('source_id', postId),
+
+supabase
+  .from('author_page_follows')
+  .select('id', {
+    count: 'exact',
+    head: true,
+  })
+  .eq('author_page_id', post.author_page_id)
+  .eq('source_post_id', postId),
     ])
 
     if (viewsResult.error) throw viewsResult.error
     if (reactionsResult.error) throw reactionsResult.error
     if (commentsResult.error) throw commentsResult.error
     if (echoesResult.error) throw echoesResult.error
+    if (savesResult.error) throw savesResult.error
+if (followsResult.error) throw followsResult.error
 
     const views = viewsResult.data || []
     const reactions = reactionsResult.data || []
@@ -314,6 +335,11 @@ export async function getMyAuthorPostInsights(req, res) {
         total + Math.max(1, Number(item.share_count || 1)),
       0
     )
+
+    const saveTotal = Number(savesResult.count || 0)
+const netFollowTotal = Number(
+  followsResult.count || 0
+)
     const audience = buildAudience(views)
 
     return res.status(200).json({
@@ -327,17 +353,22 @@ export async function getMyAuthorPostInsights(req, res) {
         created_at: post.created_at,
       },
       overview: {
-        views: views.length,
-        viewers: audience.viewers,
-        engagement:
-          reactionTotal + commentTotal + shareTotal,
-      },
-      engagement: {
-        reactions: reactionTotal,
-        reaction_by_type: reactionCounts,
-        comments: commentTotal,
-        shares: shareTotal,
-      },
+  views: views.length,
+  viewers: audience.viewers,
+  engagement:
+    reactionTotal +
+    commentTotal +
+    shareTotal +
+    saveTotal,
+  net_follows: netFollowTotal,
+},
+engagement: {
+  reactions: reactionTotal,
+  reaction_by_type: reactionCounts,
+  comments: commentTotal,
+  shares: shareTotal,
+  saves: saveTotal,
+},
       audience: {
         followers: audience.followers,
         non_followers: audience.non_followers,
