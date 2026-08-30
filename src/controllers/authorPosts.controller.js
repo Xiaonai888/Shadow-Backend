@@ -2126,7 +2126,10 @@ export async function createAuthorPostComment(req, res) {
 
     if (!isOwner && post.author_page_id) {
       await Promise.all([
-        incrementAuthorPageAnalytics(post.author_page_id, 'comments'),
+  recordPostHashtagInterestSignalSafely({
+    userId, postId, signal: 'comment',
+  }),
+  incrementAuthorPageAnalytics(post.author_page_id, 'comments'),
         incrementAuthorPageAnalytics(post.author_page_id, 'interactions'),
         createAuthorPageNotificationSafely(notificationPayload),
       ])
