@@ -1,3 +1,4 @@
+import { recordPostHashtagInterestSignalSafely } from '../services/userHashtagInterest.service.js'
 import { supabase } from '../config/supabase.js'
 import {
   createAuthorPageNotificationSafely,
@@ -350,6 +351,12 @@ export async function createAuthorPostEcho(
 
     const reader = await readUser(userId)
 const isOwner = String(post.user_id || '') === String(userId)
+
+    if (!isOwner) {
+  await recordPostHashtagInterestSignalSafely({
+    userId, postId, signal: 'echo',
+  })
+}
 
 if (!isOwner && post.author_page_id && audience !== 'only-me') {
   const readerName =
