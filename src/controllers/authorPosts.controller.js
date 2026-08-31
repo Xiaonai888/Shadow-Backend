@@ -122,7 +122,9 @@ photo_metadata: normalizePhotoMetadata(
   normalizeImageUrls(post.image_urls)
 ),
 status: post.status || 'active',
-    is_pinned: Boolean(post.is_pinned),
+scheduled_at: post.scheduled_at || null,
+published_at: post.published_at || null,
+is_pinned: Boolean(post.is_pinned),
     pinned_at: post.pinned_at || null,
     like_count: Number(post.like_count || 0),
     comment_count: Number(post.comment_count || 0),
@@ -621,21 +623,85 @@ export async function createMyAuthorPost(req, res) {
     }
 
     const content = String(req.body.content || '').trim()
-    const postType = String(req.body.post_type || req.body.postType || 'article').trim().toLowerCase()
+    const postType = String(
+      req.body.post_type || req.body.postType || 'article'
+    )
+      .trim()
+      .toLowerCase()
     const imageUrlsRaw = Array.isArray(req.body.image_urls)
       ? req.body.image_urls
       : Array.isArray(req.body.imageUrls)
         ? req.body.imageUrls
         : []
     const imageUrls = normalizeImageUrls(imageUrlsRaw)
-const photoMetadata = normalizePhotoMetadata(
-  req.body.photo_metadata,
-  imageUrls
-)
-const allowedTypes = new Set(['article', 'announcement', 'update'])
+    const photoMetadata = normalizePhotoMetadata(
+      req.body.photo_metadata,
+      imageUrls
+    )
+    const allowedTypes = new Set([
+      'article',
+      'announcement',
+      'update',
+    ])
+
+    const requestedStatus = String(
+      req.body.status ||
+        req.body.publish_status ||
+        req.body.publishStatus ||
+        'active'
+    )
+      .trim()
+      .toLowerCase()
+
+    const scheduleRequested =
+      requestedStatus === 'scheduled'
+
+    const scheduledAtInput = String(
+      req.body.scheduled_at ||
+        req.body.scheduledAt ||
+        ''
+    ).trim()
+
+    let scheduledAt = null
+
+    if (scheduleRequested) {
+      if (!scheduledAtInput) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Schedule date and time are required',
+        })
+      }
+
+      const scheduleDate = new Date(scheduledAtInput)
+
+      if (
+        Number.isNaN(scheduleDate.getTime()) ||
+        scheduleDate.getTime() <= Date.now()
+      ) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Choose a future schedule date and time',
+        })
+      }
+
+      scheduledAt = scheduleDate.toISOString()
+    }
+
+    if (
+      requestedStatus !== 'active' &&
+      requestedStatus !== 'scheduled'
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid post publish status',
+      })
+    }
 
     if (!content && !imageUrls.length) {
-      return res.status(400).json({ ok: false, message: 'Post content or photo is required' })
+      return res.status(400).json({
+        ok: false,
+        message: 'Post content or photo is required',
+      })
     }
 
     if (content.length > AUTHOR_POST_CONTENT_LIMIT) {
@@ -654,27 +720,40 @@ const allowedTypes = new Set(['article', 'announcement', 'update'])
     }
 
     if (imageUrls.length !== imageUrlsRaw.length) {
-      return res.status(400).json({ ok: false, message: 'Invalid post photo URL' })
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid post photo URL',
+      })
     }
 
-    const { data: authorPage, error: pageError } = await supabase
-      .from('author_pages')
-      .select('id, user_id')
-      .eq('user_id', userId)
-      .eq('status', 'active')
-      .maybeSingle()
+    const { data: authorPage, error: pageError } =
+      await supabase
+        .from('author_pages')
+        .select('id, user_id')
+        .eq('user_id', userId)
+        .eq('status', 'active')
+        .maybeSingle()
 
     if (pageError) throw pageError
 
     if (!authorPage) {
-      return res.status(404).json({ ok: false, message: 'Author page not found' })
+      return res.status(404).json({
+        ok: false,
+        message: 'Author page not found',
+      })
     }
 
     const todayRange = getUtcDayRange()
 
-    const { count: todayPostCount, error: countError } = await supabase
+    const {
+      count: todayPostCount,
+      error: countError,
+    } = await supabase
       .from('author_page_posts')
-      .select('id', { count: 'exact', head: true })
+      .select('id', {
+        count: 'exact',
+        head: true,
+      })
       .eq('author_page_id', authorPage.id)
       .eq('user_id', userId)
       .gte('created_at', todayRange.start)
@@ -682,27 +761,47 @@ const allowedTypes = new Set(['article', 'announcement', 'update'])
 
     if (countError) throw countError
 
-    if (Number(todayPostCount || 0) >= AUTHOR_POSTS_DAILY_LIMIT) {
+    if (
+      Number(todayPostCount || 0) >=
+      AUTHOR_POSTS_DAILY_LIMIT
+    ) {
       return res.status(429).json({
         ok: false,
-        message: 'You reached today’s posting limit. You can publish up to 5 posts per day.',
-        daily_post_limit: AUTHOR_POSTS_DAILY_LIMIT,
-        daily_post_count: Number(todayPostCount || 0),
+        message:
+          'You reached today’s posting limit. You can publish up to 5 posts per day.',
+        daily_post_limit:
+          AUTHOR_POSTS_DAILY_LIMIT,
+        daily_post_count: Number(
+          todayPostCount || 0
+        ),
       })
     }
 
-    const { data: createdPost, error: createError } = await supabase
+    const now = new Date().toISOString()
+
+    const {
+      data: createdPost,
+      error: createError,
+    } = await supabase
       .from('author_page_posts')
       .insert({
         author_page_id: authorPage.id,
         user_id: userId,
-        post_type: allowedTypes.has(postType) ? postType : 'article',
+        post_type: allowedTypes.has(postType)
+          ? postType
+          : 'article',
         content,
         image_urls: imageUrls,
         photo_metadata: photoMetadata,
-        status: 'active',
+        status: scheduleRequested
+          ? 'scheduled'
+          : 'active',
+        scheduled_at: scheduledAt,
+        published_at: scheduleRequested
+          ? null
+          : now,
         is_pinned: false,
-        updated_at: new Date().toISOString(),
+        updated_at: now,
       })
       .select()
       .single()
@@ -711,16 +810,32 @@ const allowedTypes = new Set(['article', 'announcement', 'update'])
 
     return res.status(201).json({
       ok: true,
-      message: 'Post created',
+      message: scheduleRequested
+        ? 'Post scheduled'
+        : 'Post created',
       post: publicAuthorPost(createdPost),
-      daily_post_limit: AUTHOR_POSTS_DAILY_LIMIT,
-      daily_post_count: Number(todayPostCount || 0) + 1,
+      daily_post_limit:
+        AUTHOR_POSTS_DAILY_LIMIT,
+      daily_post_count:
+        Number(todayPostCount || 0) + 1,
     })
   } catch (error) {
-    console.error('CREATE MY AUTHOR POST ERROR:', error)
-    return res.status(error.statusCode || 500).json({ ok: false, message: error.message || 'Failed to create author post' })
+    console.error(
+      'CREATE MY AUTHOR POST ERROR:',
+      error
+    )
+
+    return res
+      .status(error.statusCode || 500)
+      .json({
+        ok: false,
+        message:
+          error.message ||
+          'Failed to create author post',
+      })
   }
 }
+
 
 export async function updateMyAuthorPost(req, res) {
   try {
