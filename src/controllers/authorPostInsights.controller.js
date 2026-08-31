@@ -171,6 +171,317 @@ function buildReactionCounts(rows) {
   )
 }
 
+
+const DEMOGRAPHICS_MIN_SAMPLE = 5
+const TYPICAL_POST_LIMIT = 5
+const TYPICAL_MIN_SAMPLE = 3
+const TYPICAL_MAX_WINDOW_MS = 24 * 60 * 60 * 1000
+
+function calculateAge(dateOfBirth) {
+  const birthDate = new Date(dateOfBirth)
+  const today = new Date()
+
+  if (Number.isNaN(birthDate.getTime())) return null
+
+  let age = today.getUTCFullYear() - birthDate.getUTCFullYear()
+  const monthDiff =
+    today.getUTCMonth() - birthDate.getUTCMonth()
+
+  if (
+    monthDiff < 0 ||
+    (monthDiff === 0 &&
+      today.getUTCDate() < birthDate.getUTCDate())
+  ) {
+    age -= 1
+  }
+
+  return age >= 0 ? age : null
+}
+
+function getAgeBucket(age) {
+  if (!Number.isFinite(age) || age < 0) return null
+  if (age < 18) return 'under_18'
+  if (age <= 24) return '18_24'
+  if (age <= 34) return '25_34'
+  if (age <= 44) return '35_44'
+  if (age <= 54) return '45_54'
+  return '55_plus'
+}
+
+function buildCountBreakdown(values) {
+  const counts = new Map()
+
+  for (const value of values) {
+    if (!value) continue
+    counts.set(value, Number(counts.get(value) || 0) + 1)
+  }
+
+  const total = [...counts.values()].reduce(
+    (sum, count) => sum + count,
+    0
+  )
+
+  return [...counts.entries()]
+    .map(([key, count]) => ({
+      key,
+      count,
+      percentage: total
+        ? Number(((count / total) * 100).toFixed(1))
+        : 0,
+    }))
+    .sort((a, b) => b.count - a.count)
+}
+
+async function getViewerDemographics(views) {
+  const viewerIds = [
+    ...new Set(
+      (views || [])
+        .map((row) =>
+          String(row.viewer_user_id || '').trim()
+        )
+        .filter(Boolean)
+    ),
+  ]
+
+  if (viewerIds.length < DEMOGRAPHICS_MIN_SAMPLE) {
+    return {
+      available: false,
+      registered_viewers: viewerIds.length,
+      minimum_sample: DEMOGRAPHICS_MIN_SAMPLE,
+    }
+  }
+
+  const { data: users, error } = await supabase
+    .from('users')
+    .select('id, date_of_birth, gender')
+    .in('id', viewerIds)
+
+  if (error) throw error
+
+  const profiles = users || []
+  const ageValues = profiles
+    .map((user) => calculateAge(user.date_of_birth))
+    .map(getAgeBucket)
+    .filter(Boolean)
+
+  const genderValues = profiles
+    .map((user) => {
+      const gender = String(user.gender || '')
+        .trim()
+        .toLowerCase()
+
+      return ['female', 'male', 'custom'].includes(gender)
+        ? gender
+        : null
+    })
+    .filter(Boolean)
+
+  const ageAvailable =
+    ageValues.length >= DEMOGRAPHICS_MIN_SAMPLE
+  const genderAvailable =
+    genderValues.length >= DEMOGRAPHICS_MIN_SAMPLE
+
+  return {
+    available: ageAvailable || genderAvailable,
+    registered_viewers: viewerIds.length,
+    minimum_sample: DEMOGRAPHICS_MIN_SAMPLE,
+    age: {
+      available: ageAvailable,
+      total: ageValues.length,
+      groups: ageAvailable
+        ? buildCountBreakdown(ageValues)
+        : [],
+    },
+    gender: {
+      available: genderAvailable,
+      total: genderValues.length,
+      groups: genderAvailable
+        ? buildCountBreakdown(genderValues)
+        : [],
+    },
+  }
+}
+
+function median(values) {
+  const sorted = [...values]
+    .map((value) => Number(value || 0))
+    .sort((a, b) => a - b)
+
+  if (!sorted.length) return 0
+
+  const middle = Math.floor(sorted.length / 2)
+
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2
+}
+
+async function getTypicalPerformance(post, currentViews) {
+  if (!post?.author_page_id || !post?.created_at) {
+    return {
+      available: false,
+      reason: 'missing_post_data',
+    }
+  }
+
+  const createdAt = new Date(post.created_at)
+
+  if (Number.isNaN(createdAt.getTime())) {
+    return {
+      available: false,
+      reason: 'invalid_post_date',
+    }
+  }
+
+  const {
+    data: firstTrackedView,
+    error: trackingStartError,
+  } = await supabase
+    .from('author_page_post_views')
+    .select('viewed_at')
+    .order('viewed_at', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+
+  if (trackingStartError) throw trackingStartError
+
+  if (!firstTrackedView?.viewed_at) {
+    return {
+      available: false,
+      reason: 'no_tracking_data',
+    }
+  }
+
+  const trackingStartedAt = new Date(
+    firstTrackedView.viewed_at
+  )
+
+  if (
+    Number.isNaN(trackingStartedAt.getTime()) ||
+    createdAt < trackingStartedAt
+  ) {
+    return {
+      available: false,
+      reason: 'post_predates_tracking',
+    }
+  }
+
+  const { data: previousPosts, error: previousPostsError } =
+    await supabase
+      .from('author_page_posts')
+      .select('id, created_at')
+      .eq('author_page_id', post.author_page_id)
+      .eq('status', 'active')
+      .gte('created_at', firstTrackedView.viewed_at)
+      .lt('created_at', post.created_at)
+      .order('created_at', { ascending: false })
+      .limit(TYPICAL_POST_LIMIT)
+
+  if (previousPostsError) throw previousPostsError
+
+  const baselinePosts = previousPosts || []
+
+  if (baselinePosts.length < TYPICAL_MIN_SAMPLE) {
+    return {
+      available: false,
+      reason: 'insufficient_previous_posts',
+      sample_size: baselinePosts.length,
+      minimum_sample: TYPICAL_MIN_SAMPLE,
+    }
+  }
+
+  const elapsedMs = Math.max(
+    60 * 1000,
+    Date.now() - createdAt.getTime()
+  )
+  const windowMs = Math.min(
+    TYPICAL_MAX_WINDOW_MS,
+    elapsedMs
+  )
+  const currentWindowEnd =
+    createdAt.getTime() + windowMs
+
+  const currentWindowViews = (currentViews || []).filter(
+    (row) => {
+      const viewedAt = new Date(row.viewed_at).getTime()
+      return (
+        Number.isFinite(viewedAt) &&
+        viewedAt <= currentWindowEnd
+      )
+    }
+  ).length
+
+  const baselineResults = await Promise.all(
+    baselinePosts.map((baselinePost) => {
+      const baselineCreatedAt = new Date(
+        baselinePost.created_at
+      )
+      const baselineEnd = new Date(
+        baselineCreatedAt.getTime() + windowMs
+      ).toISOString()
+
+      return supabase
+        .from('author_page_post_views')
+        .select('id', {
+          count: 'exact',
+          head: true,
+        })
+        .eq('post_id', String(baselinePost.id))
+        .gte(
+          'viewed_at',
+          baselineCreatedAt.toISOString()
+        )
+        .lte('viewed_at', baselineEnd)
+    })
+  )
+
+  for (const result of baselineResults) {
+    if (result.error) throw result.error
+  }
+
+  const baselineCounts = baselineResults.map((result) =>
+    Number(result.count || 0)
+  )
+  const typicalViews = median(baselineCounts)
+  const minViews = Math.min(...baselineCounts)
+  const maxViews = Math.max(...baselineCounts)
+
+  let status = 'typical'
+
+  if (typicalViews === 0) {
+    status =
+      currentWindowViews > 0
+        ? 'above_typical'
+        : 'typical'
+  } else if (currentWindowViews > typicalViews * 1.1) {
+    status = 'above_typical'
+  } else if (currentWindowViews < typicalViews * 0.9) {
+    status = 'below_typical'
+  }
+
+  return {
+    available: true,
+    basis: 'recorded_views_same_age_window',
+    sample_size: baselineCounts.length,
+    window_seconds: Math.round(windowMs / 1000),
+    current_views: currentWindowViews,
+    typical_views: typicalViews,
+    typical_min: minViews,
+    typical_max: maxViews,
+    percent_vs_typical:
+      typicalViews > 0
+        ? Number(
+            (
+              ((currentWindowViews - typicalViews) /
+                typicalViews) *
+              100
+            ).toFixed(1)
+          )
+        : null,
+    status,
+  }
+}
+
 export async function recordAuthorPostView(req, res, next) {
   try {
     const postId = String(req.params.postId || '').trim()
@@ -463,6 +774,11 @@ export async function getMyAuthorPostInsights(req, res) {
     const netFollowTotal = Number(followsResult.count || 0)
     const clickTotal = Number(clicksResult.count || 0)
     const audience = buildAudience(views)
+    const [performance, demographics] =
+      await Promise.all([
+        getTypicalPerformance(post, views),
+        getViewerDemographics(views),
+      ])
 
     return res.status(200).json({
       ok: true,
@@ -502,6 +818,8 @@ export async function getMyAuthorPostInsights(req, res) {
       },
       traffic: buildSourceBreakdown(views),
       views_timeline: buildViewTimeline(views),
+      performance,
+      demographics,
     })
   } catch (error) {
     console.error('GET AUTHOR POST INSIGHTS ERROR:', error)
