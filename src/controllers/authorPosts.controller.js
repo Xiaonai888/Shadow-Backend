@@ -322,9 +322,11 @@ export async function getAuthorPagePosts(req, res) {
         authorPage.user_id &&
         String(viewerUserId) === String(authorPage.user_id)
     )
+
     const contentLibrary =
       isOwner &&
       String(req.query.content_library || '').trim() === '1'
+
     const limit = Math.min(
       contentLibrary ? 100 : 30,
       requestedLimit
@@ -389,13 +391,11 @@ export async function getAuthorPagePosts(req, res) {
     let reactionSummaryByPost = new Map()
     const myReactionByPost = new Map()
     const echoCountByPost = new Map()
-    const viewSourcesByPost = new Map()
 
     if (postIds.length) {
       const [
         reactionResult,
         echoResult,
-        viewSourceResult,
       ] = await Promise.all([
         supabase
           .from('author_page_post_reactions')
@@ -407,19 +407,6 @@ export async function getAuthorPagePosts(req, res) {
           .select('source_id, share_count')
           .eq('source_type', 'author_post')
           .in('source_id', postIds),
-
-        contentLibrary
-          ? supabase
-              .from('author_page_post_views')
-              .select('post_id, source')
-              .in(
-                'post_id',
-                postIds.map((id) => String(id))
-              )
-          : Promise.resolve({
-              data: [],
-              error: null,
-            }),
       ])
 
       if (reactionResult.error) {
@@ -428,10 +415,6 @@ export async function getAuthorPagePosts(req, res) {
 
       if (echoResult.error) {
         throw echoResult.error
-      }
-
-      if (viewSourceResult.error) {
-        throw viewSourceResult.error
       }
 
       reactionSummaryByPost =
@@ -467,23 +450,6 @@ export async function getAuthorPagePosts(req, res) {
             )
         )
       }
-
-      for (const row of viewSourceResult.data || []) {
-        const postId = String(row.post_id || '')
-        const source = String(row.source || 'direct')
-          .trim()
-          .toLowerCase()
-
-        if (!postId || !source) continue
-
-        if (!viewSourcesByPost.has(postId)) {
-          viewSourcesByPost.set(postId, new Set())
-        }
-
-        viewSourcesByPost
-          .get(postId)
-          .add(source)
-      }
     }
 
     return res.status(200).json({
@@ -500,15 +466,6 @@ export async function getAuthorPagePosts(req, res) {
         }),
         my_reaction:
           myReactionByPost.get(String(post.id)) || null,
-        view_sources: contentLibrary
-          ? [
-              ...(
-                viewSourcesByPost.get(
-                  String(post.id)
-                ) || new Set()
-              ),
-            ]
-          : [],
       })),
     })
   } catch (error) {
@@ -524,6 +481,7 @@ export async function getAuthorPagePosts(req, res) {
     })
   }
 }
+
 
 
 export async function getAuthorPostById(req, res) {
