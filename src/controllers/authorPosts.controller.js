@@ -333,10 +333,13 @@ export async function getAuthorPagePosts(req, res) {
     )
 
     let postsQuery = supabase
-      .from('author_page_posts')
-      .select('*')
-      .eq('author_page_id', authorPage.id)
-      .eq('status', 'active')
+  .from('author_page_posts')
+  .select('*')
+  .eq('author_page_id', authorPage.id)
+
+postsQuery = contentLibrary
+  ? postsQuery.in('status', ['active', 'scheduled', 'uploaded'])
+  : postsQuery.eq('status', 'active')
 
     const before = String(req.query.before || '').trim()
 
