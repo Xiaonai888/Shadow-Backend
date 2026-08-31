@@ -202,6 +202,91 @@ app.options('*', cors(corsOptions))
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
+const MEMORY_DIAGNOSTIC_ENABLED =
+  String(process.env.MEMORY_DIAGNOSTIC_ENABLED ?? 'true')
+    .trim()
+    .toLowerCase() !== 'false'
+
+const MEMORY_DIAGNOSTIC_DELTA_BYTES = 4 * 1024 * 1024
+const MEMORY_DIAGNOSTIC_SLOW_MS = 1200
+const MEMORY_DIAGNOSTIC_HIGH_RSS_BYTES = 350 * 1024 * 1024
+
+function memoryMb(bytes) {
+  return Number((Number(bytes || 0) / 1024 / 1024).toFixed(1))
+}
+
+function memorySnapshot(memory = process.memoryUsage()) {
+  return {
+    rss_mb: memoryMb(memory.rss),
+    heap_used_mb: memoryMb(memory.heapUsed),
+    heap_total_mb: memoryMb(memory.heapTotal),
+    external_mb: memoryMb(memory.external),
+    array_buffers_mb: memoryMb(memory.arrayBuffers),
+  }
+}
+
+if (MEMORY_DIAGNOSTIC_ENABLED) {
+  app.use((req, res, next) => {
+    const startedAt = process.hrtime.bigint()
+    const before = process.memoryUsage()
+    let finished = false
+
+    const report = () => {
+      if (finished) return
+      finished = true
+
+      const after = process.memoryUsage()
+      const durationMs =
+        Number(process.hrtime.bigint() - startedAt) / 1_000_000
+      const rssDelta = after.rss - before.rss
+
+      if (
+        rssDelta >= MEMORY_DIAGNOSTIC_DELTA_BYTES ||
+        durationMs >= MEMORY_DIAGNOSTIC_SLOW_MS ||
+        res.statusCode >= 500
+      ) {
+        console.log(
+          'MEMORY_DIAG',
+          JSON.stringify({
+            method: req.method,
+            path: req.path,
+            status: res.statusCode,
+            duration_ms: Number(durationMs.toFixed(1)),
+            content_length: Number(req.headers['content-length'] || 0),
+            rss_delta_mb: memoryMb(rssDelta),
+            before: memorySnapshot(before),
+            after: memorySnapshot(after),
+          })
+        )
+      }
+    }
+
+    res.once('finish', report)
+    res.once('close', report)
+    next()
+  })
+
+  let lastHighRss = process.memoryUsage().rss
+
+  const memoryWatchTimer = setInterval(() => {
+    const current = process.memoryUsage()
+
+    if (
+      current.rss >= MEMORY_DIAGNOSTIC_HIGH_RSS_BYTES &&
+      current.rss > lastHighRss
+    ) {
+      lastHighRss = current.rss
+      console.log(
+        'MEMORY_HIGH_WATER',
+        JSON.stringify(memorySnapshot(current))
+      )
+    }
+  }, 15000)
+
+  memoryWatchTimer.unref?.()
+}
+
+
 const visitorTrackingSpamGuard = createSpamGuard({
   scope: 'visitor_tracking',
   threshold: 60,
