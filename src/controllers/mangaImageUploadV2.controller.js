@@ -7,6 +7,17 @@ import {
 
 const MANGA_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 
+let mangaUploadQueue = Promise.resolve()
+
+function runMangaUploadJob(job) {
+  const queued = mangaUploadQueue.then(() => job())
+  mangaUploadQueue = queued.then(
+    () => undefined,
+    () => undefined
+  )
+  return queued
+}
+
 function cleanHeader(value, maxLength = 300) {
   return String(value || '').trim().slice(0, maxLength)
 }
@@ -91,10 +102,13 @@ export async function uploadMangaPageImageV2(req, res) {
   }
 
   try {
-    const processed = await processMangaImage(file)
-    const stored = await uploadProcessedMangaParts({
-      processed,
-      folder: `episode-content/${userId}/manga-v2`,
+    const stored = await runMangaUploadJob(async () => {
+      const processed = await processMangaImage(file)
+
+      return uploadProcessedMangaParts({
+        processed,
+        folder: `episode-content/${userId}/manga-v2`,
+      })
     })
     const firstPart = stored.parts[0]
     const totalBytes = stored.parts.reduce(
