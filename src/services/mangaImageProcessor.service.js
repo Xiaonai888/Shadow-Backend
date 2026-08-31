@@ -85,6 +85,8 @@ const ANIME_FACE_CASCADE_URL = new URL(
   import.meta.url
 )
 const FACE_DETECTION_MAX_WIDTH = 720
+const FACE_DETECTION_STRIP_HEIGHT = 2400
+const FACE_DETECTION_STRIP_OVERLAP = 256
 
 let animeFaceDetectorPromise = null
 
@@ -157,119 +159,153 @@ async function detectMangaFaceZones({
   pageWidth,
   pageHeight,
 }) {
-  let src = null
-  let gray = null
-  let equalized = null
-  let faces = null
-
   try {
     const { cv, classifier } =
       await getAnimeFaceDetector()
 
+    const detectionScale = Math.min(
+      1,
+      FACE_DETECTION_MAX_WIDTH / pageWidth
+    )
     const detectionWidth = Math.max(
       1,
-      Math.min(
-        FACE_DETECTION_MAX_WIDTH,
-        pageWidth
-      )
+      Math.round(pageWidth * detectionScale)
     )
-
     const detectionHeight = Math.max(
       1,
-      Math.round(
-        pageHeight *
-          (detectionWidth / pageWidth)
-      )
+      Math.round(pageHeight * detectionScale)
     )
-
-    const raw = await sharp(fileBuffer, {
-      limitInputPixels:
-        MANGA_PROCESSOR_LIMITS.maxPixels,
-      sequentialRead: true,
-    })
-      .rotate()
-      .resize({
-        width: detectionWidth,
-        height: detectionHeight,
-        fit: 'fill',
-        withoutEnlargement: true,
-      })
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true })
-
-    src = new cv.Mat(
-      raw.info.height,
-      raw.info.width,
-      cv.CV_8UC4
+    const stripHeight = Math.min(
+      FACE_DETECTION_STRIP_HEIGHT,
+      detectionHeight
     )
-    src.data.set(raw.data)
-
-    gray = new cv.Mat()
-    equalized = new cv.Mat()
-    faces = new cv.RectVector()
-
-    cv.cvtColor(
-      src,
-      gray,
-      cv.COLOR_RGBA2GRAY,
-      0
+    const stripOverlap = Math.min(
+      FACE_DETECTION_STRIP_OVERLAP,
+      Math.max(0, stripHeight - 1)
     )
-    cv.equalizeHist(gray, equalized)
-
-    classifier.detectMultiScale(
-      equalized,
-      faces,
-      1.1,
-      5,
-      0,
-      new cv.Size(24, 24),
-      new cv.Size(0, 0)
+    const stripStep = Math.max(
+      1,
+      stripHeight - stripOverlap
     )
-
-    const scaleY =
-      pageHeight / raw.info.height
+    const scaleY = pageHeight / detectionHeight
     const zones = []
 
-    for (let index = 0; index < faces.size(); index += 1) {
-      const face = faces.get(index)
-
-      const faceTop = face.y * scaleY
-      const faceHeight = face.height * scaleY
-      const padding = Math.max(
-        48,
-        Math.round(faceHeight * 0.35)
+    for (
+      let stripTop = 0;
+      stripTop < detectionHeight;
+      stripTop += stripStep
+    ) {
+      const currentHeight = Math.min(
+        stripHeight,
+        detectionHeight - stripTop
       )
 
-      zones.push({
-        top: Math.max(
+      let src = null
+      let gray = null
+      let equalized = null
+      let faces = null
+
+      try {
+        const raw = await sharp(fileBuffer, {
+          limitInputPixels:
+            MANGA_PROCESSOR_LIMITS.maxPixels,
+          sequentialRead: true,
+        })
+          .rotate()
+          .resize({
+            width: detectionWidth,
+            height: detectionHeight,
+            fit: 'fill',
+            withoutEnlargement: true,
+          })
+          .extract({
+            left: 0,
+            top: stripTop,
+            width: detectionWidth,
+            height: currentHeight,
+          })
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true })
+
+        src = new cv.Mat(
+          raw.info.height,
+          raw.info.width,
+          cv.CV_8UC4
+        )
+        src.data.set(raw.data)
+
+        gray = new cv.Mat()
+        equalized = new cv.Mat()
+        faces = new cv.RectVector()
+
+        cv.cvtColor(
+          src,
+          gray,
+          cv.COLOR_RGBA2GRAY,
+          0
+        )
+        cv.equalizeHist(gray, equalized)
+
+        classifier.detectMultiScale(
+          equalized,
+          faces,
+          1.1,
+          5,
           0,
-          Math.floor(faceTop - padding)
-        ),
-        bottom: Math.min(
-          pageHeight,
-          Math.ceil(
-            faceTop +
-              faceHeight +
-              padding
+          new cv.Size(24, 24),
+          new cv.Size(0, 0)
+        )
+
+        for (
+          let index = 0;
+          index < faces.size();
+          index += 1
+        ) {
+          const face = faces.get(index)
+          const faceTop =
+            (stripTop + face.y) * scaleY
+          const faceHeight = face.height * scaleY
+          const padding = Math.max(
+            48,
+            Math.round(faceHeight * 0.35)
           )
-        ),
-      })
+
+          zones.push({
+            top: Math.max(
+              0,
+              Math.floor(faceTop - padding)
+            ),
+            bottom: Math.min(
+              pageHeight,
+              Math.ceil(
+                faceTop +
+                  faceHeight +
+                  padding
+              )
+            ),
+          })
+        }
+      } finally {
+        if (faces) faces.delete()
+        if (equalized) equalized.delete()
+        if (gray) gray.delete()
+        if (src) src.delete()
+      }
+
+      if (stripTop + currentHeight >= detectionHeight) {
+        break
+      }
     }
 
     return mergeFaceZones(zones)
   } catch (error) {
-  console.error('MANGA FACE DETECTION ERROR:', error)
+    console.error('MANGA FACE DETECTION ERROR:', error)
 
-  const detectionError = new Error('Manga face detection failed.')
-  detectionError.code = 'MANGA_FACE_DETECTION_FAILED'
-  detectionError.statusCode = 503
-  throw detectionError
-} finally {
-    if (faces) faces.delete()
-    if (equalized) equalized.delete()
-    if (gray) gray.delete()
-    if (src) src.delete()
+    const detectionError = new Error('Manga face detection failed.')
+    detectionError.code = 'MANGA_FACE_DETECTION_FAILED'
+    detectionError.statusCode = 503
+    throw detectionError
   }
 }
 
