@@ -5,6 +5,9 @@ import {
 } from '@aws-sdk/client-s3'
 import sharp from 'sharp'
 import { supabase } from '../config/supabase.js'
+import {
+  invalidateDiscoverStorySharedCache,
+} from '../services/discoverStorySharedCache.service.js'
 
 const IMAGE_MIME_TYPES = new Set([
   'image/jpeg',
@@ -832,6 +835,7 @@ export async function createMyReaderStory(
     if (error) throw error
 
     createdStory = data
+    invalidateDiscoverStorySharedCache()
 
     return res.status(201).json({
       ok: true,
@@ -1003,6 +1007,8 @@ export async function deleteMyReaderStory(
     if (updateError) {
       throw updateError
     }
+
+    invalidateDiscoverStorySharedCache()
 
     return res.status(200).json({
       ok: true,
