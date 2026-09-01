@@ -61,6 +61,7 @@ import {
   getMyAuthorPostInsights,
   recordAuthorPostClick,
   recordAuthorPostView,
+  recordAuthorPostViewsBatch,
 } from '../controllers/authorPostInsights.controller.js'
 
 import {
@@ -207,11 +208,15 @@ router.put('/page/posts/:postId/notification-preference', requireUser, updateMyA
 router.get('/me/posts/:postId/insights', requireUser, getMyAuthorPostInsights)
 router.post('/page/posts/:postId/clicks', recordAuthorPostClick)
 router.post(
+  '/page/posts/views/batch',
+  recordAuthorPostViewsBatch
+)
+
+router.post(
   '/page/posts/:postId/views',
   recordAuthorPostView,
   (_req, res) => res.status(204).end()
 )
-
 router.get('/page/posts/:postId', recordAuthorPostView, getAuthorPostById)
 
 router.get('/page/posts/:postId/reactions', getAuthorPostReactions)
