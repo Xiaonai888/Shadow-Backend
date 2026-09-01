@@ -26,10 +26,10 @@ set search_path = public
 as $$
   with view_rows as (
     select
-      nullif(trim(viewer_key), '') as viewer_key,
-      nullif(trim(viewer_user_id), '') as viewer_user_id,
+      nullif(trim(viewer_key::text), '') as viewer_key,
+      nullif(trim(viewer_user_id::text), '') as viewer_user_id,
       case
-        when lower(trim(coalesce(source, ''))) in (
+        when lower(trim(coalesce(source::text, ''))) in (
           'feed',
           'suggested',
           'follower_feed',
@@ -41,13 +41,13 @@ as $$
           'direct',
           'other'
         )
-          then lower(trim(source))
+          then lower(trim(source::text))
         else 'direct'
       end as source,
       was_following,
       viewed_at
     from public.author_page_post_views
-    where post_id = p_post_id
+    where post_id::text = p_post_id
   ),
   view_totals as (
     select count(*)::bigint as views
@@ -138,7 +138,7 @@ as $$
     select
       lower(
         coalesce(
-          nullif(trim(reaction_type), ''),
+          nullif(trim(reaction_type::text), ''),
           'love'
         )
       ) as reaction_type,
@@ -197,7 +197,7 @@ as $$
   click_result as (
     select count(*)::bigint as clicks
     from public.author_page_post_clicks
-    where post_id = p_post_id
+    where post_id::text = p_post_id
   ),
   registered_viewer_ids as (
     select distinct viewer_user_id
@@ -246,12 +246,12 @@ as $$
         else '55_plus'
       end as age_key,
       case
-        when lower(trim(coalesce(u.gender, ''))) in (
+        when lower(trim(coalesce(u.gender::text, ''))) in (
           'female',
           'male',
           'custom'
         )
-          then lower(trim(u.gender))
+          then lower(trim(u.gender::text))
         else null
       end as gender_key
     from registered_viewer_ids rv
