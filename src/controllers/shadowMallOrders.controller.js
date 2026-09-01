@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
+import { emitAdminIncomeChange } from '../services/adminIncomeEvents.service.js'
 import {
   deleteR2ObjectByUrl,
   uploadFileToR2,
@@ -282,6 +283,26 @@ function publicMallOrder(order) {
     paid_at: order.paid_at,
     updated_at: order.updated_at,
   }
+}
+
+function emitShadowMallIncomeChange(
+  order,
+  action
+) {
+  if (!order?.id) return
+
+  emitAdminIncomeChange({
+    source: 'shadow_mall',
+    action,
+    order_id:
+      order.order_id || null,
+    order_row_id: order.id,
+    status:
+      order.status || null,
+    changed_at:
+      order.updated_at ||
+      new Date().toISOString(),
+  })
 }
 
 function mallMediaError(message) {
@@ -2070,6 +2091,11 @@ export async function updateAdminShadowMallOrderStatus(
 
     if (error) throw error
 
+    emitShadowMallIncomeChange(
+      data,
+      'status_changed'
+    )
+
     return res
       .status(200)
       .json({
@@ -2269,6 +2295,11 @@ export async function handleShadowMallAbaCallback(
     if (updateError) {
       throw updateError
     }
+
+    emitShadowMallIncomeChange(
+      updatedOrder,
+      'paid_order'
+    )
 
     await deductShadowMallOrderStock(
       updatedOrder
