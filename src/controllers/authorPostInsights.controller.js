@@ -15,16 +15,25 @@ const VIEW_SOURCES = new Set([
   'other',
 ])
 
+const TYPICAL_POST_LIMIT = 5
+const TYPICAL_MIN_SAMPLE = 3
+const TYPICAL_MAX_WINDOW_MS = 24 * 60 * 60 * 1000
+
 function getRequestUserId(req) {
   try {
-    const authHeader = String(req.headers.authorization || '')
+    const authHeader = String(
+      req.headers.authorization || ''
+    )
     const token = authHeader.startsWith('Bearer ')
       ? authHeader.slice(7)
       : ''
 
     if (!token) return null
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET)
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    )
 
     return decoded?.type === 'reader'
       ? decoded.user_id || null
@@ -50,14 +59,17 @@ function getViewerKey(req, userId) {
   )
     .split(',')[0]
     .trim()
+
   const ip =
     forwardedFor ||
     req.ip ||
     req.socket?.remoteAddress ||
     ''
+
   const userAgent = String(
     req.headers['user-agent'] || ''
   )
+
   const raw = userId
     ? `user:${userId}`
     : `anon:${ip}|${userAgent}`
@@ -66,240 +78,6 @@ function getViewerKey(req, userId) {
     .createHash('sha256')
     .update(raw)
     .digest('hex')
-}
-
-function buildViewTimeline(rows) {
-  const buckets = new Map()
-
-  for (const row of rows) {
-    const date = new Date(row.viewed_at)
-
-    if (Number.isNaN(date.getTime())) continue
-
-    date.setUTCMinutes(0, 0, 0)
-    const key = date.toISOString()
-    buckets.set(key, Number(buckets.get(key) || 0) + 1)
-  }
-
-  let cumulative = 0
-
-  return [...buckets.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([time, views]) => {
-      cumulative += views
-
-      return {
-        time,
-        views,
-        cumulative_views: cumulative,
-      }
-    })
-}
-
-function buildSourceBreakdown(rows) {
-  const counts = new Map()
-
-  for (const row of rows) {
-    const source = normalizeSource(row.source)
-    counts.set(source, Number(counts.get(source) || 0) + 1)
-  }
-
-  const total = rows.length
-
-  return [...counts.entries()]
-    .map(([source, views]) => ({
-      source,
-      views,
-      percentage: total
-        ? Number(((views / total) * 100).toFixed(1))
-        : 0,
-    }))
-    .sort((a, b) => b.views - a.views)
-}
-
-function buildAudience(rows) {
-  const viewers = new Map()
-
-  for (const row of rows) {
-    const key = String(row.viewer_key || '').trim()
-
-    if (!key) continue
-
-    const previous = viewers.get(key)
-
-    viewers.set(key, {
-      was_following: Boolean(
-        row.was_following || previous?.was_following
-      ),
-    })
-  }
-
-  const uniqueViewers = [...viewers.values()]
-  const followers = uniqueViewers.filter(
-    (item) => item.was_following
-  ).length
-  const nonFollowers = Math.max(
-    0,
-    uniqueViewers.length - followers
-  )
-  const total = uniqueViewers.length
-
-  return {
-    viewers: total,
-    followers,
-    non_followers: nonFollowers,
-    follower_percentage: total
-      ? Number(((followers / total) * 100).toFixed(1))
-      : 0,
-    non_follower_percentage: total
-      ? Number(((nonFollowers / total) * 100).toFixed(1))
-      : 0,
-  }
-}
-
-function buildReactionCounts(rows) {
-  return (rows || []).reduce(
-    (result, row) => {
-      const type = String(row.reaction_type || 'love')
-        .trim()
-        .toLowerCase()
-
-      result[type] = Number(result[type] || 0) + 1
-      return result
-    },
-    {}
-  )
-}
-
-
-const DEMOGRAPHICS_MIN_SAMPLE = 5
-const TYPICAL_POST_LIMIT = 5
-const TYPICAL_MIN_SAMPLE = 3
-const TYPICAL_MAX_WINDOW_MS = 24 * 60 * 60 * 1000
-
-function calculateAge(dateOfBirth) {
-  const birthDate = new Date(dateOfBirth)
-  const today = new Date()
-
-  if (Number.isNaN(birthDate.getTime())) return null
-
-  let age = today.getUTCFullYear() - birthDate.getUTCFullYear()
-  const monthDiff =
-    today.getUTCMonth() - birthDate.getUTCMonth()
-
-  if (
-    monthDiff < 0 ||
-    (monthDiff === 0 &&
-      today.getUTCDate() < birthDate.getUTCDate())
-  ) {
-    age -= 1
-  }
-
-  return age >= 0 ? age : null
-}
-
-function getAgeBucket(age) {
-  if (!Number.isFinite(age) || age < 0) return null
-  if (age < 18) return 'under_18'
-  if (age <= 24) return '18_24'
-  if (age <= 34) return '25_34'
-  if (age <= 44) return '35_44'
-  if (age <= 54) return '45_54'
-  return '55_plus'
-}
-
-function buildCountBreakdown(values) {
-  const counts = new Map()
-
-  for (const value of values) {
-    if (!value) continue
-    counts.set(value, Number(counts.get(value) || 0) + 1)
-  }
-
-  const total = [...counts.values()].reduce(
-    (sum, count) => sum + count,
-    0
-  )
-
-  return [...counts.entries()]
-    .map(([key, count]) => ({
-      key,
-      count,
-      percentage: total
-        ? Number(((count / total) * 100).toFixed(1))
-        : 0,
-    }))
-    .sort((a, b) => b.count - a.count)
-}
-
-async function getViewerDemographics(views) {
-  const viewerIds = [
-    ...new Set(
-      (views || [])
-        .map((row) =>
-          String(row.viewer_user_id || '').trim()
-        )
-        .filter(Boolean)
-    ),
-  ]
-
-  if (viewerIds.length < DEMOGRAPHICS_MIN_SAMPLE) {
-    return {
-      available: false,
-      registered_viewers: viewerIds.length,
-      minimum_sample: DEMOGRAPHICS_MIN_SAMPLE,
-    }
-  }
-
-  const { data: users, error } = await supabase
-    .from('users')
-    .select('id, date_of_birth, gender')
-    .in('id', viewerIds)
-
-  if (error) throw error
-
-  const profiles = users || []
-  const ageValues = profiles
-    .map((user) => calculateAge(user.date_of_birth))
-    .map(getAgeBucket)
-    .filter(Boolean)
-
-  const genderValues = profiles
-    .map((user) => {
-      const gender = String(user.gender || '')
-        .trim()
-        .toLowerCase()
-
-      return ['female', 'male', 'custom'].includes(gender)
-        ? gender
-        : null
-    })
-    .filter(Boolean)
-
-  const ageAvailable =
-    ageValues.length >= DEMOGRAPHICS_MIN_SAMPLE
-  const genderAvailable =
-    genderValues.length >= DEMOGRAPHICS_MIN_SAMPLE
-
-  return {
-    available: ageAvailable || genderAvailable,
-    registered_viewers: viewerIds.length,
-    minimum_sample: DEMOGRAPHICS_MIN_SAMPLE,
-    age: {
-      available: ageAvailable,
-      total: ageValues.length,
-      groups: ageAvailable
-        ? buildCountBreakdown(ageValues)
-        : [],
-    },
-    gender: {
-      available: genderAvailable,
-      total: genderValues.length,
-      groups: genderAvailable
-        ? buildCountBreakdown(genderValues)
-        : [],
-    },
-  }
 }
 
 function median(values) {
@@ -316,7 +94,7 @@ function median(values) {
     : (sorted[middle - 1] + sorted[middle]) / 2
 }
 
-async function getTypicalPerformance(post, currentViews) {
+async function getTypicalPerformance(post) {
   if (!post?.author_page_id || !post?.created_at) {
     return {
       available: false,
@@ -366,18 +144,22 @@ async function getTypicalPerformance(post, currentViews) {
     }
   }
 
-  const { data: previousPosts, error: previousPostsError } =
-    await supabase
-      .from('author_page_posts')
-      .select('id, created_at')
-      .eq('author_page_id', post.author_page_id)
-      .eq('status', 'active')
-      .gte('created_at', firstTrackedView.viewed_at)
-      .lt('created_at', post.created_at)
-      .order('created_at', { ascending: false })
-      .limit(TYPICAL_POST_LIMIT)
+  const {
+    data: previousPosts,
+    error: previousPostsError,
+  } = await supabase
+    .from('author_page_posts')
+    .select('id, created_at')
+    .eq('author_page_id', post.author_page_id)
+    .eq('status', 'active')
+    .gte('created_at', firstTrackedView.viewed_at)
+    .lt('created_at', post.created_at)
+    .order('created_at', { ascending: false })
+    .limit(TYPICAL_POST_LIMIT)
 
-  if (previousPostsError) throw previousPostsError
+  if (previousPostsError) {
+    throw previousPostsError
+  }
 
   const baselinePosts = previousPosts || []
 
@@ -394,28 +176,31 @@ async function getTypicalPerformance(post, currentViews) {
     60 * 1000,
     Date.now() - createdAt.getTime()
   )
+
   const windowMs = Math.min(
     TYPICAL_MAX_WINDOW_MS,
     elapsedMs
   )
-  const currentWindowEnd =
+
+  const currentWindowEnd = new Date(
     createdAt.getTime() + windowMs
+  ).toISOString()
 
-  const currentWindowViews = (currentViews || []).filter(
-    (row) => {
-      const viewedAt = new Date(row.viewed_at).getTime()
-      return (
-        Number.isFinite(viewedAt) &&
-        viewedAt <= currentWindowEnd
-      )
-    }
-  ).length
+  const currentResult = supabase
+    .from('author_page_post_views')
+    .select('id', {
+      count: 'exact',
+      head: true,
+    })
+    .eq('post_id', String(post.id))
+    .lte('viewed_at', currentWindowEnd)
 
-  const baselineResults = await Promise.all(
+  const baselineResultsPromise = Promise.all(
     baselinePosts.map((baselinePost) => {
       const baselineCreatedAt = new Date(
         baselinePost.created_at
       )
+
       const baselineEnd = new Date(
         baselineCreatedAt.getTime() + windowMs
       ).toISOString()
@@ -426,7 +211,10 @@ async function getTypicalPerformance(post, currentViews) {
           count: 'exact',
           head: true,
         })
-        .eq('post_id', String(baselinePost.id))
+        .eq(
+          'post_id',
+          String(baselinePost.id)
+        )
         .gte(
           'viewed_at',
           baselineCreatedAt.toISOString()
@@ -435,13 +223,30 @@ async function getTypicalPerformance(post, currentViews) {
     })
   )
 
+  const [
+    currentWindowResult,
+    baselineResults,
+  ] = await Promise.all([
+    currentResult,
+    baselineResultsPromise,
+  ])
+
+  if (currentWindowResult.error) {
+    throw currentWindowResult.error
+  }
+
   for (const result of baselineResults) {
     if (result.error) throw result.error
   }
 
-  const baselineCounts = baselineResults.map((result) =>
-    Number(result.count || 0)
+  const currentWindowViews = Number(
+    currentWindowResult.count || 0
   )
+
+  const baselineCounts = baselineResults.map(
+    (result) => Number(result.count || 0)
+  )
+
   const typicalViews = median(baselineCounts)
   const minViews = Math.min(...baselineCounts)
   const maxViews = Math.max(...baselineCounts)
@@ -453,9 +258,15 @@ async function getTypicalPerformance(post, currentViews) {
       currentWindowViews > 0
         ? 'above_typical'
         : 'typical'
-  } else if (currentWindowViews > typicalViews * 1.1) {
+  } else if (
+    currentWindowViews >
+    typicalViews * 1.1
+  ) {
     status = 'above_typical'
-  } else if (currentWindowViews < typicalViews * 0.9) {
+  } else if (
+    currentWindowViews <
+    typicalViews * 0.9
+  ) {
     status = 'below_typical'
   }
 
@@ -472,8 +283,13 @@ async function getTypicalPerformance(post, currentViews) {
       typicalViews > 0
         ? Number(
             (
-              ((currentWindowViews - typicalViews) /
-                typicalViews) *
+              (
+                (
+                  currentWindowViews -
+                  typicalViews
+                ) /
+                typicalViews
+              ) *
               100
             ).toFixed(1)
           )
@@ -482,16 +298,30 @@ async function getTypicalPerformance(post, currentViews) {
   }
 }
 
-export async function recordAuthorPostView(req, res, next) {
+export async function recordAuthorPostView(
+  req,
+  res,
+  next
+) {
   try {
-    const postId = String(req.params.postId || '').trim()
+    const postId = String(
+      req.params.postId || ''
+    ).trim()
 
     if (postId) {
-      const viewerUserId = getRequestUserId(req)
-      const viewerKey = getViewerKey(req, viewerUserId)
+      const viewerUserId =
+        getRequestUserId(req)
+
+      const viewerKey = getViewerKey(
+        req,
+        viewerUserId
+      )
+
       const source = normalizeSource(
         req.query.source ||
-          req.headers['x-shadow-post-source'] ||
+          req.headers[
+            'x-shadow-post-source'
+          ] ||
           'direct'
       )
 
@@ -508,25 +338,44 @@ export async function recordAuthorPostView(req, res, next) {
       )
 
       if (error) {
-        console.error('RECORD AUTHOR POST VIEW ERROR:', error)
+        console.error(
+          'RECORD AUTHOR POST VIEW ERROR:',
+          error
+        )
       }
     }
   } catch (error) {
-    console.error('RECORD AUTHOR POST VIEW ERROR:', error)
+    console.error(
+      'RECORD AUTHOR POST VIEW ERROR:',
+      error
+    )
   }
 
   next()
 }
 
-export async function recordAuthorPostClick(req, res) {
+export async function recordAuthorPostClick(
+  req,
+  res
+) {
   try {
-    const postId = String(req.params.postId || '').trim()
-    const targetUrl = String(req.body?.target_url || '').trim()
+    const postId = String(
+      req.params.postId || ''
+    ).trim()
 
-    if (!postId || !targetUrl || targetUrl.length > 2000) {
+    const targetUrl = String(
+      req.body?.target_url || ''
+    ).trim()
+
+    if (
+      !postId ||
+      !targetUrl ||
+      targetUrl.length > 2000
+    ) {
       return res.status(400).json({
         ok: false,
-        message: 'Valid post ID and target URL are required',
+        message:
+          'Valid post ID and target URL are required',
       })
     }
 
@@ -541,17 +390,29 @@ export async function recordAuthorPostClick(req, res) {
       })
     }
 
-    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+    if (
+      !['http:', 'https:'].includes(
+        parsedUrl.protocol
+      )
+    ) {
       return res.status(400).json({
         ok: false,
         message: 'Invalid target URL',
       })
     }
 
-    const clickerUserId = getRequestUserId(req)
-    const clickerKey = getViewerKey(req, clickerUserId)
+    const clickerUserId =
+      getRequestUserId(req)
 
-    const { data: post, error: postError } = await supabase
+    const clickerKey = getViewerKey(
+      req,
+      clickerUserId
+    )
+
+    const {
+      data: post,
+      error: postError,
+    } = await supabase
       .from('author_page_posts')
       .select('id, user_id, content')
       .eq('id', postId)
@@ -567,16 +428,22 @@ export async function recordAuthorPostClick(req, res) {
       })
     }
 
-    if (!String(post.content || '').includes(targetUrl)) {
+    if (
+      !String(
+        post.content || ''
+      ).includes(targetUrl)
+    ) {
       return res.status(400).json({
         ok: false,
-        message: 'Link does not belong to this post',
+        message:
+          'Link does not belong to this post',
       })
     }
 
     if (
       clickerUserId &&
-      String(post.user_id) === String(clickerUserId)
+      String(post.user_id) ===
+        String(clickerUserId)
     ) {
       return res.status(200).json({
         ok: true,
@@ -588,7 +455,10 @@ export async function recordAuthorPostClick(req, res) {
       Date.now() - 2000
     ).toISOString()
 
-    const { data: recent, error: recentError } = await supabase
+    const {
+      data: recent,
+      error: recentError,
+    } = await supabase
       .from('author_page_post_clicks')
       .select('id')
       .eq('post_id', postId)
@@ -606,16 +476,18 @@ export async function recordAuthorPostClick(req, res) {
       })
     }
 
-    const { error: clickError } = await supabase
-      .from('author_page_post_clicks')
-      .insert({
-        post_id: postId,
-        clicker_user_id: clickerUserId
-          ? String(clickerUserId)
-          : null,
-        clicker_key: clickerKey,
-        target_url: targetUrl,
-      })
+    const { error: clickError } =
+      await supabase
+        .from('author_page_post_clicks')
+        .insert({
+          post_id: postId,
+          clicker_user_id:
+            clickerUserId
+              ? String(clickerUserId)
+              : null,
+          clicker_key: clickerKey,
+          target_url: targetUrl,
+        })
 
     if (clickError) throw clickError
 
@@ -624,21 +496,33 @@ export async function recordAuthorPostClick(req, res) {
       recorded: true,
     })
   } catch (error) {
-    console.error('RECORD AUTHOR POST CLICK ERROR:', error)
+    console.error(
+      'RECORD AUTHOR POST CLICK ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
-      message: 'Failed to record post click',
+      message:
+        'Failed to record post click',
     })
   }
 }
 
-export async function getMyAuthorPostInsights(req, res) {
+export async function getMyAuthorPostInsights(
+  req,
+  res
+) {
   try {
     const userId = String(
-      req.user?.user_id || req.user?.id || ''
+      req.user?.user_id ||
+        req.user?.id ||
+        ''
     ).trim()
-    const postId = String(req.params.postId || '').trim()
+
+    const postId = String(
+      req.params.postId || ''
+    ).trim()
 
     if (!userId) {
       return res.status(401).json({
@@ -654,7 +538,10 @@ export async function getMyAuthorPostInsights(req, res) {
       })
     }
 
-    const { data: post, error: postError } = await supabase
+    const {
+      data: post,
+      error: postError,
+    } = await supabase
       .from('author_page_posts')
       .select(
         'id, user_id, author_page_id, content, image_urls, created_at, status'
@@ -673,126 +560,115 @@ export async function getMyAuthorPostInsights(req, res) {
     }
 
     let isOwner =
-      String(post.user_id || '') === userId
+      String(post.user_id || '') ===
+      userId
 
     if (!isOwner && post.author_page_id) {
-      const { data: authorPage, error: pageError } = await supabase
+      const {
+        data: authorPage,
+        error: pageError,
+      } = await supabase
         .from('author_pages')
         .select('user_id')
-        .eq('id', post.author_page_id)
+        .eq(
+          'id',
+          post.author_page_id
+        )
         .maybeSingle()
 
       if (pageError) throw pageError
 
       isOwner =
-        String(authorPage?.user_id || '') === userId
+        String(
+          authorPage?.user_id || ''
+        ) === userId
     }
 
     if (!isOwner) {
       return res.status(403).json({
         ok: false,
-        message: 'You can only view insights for your own post',
+        message:
+          'You can only view insights for your own post',
       })
     }
 
     const [
-      viewsResult,
-      reactionsResult,
-      commentsResult,
-      echoesResult,
-      savesResult,
-      followsResult,
-      clicksResult,
+      aggregateResult,
+      performance,
     ] = await Promise.all([
-      supabase
-        .from('author_page_post_views')
-        .select(
-          'viewer_key, viewer_user_id, source, was_following, viewed_at'
-        )
-        .eq('post_id', postId)
-        .order('viewed_at', { ascending: true }),
-      supabase
-        .from('author_page_post_reactions')
-        .select('reaction_type')
-        .eq('post_id', postId),
-      supabase
-        .from('author_page_post_comments')
-        .select('id', { count: 'exact', head: true })
-        .eq('post_id', postId)
-        .eq('is_hidden', false)
-        .is('deleted_at', null),
-      supabase
-        .from('social_echoes_v2')
-        .select('share_count')
-        .eq('source_type', 'author_post')
-        .eq('source_id', postId),
-      supabase
-        .from('saved_posts')
-        .select('id', {
-          count: 'exact',
-          head: true,
-        })
-        .eq('source_type', 'author_post')
-        .eq('source_id', postId),
-      supabase
-        .from('author_page_follows')
-        .select('id', {
-          count: 'exact',
-          head: true,
-        })
-        .eq('author_page_id', post.author_page_id)
-        .eq('source_post_id', postId),
-      supabase
-        .from('author_page_post_clicks')
-        .select('id', {
-          count: 'exact',
-          head: true,
-        })
-        .eq('post_id', postId),
+      supabase.rpc(
+        'get_author_post_insights_aggregate',
+        {
+          p_post_id: postId,
+        }
+      ),
+      getTypicalPerformance(post),
     ])
 
-    if (viewsResult.error) throw viewsResult.error
-    if (reactionsResult.error) throw reactionsResult.error
-    if (commentsResult.error) throw commentsResult.error
-    if (echoesResult.error) throw echoesResult.error
-    if (savesResult.error) throw savesResult.error
-    if (followsResult.error) throw followsResult.error
-    if (clicksResult.error) throw clicksResult.error
+    if (aggregateResult.error) {
+      throw aggregateResult.error
+    }
 
-    const views = viewsResult.data || []
-    const reactions = reactionsResult.data || []
-    const reactionCounts = buildReactionCounts(reactions)
-    const reactionTotal = reactions.length
-    const commentTotal = Number(commentsResult.count || 0)
-    const shareTotal = (echoesResult.data || []).reduce(
-      (total, item) =>
-        total + Math.max(1, Number(item.share_count || 1)),
-      0
+    const aggregate =
+      aggregateResult.data?.[0] || {}
+
+    const views = Number(
+      aggregate.views || 0
     )
 
-    const saveTotal = Number(savesResult.count || 0)
-    const netFollowTotal = Number(followsResult.count || 0)
-    const clickTotal = Number(clicksResult.count || 0)
-    const audience = buildAudience(views)
-    const [performance, demographics] =
-      await Promise.all([
-        getTypicalPerformance(post, views),
-        getViewerDemographics(views),
-      ])
+    const viewers = Number(
+      aggregate.viewers || 0
+    )
+
+    const followers = Number(
+      aggregate.follower_viewers || 0
+    )
+
+    const nonFollowers = Number(
+      aggregate.non_follower_viewers || 0
+    )
+
+    const reactionTotal = Number(
+      aggregate.reaction_total || 0
+    )
+
+    const commentTotal = Number(
+      aggregate.comments || 0
+    )
+
+    const shareTotal = Number(
+      aggregate.shares || 0
+    )
+
+    const saveTotal = Number(
+      aggregate.saves || 0
+    )
+
+    const netFollowTotal = Number(
+      aggregate.net_follows || 0
+    )
+
+    const clickTotal = Number(
+      aggregate.clicks || 0
+    )
 
     return res.status(200).json({
       ok: true,
       post: {
         id: post.id,
-        content: String(post.content || '').slice(0, 300),
-        image_urls: Array.isArray(post.image_urls)
+        content: String(
+          post.content || ''
+        ).slice(0, 300),
+        image_urls: Array.isArray(
+          post.image_urls
+        )
           ? post.image_urls.slice(0, 5)
           : [],
         created_at: post.created_at,
       },
       overview: {
-        views: views.length,
-        viewers: audience.viewers,
+        views,
+        viewers,
         engagement:
           reactionTotal +
           commentTotal +
@@ -803,30 +679,72 @@ export async function getMyAuthorPostInsights(req, res) {
       },
       engagement: {
         reactions: reactionTotal,
-        reaction_by_type: reactionCounts,
+        reaction_by_type:
+          aggregate.reaction_by_type &&
+          typeof aggregate.reaction_by_type ===
+            'object'
+            ? aggregate.reaction_by_type
+            : {},
         comments: commentTotal,
         shares: shareTotal,
         saves: saveTotal,
         clicks: clickTotal,
       },
       audience: {
-        followers: audience.followers,
-        non_followers: audience.non_followers,
-        follower_percentage: audience.follower_percentage,
-        non_follower_percentage:
-          audience.non_follower_percentage,
+        followers,
+        non_followers: nonFollowers,
+        follower_percentage: viewers
+          ? Number(
+              (
+                (followers / viewers) *
+                100
+              ).toFixed(1)
+            )
+          : 0,
+        non_follower_percentage: viewers
+          ? Number(
+              (
+                (
+                  nonFollowers /
+                  viewers
+                ) *
+                100
+              ).toFixed(1)
+            )
+          : 0,
       },
-      traffic: buildSourceBreakdown(views),
-      views_timeline: buildViewTimeline(views),
+      traffic: Array.isArray(
+        aggregate.traffic
+      )
+        ? aggregate.traffic
+        : [],
+      views_timeline: Array.isArray(
+        aggregate.views_timeline
+      )
+        ? aggregate.views_timeline
+        : [],
       performance,
-      demographics,
+      demographics:
+        aggregate.demographics &&
+        typeof aggregate.demographics ===
+          'object'
+          ? aggregate.demographics
+          : {
+              available: false,
+              registered_viewers: 0,
+              minimum_sample: 5,
+            },
     })
   } catch (error) {
-    console.error('GET AUTHOR POST INSIGHTS ERROR:', error)
+    console.error(
+      'GET AUTHOR POST INSIGHTS ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
-      message: 'Failed to load post insights',
+      message:
+        'Failed to load post insights',
       error: error.message,
     })
   }
