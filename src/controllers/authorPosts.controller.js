@@ -330,20 +330,45 @@ export async function getAuthorPagePosts(req, res) {
       String(req.query.content_library || '').trim() === '1'
 
     const limit = Math.min(
-      contentLibrary ? 100 : 30,
-      requestedLimit
-    )
+  contentLibrary ? 50 : 30,
+  requestedLimit
+)
 
-    let postsQuery = supabase
+const requestedStatus = String(
+  req.query.status || ''
+)
+  .trim()
+  .toLowerCase()
+
+let postsQuery = supabase
   .from('author_page_posts')
   .select('*')
   .eq('author_page_id', authorPage.id)
 
-postsQuery = contentLibrary
-  ? postsQuery.in('status', ['active', 'scheduled', 'uploaded'])
-  : postsQuery.eq('status', 'active')
+if (contentLibrary) {
+  postsQuery = ['active', 'scheduled', 'uploaded'].includes(
+    requestedStatus
+  )
+    ? postsQuery.eq('status', requestedStatus)
+    : postsQuery.in('status', ['active', 'scheduled', 'uploaded'])
+} else {
+  postsQuery = postsQuery.eq('status', 'active')
+}
 
-    const before = String(req.query.before || '').trim()
+const after = String(req.query.after || '').trim()
+
+if (after) {
+  const afterDate = new Date(after)
+
+  if (!Number.isNaN(afterDate.getTime())) {
+    postsQuery = postsQuery.gte(
+      'created_at',
+      afterDate.toISOString()
+    )
+  }
+}
+
+const before = String(req.query.before || '').trim()
 
     if (before) {
       if (/^\d{4}-\d{2}-\d{2}$/.test(before)) {
@@ -384,14 +409,21 @@ postsQuery = contentLibrary
         .order('created_at', { ascending: false })
     }
 
-    const { data: posts, error: postsError } =
-      await orderedQuery.limit(limit)
+    const { data: postRows, error: postsError } =
+  await orderedQuery.limit(limit + 1)
 
-    if (postsError) throw postsError
+if (postsError) throw postsError
 
-    const postIds = (posts || [])
-      .map((post) => post.id)
-      .filter(Boolean)
+const pagePosts = (postRows || []).slice(0, limit)
+const hasMore = (postRows || []).length > limit
+const nextBefore =
+  hasMore && pagePosts.length
+    ? pagePosts[pagePosts.length - 1].created_at
+    : null
+
+const postIds = pagePosts
+  .map((post) => post.id)
+  .filter(Boolean)
 
     let reactionSummaryByPost = new Map()
     const myReactionByPost = new Map()
@@ -458,21 +490,23 @@ postsQuery = contentLibrary
     }
 
     return res.status(200).json({
-      ok: true,
-      posts: (posts || []).map((post) => ({
-        ...publicAuthorPost({
-          ...post,
-          echo_count: Number(
-            echoCountByPost.get(String(post.id)) || 0
-          ),
-          echo_state_loaded: true,
-          reaction_summary:
-            reactionSummaryByPost.get(post.id) || [],
-        }),
-        my_reaction:
-          myReactionByPost.get(String(post.id)) || null,
-      })),
-    })
+  ok: true,
+  posts: pagePosts.map((post) => ({
+    ...publicAuthorPost({
+      ...post,
+      echo_count: Number(
+        echoCountByPost.get(String(post.id)) || 0
+      ),
+      echo_state_loaded: true,
+      reaction_summary:
+        reactionSummaryByPost.get(post.id) || [],
+    }),
+    my_reaction:
+      myReactionByPost.get(String(post.id)) || null,
+  })),
+  has_more: hasMore,
+  next_before: nextBefore,
+})
   } catch (error) {
     console.error(
       'GET AUTHOR PAGE POSTS ERROR:',
