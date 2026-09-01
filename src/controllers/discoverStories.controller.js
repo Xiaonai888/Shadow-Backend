@@ -1,10 +1,4 @@
 import { supabase } from '../config/supabase.js'
-import {
-  cleanupExpiredAuthorStories,
-} from './authorStories.controller.js'
-import {
-  cleanupExpiredReaderStories,
-} from './readerStories.controller.js'
 
 const HISTORY_DAYS = 30
 const MAX_HISTORY_ROWS = 1000
@@ -253,23 +247,6 @@ export async function getDiscoverStoriesFeed(
         message: 'Unauthorized',
       })
     }
-
-    await Promise.all([
-      cleanupExpiredAuthorStories()
-        .catch((error) => {
-          console.error(
-            'DISCOVER AUTHOR STORY CLEANUP ERROR:',
-            error.message
-          )
-        }),
-      cleanupExpiredReaderStories()
-        .catch((error) => {
-          console.error(
-            'DISCOVER READER STORY CLEANUP ERROR:',
-            error.message
-          )
-        }),
-    ])
 
     const groupLimit = getLimit(
       req.query.limit
