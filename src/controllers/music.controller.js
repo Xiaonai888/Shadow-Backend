@@ -105,6 +105,22 @@ async function findRelease(releaseId, includeInactive = true) {
   return data || null
 }
 
+async function getArtistListenerTotals(artistId = null) {
+  const { data, error } = await supabase.rpc('get_music_artist_listener_totals', {
+    p_artist_id: artistId || null,
+  })
+
+  if (error) throw error
+
+  const totals = new Map()
+
+  for (const row of data || []) {
+    totals.set(row.artist_id, Number(row.total_listeners || 0))
+  }
+
+  return totals
+}
+
 function attachSongs(releases, songs) {
   const songsByRelease = new Map()
 
@@ -122,16 +138,24 @@ function attachSongs(releases, songs) {
 
 export async function getPublicMusicArtists(req, res) {
   try {
-    const { data, error } = await supabase
-      .from('music_artists')
-      .select('id, name, slug, subtitle, bio, avatar_url, banner_url, sort_order')
-      .eq('is_active', true)
-      .order('sort_order', { ascending: true })
-      .order('name', { ascending: true })
+    const [artistsResult, listenerTotals] = await Promise.all([
+      supabase
+        .from('music_artists')
+        .select('id, name, slug, subtitle, bio, avatar_url, banner_url, sort_order')
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true })
+        .order('name', { ascending: true }),
+      getArtistListenerTotals(),
+    ])
 
-    if (error) throw error
+    if (artistsResult.error) throw artistsResult.error
 
-    return res.json({ ok: true, artists: data || [] })
+    const artists = (artistsResult.data || []).map((artist) => ({
+      ...artist,
+      total_listeners: listenerTotals.get(artist.id) || 0,
+    }))
+
+    return res.json({ ok: true, artists })
   } catch (error) {
     console.error('GET PUBLIC MUSIC ARTISTS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load music artists' })
@@ -146,7 +170,7 @@ export async function getPublicMusicArtist(req, res) {
       return res.status(404).json({ ok: false, message: 'Music artist not found' })
     }
 
-    const [releasesResult, songsResult] = await Promise.all([
+    const [releasesResult, songsResult, listenerTotals] = await Promise.all([
       supabase
         .from('music_releases')
         .select('*')
@@ -162,6 +186,7 @@ export async function getPublicMusicArtist(req, res) {
         .eq('is_active', true)
         .order('track_number', { ascending: true })
         .order('sort_order', { ascending: true }),
+      getArtistListenerTotals(artist.id),
     ])
 
     if (releasesResult.error) throw releasesResult.error
@@ -169,14 +194,16 @@ export async function getPublicMusicArtist(req, res) {
 
     const songs = songsResult.data || []
     const releases = attachSongs(releasesResult.data || [], songs)
-    const popular = songs
-      .filter((song) => Number(song.view_count || 0) >= 1000)
+    const popular = [...songs]
       .sort((a, b) => Number(b.view_count || 0) - Number(a.view_count || 0))
       .slice(0, 10)
 
     return res.json({
       ok: true,
-      artist,
+      artist: {
+        ...artist,
+        total_listeners: listenerTotals.get(artist.id) || 0,
+      },
       popular,
       releases,
     })
@@ -188,10 +215,11 @@ export async function getPublicMusicArtist(req, res) {
 
 export async function getAdminMusicOverview(req, res) {
   try {
-    const [artistsResult, releasesResult, songsResult] = await Promise.all([
+    const [artistsResult, releasesResult, songsResult, listenerTotals] = await Promise.all([
       supabase.from('music_artists').select('*').order('sort_order', { ascending: true }).order('created_at', { ascending: false }),
       supabase.from('music_releases').select('id, artist_id, release_type'),
       supabase.from('music_songs').select('id, artist_id, release_id'),
+      getArtistListenerTotals(),
     ])
 
     if (artistsResult.error) throw artistsResult.error
@@ -203,8 +231,10 @@ export async function getAdminMusicOverview(req, res) {
 
     const artists = (artistsResult.data || []).map((artist) => {
       const artistReleases = releases.filter((release) => release.artist_id === artist.id)
+
       return {
         ...artist,
+        total_listeners: listenerTotals.get(artist.id) || 0,
         album_count: artistReleases.filter((release) => release.release_type === 'album').length,
         single_count: artistReleases.filter((release) => release.release_type === 'single').length,
         song_count: songs.filter((song) => song.artist_id === artist.id).length,
@@ -230,9 +260,10 @@ export async function getAdminMusicArtist(req, res) {
       return res.status(404).json({ ok: false, message: 'Music artist not found' })
     }
 
-    const [releasesResult, songsResult] = await Promise.all([
+    const [releasesResult, songsResult, listenerTotals] = await Promise.all([
       supabase.from('music_releases').select('*').eq('artist_id', artist.id).order('sort_order', { ascending: true }).order('created_at', { ascending: false }),
       supabase.from('music_songs').select('*').eq('artist_id', artist.id).order('track_number', { ascending: true }).order('sort_order', { ascending: true }),
+      getArtistListenerTotals(artist.id),
     ])
 
     if (releasesResult.error) throw releasesResult.error
@@ -240,7 +271,10 @@ export async function getAdminMusicArtist(req, res) {
 
     return res.json({
       ok: true,
-      artist,
+      artist: {
+        ...artist,
+        total_listeners: listenerTotals.get(artist.id) || 0,
+      },
       releases: attachSongs(releasesResult.data || [], songsResult.data || []),
     })
   } catch (error) {
@@ -258,7 +292,7 @@ export async function createMusicArtist(req, res) {
     const payload = {
       name,
       slug,
-      subtitle: text(req.body.subtitle) || 'Shadow Music Artist',
+      subtitle: text(req.body.subtitle),
       bio: text(req.body.bio),
       avatar_url: text(req.body.avatar_url),
       banner_url: text(req.body.banner_url),
