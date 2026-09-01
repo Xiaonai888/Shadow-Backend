@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { emitAdminIncomeChange } from './adminIncomeEvents.service.js'
 
 const DEFAULT_DIAMOND_TO_USD_RATE = 0.01
 const REVENUE_TOLERANCE = 0.000001
@@ -281,6 +282,21 @@ export async function createStoryReadingIncome({
     .maybeSingle()
 
   if (error) throw error
+
+  if (data) {
+    emitAdminIncomeChange({
+      source: 'episode_sales',
+      purchase_key:
+        data.purchase_key || cleanPurchaseKey,
+      reader_id:
+        data.reader_id || cleanReaderId,
+      story_id:
+        data.story_id || cleanStoryId,
+      author_id:
+        data.author_id || authorId || null,
+      created_at: data.created_at || null,
+    })
+  }
 
   return data || null
 }
