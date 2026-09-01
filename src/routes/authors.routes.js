@@ -206,7 +206,14 @@ router.get('/page/posts/:postId/notification-preference', requireUser, getMyAuth
 router.put('/page/posts/:postId/notification-preference', requireUser, updateMyAuthorPostNotificationPreference)
 router.get('/me/posts/:postId/insights', requireUser, getMyAuthorPostInsights)
 router.post('/page/posts/:postId/clicks', recordAuthorPostClick)
+router.post(
+  '/page/posts/:postId/views',
+  recordAuthorPostView,
+  (_req, res) => res.status(204).end()
+)
+
 router.get('/page/posts/:postId', recordAuthorPostView, getAuthorPostById)
+
 router.get('/page/posts/:postId/reactions', getAuthorPostReactions)
 router.get('/page/posts/:postId/comments', getAuthorPostComments)
 router.get('/page/posts/:postId/comments/:commentId', getAuthorPostCommentById)
