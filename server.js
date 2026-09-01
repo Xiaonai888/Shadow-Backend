@@ -83,6 +83,7 @@ import adminAccountsRoutes from './src/routes/adminAccounts.routes.js'
 import adminSearchInsightsRoutes from './src/routes/adminSearchInsights.routes.js'
 import musicRoutes from './src/routes/music.routes.js'
 import { startMangaR2DeleteRetryWorker } from './src/services/mangaR2DeleteRetry.service.js'
+import { startHeavyMediaWorkerCoordinator } from './src/services/heavyMediaWorkerCoordinator.service.js'
 import storyTranslationRoutes from './src/routes/storyTranslation.routes.js'
 
 
@@ -715,6 +716,7 @@ app.listen(PORT, () => {
   startChatRetentionCleanup()
   startStorageMigrationCleanupScheduler()
   void startMangaR2DeleteRetryWorker()
+  startHeavyMediaWorkerCoordinator()
   
 
   if (process.env.ENABLE_TELEGRAM_USER_LISTENER === 'true') {
