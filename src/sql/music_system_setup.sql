@@ -4,7 +4,7 @@ create table if not exists public.music_artists (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   slug text not null unique,
-  subtitle text not null default 'Shadow Music Artist',
+  subtitle text not null default '',
   bio text not null default '',
   avatar_url text not null default '',
   banner_url text not null default '',
@@ -13,6 +13,13 @@ create table if not exists public.music_artists (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.music_artists
+alter column subtitle set default '';
+
+update public.music_artists
+set subtitle = ''
+where subtitle = 'Shadow Music Artist';
 
 create table if not exists public.music_releases (
   id uuid primary key default gen_random_uuid(),
@@ -205,4 +212,32 @@ revoke all on function public.record_music_listen(uuid, uuid, integer)
 from public, anon, authenticated;
 
 grant execute on function public.record_music_listen(uuid, uuid, integer)
+to service_role;
+
+create or replace function public.get_music_artist_listener_totals(
+  p_artist_id uuid default null
+)
+returns table (
+  artist_id uuid,
+  total_listeners bigint
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select
+    s.artist_id,
+    count(distinct l.user_id)::bigint as total_listeners
+  from public.music_listens l
+  join public.music_songs s
+    on s.id = l.song_id
+  where p_artist_id is null
+     or s.artist_id = p_artist_id
+  group by s.artist_id;
+$$;
+
+revoke all on function public.get_music_artist_listener_totals(uuid)
+from public, anon, authenticated;
+
+grant execute on function public.get_music_artist_listener_totals(uuid)
 to service_role;
