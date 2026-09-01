@@ -6,6 +6,7 @@ const RESUME_RSS_BYTES = 290 * MB
 const CRITICAL_RSS_BYTES = 420 * MB
 const RETRY_AFTER_SECONDS = 30
 const MANGA_LOCK_TIMEOUT_MS = 15 * 60 * 1000
+const MANGA_SLOT_POLL_MS = 1000
 
 let memoryBlocked = false
 let activeMangaUpload = false
@@ -16,6 +17,10 @@ function rssBytes() {
 
 function memoryMb(bytes) {
   return Number((Number(bytes || 0) / MB).toFixed(1))
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function updateMemoryBlockState(rss) {
@@ -67,6 +72,65 @@ export function getMemoryGuardSnapshot() {
     critical: rss >= CRITICAL_RSS_BYTES,
     active_manga_upload: activeMangaUpload,
   }
+}
+
+export function guardMangaTempUploadMemory(req, res, next) {
+  const rss = rssBytes()
+  updateMemoryBlockState(rss)
+
+  if (rss >= CRITICAL_RSS_BYTES) {
+    return rejectMangaUpload(res, rss, 'critical_memory')
+  }
+
+  if (rss >= WARNING_RSS_BYTES) {
+    console.warn(
+      'MEMORY_GUARD_WARNING:',
+      JSON.stringify({
+        kind: 'manga_temp_upload',
+        rss_mb: memoryMb(rss),
+        processing_blocked: memoryBlocked,
+      })
+    )
+  }
+
+  return next()
+}
+
+export async function acquireMangaProcessingSlot(
+  timeoutMs = MANGA_LOCK_TIMEOUT_MS
+) {
+  const startedAt = Date.now()
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const rss = rssBytes()
+    updateMemoryBlockState(rss)
+
+    if (
+      rss < CRITICAL_RSS_BYTES &&
+      !memoryBlocked &&
+      !activeMangaUpload
+    ) {
+      activeMangaUpload = true
+      let released = false
+
+      return () => {
+        if (released) return
+        released = true
+        activeMangaUpload = false
+      }
+    }
+
+    await sleep(MANGA_SLOT_POLL_MS)
+  }
+
+  const error = new Error(
+    'The image processor is temporarily busy. Please retry shortly.'
+  )
+  error.code = 'MANGA_PROCESSING_BUSY'
+  error.statusCode = 503
+  error.stage = 'admission'
+  error.retryAfterSeconds = RETRY_AFTER_SECONDS
+  throw error
 }
 
 export function guardMangaUploadMemory(req, res, next) {
