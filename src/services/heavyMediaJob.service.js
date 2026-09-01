@@ -357,3 +357,90 @@ export async function failHeavyMediaJob({
 
   return firstRpcRow(data)
 }
+
+export async function startHeavyMediaJob({
+  jobId,
+  userId,
+  workerId,
+  leaseSeconds = 900,
+}) {
+  const safeJobId = requireUuid(jobId, 'jobId')
+  const safeUserId = requireUuid(userId, 'userId')
+  const safeWorkerId = cleanRequiredText(
+    workerId,
+    'workerId',
+    160
+  )
+  const safeLeaseSeconds = requireInteger(
+    leaseSeconds,
+    'leaseSeconds',
+    30,
+    3600
+  )
+  const now = new Date()
+
+  const { data, error } = await supabase
+    .from('heavy_media_jobs')
+    .update({
+      status: 'processing',
+      worker_id: safeWorkerId,
+      attempt_count: 1,
+      lease_expires_at: new Date(
+        now.getTime() + safeLeaseSeconds * 1000
+      ).toISOString(),
+      started_at: now.toISOString(),
+      finished_at: null,
+      error_code: null,
+      error_message: null,
+    })
+    .eq('id', safeJobId)
+    .eq('user_id', safeUserId)
+    .eq('status', 'queued')
+    .select('*')
+    .maybeSingle()
+
+  if (error) {
+    throw databaseError(
+      error,
+      'HEAVY_MEDIA_JOB_START_FAILED'
+    )
+  }
+
+  return data || null
+}
+
+export async function failQueuedHeavyMediaJob({
+  jobId,
+  userId,
+  errorCode = 'JOB_FAILED',
+  errorMessage = '',
+}) {
+  const { data, error } = await supabase
+    .from('heavy_media_jobs')
+    .update({
+      status: 'failed',
+      error_code:
+        cleanOptionalText(errorCode, 120) ||
+        'JOB_FAILED',
+      error_message:
+        cleanOptionalText(errorMessage, 1000) || '',
+      worker_id: null,
+      lease_expires_at: null,
+      finished_at: new Date().toISOString(),
+    })
+    .eq('id', requireUuid(jobId, 'jobId'))
+    .eq('user_id', requireUuid(userId, 'userId'))
+    .eq('status', 'queued')
+    .select('*')
+    .maybeSingle()
+
+  if (error) {
+    throw databaseError(
+      error,
+      'HEAVY_MEDIA_JOB_QUEUE_FAIL_FAILED'
+    )
+  }
+
+  return data || null
+}
+
