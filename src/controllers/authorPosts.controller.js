@@ -425,88 +425,117 @@ const postIds = pagePosts
   .map((post) => post.id)
   .filter(Boolean)
 
-    let reactionSummaryByPost = new Map()
-    const myReactionByPost = new Map()
-    const echoCountByPost = new Map()
+const viewCountByPost = new Map()
+let reactionSummaryByPost = new Map()
+const myReactionByPost = new Map()
+const echoCountByPost = new Map()
 
-    if (postIds.length) {
-      const [
-        reactionResult,
-        echoResult,
-      ] = await Promise.all([
-        supabase
-          .from('author_page_post_reactions')
-          .select('post_id, user_id, reaction_type')
-          .in('post_id', postIds),
+if (postIds.length && contentLibrary) {
+  const { data: viewCountRows, error: viewCountError } =
+    await supabase.rpc('get_author_post_view_counts', {
+      p_post_ids: postIds.map((postId) => String(postId)),
+    })
 
-        supabase
-          .from('social_echoes_v2')
-          .select('source_id, share_count')
-          .eq('source_type', 'author_post')
-          .in('source_id', postIds),
-      ])
+  if (viewCountError) throw viewCountError
 
-      if (reactionResult.error) {
-        throw reactionResult.error
-      }
+  for (const row of viewCountRows || []) {
+    viewCountByPost.set(
+      String(row.post_id),
+      Number(row.view_count || 0)
+    )
+  }
+}
 
-      if (echoResult.error) {
-        throw echoResult.error
-      }
+if (postIds.length && !contentLibrary) {
+  const [
+    reactionResult,
+    echoResult,
+  ] = await Promise.all([
+    supabase
+      .from('author_page_post_reactions')
+      .select('post_id, user_id, reaction_type')
+      .in('post_id', postIds),
 
-      reactionSummaryByPost =
-        buildReactionSummaryMap(
-          reactionResult.data || []
+    supabase
+      .from('social_echoes_v2')
+      .select('source_id, share_count')
+      .eq('source_type', 'author_post')
+      .in('source_id', postIds),
+  ])
+
+  if (reactionResult.error) {
+    throw reactionResult.error
+  }
+
+  if (echoResult.error) {
+    throw echoResult.error
+  }
+
+  reactionSummaryByPost =
+    buildReactionSummaryMap(
+      reactionResult.data || []
+    )
+
+  for (const row of reactionResult.data || []) {
+    if (
+      viewerUserId &&
+      String(row.user_id) === String(viewerUserId)
+    ) {
+      myReactionByPost.set(
+        String(row.post_id),
+        String(row.reaction_type || '')
+          .trim()
+          .toLowerCase()
+      )
+    }
+  }
+
+  for (const row of echoResult.data || []) {
+    const postId = String(row.source_id || '')
+
+    echoCountByPost.set(
+      postId,
+      Number(
+        echoCountByPost.get(postId) || 0
+      ) +
+        Math.max(
+          1,
+          Number(row.share_count || 1)
         )
+    )
+  }
+}
 
-      for (const row of reactionResult.data || []) {
-        if (
-          viewerUserId &&
-          String(row.user_id) === String(viewerUserId)
-        ) {
-          myReactionByPost.set(
-            String(row.post_id),
-            String(row.reaction_type || '')
-              .trim()
-              .toLowerCase()
-          )
-        }
-      }
-
-      for (const row of echoResult.data || []) {
-        const postId = String(row.source_id || '')
-
-        echoCountByPost.set(
-          postId,
-          Number(
-            echoCountByPost.get(postId) || 0
-          ) +
-            Math.max(
-              1,
-              Number(row.share_count || 1)
-            )
-        )
-      }
+return res.status(200).json({
+  ok: true,
+  posts: pagePosts.map((post) => {
+    if (contentLibrary) {
+      return publicAuthorPost({
+        ...post,
+        view_count: Number(
+          viewCountByPost.get(String(post.id)) || 0
+        ),
+      })
     }
 
-    return res.status(200).json({
-  ok: true,
-  posts: pagePosts.map((post) => ({
-    ...publicAuthorPost({
-      ...post,
-      echo_count: Number(
-        echoCountByPost.get(String(post.id)) || 0
-      ),
-      echo_state_loaded: true,
-      reaction_summary:
-        reactionSummaryByPost.get(post.id) || [],
-    }),
-    my_reaction:
-      myReactionByPost.get(String(post.id)) || null,
-  })),
+    return {
+      ...publicAuthorPost({
+        ...post,
+        echo_count: Number(
+          echoCountByPost.get(String(post.id)) || 0
+        ),
+        echo_state_loaded: true,
+        reaction_summary:
+          reactionSummaryByPost.get(post.id) || [],
+      }),
+      my_reaction:
+        myReactionByPost.get(String(post.id)) || null,
+    }
+  }),
   has_more: hasMore,
   next_before: nextBefore,
 })
+
   } catch (error) {
     console.error(
       'GET AUTHOR PAGE POSTS ERROR:',
