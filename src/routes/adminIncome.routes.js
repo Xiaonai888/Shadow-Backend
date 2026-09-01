@@ -3,6 +3,7 @@ import { requireAdmin } from '../middleware/auth.middleware.js'
 import { getAdminDiamondGifts } from '../controllers/adminDiamondGifts.controller.js'
 import { getAdminAuthorPageIncome } from '../controllers/adminAuthorPageIncome.controller.js'
 import { getAdminShadowMallIncome } from '../controllers/adminShadowMallIncome.controller.js'
+import { streamAdminIncomeEvents } from '../services/adminIncomeEvents.service.js'
 import {
   generateAdminAuthorPayouts,
   getAdminAuthorPayouts,
@@ -13,6 +14,7 @@ import {
 
 const router = express.Router()
 
+router.get('/events', requireAdmin, streamAdminIncomeEvents)
 router.get('/summary', requireAdmin, getAdminIncomeSummary)
 router.get('/episode-sales', requireAdmin, getAdminEpisodeSales)
 router.get('/diamond-gifts', requireAdmin, getAdminDiamondGifts)
