@@ -1,164 +1,73 @@
-import { processMangaImage } from '../services/mangaImageProcessor.service.js'
 import { supabase } from '../config/supabase.js'
 import {
-  deleteStoredMangaParts,
-  uploadProcessedMangaParts,
-} from '../services/mangaPageStorage.service.js'
-import {
-  completeHeavyMediaJob,
-  failHeavyMediaJob,
-  failQueuedHeavyMediaJob,
-  startHeavyMediaJob,
+  getHeavyMediaJob,
 } from '../services/heavyMediaJob.service.js'
 import {
-  deleteMangaTempObject,
-  downloadMangaTempBuffer,
-} from '../services/mangaTempStorage.service.js'
-import {
-  acquireMangaProcessingSlot,
-} from '../services/memoryGuard.service.js'
+  wakeHeavyMediaWorkerCoordinator,
+} from '../services/heavyMediaWorkerCoordinator.service.js'
 
-const MANGA_IMAGE_MAX_BYTES = 5 * 1024 * 1024
-
-let mangaUploadQueue = Promise.resolve()
-
-function runMangaUploadJob(job) {
-  const queued = mangaUploadQueue.then(() => job())
-  mangaUploadQueue = queued.then(
-    () => undefined,
-    () => undefined
-  )
-  return queued
-}
-
-function cleanHeader(value, maxLength = 300) {
+function cleanText(value, maxLength = 300) {
   return String(value || '').trim().slice(0, maxLength)
 }
 
-function getRawFile(req) {
-  const staged = req.mangaTempUpload
+function buildCompletedResponse(job) {
+  const result =
+    job?.result && typeof job.result === 'object'
+      ? job.result
+      : {}
 
-  if (staged?.tempObjectKey && staged?.jobId) {
-    return {
-      buffer: null,
-      size: Number(staged.size || 0),
-      mimetype:
-        cleanHeader(staged.mimetype, 120) ||
-        'application/octet-stream',
-      originalname:
-        cleanHeader(staged.originalname, 240) ||
-        'manga-page',
-      staged,
-    }
-  }
-
-  const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
-  const contentType = cleanHeader(req.headers['content-type'], 120)
-    .split(';')[0]
-    .trim()
-    .toLowerCase()
-  const originalName =
-    cleanHeader(req.headers['x-file-name'], 240) || 'manga-page'
+  const parts = Array.isArray(result.parts)
+    ? result.parts
+    : []
+  const firstPart = parts[0] || {}
 
   return {
-    buffer,
-    size: buffer.length,
-    mimetype: contentType || 'application/octet-stream',
-    originalname: originalName,
-    staged: null,
-  }
-}
-
-function errorStage(error) {
-  if (error?.stage) return String(error.stage)
-
-  const code = String(error?.code || '')
-
-  if (
-    code.includes('DECODE') ||
-    code.includes('DIMENSIONS_MISSING')
-  ) {
-    return 'decode'
-  }
-
-  if (
-    code.includes('DIMENSIONS_TOO_LARGE') ||
-    code.includes('EMPTY')
-  ) {
-    return 'validate'
-  }
-
-  if (code.includes('COMPRESSION')) {
-  return 'compress'
-}
-
-if (code.includes('FACE')) {
-  return 'process'
-}
-
-return 'storage'
-}
-
-async function markQueuedJobFailed(file, userId, error) {
-  if (!file.staged?.jobId) return
-
-  try {
-    await failQueuedHeavyMediaJob({
-      jobId: file.staged.jobId,
-      userId,
-      errorCode:
-        error?.code || 'MANGA_PAGE_V2_UPLOAD_FAILED',
-      errorMessage:
-        error?.message || 'Manga processing did not start.',
-    })
-  } catch (syncError) {
-    console.error(
-      'MANGA JOB QUEUED FAILURE SYNC ERROR:',
-      syncError
-    )
-  }
-}
-
-async function markProcessingJobFailed(
-  file,
-  workerId,
-  error
-) {
-  if (!file.staged?.jobId || !workerId) return
-
-  try {
-    await failHeavyMediaJob({
-      jobId: file.staged.jobId,
-      workerId,
-      errorCode:
-        error?.code || 'MANGA_PAGE_V2_UPLOAD_FAILED',
-      errorMessage:
-        error?.message || 'Manga processing failed.',
-      retry: false,
-      retryDelaySeconds: 0,
-    })
-  } catch (syncError) {
-    console.error(
-      'MANGA JOB PROCESSING FAILURE SYNC ERROR:',
-      syncError
-    )
-  }
-}
-
-async function cleanupStagedInput(file) {
-  if (!file.staged?.tempObjectKey) return
-
-  try {
-    await deleteMangaTempObject(
-      file.staged.tempObjectKey
-    )
-  } catch (error) {
-    console.error('MANGA TEMP OBJECT CLEANUP ERROR:', error)
+    image_url:
+      result.image_url ||
+      firstPart.image_url ||
+      null,
+    imageUrl:
+      result.image_url ||
+      firstPart.image_url ||
+      null,
+    path:
+      result.storage_path ||
+      firstPart.storage_path ||
+      null,
+    source_format: result.source_format || null,
+    source_width: Number(result.source_width || 0) || null,
+    source_height: Number(result.source_height || 0) || null,
+    source_bytes: Number(result.source_bytes || 0) || null,
+    width: Number(result.width || 0) || null,
+    height: Number(result.height || 0) || null,
+    file_size: Number(result.file_size || 0) || null,
+    mime_type: result.mime_type || 'image/webp',
+    part_count:
+      Number(result.part_count || parts.length || 0),
+    parts,
+    page: {
+      image_url:
+        result.image_url ||
+        firstPart.image_url ||
+        null,
+      storage_path:
+        result.storage_path ||
+        firstPart.storage_path ||
+        null,
+      width: Number(result.width || 0) || null,
+      height: Number(result.height || 0) || null,
+      file_size: Number(result.file_size || 0) || null,
+      mime_type: result.mime_type || 'image/webp',
+      part_count:
+        Number(result.part_count || parts.length || 0),
+      parts,
+    },
   }
 }
 
 export async function uploadMangaPageImageV2(req, res) {
-  const userId = req.user?.user_id
+  const userId = cleanText(req.user?.user_id, 80)
+  const staged = req.mangaTempUpload
 
   if (!userId) {
     return res.status(401).json({
@@ -169,215 +78,121 @@ export async function uploadMangaPageImageV2(req, res) {
     })
   }
 
-  const file = getRawFile(req)
-
-  if (!file.size) {
-    return res.status(400).json({
+  if (
+    !staged?.jobId ||
+    !staged?.tempObjectKey ||
+    !Number(staged?.size)
+  ) {
+    return res.status(500).json({
       ok: false,
-      code: 'MANGA_IMAGE_BODY_EMPTY',
-      stage: 'receive',
-      message: 'No manga image data reached the server.',
+      code: 'MANGA_TEMP_JOB_MISSING',
+      stage: 'queue',
+      message:
+        'The manga upload reached storage but its processing job was not created.',
     })
   }
 
-  if (file.size > MANGA_IMAGE_MAX_BYTES) {
-    return res.status(413).json({
+  wakeHeavyMediaWorkerCoordinator()
+
+  return res.status(202).json({
+    ok: true,
+    code: 'MANGA_PAGE_V2_QUEUED',
+    stage: 'queued',
+    status: 'queued',
+    job_id: staged.jobId,
+    upload_id: staged.uploadId,
+    source_bytes: Number(staged.size),
+    status_url:
+      `/api/story-media/manga-page-v2/jobs/${staged.jobId}`,
+    message:
+      'The manga page was uploaded and queued for background processing.',
+  })
+}
+
+export async function getMangaPageImageV2JobStatus(req, res) {
+  const userId = cleanText(req.user?.user_id, 80)
+  const jobId = cleanText(req.params?.jobId, 80)
+
+  if (!userId) {
+    return res.status(401).json({
       ok: false,
-      code: 'MANGA_PAGE_TOO_LARGE',
-      stage: 'receive',
-      message: 'Manga page must be 5 MB or smaller.',
-      received_bytes: file.size,
-      max_bytes: MANGA_IMAGE_MAX_BYTES,
+      code: 'UNAUTHORIZED',
+      message: 'Please sign in again.',
+    })
+  }
+
+  if (!jobId) {
+    return res.status(400).json({
+      ok: false,
+      code: 'MANGA_JOB_ID_REQUIRED',
+      message: 'Manga processing job ID is required.',
     })
   }
 
   try {
-    const stored = await runMangaUploadJob(async () => {
-      let processingFile = file
-      let releaseProcessingSlot = null
-      let workerId = null
-      let jobStarted = false
-
-      try {
-        if (file.staged) {
-          releaseProcessingSlot =
-            await acquireMangaProcessingSlot()
-
-          workerId =
-            `inline-manga-v2:${process.pid}:${file.staged.jobId}`
-
-          const startedJob = await startHeavyMediaJob({
-            jobId: file.staged.jobId,
-            userId,
-            workerId,
-            leaseSeconds: 900,
-          })
-
-          if (!startedJob) {
-            const error = new Error(
-              'The manga processing job is no longer available.'
-            )
-            error.code = 'MANGA_JOB_NOT_AVAILABLE'
-            error.statusCode = 409
-            error.stage = 'admission'
-            await markQueuedJobFailed(file, userId, error)
-            throw error
-          }
-
-          jobStarted = true
-
-          const buffer = await downloadMangaTempBuffer(
-            file.staged.tempObjectKey,
-            MANGA_IMAGE_MAX_BYTES
-          )
-
-          if (buffer.length !== file.size) {
-            const error = new Error(
-              'The staged manga image size did not match the uploaded size.'
-            )
-            error.code = 'IMAGE_UPLOAD_SIZE_MISMATCH'
-            error.statusCode = 400
-            error.stage = 'receive'
-            throw error
-          }
-
-          processingFile = {
-            ...file,
-            buffer,
-            size: buffer.length,
-          }
-        }
-
-        const processed = await processMangaImage(
-          processingFile
-        )
-        const result = await uploadProcessedMangaParts({
-          processed,
-          folder: `episode-content/${userId}/manga-v2`,
-        })
-
-        if (file.staged && workerId) {
-          const firstPart = result.parts[0]
-          const totalBytes = result.parts.reduce(
-            (sum, part) =>
-              sum + Number(part.file_size || 0),
-            0
-          )
-
-          try {
-            await completeHeavyMediaJob({
-              jobId: file.staged.jobId,
-              workerId,
-              finalObjectKey:
-                firstPart?.storage_path || null,
-              result: {
-                image_url: firstPart?.image_url || null,
-                storage_path:
-                  firstPart?.storage_path || null,
-                part_count: result.part_count,
-                width: result.width,
-                height: result.height,
-                source_width: result.source_width,
-                source_height: result.source_height,
-                source_format: result.source_format,
-                file_size: totalBytes,
-              },
-            })
-          } catch (syncError) {
-            console.error(
-              'MANGA JOB COMPLETE SYNC ERROR:',
-              syncError
-            )
-          }
-        }
-
-        return result
-      } catch (error) {
-        if (file.staged) {
-          if (jobStarted && workerId) {
-            await markProcessingJobFailed(
-              file,
-              workerId,
-              error
-            )
-          } else {
-            await markQueuedJobFailed(
-              file,
-              userId,
-              error
-            )
-          }
-        }
-
-        throw error
-      } finally {
-        releaseProcessingSlot?.()
-
-        if (file.staged) {
-          await cleanupStagedInput(file)
-        }
-      }
+    const job = await getHeavyMediaJob({
+      jobId,
+      userId,
     })
-    const firstPart = stored.parts[0]
-    const totalBytes = stored.parts.reduce(
-      (sum, part) => sum + Number(part.file_size || 0),
-      0
-    )
 
-    return res.status(201).json({
+    if (!job || job.job_type !== 'manga_page_v2') {
+      return res.status(404).json({
+        ok: false,
+        code: 'MANGA_JOB_NOT_FOUND',
+        message: 'Manga processing job was not found.',
+      })
+    }
+
+    const status = String(job.status || 'queued')
+    const response = {
       ok: true,
-      code: 'MANGA_PAGE_V2_UPLOADED',
-      stage: 'complete',
-      image_url: firstPart.image_url,
-      imageUrl: firstPart.image_url,
-      path: firstPart.storage_path,
-      source_format: stored.source_format,
-      source_width: stored.source_width,
-      source_height: stored.source_height,
-      source_bytes: file.size,
-      width: stored.width,
-      height: stored.height,
-      file_size: totalBytes,
-      mime_type: 'image/webp',
-      part_count: stored.part_count,
-      parts: stored.parts,
-      page: {
-        image_url: firstPart.image_url,
-        storage_path: firstPart.storage_path,
-        width: stored.width,
-        height: stored.height,
-        file_size: totalBytes,
-        mime_type: 'image/webp',
-        part_count: stored.part_count,
-        parts: stored.parts,
-      },
-    })
-  } catch (error) {
-    console.error('MANGA PAGE V2 UPLOAD ERROR:', error)
+      code: 'MANGA_PAGE_V2_JOB_STATUS',
+      job_id: job.id,
+      status,
+      stage: status,
+      attempt_count: Number(job.attempt_count || 0),
+      max_attempts: Number(job.max_attempts || 0),
+      created_at: job.created_at || null,
+      started_at: job.started_at || null,
+      finished_at: job.finished_at || null,
+    }
 
-    if (error?.retryAfterSeconds) {
-      res.set(
-        'Retry-After',
-        String(error.retryAfterSeconds)
+    if (status === 'done') {
+      Object.assign(
+        response,
+        buildCompletedResponse(job)
       )
     }
 
-    return res.status(Number(error?.statusCode) || 500).json({
+    if (status === 'failed') {
+      response.error = {
+        code:
+          cleanText(job.error_code, 120) ||
+          'MANGA_PROCESSING_FAILED',
+        message:
+          cleanText(job.error_message, 1000) ||
+          'The manga page could not be processed.',
+      }
+    }
+
+    return res.json(response)
+  } catch (error) {
+    console.error(
+      'MANGA V2 JOB STATUS ERROR:',
+      error
+    )
+
+    return res.status(500).json({
       ok: false,
-      code: error?.code || 'MANGA_PAGE_V2_UPLOAD_FAILED',
-      stage: errorStage(error),
+      code: 'MANGA_JOB_STATUS_FAILED',
       message:
-        error?.message ||
-        'The manga page could not be processed or stored.',
-      rollback: error?.rollback || null,
-      retry_after_seconds:
-        Number(error?.retryAfterSeconds) || undefined,
+        'The manga processing status could not be loaded.',
     })
   }
 }
 
 export async function cleanupTemporaryMangaPartsV2(req, res) {
-  const userId = String(req.user?.user_id || '').trim()
+  const userId = cleanText(req.user?.user_id, 80)
 
   if (!userId) {
     return res.status(401).json({
@@ -391,7 +206,7 @@ export async function cleanupTemporaryMangaPartsV2(req, res) {
     ...new Set(
       (Array.isArray(req.body?.urls) ? req.body.urls : [])
         .slice(0, 10)
-        .map((url) => String(url || '').trim())
+        .map((url) => cleanText(url, 2000))
         .filter(Boolean)
     ),
   ]
@@ -454,6 +269,12 @@ export async function cleanupTemporaryMangaPartsV2(req, res) {
 
     const removableUrls = urls.filter(
       (url) => !protectedUrls.has(url)
+    )
+
+    const {
+      deleteStoredMangaParts,
+    } = await import(
+      '../services/mangaPageStorage.service.js'
     )
 
     const result = await deleteStoredMangaParts(
