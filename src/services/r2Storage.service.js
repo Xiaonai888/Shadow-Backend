@@ -3,7 +3,15 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
-import sharp from 'sharp'
+let sharpPromise = null
+
+async function getSharp() {
+  if (!sharpPromise) {
+    sharpPromise = import('sharp').then((module) => module.default)
+  }
+
+  return sharpPromise
+}
 
 let r2Client = null
 
@@ -134,7 +142,9 @@ async function createWebPBuffer(fileBuffer, profile, quality, fit) {
     resizeOptions.position = 'centre'
   }
 
-  return sharp(fileBuffer)
+const sharp = await getSharp()
+
+return sharp(fileBuffer)
     .rotate()
     .resize(resizeOptions)
     .webp({
