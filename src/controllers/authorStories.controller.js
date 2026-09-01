@@ -5,6 +5,9 @@ import {
   assertAuthorStorageAvailable,
   recordAuthorR2Asset,
 } from '../services/authorStorageQuota.service.js'
+import {
+  invalidateDiscoverStorySharedCache,
+} from '../services/discoverStorySharedCache.service.js'
 
 const IMAGE_MIME_TYPES = new Set([
   'image/jpeg',
@@ -525,6 +528,7 @@ uploaded = await uploadMedia(authorPage.id, preparedMedia, mediaType)
     createdStory = data
 
     await recordAuthorR2Asset({
+      invalidateDiscoverStorySharedCache()
       authorId: authorPage.id,
       category: mediaType === 'video' ? 'author_story_video' : 'author_story_image',
       fileName: uploaded.filePath.split('/').pop(),
@@ -717,6 +721,7 @@ export async function deleteMyAuthorStory(req, res) {
       .eq('user_id', userId)
 
     if (updateError) throw updateError
+    invalidateDiscoverStorySharedCache()
 
     return res.status(200).json({
       ok: true,
