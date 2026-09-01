@@ -10,7 +10,13 @@ import {
   uploadNovelEpisodeImage,
 } from '../controllers/episodeImageUpload.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
-import { guardMangaUploadMemory } from '../services/memoryGuard.service.js'
+import {
+  guardMangaTempUploadMemory,
+  guardMangaUploadMemory,
+} from '../services/memoryGuard.service.js'
+import {
+  stageMangaV2UploadToR2,
+} from '../middleware/mangaTempUpload.middleware.js'
 
 const router = express.Router()
 
@@ -191,8 +197,8 @@ router.post(
 router.post(
   '/upload-manga-page-v2',
   requireUser,
-  guardMangaUploadMemory,
-  readImageStream('manga', MANGA_PAGE_MAX_BYTES),
+  guardMangaTempUploadMemory,
+  stageMangaV2UploadToR2,
   uploadMangaPageImageV2
 )
 
