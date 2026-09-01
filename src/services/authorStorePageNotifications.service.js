@@ -2,6 +2,9 @@ import { supabase } from '../config/supabase.js'
 import {
   createAuthorPageNotificationSafely,
 } from './authorPageNotifications.service.js'
+import {
+  emitAdminIncomeChange,
+} from './adminIncomeEvents.service.js'
 
 function cleanText(value, fallback = '') {
   return String(value ?? fallback).trim()
@@ -45,6 +48,31 @@ export async function createAuthorStorePaidNotificationsSafely(order = {}) {
     )
 
     if (!authorPageId || !orderId) return
+
+    const paymentStatus = cleanText(
+      order.payment_status
+    ).toLowerCase()
+    const orderStatus = cleanText(
+      order.order_status || order.status
+    ).toLowerCase()
+    const isPaid =
+      paymentStatus === 'paid' ||
+      [
+        'confirmed',
+        'preparing',
+        'shipped',
+        'completed',
+      ].includes(orderStatus)
+
+    if (isPaid) {
+      emitAdminIncomeChange({
+        source: 'author_page',
+        action: 'paid_order',
+        order_id: orderId,
+        order_row_id: cleanText(order.id),
+        author_page_id: authorPageId,
+      })
+    }
 
     const buyerId = cleanText(order.buyer_id)
     const [authorPage, buyer] = await Promise.all([
