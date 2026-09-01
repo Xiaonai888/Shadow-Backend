@@ -1,4 +1,7 @@
 import { supabase } from '../config/supabase.js'
+import {
+  getDiscoverStorySharedCatalog,
+} from '../services/discoverStorySharedCache.service.js'
 
 const HISTORY_DAYS = 30
 const MAX_HISTORY_ROWS = 1000
@@ -300,8 +303,14 @@ export async function getDiscoverStoriesFeed(
 
     const authorStories =
       authorStoriesResult.data || []
-    const readerStories =
-      readerStoriesResult.data || []
+    const {
+  authorStories,
+  readerStories,
+  authorPages,
+  readers,
+} = await getDiscoverStorySharedCatalog(
+  now
+)
 
     const authorPageIds = [
       ...new Set(
@@ -324,24 +333,15 @@ export async function getDiscoverStoriesFeed(
       ),
     ]
 
-    const authorStoryIds =
-      authorStories.map(
-        (story) => story.id
-      )
-    const readerStoryIds =
-      readerStories.map(
-        (story) => story.id
-      )
+    
 
     const [
-      authorPagesResult,
-      readersResult,
-      authorFollowsResult,
-      readerFollowsResult,
-      reverseReaderFollowsResult,
-      authorViewsResult,
-      readerViewsResult,
-    ] = await Promise.all([
+  authorFollowsResult,
+  readerFollowsResult,
+  reverseReaderFollowsResult,
+  authorViewsResult,
+  readerViewsResult,
+] = await Promise.all([
       authorPageIds.length
         ? supabase
             .from('author_pages')
@@ -459,8 +459,7 @@ export async function getDiscoverStoriesFeed(
     ])
 
     for (const result of [
-      authorPagesResult,
-      readersResult,
+      
       authorFollowsResult,
       readerFollowsResult,
       reverseReaderFollowsResult,
@@ -558,22 +557,18 @@ export async function getDiscoverStoriesFeed(
       )
 
     const authorById = new Map(
-      (
-        authorPagesResult.data || []
-      ).map((page) => [
-        page.id,
-        page,
-      ])
-    )
+  authorPages.map((page) => [
+    page.id,
+    page,
+  ])
+)
 
-    const readerById = new Map(
-      (
-        readersResult.data || []
-      ).map((reader) => [
-        reader.id,
-        reader,
-      ])
-    )
+const readerById = new Map(
+  readers.map((reader) => [
+    reader.id,
+    reader,
+  ])
+)
 
     const groups = new Map()
 
