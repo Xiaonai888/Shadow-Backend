@@ -1,5 +1,6 @@
 import {
   cleanupTemporaryMangaPartsV2,
+  getMangaPageImageV2JobStatus,
   uploadMangaPageImageV2,
 } from '../controllers/mangaImageUploadV2.controller.js'
 import express from 'express'
@@ -200,6 +201,12 @@ router.post(
   guardMangaTempUploadMemory,
   stageMangaV2UploadToR2,
   uploadMangaPageImageV2
+)
+
+router.get(
+  '/manga-page-v2/jobs/:jobId',
+  requireUser,
+  getMangaPageImageV2JobStatus
 )
 
 router.post(
