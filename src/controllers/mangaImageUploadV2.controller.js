@@ -4,6 +4,19 @@ import {
   deleteStoredMangaParts,
   uploadProcessedMangaParts,
 } from '../services/mangaPageStorage.service.js'
+import {
+  completeHeavyMediaJob,
+  failHeavyMediaJob,
+  failQueuedHeavyMediaJob,
+  startHeavyMediaJob,
+} from '../services/heavyMediaJob.service.js'
+import {
+  deleteMangaTempObject,
+  downloadMangaTempBuffer,
+} from '../services/mangaTempStorage.service.js'
+import {
+  acquireMangaProcessingSlot,
+} from '../services/memoryGuard.service.js'
 
 const MANGA_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 
@@ -23,6 +36,22 @@ function cleanHeader(value, maxLength = 300) {
 }
 
 function getRawFile(req) {
+  const staged = req.mangaTempUpload
+
+  if (staged?.tempObjectKey && staged?.jobId) {
+    return {
+      buffer: null,
+      size: Number(staged.size || 0),
+      mimetype:
+        cleanHeader(staged.mimetype, 120) ||
+        'application/octet-stream',
+      originalname:
+        cleanHeader(staged.originalname, 240) ||
+        'manga-page',
+      staged,
+    }
+  }
+
   const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
   const contentType = cleanHeader(req.headers['content-type'], 120)
     .split(';')[0]
@@ -36,10 +65,13 @@ function getRawFile(req) {
     size: buffer.length,
     mimetype: contentType || 'application/octet-stream',
     originalname: originalName,
+    staged: null,
   }
 }
 
 function errorStage(error) {
+  if (error?.stage) return String(error.stage)
+
   const code = String(error?.code || '')
 
   if (
@@ -65,6 +97,64 @@ if (code.includes('FACE')) {
 }
 
 return 'storage'
+}
+
+async function markQueuedJobFailed(file, userId, error) {
+  if (!file.staged?.jobId) return
+
+  try {
+    await failQueuedHeavyMediaJob({
+      jobId: file.staged.jobId,
+      userId,
+      errorCode:
+        error?.code || 'MANGA_PAGE_V2_UPLOAD_FAILED',
+      errorMessage:
+        error?.message || 'Manga processing did not start.',
+    })
+  } catch (syncError) {
+    console.error(
+      'MANGA JOB QUEUED FAILURE SYNC ERROR:',
+      syncError
+    )
+  }
+}
+
+async function markProcessingJobFailed(
+  file,
+  workerId,
+  error
+) {
+  if (!file.staged?.jobId || !workerId) return
+
+  try {
+    await failHeavyMediaJob({
+      jobId: file.staged.jobId,
+      workerId,
+      errorCode:
+        error?.code || 'MANGA_PAGE_V2_UPLOAD_FAILED',
+      errorMessage:
+        error?.message || 'Manga processing failed.',
+      retry: false,
+      retryDelaySeconds: 0,
+    })
+  } catch (syncError) {
+    console.error(
+      'MANGA JOB PROCESSING FAILURE SYNC ERROR:',
+      syncError
+    )
+  }
+}
+
+async function cleanupStagedInput(file) {
+  if (!file.staged?.tempObjectKey) return
+
+  try {
+    await deleteMangaTempObject(
+      file.staged.tempObjectKey
+    )
+  } catch (error) {
+    console.error('MANGA TEMP OBJECT CLEANUP ERROR:', error)
+  }
 }
 
 export async function uploadMangaPageImageV2(req, res) {
@@ -103,12 +193,130 @@ export async function uploadMangaPageImageV2(req, res) {
 
   try {
     const stored = await runMangaUploadJob(async () => {
-      const processed = await processMangaImage(file)
+      let processingFile = file
+      let releaseProcessingSlot = null
+      let workerId = null
+      let jobStarted = false
 
-      return uploadProcessedMangaParts({
-        processed,
-        folder: `episode-content/${userId}/manga-v2`,
-      })
+      try {
+        if (file.staged) {
+          releaseProcessingSlot =
+            await acquireMangaProcessingSlot()
+
+          workerId =
+            `inline-manga-v2:${process.pid}:${file.staged.jobId}`
+
+          const startedJob = await startHeavyMediaJob({
+            jobId: file.staged.jobId,
+            userId,
+            workerId,
+            leaseSeconds: 900,
+          })
+
+          if (!startedJob) {
+            const error = new Error(
+              'The manga processing job is no longer available.'
+            )
+            error.code = 'MANGA_JOB_NOT_AVAILABLE'
+            error.statusCode = 409
+            error.stage = 'admission'
+            await markQueuedJobFailed(file, userId, error)
+            throw error
+          }
+
+          jobStarted = true
+
+          const buffer = await downloadMangaTempBuffer(
+            file.staged.tempObjectKey,
+            MANGA_IMAGE_MAX_BYTES
+          )
+
+          if (buffer.length !== file.size) {
+            const error = new Error(
+              'The staged manga image size did not match the uploaded size.'
+            )
+            error.code = 'IMAGE_UPLOAD_SIZE_MISMATCH'
+            error.statusCode = 400
+            error.stage = 'receive'
+            throw error
+          }
+
+          processingFile = {
+            ...file,
+            buffer,
+            size: buffer.length,
+          }
+        }
+
+        const processed = await processMangaImage(
+          processingFile
+        )
+        const result = await uploadProcessedMangaParts({
+          processed,
+          folder: `episode-content/${userId}/manga-v2`,
+        })
+
+        if (file.staged && workerId) {
+          const firstPart = result.parts[0]
+          const totalBytes = result.parts.reduce(
+            (sum, part) =>
+              sum + Number(part.file_size || 0),
+            0
+          )
+
+          try {
+            await completeHeavyMediaJob({
+              jobId: file.staged.jobId,
+              workerId,
+              finalObjectKey:
+                firstPart?.storage_path || null,
+              result: {
+                image_url: firstPart?.image_url || null,
+                storage_path:
+                  firstPart?.storage_path || null,
+                part_count: result.part_count,
+                width: result.width,
+                height: result.height,
+                source_width: result.source_width,
+                source_height: result.source_height,
+                source_format: result.source_format,
+                file_size: totalBytes,
+              },
+            })
+          } catch (syncError) {
+            console.error(
+              'MANGA JOB COMPLETE SYNC ERROR:',
+              syncError
+            )
+          }
+        }
+
+        return result
+      } catch (error) {
+        if (file.staged) {
+          if (jobStarted && workerId) {
+            await markProcessingJobFailed(
+              file,
+              workerId,
+              error
+            )
+          } else {
+            await markQueuedJobFailed(
+              file,
+              userId,
+              error
+            )
+          }
+        }
+
+        throw error
+      } finally {
+        releaseProcessingSlot?.()
+
+        if (file.staged) {
+          await cleanupStagedInput(file)
+        }
+      }
     })
     const firstPart = stored.parts[0]
     const totalBytes = stored.parts.reduce(
@@ -147,6 +355,13 @@ export async function uploadMangaPageImageV2(req, res) {
   } catch (error) {
     console.error('MANGA PAGE V2 UPLOAD ERROR:', error)
 
+    if (error?.retryAfterSeconds) {
+      res.set(
+        'Retry-After',
+        String(error.retryAfterSeconds)
+      )
+    }
+
     return res.status(Number(error?.statusCode) || 500).json({
       ok: false,
       code: error?.code || 'MANGA_PAGE_V2_UPLOAD_FAILED',
@@ -155,6 +370,8 @@ export async function uploadMangaPageImageV2(req, res) {
         error?.message ||
         'The manga page could not be processed or stored.',
       rollback: error?.rollback || null,
+      retry_after_seconds:
+        Number(error?.retryAfterSeconds) || undefined,
     })
   }
 }
