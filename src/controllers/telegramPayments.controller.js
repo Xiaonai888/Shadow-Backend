@@ -1,5 +1,6 @@
 import { publishPaymentStatus } from '../services/paymentEvents.service.js'
 import { supabase } from '../config/supabase.js'
+import { emitAdminIncomeChange } from '../services/adminIncomeEvents.service.js'
 import {
   createAuthorStorePaidNotificationsSafely,
 } from '../services/authorStorePageNotifications.service.js'
@@ -99,6 +100,26 @@ function getMessageText(message) {
 
 function money(value) {
   return `$${Number(value || 0).toFixed(2)}`
+}
+
+function emitShadowMallIncomeChange(
+  order,
+  action
+) {
+  if (!order?.id) return
+
+  emitAdminIncomeChange({
+    source: 'shadow_mall',
+    action,
+    order_id:
+      order.order_id || null,
+    order_row_id: order.id,
+    status:
+      order.status || null,
+    changed_at:
+      order.updated_at ||
+      new Date().toISOString(),
+  })
 }
 
 function getWindowMinutes() {
@@ -312,6 +333,12 @@ async function markMallOrderUnderReview(order, telegramPayment, parsed) {
     .single()
 
   if (error) throw error
+
+  emitShadowMallIncomeChange(
+    data,
+    'paid_order'
+  )
+
   return data
 }
 
@@ -747,6 +774,12 @@ async function updateShadowMallOrderFromTelegram(orderId, status) {
     .single()
 
   if (error) throw error
+
+  emitShadowMallIncomeChange(
+    data,
+    'status_changed'
+  )
+
   return data
 }
 async function approvePaymentFromTelegram(paymentId) {
