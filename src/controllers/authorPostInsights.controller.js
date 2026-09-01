@@ -351,7 +351,83 @@ export async function recordAuthorPostView(
     )
   }
 
-  next()
+   next()
+}
+
+export async function recordAuthorPostViewsBatch(
+  req,
+  res
+) {
+  try {
+    const postIds = [
+      ...new Set(
+        (Array.isArray(req.body?.post_ids)
+          ? req.body.post_ids
+          : []
+        )
+          .map((postId) =>
+            String(postId || '').trim()
+          )
+          .filter(Boolean)
+      ),
+    ].slice(0, 50)
+
+    if (!postIds.length) {
+      return res.status(200).json({
+        ok: true,
+        recorded: 0,
+      })
+    }
+
+    const viewerUserId =
+      getRequestUserId(req)
+
+    const viewerKey = getViewerKey(
+      req,
+      viewerUserId
+    )
+
+    const source = normalizeSource(
+      req.body?.source ||
+        req.query.source ||
+        req.headers[
+          'x-shadow-post-source'
+        ] ||
+        'direct'
+    )
+
+    const { data, error } =
+      await supabase.rpc(
+        'record_author_post_views_batch',
+        {
+          p_post_ids: postIds,
+          p_viewer_user_id: viewerUserId
+            ? String(viewerUserId)
+            : null,
+          p_viewer_key: viewerKey,
+          p_source: source,
+        }
+      )
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      recorded: Number(data || 0),
+      processed: postIds.length,
+    })
+  } catch (error) {
+    console.error(
+      'RECORD AUTHOR POST VIEWS BATCH ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to record post views',
+    })
+  }
 }
 
 export async function recordAuthorPostClick(
