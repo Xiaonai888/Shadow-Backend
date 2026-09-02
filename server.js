@@ -84,12 +84,17 @@ import adminSearchInsightsRoutes from './src/routes/adminSearchInsights.routes.j
 import musicRoutes from './src/routes/music.routes.js'
 import { startMangaR2DeleteRetryWorker } from './src/services/mangaR2DeleteRetry.service.js'
 import { startHeavyMediaWorkerCoordinator } from './src/services/heavyMediaWorkerCoordinator.service.js'
+import {
+  memoryIncidentTracer,
+  startMemoryIncidentMonitor,
+} from './src/services/memoryIncidentTracer.service.js'
 import storyTranslationRoutes from './src/routes/storyTranslation.routes.js'
 
 
 dotenv.config()
 
 const app = express()
+app.use(memoryIncidentTracer)
 
 const STORAGE_CLEANUP_INTERVAL_MS =
   24 * 60 * 60 * 1000
@@ -717,6 +722,7 @@ app.listen(PORT, () => {
   startStorageMigrationCleanupScheduler()
   void startMangaR2DeleteRetryWorker()
   startHeavyMediaWorkerCoordinator()
+  startMemoryIncidentMonitor()
   
 
   if (process.env.ENABLE_TELEGRAM_USER_LISTENER === 'true') {
