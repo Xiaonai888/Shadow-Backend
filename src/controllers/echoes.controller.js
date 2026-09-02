@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
+import { invalidateReaderPostsFeedCandidateCache } from '../services/readerPostsFeedCandidateCache.service.js'
 
 const DESTINATIONS = new Set(['feed', 'shadow', 'reader', 'circle'])
 const AUDIENCES = new Set(['public', 'followers', 'close-readers', 'only-me'])
@@ -2059,6 +2060,8 @@ export async function createSocialEcho(
       }
 
       echoSaved = true
+
+      invalidateReaderPostsFeedCandidateCache()
     } catch (error) {
       if (readerPostCreated) {
         await softDeleteEchoReaderPost(
@@ -2601,6 +2604,8 @@ export async function deleteSocialEcho(
 
       throw deleteError
     }
+
+    invalidateReaderPostsFeedCandidateCache()
 
     const echoCount =
       await readSocialSourceShareCount(
