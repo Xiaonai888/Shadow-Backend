@@ -549,6 +549,9 @@ export async function validateAdminSession({ decoded, req }) {
   const nowDate = new Date()
   const now = nowDate.toISOString()
   const nowMs = nowDate.getTime()
+  const nextSessionExpiresAt = new Date(
+  nowMs + SESSION_DAYS * 24 * 60 * 60 * 1000
+).toISOString()
   const ipAddress = getAdminDeviceClientIp(req)
   const userAgent = getUserAgent(req)
 
@@ -576,10 +579,11 @@ export async function validateAdminSession({ decoded, req }) {
       supabase
         .from('admin_sessions')
         .update({
-          last_seen_at: now,
-          ip_address: ipAddress,
-          user_agent: userAgent,
-        })
+  last_seen_at: now,
+  expires_at: nextSessionExpiresAt,
+  ip_address: ipAddress,
+  user_agent: userAgent,
+})
         .eq('id', session.id)
     )
   }
