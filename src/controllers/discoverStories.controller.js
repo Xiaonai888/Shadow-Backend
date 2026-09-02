@@ -273,15 +273,6 @@ export async function getDiscoverStoriesFeed(
     } = await getDiscoverStorySharedCatalog(
       now
     )
-    const {
-  authorStories,
-  readerStories,
-  authorPages,
-  readers,
-} = await getDiscoverStorySharedCatalog(
-  now
-)
-
     const authorPageIds = [
       ...new Set(
         authorStories
