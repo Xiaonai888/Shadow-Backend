@@ -1,6 +1,7 @@
 import { deleteStoredMangaParts } from '../services/mangaPageStorage.service.js'
 import { supabase } from '../config/supabase.js'
 import { assertR2MediaReference } from '../services/mediaStoragePolicy.service.js'
+import { getCachedMyStories } from '../services/myStoriesCache.service.js'
 import {
   attachEpisodePageParts,
   syncEpisodePageParts,
@@ -874,27 +875,33 @@ export async function getMyStories(req, res) {
       })
     }
 
-    const authorPage = await getAuthorPageForUser(userId)
+    const stories = await getCachedMyStories(
+      userId,
+      async () => {
+        const authorPage = await getAuthorPageForUser(userId)
 
-    if (!authorPage) {
-      return res.status(200).json({
-        ok: true,
-        stories: [],
-      })
-    }
+        if (!authorPage) {
+          return []
+        }
 
-    const { data, error } = await supabase
-      .from('stories')
-      .select('*')
-      .eq('author_id', authorPage.id)
-      .is('deleted_at', null)
-      .order('created_at', { ascending: false })
+        const { data, error } = await supabase
+          .from('stories')
+          .select('*')
+          .eq('author_id', authorPage.id)
+          .is('deleted_at', null)
+          .order('created_at', { ascending: false })
 
-    if (error) throw error
+        if (error) throw error
+
+        return data || []
+      }
+    )
+
+    res.set('Cache-Control', 'private, no-store')
 
     return res.status(200).json({
       ok: true,
-      stories: data || [],
+      stories,
     })
   } catch (error) {
     console.error('GET MY STORIES ERROR:', error)
