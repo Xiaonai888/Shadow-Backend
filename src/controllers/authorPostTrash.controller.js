@@ -1,4 +1,7 @@
 import { supabase } from '../config/supabase.js'
+import {
+  invalidateDiscoverAuthorPostsSharedCache,
+} from '../services/discoverAuthorPostsSharedCache.service.js'
 
 const AUTHOR_POST_TRASH_DAYS = 30
 const ADMIN_ARCHIVE_DAYS = 90
@@ -21,7 +24,6 @@ function getDaysLeft(value) {
   if (!value) return 0
 
   const expiresAt = new Date(value).getTime()
-
   if (!Number.isFinite(expiresAt)) return 0
 
   return Math.max(
@@ -61,7 +63,6 @@ async function getMyActiveAuthorPage(userId) {
     .maybeSingle()
 
   if (error) throw error
-
   return data || null
 }
 
@@ -86,7 +87,6 @@ export async function getMyAuthorPostTrash(req, res) {
     }
 
     const now = new Date().toISOString()
-
     const { data, error } = await supabase
       .from('author_page_posts')
       .select('*')
@@ -144,12 +144,10 @@ export async function moveMyAuthorPostToTrash(req, res) {
 
     const deletedAt = new Date()
     const deleteExpiresAt = new Date(
-      deletedAt.getTime() +
-        AUTHOR_POST_TRASH_DAYS * DAY_MS
+      deletedAt.getTime() + AUTHOR_POST_TRASH_DAYS * DAY_MS
     )
     const adminArchiveExpiresAt = new Date(
-      deleteExpiresAt.getTime() +
-        ADMIN_ARCHIVE_DAYS * DAY_MS
+      deleteExpiresAt.getTime() + ADMIN_ARCHIVE_DAYS * DAY_MS
     )
 
     const { data, error } = await supabase
@@ -178,6 +176,8 @@ export async function moveMyAuthorPostToTrash(req, res) {
         message: 'Active post not found',
       })
     }
+
+    invalidateDiscoverAuthorPostsSharedCache()
 
     return res.status(200).json({
       ok: true,
@@ -224,7 +224,6 @@ export async function restoreMyAuthorPostFromTrash(req, res) {
     }
 
     const now = new Date().toISOString()
-
     const { data, error } = await supabase
       .from('author_page_posts')
       .update({
@@ -250,6 +249,8 @@ export async function restoreMyAuthorPostFromTrash(req, res) {
         message: 'Post not found or recovery expired',
       })
     }
+
+    invalidateDiscoverAuthorPostsSharedCache()
 
     return res.status(200).json({
       ok: true,
