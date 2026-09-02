@@ -117,6 +117,46 @@ function createPasskeyLoginToken({ admin, twoFactorMethod = '' }) {
   )
 }
 
+function createRenewedAdminToken(admin) {
+  const jwtId =
+    admin?.jwt_id ||
+    admin?.jti ||
+    admin?.session?.jwt_id ||
+    ''
+
+  return jwt.sign(
+    {
+      role: admin?.role || 'admin',
+      actor:
+        admin?.actor ||
+        admin?.name ||
+        admin?.email ||
+        'Admin',
+      email: admin?.email || '',
+      admin_id:
+        admin?.admin_id ||
+        admin?.id ||
+        '',
+      password_changed_at:
+        admin?.password_changed_at || '',
+      session_id:
+        admin?.session_id ||
+        admin?.session?.id ||
+        '',
+      device_id:
+        admin?.device_id ||
+        admin?.device?.id ||
+        '',
+      jwt_id: jwtId,
+      jti: jwtId,
+    },
+    process.env.JWT_SECRET,
+    {
+      expiresIn: `${ADMIN_SESSION_DAYS}d`,
+    }
+  )
+}
+
 function verifyPasskeyLoginToken(token) {
   try {
     const payload = jwt.verify(String(token || ''), process.env.JWT_SECRET)
