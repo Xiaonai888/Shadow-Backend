@@ -22,9 +22,11 @@ function getPrivateR2Client() {
       ''
   ).trim()
 
-  if (!accountId || !accessKeyId || !secretAccessKey) {
-    throw new Error('Missing R2_ACCOUNT_ID or R2 access credentials')
-  }
+  const missing = []
+if (!accountId) missing.push('R2_ACCOUNT_ID')
+if (!accessKeyId) missing.push('R2_PRIVATE_ACCESS_KEY_ID', 'R2_ACCESS_KEY_ID')
+if (!secretAccessKey) missing.push('R2_PRIVATE_SECRET_ACCESS_KEY', 'R2_SECRET_ACCESS_KEY')
+if (missing.length) throw new Error(`Missing environment variables: ${missing.join(', ')}`)
 
   privateR2Client = new S3Client({
     region: 'auto',
@@ -42,7 +44,7 @@ function getPrivatePdfBucketName() {
   const bucketName = String(process.env.R2_PRIVATE_BUCKET_NAME || '').trim()
 
   if (!bucketName) {
-    throw new Error('Missing R2_PRIVATE_BUCKET_NAME')
+    throw new Error('Missing environment variable: R2_PRIVATE_BUCKET_NAME')
   }
 
   return bucketName
