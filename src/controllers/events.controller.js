@@ -1,4 +1,8 @@
 import { supabase } from '../config/supabase.js'
+import {
+  getActivePublicEvents,
+  invalidatePublicEventsCache,
+} from '../services/publicEventsCache.service.js'
 
 function cleanText(value) {
   return String(value ?? '').trim()
@@ -85,10 +89,12 @@ export async function listAdminEvents(req, res) {
 
     if (error) throw error
 
-    return res.status(200).json({
-      ok: true,
-      events: (data || []).map(serializeEvent),
-    })
+invalidatePublicEventsCache()
+
+return res.status(201).json({
+  ok: true,
+  event: serializeEvent(data),
+})
   } catch (error) {
     console.error('ADMIN LIST EVENTS ERROR:', error)
 
@@ -182,10 +188,12 @@ export async function createEvent(req, res) {
 
     if (error) throw error
 
-    return res.status(201).json({
-      ok: true,
-      event: serializeEvent(data),
-    })
+invalidatePublicEventsCache()
+
+return res.status(200).json({
+  ok: true,
+  event: serializeEvent(data),
+})
   } catch (error) {
     console.error('ADMIN CREATE EVENT ERROR:', error)
 
@@ -390,14 +398,16 @@ export async function deleteEvent(req, res) {
 
     if (error) throw error
 
-    if (!data) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Event not found',
-      })
-    }
+   if (!data) {
+  return res.status(404).json({
+    ok: false,
+    message: 'Event not found',
+  })
+}
 
-    return res.status(200).json({
+invalidatePublicEventsCache()
+
+return res.status(200).json({
       ok: true,
       deleted_id: data.id,
     })
@@ -414,22 +424,11 @@ export async function deleteEvent(req, res) {
 
 export async function listActiveEvents(req, res) {
   try {
-    const now = new Date().toISOString()
-
-    const { data, error } = await supabase
-      .from('shadow_events')
-      .select('*')
-      .eq('is_published', true)
-      .lte('starts_at', now)
-      .gt('ends_at', now)
-      .order('sort_order', { ascending: true })
-      .order('starts_at', { ascending: false })
-
-    if (error) throw error
+    const events = await getActivePublicEvents()
 
     return res.status(200).json({
       ok: true,
-      events: (data || []).map(serializeEvent),
+      events: events.map(serializeEvent),
     })
   } catch (error) {
     console.error('PUBLIC LIST ACTIVE EVENTS ERROR:', error)
