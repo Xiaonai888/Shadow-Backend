@@ -200,6 +200,7 @@ const corsOptions = {
     'X-Admin-Id',
     'X-Shadow-Visitor-Id',
   ],
+  exposedHeaders: ['X-Reader-Token'],
 }
 
 app.use(cors(corsOptions))
