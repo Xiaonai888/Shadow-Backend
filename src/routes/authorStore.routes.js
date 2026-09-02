@@ -1,6 +1,8 @@
 import { getReaderStoreHome } from '../controllers/readerStore.controller.js'
 import express from 'express'
 import multer from 'multer'
+import os from 'node:os'
+import { unlink } from 'node:fs/promises'
 import {
   createAuthorStoreOrder,
   createAuthorStoreOrderPayment,
@@ -53,7 +55,7 @@ import { requireAdmin } from '../middleware/auth.middleware.js'
 const router = express.Router()
 
 const privatePdfUpload = multer({
-  storage: multer.memoryStorage(),
+  dest: os.tmpdir(),
   limits: {
     fileSize: 50 * 1024 * 1024,
     files: 1,
@@ -75,6 +77,27 @@ const privatePdfUpload = multer({
     callback(null, true)
   },
 })
+
+function cleanupPrivatePdfTemp(req, res, next) {
+  const filePath = String(req.file?.path || '').trim()
+
+  if (!filePath) {
+    next()
+    return
+  }
+
+  let cleaned = false
+
+  const cleanup = () => {
+    if (cleaned) return
+    cleaned = true
+    unlink(filePath).catch(() => {})
+  }
+
+  res.once('finish', cleanup)
+  res.once('close', cleanup)
+  next()
+}
 
 router.get('/me/products', requireUser, getMyAuthorStoreProducts)
 router.get('/me/promotion', requireUser, getMyAuthorStorePromotion)
@@ -98,6 +121,7 @@ router.post(
   '/me/pdfs/upload-private',
   requireUser,
   privatePdfUpload.single('pdf'),
+  cleanupPrivatePdfTemp,
   uploadMyAuthorStorePrivatePdf
 )
 router.patch(
