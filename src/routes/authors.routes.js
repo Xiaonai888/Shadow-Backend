@@ -115,6 +115,7 @@ import {
   updateMyAuthorCommentCleanupSettings,
 } from '../controllers/authorCommentProtectionSettings.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
+import { invalidateMyAuthorPageCache } from '../services/myAuthorPageCache.service.js'
 
 import {
   deleteMyAuthorPageNotification,
@@ -134,6 +135,26 @@ import {
 } from '../controllers/readerAuthorPageBlocks.controller.js'
 
 const router = express.Router()
+
+function invalidateMyAuthorPageAfterMutation(
+  req,
+  res,
+  next
+) {
+  const userId = req.user?.user_id
+
+  res.once('finish', () => {
+    if (
+      userId &&
+      res.statusCode >= 200 &&
+      res.statusCode < 300
+    ) {
+      invalidateMyAuthorPageCache(userId)
+    }
+  })
+
+  next()
+}
 
 router.get('/me/49-day-event', requireUser, getMyAuthor49DayEvent)
 router.get('/me/dashboard', requireUser, getMyAuthorDashboard)
@@ -191,10 +212,10 @@ router.get('/page/:pageUsername', getPublicAuthorPage)
 router.post('/page/:pageUsername/follow', requireUser, followAuthorPage)
 router.delete('/page/:pageUsername/follow', requireUser, unfollowAuthorPage)
 router.post('/me/payment-methods', requireUser, saveMyAuthorPaymentMethod)
-router.post('/create', requireUser, createAuthorPage)
-router.put('/avatar', requireUser, updateAuthorAvatar)
-router.put('/profile-images', requireUser, updateAuthorProfileImages)
-router.put('/me', requireUser, updateMyAuthorPage)
+router.post('/create', requireUser, invalidateMyAuthorPageAfterMutation, createAuthorPage)
+router.put('/avatar', requireUser, invalidateMyAuthorPageAfterMutation, updateAuthorAvatar)
+router.put('/profile-images', requireUser, invalidateMyAuthorPageAfterMutation, updateAuthorProfileImages)
+router.put('/me', requireUser, invalidateMyAuthorPageAfterMutation, updateMyAuthorPage)
 router.get('/page/:pageUsername/posts', getAuthorPagePosts)
 router.post('/me/posts', requireUser, createMyAuthorPost)
 router.get('/me/posts/trash', requireUser, getMyAuthorPostTrash)
