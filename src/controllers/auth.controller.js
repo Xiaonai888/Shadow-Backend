@@ -25,6 +25,9 @@ import {
   verifyAdminPasskeyPinForLogin,
 } from '../services/adminPasskeyPin.service.js'
 
+const ADMIN_SESSION_DAYS = 7
+const ADMIN_TOKEN_RENEW_AFTER_SECONDS = 24 * 60 * 60
+
 const PASSKEY_LOGIN_TOKEN_EXPIRES_IN = '5m'
 const PASSKEY_PIN_RESET_EXPIRES_MINUTES = 10
 const PASSKEY_PIN_RESET_MAX_ATTEMPTS = 5
@@ -94,7 +97,7 @@ function createToken(admin, deviceAccess) {
     },
     process.env.JWT_SECRET,
     {
-      expiresIn: '7d',
+      expiresIn: `${ADMIN_SESSION_DAYS}d`,
     }
   )
 }
@@ -634,6 +637,46 @@ async function issueAdminLogin({ req, res, email, admin, twoFactorMethod = '', p
   })
 
   const token = createToken(admin, deviceAccess)
+
+  function createRenewedAdminToken(admin) {
+  const jwtId =
+    admin?.jwt_id ||
+    admin?.jti ||
+    admin?.session?.jwt_id ||
+    ''
+
+  return jwt.sign(
+    {
+      role: admin?.role || 'admin',
+      actor:
+        admin?.actor ||
+        admin?.name ||
+        admin?.email ||
+        'Admin',
+      email: admin?.email || '',
+      admin_id:
+        admin?.admin_id ||
+        admin?.id ||
+        '',
+      password_changed_at:
+        admin?.password_changed_at || '',
+      session_id:
+        admin?.session_id ||
+        admin?.session?.id ||
+        '',
+      device_id:
+        admin?.device_id ||
+        admin?.device?.id ||
+        '',
+      jwt_id: jwtId,
+      jti: jwtId,
+    },
+    process.env.JWT_SECRET,
+    {
+      expiresIn: `${ADMIN_SESSION_DAYS}d`,
+    }
+  )
+}
 
   return res.status(200).json({
     ok: true,
@@ -1224,9 +1267,18 @@ export async function adminResetPassword(req, res) {
 
 export async function checkAdmin(req, res) {
   const admin = req.admin || {}
+  const now = Math.floor(Date.now() / 1000)
+
+  const shouldRenewToken =
+    !admin.iat ||
+    now - admin.iat >=
+      ADMIN_TOKEN_RENEW_AFTER_SECONDS
 
   return res.status(200).json({
     ok: true,
+    token: shouldRenewToken
+      ? createRenewedAdminToken(admin)
+      : '',
     admin: {
       id: admin.admin_id || '',
       email: admin.email || '',
@@ -1235,12 +1287,15 @@ export async function checkAdmin(req, res) {
       role_id: admin.role_id || null,
       role_name: admin.role_name || '',
       status: admin.status || 'active',
-      permission_keys: Array.isArray(admin.permission_keys) ? admin.permission_keys : [],
-      has_all_permissions: Boolean(admin.has_all_permissions),
+      permission_keys:
+        Array.isArray(admin.permission_keys)
+          ? admin.permission_keys
+          : [],
+      has_all_permissions:
+        Boolean(admin.has_all_permissions),
     },
   })
 }
-
 export async function changeAdminPassword(req, res) {
   try {
     const {
