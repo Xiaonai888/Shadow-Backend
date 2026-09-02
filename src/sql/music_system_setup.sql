@@ -65,6 +65,13 @@ create table if not exists public.music_listens (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.music_artist_follows (
+  user_id uuid not null references public.users(id) on delete cascade,
+  artist_id uuid not null references public.music_artists(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (user_id, artist_id)
+);
+
 create index if not exists idx_music_artists_active_sort
 on public.music_artists (is_active, sort_order, name);
 
@@ -88,6 +95,9 @@ on public.music_listens (song_id, created_at desc);
 
 create index if not exists idx_music_listens_user_created
 on public.music_listens (user_id, created_at desc);
+
+create index if not exists idx_music_artist_follows_artist_created
+on public.music_artist_follows (artist_id, created_at desc);
 
 create or replace function public.set_music_updated_at()
 returns trigger
@@ -118,9 +128,13 @@ alter table public.music_artists enable row level security;
 alter table public.music_releases enable row level security;
 alter table public.music_songs enable row level security;
 alter table public.music_listens enable row level security;
+alter table public.music_artist_follows enable row level security;
 
 revoke all on public.music_listens from public, anon, authenticated;
 grant all on public.music_listens to service_role;
+
+revoke all on public.music_artist_follows from public, anon, authenticated;
+grant all on public.music_artist_follows to service_role;
 
 create or replace function public.record_music_listen(
   p_user_id uuid,
