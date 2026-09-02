@@ -2,6 +2,10 @@ import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import {
+  getCachedMyAuthorPage,
+  invalidateMyAuthorPageCache,
+} from '../services/myAuthorPageCache.service.js'
+import {
   createAuthorPageNotificationSafely,
   deleteAuthorPageNotificationBySourceKeySafely,
 } from '../services/authorPageNotifications.service.js'
@@ -222,42 +226,52 @@ export async function getMyAuthorPage(req, res) {
       })
     }
 
-    const { data, error } = await supabase
-      .from('author_pages')
-      .select('*')
-      .eq('user_id', userId)
-      .maybeSingle()
+    const payload = await getCachedMyAuthorPage(
+      userId,
+      async () => {
+        const { data, error } = await supabase
+          .from('author_pages')
+          .select('*')
+          .eq('user_id', userId)
+          .maybeSingle()
 
-    if (error) throw error
+        if (error) throw error
 
-    if (!data) {
-      return res.status(200).json({
-        ok: true,
-        has_author_page: false,
-        author_page: null,
-        works: [],
-      })
-    }
+        if (!data) {
+          return {
+            has_author_page: false,
+            author_page: null,
+            works: [],
+          }
+        }
 
-    const [works, rank] = await Promise.all([
-      getAuthorPageWorks(data.id, true),
-      getExactAuthorRank(data),
-    ])
+        const [works, rank] = await Promise.all([
+          getAuthorPageWorks(data.id, true),
+          getExactAuthorRank(data),
+        ])
 
-    const authorPage = {
-      ...publicAuthorPage({
-        ...data,
-        total_stories: works.length,
-      }),
-      rank,
-      works,
-    }
+        const authorPage = {
+          ...publicAuthorPage({
+            ...data,
+            total_stories: works.length,
+          }),
+          rank,
+          works,
+        }
+
+        return {
+          has_author_page: true,
+          author_page: authorPage,
+          works,
+        }
+      }
+    )
+
+    res.set('Cache-Control', 'private, no-store')
 
     return res.status(200).json({
       ok: true,
-      has_author_page: true,
-      author_page: authorPage,
-      works,
+      ...payload,
     })
   } catch (error) {
     console.error('GET MY AUTHOR PAGE ERROR:', error)
@@ -1088,6 +1102,10 @@ const alreadyFollowing = await getFollowStatus(
       authorPage.id
     )
 
+    invalidateMyAuthorPageCache(
+      updatedPage.user_id
+    )
+
     return res.status(200).json({
       ok: true,
       message: 'Author page followed',
@@ -1149,6 +1167,10 @@ export async function unfollowAuthorPage(req, res) {
 })
 
     const updatedPage = await syncAuthorFollowerCount(authorPage.id)
+
+    invalidateMyAuthorPageCache(
+      updatedPage.user_id
+    )
 
     return res.status(200).json({
       ok: true,
