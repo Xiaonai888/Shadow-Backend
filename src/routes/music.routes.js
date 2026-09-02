@@ -14,6 +14,9 @@ import {
   getAdminMusicOverview,
   getPublicMusicArtist,
   getPublicMusicArtists,
+  getMyMusicArtistFollows,
+  followMusicArtist,
+  unfollowMusicArtist,
   updateMusicArtist,
   updateMusicRelease,
   updateMusicSong,
@@ -23,6 +26,9 @@ const router = express.Router()
 
 router.get('/artists', getPublicMusicArtists)
 router.get('/artists/:artistId', getPublicMusicArtist)
+router.get('/follows', requireUser, getMyMusicArtistFollows)
+router.post('/artists/:artistId/follow', requireUser, followMusicArtist)
+router.delete('/artists/:artistId/follow', requireUser, unfollowMusicArtist)
 router.post('/songs/:songId/listen', requireUser, recordMusicListen)
 
 router.get('/admin/artists', requireAdmin, getAdminMusicOverview)
