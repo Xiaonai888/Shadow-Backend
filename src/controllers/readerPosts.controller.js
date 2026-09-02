@@ -762,17 +762,44 @@ async function attachVisibleUsers(
     .map((post) => post?.id)
     .filter(Boolean)
 
+  const sharedStateReady =
+    rows.length > 0 &&
+    rows.every(
+      (post) =>
+        post?.__feed_shared_state_loaded === true
+    )
+
+  const sharedUserMap = new Map(
+    rows
+      .filter((post) => post?.__feed_user)
+      .map((post) => [
+        String(post.user_id),
+        post.__feed_user,
+      ])
+  )
+
+  const sharedEchoCounts = new Map(
+    rows.map((post) => [
+      String(post.id),
+      Number(post.__feed_echo_count || 0),
+    ])
+  )
+
   const [
     userMap,
     relationships,
     echoCounts,
   ] = await Promise.all([
-    readUsersByIds(ownerIds),
+    sharedStateReady
+      ? sharedUserMap
+      : readUsersByIds(ownerIds),
     getRelationshipMaps(
       viewerId,
       ownerIds
     ),
-    readReaderPostEchoCounts(postIds),
+    sharedStateReady
+      ? sharedEchoCounts
+      : readReaderPostEchoCounts(postIds),
   ])
 
   return rows
