@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
+import { invalidateReaderPostsFeedCandidateCache } from '../services/readerPostsFeedCandidateCache.service.js'
 
 const SOURCE_TYPES = new Set([
   'story',
@@ -1150,6 +1151,8 @@ export async function createEchoV2(
 
     saved = true
 
+    invalidateReaderPostsFeedCandidateCache()
+
     const authorPageId = String(
   source?.owner?.id || ''
 )
@@ -1779,6 +1782,8 @@ export async function deleteEchoV2(
     }
 
     echoDeleted = true
+
+    invalidateReaderPostsFeedCandidateCache()
 
     const echoCount =
       await readSourceEchoCount(
