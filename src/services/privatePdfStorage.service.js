@@ -10,12 +10,12 @@ function getPrivateR2Client() {
   if (privateR2Client) return privateR2Client
 
   const accountId = String(process.env.R2_ACCOUNT_ID || '').trim()
-  const accessKeyId = String(process.env.R2_PRIVATE_ACCESS_KEY_ID || '').trim()
-  const secretAccessKey = String(process.env.R2_PRIVATE_SECRET_ACCESS_KEY || '').trim()
+  const accessKeyId = String(process.env.R2_PRIVATE_ACCESS_KEY_ID || process.env.R2_ACCESS_KEY_ID || '').trim()
+const secretAccessKey = String(process.env.R2_PRIVATE_SECRET_ACCESS_KEY || process.env.R2_SECRET_ACCESS_KEY || '').trim()
 
   if (!accountId || !accessKeyId || !secretAccessKey) {
     throw new Error(
-      'Missing R2_ACCOUNT_ID, R2_PRIVATE_ACCESS_KEY_ID, or R2_PRIVATE_SECRET_ACCESS_KEY'
+      'Missing R2_ACCOUNT_ID or R2 access credentials'
     )
   }
 
