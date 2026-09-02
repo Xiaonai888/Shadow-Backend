@@ -8,6 +8,7 @@ const MAX_SNAPSHOTS = 4
 const snapshots = new Map()
 const inflightRequests = new Map()
 let latestSnapshotAt = ''
+let latestRequest = null
 let cacheGeneration = 0
 
 function normalizeSnapshotAt(value) {
@@ -33,13 +34,16 @@ function pruneSnapshots() {
   for (const [key, entry] of snapshots.entries()) {
     if (!entry || entry.expiresAt <= now) {
       snapshots.delete(key)
+
       if (latestSnapshotAt === key) {
         latestSnapshotAt = ''
       }
     }
   }
 
-  if (snapshots.size <= MAX_SNAPSHOTS) return
+  if (snapshots.size <= MAX_SNAPSHOTS) {
+    return
+  }
 
   const ordered = [...snapshots.entries()].sort(
     (first, second) =>
@@ -52,7 +56,9 @@ function pruneSnapshots() {
     snapshots.size > MAX_SNAPSHOTS
   ) {
     const [key] = ordered.shift()
+
     snapshots.delete(key)
+
     if (latestSnapshotAt === key) {
       latestSnapshotAt = ''
     }
@@ -62,22 +68,31 @@ function pruneSnapshots() {
 async function loadCatalog(snapshotAt) {
   const cutoffAt = getCutoffAt(snapshotAt)
 
-  const { data: candidatePosts, error: postsError } =
-    await supabase
-      .from('author_page_posts')
-      .select(
-        'id, author_page_id, user_id, post_type, content, image_urls, status, like_count, comment_count, echo_count, created_at, updated_at'
-      )
-      .eq('status', 'active')
-      .lte('created_at', snapshotAt)
-      .gte('created_at', cutoffAt)
-      .order('created_at', { ascending: false })
-      .order('id', { ascending: false })
-      .limit(CANDIDATE_LIMIT)
+  const {
+    data: candidatePosts,
+    error: postsError,
+  } = await supabase
+    .from('author_page_posts')
+    .select(
+      'id, author_page_id, user_id, post_type, content, image_urls, status, like_count, comment_count, echo_count, created_at, updated_at'
+    )
+    .eq('status', 'active')
+    .lte('created_at', snapshotAt)
+    .gte('created_at', cutoffAt)
+    .order('created_at', {
+      ascending: false,
+    })
+    .order('id', {
+      ascending: false,
+    })
+    .limit(CANDIDATE_LIMIT)
 
-  if (postsError) throw postsError
+  if (postsError) {
+    throw postsError
+  }
 
   const posts = candidatePosts || []
+
   const authorPageIds = [
     ...new Set(
       posts
@@ -85,6 +100,7 @@ async function loadCatalog(snapshotAt) {
         .filter(Boolean)
     ),
   ]
+
   const postIds = [
     ...new Set(
       posts
@@ -93,7 +109,10 @@ async function loadCatalog(snapshotAt) {
     ),
   ]
 
-  const [pagesResult, hashtagsResult] = await Promise.all([
+  const [
+    pagesResult,
+    hashtagsResult,
+  ] = await Promise.all([
     authorPageIds.length
       ? supabase
           .from('author_pages')
@@ -102,57 +121,107 @@ async function loadCatalog(snapshotAt) {
           )
           .in('id', authorPageIds)
           .eq('status', 'active')
-      : Promise.resolve({ data: [], error: null }),
+      : Promise.resolve({
+          data: [],
+          error: null,
+        }),
     postIds.length
       ? supabase
           .from('author_post_hashtags')
-          .select('post_id, hashtag_id')
+          .select(
+            'post_id, hashtag_id'
+          )
           .in('post_id', postIds)
-      : Promise.resolve({ data: [], error: null }),
+      : Promise.resolve({
+          data: [],
+          error: null,
+        }),
   ])
 
-  if (pagesResult.error) throw pagesResult.error
-  if (hashtagsResult.error) throw hashtagsResult.error
+  if (pagesResult.error) {
+    throw pagesResult.error
+  }
+
+  if (hashtagsResult.error) {
+    throw hashtagsResult.error
+  }
 
   return {
     snapshotAt,
     candidatePosts: posts,
     pages: pagesResult.data || [],
-    postHashtags: hashtagsResult.data || [],
+    postHashtags:
+      hashtagsResult.data || [],
   }
 }
 
-async function readSnapshot(snapshotAt, makeLatest) {
+async function readSnapshot(
+  snapshotAt,
+  makeLatest
+) {
   pruneSnapshots()
 
-  const cached = snapshots.get(snapshotAt)
+  const cached =
+    snapshots.get(snapshotAt)
 
-  if (cached && cached.expiresAt > Date.now()) {
-    if (makeLatest) latestSnapshotAt = snapshotAt
+  if (
+    cached &&
+    cached.expiresAt > Date.now()
+  ) {
+    if (makeLatest) {
+      latestSnapshotAt = snapshotAt
+    }
+
     return cached.value
   }
 
-  if (inflightRequests.has(snapshotAt)) {
-    return inflightRequests.get(snapshotAt)
+  const existingRequest =
+    inflightRequests.get(snapshotAt)
+
+  if (existingRequest) {
+    const value =
+      await existingRequest
+
+    if (
+      makeLatest &&
+      snapshots.has(snapshotAt)
+    ) {
+      latestSnapshotAt = snapshotAt
+    }
+
+    return value
   }
 
-  const requestGeneration = cacheGeneration
-  const request = loadCatalog(snapshotAt)
+  const requestGeneration =
+    cacheGeneration
 
-  inflightRequests.set(snapshotAt, request)
+  const request =
+    loadCatalog(snapshotAt)
+
+  inflightRequests.set(
+    snapshotAt,
+    request
+  )
 
   try {
     const value = await request
 
-    if (requestGeneration === cacheGeneration) {
+    if (
+      requestGeneration ===
+      cacheGeneration
+    ) {
+      const now = Date.now()
+
       snapshots.set(snapshotAt, {
         value,
-        createdAt: Date.now(),
-        expiresAt: Date.now() + CACHE_TTL_MS,
+        createdAt: now,
+        expiresAt:
+          now + CACHE_TTL_MS,
       })
 
       if (makeLatest) {
-        latestSnapshotAt = snapshotAt
+        latestSnapshotAt =
+          snapshotAt
       }
 
       pruneSnapshots()
@@ -160,8 +229,14 @@ async function readSnapshot(snapshotAt, makeLatest) {
 
     return value
   } finally {
-    if (inflightRequests.get(snapshotAt) === request) {
-      inflightRequests.delete(snapshotAt)
+    if (
+      inflightRequests.get(
+        snapshotAt
+      ) === request
+    ) {
+      inflightRequests.delete(
+        snapshotAt
+      )
     }
   }
 }
@@ -169,6 +244,7 @@ async function readSnapshot(snapshotAt, makeLatest) {
 export function invalidateDiscoverAuthorPostsSharedCache() {
   cacheGeneration += 1
   latestSnapshotAt = ''
+  latestRequest = null
   snapshots.clear()
   inflightRequests.clear()
 }
@@ -176,11 +252,14 @@ export function invalidateDiscoverAuthorPostsSharedCache() {
 export async function getDiscoverAuthorPostsSharedCatalog({
   snapshotAt = '',
 } = {}) {
-  const requestedSnapshot = String(snapshotAt || '').trim()
+  const requestedSnapshot =
+    String(snapshotAt || '').trim()
 
   if (requestedSnapshot) {
     return readSnapshot(
-      normalizeSnapshotAt(requestedSnapshot),
+      normalizeSnapshotAt(
+        requestedSnapshot
+      ),
       false
     )
   }
@@ -188,13 +267,45 @@ export async function getDiscoverAuthorPostsSharedCatalog({
   pruneSnapshots()
 
   if (latestSnapshotAt) {
-    const cached = snapshots.get(latestSnapshotAt)
+    const cached =
+      snapshots.get(
+        latestSnapshotAt
+      )
 
-    if (cached && cached.expiresAt > Date.now()) {
+    if (
+      cached &&
+      cached.expiresAt >
+        Date.now()
+    ) {
       return cached.value
     }
   }
 
-  const nextSnapshotAt = new Date().toISOString()
-  return readSnapshot(nextSnapshotAt, true)
+  if (latestRequest) {
+    return latestRequest.promise
+  }
+
+  const nextSnapshotAt =
+    new Date().toISOString()
+
+  const request = {
+    snapshotAt: nextSnapshotAt,
+    promise: null,
+  }
+
+  request.promise =
+    readSnapshot(
+      nextSnapshotAt,
+      true
+    )
+
+  latestRequest = request
+
+  try {
+    return await request.promise
+  } finally {
+    if (latestRequest === request) {
+      latestRequest = null
+    }
+  }
 }
