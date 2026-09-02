@@ -1,4 +1,8 @@
 import { supabase } from '../config/supabase.js'
+import {
+  getReaderPostsFeedCandidates,
+  invalidateReaderPostsFeedCandidateCache,
+} from '../services/readerPostsFeedCandidateCache.service.js'
 
 const MAX_POST_LENGTH = 10000
 const MAX_POST_IMAGES = 5
@@ -2977,20 +2981,10 @@ export async function getMyReaderPosts(
       req.query.limit
     )
 
-    const { data, error } = await supabase
-      .from('reader_posts')
-      .select('*')
-      .eq('user_id', userId)
-      .is('deleted_at', null)
-      .order('publish_at', {
-        ascending: false,
-      })
-      .order('created_at', {
-        ascending: false,
-      })
-      .limit(FEED_SCAN_LIMIT)
-
-    if (error) throw error
+        const data =
+      await getReaderPostsFeedCandidates(
+        snapshotAt
+      )
 
     const [
       readerPosts,
@@ -3234,7 +3228,9 @@ const content = validateContent(
         .select('*')
         .single()
 
-    if (error) throw error
+        if (error) throw error
+
+    invalidateReaderPostsFeedCandidateCache()
 
     const userMap =
       await readUsersByIds([userId])
@@ -3378,7 +3374,9 @@ export async function updateMyReaderPost(
         .select('*')
         .single()
 
-    if (error) throw error
+        if (error) throw error
+
+    invalidateReaderPostsFeedCandidateCache()
 
     await updateLinkedEchoFromPost(
       linkedEcho,
