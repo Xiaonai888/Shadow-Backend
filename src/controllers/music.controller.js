@@ -213,6 +213,85 @@ export async function getPublicMusicArtist(req, res) {
   }
 }
 
+export async function getMyMusicArtistFollows(req, res) {
+  try {
+    const userId = text(req.user?.user_id)
+    if (!UUID_PATTERN.test(userId)) {
+      return res.status(401).json({ ok: false, message: 'Reader login required' })
+    }
+
+    const { data, error } = await supabase
+      .from('music_artist_follows')
+      .select('artist_id')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+
+    return res.json({
+      ok: true,
+      artist_ids: (data || []).map((row) => row.artist_id),
+    })
+  } catch (error) {
+    console.error('GET MUSIC ARTIST FOLLOWS ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load followed artists' })
+  }
+}
+
+export async function followMusicArtist(req, res) {
+  try {
+    const userId = text(req.user?.user_id)
+    const artistId = text(req.params.artistId)
+
+    if (!UUID_PATTERN.test(userId) || !UUID_PATTERN.test(artistId)) {
+      return res.status(400).json({ ok: false, message: 'Invalid user or artist ID' })
+    }
+
+    const artist = await findArtist(artistId, false)
+    if (!artist) {
+      return res.status(404).json({ ok: false, message: 'Music artist not found' })
+    }
+
+    const { error } = await supabase
+      .from('music_artist_follows')
+      .upsert(
+        { user_id: userId, artist_id: artist.id },
+        { onConflict: 'user_id,artist_id', ignoreDuplicates: true }
+      )
+
+    if (error) throw error
+
+    return res.json({ ok: true, following: true, artist_id: artist.id })
+  } catch (error) {
+    console.error('FOLLOW MUSIC ARTIST ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to follow artist' })
+  }
+}
+
+export async function unfollowMusicArtist(req, res) {
+  try {
+    const userId = text(req.user?.user_id)
+    const artistId = text(req.params.artistId)
+
+    if (!UUID_PATTERN.test(userId) || !UUID_PATTERN.test(artistId)) {
+      return res.status(400).json({ ok: false, message: 'Invalid user or artist ID' })
+    }
+
+    const { error } = await supabase
+      .from('music_artist_follows')
+      .delete()
+      .eq('user_id', userId)
+      .eq('artist_id', artistId)
+
+    if (error) throw error
+
+    return res.json({ ok: true, following: false, artist_id: artistId })
+  } catch (error) {
+    console.error('UNFOLLOW MUSIC ARTIST ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to unfollow artist' })
+  }
+}
+
 export async function getAdminMusicOverview(req, res) {
   try {
     const [artistsResult, releasesResult, songsResult, listenerTotals] = await Promise.all([
