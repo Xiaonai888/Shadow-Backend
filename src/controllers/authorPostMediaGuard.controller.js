@@ -3,6 +3,9 @@ import {
   assertR2MediaReference,
 } from '../services/mediaStoragePolicy.service.js'
 import {
+  invalidateDiscoverAuthorPostsSharedCache,
+} from '../services/discoverAuthorPostsSharedCache.service.js'
+import {
   createMyAuthorPost as createMyAuthorPostOriginal,
   updateMyAuthorPost as updateMyAuthorPostOriginal,
 } from './authorPosts.controller.js'
@@ -52,10 +55,24 @@ function sendGuardError(res, error) {
   })
 }
 
+async function runPostMutation(res, mutation) {
+  const response = await mutation()
+
+  if (res.statusCode >= 200 && res.statusCode < 300) {
+    invalidateDiscoverAuthorPostsSharedCache()
+  }
+
+  return response
+}
+
 export async function createMyAuthorPost(req, res) {
   try {
     validateImageUrls(getImageUrlsFromBody(req.body))
-    return createMyAuthorPostOriginal(req, res)
+
+    return runPostMutation(
+      res,
+      () => createMyAuthorPostOriginal(req, res)
+    )
   } catch (error) {
     return sendGuardError(res, error)
   }
@@ -66,12 +83,14 @@ export async function updateMyAuthorPost(req, res) {
     const imageUrls = getImageUrlsFromBody(req.body)
 
     if (!Array.isArray(imageUrls)) {
-      return updateMyAuthorPostOriginal(req, res)
+      return runPostMutation(
+        res,
+        () => updateMyAuthorPostOriginal(req, res)
+      )
     }
 
     const userId = req.user?.user_id || req.user?.id
     const postId = clean(req.params.postId)
-
     let existingImageUrls = []
 
     if (userId && postId) {
@@ -92,9 +111,15 @@ export async function updateMyAuthorPost(req, res) {
 
     validateImageUrls(imageUrls, existingImageUrls)
 
-    return updateMyAuthorPostOriginal(req, res)
+    return runPostMutation(
+      res,
+      () => updateMyAuthorPostOriginal(req, res)
+    )
   } catch (error) {
-    if (error?.statusCode || error?.code === 'INVALID_MEDIA_STORAGE') {
+    if (
+      error?.statusCode ||
+      error?.code === 'INVALID_MEDIA_STORAGE'
+    ) {
       return sendGuardError(res, error)
     }
 
