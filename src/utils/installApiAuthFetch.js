@@ -10,78 +10,45 @@ const API_ORIGIN = new URL(
   window.location.origin
 ).origin
 
-const VISITOR_STORAGE_KEY = 'shadow_visitor_id'
-let memoryVisitorId = ''
+function handleReaderSessionResponse(fetchPromise) {
+  return fetchPromise.then((response) => {
+    const renewedToken =
+      response.headers.get('X-Reader-Token')
 
-function createVisitorId() {
-  if (
-    window.crypto &&
-    typeof window.crypto.randomUUID === 'function'
-  ) {
-    return `visitor:${window.crypto.randomUUID()}`
-  }
+    if (renewedToken) {
+      if (
+        sessionStorage.getItem(
+          'shadow_reader_token'
+        )
+      ) {
+        sessionStorage.setItem(
+          'shadow_reader_token',
+          renewedToken
+        )
+      }
 
-  const randomPart = Math.random()
-    .toString(36)
-    .slice(2, 14)
-
-  return `visitor:${Date.now().toString(36)}:${randomPart}`
-}
-
-function getVisitorId() {
-  if (memoryVisitorId) return memoryVisitorId
-
-  try {
-    const saved = localStorage.getItem(
-      VISITOR_STORAGE_KEY
-    )
-
-    if (
-      saved &&
-      /^[a-zA-Z0-9._:-]{6,200}$/.test(saved)
-    ) {
-      memoryVisitorId = saved
-      return saved
+      if (
+        localStorage.getItem(
+          'shadow_reader_token'
+        )
+      ) {
+        localStorage.setItem(
+          'shadow_reader_token',
+          renewedToken
+        )
+      }
     }
 
-    const created = createVisitorId()
-
-    localStorage.setItem(
-      VISITOR_STORAGE_KEY,
-      created
-    )
-
-    memoryVisitorId = created
-    return created
-  } catch {
-    memoryVisitorId = createVisitorId()
-    return memoryVisitorId
-  }
-}
-
-function getReaderToken() {
-  return (
-    sessionStorage.getItem(
-      'shadow_reader_token'
-    ) ||
-    localStorage.getItem(
-      'shadow_reader_token'
-    ) ||
-    ''
-  )
+    return response
+  })
 }
 
 export function installApiAuthFetch() {
-  if (
-    window.__shadowApiAuthFetchInstalled
-  ) {
-    return
-  }
+  if (window.__shadowApiAuthFetchInstalled) return
 
   window.__shadowApiAuthFetchInstalled = true
 
-  const nativeFetch =
-    window.fetch.bind(window)
+  const nativeFetch = window.fetch.bind(window)
 
   window.fetch = (input, init = {}) => {
     const requestUrl =
@@ -98,55 +65,50 @@ export function installApiAuthFetch() {
       return nativeFetch(input, init)
     }
 
+    const token =
+      sessionStorage.getItem('shadow_reader_token') ||
+      localStorage.getItem('shadow_reader_token') ||
+      ''
+
+    if (!token) {
+      return nativeFetch(input, init)
+    }
+
     const headers = new Headers(
       input instanceof Request
         ? input.headers
         : undefined
     )
 
-    new Headers(
-      init.headers || {}
-    ).forEach((value, key) => {
-      headers.set(key, value)
-    })
+    new Headers(init.headers || {}).forEach(
+      (value, key) => {
+        headers.set(key, value)
+      }
+    )
 
-    const token = getReaderToken()
-    const visitorId = getVisitorId()
-
-    if (
-      token &&
-      !headers.has('Authorization')
-    ) {
+    if (!headers.has('Authorization')) {
       headers.set(
         'Authorization',
         `Bearer ${token}`
       )
     }
 
-    if (
-      visitorId &&
-      !headers.has(
-        'X-Shadow-Visitor-Id'
-      )
-    ) {
-      headers.set(
-        'X-Shadow-Visitor-Id',
-        visitorId
-      )
-    }
-
     if (input instanceof Request) {
-      return nativeFetch(
-        new Request(input, {
-          ...init,
-          headers,
-        })
+      return handleReaderSessionResponse(
+        nativeFetch(
+          new Request(input, {
+            ...init,
+            headers,
+          })
+        )
       )
     }
 
-    return nativeFetch(input, {
-      ...init,
-      headers,
-    })
+    return handleReaderSessionResponse(
+      nativeFetch(input, {
+        ...init,
+        headers,
+      })
+    )
   }
 }
