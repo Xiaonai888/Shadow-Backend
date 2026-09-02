@@ -24,8 +24,8 @@ function getPrivateR2Client() {
 
   const missing = []
 if (!accountId) missing.push('R2_ACCOUNT_ID')
-if (!accessKeyId) missing.push('R2_PRIVATE_ACCESS_KEY_ID', 'R2_ACCESS_KEY_ID')
-if (!secretAccessKey) missing.push('R2_PRIVATE_SECRET_ACCESS_KEY', 'R2_SECRET_ACCESS_KEY')
+if (!accessKeyId) missing.push('R2 access key ID credential')
+if (!secretAccessKey) missing.push('R2 secret access key credential')
 if (missing.length) throw new Error(`Missing environment variables: ${missing.join(', ')}`)
 
   privateR2Client = new S3Client({
