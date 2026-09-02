@@ -2894,23 +2894,10 @@ export async function getReaderPostsFeed(
     const snapshotAt =
       new Date().toISOString()
 
-    const { data, error } = await supabase
-      .from('reader_posts')
-      .select('*')
-      .is('deleted_at', null)
-      .lte(
-        'publish_at',
+    const data =
+      await getReaderPostsFeedCandidates(
         snapshotAt
       )
-      .order('publish_at', {
-        ascending: false,
-      })
-      .order('created_at', {
-        ascending: false,
-      })
-      .limit(FEED_SCAN_LIMIT)
-
-    if (error) throw error
 
     const [
       readerPosts,
@@ -2981,10 +2968,20 @@ export async function getMyReaderPosts(
       req.query.limit
     )
 
-        const data =
-      await getReaderPostsFeedCandidates(
-        snapshotAt
-      )
+        const { data, error } = await supabase
+      .from('reader_posts')
+      .select('*')
+      .eq('user_id', userId)
+      .is('deleted_at', null)
+      .order('publish_at', {
+        ascending: false,
+      })
+      .order('created_at', {
+        ascending: false,
+      })
+      .limit(FEED_SCAN_LIMIT)
+
+    if (error) throw error
 
     const [
       readerPosts,
@@ -3463,7 +3460,9 @@ export async function deleteMyReaderPost(
       .eq('user_id', userId)
       .is('deleted_at', null)
 
-    if (error) throw error
+        if (error) throw error
+
+    invalidateReaderPostsFeedCandidateCache()
 
     await deleteLinkedEchoFromPost(
       linkedEcho,
