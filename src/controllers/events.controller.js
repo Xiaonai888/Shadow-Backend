@@ -89,12 +89,10 @@ export async function listAdminEvents(req, res) {
 
     if (error) throw error
 
-invalidatePublicEventsCache()
-
-return res.status(201).json({
-  ok: true,
-  event: serializeEvent(data),
-})
+    return res.status(200).json({
+      ok: true,
+      events: (data || []).map(serializeEvent),
+    })
   } catch (error) {
     console.error('ADMIN LIST EVENTS ERROR:', error)
 
@@ -188,12 +186,12 @@ export async function createEvent(req, res) {
 
     if (error) throw error
 
-invalidatePublicEventsCache()
+    invalidatePublicEventsCache()
 
-return res.status(200).json({
-  ok: true,
-  event: serializeEvent(data),
-})
+    return res.status(201).json({
+      ok: true,
+      event: serializeEvent(data),
+    })
   } catch (error) {
     console.error('ADMIN CREATE EVENT ERROR:', error)
 
@@ -362,6 +360,8 @@ if (!finalImageUrl) {
       .single()
 
     if (error) throw error
+
+    invalidatePublicEventsCache()
 
     return res.status(200).json({
       ok: true,
