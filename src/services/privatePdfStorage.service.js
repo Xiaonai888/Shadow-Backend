@@ -3,6 +3,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
+import { createReadStream } from 'node:fs'
 
 let privateR2Client = null
 
@@ -10,13 +11,19 @@ function getPrivateR2Client() {
   if (privateR2Client) return privateR2Client
 
   const accountId = String(process.env.R2_ACCOUNT_ID || '').trim()
-  const accessKeyId = String(process.env.R2_PRIVATE_ACCESS_KEY_ID || process.env.R2_ACCESS_KEY_ID || '').trim()
-const secretAccessKey = String(process.env.R2_PRIVATE_SECRET_ACCESS_KEY || process.env.R2_SECRET_ACCESS_KEY || '').trim()
+  const accessKeyId = String(
+    process.env.R2_PRIVATE_ACCESS_KEY_ID ||
+      process.env.R2_ACCESS_KEY_ID ||
+      ''
+  ).trim()
+  const secretAccessKey = String(
+    process.env.R2_PRIVATE_SECRET_ACCESS_KEY ||
+      process.env.R2_SECRET_ACCESS_KEY ||
+      ''
+  ).trim()
 
   if (!accountId || !accessKeyId || !secretAccessKey) {
-    throw new Error(
-      'Missing R2_ACCOUNT_ID or R2 access credentials'
-    )
+    throw new Error('Missing R2_ACCOUNT_ID or R2 access credentials')
   }
 
   privateR2Client = new S3Client({
@@ -72,7 +79,7 @@ export async function uploadPrivatePdfToR2({
   authorPageId,
   file,
 }) {
-  if (!file?.buffer) {
+  if (!file?.path && !file?.buffer) {
     throw new Error('PDF file is required')
   }
 
@@ -80,12 +87,21 @@ export async function uploadPrivatePdfToR2({
     authorPageId,
     file.originalname
   )
+  const fileSize = Number(
+    file.size ||
+      file.buffer?.length ||
+      0
+  )
+  const body = file.path
+    ? createReadStream(file.path)
+    : file.buffer
 
   await getPrivateR2Client().send(
     new PutObjectCommand({
       Bucket: getPrivatePdfBucketName(),
       Key: storageKey,
-      Body: file.buffer,
+      Body: body,
+      ContentLength: fileSize || undefined,
       ContentType: 'application/pdf',
       ContentDisposition: 'inline',
       CacheControl: 'private, no-store, no-cache, must-revalidate',
@@ -100,7 +116,7 @@ export async function uploadPrivatePdfToR2({
     storageKey,
     fileName: safeFileName(file.originalname),
     mimeType: 'application/pdf',
-    fileSize: Number(file.size || file.buffer.length || 0),
+    fileSize,
   }
 }
 
