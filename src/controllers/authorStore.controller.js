@@ -401,8 +401,7 @@ export async function getAdminAuthorStoreStoreDetails(req, res) {
   }
 }
 
-async function getMyAuthorPage(userId) {
-  function publicAuthorStoreTelegramSettings(page = {}) {
+function publicAuthorStoreTelegramSettings(page = {}) {
   return {
     bot_username: String(process.env.TELEGRAM_BOT_USERNAME || '').replace(/^@+/, '').trim(),
     chat_id: String(page.telegram_chat_id || ''),
@@ -410,6 +409,8 @@ async function getMyAuthorPage(userId) {
     linked_at: page.telegram_linked_at || null,
   }
 }
+
+async function getMyAuthorPage(userId) {
   const { data, error } = await supabase
     .from('author_pages')
     .select('*')
