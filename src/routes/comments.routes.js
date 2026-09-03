@@ -4,6 +4,7 @@ import {
   getEpisodeCommentTotals,
   createEpisodeComment,
   getEpisodeComments,
+  getCommentReplies,
   createStoryComment,
   getMyCommentActivities,
   getStoryComments,
@@ -25,6 +26,7 @@ router.get(
 )
 router.get('/story/:storyId', getStoryComments)
 router.post('/story/:storyId', requireUser, createStoryComment)
+router.get('/:commentId/replies', getCommentReplies)
 router.post('/:commentId/like', requireUser, toggleCommentLike)
 router.patch('/:commentId', requireUser, updateOwnComment)
 router.patch('/:commentId/moderate', requireUser, moderateComment)
