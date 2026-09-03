@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { serveAuthorCachedJson } from '../services/authorRequestCache.service.js'
 
 const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
 const PAGE_SIZE = 1000
@@ -340,7 +341,7 @@ function countSource(rows, sourceType) {
   ).length
 }
 
-export async function getMyAuthorDiamonds(req, res) {
+async function getMyAuthorDiamondsUncached(req, res) {
   try {
     const userId = getUserId(req)
 
@@ -445,7 +446,7 @@ export async function getMyAuthorDiamonds(req, res) {
   }
 }
 
-export async function getMyAuthorGifts(req, res) {
+async function getMyAuthorGiftsUncached(req, res) {
   try {
     const userId = getUserId(req)
 
@@ -526,4 +527,31 @@ export async function getMyAuthorGifts(req, res) {
       error: error.message,
     })
   }
+}
+
+
+export async function getMyAuthorDiamonds(
+  req,
+  res
+) {
+  return serveAuthorCachedJson({
+    req,
+    res,
+    namespace: 'author-diamonds',
+    ttlMs: 15 * 1000,
+    handler: getMyAuthorDiamondsUncached,
+  })
+}
+
+export async function getMyAuthorGifts(
+  req,
+  res
+) {
+  return serveAuthorCachedJson({
+    req,
+    res,
+    namespace: 'author-gifts',
+    ttlMs: 15 * 1000,
+    handler: getMyAuthorGiftsUncached,
+  })
 }
