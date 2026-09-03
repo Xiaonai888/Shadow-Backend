@@ -67,6 +67,8 @@ function serializeEvent(row) {
     badge_text: row.badge_text || '',
     image_url: row.image_url || '',
     image_storage_key: row.image_storage_key || '',
+    banner_url: row.banner_url || '',
+    banner_storage_key: row.banner_storage_key || '',
     button_text: row.button_text || '',
     button_url: row.button_url || '',
     starts_at: row.starts_at || null,
@@ -111,6 +113,8 @@ export async function createEvent(req, res) {
     const badgeText = cleanText(req.body?.badge_text)
     const imageUrl = cleanText(req.body?.image_url)
     const imageStorageKey = cleanText(req.body?.image_storage_key)
+    const bannerUrl = cleanText(req.body?.banner_url)
+    const bannerStorageKey = cleanText(req.body?.banner_storage_key)
     const buttonText = cleanText(req.body?.button_text)
     const buttonUrl = cleanText(req.body?.button_url)
     const startsAt = normalizeTimestamp(req.body?.starts_at, true)
@@ -173,6 +177,8 @@ export async function createEvent(req, res) {
         badge_text: badgeText,
         image_url: imageUrl,
         image_storage_key: imageStorageKey,
+        banner_url: bannerUrl,
+        banner_storage_key: bannerStorageKey,
         button_text: buttonText,
         button_url: buttonUrl,
         starts_at: startsAt,
@@ -249,6 +255,8 @@ export async function updateEvent(req, res) {
       'badge_text',
       'image_url',
       'image_storage_key',
+      'banner_url',
+      'banner_storage_key',
       'button_text',
       'button_url',
     ]
