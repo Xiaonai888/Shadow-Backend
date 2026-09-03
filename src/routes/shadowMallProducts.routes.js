@@ -1,5 +1,7 @@
 import express from 'express'
 import multer from 'multer'
+import os from 'node:os'
+import { unlink } from 'node:fs/promises'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import {
@@ -72,7 +74,7 @@ import {
 const router = express.Router()
 
 const upload = multer({
-  storage: multer.memoryStorage(),
+  dest: os.tmpdir(),
   limits: {
     fileSize: 5 * 1024 * 1024,
     files: 6,
@@ -92,6 +94,71 @@ const shadowMallPromotionUploadFields = [
   { name: 'promotion_image', maxCount: 1 },
   { name: 'profile_image', maxCount: 1 },
 ]
+
+function tempFiles(req) {
+  const paths = []
+
+  if (req.file?.path) {
+    paths.push(req.file.path)
+  }
+
+  if (Array.isArray(req.files)) {
+    for (const file of req.files) {
+      if (file?.path) paths.push(file.path)
+    }
+  } else if (req.files && typeof req.files === 'object') {
+    for (const values of Object.values(req.files)) {
+      for (const file of Array.isArray(values) ? values : []) {
+        if (file?.path) paths.push(file.path)
+      }
+    }
+  }
+
+  return [...new Set(paths)]
+}
+
+async function removeTempFiles(req) {
+  await Promise.all(
+    tempFiles(req).map((filePath) =>
+      unlink(filePath).catch(() => {})
+    )
+  )
+}
+
+function cleanupTempFiles(req, res, next) {
+  let cleaned = false
+
+  const cleanup = () => {
+    if (cleaned) return
+    cleaned = true
+    removeTempFiles(req).catch(() => {})
+  }
+
+  res.once('finish', cleanup)
+  res.once('close', cleanup)
+  next()
+}
+
+function runUpload(handler) {
+  return (req, res, next) => {
+    handler(req, res, (error) => {
+      if (!error) return next()
+
+      removeTempFiles(req).catch(() => {})
+
+      const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400
+      const message =
+        error.code === 'LIMIT_FILE_SIZE'
+          ? 'Each file must be 5 MB or smaller'
+          : error.message || 'Invalid file upload'
+
+      return res.status(status).json({
+        ok: false,
+        message,
+      })
+    })
+  }
+}
 
 router.get('/home', getShadowMallHome)
 router.get('/promotion', getPublicShadowMallPromotion)
@@ -174,7 +241,8 @@ router.get(
 router.put(
   '/admin/promotion',
   requireAdmin,
-  upload.fields(shadowMallPromotionUploadFields),
+  runUpload(upload.fields(shadowMallPromotionUploadFields)),
+  cleanupTempFiles,
   updateAdminShadowMallPromotion
 )
 
@@ -186,7 +254,8 @@ router.get(
 router.post(
   '/admin/promotions',
   requireAdmin,
-  upload.fields(shadowMallPromotionUploadFields),
+  runUpload(upload.fields(shadowMallPromotionUploadFields)),
+  cleanupTempFiles,
   createAdminShadowMallPromotion
 )
 router.patch(
@@ -202,7 +271,8 @@ router.get(
 router.put(
   '/admin/promotions/:id',
   requireAdmin,
-  upload.fields(shadowMallPromotionUploadFields),
+  runUpload(upload.fields(shadowMallPromotionUploadFields)),
+  cleanupTempFiles,
   updateAdminShadowMallPromotionById
 )
 router.patch(
@@ -225,13 +295,15 @@ router.get(
 router.post(
   '/admin/publishers',
   requireAdmin,
-  upload.single('publisher_logo'),
+  runUpload(upload.single('publisher_logo')),
+  cleanupTempFiles,
   createShadowMallPublisher
 )
 router.put(
   '/admin/publishers/:id',
   requireAdmin,
-  upload.single('publisher_logo'),
+  runUpload(upload.single('publisher_logo')),
+  cleanupTempFiles,
   updateShadowMallPublisher
 )
 router.delete(
@@ -325,13 +397,15 @@ router.get(
 router.post(
   '/products',
   requireAdmin,
-  upload.fields(shadowMallUploadFields),
+  runUpload(upload.fields(shadowMallUploadFields)),
+  cleanupTempFiles,
   createShadowMallProduct
 )
 router.put(
   '/products/:id',
   requireAdmin,
-  upload.fields(shadowMallUploadFields),
+  runUpload(upload.fields(shadowMallUploadFields)),
+  cleanupTempFiles,
   updateShadowMallProduct
 )
 router.delete(
