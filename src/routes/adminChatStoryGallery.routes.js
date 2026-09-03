@@ -1,5 +1,8 @@
 import express from 'express'
 import multer from 'multer'
+import os from 'node:os'
+import { createReadStream } from 'node:fs'
+import { unlink } from 'node:fs/promises'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
@@ -12,7 +15,7 @@ import {
 const router = express.Router()
 
 const upload = multer({
-  storage: multer.memoryStorage(),
+  dest: os.tmpdir(),
   limits: {
     fileSize: 5 * 1024 * 1024,
     files: 20,
@@ -60,12 +63,60 @@ function safeExtension(file) {
   return (fromName || fromMime).toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
 }
 
+function tempFiles(req) {
+  return (Array.isArray(req.files) ? req.files : [])
+    .map((file) => file?.path)
+    .filter(Boolean)
+}
+
+async function removeTempFiles(req) {
+  await Promise.all(
+    tempFiles(req).map((filePath) =>
+      unlink(filePath).catch(() => {})
+    )
+  )
+}
+
+function cleanupTempFiles(req, res, next) {
+  let cleaned = false
+
+  const cleanup = () => {
+    if (cleaned) return
+    cleaned = true
+    removeTempFiles(req).catch(() => {})
+  }
+
+  res.once('finish', cleanup)
+  res.once('close', cleanup)
+  next()
+}
+
+function uploadGalleryImages(req, res, next) {
+  upload.array('images', 20)(req, res, (error) => {
+    if (!error) return next()
+
+    removeTempFiles(req).catch(() => {})
+
+    const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400
+    const message =
+      error.code === 'LIMIT_FILE_SIZE'
+        ? 'Each image must be 5 MB or smaller'
+        : error.message || 'Invalid image upload'
+
+    return res.status(status).json({
+      ok: false,
+      message,
+    })
+  })
+}
+
 router.get('/', requireAdmin, getAdminChatStoryGallery)
 
 router.post(
   '/upload',
   requireAdmin,
-  upload.array('images', 20),
+  uploadGalleryImages,
+  cleanupTempFiles,
   async (req, res) => {
     try {
       const files = Array.isArray(req.files) ? req.files : []
@@ -103,7 +154,8 @@ router.post(
           new PutObjectCommand({
             Bucket: r2Bucket,
             Key: key,
-            Body: file.buffer,
+            Body: createReadStream(file.path),
+            ContentLength: Number(file.size || 0) || undefined,
             ContentType: file.mimetype,
           })
         )
