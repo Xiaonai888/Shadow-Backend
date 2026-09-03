@@ -31,7 +31,7 @@ async function loadPublishedEvents(nowIso) {
   const { data, error } = await supabase
     .from('shadow_events')
     .select(
-      'id, title, description, badge_text, image_url, image_storage_key, button_text, button_url, starts_at, ends_at, sort_order, is_published, created_at, updated_at'
+      'id, title, description, badge_text, image_url, image_storage_key, banner_url, banner_storage_key, button_text, button_url, starts_at, ends_at, sort_order, is_published, created_at, updated_at'
     )
     .eq('is_published', true)
     .gt('ends_at', nowIso)
