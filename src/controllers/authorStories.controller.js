@@ -1,5 +1,11 @@
+import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { createReadStream } from 'node:fs'
+import { open, stat, unlink } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
-import sharp from 'sharp'
 import { supabase } from '../config/supabase.js'
 import {
   assertAuthorStorageAvailable,
@@ -8,6 +14,7 @@ import {
 import {
   invalidateDiscoverStorySharedCache,
 } from '../services/discoverStorySharedCache.service.js'
+import { evaluateHeavyJobAdmission } from '../services/memoryGuard.service.js'
 
 const IMAGE_MIME_TYPES = new Set([
   'image/jpeg',
@@ -33,8 +40,16 @@ const MAX_IMAGE_OUTPUT_BYTES = Math.floor(1.5 * 1024 * 1024)
 const MAX_VIDEO_BYTES = 30 * 1024 * 1024
 const MAX_VIDEO_DURATION_SECONDS = 60
 const STORY_DURATION_MS = 24 * 60 * 60 * 1000
+const WORKER_TIMEOUT_MS = 3 * 60 * 1000
+const ADMISSION_TIMEOUT_MS = 5 * 60 * 1000
+const ADMISSION_POLL_MS = 1000
+const ESTIMATED_IMAGE_WORKER_MB = 140
+const STORY_IMAGE_WORKER_PATH = fileURLToPath(
+  new URL('../workers/authorStoryImage.worker.js', import.meta.url)
+)
 
 let r2Client = null
+let imageProcessingTail = Promise.resolve()
 
 function getR2Client() {
   if (r2Client) return r2Client
@@ -102,18 +117,33 @@ function normalizeBoolean(value, fallback = true) {
   return fallback
 }
 
-function readBox(buffer, offset, end) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function readAt(fileHandle, position, length) {
+  const buffer = Buffer.alloc(length)
+  const { bytesRead } = await fileHandle.read(buffer, 0, length, position)
+  return bytesRead === length ? buffer : buffer.subarray(0, bytesRead)
+}
+
+async function readBoxHeader(fileHandle, offset, end) {
   if (offset + 8 > end) return null
 
-  let size = buffer.readUInt32BE(offset)
-  const type = buffer.toString('ascii', offset + 4, offset + 8)
+  const header = await readAt(fileHandle, offset, 8)
+  if (header.length < 8) return null
+
+  let size = header.readUInt32BE(0)
+  const type = header.toString('ascii', 4, 8)
   let headerSize = 8
 
   if (size === 1) {
     if (offset + 16 > end) return null
 
-    const largeSize = buffer.readBigUInt64BE(offset + 8)
+    const largeSizeBuffer = await readAt(fileHandle, offset + 8, 8)
+    if (largeSizeBuffer.length < 8) return null
 
+    const largeSize = largeSizeBuffer.readBigUInt64BE(0)
     if (largeSize > BigInt(Number.MAX_SAFE_INTEGER)) return null
 
     size = Number(largeSize)
@@ -132,11 +162,11 @@ function readBox(buffer, offset, end) {
   }
 }
 
-function findDirectChildBox(buffer, start, end, wantedType) {
+async function findDirectChildBox(fileHandle, start, end, wantedType) {
   let offset = start
 
   while (offset + 8 <= end) {
-    const box = readBox(buffer, offset, end)
+    const box = await readBoxHeader(fileHandle, offset, end)
 
     if (!box) return null
     if (box.type === wantedType) return box
@@ -147,53 +177,62 @@ function findDirectChildBox(buffer, start, end, wantedType) {
   return null
 }
 
-function readVideoDurationSeconds(buffer) {
-  const moov = findDirectChildBox(buffer, 0, buffer.length, 'moov')
+async function readVideoDurationSeconds(filePath) {
+  const fileHandle = await open(filePath, 'r')
 
-  if (!moov) return 0
+  try {
+    const fileStat = await fileHandle.stat()
+    const fileSize = Number(fileStat.size || 0)
 
-  const mvhd = findDirectChildBox(
-    buffer,
-    moov.payloadStart,
-    moov.end,
-    'mvhd'
-  )
+    if (!fileSize) return 0
 
-  if (!mvhd || mvhd.payloadStart + 20 > mvhd.end) return 0
+    const moov = await findDirectChildBox(fileHandle, 0, fileSize, 'moov')
+    if (!moov) return 0
 
-  const version = buffer.readUInt8(mvhd.payloadStart)
+    const mvhd = await findDirectChildBox(
+      fileHandle,
+      moov.payloadStart,
+      moov.end,
+      'mvhd'
+    )
 
-  if (version === 0) {
-    const timescaleOffset = mvhd.payloadStart + 12
-    const durationOffset = mvhd.payloadStart + 16
+    if (!mvhd || mvhd.payloadStart + 20 > mvhd.end) return 0
 
-    if (durationOffset + 4 > mvhd.end) return 0
+    const header = await readAt(
+      fileHandle,
+      mvhd.payloadStart,
+      Math.min(32, mvhd.end - mvhd.payloadStart)
+    )
 
-    const timescale = buffer.readUInt32BE(timescaleOffset)
-    const duration = buffer.readUInt32BE(durationOffset)
+    if (header.length < 20) return 0
 
-    return timescale > 0 ? duration / timescale : 0
+    const version = header.readUInt8(0)
+
+    if (version === 0) {
+      const timescale = header.readUInt32BE(12)
+      const duration = header.readUInt32BE(16)
+      return timescale > 0 ? duration / timescale : 0
+    }
+
+    if (version === 1) {
+      if (header.length < 32) return 0
+
+      const timescale = header.readUInt32BE(20)
+      const duration = header.readBigUInt64BE(24)
+
+      if (!timescale || duration > BigInt(Number.MAX_SAFE_INTEGER)) return 0
+
+      return Number(duration) / timescale
+    }
+
+    return 0
+  } finally {
+    await fileHandle.close().catch(() => {})
   }
-
-  if (version === 1) {
-    const timescaleOffset = mvhd.payloadStart + 20
-    const durationOffset = mvhd.payloadStart + 24
-
-    if (durationOffset + 8 > mvhd.end) return 0
-
-    const timescale = buffer.readUInt32BE(timescaleOffset)
-    const duration = buffer.readBigUInt64BE(durationOffset)
-
-    if (!timescale || duration > BigInt(Number.MAX_SAFE_INTEGER)) return 0
-
-    return Number(duration) / timescale
-  }
-
-  return 0
 }
 
-function validateMedia(file) {
-  if (!file) {
+async function validateMedia(file) {
+  if (!file?.path) {
     const error = new Error('Photo or video is required')
     error.statusCode = 400
     error.code = 'STORY_MEDIA_REQUIRED'
@@ -226,7 +265,7 @@ function validateMedia(file) {
   }
 
   if (isVideo) {
-    const duration = readVideoDurationSeconds(file.buffer)
+    const duration = await readVideoDurationSeconds(file.path)
 
     if (!Number.isFinite(duration) || duration <= 0) {
       const error = new Error('Could not read video duration')
@@ -251,59 +290,165 @@ function getSafeExtension(file) {
   return EXTENSION_BY_MIME[mimeType] || 'bin'
 }
 
-async function optimizeStoryImage(file) {
-  const attempts = [
-    { width: 1080, height: 1920, quality: 82 },
-    { width: 1080, height: 1920, quality: 74 },
-    { width: 900, height: 1600, quality: 76 },
-    { width: 900, height: 1600, quality: 68 },
-    { width: 720, height: 1280, quality: 72 },
-    { width: 720, height: 1280, quality: 62 },
-    { width: 540, height: 960, quality: 58 },
-  ]
+async function waitForImageWorkerAdmission() {
+  const startedAt = Date.now()
+  let lastAdmission = null
 
-  for (const attempt of attempts) {
-    const buffer = await sharp(file.buffer, { failOn: 'none' })
-      .rotate()
-      .resize({
-        width: attempt.width,
-        height: attempt.height,
-        fit: 'inside',
-        withoutEnlargement: true,
-      })
-      .webp({
-        quality: attempt.quality,
-        effort: 4,
-      })
-      .toBuffer()
+  while (Date.now() - startedAt < ADMISSION_TIMEOUT_MS) {
+    lastAdmission = evaluateHeavyJobAdmission({
+      jobType: 'author_story_image',
+      estimatedJobMb: ESTIMATED_IMAGE_WORKER_MB,
+    })
 
-    if (buffer.length <= MAX_IMAGE_OUTPUT_BYTES) {
-      return {
-        buffer,
-        mimeType: 'image/webp',
-        extension: 'webp',
-        fileSize: buffer.length,
-      }
+    if (lastAdmission.allowed) {
+      return lastAdmission
     }
+
+    await sleep(ADMISSION_POLL_MS)
   }
 
-  const error = new Error('Photo could not be optimized below 1.5 MB')
-  error.statusCode = 413
-  error.code = 'STORY_IMAGE_OPTIMIZE_FAILED'
+  const error = new Error('Image processing is temporarily busy. Please retry shortly.')
+  error.statusCode = 503
+  error.code = 'STORY_IMAGE_PROCESSING_BUSY'
+  error.admission = lastAdmission
   throw error
+}
+
+function runImageWorker(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [STORY_IMAGE_WORKER_PATH, inputPath, outputPath],
+      { stdio: ['ignore', 'ignore', 'pipe'] }
+    )
+
+    let stderr = ''
+    let settled = false
+
+    const finish = (error = null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+
+      if (error) reject(error)
+      else resolve()
+    }
+
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk || '')
+      if (stderr.length > 4000) stderr = stderr.slice(-4000)
+    })
+
+    child.once('error', (error) => {
+      error.statusCode = error.statusCode || 500
+      error.code = error.code || 'STORY_IMAGE_PROCESSING_FAILED'
+      finish(error)
+    })
+
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        finish()
+        return
+      }
+
+      const optimizeFailed = stderr.includes('STORY_IMAGE_OPTIMIZE_FAILED')
+      const error = new Error(
+        optimizeFailed
+          ? 'Photo could not be optimized below 1.5 MB'
+          : stderr.trim() ||
+              `Image worker exited with code ${code ?? 'unknown'}${signal ? ` (${signal})` : ''}`
+      )
+
+      error.statusCode = optimizeFailed ? 413 : 500
+      error.code = optimizeFailed
+        ? 'STORY_IMAGE_OPTIMIZE_FAILED'
+        : 'STORY_IMAGE_PROCESSING_FAILED'
+      finish(error)
+    })
+
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      const error = new Error('Image processing timed out')
+      error.statusCode = 503
+      error.code = 'STORY_IMAGE_PROCESSING_TIMEOUT'
+      finish(error)
+    }, WORKER_TIMEOUT_MS)
+
+    timer.unref?.()
+  })
+}
+
+async function optimizeStoryImage(file) {
+  await waitForImageWorkerAdmission()
+
+  const outputPath = path.join(
+    os.tmpdir(),
+    `author-story-${Date.now()}-${randomUUID()}.webp`
+  )
+
+  try {
+    await runImageWorker(file.path, outputPath)
+    const outputStat = await stat(outputPath)
+
+    if (!outputStat.isFile() || outputStat.size <= 0) {
+      const error = new Error('Image worker produced an empty file')
+      error.statusCode = 500
+      error.code = 'STORY_IMAGE_PROCESSING_FAILED'
+      throw error
+    }
+
+    if (outputStat.size > MAX_IMAGE_OUTPUT_BYTES) {
+      const error = new Error('Photo could not be optimized below 1.5 MB')
+      error.statusCode = 413
+      error.code = 'STORY_IMAGE_OPTIMIZE_FAILED'
+      throw error
+    }
+
+    return {
+      path: outputPath,
+      cleanupPath: outputPath,
+      mimeType: 'image/webp',
+      extension: 'webp',
+      fileSize: outputStat.size,
+    }
+  } catch (error) {
+    await unlink(outputPath).catch(() => {})
+    throw error
+  }
+}
+
+function enqueueImageOptimization(file) {
+  const job = imageProcessingTail.then(
+    () => optimizeStoryImage(file),
+    () => optimizeStoryImage(file)
+  )
+
+  imageProcessingTail = job.then(
+    () => undefined,
+    () => undefined
+  )
+
+  return job
 }
 
 async function prepareStoryMedia(file, mediaType) {
   if (mediaType === 'image') {
-    return optimizeStoryImage(file)
+    return enqueueImageOptimization(file)
   }
 
   return {
-    buffer: file.buffer,
+    path: file.path,
+    cleanupPath: '',
     mimeType: file.mimetype,
     extension: getSafeExtension(file),
-    fileSize: Number(file.size || file.buffer?.length || 0),
+    fileSize: Number(file.size || 0),
   }
+}
+
+async function cleanupPreparedMedia(preparedMedia) {
+  const cleanupPath = String(preparedMedia?.cleanupPath || '').trim()
+  if (!cleanupPath) return
+  await unlink(cleanupPath).catch(() => {})
 }
 
 async function getMyAuthorPage(userId) {
@@ -329,7 +474,8 @@ async function uploadMedia(authorPageId, preparedMedia, mediaType) {
   await getR2Client().send(new PutObjectCommand({
     Bucket: getR2BucketName(),
     Key: filePath,
-    Body: preparedMedia.buffer,
+    Body: createReadStream(preparedMedia.path),
+    ContentLength: preparedMedia.fileSize,
     ContentType: preparedMedia.mimeType,
     CacheControl: 'public, max-age=86400',
   }))
@@ -463,12 +609,13 @@ async function cleanupSafely() {
 export async function createMyAuthorStory(req, res) {
   let uploaded = null
   let createdStory = null
+  let preparedMedia = null
 
   try {
     await cleanupSafely()
 
     const userId = req.user?.user_id
-    const mediaType = validateMedia(req.file)
+    const mediaType = await validateMedia(req.file)
     const caption = String(req.body.caption || '').trim()
     const allowMessages = normalizeBoolean(req.body.allow_messages, true)
 
@@ -494,11 +641,11 @@ export async function createMyAuthorStory(req, res) {
       })
     }
 
-    const preparedMedia = await prepareStoryMedia(req.file, mediaType)
+    preparedMedia = await prepareStoryMedia(req.file, mediaType)
 
-await assertAuthorStorageAvailable(authorPage.id, preparedMedia.fileSize)
+    await assertAuthorStorageAvailable(authorPage.id, preparedMedia.fileSize)
 
-uploaded = await uploadMedia(authorPage.id, preparedMedia, mediaType)
+    uploaded = await uploadMedia(authorPage.id, preparedMedia, mediaType)
 
     const createdAt = new Date()
     const expiresAt = new Date(createdAt.getTime() + STORY_DURATION_MS)
@@ -571,6 +718,8 @@ uploaded = await uploadMedia(authorPage.id, preparedMedia, mediaType)
       message: error.message || 'Failed to create story',
       quota: error.quota || null,
     })
+  } finally {
+    await cleanupPreparedMedia(preparedMedia)
   }
 }
 
