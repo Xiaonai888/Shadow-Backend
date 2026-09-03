@@ -42,6 +42,7 @@ import authorStoreRoutes from './src/routes/authorStore.routes.js'
 import adminIncomeRoutes from './src/routes/adminIncome.routes.js'
 import visitorAnalyticsRoutes from './src/routes/visitorAnalytics.routes.js'
 import { createSpamGuard } from './src/middleware/spamGuard.middleware.js'
+import { globalMediaUploadGuard } from './src/middleware/globalMediaUploadGuard.middleware.js'
 import adminTaskCenterRoutes from './src/routes/adminTaskCenter.routes.js'
 import adminLoginGuardRoutes from './src/routes/adminLoginGuard.routes.js'
 import adminDeviceAccessRoutes from './src/routes/adminDeviceAccess.routes.js'
@@ -208,6 +209,7 @@ app.options('*', cors(corsOptions))
 
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
+app.use('/api', globalMediaUploadGuard)
 
 const MEMORY_DIAGNOSTIC_ENABLED =
   String(process.env.MEMORY_DIAGNOSTIC_ENABLED ?? 'true')
