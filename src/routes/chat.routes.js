@@ -1,7 +1,6 @@
 import chatConversationManagementRoutes from './chatConversationManagement.routes.js'
 import chatMessageActionsRoutes from './chatMessageActions.routes.js'
 import express from 'express'
-import multer from 'multer'
 import {
   createReaderAuthorRequestController,
   createReaderReaderRequestController,
@@ -9,7 +8,6 @@ import {
   getConversationMessagesController,
   listMyConversationsController,
   markConversationReadController,
-  sendConversationAttachmentController,
   sendConversationMessageController,
   createGroupConversationController,
 } from '../controllers/chat.controller.js'
@@ -27,7 +25,6 @@ import { requireUser } from '../middleware/user.middleware.js'
 import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
 
 const router = express.Router()
-const CHAT_ATTACHMENTS_ENABLED = false
 
 const chatReadGuard = createSpamGuard({
   scope: 'chat_read',
@@ -40,36 +37,6 @@ const chatWriteGuard = createSpamGuard({
   threshold: 30,
   windowSeconds: 60,
 })
-
-const chatAttachmentUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 8 * 1024 * 1024,
-    files: 1,
-  },
-}).single('file')
-
-function uploadChatAttachment(req, res, next) {
-  chatAttachmentUpload(req, res, (error) => {
-    if (!error) {
-      next()
-      return
-    }
-
-    const tooLarge =
-      error.code === 'LIMIT_FILE_SIZE'
-
-    res.status(tooLarge ? 413 : 400).json({
-      ok: false,
-      code: tooLarge
-        ? 'CHAT_ATTACHMENT_TOO_LARGE'
-        : 'CHAT_ATTACHMENT_UPLOAD_INVALID',
-      message: tooLarge
-        ? 'File must be 8 MB or smaller'
-        : 'Unable to read this file',
-    })
-  })
-}
 
 const chatRequestGuard = createSpamGuard({
   scope: 'chat_request',
@@ -134,15 +101,6 @@ router.get(
   chatReadGuard,
   getConversationBlockStatusController
 )
-
-if (CHAT_ATTACHMENTS_ENABLED) {
-  router.post(
-    '/conversations/:conversationId/attachments',
-    chatWriteGuard,
-    uploadChatAttachment,
-    sendConversationAttachmentController
-  )
-}
 
 router.post(
   '/conversations/:conversationId/messages',
