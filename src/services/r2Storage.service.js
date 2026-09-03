@@ -1,9 +1,28 @@
+import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { createReadStream } from 'node:fs'
+import { stat, unlink } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   DeleteObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
+import { evaluateHeavyJobAdmission } from './memoryGuard.service.js'
+
+const WORKER_TIMEOUT_MS = 3 * 60 * 1000
+const ADMISSION_TIMEOUT_MS = 5 * 60 * 1000
+const ADMISSION_POLL_MS = 1000
+const ESTIMATED_IMAGE_WORKER_MB = 140
+const R2_IMAGE_WORKER_PATH = fileURLToPath(
+  new URL('../workers/r2Image.worker.js', import.meta.url)
+)
+
 let sharpPromise = null
+let r2Client = null
+let imageProcessingTail = Promise.resolve()
 
 async function getSharp() {
   if (!sharpPromise) {
@@ -12,8 +31,6 @@ async function getSharp() {
 
   return sharpPromise
 }
-
-let r2Client = null
 
 function getR2Client() {
   if (r2Client) return r2Client
@@ -104,7 +121,9 @@ function buildResizeProfiles({
   if (maxBytes > 0 && fallbackWidth > 0) {
     profiles.push({
       width: fallbackWidth,
-      height: fallbackHeight || (height ? Math.round((fallbackWidth * height) / width) : null),
+      height:
+        fallbackHeight ||
+        (height ? Math.round((fallbackWidth * height) / width) : null),
     })
   }
 
@@ -125,7 +144,9 @@ function buildResizeProfiles({
     (profile, index, list) =>
       index ===
       list.findIndex(
-        (item) => item.width === profile.width && item.height === profile.height
+        (item) =>
+          item.width === profile.width &&
+          item.height === profile.height
       )
   )
 }
@@ -142,9 +163,9 @@ async function createWebPBuffer(fileBuffer, profile, quality, fit) {
     resizeOptions.position = 'centre'
   }
 
-const sharp = await getSharp()
+  const sharp = await getSharp()
 
-return sharp(fileBuffer)
+  return sharp(fileBuffer)
     .rotate()
     .resize(resizeOptions)
     .webp({
@@ -155,46 +176,309 @@ return sharp(fileBuffer)
     .toBuffer()
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForImageWorkerAdmission() {
+  const startedAt = Date.now()
+  let lastAdmission = null
+
+  while (Date.now() - startedAt < ADMISSION_TIMEOUT_MS) {
+    lastAdmission = evaluateHeavyJobAdmission({
+      jobType: 'r2_image',
+      estimatedJobMb: ESTIMATED_IMAGE_WORKER_MB,
+    })
+
+    if (lastAdmission.allowed) {
+      return lastAdmission
+    }
+
+    await sleep(ADMISSION_POLL_MS)
+  }
+
+  const error = new Error(
+    'Image processing is temporarily busy. Please retry shortly.'
+  )
+  error.statusCode = 503
+  error.code = 'R2_IMAGE_PROCESSING_BUSY'
+  error.admission = lastAdmission
+  throw error
+}
+
+function runImageWorker(inputPath, outputPath, options) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [
+        R2_IMAGE_WORKER_PATH,
+        inputPath,
+        outputPath,
+        JSON.stringify(options),
+      ],
+      {
+        stdio: ['ignore', 'ignore', 'pipe'],
+      }
+    )
+
+    let stderr = ''
+    let settled = false
+
+    const finish = (error = null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+
+      if (error) reject(error)
+      else resolve()
+    }
+
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk || '')
+      if (stderr.length > 4000) {
+        stderr = stderr.slice(-4000)
+      }
+    })
+
+    child.once('error', (error) => {
+      error.statusCode = error.statusCode || 500
+      error.code = error.code || 'R2_IMAGE_PROCESSING_FAILED'
+      finish(error)
+    })
+
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        finish()
+        return
+      }
+
+      const compressLimit = stderr.includes(
+        'Unable to compress image below'
+      )
+      const error = new Error(
+        stderr.trim() ||
+          `Image worker exited with code ${code ?? 'unknown'}${
+            signal ? ` (${signal})` : ''
+          }`
+      )
+
+      error.statusCode = compressLimit ? 422 : 500
+      error.code = compressLimit
+        ? 'R2_IMAGE_COMPRESS_LIMIT'
+        : 'R2_IMAGE_PROCESSING_FAILED'
+      finish(error)
+    })
+
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      const error = new Error('Image processing timed out')
+      error.statusCode = 503
+      error.code = 'R2_IMAGE_PROCESSING_TIMEOUT'
+      finish(error)
+    }, WORKER_TIMEOUT_MS)
+
+    timer.unref?.()
+  })
+}
+
+async function optimizePathToWebP(inputPath, options) {
+  await waitForImageWorkerAdmission()
+
+  const outputPath = path.join(
+    os.tmpdir(),
+    `r2-image-${Date.now()}-${randomUUID()}.webp`
+  )
+
+  try {
+    await runImageWorker(
+      inputPath,
+      outputPath,
+      options
+    )
+
+    const outputStat = await stat(outputPath)
+
+    if (!outputStat.isFile() || outputStat.size <= 0) {
+      const error = new Error('Image worker produced an empty file')
+      error.statusCode = 500
+      error.code = 'R2_IMAGE_PROCESSING_FAILED'
+      throw error
+    }
+
+    return {
+      path: outputPath,
+      size: outputStat.size,
+    }
+  } catch (error) {
+    await unlink(outputPath).catch(() => {})
+    throw error
+  }
+}
+
+function enqueuePathOptimization(inputPath, options) {
+  const job = imageProcessingTail.then(
+    () => optimizePathToWebP(inputPath, options),
+    () => optimizePathToWebP(inputPath, options)
+  )
+
+  imageProcessingTail = job.then(
+    () => undefined,
+    () => undefined
+  )
+
+  return job
+}
+
 export async function uploadFileToR2(file, folder = 'uploads') {
   if (!file) return null
 
-  const safeFolder = String(folder || 'uploads').replace(/^\/+|\/+$/g, '')
+  const safeFolder = String(folder || 'uploads')
+    .replace(/^\/+|\/+$/g, '')
   const safeExt = getSafeExtension(file)
-  const fileName = `${safeFolder}/${Date.now()}-${Math.random().toString(36).slice(2)}.${safeExt}`
+  const fileName =
+    `${safeFolder}/${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2)}.${safeExt}`
 
-  await getR2Client().send(new PutObjectCommand({
-    Bucket: getR2BucketName(),
-    Key: fileName,
-    Body: file.buffer,
-    ContentType: file.mimetype,
-    CacheControl: 'public, max-age=31536000, immutable',
-  }))
+  const body = file.path
+    ? createReadStream(file.path)
+    : file.buffer
+
+  if (!body) {
+    throw new Error('Upload file data is missing')
+  }
+
+  await getR2Client().send(
+    new PutObjectCommand({
+      Bucket: getR2BucketName(),
+      Key: fileName,
+      Body: body,
+      ContentLength:
+        file.path && Number(file.size || 0) > 0
+          ? Number(file.size)
+          : undefined,
+      ContentType: file.mimetype,
+      CacheControl:
+        'public, max-age=31536000, immutable',
+    })
+  )
 
   return `${getR2PublicUrl()}/${fileName}`
 }
 
-export async function uploadImageToR2AsWebP(file, folder = 'uploads', options = {}) {
+export async function uploadImageToR2AsWebP(
+  file,
+  folder = 'uploads',
+  options = {}
+) {
   if (!file) return null
 
-  const safeFolder = String(folder || 'uploads').replace(/^\/+|\/+$/g, '')
-  const fileName = `${safeFolder}/${Date.now()}-${Math.random().toString(36).slice(2)}.webp`
-  const width = clampInteger(options.width, 320, 4000, 1600)
+  const safeFolder = String(folder || 'uploads')
+    .replace(/^\/+|\/+$/g, '')
+  const fileName =
+    `${safeFolder}/${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2)}.webp`
+  const width = clampInteger(
+    options.width,
+    320,
+    4000,
+    1600
+  )
   const height = options.height
-    ? clampInteger(options.height, 180, 4000, 0)
+    ? clampInteger(
+        options.height,
+        180,
+        4000,
+        0
+      )
     : null
-  const quality = clampInteger(options.quality, 40, 100, 82)
-  const minQuality = clampInteger(options.minQuality, 40, quality, 58)
-  const qualityStep = clampInteger(options.qualityStep, 1, 20, 6)
-  const maxBytes = clampInteger(options.maxBytes, 0, 20 * 1024 * 1024, 0)
+  const quality = clampInteger(
+    options.quality,
+    40,
+    100,
+    82
+  )
+  const minQuality = clampInteger(
+    options.minQuality,
+    40,
+    quality,
+    58
+  )
+  const qualityStep = clampInteger(
+    options.qualityStep,
+    1,
+    20,
+    6
+  )
+  const maxBytes = clampInteger(
+    options.maxBytes,
+    0,
+    20 * 1024 * 1024,
+    0
+  )
   const fallbackWidth = options.fallbackWidth
-    ? clampInteger(options.fallbackWidth, 320, width, 0)
+    ? clampInteger(
+        options.fallbackWidth,
+        320,
+        width,
+        0
+      )
     : 0
   const fallbackHeight = options.fallbackHeight
-    ? clampInteger(options.fallbackHeight, 180, height || 4000, 0)
+    ? clampInteger(
+        options.fallbackHeight,
+        180,
+        height || 4000,
+        0
+      )
     : null
-  const fit = options.fit === 'contain' ? 'contain' : 'cover'
+  const fit =
+    options.fit === 'contain'
+      ? 'contain'
+      : 'cover'
+
+  if (file.path) {
+    const optimized = await enqueuePathOptimization(
+      file.path,
+      {
+        width,
+        height,
+        quality,
+        minQuality,
+        qualityStep,
+        maxBytes,
+        fallbackWidth,
+        fallbackHeight,
+        fit,
+      }
+    )
+
+    try {
+      await getR2Client().send(
+        new PutObjectCommand({
+          Bucket: getR2BucketName(),
+          Key: fileName,
+          Body: createReadStream(optimized.path),
+          ContentLength: optimized.size,
+          ContentType: 'image/webp',
+          CacheControl:
+            'public, max-age=31536000, immutable',
+        })
+      )
+    } finally {
+      await unlink(optimized.path).catch(() => {})
+    }
+
+    return `${getR2PublicUrl()}/${fileName}`
+  }
+
   const qualityLevels = maxBytes > 0
-    ? buildQualityLevels(quality, minQuality, qualityStep)
+    ? buildQualityLevels(
+        quality,
+        minQuality,
+        qualityStep
+      )
     : [quality]
   const profiles = buildResizeProfiles({
     width,
@@ -216,34 +500,53 @@ export async function uploadImageToR2AsWebP(file, folder = 'uploads', options = 
         fit
       )
 
-      if (!smallestBuffer || buffer.length < smallestBuffer.length) {
+      if (
+        !smallestBuffer ||
+        buffer.length < smallestBuffer.length
+      ) {
         smallestBuffer = buffer
       }
 
-      if (!maxBytes || buffer.length <= maxBytes) {
+      if (
+        !maxBytes ||
+        buffer.length <= maxBytes
+      ) {
         smallestBuffer = buffer
         break
       }
     }
 
-    if (!maxBytes || smallestBuffer.length <= maxBytes) break
+    if (
+      !maxBytes ||
+      smallestBuffer.length <= maxBytes
+    ) {
+      break
+    }
   }
 
-  if (maxBytes && smallestBuffer.length > maxBytes) {
+  if (
+    maxBytes &&
+    smallestBuffer.length > maxBytes
+  ) {
     const error = new Error(
-      `Unable to compress image below ${Math.round(maxBytes / 1024)} KB`
+      `Unable to compress image below ${Math.round(
+        maxBytes / 1024
+      )} KB`
     )
     error.statusCode = 422
     throw error
   }
 
-  await getR2Client().send(new PutObjectCommand({
-    Bucket: getR2BucketName(),
-    Key: fileName,
-    Body: smallestBuffer,
-    ContentType: 'image/webp',
-    CacheControl: 'public, max-age=31536000, immutable',
-  }))
+  await getR2Client().send(
+    new PutObjectCommand({
+      Bucket: getR2BucketName(),
+      Key: fileName,
+      Body: smallestBuffer,
+      ContentType: 'image/webp',
+      CacheControl:
+        'public, max-age=31536000, immutable',
+    })
+  )
 
   return `${getR2PublicUrl()}/${fileName}`
 }
