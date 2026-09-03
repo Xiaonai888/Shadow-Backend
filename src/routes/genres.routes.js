@@ -1,5 +1,7 @@
 import express from 'express'
 import multer from 'multer'
+import os from 'node:os'
+import { unlink } from 'node:fs/promises'
 import { supabase } from '../config/supabase.js'
 import { getAdminActor, logAdminActivity } from '../services/adminActivity.service.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
@@ -9,11 +11,56 @@ const router = express.Router()
 const MAX_FEATURED_TABS = 12
 
 const upload = multer({
-  storage: multer.memoryStorage(),
+  dest: os.tmpdir(),
   limits: {
     fileSize: 8 * 1024 * 1024,
+    files: 1,
   },
 })
+
+async function removeTempFile(req) {
+  if (!req.file?.path) return
+  await unlink(req.file.path).catch(() => {})
+}
+
+function cleanupTempFile(req, res, next) {
+  let cleaned = false
+
+  const cleanup = () => {
+    if (cleaned) return
+    cleaned = true
+    removeTempFile(req).catch(() => {})
+  }
+
+  res.once('finish', cleanup)
+  res.once('close', cleanup)
+  next()
+}
+
+function uploadGenreBannerImage(req, res, next) {
+  upload.single('image')(req, res, (error) => {
+    if (!error) return next()
+
+    removeTempFile(req).catch(() => {})
+
+    const status =
+      error.code === 'LIMIT_FILE_SIZE'
+        ? 413
+        : 400
+
+    return res.status(status).json({
+      ok: false,
+      code:
+        error.code ||
+        'GENRE_BANNER_UPLOAD_INVALID',
+      message:
+        error.code === 'LIMIT_FILE_SIZE'
+          ? 'Image must be 8 MB or smaller'
+          : error.message ||
+            'Invalid genre banner image',
+    })
+  })
+}
 
 async function notifyContentChange(keys) {
   try {
@@ -446,7 +493,14 @@ async function updateFeaturedGenreTabs(req, res) {
 router.get('/', getGenres)
 router.get('/featured-tabs', getFeaturedGenreTabs)
 router.get('/admin/records', getAdminGenres)
-router.post('/admin/upload-banner', upload.single('image'), uploadGenreBanner)
+
+router.post(
+  '/admin/upload-banner',
+  uploadGenreBannerImage,
+  cleanupTempFile,
+  uploadGenreBanner
+)
+
 router.post('/admin/records', createGenre)
 router.put('/admin/records/:id', updateGenre)
 router.delete('/admin/records/:id', deleteGenre)
