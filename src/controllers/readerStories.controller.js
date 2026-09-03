@@ -1,13 +1,20 @@
+import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { createReadStream } from 'node:fs'
+import { open, stat, unlink } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   DeleteObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
-import sharp from 'sharp'
 import { supabase } from '../config/supabase.js'
 import {
   invalidateDiscoverStorySharedCache,
 } from '../services/discoverStorySharedCache.service.js'
+import { evaluateHeavyJobAdmission } from '../services/memoryGuard.service.js'
 
 const IMAGE_MIME_TYPES = new Set([
   'image/jpeg',
@@ -28,39 +35,31 @@ const EXTENSION_BY_MIME = {
   'video/quicktime': 'mov',
 }
 
-const MAX_IMAGE_INPUT_BYTES =
-  5 * 1024 * 1024
-const MAX_IMAGE_OUTPUT_BYTES =
-  Math.floor(1.5 * 1024 * 1024)
-const MAX_VIDEO_BYTES =
-  30 * 1024 * 1024
+const MAX_IMAGE_INPUT_BYTES = 5 * 1024 * 1024
+const MAX_IMAGE_OUTPUT_BYTES = Math.floor(1.5 * 1024 * 1024)
+const MAX_VIDEO_BYTES = 30 * 1024 * 1024
 const MAX_VIDEO_DURATION_SECONDS = 60
-const STORY_DURATION_MS =
-  24 * 60 * 60 * 1000
+const STORY_DURATION_MS = 24 * 60 * 60 * 1000
+const WORKER_TIMEOUT_MS = 3 * 60 * 1000
+const ADMISSION_TIMEOUT_MS = 5 * 60 * 1000
+const ADMISSION_POLL_MS = 1000
+const ESTIMATED_IMAGE_WORKER_MB = 140
+const STORY_IMAGE_WORKER_PATH = fileURLToPath(
+  new URL('../workers/authorStoryImage.worker.js', import.meta.url)
+)
 
 let r2Client = null
+let imageProcessingTail = Promise.resolve()
 
 function getR2Client() {
   if (r2Client) return r2Client
 
-  const accountId = String(
-    process.env.R2_ACCOUNT_ID || ''
-  ).trim()
-  const accessKeyId = String(
-    process.env.R2_ACCESS_KEY_ID || ''
-  ).trim()
-  const secretAccessKey = String(
-    process.env.R2_SECRET_ACCESS_KEY || ''
-  ).trim()
+  const accountId = String(process.env.R2_ACCOUNT_ID || '').trim()
+  const accessKeyId = String(process.env.R2_ACCESS_KEY_ID || '').trim()
+  const secretAccessKey = String(process.env.R2_SECRET_ACCESS_KEY || '').trim()
 
-  if (
-    !accountId ||
-    !accessKeyId ||
-    !secretAccessKey
-  ) {
-    const error = new Error(
-      'Cloudflare R2 credentials are missing'
-    )
+  if (!accountId || !accessKeyId || !secretAccessKey) {
+    const error = new Error('Cloudflare R2 credentials are missing')
     error.statusCode = 500
     error.code = 'R2_ENV_MISSING'
     throw error
@@ -68,8 +67,7 @@ function getR2Client() {
 
   r2Client = new S3Client({
     region: 'auto',
-    endpoint:
-      `https://${accountId}.r2.cloudflarestorage.com`,
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: {
       accessKeyId,
       secretAccessKey,
@@ -80,14 +78,10 @@ function getR2Client() {
 }
 
 function getR2BucketName() {
-  const bucketName = String(
-    process.env.R2_BUCKET_NAME || ''
-  ).trim()
+  const bucketName = String(process.env.R2_BUCKET_NAME || '').trim()
 
   if (!bucketName) {
-    const error = new Error(
-      'Cloudflare R2 bucket name is missing'
-    )
+    const error = new Error('Cloudflare R2 bucket name is missing')
     error.statusCode = 500
     error.code = 'R2_ENV_MISSING'
     throw error
@@ -97,16 +91,12 @@ function getR2BucketName() {
 }
 
 function getR2PublicUrl() {
-  const publicUrl = String(
-    process.env.R2_PUBLIC_URL || ''
-  )
+  const publicUrl = String(process.env.R2_PUBLIC_URL || '')
     .trim()
     .replace(/\/+$/, '')
 
   if (!publicUrl) {
-    const error = new Error(
-      'Cloudflare R2 public URL is missing'
-    )
+    const error = new Error('Cloudflare R2 public URL is missing')
     error.statusCode = 500
     error.code = 'R2_ENV_MISSING'
     throw error
@@ -115,62 +105,41 @@ function getR2PublicUrl() {
   return publicUrl
 }
 
-function normalizeBoolean(
-  value,
-  fallback = true
-) {
-  if (
-    value === undefined ||
-    value === null ||
-    value === ''
-  ) {
-    return fallback
-  }
-
-  if (
-    value === true ||
-    value === 'true' ||
-    value === 1 ||
-    value === '1'
-  ) {
-    return true
-  }
-
-  if (
-    value === false ||
-    value === 'false' ||
-    value === 0 ||
-    value === '0'
-  ) {
-    return false
-  }
-
+function normalizeBoolean(value, fallback = true) {
+  if (value === undefined || value === null || value === '') return fallback
+  if (value === true || value === 'true' || value === 1 || value === '1') return true
+  if (value === false || value === 'false' || value === 0 || value === '0') return false
   return fallback
 }
 
-function readBox(buffer, offset, end) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function readAt(fileHandle, position, length) {
+  const buffer = Buffer.alloc(length)
+  const { bytesRead } = await fileHandle.read(buffer, 0, length, position)
+  return bytesRead === length ? buffer : buffer.subarray(0, bytesRead)
+}
+
+async function readBoxHeader(fileHandle, offset, end) {
   if (offset + 8 > end) return null
 
-  let size = buffer.readUInt32BE(offset)
-  const type = buffer.toString(
-    'ascii',
-    offset + 4,
-    offset + 8
-  )
+  const header = await readAt(fileHandle, offset, 8)
+  if (header.length < 8) return null
+
+  let size = header.readUInt32BE(0)
+  const type = header.toString('ascii', 4, 8)
   let headerSize = 8
 
   if (size === 1) {
     if (offset + 16 > end) return null
 
-    const largeSize =
-      buffer.readBigUInt64BE(offset + 8)
+    const largeSizeBuffer = await readAt(fileHandle, offset + 8, 8)
+    if (largeSizeBuffer.length < 8) return null
 
-    if (
-      largeSize >
-      BigInt(Number.MAX_SAFE_INTEGER)
-    ) {
-      return null
-    }
+    const largeSize = largeSizeBuffer.readBigUInt64BE(0)
+    if (largeSize > BigInt(Number.MAX_SAFE_INTEGER)) return null
 
     size = Number(largeSize)
     headerSize = 16
@@ -178,12 +147,7 @@ function readBox(buffer, offset, end) {
     size = end - offset
   }
 
-  if (
-    size < headerSize ||
-    offset + size > end
-  ) {
-    return null
-  }
+  if (size < headerSize || offset + size > end) return null
 
   return {
     type,
@@ -193,25 +157,14 @@ function readBox(buffer, offset, end) {
   }
 }
 
-function findDirectChildBox(
-  buffer,
-  start,
-  end,
-  wantedType
-) {
+async function findDirectChildBox(fileHandle, start, end, wantedType) {
   let offset = start
 
   while (offset + 8 <= end) {
-    const box = readBox(
-      buffer,
-      offset,
-      end
-    )
+    const box = await readBoxHeader(fileHandle, offset, end)
 
     if (!box) return null
-    if (box.type === wantedType) {
-      return box
-    }
+    if (box.type === wantedType) return box
 
     offset = box.end
   }
@@ -219,178 +172,106 @@ function findDirectChildBox(
   return null
 }
 
-function readVideoDurationSeconds(buffer) {
-  const moov = findDirectChildBox(
-    buffer,
-    0,
-    buffer.length,
-    'moov'
-  )
+async function readVideoDurationSeconds(filePath) {
+  const fileHandle = await open(filePath, 'r')
 
-  if (!moov) return 0
+  try {
+    const fileStat = await fileHandle.stat()
+    const fileSize = Number(fileStat.size || 0)
 
-  const mvhd = findDirectChildBox(
-    buffer,
-    moov.payloadStart,
-    moov.end,
-    'mvhd'
-  )
+    if (!fileSize) return 0
 
-  if (
-    !mvhd ||
-    mvhd.payloadStart + 20 >
-      mvhd.end
-  ) {
-    return 0
-  }
+    const moov = await findDirectChildBox(fileHandle, 0, fileSize, 'moov')
+    if (!moov) return 0
 
-  const version =
-    buffer.readUInt8(mvhd.payloadStart)
-
-  if (version === 0) {
-    const timescaleOffset =
-      mvhd.payloadStart + 12
-    const durationOffset =
-      mvhd.payloadStart + 16
-
-    if (
-      durationOffset + 4 >
-      mvhd.end
-    ) {
-      return 0
-    }
-
-    const timescale =
-      buffer.readUInt32BE(
-        timescaleOffset
-      )
-    const duration =
-      buffer.readUInt32BE(
-        durationOffset
-      )
-
-    return timescale > 0
-      ? duration / timescale
-      : 0
-  }
-
-  if (version === 1) {
-    const timescaleOffset =
-      mvhd.payloadStart + 20
-    const durationOffset =
-      mvhd.payloadStart + 24
-
-    if (
-      durationOffset + 8 >
-      mvhd.end
-    ) {
-      return 0
-    }
-
-    const timescale =
-      buffer.readUInt32BE(
-        timescaleOffset
-      )
-    const duration =
-      buffer.readBigUInt64BE(
-        durationOffset
-      )
-
-    if (
-      !timescale ||
-      duration >
-        BigInt(
-          Number.MAX_SAFE_INTEGER
-        )
-    ) {
-      return 0
-    }
-
-    return (
-      Number(duration) / timescale
+    const mvhd = await findDirectChildBox(
+      fileHandle,
+      moov.payloadStart,
+      moov.end,
+      'mvhd'
     )
-  }
 
-  return 0
+    if (!mvhd || mvhd.payloadStart + 20 > mvhd.end) return 0
+
+    const header = await readAt(
+      fileHandle,
+      mvhd.payloadStart,
+      Math.min(32, mvhd.end - mvhd.payloadStart)
+    )
+
+    if (header.length < 20) return 0
+
+    const version = header.readUInt8(0)
+
+    if (version === 0) {
+      const timescale = header.readUInt32BE(12)
+      const duration = header.readUInt32BE(16)
+      return timescale > 0 ? duration / timescale : 0
+    }
+
+    if (version === 1) {
+      if (header.length < 32) return 0
+
+      const timescale = header.readUInt32BE(20)
+      const duration = header.readBigUInt64BE(24)
+
+      if (!timescale || duration > BigInt(Number.MAX_SAFE_INTEGER)) return 0
+
+      return Number(duration) / timescale
+    }
+
+    return 0
+  } finally {
+    await fileHandle.close().catch(() => {})
+  }
 }
 
-function validateMedia(file) {
-  if (!file) {
-    const error = new Error(
-      'Photo or video is required'
-    )
+async function validateMedia(file) {
+  if (!file?.path) {
+    const error = new Error('Photo or video is required')
     error.statusCode = 400
-    error.code =
-      'STORY_MEDIA_REQUIRED'
+    error.code = 'STORY_MEDIA_REQUIRED'
     throw error
   }
 
-  const mimeType = String(
-    file.mimetype || ''
-  ).toLowerCase()
-  const isImage =
-    IMAGE_MIME_TYPES.has(mimeType)
-  const isVideo =
-    VIDEO_MIME_TYPES.has(mimeType)
+  const mimeType = String(file.mimetype || '').toLowerCase()
+  const isImage = IMAGE_MIME_TYPES.has(mimeType)
+  const isVideo = VIDEO_MIME_TYPES.has(mimeType)
 
   if (!isImage && !isVideo) {
-    const error = new Error(
-      'Only JPG, PNG, WebP, MP4, or MOV files are allowed'
-    )
+    const error = new Error('Only JPG, PNG, WebP, MP4, or MOV files are allowed')
     error.statusCode = 400
-    error.code =
-      'STORY_MEDIA_TYPE_INVALID'
+    error.code = 'STORY_MEDIA_TYPE_INVALID'
     throw error
   }
 
-  const maxBytes = isVideo
-    ? MAX_VIDEO_BYTES
-    : MAX_IMAGE_INPUT_BYTES
+  const maxBytes = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_INPUT_BYTES
 
-  if (
-    Number(file.size || 0) >
-    maxBytes
-  ) {
+  if (Number(file.size || 0) > maxBytes) {
     const error = new Error(
       isVideo
         ? 'Video must be 30 MB or smaller'
         : 'Photo must be 5 MB or smaller'
     )
     error.statusCode = 413
-    error.code =
-      'STORY_MEDIA_TOO_LARGE'
+    error.code = 'STORY_MEDIA_TOO_LARGE'
     throw error
   }
 
   if (isVideo) {
-    const duration =
-      readVideoDurationSeconds(
-        file.buffer
-      )
+    const duration = await readVideoDurationSeconds(file.path)
 
-    if (
-      !Number.isFinite(duration) ||
-      duration <= 0
-    ) {
-      const error = new Error(
-        'Could not read video duration'
-      )
+    if (!Number.isFinite(duration) || duration <= 0) {
+      const error = new Error('Could not read video duration')
       error.statusCode = 400
-      error.code =
-        'STORY_VIDEO_DURATION_UNREADABLE'
+      error.code = 'STORY_VIDEO_DURATION_UNREADABLE'
       throw error
     }
 
-    if (
-      duration >
-      MAX_VIDEO_DURATION_SECONDS
-    ) {
-      const error = new Error(
-        'Video must be 60 seconds or shorter'
-      )
+    if (duration > MAX_VIDEO_DURATION_SECONDS) {
+      const error = new Error('Video must be 60 seconds or shorter')
       error.statusCode = 400
-      error.code =
-        'STORY_VIDEO_TOO_LONG'
+      error.code = 'STORY_VIDEO_TOO_LONG'
       throw error
     }
   }
@@ -399,162 +280,203 @@ function validateMedia(file) {
 }
 
 function getSafeExtension(file) {
-  const mimeType = String(
-    file?.mimetype || ''
-  )
-    .trim()
-    .toLowerCase()
-
-  return (
-    EXTENSION_BY_MIME[mimeType] ||
-    'bin'
-  )
+  const mimeType = String(file?.mimetype || '').trim().toLowerCase()
+  return EXTENSION_BY_MIME[mimeType] || 'bin'
 }
 
-async function optimizeStoryImage(file) {
-  const attempts = [
-    {
-      width: 1080,
-      height: 1920,
-      quality: 82,
-    },
-    {
-      width: 1080,
-      height: 1920,
-      quality: 74,
-    },
-    {
-      width: 900,
-      height: 1600,
-      quality: 76,
-    },
-    {
-      width: 900,
-      height: 1600,
-      quality: 68,
-    },
-    {
-      width: 720,
-      height: 1280,
-      quality: 72,
-    },
-    {
-      width: 720,
-      height: 1280,
-      quality: 62,
-    },
-    {
-      width: 540,
-      height: 960,
-      quality: 58,
-    },
-  ]
+async function waitForImageWorkerAdmission() {
+  const startedAt = Date.now()
+  let lastAdmission = null
 
-  for (const attempt of attempts) {
-    const buffer = await sharp(
-      file.buffer,
-      {
-        failOn: 'none',
-      }
-    )
-      .rotate()
-      .resize({
-        width: attempt.width,
-        height: attempt.height,
-        fit: 'inside',
-        withoutEnlargement: true,
-      })
-      .webp({
-        quality: attempt.quality,
-        effort: 4,
-      })
-      .toBuffer()
+  while (Date.now() - startedAt < ADMISSION_TIMEOUT_MS) {
+    lastAdmission = evaluateHeavyJobAdmission({
+      jobType: 'reader_story_image',
+      estimatedJobMb: ESTIMATED_IMAGE_WORKER_MB,
+    })
 
-    if (
-      buffer.length <=
-      MAX_IMAGE_OUTPUT_BYTES
-    ) {
-      return {
-        buffer,
-        mimeType: 'image/webp',
-        extension: 'webp',
-        fileSize: buffer.length,
-      }
+    if (lastAdmission.allowed) {
+      return lastAdmission
     }
+
+    await sleep(ADMISSION_POLL_MS)
   }
 
   const error = new Error(
-    'Photo could not be optimized below 1.5 MB'
+    'Image processing is temporarily busy. Please retry shortly.'
   )
-  error.statusCode = 413
-  error.code =
-    'STORY_IMAGE_OPTIMIZE_FAILED'
+  error.statusCode = 503
+  error.code = 'STORY_IMAGE_PROCESSING_BUSY'
+  error.admission = lastAdmission
   throw error
 }
 
-async function prepareStoryMedia(
-  file,
-  mediaType
-) {
-  if (mediaType === 'image') {
-    return optimizeStoryImage(file)
-  }
+function runImageWorker(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [STORY_IMAGE_WORKER_PATH, inputPath, outputPath],
+      { stdio: ['ignore', 'ignore', 'pipe'] }
+    )
 
-  return {
-    buffer: file.buffer,
-    mimeType: file.mimetype,
-    extension: getSafeExtension(file),
-    fileSize: Number(
-      file.size ||
-        file.buffer?.length ||
-        0
-    ),
+    let stderr = ''
+    let settled = false
+
+    const finish = (error = null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+
+      if (error) reject(error)
+      else resolve()
+    }
+
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk || '')
+      if (stderr.length > 4000) stderr = stderr.slice(-4000)
+    })
+
+    child.once('error', (error) => {
+      error.statusCode = error.statusCode || 500
+      error.code = error.code || 'STORY_IMAGE_PROCESSING_FAILED'
+      finish(error)
+    })
+
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        finish()
+        return
+      }
+
+      const optimizeFailed = stderr.includes('STORY_IMAGE_OPTIMIZE_FAILED')
+      const error = new Error(
+        optimizeFailed
+          ? 'Photo could not be optimized below 1.5 MB'
+          : stderr.trim() ||
+              `Image worker exited with code ${code ?? 'unknown'}${
+                signal ? ` (${signal})` : ''
+              }`
+      )
+
+      error.statusCode = optimizeFailed ? 413 : 500
+      error.code = optimizeFailed
+        ? 'STORY_IMAGE_OPTIMIZE_FAILED'
+        : 'STORY_IMAGE_PROCESSING_FAILED'
+      finish(error)
+    })
+
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      const error = new Error('Image processing timed out')
+      error.statusCode = 503
+      error.code = 'STORY_IMAGE_PROCESSING_TIMEOUT'
+      finish(error)
+    }, WORKER_TIMEOUT_MS)
+
+    timer.unref?.()
+  })
+}
+
+async function optimizeStoryImage(file) {
+  await waitForImageWorkerAdmission()
+
+  const outputPath = path.join(
+    os.tmpdir(),
+    `reader-story-${Date.now()}-${randomUUID()}.webp`
+  )
+
+  try {
+    await runImageWorker(file.path, outputPath)
+    const outputStat = await stat(outputPath)
+
+    if (!outputStat.isFile() || outputStat.size <= 0) {
+      const error = new Error('Image worker produced an empty file')
+      error.statusCode = 500
+      error.code = 'STORY_IMAGE_PROCESSING_FAILED'
+      throw error
+    }
+
+    if (outputStat.size > MAX_IMAGE_OUTPUT_BYTES) {
+      const error = new Error('Photo could not be optimized below 1.5 MB')
+      error.statusCode = 413
+      error.code = 'STORY_IMAGE_OPTIMIZE_FAILED'
+      throw error
+    }
+
+    return {
+      path: outputPath,
+      cleanupPath: outputPath,
+      mimeType: 'image/webp',
+      extension: 'webp',
+      fileSize: outputStat.size,
+    }
+  } catch (error) {
+    await unlink(outputPath).catch(() => {})
+    throw error
   }
 }
 
-async function uploadMedia(
-  userId,
-  preparedMedia,
-  mediaType
-) {
-  const random = Math.random()
-    .toString(36)
-    .slice(2, 12)
+function enqueueImageOptimization(file) {
+  const job = imageProcessingTail.then(
+    () => optimizeStoryImage(file),
+    () => optimizeStoryImage(file)
+  )
+
+  imageProcessingTail = job.then(
+    () => undefined,
+    () => undefined
+  )
+
+  return job
+}
+
+async function prepareStoryMedia(file, mediaType) {
+  if (mediaType === 'image') {
+    return enqueueImageOptimization(file)
+  }
+
+  return {
+    path: file.path,
+    cleanupPath: '',
+    mimeType: file.mimetype,
+    extension: getSafeExtension(file),
+    fileSize: Number(file.size || 0),
+  }
+}
+
+async function cleanupPreparedMedia(preparedMedia) {
+  const cleanupPath = String(preparedMedia?.cleanupPath || '').trim()
+  if (!cleanupPath) return
+  await unlink(cleanupPath).catch(() => {})
+}
+
+async function uploadMedia(userId, preparedMedia, mediaType) {
+  const random = Math.random().toString(36).slice(2, 12)
 
   const filePath =
     `reader-stories/${userId}/${mediaType}/` +
-    `${Date.now()}-${random}.` +
-    preparedMedia.extension
+    `${Date.now()}-${random}.${preparedMedia.extension}`
 
   await getR2Client().send(
     new PutObjectCommand({
       Bucket: getR2BucketName(),
       Key: filePath,
-      Body: preparedMedia.buffer,
-      ContentType:
-        preparedMedia.mimeType,
-      CacheControl:
-        'public, max-age=86400',
+      Body: createReadStream(preparedMedia.path),
+      ContentLength: preparedMedia.fileSize,
+      ContentType: preparedMedia.mimeType,
+      CacheControl: 'public, max-age=86400',
     })
   )
 
   return {
     filePath,
-    publicUrl:
-      `${getR2PublicUrl()}/${filePath}`,
-    mimeType:
-      preparedMedia.mimeType,
-    fileSize:
-      preparedMedia.fileSize,
+    publicUrl: `${getR2PublicUrl()}/${filePath}`,
+    mimeType: preparedMedia.mimeType,
+    fileSize: preparedMedia.fileSize,
   }
 }
 
 async function deleteMedia(filePath) {
-  const normalizedPath = String(
-    filePath || ''
-  )
-    .trim()
-    .replace(/^\/+/, '')
+  const normalizedPath = String(filePath || '').trim().replace(/^\/+/, '')
 
   if (!normalizedPath) return
 
@@ -567,30 +489,21 @@ async function deleteMedia(filePath) {
 }
 
 async function getReader(userId) {
-  const { data, error } =
-    await supabase
-      .from('users')
-      .select(
-        'id, name, username, avatar_url, is_active'
-      )
-      .eq('id', userId)
-      .eq('is_active', true)
-      .maybeSingle()
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, name, username, avatar_url, is_active')
+    .eq('id', userId)
+    .eq('is_active', true)
+    .maybeSingle()
 
   if (error) throw error
 
   return data
 }
 
-function publicStory(
-  story,
-  reader = null,
-  hasViewed = false
-) {
+function publicStory(story, reader = null, hasViewed = false) {
   const expiresAt = story?.expires_at
-    ? new Date(
-        story.expires_at
-      ).getTime()
+    ? new Date(story.expires_at).getTime()
     : 0
 
   return {
@@ -601,60 +514,36 @@ function publicStory(
     media_url: story.media_url,
     mime_type: story.mime_type,
     caption: story.caption || '',
-    allow_messages: Boolean(
-      story.allow_messages
-    ),
-    view_count: Number(
-      story.view_count || 0
-    ),
+    allow_messages: Boolean(story.allow_messages),
+    view_count: Number(story.view_count || 0),
     has_viewed: Boolean(hasViewed),
     created_at: story.created_at,
     expires_at: story.expires_at,
     remaining_seconds: expiresAt
-      ? Math.max(
-          0,
-          Math.floor(
-            (expiresAt - Date.now()) /
-              1000
-          )
-        )
+      ? Math.max(0, Math.floor((expiresAt - Date.now()) / 1000))
       : 0,
     reader: reader
       ? {
           id: reader.id,
-          name:
-            reader.name || 'Reader',
-          username:
-            reader.username || '',
-          avatar_url:
-            reader.avatar_url || '',
+          name: reader.name || 'Reader',
+          username: reader.username || '',
+          avatar_url: reader.avatar_url || '',
         }
       : null,
   }
 }
 
-export async function cleanupExpiredReaderStories(
-  limit = 100
-) {
-  const safeLimit = Math.min(
-    500,
-    Math.max(
-      1,
-      Number(limit || 100)
-    )
-  )
+export async function cleanupExpiredReaderStories(limit = 100) {
+  const safeLimit = Math.min(500, Math.max(1, Number(limit || 100)))
   const now = new Date().toISOString()
 
-  const { data: stories, error } =
-    await supabase
-      .from('reader_stories')
-      .select('id, media_path')
-      .eq('status', 'active')
-      .lte('expires_at', now)
-      .order('expires_at', {
-        ascending: true,
-      })
-      .limit(safeLimit)
+  const { data: stories, error } = await supabase
+    .from('reader_stories')
+    .select('id, media_path')
+    .eq('status', 'active')
+    .lte('expires_at', now)
+    .order('expires_at', { ascending: true })
+    .limit(safeLimit)
 
   if (error) throw error
 
@@ -662,24 +551,19 @@ export async function cleanupExpiredReaderStories(
 
   for (const story of stories || []) {
     try {
-      await deleteMedia(
-        story.media_path
-      )
+      await deleteMedia(story.media_path)
 
-      const { error: updateError } =
-        await supabase
-          .from('reader_stories')
-          .update({
-            status: 'deleted',
-            deleted_at: now,
-            updated_at: now,
-          })
-          .eq('id', story.id)
-          .eq('status', 'active')
+      const { error: updateError } = await supabase
+        .from('reader_stories')
+        .update({
+          status: 'deleted',
+          deleted_at: now,
+          updated_at: now,
+        })
+        .eq('id', story.id)
+        .eq('status', 'active')
 
-      if (updateError) {
-        throw updateError
-      }
+      if (updateError) throw updateError
 
       deleted += 1
     } catch (cleanupError) {
@@ -697,28 +581,21 @@ export async function cleanupExpiredReaderStories(
   }
 }
 
-export function startReaderStoriesCleanup(
-  intervalMs =
-    10 * 60 * 1000
-) {
-  cleanupExpiredReaderStories().catch(
-    (error) => {
-      console.error(
-        'READER STORIES INITIAL CLEANUP ERROR:',
-        error.message
-      )
-    }
-  )
+export function startReaderStoriesCleanup(intervalMs = 10 * 60 * 1000) {
+  cleanupExpiredReaderStories().catch((error) => {
+    console.error(
+      'READER STORIES INITIAL CLEANUP ERROR:',
+      error.message
+    )
+  })
 
   const timer = setInterval(() => {
-    cleanupExpiredReaderStories().catch(
-      (error) => {
-        console.error(
-          'READER STORIES SCHEDULED CLEANUP ERROR:',
-          error.message
-        )
-      }
-    )
+    cleanupExpiredReaderStories().catch((error) => {
+      console.error(
+        'READER STORIES SCHEDULED CLEANUP ERROR:',
+        error.message
+      )
+    })
   }, intervalMs)
 
   timer.unref?.()
@@ -727,36 +604,29 @@ export function startReaderStoriesCleanup(
 }
 
 async function cleanupSafely() {
-  await cleanupExpiredReaderStories()
-    .catch((error) => {
-      console.error(
-        'READER STORIES REQUEST CLEANUP ERROR:',
-        error.message
-      )
-    })
+  await cleanupExpiredReaderStories().catch((error) => {
+    console.error(
+      'READER STORIES REQUEST CLEANUP ERROR:',
+      error.message
+    )
+  })
 }
 
-export async function createMyReaderStory(
-  req,
-  res
-) {
+export async function createMyReaderStory(req, res) {
   let uploaded = null
   let createdStory = null
+  let preparedMedia = null
 
   try {
     await cleanupSafely()
 
     const userId = req.user?.user_id
-    const mediaType =
-      validateMedia(req.file)
-    const caption = String(
-      req.body.caption || ''
-    ).trim()
-    const allowMessages =
-      normalizeBoolean(
-        req.body.allow_messages,
-        true
-      )
+    const mediaType = await validateMedia(req.file)
+    const caption = String(req.body.caption || '').trim()
+    const allowMessages = normalizeBoolean(
+      req.body.allow_messages,
+      true
+    )
 
     if (!userId) {
       return res.status(401).json({
@@ -768,29 +638,24 @@ export async function createMyReaderStory(
     if (caption.length > 200) {
       return res.status(400).json({
         ok: false,
-        code:
-          'STORY_CAPTION_TOO_LONG',
-        message:
-          'Caption must be 200 characters or fewer',
+        code: 'STORY_CAPTION_TOO_LONG',
+        message: 'Caption must be 200 characters or fewer',
       })
     }
 
-    const reader =
-      await getReader(userId)
+    const reader = await getReader(userId)
 
     if (!reader) {
       return res.status(404).json({
         ok: false,
-        message:
-          'Reader profile not found',
+        message: 'Reader profile not found',
       })
     }
 
-    const preparedMedia =
-      await prepareStoryMedia(
-        req.file,
-        mediaType
-      )
+    preparedMedia = await prepareStoryMedia(
+      req.file,
+      mediaType
+    )
 
     uploaded = await uploadMedia(
       userId,
@@ -800,37 +665,27 @@ export async function createMyReaderStory(
 
     const createdAt = new Date()
     const expiresAt = new Date(
-      createdAt.getTime() +
-        STORY_DURATION_MS
+      createdAt.getTime() + STORY_DURATION_MS
     )
 
-    const { data, error } =
-      await supabase
-        .from('reader_stories')
-        .insert({
-          user_id: userId,
-          media_type: mediaType,
-          media_url:
-            uploaded.publicUrl,
-          media_path:
-            uploaded.filePath,
-          mime_type:
-            uploaded.mimeType,
-          file_size:
-            uploaded.fileSize,
-          caption,
-          allow_messages:
-            allowMessages,
-          status: 'active',
-          created_at:
-            createdAt.toISOString(),
-          expires_at:
-            expiresAt.toISOString(),
-          updated_at:
-            createdAt.toISOString(),
-        })
-        .select()
-        .single()
+    const { data, error } = await supabase
+      .from('reader_stories')
+      .insert({
+        user_id: userId,
+        media_type: mediaType,
+        media_url: uploaded.publicUrl,
+        media_path: uploaded.filePath,
+        mime_type: uploaded.mimeType,
+        file_size: uploaded.fileSize,
+        caption,
+        allow_messages: allowMessages,
+        status: 'active',
+        created_at: createdAt.toISOString(),
+        expires_at: expiresAt.toISOString(),
+        updated_at: createdAt.toISOString(),
+      })
+      .select()
+      .single()
 
     if (error) throw error
 
@@ -857,9 +712,7 @@ export async function createMyReaderStory(
 
     if (uploaded?.filePath) {
       try {
-        await deleteMedia(
-          uploaded.filePath
-        )
+        await deleteMedia(uploaded.filePath)
       } catch {}
     }
 
@@ -869,9 +722,7 @@ export async function createMyReaderStory(
     )
 
     return res
-      .status(
-        error.statusCode || 500
-      )
+      .status(error.statusCode || 500)
       .json({
         ok: false,
         code:
@@ -881,13 +732,12 @@ export async function createMyReaderStory(
           error.message ||
           'Failed to create story',
       })
+  } finally {
+    await cleanupPreparedMedia(preparedMedia)
   }
 }
 
-export async function getMyReaderStories(
-  req,
-  res
-) {
+export async function getMyReaderStories(req, res) {
   try {
     await cleanupSafely()
 
@@ -900,22 +750,20 @@ export async function getMyReaderStories(
       })
     }
 
-    const reader =
-      await getReader(userId)
+    const reader = await getReader(userId)
 
-    const { data, error } =
-      await supabase
-        .from('reader_stories')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('status', 'active')
-        .gt(
-          'expires_at',
-          new Date().toISOString()
-        )
-        .order('created_at', {
-          ascending: false,
-        })
+    const { data, error } = await supabase
+      .from('reader_stories')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .gt(
+        'expires_at',
+        new Date().toISOString()
+      )
+      .order('created_at', {
+        ascending: false,
+      })
 
     if (error) throw error
 
@@ -945,10 +793,7 @@ export async function getMyReaderStories(
   }
 }
 
-export async function deleteMyReaderStory(
-  req,
-  res
-) {
+export async function deleteMyReaderStory(req, res) {
   try {
     const userId = req.user?.user_id
     const storyId = String(
@@ -965,19 +810,17 @@ export async function deleteMyReaderStory(
     if (!storyId) {
       return res.status(400).json({
         ok: false,
-        message:
-          'Story ID is required',
+        message: 'Story ID is required',
       })
     }
 
-    const { data: story, error } =
-      await supabase
-        .from('reader_stories')
-        .select('*')
-        .eq('id', storyId)
-        .eq('user_id', userId)
-        .eq('status', 'active')
-        .maybeSingle()
+    const { data: story, error } = await supabase
+      .from('reader_stories')
+      .select('*')
+      .eq('id', storyId)
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .maybeSingle()
 
     if (error) throw error
 
@@ -990,23 +833,19 @@ export async function deleteMyReaderStory(
 
     await deleteMedia(story.media_path)
 
-    const now =
-      new Date().toISOString()
+    const now = new Date().toISOString()
 
-    const { error: updateError } =
-      await supabase
-        .from('reader_stories')
-        .update({
-          status: 'deleted',
-          deleted_at: now,
-          updated_at: now,
-        })
-        .eq('id', story.id)
-        .eq('user_id', userId)
+    const { error: updateError } = await supabase
+      .from('reader_stories')
+      .update({
+        status: 'deleted',
+        deleted_at: now,
+        updated_at: now,
+      })
+      .eq('id', story.id)
+      .eq('user_id', userId)
 
-    if (updateError) {
-      throw updateError
-    }
+    if (updateError) throw updateError
 
     invalidateDiscoverStorySharedCache()
 
@@ -1021,9 +860,7 @@ export async function deleteMyReaderStory(
     )
 
     return res
-      .status(
-        error.statusCode || 500
-      )
+      .status(error.statusCode || 500)
       .json({
         ok: false,
         code:
@@ -1036,17 +873,13 @@ export async function deleteMyReaderStory(
   }
 }
 
-export async function recordReaderStoryView(
-  req,
-  res
-) {
+export async function recordReaderStoryView(req, res) {
   try {
     const userId = req.user?.user_id
     const storyId = String(
       req.params.storyId || ''
     ).trim()
-    const now =
-      new Date().toISOString()
+    const now = new Date().toISOString()
 
     if (!userId) {
       return res.status(401).json({
@@ -1058,36 +891,30 @@ export async function recordReaderStoryView(
     if (!storyId) {
       return res.status(400).json({
         ok: false,
-        message:
-          'Story ID is required',
+        message: 'Story ID is required',
       })
     }
 
-    const { data: story, error } =
-      await supabase
-        .from('reader_stories')
-        .select(
-          'id, user_id, status, expires_at, view_count'
-        )
-        .eq('id', storyId)
-        .eq('status', 'active')
-        .gt('expires_at', now)
-        .maybeSingle()
+    const { data: story, error } = await supabase
+      .from('reader_stories')
+      .select(
+        'id, user_id, status, expires_at, view_count'
+      )
+      .eq('id', storyId)
+      .eq('status', 'active')
+      .gt('expires_at', now)
+      .maybeSingle()
 
     if (error) throw error
 
     if (!story) {
       return res.status(404).json({
         ok: false,
-        message:
-          'Story not found or expired',
+        message: 'Story not found or expired',
       })
     }
 
-    if (
-      String(story.user_id) ===
-      String(userId)
-    ) {
+    if (String(story.user_id) === String(userId)) {
       return res.status(200).json({
         ok: true,
         counted: false,
@@ -1105,10 +932,7 @@ export async function recordReaderStoryView(
       .from('reader_story_views')
       .select('id')
       .eq('story_id', story.id)
-      .eq(
-        'viewer_user_id',
-        userId
-      )
+      .eq('viewer_user_id', userId)
       .maybeSingle()
 
     if (existingViewError) {
@@ -1118,14 +942,13 @@ export async function recordReaderStoryView(
     let counted = false
 
     if (!existingView) {
-      const { error: insertError } =
-        await supabase
-          .from('reader_story_views')
-          .insert({
-            story_id: story.id,
-            viewer_user_id: userId,
-            viewed_at: now,
-          })
+      const { error: insertError } = await supabase
+        .from('reader_story_views')
+        .insert({
+          story_id: story.id,
+          viewer_user_id: userId,
+          viewed_at: now,
+        })
 
       if (
         insertError &&
@@ -1166,8 +989,7 @@ export async function recordReaderStoryView(
 
     return res.status(500).json({
       ok: false,
-      message:
-        'Failed to record story view',
+      message: 'Failed to record story view',
       error: error.message,
     })
   }
