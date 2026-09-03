@@ -1,6 +1,8 @@
 import express from 'express'
 import jwt from 'jsonwebtoken'
 import multer from 'multer'
+import os from 'node:os'
+import { unlink } from 'node:fs/promises'
 import {
   createMyAuthorStory,
   deleteMyAuthorStory,
@@ -16,7 +18,7 @@ import { requireUser } from '../middleware/user.middleware.js'
 const router = express.Router()
 
 const upload = multer({
-  storage: multer.memoryStorage(),
+  dest: os.tmpdir(),
   limits: {
     fileSize: 30 * 1024 * 1024,
     files: 1,
@@ -42,9 +44,30 @@ function optionalUser(req, res, next) {
   }
 }
 
+async function removeTempFile(req) {
+  if (!req.file?.path) return
+  await unlink(req.file.path).catch(() => {})
+}
+
+function cleanupStoryMediaTemp(req, res, next) {
+  let cleaned = false
+
+  const cleanup = () => {
+    if (cleaned) return
+    cleaned = true
+    removeTempFile(req).catch(() => {})
+  }
+
+  res.once('finish', cleanup)
+  res.once('close', cleanup)
+  next()
+}
+
 function uploadStoryMedia(req, res, next) {
   upload.single('media')(req, res, (error) => {
     if (!error) return next()
+
+    removeTempFile(req).catch(() => {})
 
     if (error.code === 'LIMIT_FILE_SIZE') {
       return res.status(413).json({
@@ -69,6 +92,7 @@ router.post(
   requireUser,
   enforceAuthorStoryDailyLimit,
   uploadStoryMedia,
+  cleanupStoryMediaTemp,
   createMyAuthorStory
 )
 router.patch('/me/:storyId/extras', requireUser, saveMyAuthorStoryExtras)
