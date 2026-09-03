@@ -3,6 +3,7 @@ import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
 import { requireUser } from '../middleware/user.middleware.js'
+import { guardDiskBackedUploads } from '../middleware/globalMediaUploadGuard.middleware.js'
 import {
   getMyAuthorStorageQuota,
   uploadMyAuthorProfileImage,
@@ -73,6 +74,7 @@ router.post(
   requireUser,
   uploadProfileImage,
   cleanupTempFile,
+  guardDiskBackedUploads,
   uploadMyAuthorProfileImage
 )
 
