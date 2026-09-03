@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { serveAuthorCachedJson } from '../services/authorRequestCache.service.js'
 import { getAuthorProfileSummary } from '../services/authorProfileSummary.service.js'
 import { getAuthorIncomeRecordData } from '../services/authorIncomeRecords.service.js'
 import {
@@ -1279,7 +1280,7 @@ export async function activateMyAuthorLifetimeBoost(
   }
 }
 
-export async function getMyAuthorIncome(req, res) {
+async function getMyAuthorIncomeUncached(req, res) {
   try {
     const userId = req.user?.user_id
 
@@ -1660,3 +1661,23 @@ export async function saveMyAuthorPaymentMethod(req, res) {
   }
 }
 
+
+
+export async function getMyAuthorIncome(
+  req,
+  res
+) {
+  return serveAuthorCachedJson({
+    req,
+    res,
+    namespace: 'author-income',
+    ttlMs: 15 * 1000,
+    variant: {
+      record_period:
+        req.query?.record_period || '',
+      record_date:
+        req.query?.record_date || '',
+    },
+    handler: getMyAuthorIncomeUncached,
+  })
+}
