@@ -1,4 +1,9 @@
-import { DeleteObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
+import { createReadStream } from 'node:fs'
+import {
+  DeleteObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3'
 import { supabase } from '../config/supabase.js'
 import { bumpContentVersions } from '../services/contentVersion.service.js'
 
@@ -170,10 +175,12 @@ async function deleteImageFromStorage(publicUrl) {
     const r2ObjectKey = extractR2ObjectKeyFromPublicUrl(publicUrl)
 
     if (r2ObjectKey) {
-      await getR2Client().send(new DeleteObjectCommand({
-        Bucket: getR2BucketName(),
-        Key: r2ObjectKey,
-      }))
+      await getR2Client().send(
+        new DeleteObjectCommand({
+          Bucket: getR2BucketName(),
+          Key: r2ObjectKey,
+        })
+      )
       return
     }
 
@@ -189,19 +196,25 @@ async function deleteImageFromStorage(publicUrl) {
 
 async function uploadImage(file) {
   if (!file) return null
+  if (!file.path) {
+    throw new Error('Temporary slide image file is required')
+  }
 
   const originalName = file.originalname || 'slide-image'
   const fileExt = originalName.includes('.') ? originalName.split('.').pop() : 'jpg'
   const safeExt = fileExt.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
   const fileName = `slides/${Date.now()}-${Math.random().toString(36).slice(2)}.${safeExt}`
 
-  await getR2Client().send(new PutObjectCommand({
-    Bucket: getR2BucketName(),
-    Key: fileName,
-    Body: file.buffer,
-    ContentType: file.mimetype,
-    CacheControl: 'public, max-age=31536000, immutable',
-  }))
+  await getR2Client().send(
+    new PutObjectCommand({
+      Bucket: getR2BucketName(),
+      Key: fileName,
+      Body: createReadStream(file.path),
+      ContentLength: Number(file.size || 0) || undefined,
+      ContentType: file.mimetype,
+      CacheControl: 'public, max-age=31536000, immutable',
+    })
+  )
 
   return `${getR2PublicUrl()}/${fileName}`
 }
@@ -324,7 +337,13 @@ export async function updateSlide(req, res) {
       updated_at: new Date().toISOString(),
     }
 
-    const allowedFields = ['section_key', 'title', 'subtitle', 'genre_label', 'link_url']
+    const allowedFields = [
+      'section_key',
+      'title',
+      'subtitle',
+      'genre_label',
+      'link_url',
+    ]
 
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
@@ -360,7 +379,9 @@ export async function updateSlide(req, res) {
     }
 
     const changedFields = getChangedFields(oldSlide, data, imageReplaced)
-    const isVisibilityOnly = changedFields.length === 1 && changedFields[0] === 'visibility'
+    const isVisibilityOnly =
+      changedFields.length === 1 &&
+      changedFields[0] === 'visibility'
 
     await createActivityLog({
       action: isVisibilityOnly ? 'VISIBILITY' : 'UPDATE',
