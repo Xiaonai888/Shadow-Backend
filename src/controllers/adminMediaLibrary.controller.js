@@ -1,5 +1,9 @@
 import { supabase } from '../config/supabase.js'
 import {
+  assertR2MediaReference,
+  assertR2StorageKey,
+} from '../services/mediaStoragePolicy.service.js'
+import {
   deleteMediaLibraryObject,
   deleteMediaLibraryObjects,
   mediaLibraryFolderPrefix,
@@ -243,10 +247,20 @@ export async function createMediaItem(req, res) {
     const folderId = text(req.body.folder_id, 100)
     const title = text(req.body.title, 120)
     const imageUrl = text(req.body.image_url, 1000)
+    const storageKey = text(req.body.storage_key, 500)
 
     if (!folderId || !title || !imageUrl) {
       return res.status(400).json({ ok: false, message: 'Folder, title and image URL are required' })
     }
+
+    const safeImageUrl = assertR2MediaReference(imageUrl, {
+      field: 'media_library.image_url',
+      allowEmpty: false,
+    })
+    const safeStorageKey = assertR2StorageKey(storageKey, {
+      field: 'media_library.storage_key',
+      allowEmpty: true,
+    })
 
     const tags = Array.isArray(req.body.tags)
       ? req.body.tags.map((item) => text(item, 40)).filter(Boolean).slice(0, 20)
@@ -258,8 +272,8 @@ export async function createMediaItem(req, res) {
         folder_id: folderId,
         title,
         alt_text: text(req.body.alt_text || title, 180),
-        image_url: imageUrl,
-        storage_key: text(req.body.storage_key, 500) || null,
+        image_url: safeImageUrl,
+        storage_key: safeStorageKey,
         media_type: text(req.body.media_type, 30) || 'image',
         tags,
         sort_order: order(req.body.sort_order),
@@ -273,7 +287,11 @@ export async function createMediaItem(req, res) {
     return res.status(201).json({ ok: true, image: data })
   } catch (error) {
     console.error('CREATE MEDIA ITEM ERROR:', error)
-    return res.status(500).json({ ok: false, message: error.message || 'Failed to create media item' })
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      code: error.code || undefined,
+      message: error.message || 'Failed to create media item',
+    })
   }
 }
 
