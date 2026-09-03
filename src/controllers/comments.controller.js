@@ -582,32 +582,65 @@ async function getReactionMap(
   )
 }
   
-function attachReplies(
-  parentComments,
-  replies
-) {
-  const replyMap = new Map()
+async function loadReplyPage({
+  parentId,
+  storyId,
+  episodeId = null,
+  page = 1,
+  limit = 5,
+}) {
+  const from =
+    (page - 1) * limit
+  const to =
+    from + limit - 1
 
-  replies.forEach((reply) => {
-    const key = String(
-      reply.parent_id || ''
+  let query = supabase
+    .from('comments')
+    .select(
+      '*, user:users(id, name, username, avatar_url, role)',
+      { count: 'exact' }
     )
-    const current =
-      replyMap.get(key) || []
+    .eq('story_id', storyId)
+    .eq('is_hidden', false)
+    .is('deleted_at', null)
+    .eq('parent_id', parentId)
+    .order(
+      'created_at',
+      { ascending: true }
+    )
+    .range(from, to)
 
-    current.push(reply)
-    replyMap.set(key, current)
-  })
+  if (episodeId) {
+    query = query.eq(
+      'episode_id',
+      episodeId
+    )
+  } else {
+    query = query.is(
+      'episode_id',
+      null
+    )
+  }
 
-  return parentComments.map(
-    (comment) => ({
-      ...comment,
-      replies:
-        replyMap.get(
-          String(comment.id)
-        ) || [],
-    })
-  )
+  const {
+    data,
+    error,
+    count,
+  } = await query
+
+  if (error) throw error
+
+  const rows = data || []
+  const total = Number(count || 0)
+
+  return {
+    rows,
+    total,
+    page,
+    limit,
+    hasMore:
+      page * limit < total,
+  }
 }
 
 async function loadComments({
@@ -615,6 +648,7 @@ async function loadComments({
   episodeId = null,
   page,
   limit,
+  replyLimit = 5,
   sort,
   userId,
 }) {
@@ -636,10 +670,16 @@ async function loadComments({
     .range(from, to)
 
   if (episodeId) {
-  query = query.eq('episode_id', episodeId)
-} else {
-  query = query.is('episode_id', null)
-}
+    query = query.eq(
+      'episode_id',
+      episodeId
+    )
+  } else {
+    query = query.is(
+      'episode_id',
+      null
+    )
+  }
 
   if (sort === 'top') {
     query = query
@@ -712,10 +752,16 @@ async function loadComments({
     )
 
   if (episodeId) {
-  deletedQuery = deletedQuery.eq('episode_id', episodeId)
-} else {
-  deletedQuery = deletedQuery.is('episode_id', null)
-}
+    deletedQuery = deletedQuery.eq(
+      'episode_id',
+      episodeId
+    )
+  } else {
+    deletedQuery = deletedQuery.is(
+      'episode_id',
+      null
+    )
+  }
 
   let deletedParents = []
 
@@ -737,104 +783,107 @@ async function loadComments({
     ...(data || []),
     ...deletedParents,
   ]
-  const candidateIds =
-    candidateParents.map(
-      (comment) => comment.id
-    )
 
-  let replies = []
-
-  if (candidateIds.length) {
-    let replyQuery = supabase
-      .from('comments')
-      .select(
-        '*, user:users(id, name, username, avatar_url, role)'
-      )
-      .eq('story_id', storyId)
-      .eq('is_hidden', false)
-      .is('deleted_at', null)
-      .in(
-        'parent_id',
-        candidateIds
-      )
-      .order(
-        'created_at',
-        { ascending: true }
-      )
-
-    if (episodeId) {
-  replyQuery = replyQuery.eq('episode_id', episodeId)
-} else {
-  replyQuery = replyQuery.is('episode_id', null)
-}
-
-    const {
-      data: replyData,
-      error: replyError,
-    } = await replyQuery
-
-    if (replyError) {
-      throw replyError
-    }
-
-    replies = replyData || []
-  }
-
-  const replyParentIds =
-    new Set(
-      replies.map(
-        (reply) =>
-          String(
-            reply.parent_id || ''
-          )
+  const replyResults =
+    await Promise.all(
+      candidateParents.map(
+        async (parent) => ({
+          parentId: String(parent.id),
+          result: await loadReplyPage({
+            parentId: parent.id,
+            storyId,
+            episodeId,
+            page: 1,
+            limit: replyLimit,
+          }),
+        })
       )
     )
+
+  const replyResultMap = new Map(
+    replyResults.map(
+      ({ parentId, result }) => [
+        parentId,
+        result,
+      ]
+    )
+  )
+
   const visibleDeletedParents =
     deletedParents.filter(
       (comment) =>
-        replyParentIds.has(
-          String(comment.id)
-        )
+        Number(
+          replyResultMap.get(
+            String(comment.id)
+          )?.total || 0
+        ) > 0
     )
+
   const parentRows = [
     ...(data || []),
     ...visibleDeletedParents,
   ]
+
+  const replyRows =
+    parentRows.flatMap(
+      (parent) =>
+        replyResultMap.get(
+          String(parent.id)
+        )?.rows || []
+    )
+
   const allIds = [
     ...parentRows.map(
       (comment) => comment.id
     ),
-    ...replies.map(
+    ...replyRows.map(
       (reply) => reply.id
     ),
   ]
+
   const reactionMap =
     await getReactionMap(
       allIds,
       userId
     )
+
   const publicParents =
-    parentRows.map(
-      (comment) =>
-        publicComment(
+    parentRows.map((comment) => {
+      const result =
+        replyResultMap.get(
+          String(comment.id)
+        ) || {
+          rows: [],
+          total: 0,
+          page: 0,
+          hasMore: false,
+        }
+
+      return {
+        ...publicComment(
           comment,
           reactionMap
-        )
-    )
-  const publicReplies =
-    replies.map(
-      (reply) =>
-        publicComment(
-          reply,
-          reactionMap
-        )
-    )
+        ),
+        replies: result.rows.map(
+          (reply) =>
+            publicComment(
+              reply,
+              reactionMap
+            )
+        ),
+        reply_total:
+          Number(result.total || 0),
+        reply_page:
+          result.total > 0
+            ? Number(result.page || 1)
+            : 0,
+        reply_has_more:
+          Boolean(result.hasMore),
+      }
+    })
 
   return {
-    comments: attachReplies(
-      publicParents,
-      publicReplies
-    ),
+    comments: publicParents,
     total:
       Number(count || 0),
   }
@@ -984,6 +1033,109 @@ export async function getEpisodeCommentTotals(
 }
 
 
+export async function getCommentReplies(
+  req,
+  res
+) {
+  try {
+    const commentId = String(
+      req.params.commentId || ''
+    ).trim()
+    const page = Math.max(
+      1,
+      Number(req.query.page || 1)
+    )
+    const limit = Math.min(
+      20,
+      Math.max(
+        1,
+        Number(req.query.limit || 5)
+      )
+    )
+    const userId =
+      getRequestUserId(req)
+
+    if (!commentId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment id is required',
+      })
+    }
+
+    const {
+      data: parent,
+      error: parentError,
+    } = await supabase
+      .from('comments')
+      .select(
+        'id, story_id, episode_id, parent_id, is_hidden'
+      )
+      .eq('id', commentId)
+      .maybeSingle()
+
+    if (parentError) {
+      throw parentError
+    }
+
+    if (
+      !parent ||
+      parent.parent_id ||
+      parent.is_hidden
+    ) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
+
+    const result =
+      await loadReplyPage({
+        parentId: parent.id,
+        storyId: parent.story_id,
+        episodeId:
+          parent.episode_id || null,
+        page,
+        limit,
+      })
+
+    const reactionMap =
+      await getReactionMap(
+        result.rows.map(
+          (reply) => reply.id
+        ),
+        userId
+      )
+
+    return res.status(200).json({
+      ok: true,
+      replies: result.rows.map(
+        (reply) =>
+          publicComment(
+            reply,
+            reactionMap
+          )
+      ),
+      page: result.page,
+      limit: result.limit,
+      total: result.total,
+      has_more: result.hasMore,
+    })
+  } catch (error) {
+    console.error(
+      'GET COMMENT REPLIES ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to load replies',
+      error: error.message,
+    })
+  }
+}
+
+
 export async function getStoryComments(
   req,
   res
@@ -1007,6 +1159,16 @@ export async function getStoryComments(
           1,
           Number(
             req.query.limit || 20
+          )
+        )
+      )
+    const replyLimit =
+      Math.min(
+        10,
+        Math.max(
+          1,
+          Number(
+            req.query.reply_limit || 5
           )
         )
       )
@@ -1034,6 +1196,7 @@ export async function getStoryComments(
         storyId,
         page,
         limit,
+        replyLimit,
         sort,
         userId,
       })
@@ -1091,6 +1254,16 @@ export async function getEpisodeComments(
           )
         )
       )
+    const replyLimit =
+      Math.min(
+        10,
+        Math.max(
+          1,
+          Number(
+            req.query.reply_limit || 5
+          )
+        )
+      )
     const sort =
       String(
         req.query.sort || 'newest'
@@ -1117,6 +1290,7 @@ export async function getEpisodeComments(
         episodeId,
         page,
         limit,
+        replyLimit,
         sort,
         userId,
       })
