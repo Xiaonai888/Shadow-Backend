@@ -3,6 +3,7 @@ import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
+import { guardDiskBackedUploads } from '../middleware/globalMediaUploadGuard.middleware.js'
 import {
   createMediaFolder,
   createMediaItem,
@@ -105,6 +106,7 @@ router.post(
   manageMediaLibrary,
   runUpload(upload.array('images', 20)),
   cleanupTempFiles,
+  guardDiskBackedUploads,
   async (req, res) => {
     const uploaded = []
 
@@ -153,6 +155,7 @@ router.post(
   manageMediaLibrary,
   runUpload(upload.single('cover')),
   cleanupTempFiles,
+  guardDiskBackedUploads,
   uploadMediaFolderCover
 )
 
