@@ -1,5 +1,8 @@
 import { supabase } from '../config/supabase.js'
 import {
+  assertR2MediaReference,
+} from '../services/mediaStoragePolicy.service.js'
+import {
   getReaderPostsFeedCandidates,
   invalidateReaderPostsFeedCandidateCache,
 } from '../services/readerPostsFeedCandidateCache.service.js'
@@ -65,7 +68,10 @@ function normalizeContent(value) {
     .trim()
 }
 
-function normalizeImageUrls(value) {
+function normalizeImageUrls(
+  value,
+  existingValues = []
+) {
   if (
     value === undefined ||
     value === null
@@ -104,18 +110,23 @@ function normalizeImageUrls(value) {
     throw error
   }
 
-  const invalidUrl = imageUrls.find(
-    (url) =>
-      !/^https?:\/\/\S+$/i.test(url)
+  const existing = new Set(
+    (Array.isArray(existingValues)
+      ? existingValues
+      : []
+    )
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
   )
 
-  if (invalidUrl) {
-    const error = new Error(
-      'Post image URL is invalid'
-    )
-    error.statusCode = 400
-    throw error
-  }
+  imageUrls.forEach((url, index) => {
+    if (existing.has(url)) return
+
+    assertR2MediaReference(url, {
+      field: `reader_posts.image_urls[${index}]`,
+      allowEmpty: false,
+    })
+  })
 
   return imageUrls
 }
@@ -3328,7 +3339,8 @@ export async function updateMyReaderPost(
           ? current.image_urls
           : []
         : normalizeImageUrls(
-            req.body.image_urls
+            req.body.image_urls,
+            current.image_urls
           )
 
     const photoMetadata =
