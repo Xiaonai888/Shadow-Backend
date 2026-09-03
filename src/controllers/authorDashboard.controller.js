@@ -1,10 +1,49 @@
 import { supabase } from '../config/supabase.js'
+import { serveAuthorCachedJson } from '../services/authorRequestCache.service.js'
 
 const PERIOD_DAYS = {
   today: 1,
   '7d': 7,
   '28d': 28,
   '30d': 30,
+}
+
+const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
+
+function startOfCambodiaMonthIso(date = new Date()) {
+  const cambodiaDate = new Date(
+    date.getTime() + CAMBODIA_OFFSET_MS
+  )
+
+  return new Date(
+    Date.UTC(
+      cambodiaDate.getUTCFullYear(),
+      cambodiaDate.getUTCMonth(),
+      1
+    ) - CAMBODIA_OFFSET_MS
+  ).toISOString()
+}
+
+function giftQuantity(metadata) {
+  if (!metadata) return 1
+
+  if (typeof metadata === 'string') {
+    try {
+      return Math.max(
+        1,
+        safeNumber(
+          JSON.parse(metadata)?.quantity
+        )
+      )
+    } catch {
+      return 1
+    }
+  }
+
+  return Math.max(
+    1,
+    safeNumber(metadata.quantity)
+  )
 }
 
 function safeNumber(value) {
@@ -58,7 +97,7 @@ function buildAnalyticsSeries(rows, start, days) {
   })
 }
 
-export async function getMyAuthorDashboard(req, res) {
+async function getMyAuthorDashboardUncached(req, res) {
   try {
     const userId = req.user?.user_id
     const period = parsePeriod(req.query.period)
@@ -98,6 +137,7 @@ export async function getMyAuthorDashboard(req, res) {
       recentCommentsResult,
       notificationsResult,
       unreadResult,
+      monthlyGiftsResult,
     ] = await Promise.all([
       supabase.rpc(
         'get_author_dashboard_content_summary',
@@ -165,6 +205,16 @@ export async function getMyAuthorDashboard(req, res) {
         })
         .eq('author_page_id', authorPage.id)
         .eq('is_read', false),
+
+      supabase
+        .from('author_story_notifications')
+        .select('metadata')
+        .eq('author_id', authorPage.id)
+        .eq('type', 'gift')
+        .gte(
+          'created_at',
+          startOfCambodiaMonthIso()
+        ),
     ])
 
     if (summaryResult.error) throw summaryResult.error
@@ -174,6 +224,7 @@ export async function getMyAuthorDashboard(req, res) {
     if (recentCommentsResult.error) throw recentCommentsResult.error
     if (notificationsResult.error) throw notificationsResult.error
     if (unreadResult.error) throw unreadResult.error
+    if (monthlyGiftsResult.error) throw monthlyGiftsResult.error
 
     const summary = summaryResult.data?.[0] || {}
     const series = buildAnalyticsSeries(
@@ -211,6 +262,13 @@ export async function getMyAuthorDashboard(req, res) {
     const storyLikes = safeNumber(summary.story_likes)
     const storyComments = safeNumber(summary.story_comments)
     const episodes = safeNumber(summary.episodes)
+    const monthlyGifts = (
+      monthlyGiftsResult.data || []
+    ).reduce(
+      (total, item) =>
+        total + giftQuantity(item.metadata),
+      0
+    )
 
     return res.status(200).json({
       ok: true,
@@ -224,6 +282,7 @@ export async function getMyAuthorDashboard(req, res) {
         followers: safeNumber(authorPage.total_followers),
         comments: postComments + storyComments,
         episodes,
+        monthly_gifts: monthlyGifts,
         post_likes: postLikes,
         post_comments: postComments,
         post_echoes: postEchoes,
@@ -257,4 +316,19 @@ export async function getMyAuthorDashboard(req, res) {
       error: error.message,
     })
   }
+}
+
+
+export async function getMyAuthorDashboard(
+  req,
+  res
+) {
+  return serveAuthorCachedJson({
+    req,
+    res,
+    namespace: 'author-dashboard',
+    ttlMs: 2 * 60 * 1000,
+    variant: parsePeriod(req.query.period),
+    handler: getMyAuthorDashboardUncached,
+  })
 }
