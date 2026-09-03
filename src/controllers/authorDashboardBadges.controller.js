@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { serveAuthorCachedJson } from '../services/authorRequestCache.service.js'
 
 function getUserId(req) {
   return String(
@@ -8,7 +9,7 @@ function getUserId(req) {
   ).trim()
 }
 
-export async function getMyAuthorDashboardBadges(
+async function getMyAuthorDashboardBadgesUncached(
   req,
   res
 ) {
@@ -63,4 +64,18 @@ export async function getMyAuthorDashboardBadges(
       error: error.message,
     })
   }
+}
+
+
+export async function getMyAuthorDashboardBadges(
+  req,
+  res
+) {
+  return serveAuthorCachedJson({
+    req,
+    res,
+    namespace: 'author-dashboard-badges',
+    ttlMs: 30 * 1000,
+    handler: getMyAuthorDashboardBadgesUncached,
+  })
 }
