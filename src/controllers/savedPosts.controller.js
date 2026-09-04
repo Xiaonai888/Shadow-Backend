@@ -4,6 +4,10 @@ const SOURCE_TYPES = new Set(['reader_post', 'author_post', 'promotion'])
 const SORT_TYPES = new Set(['newest', 'oldest'])
 const MAX_SNAPSHOT_BYTES = 200000
 const MAX_PAGE_SIZE = 50
+const SAVED_POST_PAGE_SIZE = 30
+const COLLECTION_PREVIEW_SIZE = 3
+const SAVED_POST_FIELDS = 'id, source_type, source_id, source_url, snapshot_data, status, original_created_at, saved_at, updated_at'
+const COLLECTION_FIELDS = 'id, name, description, system_key, cover_color, sort_order, created_at, updated_at'
 
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
@@ -39,7 +43,7 @@ function normalizeSort(value) {
 
 function normalizeLimit(value) {
   const parsed = Number(value)
-  if (!Number.isFinite(parsed)) return 20
+  if (!Number.isFinite(parsed)) return SAVED_POST_PAGE_SIZE
   return Math.min(MAX_PAGE_SIZE, Math.max(1, Math.floor(parsed)))
 }
 
@@ -220,7 +224,7 @@ async function addSavedPostToCollections(userId, savedPostId, collectionIds) {
 async function getSavedPostWithCollections(userId, savedPostId) {
   const { data, error } = await supabase
     .from('saved_posts')
-    .select('*')
+    .select(SAVED_POST_FIELDS)
     .eq('id', savedPostId)
     .eq('user_id', userId)
     .maybeSingle()
@@ -259,8 +263,8 @@ export async function getSavedPosts(req, res) {
     }
 
     const selectFields = collectionId
-      ? '*, saved_post_collection_items!inner(collection_id, user_id)'
-      : '*'
+      ? `${SAVED_POST_FIELDS}, saved_post_collection_items!inner(collection_id, user_id)`
+      : SAVED_POST_FIELDS
 
     let query = supabase
       .from('saved_posts')
@@ -442,7 +446,7 @@ export async function savePost(req, res) {
 
     const { data: existingItem, error: existingError } = await supabase
       .from('saved_posts')
-      .select('*')
+      .select(SAVED_POST_FIELDS)
       .eq('user_id', userId)
       .eq('source_type', sourceType)
       .eq('source_id', sourceId)
@@ -467,7 +471,7 @@ export async function savePost(req, res) {
         })
         .eq('id', existingItem.id)
         .eq('user_id', userId)
-        .select('*')
+        .select(SAVED_POST_FIELDS)
         .single()
 
       if (error) throw error
@@ -486,7 +490,7 @@ export async function savePost(req, res) {
             ? originalCreatedAt.toISOString()
             : null,
         })
-        .select('*')
+        .select(SAVED_POST_FIELDS)
         .single()
 
       if (error) throw error
@@ -614,55 +618,59 @@ export async function getSavedPostCollections(req, res) {
       })
     }
 
+    const collectionSelectFields = `
+      ${COLLECTION_FIELDS},
+      item_count:saved_post_collection_items(count),
+      preview_memberships:saved_post_collection_items(
+        added_at,
+        saved_post:saved_posts(${SAVED_POST_FIELDS})
+      )
+    `
+
     const [
       { data: collections, error: collectionsError },
-      { data: membershipRows, error: membershipError },
       { data: latestSavedPosts, error: latestError, count: allSavedCount },
     ] = await Promise.all([
       supabase
         .from('saved_post_collections')
-        .select('*')
+        .select(collectionSelectFields)
         .eq('user_id', userId)
         .order('sort_order', { ascending: true })
-        .order('created_at', { ascending: true }),
-      supabase
-        .from('saved_post_collection_items')
-        .select('collection_id, added_at, saved_post:saved_posts(id, source_type, source_id, source_url, snapshot_data, status, original_created_at, saved_at, updated_at)')
-        .eq('user_id', userId)
-        .order('added_at', { ascending: false }),
+        .order('created_at', { ascending: true })
+        .order('added_at', {
+          referencedTable: 'preview_memberships',
+          ascending: false,
+        })
+        .limit(COLLECTION_PREVIEW_SIZE, {
+          referencedTable: 'preview_memberships',
+        }),
       supabase
         .from('saved_posts')
-        .select('*', { count: 'exact' })
+        .select(SAVED_POST_FIELDS, { count: 'exact' })
         .eq('user_id', userId)
         .order('saved_at', { ascending: false })
-        .limit(3),
+        .limit(COLLECTION_PREVIEW_SIZE),
     ])
 
     if (collectionsError) throw collectionsError
-    if (membershipError) throw membershipError
     if (latestError) throw latestError
 
-    const counts = new Map()
-    const previews = new Map()
+    const collectionItems = (collections || []).map((collection) => {
+      const embeddedCount = Array.isArray(collection.item_count)
+        ? collection.item_count[0]?.count
+        : collection.item_count?.count
 
-    for (const row of membershipRows || []) {
-      counts.set(
-        row.collection_id,
-        Number(counts.get(row.collection_id) || 0) + 1
+      const previewItems = (collection.preview_memberships || [])
+        .map((row) => row.saved_post)
+        .filter(Boolean)
+        .map((item) => publicSavedPost(item))
+
+      return publicCollection(
+        collection,
+        Number(embeddedCount || 0),
+        previewItems
       )
-
-      if (!row.saved_post) continue
-
-      if (!previews.has(row.collection_id)) {
-        previews.set(row.collection_id, [])
-      }
-
-      const items = previews.get(row.collection_id)
-
-      if (items.length < 3) {
-        items.push(publicSavedPost(row.saved_post))
-      }
-    }
+    })
 
     return res.status(200).json({
       ok: true,
@@ -678,13 +686,7 @@ export async function getSavedPostCollections(req, res) {
           publicSavedPost(item)
         ),
       },
-      collections: (collections || []).map((collection) =>
-        publicCollection(
-          collection,
-          counts.get(collection.id) || 0,
-          previews.get(collection.id) || []
-        )
-      ),
+      collections: collectionItems,
     })
   } catch (error) {
     console.error('GET SAVED POST COLLECTIONS ERROR:', error)
@@ -727,7 +729,7 @@ export async function createSavedPostCollection(req, res) {
         cover_color: coverColor,
         sort_order: 100,
       })
-      .select('*')
+      .select(COLLECTION_FIELDS)
       .single()
 
     if (error) {
@@ -770,7 +772,7 @@ export async function updateSavedPostCollection(req, res) {
 
     const { data: existingCollection, error: existingError } = await supabase
       .from('saved_post_collections')
-      .select('*')
+      .select(COLLECTION_FIELDS)
       .eq('id', collectionId)
       .eq('user_id', userId)
       .maybeSingle()
@@ -829,7 +831,7 @@ export async function updateSavedPostCollection(req, res) {
       .update(updates)
       .eq('id', collectionId)
       .eq('user_id', userId)
-      .select('*')
+      .select(COLLECTION_FIELDS)
       .single()
 
     if (error) {
