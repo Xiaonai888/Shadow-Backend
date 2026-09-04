@@ -11,6 +11,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3'
 import { evaluateHeavyJobAdmission } from './memoryGuard.service.js'
+import { assertDiskBackedUploadFile } from './mediaStoragePolicy.service.js'
 
 const WORKER_TIMEOUT_MS = 3 * 60 * 1000
 const ADMISSION_TIMEOUT_MS = 5 * 60 * 1000
@@ -20,17 +21,8 @@ const R2_IMAGE_WORKER_PATH = fileURLToPath(
   new URL('../workers/r2Image.worker.js', import.meta.url)
 )
 
-let sharpPromise = null
 let r2Client = null
 let imageProcessingTail = Promise.resolve()
-
-async function getSharp() {
-  if (!sharpPromise) {
-    sharpPromise = import('sharp').then((module) => module.default)
-  }
-
-  return sharpPromise
-}
 
 function getR2Client() {
   if (r2Client) return r2Client
@@ -96,84 +88,65 @@ function clampInteger(value, minimum, maximum, fallback) {
   return Math.min(maximum, Math.max(minimum, Math.round(parsed)))
 }
 
-function buildQualityLevels(startQuality, minQuality, step) {
-  const levels = []
-  let current = startQuality
+function safeFolderName(value, fallback = 'uploads') {
+  const input = String(value || fallback)
+    .trim()
+    .replace(/^\/+|\/+$/g, '')
 
-  while (current > minQuality) {
-    levels.push(current)
-    current -= step
+  if (!input || input.includes('..') || input.includes('://')) {
+    const error = new Error('Invalid R2 folder path')
+    error.statusCode = 400
+    error.code = 'INVALID_R2_OBJECT_KEY'
+    throw error
   }
 
-  levels.push(minQuality)
-  return [...new Set(levels)]
+  return input
 }
 
-function buildResizeProfiles({
-  width,
-  height,
-  fallbackWidth,
-  fallbackHeight,
-  maxBytes,
-}) {
-  const profiles = [{ width, height }]
+function safeObjectKey(value) {
+  const input = String(value || '')
+    .trim()
+    .replace(/^\/+/, '')
 
-  if (maxBytes > 0 && fallbackWidth > 0) {
-    profiles.push({
-      width: fallbackWidth,
-      height:
-        fallbackHeight ||
-        (height ? Math.round((fallbackWidth * height) / width) : null),
-    })
+  if (
+    !input ||
+    input.includes('..') ||
+    input.includes('://') ||
+    input.includes('\\')
+  ) {
+    const error = new Error('Invalid R2 object key')
+    error.statusCode = 400
+    error.code = 'INVALID_R2_OBJECT_KEY'
+    throw error
   }
 
-  if (maxBytes > 0 && height) {
-    const ratio = height / width
-
-    for (const nextWidth of [800, 640]) {
-      if (nextWidth < profiles[profiles.length - 1].width) {
-        profiles.push({
-          width: nextWidth,
-          height: Math.round(nextWidth * ratio),
-        })
-      }
-    }
-  }
-
-  return profiles.filter(
-    (profile, index, list) =>
-      index ===
-      list.findIndex(
-        (item) =>
-          item.width === profile.width &&
-          item.height === profile.height
-      )
-  )
+  return input
 }
 
-async function createWebPBuffer(fileBuffer, profile, quality, fit) {
-  const resizeOptions = {
-    width: profile.width,
-    withoutEnlargement: true,
+function normalizeMetadata(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined
   }
 
-  if (profile.height) {
-    resizeOptions.height = profile.height
-    resizeOptions.fit = fit
-    resizeOptions.position = 'centre'
+  const entries = Object.entries(value)
+    .map(([key, item]) => [
+      String(key || '').trim(),
+      String(item ?? '').trim(),
+    ])
+    .filter(([key, item]) => key && item)
+
+  return entries.length ? Object.fromEntries(entries) : undefined
+}
+
+async function getDiskFileSize(file) {
+  const declaredSize = Number(file?.size || 0)
+
+  if (declaredSize > 0) {
+    return declaredSize
   }
 
-  const sharp = await getSharp()
-
-  return sharp(fileBuffer)
-    .rotate()
-    .resize(resizeOptions)
-    .webp({
-      quality,
-      effort: 4,
-      smartSubsample: true,
-    })
-    .toBuffer()
+  const fileStat = await stat(file.path)
+  return Number(fileStat.size || 0)
 }
 
 function sleep(ms) {
@@ -332,31 +305,25 @@ function enqueuePathOptimization(inputPath, options) {
 export async function uploadFileToR2(file, folder = 'uploads') {
   if (!file) return null
 
-  const safeFolder = String(folder || 'uploads')
-    .replace(/^\/+|\/+$/g, '')
+  assertDiskBackedUploadFile(file, {
+    field: 'r2_upload_file',
+    allowEmpty: false,
+  })
+
+  const safeFolder = safeFolderName(folder)
   const safeExt = getSafeExtension(file)
   const fileName =
     `${safeFolder}/${Date.now()}-${Math.random()
       .toString(36)
       .slice(2)}.${safeExt}`
-
-  const body = file.path
-    ? createReadStream(file.path)
-    : file.buffer
-
-  if (!body) {
-    throw new Error('Upload file data is missing')
-  }
+  const fileSize = await getDiskFileSize(file)
 
   await getR2Client().send(
     new PutObjectCommand({
       Bucket: getR2BucketName(),
       Key: fileName,
-      Body: body,
-      ContentLength:
-        file.path && Number(file.size || 0) > 0
-          ? Number(file.size)
-          : undefined,
+      Body: createReadStream(file.path),
+      ContentLength: fileSize || undefined,
       ContentType: file.mimetype,
       CacheControl:
         'public, max-age=31536000, immutable',
@@ -373,12 +340,19 @@ export async function uploadImageToR2AsWebP(
 ) {
   if (!file) return null
 
-  const safeFolder = String(folder || 'uploads')
-    .replace(/^\/+|\/+$/g, '')
-  const fileName =
+  assertDiskBackedUploadFile(file, {
+    field: 'r2_image_upload_file',
+    allowEmpty: false,
+  })
+
+  const safeFolder = safeFolderName(folder)
+  const generatedFileName =
     `${safeFolder}/${Date.now()}-${Math.random()
       .toString(36)
       .slice(2)}.webp`
+  const fileName = options.objectKey
+    ? safeObjectKey(options.objectKey)
+    : generatedFileName
   const width = clampInteger(
     options.width,
     320,
@@ -437,118 +411,67 @@ export async function uploadImageToR2AsWebP(
     options.fit === 'contain'
       ? 'contain'
       : 'cover'
+  const withoutEnlargement =
+    options.withoutEnlargement !== false
+  const cacheControl = String(
+    options.cacheControl ||
+      'public, max-age=31536000, immutable'
+  ).trim()
+  const contentDisposition = String(
+    options.contentDisposition || ''
+  ).trim()
+  const metadata = normalizeMetadata(
+    options.metadata
+  )
 
-  if (file.path) {
-    const optimized = await enqueuePathOptimization(
-      file.path,
-      {
-        width,
-        height,
-        quality,
-        minQuality,
-        qualityStep,
-        maxBytes,
-        fallbackWidth,
-        fallbackHeight,
-        fit,
-      }
+  const optimized = await enqueuePathOptimization(
+    file.path,
+    {
+      width,
+      height,
+      quality,
+      minQuality,
+      qualityStep,
+      maxBytes,
+      fallbackWidth,
+      fallbackHeight,
+      fit,
+      withoutEnlargement,
+    }
+  )
+
+  try {
+    await getR2Client().send(
+      new PutObjectCommand({
+        Bucket: getR2BucketName(),
+        Key: fileName,
+        Body: createReadStream(optimized.path),
+        ContentLength: optimized.size,
+        ContentType: 'image/webp',
+        CacheControl: cacheControl,
+        ContentDisposition:
+          contentDisposition || undefined,
+        Metadata: metadata,
+      })
     )
-
-    try {
-      await getR2Client().send(
-        new PutObjectCommand({
-          Bucket: getR2BucketName(),
-          Key: fileName,
-          Body: createReadStream(optimized.path),
-          ContentLength: optimized.size,
-          ContentType: 'image/webp',
-          CacheControl:
-            'public, max-age=31536000, immutable',
-        })
-      )
-    } finally {
-      await unlink(optimized.path).catch(() => {})
-    }
-
-    return `${getR2PublicUrl()}/${fileName}`
+  } finally {
+    await unlink(optimized.path).catch(() => {})
   }
 
-  const qualityLevels = maxBytes > 0
-    ? buildQualityLevels(
-        quality,
-        minQuality,
-        qualityStep
-      )
-    : [quality]
-  const profiles = buildResizeProfiles({
-    width,
-    height,
-    fallbackWidth,
-    fallbackHeight,
-    maxBytes,
-  })
+  return `${getR2PublicUrl()}/${fileName}`
+}
 
-  let buffer = null
-  let smallestBuffer = null
-
-  for (const profile of profiles) {
-    for (const currentQuality of qualityLevels) {
-      buffer = await createWebPBuffer(
-        file.buffer,
-        profile,
-        currentQuality,
-        fit
-      )
-
-      if (
-        !smallestBuffer ||
-        buffer.length < smallestBuffer.length
-      ) {
-        smallestBuffer = buffer
-      }
-
-      if (
-        !maxBytes ||
-        buffer.length <= maxBytes
-      ) {
-        smallestBuffer = buffer
-        break
-      }
-    }
-
-    if (
-      !maxBytes ||
-      smallestBuffer.length <= maxBytes
-    ) {
-      break
-    }
-  }
-
-  if (
-    maxBytes &&
-    smallestBuffer.length > maxBytes
-  ) {
-    const error = new Error(
-      `Unable to compress image below ${Math.round(
-        maxBytes / 1024
-      )} KB`
-    )
-    error.statusCode = 422
-    throw error
-  }
+export async function deleteR2ObjectByKey(storageKey) {
+  const key = safeObjectKey(storageKey)
 
   await getR2Client().send(
-    new PutObjectCommand({
+    new DeleteObjectCommand({
       Bucket: getR2BucketName(),
-      Key: fileName,
-      Body: smallestBuffer,
-      ContentType: 'image/webp',
-      CacheControl:
-        'public, max-age=31536000, immutable',
+      Key: key,
     })
   )
 
-  return `${getR2PublicUrl()}/${fileName}`
+  return true
 }
 
 export async function deleteR2ObjectByUrl(fileUrl) {
@@ -570,12 +493,5 @@ export async function deleteR2ObjectByUrl(fileUrl) {
 
   if (!key) return false
 
-  await getR2Client().send(
-    new DeleteObjectCommand({
-      Bucket: getR2BucketName(),
-      Key: key,
-    })
-  )
-
-  return true
+  return deleteR2ObjectByKey(key)
 }
