@@ -28,25 +28,28 @@ function normalizeReactionType(value) {
   return String(value || 'love').trim().toLowerCase()
 }
 
-function buildReactionSummary(rows = []) {
-  const rank = new Map(REACTION_ORDER.map((type, index) => [type, index]))
-  const counts = new Map()
-
-  for (const row of rows) {
-    const type = normalizeReactionType(row?.reaction_type)
-
-    if (!ALLOWED_REACTIONS.has(type)) continue
-
-    counts.set(type, Number(counts.get(type) || 0) + 1)
-  }
-
-  return [...counts.entries()]
-    .map(([type, count]) => ({ type, count }))
+function buildReactionSummary(counts = {}) {
+  return REACTION_ORDER
+    .map((type, index) => ({
+      type,
+      count: Number(
+        counts[type] || 0
+      ),
+      index,
+    }))
+    .filter((item) => item.count > 0)
     .sort((first, second) => {
-      if (second.count !== first.count) return second.count - first.count
-      return Number(rank.get(first.type) ?? 99) - Number(rank.get(second.type) ?? 99)
+      if (second.count !== first.count) {
+        return second.count - first.count
+      }
+
+      return first.index - second.index
     })
     .slice(0, 3)
+    .map(({ type, count }) => ({
+      type,
+      count,
+    }))
 }
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -162,15 +165,68 @@ async function readReaderPost(postId) {
   return data
 }
 
-async function readReactionRows(postId) {
+async function readReactionStats(postId) {
+  const results = await Promise.all(
+    REACTION_ORDER.map(
+      async (reactionType) => {
+        const { count, error } =
+          await supabase
+            .from(
+              'reader_post_reactions'
+            )
+            .select('id', {
+              count: 'exact',
+              head: true,
+            })
+            .eq('post_id', postId)
+            .eq(
+              'reaction_type',
+              reactionType
+            )
+
+        if (error) throw error
+
+        return [
+          reactionType,
+          Number(count || 0),
+        ]
+      }
+    )
+  )
+
+  const counts = Object.fromEntries(
+    results
+  )
+  const likeCount = results.reduce(
+    (total, [, count]) =>
+      total + Number(count || 0),
+    0
+  )
+
+  return {
+    counts,
+    likeCount,
+    summary:
+      buildReactionSummary(counts),
+  }
+}
+
+async function readMyReaction(
+  postId,
+  userId
+) {
+  if (!userId) return null
+
   const { data, error } = await supabase
     .from('reader_post_reactions')
-    .select('user_id, reaction_type')
+    .select('reaction_type')
     .eq('post_id', postId)
+    .eq('user_id', userId)
+    .maybeSingle()
 
   if (error) throw error
 
-  return data || []
+  return data?.reaction_type || null
 }
 
 export async function getReaderPostReactionStatus(req, res) {
@@ -204,15 +260,19 @@ export async function getReaderPostReactionStatus(req, res) {
       })
     }
 
-    const rows = await readReactionRows(postId)
-    const myReaction =
-      rows.find((row) => String(row.user_id || '') === userId)?.reaction_type || null
+    const [
+      stats,
+      myReaction,
+    ] = await Promise.all([
+      readReactionStats(postId),
+      readMyReaction(postId, userId),
+    ])
 
     return res.status(200).json({
       ok: true,
       my_reaction: myReaction,
-      like_count: rows.length,
-      reaction_summary: buildReactionSummary(rows),
+      like_count: stats.likeCount,
+      reaction_summary: stats.summary,
     })
   } catch (error) {
     console.error('GET READER POST REACTION STATUS ERROR:', error)
@@ -252,32 +312,28 @@ export async function getReaderPostReactions(req, res) {
       })
     }
 
-    const [countResult, reactionResult] = await Promise.all([
+    const [
+      stats,
+      reactionResult,
+    ] = await Promise.all([
+      readReactionStats(postId),
       supabase
         .from('reader_post_reactions')
-        .select('reaction_type')
-        .eq('post_id', postId),
-      supabase
-        .from('reader_post_reactions')
-        .select('id, user_id, reaction_type, created_at', {
-          count: 'exact',
-        })
+        .select(
+          'id, user_id, reaction_type, created_at'
+        )
         .eq('post_id', postId)
-        .order('created_at', { ascending: false })
+        .order('created_at', {
+          ascending: false,
+        })
         .range(from, to),
     ])
 
-    if (countResult.error) throw countResult.error
-    if (reactionResult.error) throw reactionResult.error
+    if (reactionResult.error) {
+      throw reactionResult.error
+    }
 
-    const counts = (countResult.data || []).reduce((result, item) => {
-      const type = normalizeReactionType(item.reaction_type)
-
-      if (!ALLOWED_REACTIONS.has(type)) return result
-
-      result[type] = Number(result[type] || 0) + 1
-      return result
-    }, {})
+    const counts = stats.counts
 
     const reactionRows = reactionResult.data || []
     const userIds = [
@@ -319,7 +375,7 @@ export async function getReaderPostReactions(req, res) {
       }
     })
 
-    const total = Number(reactionResult.count || 0)
+    const total = stats.likeCount
 
     return res.status(200).json({
       ok: true,
@@ -430,9 +486,11 @@ export async function setReaderPostReaction(req, res) {
       if (insertError) throw insertError
     }
 
-    const rows = await readReactionRows(postId)
-    const likeCount = rows.length
-    const reactionSummary = buildReactionSummary(rows)
+    const stats =
+      await readReactionStats(postId)
+    const likeCount = stats.likeCount
+    const reactionSummary =
+      stats.summary
 
     const { error: updatePostError } = await supabase
       .from('reader_posts')
