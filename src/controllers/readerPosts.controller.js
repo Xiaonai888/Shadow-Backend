@@ -14,6 +14,8 @@ const MAX_PHOTO_ALT_TEXT_LENGTH = 500
 const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 30
 const FEED_SCAN_LIMIT = 120
+const READER_POST_SELECT =
+  'id, user_id, content, image_urls, photo_metadata, visibility, comments_permission, story_sharing, publish_at, like_count, comment_count, echo_count, created_at, updated_at, deleted_at'
 
 const VISIBILITIES = new Set([
   'public',
@@ -943,8 +945,9 @@ async function attachProfileInteractionState(
             'reader_post_reactions'
           )
           .select(
-            'post_id, user_id, reaction_type'
+            'post_id, reaction_type'
           )
+          .eq('user_id', viewerId)
           .in(
             'post_id',
             reactionPostIds
@@ -1002,36 +1005,14 @@ async function attachProfileInteractionState(
     throw echoResult.error
   }
 
-  const reactions = new Map()
-
-  for (
-    const row of
-      reactionResult.data || []
-  ) {
-    const postId = String(
-      row.post_id || ''
-    )
-
-    if (!reactions.has(postId)) {
-      reactions.set(postId, {
-        count: 0,
-        myReaction: null,
-      })
-    }
-
-    const state =
-      reactions.get(postId)
-
-    state.count += 1
-
-    if (
-      String(row.user_id || '') ===
-      String(viewerId)
-    ) {
-      state.myReaction =
-        row.reaction_type || null
-    }
-  }
+  const myReactions = new Map(
+    (reactionResult.data || [])
+      .map((row) => [
+        String(row.post_id || ''),
+        row.reaction_type || null,
+      ])
+      .filter(([postId]) => Boolean(postId))
+  )
 
   const savedIds = new Set(
     (savedResult.data || [])
@@ -1082,9 +1063,6 @@ async function attachProfileInteractionState(
     const echoKey =
       `${source.type}:${source.id}`
 
-    const reaction =
-      reactions.get(postId)
-
     const hasReactionState =
       reactionPostIdSet.has(postId)
 
@@ -1097,17 +1075,13 @@ async function attachProfileInteractionState(
     return {
       ...post,
 
-      like_count: hasReactionState
-        ? Number(
-            reaction?.count || 0
-          )
-        : Number(
-            post?.like_count || 0
-          ),
+      like_count: Number(
+        post?.like_count || 0
+      ),
 
       my_reaction:
         hasReactionState
-          ? reaction?.myReaction ||
+          ? myReactions.get(postId) ||
             null
           : post?.my_reaction ||
             null,
@@ -2746,7 +2720,7 @@ async function readOwnedPost(
 ) {
   const { data, error } = await supabase
     .from('reader_posts')
-    .select('*')
+    .select(READER_POST_SELECT)
     .eq('id', postId)
     .eq('user_id', userId)
     .is('deleted_at', null)
@@ -2815,7 +2789,7 @@ export async function getReaderPostById(
 
     const { data, error } = await supabase
       .from('reader_posts')
-      .select('*')
+      .select(READER_POST_SELECT)
       .eq('id', postId)
       .is('deleted_at', null)
       .maybeSingle()
@@ -3008,7 +2982,7 @@ export async function getMyReaderPosts(
 
         const { data, error } = await supabase
       .from('reader_posts')
-      .select('*')
+      .select(READER_POST_SELECT)
       .eq('user_id', userId)
       .is('deleted_at', null)
       .order('publish_at', {
@@ -3128,7 +3102,7 @@ export async function getReaderPostsByUsername(
     const { data, error } =
       await supabase
         .from('reader_posts')
-        .select('*')
+        .select(READER_POST_SELECT)
         .eq('user_id', user.id)
         .is('deleted_at', null)
         .lte(
@@ -3260,7 +3234,7 @@ const content = validateContent(
           updated_at:
             new Date().toISOString(),
         })
-        .select('*')
+        .select(READER_POST_SELECT)
         .single()
 
         if (error) throw error
@@ -3407,7 +3381,7 @@ export async function updateMyReaderPost(
         .eq('id', postId)
         .eq('user_id', userId)
         .is('deleted_at', null)
-        .select('*')
+        .select(READER_POST_SELECT)
         .single()
 
         if (error) throw error
