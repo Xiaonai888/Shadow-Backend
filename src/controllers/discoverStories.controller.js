@@ -2,68 +2,37 @@ import { supabase } from '../config/supabase.js'
 import {
   getDiscoverStorySharedCatalog,
 } from '../services/discoverStorySharedCache.service.js'
-
-const HISTORY_DAYS = 30
-const MAX_HISTORY_ROWS = 1000
+import {
+  getDiscoverStoryInteractionHistory,
+} from '../services/discoverStoryPersonalizationCache.service.js'
 
 function asTime(value) {
   return new Date(value || 0).getTime()
 }
 
 function getLimit(value) {
-  const parsed = Number.parseInt(
-    value,
-    10
-  )
+  const parsed = Number.parseInt(value, 10)
 
   if (!Number.isFinite(parsed)) {
     return 20
   }
 
-  return Math.min(
-    30,
-    Math.max(1, parsed)
-  )
+  return Math.min(30, Math.max(1, parsed))
 }
 
-function countByCreator(
-  rows,
-  storyToCreator
-) {
-  const counts = new Map()
-
-  for (const row of rows || []) {
-    const creatorId =
-      storyToCreator.get(row.story_id)
-
-    if (!creatorId) continue
-
-    counts.set(
-      creatorId,
-      (counts.get(creatorId) || 0) +
-        1
-    )
-  }
-
-  return counts
-}
-
-function makeAuthorStory(
-  story,
-  hasViewed
-) {
+function makeAuthorStory(story, hasViewed) {
   return {
     id: story.id,
     source_type: 'author',
-    creator_id:
-      story.author_page_id,
+    creator_id: story.author_page_id,
     media_type: story.media_type,
     media_url: story.media_url,
     mime_type: story.mime_type,
     caption: story.caption || '',
     alt_text: story.alt_text || '',
     text_overlay: story.text_overlay || '',
-    mention_username: story.mention_username || '',
+    mention_username:
+      story.mention_username || '',
     link_url: story.link_url || '',
     allow_messages: Boolean(
       story.allow_messages
@@ -77,10 +46,7 @@ function makeAuthorStory(
   }
 }
 
-function makeReaderStory(
-  story,
-  hasViewed
-) {
+function makeReaderStory(story, hasViewed) {
   return {
     id: story.id,
     source_type: 'reader',
@@ -91,7 +57,8 @@ function makeReaderStory(
     caption: story.caption || '',
     alt_text: story.alt_text || '',
     text_overlay: story.text_overlay || '',
-    mention_username: story.mention_username || '',
+    mention_username:
+      story.mention_username || '',
     link_url: story.link_url || '',
     allow_messages: Boolean(
       story.allow_messages
@@ -112,9 +79,7 @@ function sortStories(stories) {
         left.has_viewed !==
         right.has_viewed
       ) {
-        return left.has_viewed
-          ? 1
-          : -1
+        return left.has_viewed ? 1 : -1
       }
 
       return (
@@ -134,11 +99,8 @@ function calculateScore(group) {
     0,
     (
       Date.now() -
-      asTime(
-        group.latest_created_at
-      )
-    ) /
-      3600000
+      asTime(group.latest_created_at)
+    ) / 3600000
   )
 
   const recencyScore = Math.max(
@@ -177,64 +139,11 @@ function calculateScore(group) {
   )
 }
 
-async function readStoryCreatorMaps(
-  authorStoryIds,
-  readerStoryIds
-) {
-  const [
-    authorResult,
-    readerResult,
-  ] = await Promise.all([
-    authorStoryIds.length
-      ? supabase
-          .from(
-            'author_page_stories'
-          )
-          .select(
-            'id, author_page_id'
-          )
-          .in('id', authorStoryIds)
-      : Promise.resolve({
-          data: [],
-          error: null,
-        }),
-    readerStoryIds.length
-      ? supabase
-          .from('reader_stories')
-          .select('id, user_id')
-          .in('id', readerStoryIds)
-      : Promise.resolve({
-          data: [],
-          error: null,
-        }),
-  ])
-
-  if (authorResult.error) {
-    throw authorResult.error
-  }
-
-  if (readerResult.error) {
-    throw readerResult.error
-  }
-
-  return {
-    authorStoryToCreator: new Map(
-      (authorResult.data || []).map(
-        (story) => [
-          story.id,
-          story.author_page_id,
-        ]
-      )
-    ),
-    readerStoryToCreator: new Map(
-      (readerResult.data || []).map(
-        (story) => [
-          story.id,
-          story.user_id,
-        ]
-      )
-    ),
-  }
+function emptyResult() {
+  return Promise.resolve({
+    data: [],
+    error: null,
+  })
 }
 
 export async function getDiscoverStoriesFeed(
@@ -256,23 +165,17 @@ export async function getDiscoverStoriesFeed(
     )
     const now =
       new Date().toISOString()
-    const historyStart = new Date(
-      Date.now() -
-        HISTORY_DAYS *
-          24 *
-          60 *
-          60 *
-          1000
-    ).toISOString()
 
     const {
       authorStories,
       readerStories,
       authorPages,
       readers,
-    } = await getDiscoverStorySharedCatalog(
-      now
-    )
+    } =
+      await getDiscoverStorySharedCatalog(
+        now
+      )
+
     const authorPageIds = [
       ...new Set(
         authorStories
@@ -294,15 +197,30 @@ export async function getDiscoverStoriesFeed(
       ),
     ]
 
-    
+    const authorStoryIds = [
+      ...new Set(
+        authorStories
+          .map((story) => story.id)
+          .filter(Boolean)
+      ),
+    ]
+
+    const readerStoryIds = [
+      ...new Set(
+        readerStories
+          .map((story) => story.id)
+          .filter(Boolean)
+      ),
+    ]
 
     const [
-  authorFollowsResult,
-  readerFollowsResult,
-  reverseReaderFollowsResult,
-  authorViewsResult,
-  readerViewsResult,
-] = await Promise.all([
+      authorFollowsResult,
+      readerFollowsResult,
+      reverseReaderFollowsResult,
+      activeAuthorViewsResult,
+      activeReaderViewsResult,
+      interactionHistory,
+    ] = await Promise.all([
       authorPageIds.length
         ? supabase
             .from(
@@ -317,10 +235,7 @@ export async function getDiscoverStoriesFeed(
               'author_page_id',
               authorPageIds
             )
-        : Promise.resolve({
-            data: [],
-            error: null,
-          }),
+        : emptyResult(),
       readerIds.length
         ? supabase
             .from('user_follows')
@@ -335,10 +250,7 @@ export async function getDiscoverStoriesFeed(
               'following_user_id',
               readerIds
             )
-        : Promise.resolve({
-            data: [],
-            error: null,
-          }),
+        : emptyResult(),
       readerIds.length
         ? supabase
             .from('user_follows')
@@ -353,111 +265,80 @@ export async function getDiscoverStoriesFeed(
               'follower_user_id',
               readerIds
             )
-        : Promise.resolve({
-            data: [],
-            error: null,
-          }),
-      supabase
-        .from(
-          'author_page_story_views'
-        )
-        .select(
-          'story_id, viewed_at'
-        )
-        .eq(
-          'viewer_user_id',
-          userId
-        )
-        .gte(
-          'viewed_at',
-          historyStart
-        )
-        .order('viewed_at', {
-          ascending: false,
-        })
-        .limit(MAX_HISTORY_ROWS),
-      supabase
-        .from('reader_story_views')
-        .select(
-          'story_id, viewed_at'
-        )
-        .eq(
-          'viewer_user_id',
-          userId
-        )
-        .gte(
-          'viewed_at',
-          historyStart
-        )
-        .order('viewed_at', {
-          ascending: false,
-        })
-        .limit(MAX_HISTORY_ROWS),
+        : emptyResult(),
+      authorStoryIds.length
+        ? supabase
+            .from(
+              'author_page_story_views'
+            )
+            .select('story_id')
+            .eq(
+              'viewer_user_id',
+              userId
+            )
+            .in(
+              'story_id',
+              authorStoryIds
+            )
+        : emptyResult(),
+      readerStoryIds.length
+        ? supabase
+            .from(
+              'reader_story_views'
+            )
+            .select('story_id')
+            .eq(
+              'viewer_user_id',
+              userId
+            )
+            .in(
+              'story_id',
+              readerStoryIds
+            )
+        : emptyResult(),
+      getDiscoverStoryInteractionHistory(
+        userId
+      ),
     ])
 
     for (const result of [
-      
       authorFollowsResult,
       readerFollowsResult,
       reverseReaderFollowsResult,
-      authorViewsResult,
-      readerViewsResult,
+      activeAuthorViewsResult,
+      activeReaderViewsResult,
     ]) {
       if (result.error) {
         throw result.error
       }
     }
 
-    const authorHistoryStoryIds = [
-      ...new Set(
-        (authorViewsResult.data || [])
-          .map(
-            (row) => row.story_id
-          )
-          .filter(Boolean)
-      ),
-    ]
-
-    const readerHistoryStoryIds = [
-      ...new Set(
-        (readerViewsResult.data || [])
-          .map(
-            (row) => row.story_id
-          )
-          .filter(Boolean)
-      ),
-    ]
-
-    const {
-      authorStoryToCreator,
-      readerStoryToCreator,
-    } = await readStoryCreatorMaps(
-      authorHistoryStoryIds,
-      readerHistoryStoryIds
-    )
-
     const authorViewCounts =
-      countByCreator(
-        authorViewsResult.data,
-        authorStoryToCreator
-      )
+      interactionHistory
+        .authorViewCounts || new Map()
 
     const readerViewCounts =
-      countByCreator(
-        readerViewsResult.data,
-        readerStoryToCreator
-      )
+      interactionHistory
+        .readerViewCounts || new Map()
 
     const viewedAuthorStoryIds =
       new Set(
-        authorViewsResult.data
+        (
+          activeAuthorViewsResult.data ||
+          []
+        )
           .map((row) => row.story_id)
+          .filter(Boolean)
       )
 
     const viewedReaderStoryIds =
       new Set(
-        readerViewsResult.data
+        (
+          activeReaderViewsResult.data ||
+          []
+        )
           .map((row) => row.story_id)
+          .filter(Boolean)
       )
 
     const followedAuthorIds =
@@ -465,10 +346,12 @@ export async function getDiscoverStoriesFeed(
         (
           authorFollowsResult.data ||
           []
-        ).map(
-          (row) =>
-            row.author_page_id
         )
+          .map(
+            (row) =>
+              row.author_page_id
+          )
+          .filter(Boolean)
       )
 
     const followedReaderIds =
@@ -476,10 +359,12 @@ export async function getDiscoverStoriesFeed(
         (
           readerFollowsResult.data ||
           []
-        ).map(
-          (row) =>
-            row.following_user_id
         )
+          .map(
+            (row) =>
+              row.following_user_id
+          )
+          .filter(Boolean)
       )
 
     const readersFollowingViewer =
@@ -487,40 +372,38 @@ export async function getDiscoverStoriesFeed(
         (
           reverseReaderFollowsResult.data ||
           []
-        ).map(
-          (row) =>
-            row.follower_user_id
         )
+          .map(
+            (row) =>
+              row.follower_user_id
+          )
+          .filter(Boolean)
       )
 
     const authorById = new Map(
-  authorPages.map((page) => [
-    page.id,
-    page,
-  ])
-)
+      authorPages.map((page) => [
+        page.id,
+        page,
+      ])
+    )
 
-const readerById = new Map(
-  readers.map((reader) => [
-    reader.id,
-    reader,
-  ])
-)
+    const readerById = new Map(
+      readers.map((reader) => [
+        reader.id,
+        reader,
+      ])
+    )
 
     const groups = new Map()
 
-    for (
-      const story of authorStories
-    ) {
+    for (const story of authorStories) {
       const page = authorById.get(
         story.author_page_id
       )
 
       if (
         !page ||
-        !followedAuthorIds.has(
-          page.id
-        )
+        !followedAuthorIds.has(page.id)
       ) {
         continue
       }
@@ -535,11 +418,9 @@ const readerById = new Map(
             id: page.id,
             user_id: page.user_id,
             name:
-              page.page_name ||
-              'Author',
+              page.page_name || 'Author',
             username:
-              page.page_username ||
-              '',
+              page.page_username || '',
             avatar_url:
               page.avatar_url || '',
           },
@@ -578,9 +459,7 @@ const readerById = new Map(
       )
     }
 
-    for (
-      const story of readerStories
-    ) {
+    for (const story of readerStories) {
       const reader = readerById.get(
         story.user_id
       )
@@ -610,8 +489,7 @@ const readerById = new Map(
             id: reader.id,
             user_id: reader.id,
             name:
-              reader.name ||
-              'Reader',
+              reader.name || 'Reader',
             username:
               reader.username || '',
             avatar_url:
@@ -725,6 +603,11 @@ const readerById = new Map(
         )
       })
       .slice(0, groupLimit)
+
+    res.set(
+      'Cache-Control',
+      'private, no-store'
+    )
 
     return res.status(200).json({
       ok: true,
