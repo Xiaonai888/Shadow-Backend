@@ -4,6 +4,8 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3'
 import { createReadStream } from 'node:fs'
+import { stat } from 'node:fs/promises'
+import { assertDiskBackedUploadFile } from './mediaStoragePolicy.service.js'
 
 let privateR2Client = null
 
@@ -23,10 +25,10 @@ function getPrivateR2Client() {
   ).trim()
 
   const missing = []
-if (!accountId) missing.push('R2_ACCOUNT_ID')
-if (!accessKeyId) missing.push('R2 access key ID credential')
-if (!secretAccessKey) missing.push('R2 secret access key credential')
-if (missing.length) throw new Error(`Missing environment variables: ${missing.join(', ')}`)
+  if (!accountId) missing.push('R2_ACCOUNT_ID')
+  if (!accessKeyId) missing.push('R2 access key ID credential')
+  if (!secretAccessKey) missing.push('R2 secret access key credential')
+  if (missing.length) throw new Error(`Missing environment variables: ${missing.join(', ')}`)
 
   privateR2Client = new S3Client({
     region: 'auto',
@@ -81,28 +83,26 @@ export async function uploadPrivatePdfToR2({
   authorPageId,
   file,
 }) {
-  if (!file?.path && !file?.buffer) {
-    throw new Error('PDF file is required')
-  }
+  assertDiskBackedUploadFile(file, {
+    field: 'private_pdf_upload',
+    allowEmpty: false,
+  })
 
   const storageKey = createPrivatePdfKey(
     authorPageId,
     file.originalname
   )
-  const fileSize = Number(
-    file.size ||
-      file.buffer?.length ||
-      0
-  )
-  const body = file.path
-    ? createReadStream(file.path)
-    : file.buffer
+  const declaredSize = Number(file.size || 0)
+  const fileStat = declaredSize > 0
+    ? null
+    : await stat(file.path)
+  const fileSize = declaredSize || Number(fileStat?.size || 0)
 
   await getPrivateR2Client().send(
     new PutObjectCommand({
       Bucket: getPrivatePdfBucketName(),
       Key: storageKey,
-      Body: body,
+      Body: createReadStream(file.path),
       ContentLength: fileSize || undefined,
       ContentType: 'application/pdf',
       ContentDisposition: 'inline',
