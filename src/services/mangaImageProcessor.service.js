@@ -85,9 +85,9 @@ const ANIME_FACE_CASCADE_URL = new URL(
   '../models/lbpcascade_animeface.xml',
   import.meta.url
 )
-const FACE_DETECTION_MAX_WIDTH = 720
+const FACE_DETECTION_MAX_WIDTH = 960
 const FACE_DETECTION_STRIP_HEIGHT = 2400
-const FACE_DETECTION_STRIP_OVERLAP = 256
+const FACE_DETECTION_STRIP_OVERLAP = 384
 
 let animeFaceDetectorPromise = null
 
@@ -140,7 +140,7 @@ function mergeFaceZones(zones) {
 
     if (
       previous &&
-      zone.top <= previous.bottom + 24
+      zone.top <= previous.bottom + 48
     ) {
       previous.bottom = Math.max(
         previous.bottom,
@@ -251,10 +251,10 @@ async function detectMangaFaceZones({
         classifier.detectMultiScale(
           equalized,
           faces,
-          1.1,
-          5,
+          1.08,
+          3,
           0,
-          new cv.Size(24, 24),
+          new cv.Size(20, 20),
           new cv.Size(0, 0)
         )
 
@@ -268,8 +268,8 @@ async function detectMangaFaceZones({
             (stripTop + face.y) * scaleY
           const faceHeight = face.height * scaleY
           const padding = Math.max(
-            48,
-            Math.round(faceHeight * 0.35)
+            72,
+            Math.round(faceHeight * 0.5)
           )
 
           zones.push({
