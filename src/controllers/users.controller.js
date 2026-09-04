@@ -441,29 +441,40 @@ export async function loginUser(req, res) {
       })
     }
 
-    const email = normalizeEmail(req.body.email)
+    const identifier = String(req.body.identifier || req.body.email || '').trim()
     const password = String(req.body.password || '')
 
-    if (!email || !password) {
+    if (!identifier || !password) {
       return res.status(400).json({
         ok: false,
-        message: 'Email and password are required',
+        message: 'Email/username and password are required',
       })
     }
 
-    const { data, error } = await supabase
+    const isEmailLogin = isValidEmail(identifier)
+
+    let query = supabase
       .from('users')
       .select('*')
-      .eq('email', email)
       .eq('is_active', true)
-      .maybeSingle()
+
+    if (isEmailLogin) {
+      query = query.eq('email', normalizeEmail(identifier))
+    } else {
+      query = query.ilike(
+        'username',
+        escapeLikePattern(normalizeUsername(identifier))
+      )
+    }
+
+    const { data, error } = await query.maybeSingle()
 
     if (error) throw error
 
     if (!data || !verifyPassword(password, data.password_hash)) {
       return res.status(401).json({
         ok: false,
-        message: 'Email or password is incorrect',
+        message: 'Email, username, or password is incorrect',
       })
     }
 
@@ -484,6 +495,7 @@ export async function loginUser(req, res) {
     })
   }
 }
+
 
 export async function requestPasswordReset(req, res) {
   try {
