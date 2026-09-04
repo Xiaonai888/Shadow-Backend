@@ -18,6 +18,7 @@ import {
   createReaderPostComment,
   deleteOwnReaderPostComment,
   getReaderPostComments,
+  getReaderPostCommentReplies,
   toggleReaderPostCommentLike,
   updateOwnReaderPostComment,
 } from '../controllers/readerPostComments.controller.js'
@@ -77,6 +78,12 @@ router.post(
   '/comments/:commentId/like',
   requireUser,
   toggleReaderPostCommentLike
+)
+
+router.get(
+  '/comments/:commentId/replies',
+  requireUser,
+  getReaderPostCommentReplies
 )
 
 router.get(
