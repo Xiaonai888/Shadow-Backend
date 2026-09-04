@@ -1,7 +1,16 @@
 import { supabase } from '../config/supabase.js'
+
 const MAIL_RETENTION_DAYS = 365
 const REMINDER_MAIL_RETENTION_DAYS = 7
 const DAILY_CHECKIN_REMINDER_PREFIX = 'daily_checkin_reminder_'
+const DEFAULT_MAIL_LIMIT = 30
+const MAX_MAIL_LIMIT = 100
+const MAIL_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000
+const MAIL_SELECT =
+  'id, user_id, sender_type, mail_type, title, message, detail, action_type, reward_type, reward_amount, link, image_url, reference_id, is_read, read_at, claimed_at, created_at'
+const WALLET_SELECT = 'user_id, diamond_balance, gem_balance, updated_at'
+
+const mailCleanupAtByUser = new Map()
 
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
@@ -9,7 +18,24 @@ function getUserId(req) {
 
 function normalizeMailType(value) {
   const type = String(value || '').trim().toLowerCase()
-  return ['admin', 'reward', 'system', 'coupon', 'event', 'payment'].includes(type) ? type : 'admin'
+  return ['admin', 'reward', 'system', 'coupon', 'event', 'payment'].includes(type)
+    ? type
+    : 'admin'
+}
+
+function getPage(value) {
+  const page = Number.parseInt(String(value || ''), 10)
+  return Number.isFinite(page) && page > 0 ? page : 1
+}
+
+function getLimit(value) {
+  const limit = Number.parseInt(String(value || ''), 10)
+  if (!Number.isFinite(limit) || limit <= 0) return DEFAULT_MAIL_LIMIT
+  return Math.min(limit, MAX_MAIL_LIMIT)
+}
+
+function shouldIncludeCounts(value) {
+  return String(value ?? 'true').trim().toLowerCase() !== 'false'
 }
 
 function getPhnomPenhDateKey(date = new Date()) {
@@ -63,21 +89,10 @@ function publicMail(item) {
   }
 }
 
-function buildCounts(items) {
-  return {
-    all: items.length,
-    unread: items.filter((item) => !item.is_read).length,
-    rewards: items.filter((item) => item.mail_type === 'reward').length,
-    admin: items.filter((item) => item.mail_type === 'admin').length,
-    system: items.filter((item) => item.mail_type === 'system' || item.sender_type === 'system').length,
-  }
-}
-
 async function cleanupOldMails(userId) {
   if (!userId) return
 
   const now = new Date().toISOString()
-
   const cutoffDate = new Date()
   cutoffDate.setDate(cutoffDate.getDate() - MAIL_RETENTION_DAYS)
 
@@ -93,7 +108,9 @@ async function cleanupOldMails(userId) {
   }
 
   const reminderCutoffDate = new Date()
-  reminderCutoffDate.setDate(reminderCutoffDate.getDate() - REMINDER_MAIL_RETENTION_DAYS)
+  reminderCutoffDate.setDate(
+    reminderCutoffDate.getDate() - REMINDER_MAIL_RETENTION_DAYS
+  )
 
   const { error: reminderCleanupError } = await supabase
     .from('reader_mails')
@@ -104,14 +121,103 @@ async function cleanupOldMails(userId) {
     .lt('created_at', reminderCutoffDate.toISOString())
 
   if (reminderCleanupError) {
-    console.error('CLEANUP DAILY CHECKIN REMINDER MAILS ERROR:', reminderCleanupError)
+    console.error(
+      'CLEANUP DAILY CHECKIN REMINDER MAILS ERROR:',
+      reminderCleanupError
+    )
   }
+}
+
+function scheduleMailCleanup(userId) {
+  if (!userId) return
+
+  const key = String(userId)
+  const now = Date.now()
+  const lastCleanupAt = Number(mailCleanupAtByUser.get(key) || 0)
+
+  if (now - lastCleanupAt < MAIL_CLEANUP_INTERVAL_MS) return
+
+  mailCleanupAtByUser.set(key, now)
+
+  cleanupOldMails(userId).catch((error) => {
+    mailCleanupAtByUser.delete(key)
+    console.error('READER MAIL WRITE CLEANUP ERROR:', error)
+  })
+}
+
+
+function getMailRetentionCutoffs() {
+  const now = new Date()
+  const generalCutoff = new Date(now)
+  generalCutoff.setDate(generalCutoff.getDate() - MAIL_RETENTION_DAYS)
+
+  const reminderCutoff = new Date(now)
+  reminderCutoff.setDate(
+    reminderCutoff.getDate() - REMINDER_MAIL_RETENTION_DAYS
+  )
+
+  return {
+    generalCutoff: generalCutoff.toISOString(),
+    reminderCutoff: reminderCutoff.toISOString(),
+  }
+}
+
+function applyRetentionFilter(query) {
+  const { generalCutoff, reminderCutoff } = getMailRetentionCutoffs()
+
+  return query
+    .gte('created_at', generalCutoff)
+    .or(
+      `reference_id.is.null,reference_id.not.ilike.${DAILY_CHECKIN_REMINDER_PREFIX}%,created_at.gte.${reminderCutoff}`
+    )
+}
+
+function applyMailTypeFilter(query, type) {
+  if (type === 'unread') return query.eq('is_read', false)
+  if (type === 'rewards') return query.eq('mail_type', 'reward')
+  if (type === 'admin') return query.eq('mail_type', 'admin')
+  if (type === 'system') return query.eq('sender_type', 'system')
+  if (type !== 'all') return query.eq('mail_type', normalizeMailType(type))
+  return query
+}
+
+async function countReaderMails(userId, type = 'all', systemCount = false) {
+  let query = supabase
+    .from('reader_mails')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .is('deleted_at', null)
+
+  query = applyRetentionFilter(query)
+
+  if (systemCount) {
+    query = query.or('mail_type.eq.system,sender_type.eq.system')
+  } else {
+    query = applyMailTypeFilter(query, type)
+  }
+
+  const { count, error } = await query
+
+  if (error) throw error
+  return Number(count || 0)
+}
+
+async function getReaderMailCounts(userId) {
+  const [all, unread, rewards, admin, system] = await Promise.all([
+    countReaderMails(userId, 'all'),
+    countReaderMails(userId, 'unread'),
+    countReaderMails(userId, 'rewards'),
+    countReaderMails(userId, 'admin'),
+    countReaderMails(userId, 'all', true),
+  ])
+
+  return { all, unread, rewards, admin, system }
 }
 
 async function getOrCreateWallet(userId) {
   const { data: existingWallet, error: existingError } = await supabase
     .from('user_wallets')
-    .select('*')
+    .select(WALLET_SELECT)
     .eq('user_id', userId)
     .maybeSingle()
 
@@ -121,11 +227,10 @@ async function getOrCreateWallet(userId) {
   const { data, error } = await supabase
     .from('user_wallets')
     .insert({ user_id: userId, diamond_balance: 0, gem_balance: 0 })
-    .select('*')
+    .select(WALLET_SELECT)
     .single()
 
   if (error) throw error
-
   return data
 }
 
@@ -133,9 +238,7 @@ async function applyReward(userId, mail) {
   const rewardType = String(mail.reward_type || '').trim().toLowerCase()
   const rewardAmount = Number(mail.reward_amount || 0)
 
-  if (!rewardType || rewardAmount <= 0) {
-    return null
-  }
+  if (!rewardType || rewardAmount <= 0) return null
 
   const now = new Date().toISOString()
   const wallet = await getOrCreateWallet(userId)
@@ -148,7 +251,7 @@ async function applyReward(userId, mail) {
         updated_at: now,
       })
       .eq('user_id', userId)
-      .select('*')
+      .select(WALLET_SELECT)
       .single()
 
     if (error) throw error
@@ -163,7 +266,7 @@ async function applyReward(userId, mail) {
         updated_at: now,
       })
       .eq('user_id', userId)
-      .select('*')
+      .select(WALLET_SELECT)
       .single()
 
     if (error) throw error
@@ -227,6 +330,8 @@ export async function updateDailyCheckInReminder(req, res) {
       .single()
 
     if (error) throw error
+
+    scheduleMailCleanup(userId)
 
     return res.status(200).json({
       ok: true,
@@ -303,7 +408,9 @@ export async function sendDailyCheckInReminderMails() {
   if (existingNotificationsError) throw existingNotificationsError
 
   const claimedUserIds = new Set((claimedRows || []).map((item) => item.user_id))
-  const existingMailUserIds = new Set((existingMails || []).map((item) => item.user_id))
+  const existingMailUserIds = new Set(
+    (existingMails || []).map((item) => item.user_id)
+  )
   const existingNotificationUserIds = new Set(
     (existingNotifications || []).map((item) => item.user_id)
   )
@@ -320,7 +427,8 @@ export async function sendDailyCheckInReminderMails() {
       mail_type: 'system',
       title: 'Daily check-in reminder',
       message: 'Your daily coin reward is ready.',
-      detail: 'Open Task Center and tap today’s reward to keep your check-in streak active.',
+      detail:
+        'Open Task Center and tap today’s reward to keep your check-in streak active.',
       action_type: '',
       reward_type: '',
       reward_amount: 0,
@@ -336,7 +444,8 @@ export async function sendDailyCheckInReminderMails() {
       user_id: userId,
       type: 'announcements',
       title: 'Daily check-in reminder',
-      message: 'Your daily coin reward is ready. Open Task Center and claim today’s reward.',
+      message:
+        'Your daily coin reward is ready. Open Task Center and claim today’s reward.',
       image_url: '',
       link: '/tasks',
       reference_id: referenceId,
@@ -372,7 +481,6 @@ export async function sendDailyCheckInReminderMails() {
   }
 }
 
-
 export async function runDailyCheckInReminderMails(req, res) {
   try {
     const secret = String(req.headers['x-cron-secret'] || req.query.secret || '')
@@ -383,7 +491,6 @@ export async function runDailyCheckInReminderMails(req, res) {
     }
 
     const result = await sendDailyCheckInReminderMails()
-
     return res.status(200).json(result)
   } catch (error) {
     console.error('RUN DAILY CHECKIN REMINDER MAILS ERROR:', error)
@@ -400,50 +507,49 @@ export async function getMyMails(req, res) {
   try {
     const userId = getUserId(req)
     const type = String(req.query.type || 'all').trim().toLowerCase()
+    const page = getPage(req.query.page)
+    const limit = getLimit(req.query.limit)
+    const includeCounts = shouldIncludeCounts(req.query.include_counts)
+    const from = (page - 1) * limit
+    const to = from + limit - 1
 
     if (!userId) {
       return res.status(401).json({ ok: false, message: 'Unauthorized' })
     }
 
-    await cleanupOldMails(userId)
-
     let query = supabase
       .from('reader_mails')
-      .select('id, user_id, sender_type, mail_type, title, message, detail, action_type, reward_type, reward_amount, link, image_url, reference_id, is_read, read_at, claimed_at, created_at')
+      .select(MAIL_SELECT, { count: 'exact' })
       .eq('user_id', userId)
       .is('deleted_at', null)
+
+    query = applyRetentionFilter(query)
+    query = applyMailTypeFilter(query, type)
+    query = query
       .order('created_at', { ascending: false })
-      .limit(80)
+      .range(from, to)
 
-    if (type === 'unread') {
-      query = query.eq('is_read', false)
-    } else if (type === 'rewards') {
-      query = query.eq('mail_type', 'reward')
-    } else if (type === 'admin') {
-      query = query.eq('mail_type', 'admin')
-    } else if (type === 'system') {
-      query = query.eq('sender_type', 'system')
-    } else if (type !== 'all') {
-      query = query.eq('mail_type', normalizeMailType(type))
-    }
-
-    const { data, error } = await query
+    const [{ data, error, count }, counts] = await Promise.all([
+      query,
+      includeCounts ? getReaderMailCounts(userId) : Promise.resolve(null),
+    ])
 
     if (error) throw error
 
-    const { data: countRows, error: countError } = await supabase
-      .from('reader_mails')
-      .select('id, sender_type, mail_type, is_read')
-      .eq('user_id', userId)
-      .is('deleted_at', null)
-      .limit(500)
+    const total = Number(count || 0)
+    const hasMore = to + 1 < total
 
-    if (countError) throw countError
+    res.set('Cache-Control', 'private, no-store')
 
     return res.status(200).json({
       ok: true,
       mails: (data || []).map(publicMail),
-      counts: buildCounts(countRows || []),
+      ...(counts ? { counts } : {}),
+      page,
+      limit,
+      total,
+      has_more: hasMore,
+      next_page: hasMore ? page + 1 : null,
     })
   } catch (error) {
     console.error('GET MY MAILS ERROR:', error)
@@ -464,20 +570,13 @@ export async function getMyMailUnreadCount(req, res) {
       return res.status(401).json({ ok: false, message: 'Unauthorized' })
     }
 
-    await cleanupOldMails(userId)
+    const unreadCount = await countReaderMails(userId, 'unread')
 
-    const { count, error } = await supabase
-      .from('reader_mails')
-      .select('id', { count: 'exact', head: true })
-      .eq('user_id', userId)
-      .eq('is_read', false)
-      .is('deleted_at', null)
-
-    if (error) throw error
+    res.set('Cache-Control', 'private, no-store')
 
     return res.status(200).json({
       ok: true,
-      unread_count: Number(count || 0),
+      unread_count: unreadCount,
     })
   } catch (error) {
     console.error('GET MAIL UNREAD COUNT ERROR:', error)
@@ -512,7 +611,7 @@ export async function markMailAsRead(req, res) {
       .eq('id', mailId)
       .eq('user_id', userId)
       .is('deleted_at', null)
-      .select('id, user_id, sender_type, mail_type, title, message, detail, action_type, reward_type, reward_amount, link, reference_id, is_read, read_at, claimed_at, created_at')
+      .select(MAIL_SELECT)
       .maybeSingle()
 
     if (error) throw error
@@ -520,6 +619,8 @@ export async function markMailAsRead(req, res) {
     if (!data) {
       return res.status(404).json({ ok: false, message: 'Mail not found' })
     }
+
+    scheduleMailCleanup(userId)
 
     return res.status(200).json({
       ok: true,
@@ -551,7 +652,7 @@ export async function claimMailReward(req, res) {
 
     const { data: mail, error: mailError } = await supabase
       .from('reader_mails')
-      .select('*')
+      .select(MAIL_SELECT)
       .eq('id', mailId)
       .eq('user_id', userId)
       .is('deleted_at', null)
@@ -564,7 +665,10 @@ export async function claimMailReward(req, res) {
     }
 
     if (mail.action_type !== 'claim') {
-      return res.status(400).json({ ok: false, message: 'This mail has no claim action' })
+      return res.status(400).json({
+        ok: false,
+        message: 'This mail has no claim action',
+      })
     }
 
     if (mail.claimed_at) {
@@ -588,10 +692,12 @@ export async function claimMailReward(req, res) {
       .eq('id', mailId)
       .eq('user_id', userId)
       .is('deleted_at', null)
-      .select('id, user_id, sender_type, mail_type, title, message, detail, action_type, reward_type, reward_amount, link, reference_id, is_read, read_at, claimed_at, created_at')
+      .select(MAIL_SELECT)
       .single()
 
     if (updateError) throw updateError
+
+    scheduleMailCleanup(userId)
 
     return res.status(200).json({
       ok: true,
@@ -630,7 +736,10 @@ export async function createReaderMail({
     .from('reader_mails')
     .insert({
       user_id: userId,
-      sender_type: String(senderType || 'system').trim().toLowerCase() === 'admin' ? 'admin' : 'system',
+      sender_type:
+        String(senderType || 'system').trim().toLowerCase() === 'admin'
+          ? 'admin'
+          : 'system',
       mail_type: normalizeMailType(mailType),
       title: String(title || '').trim(),
       message: String(message || '').trim(),
@@ -643,7 +752,7 @@ export async function createReaderMail({
       reference_id: String(referenceId || '').trim(),
       is_read: false,
     })
-    .select('id, user_id, sender_type, mail_type, title, message, detail, action_type, reward_type, reward_amount, link, reference_id, is_read, read_at, claimed_at, created_at')
+    .select(MAIL_SELECT)
     .single()
 
   if (error) {
@@ -651,5 +760,6 @@ export async function createReaderMail({
     return null
   }
 
+  scheduleMailCleanup(userId)
   return publicMail(data)
 }
