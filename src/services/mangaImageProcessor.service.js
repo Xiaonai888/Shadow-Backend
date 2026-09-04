@@ -16,6 +16,7 @@ export const MANGA_PROCESSOR_LIMITS = Object.freeze({
   cutAnalysisWidth: 480,
   cutBandHeight: 260,
   cutStep: 16,
+  partOverlap: 2,
   targetPartBytes: 1792 * 1024,
   hardPartBytes: 2 * 1024 * 1024,
 })
@@ -678,6 +679,8 @@ async function buildSmartPartRanges({
     partEmergencyMaxHeight,
     partMinHeight,
     partEmergencyMinHeight,
+    cutSearchRadius,
+    partOverlap,
   } = MANGA_PROCESSOR_LIMITS
 
   if (pageHeight <= partMaxHeight) {
@@ -714,12 +717,22 @@ async function buildSmartPartRanges({
       pageHeight - remainingParts * partMinHeight
     )
 
+    const searchCenterY = clamp(targetY, minimumY, maximumY)
+    const searchMinimumY = Math.max(
+      minimumY,
+      searchCenterY - cutSearchRadius
+    )
+    const searchMaximumY = Math.min(
+      maximumY,
+      searchCenterY + cutSearchRadius
+    )
+
     let cutY = findSafestCut({
       analysis,
       faceZones,
       targetY,
-      minimumY,
-      maximumY,
+      minimumY: searchMinimumY,
+      maximumY: searchMaximumY,
     })
 
     if (cutY === null) {
@@ -764,7 +777,7 @@ async function buildSmartPartRanges({
 
   for (const cutY of cuts) {
     ranges.push({ top, height: cutY - top })
-    top = cutY
+    top = Math.max(0, cutY - partOverlap)
   }
 
   ranges.push({ top, height: pageHeight - top })
