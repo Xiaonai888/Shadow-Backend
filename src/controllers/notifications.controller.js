@@ -1,24 +1,5 @@
 import { supabase } from '../config/supabase.js'
 
-const NOTIFICATION_RETENTION_DAYS = 90
-
-async function cleanupOldNotifications(userId) {
-  if (!userId) return
-
-  const cutoffDate = new Date()
-  cutoffDate.setDate(cutoffDate.getDate() - NOTIFICATION_RETENTION_DAYS)
-
-  const { error } = await supabase
-    .from('notifications')
-    .delete()
-    .eq('user_id', userId)
-    .lt('created_at', cutoffDate.toISOString())
-
-  if (error) {
-    console.error('CLEANUP OLD NOTIFICATIONS ERROR:', error)
-  }
-}
-
 function normalizeType(value) {
   const type = String(value || '').trim().toLowerCase()
   return ['community', 'announcements'].includes(type) ? type : 'announcements'
@@ -40,57 +21,137 @@ function publicNotification(item) {
   }
 }
 
-function buildCounts(items) {
+const NOTIFICATION_RETENTION_DAYS = 90
+const NOTIFICATION_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000
+const notificationCleanupTimestamps = new Map()
+const DEFAULT_NOTIFICATION_PAGE_SIZE = 30
+const MAX_NOTIFICATION_PAGE_SIZE = 100
+const NOTIFICATION_SELECT =
+  'id, user_id, type, title, message, image_url, link, reference_id, is_read, created_at, read_at'
+
+function parsePositiveInteger(value, fallback) {
+  const parsed = Number.parseInt(String(value || ''), 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+async function maybeCleanupOldNotifications(userId) {
+  if (!userId) return
+
+  const key = String(userId)
+  const now = Date.now()
+  const lastCleanup = Number(notificationCleanupTimestamps.get(key) || 0)
+
+  if (now - lastCleanup < NOTIFICATION_CLEANUP_INTERVAL_MS) {
+    return
+  }
+
+  notificationCleanupTimestamps.set(key, now)
+
+  const cutoffDate = new Date()
+  cutoffDate.setDate(cutoffDate.getDate() - NOTIFICATION_RETENTION_DAYS)
+
+  const { error } = await supabase
+    .from('notifications')
+    .delete()
+    .eq('user_id', userId)
+    .lt('created_at', cutoffDate.toISOString())
+
+  if (error) {
+    notificationCleanupTimestamps.delete(key)
+    console.error('CLEANUP OLD NOTIFICATIONS ERROR:', error)
+  }
+}
+
+async function countNotifications(userId, { type = '', unreadOnly = false } = {}) {
+  let query = supabase
+    .from('notifications')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .is('deleted_at', null)
+
+  if (unreadOnly) {
+    query = query.eq('is_read', false)
+  }
+
+  if (type) {
+    query = query.eq('type', type)
+  }
+
+  const { count, error } = await query
+
+  if (error) throw error
+
+  return Number(count || 0)
+}
+
+async function getNotificationCounts(userId) {
+  const [all, unread, community, announcements] = await Promise.all([
+    countNotifications(userId),
+    countNotifications(userId, { unreadOnly: true }),
+    countNotifications(userId, { type: 'community', unreadOnly: true }),
+    countNotifications(userId, { type: 'announcements', unreadOnly: true }),
+  ])
+
   return {
-    all: items.length,
-    unread: items.filter((item) => !item.is_read).length,
-    community: items.filter((item) => item.type === 'community' && !item.is_read).length,
-    announcements: items.filter((item) => item.type === 'announcements' && !item.is_read).length,
+    all,
+    unread,
+    community,
+    announcements,
   }
 }
 
 export async function getMyNotifications(req, res) {
   try {
     const userId = req.user?.user_id
-    const type = String(req.query.type || 'all').trim().toLowerCase()
+    const requestedType = String(req.query.type || 'all').trim().toLowerCase()
+    const type = ['all', 'unread', 'community', 'announcements'].includes(requestedType)
+      ? requestedType
+      : 'all'
+    const page = parsePositiveInteger(req.query.page, 1)
+    const requestedLimit = parsePositiveInteger(
+      req.query.limit,
+      DEFAULT_NOTIFICATION_PAGE_SIZE
+    )
+    const limit = Math.min(requestedLimit, MAX_NOTIFICATION_PAGE_SIZE)
+    const includeCounts = String(req.query.include_counts ?? '1') !== '0'
+    const from = (page - 1) * limit
+    const to = from + limit - 1
 
     if (!userId) {
       return res.status(401).json({ ok: false, message: 'Unauthorized' })
     }
 
-    await cleanupOldNotifications(userId)
-
     let query = supabase
       .from('notifications')
-      .select('id, user_id, type, title, message, image_url, link, reference_id, is_read, created_at, read_at')
+      .select(NOTIFICATION_SELECT, { count: 'exact' })
       .eq('user_id', userId)
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
-      .limit(80)
+      .range(from, to)
 
     if (type === 'unread') {
       query = query.eq('is_read', false)
-    } else if (['community', 'announcements'].includes(type)) {
+    } else if (type === 'community' || type === 'announcements') {
       query = query.eq('type', type)
     }
 
-    const { data, error } = await query
+    const { data, error, count } = await query
 
     if (error) throw error
 
-    const { data: countRows, error: countError } = await supabase
-      .from('notifications')
-      .select('id, type, is_read')
-      .eq('user_id', userId)
-      .is('deleted_at', null)
-      .limit(500)
-
-    if (countError) throw countError
+    const counts = includeCounts
+      ? await getNotificationCounts(userId)
+      : undefined
+    const total = Number(count || 0)
 
     return res.status(200).json({
       ok: true,
       notifications: (data || []).map(publicNotification),
-      counts: buildCounts(countRows || []),
+      ...(counts ? { counts } : {}),
+      page,
+      limit,
+      total,
+      has_more: page * limit < total,
     })
   } catch (error) {
     console.error('GET MY NOTIFICATIONS ERROR:', error)
@@ -157,7 +218,7 @@ export async function markNotificationAsRead(req, res) {
       .eq('id', notificationId)
       .eq('user_id', userId)
       .is('deleted_at', null)
-      .select('id, user_id, type, title, message, image_url, link, reference_id, is_read, created_at, read_at')
+      .select(NOTIFICATION_SELECT)
       .maybeSingle()
 
     if (error) throw error
@@ -231,13 +292,15 @@ export async function createNotification({ userId, type, title, message, imageUr
       reference_id: String(referenceId || '').trim(),
       is_read: false,
     })
-    .select('id, user_id, type, title, message, image_url, link, reference_id, is_read, created_at, read_at')
+    .select(NOTIFICATION_SELECT)
     .single()
 
   if (error) {
     console.error('CREATE NOTIFICATION ERROR:', error)
     return null
   }
+
+  await maybeCleanupOldNotifications(userId)
 
   return publicNotification(data)
 }
