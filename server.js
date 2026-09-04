@@ -90,7 +90,7 @@ import {
   startMemoryIncidentMonitor,
 } from './src/services/memoryIncidentTracer.service.js'
 import storyTranslationRoutes from './src/routes/storyTranslation.routes.js'
-
+import spinRoutes from './src/routes/spin.routes.js'
 
 dotenv.config()
 
@@ -685,6 +685,7 @@ app.use('/api/author-stories', shortStorySpamGuard, authorStoriesRoutes)
 app.use('/api/reader-stories', shortStorySpamGuard, readerStoriesRoutes)
 app.use('/api/discover-stories', readerReadSpamGuard, discoverStoriesRoutes)
 app.use('/api/discover-search', readerReadSpamGuard, discoverSearchRoutes)
+app.use('/api/spin', readerActionSpamGuard, spinRoutes)
 app.use('/api/fast', mediaUploadRouteSpamGuard, fastRoutes)
 app.use('/api/reports', reportActionSpamGuard, contentReportsRoutes)
 app.use('/api/admin/reports', adminReportsRoutes)
