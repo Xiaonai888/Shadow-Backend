@@ -44,6 +44,21 @@ const WORKER_TIMEOUT_MS = 3 * 60 * 1000
 const ADMISSION_TIMEOUT_MS = 5 * 60 * 1000
 const ADMISSION_POLL_MS = 1000
 const ESTIMATED_IMAGE_WORKER_MB = 140
+const DEFAULT_READER_STORY_PAGE_SIZE = 30
+const MAX_READER_STORY_PAGE_SIZE = 100
+const MAX_READER_STORY_PAGE = 10000
+const READER_STORY_PUBLIC_SELECT = [
+  'id',
+  'user_id',
+  'media_type',
+  'media_url',
+  'mime_type',
+  'caption',
+  'allow_messages',
+  'view_count',
+  'created_at',
+  'expires_at',
+].join(', ')
 const STORY_IMAGE_WORKER_PATH = fileURLToPath(
   new URL('../workers/authorStoryImage.worker.js', import.meta.url)
 )
@@ -110,6 +125,16 @@ function normalizeBoolean(value, fallback = true) {
   if (value === true || value === 'true' || value === 1 || value === '1') return true
   if (value === false || value === 'false' || value === 0 || value === '0') return false
   return fallback
+}
+
+function parsePositiveInteger(value, fallback, max) {
+  const parsed = Number.parseInt(String(value ?? ''), 10)
+
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback
+  }
+
+  return Math.min(parsed, max)
 }
 
 function sleep(ms) {
@@ -684,7 +709,7 @@ export async function createMyReaderStory(req, res) {
         expires_at: expiresAt.toISOString(),
         updated_at: createdAt.toISOString(),
       })
-      .select()
+      .select(READER_STORY_PUBLIC_SELECT)
       .single()
 
     if (error) throw error
@@ -739,8 +764,6 @@ export async function createMyReaderStory(req, res) {
 
 export async function getMyReaderStories(req, res) {
   try {
-    await cleanupSafely()
-
     const userId = req.user?.user_id
 
     if (!userId) {
@@ -750,22 +773,40 @@ export async function getMyReaderStories(req, res) {
       })
     }
 
+    const page = parsePositiveInteger(
+      req.query.page,
+      1,
+      MAX_READER_STORY_PAGE
+    )
+    const limit = parsePositiveInteger(
+      req.query.limit,
+      DEFAULT_READER_STORY_PAGE_SIZE,
+      MAX_READER_STORY_PAGE_SIZE
+    )
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+    const now = new Date().toISOString()
     const reader = await getReader(userId)
 
-    const { data, error } = await supabase
+    const { data, count, error } = await supabase
       .from('reader_stories')
-      .select('*')
+      .select(READER_STORY_PUBLIC_SELECT, {
+        count: 'exact',
+      })
       .eq('user_id', userId)
       .eq('status', 'active')
-      .gt(
-        'expires_at',
-        new Date().toISOString()
-      )
+      .gt('expires_at', now)
       .order('created_at', {
         ascending: false,
       })
+      .range(from, to)
 
     if (error) throw error
+
+    const total = Number(count || 0)
+    const hasMore = page * limit < total
+
+    res.set('Cache-Control', 'private, no-store')
 
     return res.status(200).json({
       ok: true,
@@ -777,6 +818,11 @@ export async function getMyReaderStories(req, res) {
             true
           )
       ),
+      page,
+      limit,
+      total,
+      has_more: hasMore,
+      next_page: hasMore ? page + 1 : null,
     })
   } catch (error) {
     console.error(
@@ -816,7 +862,7 @@ export async function deleteMyReaderStory(req, res) {
 
     const { data: story, error } = await supabase
       .from('reader_stories')
-      .select('*')
+      .select('id, media_path')
       .eq('id', storyId)
       .eq('user_id', userId)
       .eq('status', 'active')
