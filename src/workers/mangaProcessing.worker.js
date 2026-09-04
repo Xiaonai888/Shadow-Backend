@@ -58,6 +58,10 @@ async function main() {
   }
 
   let peakRss = process.memoryUsage().rss
+  let tempObjectKey = ''
+  let storedParts = []
+  let completionPersisted = false
+  let deleteStoredMangaParts = null
 
   const sampleTimer = setInterval(() => {
     const rss = process.memoryUsage().rss
@@ -88,7 +92,7 @@ async function main() {
       throw error
     }
 
-    const tempObjectKey =
+    tempObjectKey =
       cleanText(job.temp_object_key, 1000)
     const payload =
       job.payload &&
@@ -131,11 +135,14 @@ async function main() {
     } = await import(
       '../services/mangaImageProcessor.service.js'
     )
-    const {
-      uploadProcessedMangaParts,
-    } = await import(
+    const mangaStorage = await import(
       '../services/mangaPageStorage.service.js'
     )
+    const {
+      uploadProcessedMangaParts,
+    } = mangaStorage
+    deleteStoredMangaParts =
+      mangaStorage.deleteStoredMangaParts
 
     const file = {
       buffer,
@@ -158,6 +165,7 @@ async function main() {
     const parts = Array.isArray(stored.parts)
       ? stored.parts
       : []
+    storedParts = parts
     const firstPart = parts[0] || {}
     const totalBytes = parts.reduce(
       (sum, part) =>
@@ -201,6 +209,9 @@ async function main() {
       throw error
     }
 
+    completionPersisted = true
+    storedParts = []
+
     await deleteTempSafely(tempObjectKey)
 
     peakRss = Math.max(
@@ -218,6 +229,49 @@ async function main() {
       'MANGA BACKGROUND WORKER ERROR:',
       error
     )
+
+    if (
+      storedParts.length > 0 &&
+      !completionPersisted
+    ) {
+      try {
+        const latestJob =
+          await getHeavyMediaJob({ jobId })
+
+        if (latestJob?.status === 'done') {
+          completionPersisted = true
+          storedParts = []
+          await deleteTempSafely(tempObjectKey)
+
+          peakRss = Math.max(
+            peakRss,
+            process.memoryUsage().rss
+          )
+
+          sendMessage({
+            type: 'done',
+            status: 'done',
+            peak_rss_mb: memoryMb(peakRss),
+          })
+          return
+        }
+
+        if (
+          typeof deleteStoredMangaParts ===
+          'function'
+        ) {
+          await deleteStoredMangaParts(
+            storedParts
+          )
+          storedParts = []
+        }
+      } catch (cleanupError) {
+        console.error(
+          'MANGA WORKER OUTPUT CLEANUP ERROR:',
+          cleanupError
+        )
+      }
+    }
 
     let failedJob = null
 
