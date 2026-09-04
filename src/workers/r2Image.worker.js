@@ -112,7 +112,8 @@ async function main() {
 
         const resizeOptions = {
           width: profile.width,
-          withoutEnlargement: true,
+          withoutEnlargement:
+            options.withoutEnlargement !== false,
         }
 
         if (profile.height) {
