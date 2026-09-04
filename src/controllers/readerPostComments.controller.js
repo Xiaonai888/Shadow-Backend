@@ -3,6 +3,10 @@ import { supabase } from '../config/supabase.js'
 const COMMENT_LIMIT = 1000
 const DEFAULT_PAGE_SIZE = 20
 const MAX_PAGE_SIZE = 30
+const DEFAULT_REPLY_PAGE_SIZE = 5
+const MAX_REPLY_PAGE_SIZE = 20
+const COMMENT_SELECT =
+  'id, post_id, user_id, parent_id, text, likes, is_hidden, created_at, updated_at, user:users(id, name, username, avatar_url, role)'
 
 const COMMENT_REACTION_TYPES = new Set([
   'love',
@@ -345,6 +349,63 @@ async function readReactionMap(
   )
 }
 
+
+async function loadReplyPage({
+  postId,
+  parentId,
+  page = 1,
+  limit = DEFAULT_REPLY_PAGE_SIZE,
+}) {
+  const safePage = Math.max(
+    1,
+    Number.parseInt(page, 10) || 1
+  )
+  const safeLimit = Math.min(
+    MAX_REPLY_PAGE_SIZE,
+    Math.max(
+      1,
+      Number.parseInt(limit, 10) ||
+        DEFAULT_REPLY_PAGE_SIZE
+    )
+  )
+  const from =
+    (safePage - 1) * safeLimit
+  const to =
+    from + safeLimit - 1
+
+  const {
+    data,
+    error,
+    count,
+  } = await supabase
+    .from('reader_post_comments')
+    .select(COMMENT_SELECT, {
+      count: 'exact',
+    })
+    .eq('post_id', postId)
+    .eq('is_hidden', false)
+    .eq('parent_id', parentId)
+    .order('created_at', {
+      ascending: true,
+    })
+    .range(from, to)
+
+  if (error) throw error
+
+  const rows = data || []
+  const total = Number(count || 0)
+
+  return {
+    rows,
+    total,
+    page: safePage,
+    limit: safeLimit,
+    hasMore:
+      safePage * safeLimit < total,
+  }
+}
+
+
 export async function getReaderPostComments(
   req,
   res
@@ -363,6 +424,17 @@ export async function getReaderPostComments(
       .toLowerCase()
     const { page, limit, from, to } =
       getPagination(req)
+    const replyLimit = Math.min(
+      MAX_REPLY_PAGE_SIZE,
+      Math.max(
+        1,
+        Number.parseInt(
+          req.query.reply_limit,
+          10
+        ) ||
+          DEFAULT_REPLY_PAGE_SIZE
+      )
+    )
 
     if (!postId) {
       return res.status(400).json({
@@ -382,9 +454,9 @@ export async function getReaderPostComments(
 
     let parentQuery = supabase
       .from('reader_post_comments')
-      .select(
-        '*, user:users(id, name, username, avatar_url, role)'
-      )
+      .select(COMMENT_SELECT, {
+        count: 'exact',
+      })
       .eq('post_id', postId)
       .eq('is_hidden', false)
       .is('parent_id', null)
@@ -409,65 +481,57 @@ export async function getReaderPostComments(
     const {
       data: parentComments,
       error: parentError,
+      count: parentCount,
     } = await parentQuery.range(from, to)
 
     if (parentError) throw parentError
 
-    const parentIds = (
-      parentComments || []
-    )
-      .map((comment) => comment.id)
-      .filter(Boolean)
+    const parents = parentComments || []
 
-    let replies = []
-
-    if (parentIds.length) {
-      const { data, error } = await supabase
-        .from('reader_post_comments')
-        .select(
-          '*, user:users(id, name, username, avatar_url, role)'
+    const [
+      replyResults,
+      total,
+    ] = await Promise.all([
+      Promise.all(
+        parents.map(
+          async (parent) => ({
+            parentId: String(parent.id),
+            result: await loadReplyPage({
+              postId,
+              parentId: parent.id,
+              page: 1,
+              limit: replyLimit,
+            }),
+          })
         )
-        .eq('post_id', postId)
-        .eq('is_hidden', false)
-        .in('parent_id', parentIds)
-        .order('created_at', {
-          ascending: true,
-        })
+      ),
+      countVisibleComments(postId),
+    ])
 
-      if (error) throw error
-      replies = data || []
-    }
-
-    const repliesByParent = new Map()
-
-    for (const reply of replies) {
-      const key = String(
-        reply.parent_id || ''
+    const replyResultMap = new Map(
+      replyResults.map(
+        ({ parentId, result }) => [
+          parentId,
+          result,
+        ]
       )
-      const current =
-        repliesByParent.get(key) || []
-      current.push(reply)
-      repliesByParent.set(key, current)
-    }
-
-    const combined = (
-      parentComments || []
-    ).map((comment) => ({
-      ...comment,
-      replies:
-        repliesByParent.get(
-          String(comment.id)
-        ) || [],
-    }))
-
-    const allCommentIds = combined.flatMap(
-      (comment) => [
-        comment.id,
-        ...(comment.replies || []).map(
-          (reply) => reply.id
-        ),
-      ]
     )
+
+    const replyRows = parents.flatMap(
+      (parent) =>
+        replyResultMap.get(
+          String(parent.id)
+        )?.rows || []
+    )
+
+    const allCommentIds = [
+      ...parents.map(
+        (comment) => comment.id
+      ),
+      ...replyRows.map(
+        (reply) => reply.id
+      ),
+    ]
 
     const reactionMap =
       await readReactionMap(
@@ -475,34 +539,44 @@ export async function getReaderPostComments(
         allCommentIds
       )
 
-    const total =
-      await countVisibleComments(postId)
+    const commentsWithReplies =
+      parents.map((comment) => {
+        const result =
+          replyResultMap.get(
+            String(comment.id)
+          ) || {
+            rows: [],
+            total: 0,
+            page: 0,
+            hasMore: false,
+          }
 
-    const {
-      count: parentCount,
-      error: parentCountError,
-    } = await supabase
-      .from('reader_post_comments')
-      .select('id', {
-        count: 'exact',
-        head: true,
+        return {
+          ...publicComment(
+            comment,
+            reactionMap
+          ),
+          replies: result.rows.map(
+            (reply) =>
+              publicComment(
+                reply,
+                reactionMap
+              )
+          ),
+          reply_total:
+            Number(result.total || 0),
+          reply_page:
+            result.total > 0
+              ? Number(result.page || 1)
+              : 0,
+          reply_has_more:
+            Boolean(result.hasMore),
+        }
       })
-      .eq('post_id', postId)
-      .eq('is_hidden', false)
-      .is('parent_id', null)
-
-    if (parentCountError) {
-      throw parentCountError
-    }
 
     return res.status(200).json({
       ok: true,
-      comments: combined.map((comment) =>
-        publicComment(
-          comment,
-          reactionMap
-        )
-      ),
+      comments: commentsWithReplies,
       page,
       limit,
       total,
@@ -521,6 +595,109 @@ export async function getReaderPostComments(
       message:
         error.message ||
         'Failed to load comments',
+    })
+  }
+}
+
+export async function getReaderPostCommentReplies(
+  req,
+  res
+) {
+  try {
+    const userId = getUserId(req)
+    const commentId = String(
+      req.params.commentId || ''
+    ).trim()
+    const page = Math.max(
+      1,
+      Number.parseInt(
+        req.query.page,
+        10
+      ) || 1
+    )
+    const limit = Math.min(
+      MAX_REPLY_PAGE_SIZE,
+      Math.max(
+        1,
+        Number.parseInt(
+          req.query.limit,
+          10
+        ) ||
+          DEFAULT_REPLY_PAGE_SIZE
+      )
+    )
+
+    if (!commentId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment ID is required',
+      })
+    }
+
+    const {
+      data: parent,
+      error: parentError,
+    } = await supabase
+      .from('reader_post_comments')
+      .select(
+        'id, post_id, parent_id, is_hidden'
+      )
+      .eq('id', commentId)
+      .maybeSingle()
+
+    if (parentError) throw parentError
+
+    if (
+      !parent ||
+      parent.parent_id ||
+      parent.is_hidden
+    ) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
+
+    const result = await loadReplyPage({
+      postId: parent.post_id,
+      parentId: parent.id,
+      page,
+      limit,
+    })
+
+    const reactionMap =
+      await readReactionMap(
+        userId,
+        result.rows.map(
+          (reply) => reply.id
+        )
+      )
+
+    return res.status(200).json({
+      ok: true,
+      replies: result.rows.map(
+        (reply) =>
+          publicComment(
+            reply,
+            reactionMap
+          )
+      ),
+      page: result.page,
+      limit: result.limit,
+      total: result.total,
+      has_more: result.hasMore,
+    })
+  } catch (error) {
+    console.error(
+      'GET READER POST COMMENT REPLIES ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        error.message ||
+        'Failed to load replies',
     })
   }
 }
@@ -629,7 +806,7 @@ export async function createReaderPostComment(
         text,
       })
       .select(
-        '*, user:users(id, name, username, avatar_url, role)'
+        COMMENT_SELECT
       )
       .single()
 
@@ -738,7 +915,7 @@ export async function updateOwnReaderPostComment(
       .eq('id', commentId)
       .eq('user_id', userId)
       .select(
-        '*, user:users(id, name, username, avatar_url, role)'
+        COMMENT_SELECT
       )
       .single()
 
