@@ -60,7 +60,9 @@ function buildEchoCounts(v2Rows, legacyRows) {
 async function loadCandidates(snapshotAt) {
   const { data: posts, error: postsError } = await supabase
     .from('reader_posts')
-    .select('*')
+    .select(
+      'id, user_id, content, image_urls, photo_metadata, visibility, comments_permission, story_sharing, publish_at, like_count, comment_count, echo_count, created_at, updated_at'
+    )
     .is('deleted_at', null)
     .lte('publish_at', snapshotAt)
     .order('publish_at', {
