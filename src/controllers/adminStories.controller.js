@@ -758,6 +758,7 @@ export async function getAdminStories(req, res) {
     const storyStatus = cleanText(req.query.status || 'all').toLowerCase()
     const visibility = cleanText(req.query.visibility || 'all').toLowerCase()
     const genre = cleanText(req.query.genre || 'all')
+    const storyType = cleanText(req.query.story_type || req.query.storyType || 'all').toLowerCase()
     const authorId = cleanText(req.query.author_id || req.query.authorId)
 
     let query = supabase.from('stories').select('*', { count: 'exact' })
@@ -770,6 +771,9 @@ export async function getAdminStories(req, res) {
     if (storyStatus !== 'all') query = query.eq('status', storyStatus)
     if (visibility !== 'all') query = query.eq('admin_visibility_status', visibility)
     if (genre !== 'all') query = query.eq('main_genre', genre)
+    if (storyType === 'novel') query = query.or('story_type.eq.novel,story_type.is.null')
+    if (storyType === 'manga') query = query.eq('story_type', 'manga')
+    if (storyType === 'chat_story') query = query.eq('story_type', 'chat_story')
     if (authorId) query = query.eq('author_id', authorId)
 
     if (search) {
