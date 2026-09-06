@@ -1,28 +1,26 @@
-import { readFile } from 'node:fs/promises'
 import sharp from 'sharp'
-import { loadOpenCV } from '@opencvjs/node'
 
 export const MANGA_PROCESSOR_LIMITS = Object.freeze({
   maxWidth: 8000,
   maxHeight: 30000,
   maxPixels: 120_000_000,
   targetWidth: 1600,
-  partPreferredHeight: 5000,
-  partMaxHeight: 6200,
-  partEmergencyMaxHeight: 7600,
-  partMinHeight: 1600,
-  partEmergencyMinHeight: 1000,
-  cutSearchRadius: 1800,
-  cutAnalysisWidth: 480,
-  cutBandHeight: 260,
-  cutStep: 16,
+  partPreferredHeight: 4200,
+  partMaxHeight: 5200,
+  partEmergencyMaxHeight: 6200,
+  partMinHeight: 1400,
+  partEmergencyMinHeight: 900,
+  cutSearchRadius: 1400,
+  cutAnalysisWidth: 360,
+  cutBandHeight: 280,
+  cutStep: 24,
   partOverlap: 2,
   targetPartBytes: 1792 * 1024,
   hardPartBytes: 2 * 1024 * 1024,
 })
 
 const WIDTH_FALLBACKS = [1600, 1440, 1280, 1120]
-const QUALITY_LEVELS = [92, 90, 88, 85, 82, 79, 76, 73, 70, 67, 64]
+const QUALITY_LEVELS = [86, 80, 74, 68, 62]
 
 function positiveInteger(value, fallback = 0) {
   const number = Number(value)
@@ -78,233 +76,6 @@ function widthProfiles(sourceWidth) {
 
 function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value))
-}
-
-const ANIME_FACE_CASCADE_FILE = 'lbpcascade_animeface.xml'
-const ANIME_FACE_CASCADE_URL = new URL(
-  '../models/lbpcascade_animeface.xml',
-  import.meta.url
-)
-const FACE_DETECTION_MAX_WIDTH = 960
-const FACE_DETECTION_STRIP_HEIGHT = 2400
-const FACE_DETECTION_STRIP_OVERLAP = 384
-
-let animeFaceDetectorPromise = null
-
-async function getAnimeFaceDetector() {
-  if (!animeFaceDetectorPromise) {
-    animeFaceDetectorPromise = (async () => {
-      const cv = await loadOpenCV()
-      const bytes = new Uint8Array(
-        await readFile(ANIME_FACE_CASCADE_URL)
-      )
-
-      try {
-        cv.FS_createDataFile(
-          '/',
-          ANIME_FACE_CASCADE_FILE,
-          bytes,
-          true,
-          false,
-          false
-        )
-      } catch {
-      }
-
-      const classifier = new cv.CascadeClassifier()
-      classifier.load(ANIME_FACE_CASCADE_FILE)
-
-      if (classifier.empty()) {
-        classifier.delete()
-        throw new Error('Anime face classifier could not be loaded.')
-      }
-
-      return { cv, classifier }
-    })().catch((error) => {
-      animeFaceDetectorPromise = null
-      throw error
-    })
-  }
-
-  return animeFaceDetectorPromise
-}
-
-function mergeFaceZones(zones) {
-  const sorted = [...zones].sort(
-    (a, b) => a.top - b.top
-  )
-  const merged = []
-
-  for (const zone of sorted) {
-    const previous = merged[merged.length - 1]
-
-    if (
-      previous &&
-      zone.top <= previous.bottom + 48
-    ) {
-      previous.bottom = Math.max(
-        previous.bottom,
-        zone.bottom
-      )
-      continue
-    }
-
-    merged.push({ ...zone })
-  }
-
-  return merged
-}
-
-async function detectMangaFaceZones({
-  fileBuffer,
-  pageWidth,
-  pageHeight,
-}) {
-  const zones = []
-
-  try {
-    const { cv, classifier } =
-      await getAnimeFaceDetector()
-
-    const detectionScale = Math.min(
-      1,
-      FACE_DETECTION_MAX_WIDTH / pageWidth
-    )
-    const detectionWidth = Math.max(
-      1,
-      Math.round(pageWidth * detectionScale)
-    )
-    const detectionHeight = Math.max(
-      1,
-      Math.round(pageHeight * detectionScale)
-    )
-    const stripHeight = Math.min(
-      FACE_DETECTION_STRIP_HEIGHT,
-      detectionHeight
-    )
-    const stripOverlap = Math.min(
-      FACE_DETECTION_STRIP_OVERLAP,
-      Math.max(0, stripHeight - 1)
-    )
-    const stripStep = Math.max(
-      1,
-      stripHeight - stripOverlap
-    )
-    const scaleY = pageHeight / detectionHeight
-
-    for (
-      let stripTop = 0;
-      stripTop < detectionHeight;
-      stripTop += stripStep
-    ) {
-      const currentHeight = Math.min(
-        stripHeight,
-        detectionHeight - stripTop
-      )
-
-      let src = null
-      let gray = null
-      let equalized = null
-      let faces = null
-
-      try {
-        const raw = await sharp(fileBuffer, {
-          limitInputPixels:
-            MANGA_PROCESSOR_LIMITS.maxPixels,
-          sequentialRead: true,
-        })
-          .rotate()
-          .resize({
-            width: detectionWidth,
-            height: detectionHeight,
-            fit: 'fill',
-            withoutEnlargement: true,
-          })
-          .extract({
-            left: 0,
-            top: stripTop,
-            width: detectionWidth,
-            height: currentHeight,
-          })
-          .ensureAlpha()
-          .raw()
-          .toBuffer({ resolveWithObject: true })
-
-        src = new cv.Mat(
-          raw.info.height,
-          raw.info.width,
-          cv.CV_8UC4
-        )
-        src.data.set(raw.data)
-
-        gray = new cv.Mat()
-        equalized = new cv.Mat()
-        faces = new cv.RectVector()
-
-        cv.cvtColor(
-          src,
-          gray,
-          cv.COLOR_RGBA2GRAY,
-          0
-        )
-        cv.equalizeHist(gray, equalized)
-
-        classifier.detectMultiScale(
-          equalized,
-          faces,
-          1.08,
-          3,
-          0,
-          new cv.Size(20, 20),
-          new cv.Size(0, 0)
-        )
-
-        for (
-          let index = 0;
-          index < faces.size();
-          index += 1
-        ) {
-          const face = faces.get(index)
-          const faceTop =
-            (stripTop + face.y) * scaleY
-          const faceHeight = face.height * scaleY
-          const padding = Math.max(
-            72,
-            Math.round(faceHeight * 0.5)
-          )
-
-          zones.push({
-            top: Math.max(
-              0,
-              Math.floor(faceTop - padding)
-            ),
-            bottom: Math.min(
-              pageHeight,
-              Math.ceil(
-                faceTop +
-                  faceHeight +
-                  padding
-              )
-            ),
-          })
-        }
-      } finally {
-        if (faces) faces.delete()
-        if (equalized) equalized.delete()
-        if (gray) gray.delete()
-        if (src) src.delete()
-      }
-
-      if (stripTop + currentHeight >= detectionHeight) {
-        break
-      }
-    }
-
-    return mergeFaceZones(zones)
-  } catch (error) {
-    console.warn('MANGA FACE DETECTION FALLBACK:', error)
-    return mergeFaceZones(zones)
-  }
 }
 
 async function buildCutAnalysis({
@@ -572,17 +343,8 @@ function scoreCutCandidate({ analysis, pageY, targetY }) {
   )
 }
 
-function cutCrossesFace(faceZones, pageY) {
-  return faceZones.some(
-    (zone) =>
-      pageY >= zone.top &&
-      pageY <= zone.bottom
-  )
-}
-
 function findSafestCut({
   analysis,
-  faceZones = [],
   targetY,
   minimumY,
   maximumY,
@@ -590,23 +352,22 @@ function findSafestCut({
   const minimum = Math.ceil(minimumY)
   const maximum = Math.floor(maximumY)
 
-  if (minimum >= maximum) {
-    const candidateY = clamp(
-      Math.round(targetY),
-      minimum,
-      maximum
-    )
+  if (minimum > maximum) return null
 
-    return cutCrossesFace(
-      faceZones,
-      candidateY
-    )
-      ? null
-      : candidateY
+  if (minimum === maximum) {
+    return minimum
   }
 
-  let bestY = null
-  let bestScore = Number.POSITIVE_INFINITY
+  let bestY = clamp(
+    Math.round(targetY),
+    minimum,
+    maximum
+  )
+  let bestScore = scoreCutCandidate({
+    analysis,
+    pageY: bestY,
+    targetY,
+  })
 
   const evaluate = (candidateY) => {
     const y = clamp(
@@ -614,11 +375,6 @@ function findSafestCut({
       minimum,
       maximum
     )
-
-    if (cutCrossesFace(faceZones, y)) {
-      return
-    }
-
     const score = scoreCutCandidate({
       analysis,
       pageY: y,
@@ -631,18 +387,12 @@ function findSafestCut({
     }
   }
 
-  evaluate(targetY)
-
   for (
     let candidateY = minimum;
     candidateY <= maximum;
     candidateY += MANGA_PROCESSOR_LIMITS.cutStep
   ) {
     evaluate(candidateY)
-  }
-
-  if (bestY === null) {
-    return null
   }
 
   const refineStart = Math.max(
@@ -691,12 +441,6 @@ async function buildSmartPartRanges({
     pageHeight,
   })
 
-  const faceZones = await detectMangaFaceZones({
-    fileBuffer,
-    pageWidth,
-    pageHeight,
-  })
-
   const cuts = []
   let previousCut = 0
 
@@ -726,7 +470,6 @@ async function buildSmartPartRanges({
 
     let cutY = findSafestCut({
       analysis,
-      faceZones,
       targetY,
       minimumY: searchMinimumY,
       maximumY: searchMaximumY,
@@ -749,8 +492,7 @@ async function buildSmartPartRanges({
 
       cutY = findSafestCut({
         analysis,
-        faceZones,
-        targetY,
+          targetY,
         minimumY: emergencyMinimumY,
         maximumY: emergencyMaximumY,
       })
@@ -758,9 +500,9 @@ async function buildSmartPartRanges({
 
     if (cutY === null) {
       const error = new Error(
-        'No face-safe manga cut position could be found.'
+        'No safe manga cut position could be found.'
       )
-      error.code = 'MANGA_FACE_SAFE_CUT_NOT_FOUND'
+      error.code = 'MANGA_SAFE_CUT_NOT_FOUND'
       error.statusCode = 422
       throw error
     }
@@ -782,144 +524,145 @@ async function buildSmartPartRanges({
   return ranges.filter((range) => range.height > 0)
 }
 
-async function renderRawPart({
-  fileBuffer,
-  pageWidth,
+function mapPageRangeToSource({
+  sourceHeight,
   pageHeight,
   top,
   height,
 }) {
+  const scaleY = sourceHeight / pageHeight
+  const sourceTop = clamp(
+    Math.floor(top * scaleY),
+    0,
+    Math.max(0, sourceHeight - 1)
+  )
+  const sourceBottom = clamp(
+    Math.ceil((top + height) * scaleY),
+    sourceTop + 1,
+    sourceHeight
+  )
+
+  return {
+    top: sourceTop,
+    height: sourceBottom - sourceTop,
+  }
+}
+
+async function encodeMangaPart({
+  fileBuffer,
+  sourceWidth,
+  sourceHeight,
+  pageWidth,
+  pageHeight,
+  top,
+  height,
+  quality,
+}) {
+  const sourceRange = mapPageRangeToSource({
+    sourceHeight,
+    pageHeight,
+    top,
+    height,
+  })
+
   return sharp(fileBuffer, {
     limitInputPixels: MANGA_PROCESSOR_LIMITS.maxPixels,
     sequentialRead: true,
   })
     .rotate()
-    .resize({
-  width: pageWidth,
-  height: pageHeight,
-  fit: 'fill',
-  withoutEnlargement: true,
-})
-.sharpen({ sigma: 0.5 })
-.extract({
+    .extract({
       left: 0,
-      top,
+      top: sourceRange.top,
+      width: sourceWidth,
+      height: sourceRange.height,
+    })
+    .resize({
       width: pageWidth,
       height,
+      fit: 'fill',
+      withoutEnlargement: true,
     })
-    .raw()
+    .sharpen({ sigma: 0.45 })
+    .webp({
+      quality,
+      effort: 3,
+      smartSubsample: true,
+    })
     .toBuffer({ resolveWithObject: true })
 }
 
-async function encodeRawPart(rawData, rawInfo, quality) {
-  return sharp(rawData, {
-    raw: {
-      width: rawInfo.width,
-      height: rawInfo.height,
-      channels: rawInfo.channels,
-    },
-  })
-    .webp({
-      quality,
-      effort: 4,
-      smartSubsample: true,
-    })
-    .toBuffer()
-}
-
-async function measureRawPartQualities(rawData, rawInfo) {
-  let hardQuality = null
+async function compressMangaPart(options) {
+  let hardCandidate = null
 
   for (const quality of QUALITY_LEVELS) {
-    const buffer = await encodeRawPart(rawData, rawInfo, quality)
+    const encoded = await encodeMangaPart({
+      ...options,
+      quality,
+    })
+    const candidate = {
+      buffer: encoded.data,
+      width: encoded.info.width,
+      height: encoded.info.height,
+      quality,
+    }
 
     if (
-      hardQuality === null &&
-      buffer.length <= MANGA_PROCESSOR_LIMITS.hardPartBytes
+      !hardCandidate &&
+      encoded.data.length <= MANGA_PROCESSOR_LIMITS.hardPartBytes
     ) {
-      hardQuality = quality
+      hardCandidate = candidate
     }
 
-    if (buffer.length <= MANGA_PROCESSOR_LIMITS.targetPartBytes) {
-      return {
-        targetQuality: quality,
-        hardQuality: hardQuality ?? quality,
-      }
+    if (
+      encoded.data.length <= MANGA_PROCESSOR_LIMITS.targetPartBytes
+    ) {
+      return candidate
     }
   }
 
-  return {
-    targetQuality: null,
-    hardQuality,
-  }
+  return hardCandidate
 }
 
-async function processAtWidth(fileBuffer, sourceWidth, sourceHeight, pageWidth) {
+async function processAtWidth(
+  fileBuffer,
+  sourceWidth,
+  sourceHeight,
+  pageWidth
+) {
   const ratio = pageWidth / sourceWidth
-  const pageHeight = Math.max(1, Math.round(sourceHeight * ratio))
+  const pageHeight = Math.max(
+    1,
+    Math.round(sourceHeight * ratio)
+  )
   const ranges = await buildSmartPartRanges({
     fileBuffer,
     pageWidth,
     pageHeight,
   })
-  const qualityChecks = []
-
-  for (const range of ranges) {
-    const raw = await renderRawPart({
-      fileBuffer,
-      pageWidth,
-      pageHeight,
-      top: range.top,
-      height: range.height,
-    })
-    const check = await measureRawPartQualities(raw.data, raw.info)
-
-    if (check.hardQuality === null) return null
-
-    qualityChecks.push(check)
-  }
-
-  const targetReady = qualityChecks.every(
-    (check) => check.targetQuality !== null
-  )
-
-  const commonQuality = Math.min(
-    ...qualityChecks.map((check) =>
-      targetReady ? check.targetQuality : check.hardQuality
-    )
-  )
-
-  const maximumBytes = targetReady
-    ? MANGA_PROCESSOR_LIMITS.targetPartBytes
-    : MANGA_PROCESSOR_LIMITS.hardPartBytes
-
   const parts = []
 
   for (let partIndex = 0; partIndex < ranges.length; partIndex += 1) {
     const range = ranges[partIndex]
-    const raw = await renderRawPart({
+    const compressed = await compressMangaPart({
       fileBuffer,
+      sourceWidth,
+      sourceHeight,
       pageWidth,
       pageHeight,
       top: range.top,
       height: range.height,
     })
-    const buffer = await encodeRawPart(
-      raw.data,
-      raw.info,
-      commonQuality
-    )
 
-    if (buffer.length > maximumBytes) return null
+    if (!compressed) return null
 
     parts.push({
       partIndex,
-      buffer,
-      width: raw.info.width,
-      height: raw.info.height,
-      fileSize: buffer.length,
+      buffer: compressed.buffer,
+      width: compressed.width,
+      height: compressed.height,
+      fileSize: compressed.buffer.length,
       mimeType: 'image/webp',
-      quality: commonQuality,
+      quality: compressed.quality,
     })
   }
 
