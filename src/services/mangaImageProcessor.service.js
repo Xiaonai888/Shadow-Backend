@@ -581,6 +581,9 @@ function splitOversizedRange({
 }
 
 export async function processMangaImage(file, { onPart } = {}) {
+  sharp.cache(false)
+  sharp.concurrency(1)
+
   const filePath = String(file?.path || '').trim()
 
   if (!filePath) {
