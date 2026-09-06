@@ -9,7 +9,6 @@ export const MANGA_PROCESSOR_LIMITS = Object.freeze({
   maxHeight: 30000,
   maxPixels: 120_000_000,
   targetWidth: 1440,
-  preparedQuality: 92,
   partPreferredHeight: 2400,
   partMaxHeight: 3000,
   partEmergencyMaxHeight: 3600,
@@ -77,43 +76,6 @@ async function safeUnlink(filePath) {
   await unlink(filePath).catch(() => {})
 }
 
-async function prepareWorkingImage({
-  filePath,
-  pageWidth,
-}) {
-  const preparedPath = path.join(
-    os.tmpdir(),
-    `manga-prepared-${Date.now()}-${randomUUID()}.jpg`
-  )
-
-  try {
-    const info = await sharp(filePath, {
-      limitInputPixels: MANGA_PROCESSOR_LIMITS.maxPixels,
-      sequentialRead: true,
-    })
-      .rotate()
-      .resize({
-        width: pageWidth,
-        withoutEnlargement: true,
-        kernel: sharp.kernel.lanczos3,
-      })
-      .jpeg({
-        quality: MANGA_PROCESSOR_LIMITS.preparedQuality,
-        mozjpeg: true,
-      })
-      .toFile(preparedPath)
-
-    return {
-      path: preparedPath,
-      width: Number(info.width || pageWidth),
-      height: Number(info.height || 0),
-    }
-  } catch (error) {
-    await safeUnlink(preparedPath)
-    throw error
-  }
-}
-
 async function buildCutAnalysis({
   filePath,
   pageWidth,
@@ -132,6 +94,7 @@ async function buildCutAnalysis({
     limitInputPixels: MANGA_PROCESSOR_LIMITS.maxPixels,
     sequentialRead: true,
   })
+    .rotate()
     .resize({
       width: analysisWidth,
       height: analysisHeight,
@@ -461,13 +424,46 @@ async function buildSmartPartRanges({
   }
 }
 
+function mapPageRangeToSource({
+  sourceHeight,
+  pageHeight,
+  top,
+  height,
+}) {
+  const scaleY = sourceHeight / pageHeight
+  const sourceTop = clamp(
+    Math.floor(top * scaleY),
+    0,
+    Math.max(0, sourceHeight - 1)
+  )
+  const sourceBottom = clamp(
+    Math.ceil((top + height) * scaleY),
+    sourceTop + 1,
+    sourceHeight
+  )
+
+  return {
+    top: sourceTop,
+    height: sourceBottom - sourceTop,
+  }
+}
+
 async function encodeRangeToFile({
   filePath,
+  sourceWidth,
+  sourceHeight,
   pageWidth,
+  pageHeight,
   top,
   height,
   quality,
 }) {
+  const sourceRange = mapPageRangeToSource({
+    sourceHeight,
+    pageHeight,
+    top,
+    height,
+  })
   const outputPath = path.join(
     os.tmpdir(),
     `manga-encoded-${Date.now()}-${randomUUID()}.webp`
@@ -478,11 +474,19 @@ async function encodeRangeToFile({
       limitInputPixels: MANGA_PROCESSOR_LIMITS.maxPixels,
       sequentialRead: true,
     })
+      .rotate()
       .extract({
         left: 0,
-        top,
+        top: sourceRange.top,
+        width: sourceWidth,
+        height: sourceRange.height,
+      })
+      .resize({
         width: pageWidth,
         height,
+        fit: 'fill',
+        withoutEnlargement: true,
+        kernel: sharp.kernel.lanczos3,
       })
       .webp({
         quality,
@@ -618,94 +622,78 @@ export async function processMangaImage(file, { onPart } = {}) {
     MANGA_PROCESSOR_LIMITS.targetWidth,
     source.width
   )
+  const ratio = pageWidth / source.width
+  const pageHeight = Math.max(
+    1,
+    Math.round(source.height * ratio)
+  )
+  const plan = await buildSmartPartRanges({
+    filePath,
+    pageWidth,
+    pageHeight,
+  })
+  const queue = [...plan.ranges]
+  const storedParts = []
+  let partIndex = 0
 
-  let preparedFilePath = ''
-  let preparedHeight = 0
-  let sourceDeleted = false
-
-  try {
-    const prepared = await prepareWorkingImage({
+  while (queue.length > 0) {
+    const range = queue.shift()
+    const encoded = await compressRangeToFile({
       filePath,
-      pageWidth,
-    })
-
-    preparedFilePath = prepared.path
-    preparedHeight = prepared.height
-
-    await safeUnlink(filePath)
-    sourceDeleted = true
-
-    const plan = await buildSmartPartRanges({
-      filePath: preparedFilePath,
-      pageWidth,
-      pageHeight: preparedHeight,
-    })
-    const queue = [...plan.ranges]
-    const storedParts = []
-    let partIndex = 0
-
-    while (queue.length > 0) {
-      const range = queue.shift()
-      const encoded = await compressRangeToFile({
-        filePath: preparedFilePath,
-        pageWidth,
-        top: range.top,
-        height: range.height,
-      })
-
-      if (!encoded) {
-        const split = splitOversizedRange({
-          range,
-          analysis: plan.analysis,
-          pageHeight: preparedHeight,
-        })
-
-        if (!split) {
-          const error = new Error(
-            'Manga image could not be compressed below 2 MB per part.'
-          )
-          error.code = 'MANGA_PART_COMPRESSION_FAILED'
-          error.statusCode = 422
-          throw error
-        }
-
-        queue.unshift(...split)
-        continue
-      }
-
-      try {
-        const stored = await onPart({
-          partIndex,
-          path: encoded.path,
-          size: encoded.size,
-          width: encoded.width,
-          height: encoded.height,
-          fileSize: encoded.size,
-          mimeType: 'image/webp',
-          quality: encoded.quality,
-        })
-
-        storedParts.push(stored)
-        partIndex += 1
-      } finally {
-        await safeUnlink(encoded.path)
-      }
-    }
-
-    return {
       sourceWidth: source.width,
       sourceHeight: source.height,
-      sourceFormat: metadata.format || null,
-      width: pageWidth,
-      height: preparedHeight,
-      partCount: storedParts.length,
-      parts: storedParts,
-    }
-  } finally {
-    await safeUnlink(preparedFilePath)
+      pageWidth,
+      pageHeight,
+      top: range.top,
+      height: range.height,
+    })
 
-    if (!sourceDeleted) {
-      await safeUnlink(filePath)
+    if (!encoded) {
+      const split = splitOversizedRange({
+        range,
+        analysis: plan.analysis,
+        pageHeight,
+      })
+
+      if (!split) {
+        const error = new Error(
+          'Manga image could not be compressed below 2 MB per part.'
+        )
+        error.code = 'MANGA_PART_COMPRESSION_FAILED'
+        error.statusCode = 422
+        throw error
+      }
+
+      queue.unshift(...split)
+      continue
     }
+
+    try {
+      const stored = await onPart({
+        partIndex,
+        path: encoded.path,
+        size: encoded.size,
+        width: encoded.width,
+        height: encoded.height,
+        fileSize: encoded.size,
+        mimeType: 'image/webp',
+        quality: encoded.quality,
+      })
+
+      storedParts.push(stored)
+      partIndex += 1
+    } finally {
+      await safeUnlink(encoded.path)
+    }
+  }
+
+  return {
+    sourceWidth: source.width,
+    sourceHeight: source.height,
+    sourceFormat: metadata.format || null,
+    width: pageWidth,
+    height: pageHeight,
+    partCount: storedParts.length,
+    parts: storedParts,
   }
 }
