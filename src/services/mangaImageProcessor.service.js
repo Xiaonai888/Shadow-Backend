@@ -22,6 +22,8 @@ export const MANGA_PROCESSOR_LIMITS = Object.freeze({
   hardPartBytes: 2 * 1024 * 1024,
   primaryQuality: 82,
   fallbackQuality: 72,
+  tileWidth: 256,
+  tileHeight: 256,
 })
 
 function positiveInteger(value, fallback = 0) {
@@ -76,11 +78,44 @@ async function safeUnlink(filePath) {
   await unlink(filePath).catch(() => {})
 }
 
-async function buildCutAnalysis({
-  filePath,
-  pageWidth,
-  pageHeight,
-}) {
+async function buildWorkingTiff({ filePath, pageWidth }) {
+  const workingPath = path.join(
+    os.tmpdir(),
+    `manga-working-${Date.now()}-${randomUUID()}.tif`
+  )
+
+  try {
+    const info = await sharp(filePath, {
+      limitInputPixels: MANGA_PROCESSOR_LIMITS.maxPixels,
+      sequentialRead: true,
+    })
+      .rotate()
+      .resize({
+        width: pageWidth,
+        withoutEnlargement: true,
+        kernel: sharp.kernel.lanczos3,
+      })
+      .tiff({
+        compression: 'lzw',
+        tile: true,
+        tileWidth: MANGA_PROCESSOR_LIMITS.tileWidth,
+        tileHeight: MANGA_PROCESSOR_LIMITS.tileHeight,
+        pyramid: false,
+      })
+      .toFile(workingPath)
+
+    return {
+      path: workingPath,
+      width: Number(info.width || pageWidth),
+      height: Number(info.height || 0),
+    }
+  } catch (error) {
+    await safeUnlink(workingPath)
+    throw error
+  }
+}
+
+async function buildCutAnalysis({ filePath, pageWidth, pageHeight }) {
   const analysisWidth = Math.max(
     1,
     Math.min(MANGA_PROCESSOR_LIMITS.cutAnalysisWidth, pageWidth)
@@ -94,7 +129,6 @@ async function buildCutAnalysis({
     limitInputPixels: MANGA_PROCESSOR_LIMITS.maxPixels,
     sequentialRead: true,
   })
-    .rotate()
     .resize({
       width: analysisWidth,
       height: analysisHeight,
@@ -121,16 +155,10 @@ function scoreCutCandidate({ analysis, pageY, targetY }) {
     return Number.POSITIVE_INFINITY
   }
 
-  const centerY = clamp(
-    Math.round(pageY * scaleY),
-    1,
-    height - 2
-  )
+  const centerY = clamp(Math.round(pageY * scaleY), 1, height - 2)
   const bandRadius = Math.max(
     1,
-    Math.round(
-      (MANGA_PROCESSOR_LIMITS.cutBandHeight / 2) * scaleY
-    )
+    Math.round((MANGA_PROCESSOR_LIMITS.cutBandHeight / 2) * scaleY)
   )
   const guardRadius = Math.max(1, Math.round(72 * scaleY))
   const startY = clamp(centerY - bandRadius, 1, height - 2)
@@ -212,10 +240,7 @@ function scoreCutCandidate({ analysis, pageY, targetY }) {
   }
 
   const mean = valueSum / pixelCount
-  const variance = Math.max(
-    0,
-    valueSquareSum / pixelCount - mean * mean
-  )
+  const variance = Math.max(0, valueSquareSum / pixelCount - mean * mean)
   const standardDeviation = Math.sqrt(variance)
   const horizontalEdge =
     horizontalDifference / Math.max(1, horizontalCount) / 255
@@ -228,21 +253,15 @@ function scoreCutCandidate({ analysis, pageY, targetY }) {
   const distancePenalty =
     Math.abs(pageY - targetY) /
     Math.max(1, MANGA_PROCESSOR_LIMITS.cutSearchRadius)
-  const guardEdge =
-    guardDifference / Math.max(1, guardSamples) / 255
+  const guardEdge = guardDifference / Math.max(1, guardSamples) / 255
   const guardBusyRatio = guardBusy / Math.max(1, guardSamples)
   const peakSectionBusyRatio = sectionBusy.reduce(
     (peak, count, index) =>
-      Math.max(
-        peak,
-        count / Math.max(1, sectionSamples[index])
-      ),
+      Math.max(peak, count / Math.max(1, sectionSamples[index])),
     0
   )
   const unsafeGuardPenalty =
-    guardBusyRatio > 0.14
-      ? (guardBusyRatio - 0.14) * 2.8
-      : 0
+    guardBusyRatio > 0.14 ? (guardBusyRatio - 0.14) * 2.8 : 0
   const unsafeSectionPenalty =
     peakSectionBusyRatio > 0.24
       ? (peakSectionBusyRatio - 0.24) * 3.2
@@ -263,12 +282,7 @@ function scoreCutCandidate({ analysis, pageY, targetY }) {
   )
 }
 
-function findSafestCut({
-  analysis,
-  targetY,
-  minimumY,
-  maximumY,
-}) {
+function findSafestCut({ analysis, targetY, minimumY, maximumY }) {
   const minimum = Math.ceil(minimumY)
   const maximum = Math.floor(maximumY)
 
@@ -276,11 +290,7 @@ function findSafestCut({
   if (minimum === maximum) return minimum
 
   let bestY = clamp(Math.round(targetY), minimum, maximum)
-  let bestScore = scoreCutCandidate({
-    analysis,
-    pageY: bestY,
-    targetY,
-  })
+  let bestScore = scoreCutCandidate({ analysis, pageY: bestY, targetY })
 
   const evaluate = (candidateY) => {
     const y = clamp(Math.round(candidateY), minimum, maximum)
@@ -320,11 +330,7 @@ function findSafestCut({
   return bestY
 }
 
-async function buildSmartPartRanges({
-  filePath,
-  pageWidth,
-  pageHeight,
-}) {
+async function buildSmartPartRanges({ filePath, pageWidth, pageHeight }) {
   const {
     partPreferredHeight,
     partMaxHeight,
@@ -424,46 +430,13 @@ async function buildSmartPartRanges({
   }
 }
 
-function mapPageRangeToSource({
-  sourceHeight,
-  pageHeight,
-  top,
-  height,
-}) {
-  const scaleY = sourceHeight / pageHeight
-  const sourceTop = clamp(
-    Math.floor(top * scaleY),
-    0,
-    Math.max(0, sourceHeight - 1)
-  )
-  const sourceBottom = clamp(
-    Math.ceil((top + height) * scaleY),
-    sourceTop + 1,
-    sourceHeight
-  )
-
-  return {
-    top: sourceTop,
-    height: sourceBottom - sourceTop,
-  }
-}
-
 async function encodeRangeToFile({
   filePath,
-  sourceWidth,
-  sourceHeight,
   pageWidth,
-  pageHeight,
   top,
   height,
   quality,
 }) {
-  const sourceRange = mapPageRangeToSource({
-    sourceHeight,
-    pageHeight,
-    top,
-    height,
-  })
   const outputPath = path.join(
     os.tmpdir(),
     `manga-encoded-${Date.now()}-${randomUUID()}.webp`
@@ -474,19 +447,11 @@ async function encodeRangeToFile({
       limitInputPixels: MANGA_PROCESSOR_LIMITS.maxPixels,
       sequentialRead: true,
     })
-      .rotate()
       .extract({
         left: 0,
-        top: sourceRange.top,
-        width: sourceWidth,
-        height: sourceRange.height,
-      })
-      .resize({
+        top,
         width: pageWidth,
         height,
-        fit: 'fill',
-        withoutEnlargement: true,
-        kernel: sharp.kernel.lanczos3,
       })
       .webp({
         quality,
@@ -535,11 +500,7 @@ async function compressRangeToFile(options) {
   return null
 }
 
-function splitOversizedRange({
-  range,
-  analysis,
-  pageHeight,
-}) {
+function splitOversizedRange({ range, analysis, pageHeight }) {
   const minimumChildHeight = Math.min(
     MANGA_PROCESSOR_LIMITS.partEmergencyMinHeight,
     Math.max(320, Math.floor(range.height / 3))
@@ -622,78 +583,88 @@ export async function processMangaImage(file, { onPart } = {}) {
     MANGA_PROCESSOR_LIMITS.targetWidth,
     source.width
   )
-  const ratio = pageWidth / source.width
-  const pageHeight = Math.max(
-    1,
-    Math.round(source.height * ratio)
-  )
-  const plan = await buildSmartPartRanges({
-    filePath,
-    pageWidth,
-    pageHeight,
-  })
-  const queue = [...plan.ranges]
-  const storedParts = []
-  let partIndex = 0
 
-  while (queue.length > 0) {
-    const range = queue.shift()
-    const encoded = await compressRangeToFile({
+  let workingPath = ''
+
+  try {
+    const working = await buildWorkingTiff({
       filePath,
-      sourceWidth: source.width,
-      sourceHeight: source.height,
       pageWidth,
-      pageHeight,
-      top: range.top,
-      height: range.height,
     })
 
-    if (!encoded) {
-      const split = splitOversizedRange({
-        range,
-        analysis: plan.analysis,
-        pageHeight,
+    workingPath = working.path
+    const pageHeight = working.height
+
+    await safeUnlink(filePath)
+
+    const plan = await buildSmartPartRanges({
+      filePath: workingPath,
+      pageWidth: working.width,
+      pageHeight,
+    })
+    const queue = [...plan.ranges]
+    const storedParts = []
+    let partIndex = 0
+
+    while (queue.length > 0) {
+      const range = queue.shift()
+      const encoded = await compressRangeToFile({
+        filePath: workingPath,
+        pageWidth: working.width,
+        top: range.top,
+        height: range.height,
       })
 
-      if (!split) {
-        const error = new Error(
-          'Manga image could not be compressed below 2 MB per part.'
-        )
-        error.code = 'MANGA_PART_COMPRESSION_FAILED'
-        error.statusCode = 422
-        throw error
+      if (!encoded) {
+        const split = splitOversizedRange({
+          range,
+          analysis: plan.analysis,
+          pageHeight,
+        })
+
+        if (!split) {
+          const error = new Error(
+            'Manga image could not be compressed below 2 MB per part.'
+          )
+          error.code = 'MANGA_PART_COMPRESSION_FAILED'
+          error.statusCode = 422
+          throw error
+        }
+
+        queue.unshift(...split)
+        continue
       }
 
-      queue.unshift(...split)
-      continue
+      try {
+        const stored = await onPart({
+          partIndex,
+          path: encoded.path,
+          size: encoded.size,
+          width: encoded.width,
+          height: encoded.height,
+          fileSize: encoded.size,
+          mimeType: 'image/webp',
+          quality: encoded.quality,
+        })
+
+        storedParts.push(stored)
+        partIndex += 1
+      } finally {
+        await safeUnlink(encoded.path)
+      }
     }
 
-    try {
-      const stored = await onPart({
-        partIndex,
-        path: encoded.path,
-        size: encoded.size,
-        width: encoded.width,
-        height: encoded.height,
-        fileSize: encoded.size,
-        mimeType: 'image/webp',
-        quality: encoded.quality,
-      })
-
-      storedParts.push(stored)
-      partIndex += 1
-    } finally {
-      await safeUnlink(encoded.path)
+    return {
+      sourceWidth: source.width,
+      sourceHeight: source.height,
+      sourceFormat: metadata.format || null,
+      width: working.width,
+      height: pageHeight,
+      partCount: storedParts.length,
+      parts: storedParts,
     }
-  }
-
-  return {
-    sourceWidth: source.width,
-    sourceHeight: source.height,
-    sourceFormat: metadata.format || null,
-    width: pageWidth,
-    height: pageHeight,
-    partCount: storedParts.length,
-    parts: storedParts,
+  } finally {
+    await safeUnlink(workingPath)
+    await safeUnlink(filePath)
   }
 }
