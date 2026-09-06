@@ -110,7 +110,7 @@ async function main() {
 
     const sourceBytes =
       Number(payload.source_bytes || 0)
-    const buffer = await downloadMangaTempBuffer(
+    let buffer = await downloadMangaTempBuffer(
       tempObjectKey,
       MANGA_IMAGE_MAX_BYTES
     )
@@ -129,6 +129,7 @@ async function main() {
 
     const { default: sharp } = await import('sharp')
     sharp.concurrency(1)
+    sharp.cache({ memory: 8, files: 0, items: 16 })
 
     const {
       processMangaImage,
@@ -144,6 +145,7 @@ async function main() {
     deleteStoredMangaParts =
       mangaStorage.deleteStoredMangaParts
 
+    const receivedBytes = buffer.length
     const file = {
       buffer,
       size: buffer.length,
@@ -156,6 +158,9 @@ async function main() {
     }
 
     const processed = await processMangaImage(file)
+    file.buffer = null
+    buffer = null
+
     const stored = await uploadProcessedMangaParts({
       processed,
       folder:
@@ -183,7 +188,7 @@ async function main() {
       source_height:
         Number(stored.source_height || 0) || null,
       source_bytes:
-        sourceBytes || buffer.length,
+        sourceBytes || receivedBytes,
       width: Number(stored.width || 0) || null,
       height: Number(stored.height || 0) || null,
       file_size: totalBytes,
