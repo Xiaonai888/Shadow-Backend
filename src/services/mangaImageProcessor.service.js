@@ -160,6 +160,8 @@ async function detectMangaFaceZones({
   pageWidth,
   pageHeight,
 }) {
+  const zones = []
+
   try {
     const { cv, classifier } =
       await getAnimeFaceDetector()
@@ -189,7 +191,6 @@ async function detectMangaFaceZones({
       stripHeight - stripOverlap
     )
     const scaleY = pageHeight / detectionHeight
-    const zones = []
 
     for (
       let stripTop = 0;
@@ -301,12 +302,8 @@ async function detectMangaFaceZones({
 
     return mergeFaceZones(zones)
   } catch (error) {
-    console.error('MANGA FACE DETECTION ERROR:', error)
-
-    const detectionError = new Error('Manga face detection failed.')
-    detectionError.code = 'MANGA_FACE_DETECTION_FAILED'
-    detectionError.statusCode = 503
-    throw detectionError
+    console.warn('MANGA FACE DETECTION FALLBACK:', error)
+    return mergeFaceZones(zones)
   }
 }
 
