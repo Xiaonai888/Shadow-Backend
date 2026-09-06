@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { writeFile, unlink } from 'node:fs/promises'
+import { stat, unlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { wakeMangaR2DeleteRetryWorker } from './mangaR2DeleteRetry.service.js'
@@ -12,7 +12,8 @@ import {
 const DELETE_RETRY_DELAY_MS = 60 * 1000
 
 function getStoragePath(imageUrl) {
-  const publicBaseUrl = String(process.env.R2_PUBLIC_URL || '').replace(/\/+$/, '')
+  const publicBaseUrl = String(process.env.R2_PUBLIC_URL || '')
+    .replace(/\/+$/, '')
   const value = String(imageUrl || '').trim()
 
   if (publicBaseUrl && value.startsWith(`${publicBaseUrl}/`)) {
@@ -20,61 +21,6 @@ function getStoragePath(imageUrl) {
   }
 
   return value
-}
-
-function normalizePart(part, index) {
-  const partIndex = Number.isFinite(Number(part?.partIndex))
-    ? Math.max(0, Math.floor(Number(part.partIndex)))
-    : index
-
-  const buffer = Buffer.isBuffer(part?.buffer)
-    ? part.buffer
-    : Buffer.alloc(0)
-
-  return {
-    sourcePart: part,
-    partIndex,
-    buffer,
-    width: Number(part?.width || 0),
-    height: Number(part?.height || 0),
-    fileSize: Number(part?.fileSize || buffer.length || 0),
-    mimeType: String(part?.mimeType || 'image/webp'),
-    quality: Number(part?.quality || 0) || null,
-  }
-}
-
-async function buildPartFile(part) {
-  const originalname = `part-${String(part.partIndex).padStart(3, '0')}.webp`
-  const tempPath = path.join(
-    os.tmpdir(),
-    `manga-part-${Date.now()}-${randomUUID()}.webp`
-  )
-  const buffer = part.buffer
-
-  try {
-    await writeFile(tempPath, buffer, { flag: 'wx' })
-
-    const size = buffer.length
-    part.fileSize = part.fileSize || size
-    part.buffer = null
-
-    if (
-      part.sourcePart &&
-      typeof part.sourcePart === 'object'
-    ) {
-      part.sourcePart.buffer = null
-    }
-
-    return {
-      path: tempPath,
-      size,
-      mimetype: part.mimeType || 'image/webp',
-      originalname,
-    }
-  } catch (error) {
-    await unlink(tempPath).catch(() => {})
-    throw error
-  }
 }
 
 function cleanDeleteError(error) {
@@ -180,6 +126,65 @@ async function clearMangaR2DeleteRetry(imageUrl) {
   }
 }
 
+async function diskBackedPart(part, index = 0) {
+  const partIndex = Number.isFinite(Number(part?.partIndex))
+    ? Math.max(0, Math.floor(Number(part.partIndex)))
+    : index
+  const existingPath = String(part?.path || '').trim()
+
+  if (existingPath) {
+    const fileStat = await stat(existingPath)
+
+    if (!fileStat.isFile() || fileStat.size <= 0) {
+      const error = new Error('Processed manga part file is empty.')
+      error.code = 'MANGA_PART_EMPTY'
+      error.statusCode = 422
+      throw error
+    }
+
+    return {
+      cleanup: false,
+      partIndex,
+      file: {
+        path: existingPath,
+        size: Number(part?.size || part?.fileSize || fileStat.size),
+        mimetype: String(part?.mimeType || 'image/webp'),
+        originalname: `part-${String(partIndex).padStart(3, '0')}.webp`,
+      },
+    }
+  }
+
+  const buffer = Buffer.isBuffer(part?.buffer)
+    ? part.buffer
+    : Buffer.alloc(0)
+
+  if (!buffer.length) {
+    const error = new Error('Processed manga part is empty.')
+    error.code = 'MANGA_PART_EMPTY'
+    error.statusCode = 422
+    throw error
+  }
+
+  const tempPath = path.join(
+    os.tmpdir(),
+    `manga-part-${Date.now()}-${randomUUID()}.webp`
+  )
+
+  await writeFile(tempPath, buffer, { flag: 'wx' })
+  part.buffer = null
+
+  return {
+    cleanup: true,
+    partIndex,
+    file: {
+      path: tempPath,
+      size: buffer.length,
+      mimetype: String(part?.mimeType || 'image/webp'),
+      originalname: `part-${String(partIndex).padStart(3, '0')}.webp`,
+    },
+  }
+}
+
 export async function deleteStoredMangaParts(parts = []) {
   const urls = [
     ...new Set(
@@ -193,7 +198,6 @@ export async function deleteStoredMangaParts(parts = []) {
   const results = await Promise.allSettled(
     urls.map((url) => deleteR2ObjectByUrl(url))
   )
-
   const deletedUrls = []
   const failedDeletes = []
   let ignored = 0
@@ -201,19 +205,13 @@ export async function deleteStoredMangaParts(parts = []) {
   results.forEach((result, index) => {
     const url = urls[index]
 
-    if (
-      result.status === 'fulfilled' &&
-      result.value === true
-    ) {
+    if (result.status === 'fulfilled' && result.value === true) {
       deletedUrls.push(url)
       return
     }
 
     if (result.status === 'rejected') {
-      failedDeletes.push({
-        url,
-        error: result.reason,
-      })
+      failedDeletes.push({ url, error: result.reason })
       return
     }
 
@@ -221,9 +219,7 @@ export async function deleteStoredMangaParts(parts = []) {
   })
 
   await Promise.allSettled(
-    deletedUrls.map((url) =>
-      clearMangaR2DeleteRetry(url)
-    )
+    deletedUrls.map((url) => clearMangaR2DeleteRetry(url))
   )
 
   const queueResults = await Promise.allSettled(
@@ -231,7 +227,6 @@ export async function deleteStoredMangaParts(parts = []) {
       queueMangaR2DeleteRetry(url, error)
     )
   )
-
   const queued = queueResults.filter(
     (result) =>
       result.status === 'fulfilled' &&
@@ -242,7 +237,6 @@ export async function deleteStoredMangaParts(parts = []) {
     wakeMangaR2DeleteRetryWorker(DELETE_RETRY_DELAY_MS)
   }
 
-
   return {
     requested: urls.length,
     deleted: deletedUrls.length,
@@ -250,6 +244,36 @@ export async function deleteStoredMangaParts(parts = []) {
     queued,
     queue_failed: failedDeletes.length - queued,
     ignored,
+  }
+}
+
+export async function uploadProcessedMangaPart({
+  part,
+  folder,
+}) {
+  const normalized = await diskBackedPart(part)
+
+  try {
+    const imageUrl = await uploadFileToR2(
+      normalized.file,
+      folder
+    )
+
+    return {
+      part_index: normalized.partIndex,
+      image_url: imageUrl,
+      storage_path: getStoragePath(imageUrl),
+      width: Number(part?.width || 0) || null,
+      height: Number(part?.height || 0) || null,
+      file_size:
+        Number(part?.fileSize || part?.size || normalized.file.size) || null,
+      mime_type: String(part?.mimeType || 'image/webp'),
+      quality: Number(part?.quality || 0) || null,
+    }
+  } finally {
+    if (normalized.cleanup) {
+      await unlink(normalized.file.path).catch(() => {})
+    }
   }
 }
 
@@ -268,48 +292,27 @@ export async function uploadProcessedMangaParts({
     throw error
   }
 
-  const parts = sourceParts
-    .map(normalizePart)
-    .sort((a, b) => a.partIndex - b.partIndex)
-
-  if (
-    parts.some(
-      (part) =>
-        !Buffer.isBuffer(part.buffer) ||
-        !part.buffer.length
-    )
-  ) {
-    const error = new Error('One or more processed manga parts are empty.')
-    error.code = 'MANGA_PART_EMPTY'
-    error.statusCode = 422
-    throw error
-  }
-
   const uploaded = []
 
   try {
-    for (const part of parts) {
-      const partFile = await buildPartFile(part)
+    const ordered = [...sourceParts].sort(
+      (a, b) => Number(a?.partIndex || 0) - Number(b?.partIndex || 0)
+    )
 
-      try {
-        const imageUrl = await uploadFileToR2(
-          partFile,
-          folder
-        )
+    for (let index = 0; index < ordered.length; index += 1) {
+      const part = ordered[index]
+      const stored = await uploadProcessedMangaPart({
+        part: {
+          ...part,
+          partIndex:
+            Number.isFinite(Number(part?.partIndex))
+              ? Number(part.partIndex)
+              : index,
+        },
+        folder,
+      })
 
-        uploaded.push({
-          part_index: part.partIndex,
-          image_url: imageUrl,
-          storage_path: getStoragePath(imageUrl),
-          width: part.width || null,
-          height: part.height || null,
-          file_size: part.fileSize || partFile.size,
-          mime_type: part.mimeType || 'image/webp',
-          quality: part.quality,
-        })
-      } finally {
-        await unlink(partFile.path).catch(() => {})
-      }
+      uploaded.push(stored)
     }
 
     return {
@@ -331,4 +334,3 @@ export async function uploadProcessedMangaParts({
     throw error
   }
 }
-
