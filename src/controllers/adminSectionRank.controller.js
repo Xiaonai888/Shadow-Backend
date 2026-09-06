@@ -34,7 +34,7 @@ async function loadTodayEvents(eventDate) {
   while (true) {
     const { data, error } = await supabase
       .from('story_section_rank_events')
-      .select('section_key, action')
+      .select('section_key, action, actor_key')
       .eq('event_date', eventDate)
       .range(from, from + PAGE_SIZE - 1)
 
@@ -65,6 +65,7 @@ export async function getAdminSectionRanking(req, res) {
 
     const eventDate = cambodiaDate()
     const events = await loadTodayEvents(eventDate)
+    const allUniqueActors = new Set()
 
     const totals = new Map(
       SECTIONS.map((section) => [
@@ -74,6 +75,7 @@ export async function getAdminSectionRanking(req, res) {
           sectionName: section.name,
           qualifiedViews: 0,
           qualifiedReads: 0,
+          uniqueActors: new Set(),
         },
       ])
     )
@@ -84,16 +86,35 @@ export async function getAdminSectionRanking(req, res) {
 
       if (event.action === 'view') {
         row.qualifiedViews += 1
+
+        if (event.actor_key) {
+          row.uniqueActors.add(event.actor_key)
+          allUniqueActors.add(event.actor_key)
+        }
       } else if (event.action === 'read') {
         row.qualifiedReads += 1
       }
     }
 
-    const data = Array.from(totals.values()).sort(
-      (first, second) =>
-        second.qualifiedViews - first.qualifiedViews ||
-        second.qualifiedReads - first.qualifiedReads
+    const totalTrafficViews = Array.from(totals.values()).reduce(
+      (sum, row) => sum + row.qualifiedViews,
+      0
     )
+
+    const data = Array.from(totals.values())
+      .map(({ uniqueActors, ...row }) => ({
+        ...row,
+        uniqueUsers: uniqueActors.size,
+        trafficSharePercent: totalTrafficViews
+          ? Number(((row.qualifiedViews / totalTrafficViews) * 100).toFixed(1))
+          : 0,
+      }))
+      .sort(
+        (first, second) =>
+          second.uniqueUsers - first.uniqueUsers ||
+          second.qualifiedViews - first.qualifiedViews ||
+          second.qualifiedReads - first.qualifiedReads
+      )
 
     return res.status(200).json({
       ok: true,
@@ -101,6 +122,8 @@ export async function getAdminSectionRanking(req, res) {
       meta: {
         range: 'today',
         date: eventDate,
+        totalUniqueUsers: allUniqueActors.size,
+        totalTrafficViews,
         updatedAt: new Date().toISOString(),
       },
     })
