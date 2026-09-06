@@ -1,26 +1,28 @@
+import { randomUUID } from 'node:crypto'
+import { stat, unlink } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import sharp from 'sharp'
 
 export const MANGA_PROCESSOR_LIMITS = Object.freeze({
   maxWidth: 8000,
   maxHeight: 30000,
   maxPixels: 120_000_000,
-  targetWidth: 1600,
-  partPreferredHeight: 4200,
-  partMaxHeight: 5200,
-  partEmergencyMaxHeight: 6200,
-  partMinHeight: 1400,
-  partEmergencyMinHeight: 900,
-  cutSearchRadius: 1400,
-  cutAnalysisWidth: 360,
-  cutBandHeight: 280,
-  cutStep: 24,
+  targetWidth: 1440,
+  partPreferredHeight: 2400,
+  partMaxHeight: 3000,
+  partEmergencyMaxHeight: 3600,
+  partMinHeight: 800,
+  partEmergencyMinHeight: 650,
+  cutSearchRadius: 1000,
+  cutAnalysisWidth: 220,
+  cutBandHeight: 240,
+  cutStep: 32,
   partOverlap: 2,
-  targetPartBytes: 1792 * 1024,
   hardPartBytes: 2 * 1024 * 1024,
+  primaryQuality: 82,
+  fallbackQuality: 72,
 })
-
-const WIDTH_FALLBACKS = [1600, 1440, 1280, 1120]
-const QUALITY_LEVELS = [86, 80, 74, 68, 62]
 
 function positiveInteger(value, fallback = 0) {
   const number = Number(value)
@@ -65,21 +67,12 @@ function validateDimensions(width, height) {
   }
 }
 
-function widthProfiles(sourceWidth) {
-  return WIDTH_FALLBACKS
-    .map((width) => Math.min(width, sourceWidth))
-    .filter(
-      (width, index, list) =>
-        width > 0 && list.indexOf(width) === index
-    )
-}
-
 function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value))
 }
 
 async function buildCutAnalysis({
-  fileBuffer,
+  filePath,
   pageWidth,
   pageHeight,
 }) {
@@ -92,7 +85,7 @@ async function buildCutAnalysis({
     Math.round(pageHeight * (analysisWidth / pageWidth))
   )
 
-  const raw = await sharp(fileBuffer, {
+  const raw = await sharp(filePath, {
     limitInputPixels: MANGA_PROCESSOR_LIMITS.maxPixels,
     sequentialRead: true,
   })
@@ -102,6 +95,7 @@ async function buildCutAnalysis({
       height: analysisHeight,
       fit: 'fill',
       withoutEnlargement: true,
+      kernel: sharp.kernel.lanczos3,
     })
     .greyscale()
     .raw()
@@ -130,34 +124,14 @@ function scoreCutCandidate({ analysis, pageY, targetY }) {
   const bandRadius = Math.max(
     1,
     Math.round(
-      (MANGA_PROCESSOR_LIMITS.cutBandHeight / 2) *
-        scaleY
+      (MANGA_PROCESSOR_LIMITS.cutBandHeight / 2) * scaleY
     )
   )
-  const guardRadius = Math.max(
-    1,
-    Math.round(60 * scaleY)
-  )
-  const startY = clamp(
-    centerY - bandRadius,
-    1,
-    height - 2
-  )
-  const endY = clamp(
-    centerY + bandRadius,
-    1,
-    height - 2
-  )
-  const guardStartY = clamp(
-    centerY - guardRadius,
-    1,
-    height - 2
-  )
-  const guardEndY = clamp(
-    centerY + guardRadius,
-    1,
-    height - 2
-  )
+  const guardRadius = Math.max(1, Math.round(72 * scaleY))
+  const startY = clamp(centerY - bandRadius, 1, height - 2)
+  const endY = clamp(centerY + bandRadius, 1, height - 2)
+  const guardStartY = clamp(centerY - guardRadius, 1, height - 2)
+  const guardEndY = clamp(centerY + guardRadius, 1, height - 2)
 
   let valueSum = 0
   let valueSquareSum = 0
@@ -180,76 +154,42 @@ function scoreCutCandidate({ analysis, pageY, targetY }) {
       valueSquareSum += value * value
       pixelCount += 1
 
-      if (value >= 242) {
-        nearWhiteCount += 1
-      }
+      if (value >= 242) nearWhiteCount += 1
 
       if (x > 0) {
-        const difference = Math.abs(
-          value - data[rowOffset + x - 1]
-        )
-
+        const difference = Math.abs(value - data[rowOffset + x - 1])
         horizontalDifference += difference
         horizontalCount += 1
-
-        if (difference >= 24) {
-          busyCount += 1
-        }
+        if (difference >= 24) busyCount += 1
       }
 
-      const vertical = Math.abs(
-        value - data[previousRowOffset + x]
-      )
-
+      const vertical = Math.abs(value - data[previousRowOffset + x])
       verticalDifference += vertical
       verticalCount += 1
-
-      if (vertical >= 24) {
-        busyCount += 1
-      }
+      if (vertical >= 24) busyCount += 1
     }
   }
 
-  if (!pixelCount) {
-    return Number.POSITIVE_INFINITY
-  }
+  if (!pixelCount) return Number.POSITIVE_INFINITY
 
   const sectionCount = Math.min(8, width)
-  const sectionWidth = Math.max(
-    1,
-    Math.ceil(width / sectionCount)
-  )
+  const sectionWidth = Math.max(1, Math.ceil(width / sectionCount))
   const sectionBusy = Array(sectionCount).fill(0)
   const sectionSamples = Array(sectionCount).fill(0)
-
   let guardDifference = 0
   let guardSamples = 0
   let guardBusy = 0
 
-  for (
-    let y = guardStartY;
-    y <= guardEndY;
-    y += 1
-  ) {
+  for (let y = guardStartY; y <= guardEndY; y += 1) {
     const rowOffset = y * width
     const previousRowOffset = (y - 1) * width
 
     for (let x = 0; x < width; x += 1) {
       const value = data[rowOffset + x]
-      const vertical = Math.abs(
-        value - data[previousRowOffset + x]
-      )
+      const vertical = Math.abs(value - data[previousRowOffset + x])
       const horizontal =
-        x > 0
-          ? Math.abs(
-              value - data[rowOffset + x - 1]
-            )
-          : 0
-
-      const localDifference = Math.max(
-        horizontal,
-        vertical
-      )
+        x > 0 ? Math.abs(value - data[rowOffset + x - 1]) : 0
+      const localDifference = Math.max(horizontal, vertical)
       const sectionIndex = Math.min(
         sectionCount - 1,
         Math.floor(x / sectionWidth)
@@ -272,60 +212,35 @@ function scoreCutCandidate({ analysis, pageY, targetY }) {
     valueSquareSum / pixelCount - mean * mean
   )
   const standardDeviation = Math.sqrt(variance)
-
   const horizontalEdge =
-    horizontalDifference /
-    Math.max(1, horizontalCount) /
-    255
+    horizontalDifference / Math.max(1, horizontalCount) / 255
   const verticalEdge =
-    verticalDifference /
-    Math.max(1, verticalCount) /
-    255
+    verticalDifference / Math.max(1, verticalCount) / 255
   const busyRatio =
-    busyCount /
-    Math.max(
-      1,
-      horizontalCount + verticalCount
-    )
-  const whiteRatio =
-    nearWhiteCount / pixelCount
-  const varianceScore = Math.min(
-    1,
-    standardDeviation / 96
-  )
+    busyCount / Math.max(1, horizontalCount + verticalCount)
+  const whiteRatio = nearWhiteCount / pixelCount
+  const varianceScore = Math.min(1, standardDeviation / 96)
   const distancePenalty =
     Math.abs(pageY - targetY) /
-    Math.max(
-      1,
-      MANGA_PROCESSOR_LIMITS.cutSearchRadius
-    )
-
+    Math.max(1, MANGA_PROCESSOR_LIMITS.cutSearchRadius)
   const guardEdge =
-    guardDifference /
-    Math.max(1, guardSamples) /
-    255
-  const guardBusyRatio =
-    guardBusy / Math.max(1, guardSamples)
-
+    guardDifference / Math.max(1, guardSamples) / 255
+  const guardBusyRatio = guardBusy / Math.max(1, guardSamples)
   const peakSectionBusyRatio = sectionBusy.reduce(
-    (peak, count, index) => {
-      const ratio =
-        count /
-        Math.max(1, sectionSamples[index])
-
-      return Math.max(peak, ratio)
-    },
+    (peak, count, index) =>
+      Math.max(
+        peak,
+        count / Math.max(1, sectionSamples[index])
+      ),
     0
   )
-
   const unsafeGuardPenalty =
-    guardBusyRatio > 0.16
-      ? (guardBusyRatio - 0.16) * 2.4
+    guardBusyRatio > 0.14
+      ? (guardBusyRatio - 0.14) * 2.8
       : 0
-
   const unsafeSectionPenalty =
-    peakSectionBusyRatio > 0.28
-      ? (peakSectionBusyRatio - 0.28) * 2.8
+    peakSectionBusyRatio > 0.24
+      ? (peakSectionBusyRatio - 0.24) * 3.2
       : 0
 
   return (
@@ -333,13 +248,13 @@ function scoreCutCandidate({ analysis, pageY, targetY }) {
     horizontalEdge * 0.55 +
     verticalEdge * 0.65 +
     busyRatio * 0.72 +
-    guardEdge * 1.15 +
-    guardBusyRatio * 1.5 +
-    peakSectionBusyRatio * 1.25 +
+    guardEdge * 1.25 +
+    guardBusyRatio * 1.7 +
+    peakSectionBusyRatio * 1.4 +
     unsafeGuardPenalty +
     unsafeSectionPenalty +
     distancePenalty * 0.1 -
-    whiteRatio * 0.14
+    whiteRatio * 0.16
   )
 }
 
@@ -353,16 +268,9 @@ function findSafestCut({
   const maximum = Math.floor(maximumY)
 
   if (minimum > maximum) return null
+  if (minimum === maximum) return minimum
 
-  if (minimum === maximum) {
-    return minimum
-  }
-
-  let bestY = clamp(
-    Math.round(targetY),
-    minimum,
-    maximum
-  )
+  let bestY = clamp(Math.round(targetY), minimum, maximum)
   let bestScore = scoreCutCandidate({
     analysis,
     pageY: bestY,
@@ -370,16 +278,8 @@ function findSafestCut({
   })
 
   const evaluate = (candidateY) => {
-    const y = clamp(
-      Math.round(candidateY),
-      minimum,
-      maximum
-    )
-    const score = scoreCutCandidate({
-      analysis,
-      pageY: y,
-      targetY,
-    })
+    const y = clamp(Math.round(candidateY), minimum, maximum)
+    const score = scoreCutCandidate({ analysis, pageY: y, targetY })
 
     if (score < bestScore) {
       bestScore = score
@@ -416,7 +316,7 @@ function findSafestCut({
 }
 
 async function buildSmartPartRanges({
-  fileBuffer,
+  filePath,
   pageWidth,
   pageHeight,
 }) {
@@ -431,33 +331,32 @@ async function buildSmartPartRanges({
   } = MANGA_PROCESSOR_LIMITS
 
   if (pageHeight <= partMaxHeight) {
-    return [{ top: 0, height: pageHeight }]
+    return {
+      analysis: null,
+      ranges: [{ top: 0, height: pageHeight }],
+    }
   }
 
-  const partCount = Math.ceil(pageHeight / partPreferredHeight)
   const analysis = await buildCutAnalysis({
-    fileBuffer,
+    filePath,
     pageWidth,
     pageHeight,
   })
-
+  const partCount = Math.ceil(pageHeight / partPreferredHeight)
   const cuts = []
   let previousCut = 0
 
   for (let cutIndex = 1; cutIndex < partCount; cutIndex += 1) {
     const remainingParts = partCount - cutIndex
     const targetY = Math.round((pageHeight * cutIndex) / partCount)
-
     const minimumY = Math.max(
       previousCut + partMinHeight,
       pageHeight - remainingParts * partMaxHeight
     )
-
     const maximumY = Math.min(
       previousCut + partMaxHeight,
       pageHeight - remainingParts * partMinHeight
     )
-
     const searchCenterY = clamp(targetY, minimumY, maximumY)
     const searchMinimumY = Math.max(
       minimumY,
@@ -478,30 +377,23 @@ async function buildSmartPartRanges({
     if (cutY === null) {
       const emergencyMinimumY = Math.max(
         previousCut + partEmergencyMinHeight,
-        pageHeight -
-          remainingParts *
-            partEmergencyMaxHeight
+        pageHeight - remainingParts * partEmergencyMaxHeight
       )
-
       const emergencyMaximumY = Math.min(
         previousCut + partEmergencyMaxHeight,
-        pageHeight -
-          remainingParts *
-            partEmergencyMinHeight
+        pageHeight - remainingParts * partEmergencyMinHeight
       )
 
       cutY = findSafestCut({
         analysis,
-          targetY,
+        targetY,
         minimumY: emergencyMinimumY,
         maximumY: emergencyMaximumY,
       })
     }
 
     if (cutY === null) {
-      const error = new Error(
-        'No safe manga cut position could be found.'
-      )
+      const error = new Error('No safe manga cut position could be found.')
       error.code = 'MANGA_SAFE_CUT_NOT_FOUND'
       error.statusCode = 422
       throw error
@@ -521,7 +413,10 @@ async function buildSmartPartRanges({
 
   ranges.push({ top, height: pageHeight - top })
 
-  return ranges.filter((range) => range.height > 0)
+  return {
+    analysis,
+    ranges: ranges.filter((range) => range.height > 0),
+  }
 }
 
 function mapPageRangeToSource({
@@ -548,8 +443,8 @@ function mapPageRangeToSource({
   }
 }
 
-async function encodeMangaPart({
-  fileBuffer,
+async function encodeRangeToFile({
+  filePath,
   sourceWidth,
   sourceHeight,
   pageWidth,
@@ -564,131 +459,147 @@ async function encodeMangaPart({
     top,
     height,
   })
-
-  return sharp(fileBuffer, {
-    limitInputPixels: MANGA_PROCESSOR_LIMITS.maxPixels,
-    sequentialRead: true,
-  })
-    .rotate()
-    .extract({
-      left: 0,
-      top: sourceRange.top,
-      width: sourceWidth,
-      height: sourceRange.height,
-    })
-    .resize({
-      width: pageWidth,
-      height,
-      fit: 'fill',
-      withoutEnlargement: true,
-    })
-    .sharpen({ sigma: 0.45 })
-    .webp({
-      quality,
-      effort: 3,
-      smartSubsample: true,
-    })
-    .toBuffer({ resolveWithObject: true })
-}
-
-async function compressMangaPart(options) {
-  let hardCandidate = null
-
-  for (const quality of QUALITY_LEVELS) {
-    const encoded = await encodeMangaPart({
-      ...options,
-      quality,
-    })
-    const candidate = {
-      buffer: encoded.data,
-      width: encoded.info.width,
-      height: encoded.info.height,
-      quality,
-    }
-
-    if (
-      !hardCandidate &&
-      encoded.data.length <= MANGA_PROCESSOR_LIMITS.hardPartBytes
-    ) {
-      hardCandidate = candidate
-    }
-
-    if (
-      encoded.data.length <= MANGA_PROCESSOR_LIMITS.targetPartBytes
-    ) {
-      return candidate
-    }
-  }
-
-  return hardCandidate
-}
-
-async function processAtWidth(
-  fileBuffer,
-  sourceWidth,
-  sourceHeight,
-  pageWidth
-) {
-  const ratio = pageWidth / sourceWidth
-  const pageHeight = Math.max(
-    1,
-    Math.round(sourceHeight * ratio)
+  const outputPath = path.join(
+    os.tmpdir(),
+    `manga-encoded-${Date.now()}-${randomUUID()}.webp`
   )
-  const ranges = await buildSmartPartRanges({
-    fileBuffer,
-    pageWidth,
-    pageHeight,
-  })
-  const parts = []
 
-  for (let partIndex = 0; partIndex < ranges.length; partIndex += 1) {
-    const range = ranges[partIndex]
-    const compressed = await compressMangaPart({
-      fileBuffer,
-      sourceWidth,
-      sourceHeight,
-      pageWidth,
-      pageHeight,
-      top: range.top,
-      height: range.height,
+  try {
+    const info = await sharp(filePath, {
+      limitInputPixels: MANGA_PROCESSOR_LIMITS.maxPixels,
+      sequentialRead: true,
     })
+      .rotate()
+      .extract({
+        left: 0,
+        top: sourceRange.top,
+        width: sourceWidth,
+        height: sourceRange.height,
+      })
+      .resize({
+        width: pageWidth,
+        height,
+        fit: 'fill',
+        withoutEnlargement: true,
+        kernel: sharp.kernel.lanczos3,
+      })
+      .webp({
+        quality,
+        effort: 2,
+        smartSubsample: true,
+      })
+      .toFile(outputPath)
 
-    if (!compressed) return null
+    const fileStat = await stat(outputPath)
 
-    parts.push({
-      partIndex,
-      buffer: compressed.buffer,
-      width: compressed.width,
-      height: compressed.height,
-      fileSize: compressed.buffer.length,
-      mimeType: 'image/webp',
-      quality: compressed.quality,
-    })
-  }
-
-  return {
-    width: pageWidth,
-    height: pageHeight,
-    parts,
+    return {
+      path: outputPath,
+      size: Number(fileStat.size || info.size || 0),
+      width: Number(info.width || pageWidth),
+      height: Number(info.height || height),
+      quality,
+    }
+  } catch (error) {
+    await unlink(outputPath).catch(() => {})
+    throw error
   }
 }
 
-export async function processMangaImage(file) {
-  const fileBuffer = Buffer.isBuffer(file?.buffer)
-    ? file.buffer
-    : Buffer.alloc(0)
+async function compressRangeToFile(options) {
+  const first = await encodeRangeToFile({
+    ...options,
+    quality: MANGA_PROCESSOR_LIMITS.primaryQuality,
+  })
 
-  if (!fileBuffer.length) {
-    const error = new Error('Manga image data is empty.')
-    error.code = 'MANGA_IMAGE_EMPTY'
-    error.statusCode = 400
+  if (first.size <= MANGA_PROCESSOR_LIMITS.hardPartBytes) {
+    return first
+  }
+
+  await unlink(first.path).catch(() => {})
+
+  const second = await encodeRangeToFile({
+    ...options,
+    quality: MANGA_PROCESSOR_LIMITS.fallbackQuality,
+  })
+
+  if (second.size <= MANGA_PROCESSOR_LIMITS.hardPartBytes) {
+    return second
+  }
+
+  await unlink(second.path).catch(() => {})
+  return null
+}
+
+function splitOversizedRange({
+  range,
+  analysis,
+  pageHeight,
+}) {
+  const minimumChildHeight = Math.min(
+    MANGA_PROCESSOR_LIMITS.partEmergencyMinHeight,
+    Math.max(320, Math.floor(range.height / 3))
+  )
+
+  if (range.height < minimumChildHeight * 2 + 2) {
+    return null
+  }
+
+  const minimumY = range.top + minimumChildHeight
+  const maximumY = range.top + range.height - minimumChildHeight
+  const targetY = Math.round(range.top + range.height / 2)
+  let cutY = analysis
+    ? findSafestCut({
+        analysis,
+        targetY,
+        minimumY,
+        maximumY,
+      })
+    : targetY
+
+  cutY = clamp(cutY ?? targetY, minimumY, maximumY)
+
+  if (cutY <= range.top || cutY >= range.top + range.height) {
+    return null
+  }
+
+  const overlap = MANGA_PROCESSOR_LIMITS.partOverlap
+  const first = {
+    top: range.top,
+    height: cutY - range.top,
+  }
+  const secondTop = Math.max(range.top, cutY - overlap)
+  const second = {
+    top: secondTop,
+    height: Math.min(
+      pageHeight - secondTop,
+      range.top + range.height - secondTop
+    ),
+  }
+
+  return [first, second].filter((item) => item.height > 0)
+}
+
+export async function processMangaImage(file, { onPart } = {}) {
+  const filePath = String(file?.path || '').trim()
+
+  if (!filePath) {
+    const error = new Error('Manga image must use disk-backed temporary storage.')
+    error.code = 'MANGA_IMAGE_PATH_REQUIRED'
+    error.statusCode = 500
+    throw error
+  }
+
+  if (typeof onPart !== 'function') {
+    const error = new Error('Manga part uploader is required.')
+    error.code = 'MANGA_PART_UPLOADER_REQUIRED'
+    error.statusCode = 500
     throw error
   }
 
   let metadata
 
   try {
-    metadata = await sharp(fileBuffer).metadata()
+    metadata = await sharp(filePath).metadata()
   } catch {
     const error = new Error('Manga image data could not be decoded.')
     error.code = 'MANGA_IMAGE_DECODE_FAILED'
@@ -697,34 +608,84 @@ export async function processMangaImage(file) {
   }
 
   const source = orientedDimensions(metadata)
-
   validateDimensions(source.width, source.height)
 
-  for (const pageWidth of widthProfiles(source.width)) {
-    const processed = await processAtWidth(
-      fileBuffer,
-      source.width,
-      source.height,
-      pageWidth
-    )
+  const pageWidth = Math.min(
+    MANGA_PROCESSOR_LIMITS.targetWidth,
+    source.width
+  )
+  const ratio = pageWidth / source.width
+  const pageHeight = Math.max(
+    1,
+    Math.round(source.height * ratio)
+  )
+  const plan = await buildSmartPartRanges({
+    filePath,
+    pageWidth,
+    pageHeight,
+  })
+  const queue = [...plan.ranges]
+  const storedParts = []
+  let partIndex = 0
 
-    if (processed) {
-      return {
-        sourceWidth: source.width,
-        sourceHeight: source.height,
-        sourceFormat: metadata.format || null,
-        width: processed.width,
-        height: processed.height,
-        partCount: processed.parts.length,
-        parts: processed.parts,
+  while (queue.length > 0) {
+    const range = queue.shift()
+    const encoded = await compressRangeToFile({
+      filePath,
+      sourceWidth: source.width,
+      sourceHeight: source.height,
+      pageWidth,
+      pageHeight,
+      top: range.top,
+      height: range.height,
+    })
+
+    if (!encoded) {
+      const split = splitOversizedRange({
+        range,
+        analysis: plan.analysis,
+        pageHeight,
+      })
+
+      if (!split) {
+        const error = new Error(
+          'Manga image could not be compressed below 2 MB per part.'
+        )
+        error.code = 'MANGA_PART_COMPRESSION_FAILED'
+        error.statusCode = 422
+        throw error
       }
+
+      queue.unshift(...split)
+      continue
+    }
+
+    try {
+      const stored = await onPart({
+        partIndex,
+        path: encoded.path,
+        size: encoded.size,
+        width: encoded.width,
+        height: encoded.height,
+        fileSize: encoded.size,
+        mimeType: 'image/webp',
+        quality: encoded.quality,
+      })
+
+      storedParts.push(stored)
+      partIndex += 1
+    } finally {
+      await unlink(encoded.path).catch(() => {})
     }
   }
 
-  const error = new Error(
-    'Manga image could not be compressed below 2 MB per part.'
-  )
-  error.code = 'MANGA_PART_COMPRESSION_FAILED'
-  error.statusCode = 422
-  throw error
+  return {
+    sourceWidth: source.width,
+    sourceHeight: source.height,
+    sourceFormat: metadata.format || null,
+    width: pageWidth,
+    height: pageHeight,
+    partCount: storedParts.length,
+    parts: storedParts,
+  }
 }
