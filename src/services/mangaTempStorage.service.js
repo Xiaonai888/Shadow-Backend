@@ -1,3 +1,10 @@
+import { randomUUID } from 'node:crypto'
+import { createWriteStream } from 'node:fs'
+import { readFile, stat, unlink } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -76,6 +83,44 @@ function requirePositiveInteger(value, fieldName) {
   return number
 }
 
+function pageTooLargeError() {
+  const error = new Error('Manga page must be 5 MB or smaller.')
+  error.code = 'MANGA_PAGE_TOO_LARGE'
+  error.statusCode = 413
+  error.stage = 'receive'
+  return error
+}
+
+async function getTempObjectResponse(key, maxBytes) {
+  const safeKey = requireTempKey(key)
+  const safeMaxBytes = requirePositiveInteger(maxBytes, 'maxBytes')
+  const response = await getR2Client().send(
+    new GetObjectCommand({
+      Bucket: getR2BucketName(),
+      Key: safeKey,
+    })
+  )
+  const declaredLength = Number(response.ContentLength || 0)
+
+  if (declaredLength > safeMaxBytes) {
+    response.Body?.destroy?.()
+    throw pageTooLargeError()
+  }
+
+  if (!response.Body) {
+    const error = new Error('Temporary manga image is missing.')
+    error.code = 'MANGA_TEMP_OBJECT_EMPTY'
+    error.statusCode = 500
+    error.stage = 'storage'
+    throw error
+  }
+
+  return {
+    response,
+    safeMaxBytes,
+  }
+}
+
 export async function uploadMangaTempStream({
   key,
   body,
@@ -83,10 +128,7 @@ export async function uploadMangaTempStream({
   contentLength,
 }) {
   const safeKey = requireTempKey(key)
-  const safeLength = requirePositiveInteger(
-    contentLength,
-    'contentLength'
-  )
+  const safeLength = requirePositiveInteger(contentLength, 'contentLength')
 
   await getR2Client().send(
     new PutObjectCommand({
@@ -108,73 +150,68 @@ export async function uploadMangaTempStream({
   return safeKey
 }
 
-export async function downloadMangaTempBuffer(
-  key,
-  maxBytes
-) {
-  const safeKey = requireTempKey(key)
-  const safeMaxBytes = requirePositiveInteger(
-    maxBytes,
-    'maxBytes'
+export async function downloadMangaTempFile(key, maxBytes) {
+  const { response, safeMaxBytes } =
+    await getTempObjectResponse(key, maxBytes)
+  const tempPath = path.join(
+    os.tmpdir(),
+    `manga-source-${Date.now()}-${randomUUID()}`
   )
-
-  const response = await getR2Client().send(
-    new GetObjectCommand({
-      Bucket: getR2BucketName(),
-      Key: safeKey,
-    })
-  )
-
-  const declaredLength = Number(response.ContentLength || 0)
-
-  if (declaredLength > safeMaxBytes) {
-    const error = new Error('Manga page must be 5 MB or smaller.')
-    error.code = 'MANGA_PAGE_TOO_LARGE'
-    error.statusCode = 413
-    error.stage = 'receive'
-    throw error
-  }
-
-  if (!response.Body) {
-    const error = new Error('Temporary manga image is missing.')
-    error.code = 'MANGA_TEMP_OBJECT_EMPTY'
-    error.statusCode = 500
-    error.stage = 'storage'
-    throw error
-  }
-
-  const chunks = []
   let totalBytes = 0
 
-  for await (const chunk of response.Body) {
-    const buffer = Buffer.isBuffer(chunk)
-      ? chunk
-      : Buffer.from(chunk)
+  const limiter = new Transform({
+    transform(chunk, encoding, callback) {
+      const buffer = Buffer.isBuffer(chunk)
+        ? chunk
+        : Buffer.from(chunk)
 
-    totalBytes += buffer.length
+      totalBytes += buffer.length
 
-    if (totalBytes > safeMaxBytes) {
-      response.Body.destroy?.()
+      if (totalBytes > safeMaxBytes) {
+        callback(pageTooLargeError())
+        return
+      }
 
-      const error = new Error('Manga page must be 5 MB or smaller.')
-      error.code = 'MANGA_PAGE_TOO_LARGE'
-      error.statusCode = 413
-      error.stage = 'receive'
+      callback(null, buffer)
+    },
+  })
+
+  try {
+    await pipeline(
+      response.Body,
+      limiter,
+      createWriteStream(tempPath, { flags: 'wx' })
+    )
+
+    if (totalBytes === 0) {
+      const error = new Error('Temporary manga image is empty.')
+      error.code = 'MANGA_TEMP_OBJECT_EMPTY'
+      error.statusCode = 500
+      error.stage = 'storage'
       throw error
     }
 
-    chunks.push(buffer)
-  }
+    const fileStat = await stat(tempPath)
 
-  if (totalBytes === 0) {
-    const error = new Error('Temporary manga image is empty.')
-    error.code = 'MANGA_TEMP_OBJECT_EMPTY'
-    error.statusCode = 500
-    error.stage = 'storage'
+    return {
+      path: tempPath,
+      size: Number(fileStat.size || totalBytes),
+    }
+  } catch (error) {
+    response.Body?.destroy?.()
+    await unlink(tempPath).catch(() => {})
     throw error
   }
+}
 
-  return Buffer.concat(chunks, totalBytes)
+export async function downloadMangaTempBuffer(key, maxBytes) {
+  const file = await downloadMangaTempFile(key, maxBytes)
+
+  try {
+    return await readFile(file.path)
+  } finally {
+    await unlink(file.path).catch(() => {})
+  }
 }
 
 export async function deleteMangaTempObject(key) {
