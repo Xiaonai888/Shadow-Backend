@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto'
+import { writeFile, unlink } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { wakeMangaR2DeleteRetryWorker } from './mangaR2DeleteRetry.service.js'
 import { supabase } from '../config/supabase.js'
 import {
@@ -34,12 +38,25 @@ function normalizePart(part, index) {
   }
 }
 
-function buildPartFile(part) {
-  return {
-    buffer: part.buffer,
-    size: part.buffer.length,
-    mimetype: 'image/webp',
-    originalname: `part-${String(part.partIndex).padStart(3, '0')}.webp`,
+async function buildPartFile(part) {
+  const originalname = `part-${String(part.partIndex).padStart(3, '0')}.webp`
+  const tempPath = path.join(
+    os.tmpdir(),
+    `manga-part-${Date.now()}-${randomUUID()}.webp`
+  )
+
+  try {
+    await writeFile(tempPath, part.buffer, { flag: 'wx' })
+
+    return {
+      path: tempPath,
+      size: part.buffer.length,
+      mimetype: part.mimeType || 'image/webp',
+      originalname,
+    }
+  } catch (error) {
+    await unlink(tempPath).catch(() => {})
+    throw error
   }
 }
 
@@ -249,21 +266,27 @@ export async function uploadProcessedMangaParts({
 
   try {
     for (const part of parts) {
-      const imageUrl = await uploadFileToR2(
-        buildPartFile(part),
-        folder
-      )
+      const partFile = await buildPartFile(part)
 
-      uploaded.push({
-        part_index: part.partIndex,
-        image_url: imageUrl,
-        storage_path: getStoragePath(imageUrl),
-        width: part.width || null,
-        height: part.height || null,
-        file_size: part.buffer.length,
-        mime_type: 'image/webp',
-        quality: part.quality,
-      })
+      try {
+        const imageUrl = await uploadFileToR2(
+          partFile,
+          folder
+        )
+
+        uploaded.push({
+          part_index: part.partIndex,
+          image_url: imageUrl,
+          storage_path: getStoragePath(imageUrl),
+          width: part.width || null,
+          height: part.height || null,
+          file_size: part.fileSize || part.buffer.length,
+          mime_type: part.mimeType || 'image/webp',
+          quality: part.quality,
+        })
+      } finally {
+        await unlink(partFile.path).catch(() => {})
+      }
     }
 
     return {
