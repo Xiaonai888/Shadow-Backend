@@ -27,12 +27,17 @@ function normalizePart(part, index) {
     ? Math.max(0, Math.floor(Number(part.partIndex)))
     : index
 
+  const buffer = Buffer.isBuffer(part?.buffer)
+    ? part.buffer
+    : Buffer.alloc(0)
+
   return {
+    sourcePart: part,
     partIndex,
-    buffer: Buffer.isBuffer(part?.buffer) ? part.buffer : Buffer.alloc(0),
+    buffer,
     width: Number(part?.width || 0),
     height: Number(part?.height || 0),
-    fileSize: Number(part?.fileSize || part?.buffer?.length || 0),
+    fileSize: Number(part?.fileSize || buffer.length || 0),
     mimeType: String(part?.mimeType || 'image/webp'),
     quality: Number(part?.quality || 0) || null,
   }
@@ -44,13 +49,25 @@ async function buildPartFile(part) {
     os.tmpdir(),
     `manga-part-${Date.now()}-${randomUUID()}.webp`
   )
+  const buffer = part.buffer
 
   try {
-    await writeFile(tempPath, part.buffer, { flag: 'wx' })
+    await writeFile(tempPath, buffer, { flag: 'wx' })
+
+    const size = buffer.length
+    part.fileSize = part.fileSize || size
+    part.buffer = null
+
+    if (
+      part.sourcePart &&
+      typeof part.sourcePart === 'object'
+    ) {
+      part.sourcePart.buffer = null
+    }
 
     return {
       path: tempPath,
-      size: part.buffer.length,
+      size,
       mimetype: part.mimeType || 'image/webp',
       originalname,
     }
@@ -255,7 +272,13 @@ export async function uploadProcessedMangaParts({
     .map(normalizePart)
     .sort((a, b) => a.partIndex - b.partIndex)
 
-  if (parts.some((part) => !part.buffer.length)) {
+  if (
+    parts.some(
+      (part) =>
+        !Buffer.isBuffer(part.buffer) ||
+        !part.buffer.length
+    )
+  ) {
     const error = new Error('One or more processed manga parts are empty.')
     error.code = 'MANGA_PART_EMPTY'
     error.statusCode = 422
@@ -280,7 +303,7 @@ export async function uploadProcessedMangaParts({
           storage_path: getStoragePath(imageUrl),
           width: part.width || null,
           height: part.height || null,
-          file_size: part.fileSize || part.buffer.length,
+          file_size: part.fileSize || partFile.size,
           mime_type: part.mimeType || 'image/webp',
           quality: part.quality,
         })
