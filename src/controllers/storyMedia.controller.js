@@ -18,10 +18,46 @@ const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'media'
 
 const ALLOWED_FOLDERS = {
   story_cover: 'story-covers',
+  story_landscape_thumbnail: 'story-landscape-thumbnails',
   story_slide: 'story-slides',
   episode_cover: 'episode-covers',
   episode_content: 'episode-content',
   payment_proof: 'payment-proofs',
+}
+
+const STORY_IMAGE_PROCESSING_OPTIONS = {
+  story_cover: {
+    width: 1200,
+    quality: 82,
+    minQuality: 50,
+    qualityStep: 6,
+    maxBytes: 800 * 1024,
+    fallbackWidth: 800,
+  },
+  story_landscape_thumbnail: {
+    width: 1600,
+    quality: 82,
+    minQuality: 50,
+    qualityStep: 6,
+    maxBytes: 800 * 1024,
+    fallbackWidth: 960,
+  },
+  story_slide: {
+    width: 1920,
+    quality: 82,
+    minQuality: 50,
+    qualityStep: 6,
+    maxBytes: 1024 * 1024,
+    fallbackWidth: 1280,
+  },
+  episode_content: {
+    width: 1600,
+    quality: 82,
+    minQuality: 40,
+    qualityStep: 6,
+    maxBytes: 500 * 1024,
+    fallbackWidth: 640,
+  },
 }
 
 const R2_FOLDERS = {
@@ -298,9 +334,10 @@ export async function uploadStoryImage(
     const isChatStoryCharacterUpload =
       requestedFolder ===
       'chat_story_character'
-    const isEpisodeContentUpload =
-      requestedFolder ===
-      'episode_content'
+    const storyImageProcessingOptions =
+  STORY_IMAGE_PROCESSING_OPTIONS[
+    requestedFolder
+  ] || null
 
     if (
       isChatStoryCharacterUpload &&
@@ -341,86 +378,81 @@ export async function uploadStoryImage(
       })
     }
 
-    if (isEpisodeContentUpload) {
-      try {
-        processed =
-          await processStoryImageFile(
-            req.file,
-            {
-              width: 1600,
-              quality: 82,
-              minQuality: 40,
-              qualityStep: 6,
-              maxBytes:
-                500 * 1024,
-              fallbackWidth: 640,
-            }
-          )
-      } catch (error) {
-        if (
-          error?.code ===
-            'STORY_IMAGE_DECODE_FAILED' ||
-          error?.code ===
-            'IMAGE_DIMENSIONS_MISSING'
-        ) {
-          return res.status(400).json({
-            ok: false,
-            code:
-              'EPISODE_IMAGE_INVALID',
-            message:
-              'Episode image is invalid',
-          })
-        }
-
-        throw error
-      }
-
-      const folder = safeFolder(
-        requestedFolder
+    if (storyImageProcessingOptions) {
+  try {
+    processed =
+      await processStoryImageFile(
+        req.file,
+        storyImageProcessingOptions
       )
-      const imageUrl =
-        await uploadFileToR2(
-          {
-            path: processed.path,
-            size: processed.size,
-            mimetype:
-              'image/webp',
-            originalname:
-              'episode-image.webp',
-          },
-          `${folder}/${userId}`
-        )
+  } catch (error) {
+    if (
+      error?.code ===
+        'STORY_IMAGE_DECODE_FAILED' ||
+      error?.code ===
+        'IMAGE_DIMENSIONS_MISSING'
+    ) {
+      const isEpisode =
+        requestedFolder ===
+        'episode_content'
 
-      const publicBaseUrl =
-        String(
-          process.env.R2_PUBLIC_URL ||
-            ''
-        ).replace(/\/+$/, '')
-      const storagePath =
-        publicBaseUrl &&
-        imageUrl.startsWith(
-          `${publicBaseUrl}/`
-        )
-          ? imageUrl.slice(
-              publicBaseUrl.length +
-                1
-            )
-          : imageUrl
-
-      return res
-        .status(201)
-        .json({
-          ok: true,
-          message:
-            'Image uploaded successfully',
-          bucket:
-            process.env
-              .R2_BUCKET_NAME,
-          path: storagePath,
-          image_url: imageUrl,
-          imageUrl,
-        })
+      return res.status(400).json({
+        ok: false,
+        code: isEpisode
+          ? 'EPISODE_IMAGE_INVALID'
+          : 'STORY_IMAGE_INVALID',
+        message: isEpisode
+          ? 'Episode image is invalid'
+          : 'Story image is invalid',
+      })
     }
+
+    throw error
+  }
+
+  const folder = safeFolder(
+    requestedFolder
+  )
+
+  const imageUrl =
+    await uploadFileToR2(
+      {
+        path: processed.path,
+        size: processed.size,
+        mimetype: 'image/webp',
+        originalname:
+          'story-image.webp',
+      },
+      `${folder}/${userId}`
+    )
+
+  const publicBaseUrl =
+    String(
+      process.env.R2_PUBLIC_URL ||
+        ''
+    ).replace(/\/+$/, '')
+
+  const storagePath =
+    publicBaseUrl &&
+    imageUrl.startsWith(
+      `${publicBaseUrl}/`
+    )
+      ? imageUrl.slice(
+          publicBaseUrl.length + 1
+        )
+      : imageUrl
+
+  return res.status(201).json({
+    ok: true,
+    message:
+      'Image uploaded successfully',
+    bucket:
+      process.env.R2_BUCKET_NAME,
+    path: storagePath,
+    image_url: imageUrl,
+    imageUrl,
+  })
+}
 
     if (
       R2_FOLDERS[
