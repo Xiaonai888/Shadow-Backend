@@ -1,3 +1,4 @@
+import { unlink } from 'node:fs/promises'
 import dotenv from 'dotenv'
 import {
   completeHeavyMediaJob,
@@ -6,7 +7,7 @@ import {
 } from '../services/heavyMediaJob.service.js'
 import {
   deleteMangaTempObject,
-  downloadMangaTempBuffer,
+  downloadMangaTempFile,
 } from '../services/mangaTempStorage.service.js'
 
 dotenv.config()
@@ -20,9 +21,7 @@ function cleanText(value, maxLength = 1000) {
 }
 
 function memoryMb(bytes) {
-  return Number(
-    (Number(bytes || 0) / MB).toFixed(1)
-  )
+  return Number((Number(bytes || 0) / MB).toFixed(1))
 }
 
 function sendMessage(message) {
@@ -40,10 +39,7 @@ async function deleteTempSafely(key) {
   try {
     await deleteMangaTempObject(key)
   } catch (error) {
-    console.error(
-      'MANGA WORKER TEMP CLEANUP ERROR:',
-      error
-    )
+    console.error('MANGA WORKER TEMP CLEANUP ERROR:', error)
   }
 }
 
@@ -52,13 +48,12 @@ async function main() {
   const workerId = cleanText(process.argv[3], 160)
 
   if (!jobId || !workerId) {
-    throw new Error(
-      'Manga worker requires jobId and workerId.'
-    )
+    throw new Error('Manga worker requires jobId and workerId.')
   }
 
   let peakRss = process.memoryUsage().rss
   let tempObjectKey = ''
+  let sourceFilePath = ''
   let storedParts = []
   let completionPersisted = false
   let deleteStoredMangaParts = null
@@ -92,33 +87,26 @@ async function main() {
       throw error
     }
 
-    tempObjectKey =
-      cleanText(job.temp_object_key, 1000)
+    tempObjectKey = cleanText(job.temp_object_key, 1000)
     const payload =
-      job.payload &&
-      typeof job.payload === 'object'
+      job.payload && typeof job.payload === 'object'
         ? job.payload
         : {}
 
     if (!tempObjectKey) {
-      const error = new Error(
-        'The manga job has no temporary storage key.'
-      )
+      const error = new Error('The manga job has no temporary storage key.')
       error.code = 'MANGA_TEMP_KEY_MISSING'
       throw error
     }
 
-    const sourceBytes =
-      Number(payload.source_bytes || 0)
-    let buffer = await downloadMangaTempBuffer(
+    const sourceBytes = Number(payload.source_bytes || 0)
+    const sourceFile = await downloadMangaTempFile(
       tempObjectKey,
       MANGA_IMAGE_MAX_BYTES
     )
+    sourceFilePath = sourceFile.path
 
-    if (
-      sourceBytes > 0 &&
-      buffer.length !== sourceBytes
-    ) {
+    if (sourceBytes > 0 && sourceFile.size !== sourceBytes) {
       const error = new Error(
         'The staged manga image size did not match the uploaded size.'
       )
@@ -129,72 +117,62 @@ async function main() {
 
     const { default: sharp } = await import('sharp')
     sharp.concurrency(1)
-    sharp.cache({ memory: 8, files: 0, items: 16 })
+    sharp.cache(false)
 
-    const {
-      processMangaImage,
-    } = await import(
+    const { processMangaImage } = await import(
       '../services/mangaImageProcessor.service.js'
     )
     const mangaStorage = await import(
       '../services/mangaPageStorage.service.js'
     )
-    const {
-      uploadProcessedMangaParts,
-    } = mangaStorage
-    deleteStoredMangaParts =
-      mangaStorage.deleteStoredMangaParts
+    const { uploadProcessedMangaPart } = mangaStorage
+    deleteStoredMangaParts = mangaStorage.deleteStoredMangaParts
+    const folder = `episode-content/${job.user_id}/manga-v2`
 
-    const receivedBytes = buffer.length
-    const file = {
-      buffer,
-      size: buffer.length,
-      mimetype:
-        cleanText(payload.content_type, 120) ||
-        'application/octet-stream',
-      originalname:
-        cleanText(payload.original_name, 240) ||
-        'manga-page',
-    }
+    const processed = await processMangaImage(
+      {
+        path: sourceFile.path,
+        size: sourceFile.size,
+        mimetype:
+          cleanText(payload.content_type, 120) ||
+          'application/octet-stream',
+        originalname:
+          cleanText(payload.original_name, 240) ||
+          'manga-page',
+      },
+      {
+        onPart: async (part) => {
+          const stored = await uploadProcessedMangaPart({
+            part,
+            folder,
+          })
+          storedParts.push(stored)
+          return stored
+        },
+      }
+    )
 
-    const processed = await processMangaImage(file)
-    file.buffer = null
-    buffer = null
-
-    const stored = await uploadProcessedMangaParts({
-      processed,
-      folder:
-        `episode-content/${job.user_id}/manga-v2`,
-    })
-
-    const parts = Array.isArray(stored.parts)
-      ? stored.parts
-      : []
-    storedParts = parts
+    const parts = Array.isArray(processed.parts)
+      ? processed.parts
+      : storedParts
     const firstPart = parts[0] || {}
     const totalBytes = parts.reduce(
-      (sum, part) =>
-        sum + Number(part.file_size || 0),
+      (sum, part) => sum + Number(part.file_size || 0),
       0
     )
 
     const result = {
       image_url: firstPart.image_url || null,
-      storage_path:
-        firstPart.storage_path || null,
-      source_format: stored.source_format || null,
-      source_width:
-        Number(stored.source_width || 0) || null,
-      source_height:
-        Number(stored.source_height || 0) || null,
-      source_bytes:
-        sourceBytes || receivedBytes,
-      width: Number(stored.width || 0) || null,
-      height: Number(stored.height || 0) || null,
+      storage_path: firstPart.storage_path || null,
+      source_format: processed.sourceFormat || null,
+      source_width: Number(processed.sourceWidth || 0) || null,
+      source_height: Number(processed.sourceHeight || 0) || null,
+      source_bytes: sourceBytes || sourceFile.size,
+      width: Number(processed.width || 0) || null,
+      height: Number(processed.height || 0) || null,
       file_size: totalBytes,
       mime_type: 'image/webp',
-      part_count:
-        Number(stored.part_count || parts.length),
+      part_count: Number(processed.partCount || parts.length),
       parts,
     }
 
@@ -202,8 +180,7 @@ async function main() {
       jobId,
       workerId,
       result,
-      finalObjectKey:
-        firstPart.storage_path || null,
+      finalObjectKey: firstPart.storage_path || null,
     })
 
     if (!completed) {
@@ -216,13 +193,9 @@ async function main() {
 
     completionPersisted = true
     storedParts = []
-
     await deleteTempSafely(tempObjectKey)
 
-    peakRss = Math.max(
-      peakRss,
-      process.memoryUsage().rss
-    )
+    peakRss = Math.max(peakRss, process.memoryUsage().rss)
 
     sendMessage({
       type: 'done',
@@ -230,28 +203,17 @@ async function main() {
       peak_rss_mb: memoryMb(peakRss),
     })
   } catch (error) {
-    console.error(
-      'MANGA BACKGROUND WORKER ERROR:',
-      error
-    )
+    console.error('MANGA BACKGROUND WORKER ERROR:', error)
 
-    if (
-      storedParts.length > 0 &&
-      !completionPersisted
-    ) {
+    if (storedParts.length > 0 && !completionPersisted) {
       try {
-        const latestJob =
-          await getHeavyMediaJob({ jobId })
+        const latestJob = await getHeavyMediaJob({ jobId })
 
         if (latestJob?.status === 'done') {
           completionPersisted = true
           storedParts = []
           await deleteTempSafely(tempObjectKey)
-
-          peakRss = Math.max(
-            peakRss,
-            process.memoryUsage().rss
-          )
+          peakRss = Math.max(peakRss, process.memoryUsage().rss)
 
           sendMessage({
             type: 'done',
@@ -261,13 +223,8 @@ async function main() {
           return
         }
 
-        if (
-          typeof deleteStoredMangaParts ===
-          'function'
-        ) {
-          await deleteStoredMangaParts(
-            storedParts
-          )
+        if (typeof deleteStoredMangaParts === 'function') {
+          await deleteStoredMangaParts(storedParts)
           storedParts = []
         }
       } catch (cleanupError) {
@@ -290,27 +247,19 @@ async function main() {
         errorMessage:
           cleanText(error?.message, 1000) ||
           'Manga background processing failed.',
-        retry: true,
-        retryDelaySeconds: 30,
+        retry: false,
+        retryDelaySeconds: 0,
       })
     } catch (syncError) {
-      console.error(
-        'MANGA WORKER FAILURE SYNC ERROR:',
-        syncError
-      )
+      console.error('MANGA WORKER FAILURE SYNC ERROR:', syncError)
       throw error
     }
 
     if (failedJob?.status === 'failed') {
-      await deleteTempSafely(
-        failedJob.temp_object_key
-      )
+      await deleteTempSafely(failedJob.temp_object_key)
     }
 
-    peakRss = Math.max(
-      peakRss,
-      process.memoryUsage().rss
-    )
+    peakRss = Math.max(peakRss, process.memoryUsage().rss)
 
     sendMessage({
       type: 'failed',
@@ -319,6 +268,10 @@ async function main() {
     })
   } finally {
     clearInterval(sampleTimer)
+
+    if (sourceFilePath) {
+      await unlink(sourceFilePath).catch(() => {})
+    }
   }
 }
 
@@ -327,9 +280,6 @@ main()
     process.exitCode = 0
   })
   .catch((error) => {
-    console.error(
-      'MANGA WORKER FATAL ERROR:',
-      error
-    )
+    console.error('MANGA WORKER FATAL ERROR:', error)
     process.exitCode = 1
   })
