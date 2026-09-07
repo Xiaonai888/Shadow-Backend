@@ -6,6 +6,10 @@ function cleanLimit(value, fallback = 24, max = 60) {
   return Math.min(Math.max(Math.floor(number), 1), max)
 }
 
+function cleanText(value) {
+  return String(value ?? '').trim()
+}
+
 function productStockStatus(product) {
   if (product.product_type === 'pdf') return 'digital'
   if (product.pre_order) return 'pre_order'
@@ -16,20 +20,16 @@ function publicReaderStoreProduct(product, authorPage) {
   return {
     id: product.id,
     author_page_id: product.author_page_id,
-    page_name: authorPage.page_name || '',
-    page_username: authorPage.page_username || '',
-    author_avatar_url:
-      authorPage.avatar_url ||
-      authorPage.profile_image_url ||
-      authorPage.logo_url ||
-      '',
+    page_name: cleanText(authorPage.page_name),
+    page_username: cleanText(authorPage.page_username),
+    author_avatar_url: cleanText(authorPage.avatar_url),
     product_type: product.product_type || 'book',
-    title: product.title || '',
-    author_name: product.author_name || authorPage.page_name || '',
-    publisher: product.publisher || '',
-    category: product.category || '',
-    genre: product.genre || '',
-    cover_url: product.cover_url || '',
+    title: cleanText(product.title),
+    author_name: cleanText(product.author_name) || cleanText(authorPage.page_name),
+    publisher: cleanText(product.publisher),
+    category: cleanText(product.category),
+    genre: cleanText(product.genre),
+    cover_url: cleanText(product.cover_url),
     original_price: Number(product.original_price || 0),
     sale_price: Number(product.sale_price || 0),
     stock_status: productStockStatus(product),
@@ -107,13 +107,9 @@ export async function getReaderStoreHome(req, res) {
     const featuredAuthors = (authorPages || [])
       .map((page) => ({
         author_page_id: page.id,
-        page_name: page.page_name || '',
-        page_username: page.page_username || '',
-        avatar_url:
-          page.avatar_url ||
-          page.profile_image_url ||
-          page.logo_url ||
-          '',
+        page_name: cleanText(page.page_name),
+        page_username: cleanText(page.page_username),
+        avatar_url: cleanText(page.avatar_url),
         product_count: productCountByAuthor.get(String(page.id)) || 0,
         latest_product_at: latestByAuthor.get(String(page.id)) || '',
       }))
