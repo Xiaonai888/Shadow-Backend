@@ -1,6 +1,28 @@
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
+import { updateAuthorRequestCache } from '../services/authorRequestCache.service.js'
+
+function updateDashboardStoryUnreadCache(userId, updater) {
+  updateAuthorRequestCache({
+    userId,
+    namespace: 'author-dashboard-badges',
+    updater: (body) => {
+      if (!body || typeof body !== 'object') return body
+
+      const current = Math.max(
+        0,
+        Number(body.story_unread_count || 0)
+      )
+      const next = Math.max(0, Number(updater(current)))
+
+      return {
+        ...body,
+        story_unread_count: next,
+      }
+    },
+  })
+}
 
 const EPISODE_REACTION_TYPES = new Set([
   'love',
@@ -45,14 +67,67 @@ async function getReaderProfileSafely(userId) {
 
 async function deleteEpisodeLikeNotificationSafely(episodeId, userId) {
   try {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('author_story_notifications')
       .delete()
       .eq('source_key', `episode-like:${episodeId}:${userId}`)
+      .select('id, is_read, author_user_id')
+      .maybeSingle()
 
     if (error) throw error
+
+    if (data && !data.is_read && data.author_user_id) {
+      updateDashboardStoryUnreadCache(
+        data.author_user_id,
+        (current) => current - 1
+      )
+    }
+
+    return data || null
   } catch (error) {
     console.error('DELETE EPISODE LIKE NOTIFICATION ERROR:', error)
+    return null
+  }
+}
+
+async function updateEpisodeLikeNotificationReactionSafely(
+  episodeId,
+  userId,
+  reactionType
+) {
+  try {
+    const sourceKey = `episode-like:${episodeId}:${userId}`
+    const { data, error } = await supabase
+      .from('author_story_notifications')
+      .select('id, metadata')
+      .eq('source_key', sourceKey)
+      .maybeSingle()
+
+    if (error) throw error
+    if (!data) return null
+
+    const metadata =
+      data.metadata && typeof data.metadata === 'object'
+        ? data.metadata
+        : {}
+
+    const { data: updated, error: updateError } = await supabase
+      .from('author_story_notifications')
+      .update({
+        metadata: {
+          ...metadata,
+          reaction_type: reactionType,
+        },
+      })
+      .eq('id', data.id)
+      .select('id')
+      .maybeSingle()
+
+    if (updateError) throw updateError
+    return updated || null
+  } catch (error) {
+    console.error('UPDATE EPISODE LIKE NOTIFICATION ERROR:', error)
+    return null
   }
 }
 
@@ -274,8 +349,14 @@ export async function toggleEpisodeReaction(req, res) {
 
         if (updateError) throw updateError
 
-        const totalLikes =
-          await syncEpisodeTotalLikes(episodeId)
+        const [totalLikes] = await Promise.all([
+          syncEpisodeTotalLikes(episodeId),
+          updateEpisodeLikeNotificationReactionSafely(
+            episodeId,
+            userId,
+            reactionType
+          ),
+        ])
 
         return res.status(200).json({
           ok: true,
@@ -330,7 +411,7 @@ export async function toggleEpisodeReaction(req, res) {
       const reader = await getReaderProfileSafely(userId)
       const readerName = reader?.name || reader?.username || 'A reader'
 
-      await Promise.all([
+      const [, notification] = await Promise.all([
         incrementAuthorPageAnalytics(episode.author_id, 'interactions'),
         createAuthorStoryNotificationSafely({
           authorId: episode.author_id,
@@ -350,6 +431,13 @@ export async function toggleEpisodeReaction(req, res) {
           },
         }),
       ])
+
+      if (notification?.author_user_id) {
+        updateDashboardStoryUnreadCache(
+          notification.author_user_id,
+          (current) => current + 1
+        )
+      }
     }
 
     return res.status(200).json({
