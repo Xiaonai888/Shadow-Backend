@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { updateAuthorRequestCache } from '../services/authorRequestCache.service.js'
 
 const NOTIFICATION_TYPES = new Set([
   'comment',
@@ -66,6 +67,40 @@ function parseBeforeCursor(value) {
   }
 
   return parsed.toISOString()
+}
+
+function updateDashboardStoryUnreadCache(
+  userId,
+  updater
+) {
+  updateAuthorRequestCache({
+    userId,
+    namespace: 'author-dashboard-badges',
+    updater: (body) => {
+      if (
+        !body ||
+        typeof body !== 'object'
+      ) {
+        return body
+      }
+
+      const current = Math.max(
+        0,
+        Number(
+          body.story_unread_count || 0
+        )
+      )
+      const next = Math.max(
+        0,
+        Number(updater(current))
+      )
+
+      return {
+        ...body,
+        story_unread_count: next,
+      }
+    },
+  })
 }
 
 async function getAuthorPage(userId) {
@@ -380,12 +415,43 @@ export async function markMyAuthorStoryNotificationRead(
           'author_id',
           authorPage.id
         )
+        .eq('is_read', false)
         .select()
         .maybeSingle()
 
     if (error) throw error
 
-    if (!data) {
+    if (data) {
+      updateDashboardStoryUnreadCache(
+        userId,
+        (current) => current - 1
+      )
+
+      return res.status(200).json({
+        ok: true,
+        notification:
+          normalizeNotification(data),
+      })
+    }
+
+    const {
+      data: existing,
+      error: existingError,
+    } = await supabase
+      .from(
+        'author_story_notifications'
+      )
+      .select('*')
+      .eq('id', notificationId)
+      .eq(
+        'author_id',
+        authorPage.id
+      )
+      .maybeSingle()
+
+    if (existingError) throw existingError
+
+    if (!existing) {
       return res.status(404).json({
         ok: false,
         message:
@@ -396,7 +462,7 @@ export async function markMyAuthorStoryNotificationRead(
     return res.status(200).json({
       ok: true,
       notification:
-        normalizeNotification(data),
+        normalizeNotification(existing),
     })
   } catch (error) {
     console.error(
@@ -463,12 +529,43 @@ export async function markMyAuthorStoryNotificationUnread(
           'author_id',
           authorPage.id
         )
+        .eq('is_read', true)
         .select()
         .maybeSingle()
 
     if (error) throw error
 
-    if (!data) {
+    if (data) {
+      updateDashboardStoryUnreadCache(
+        userId,
+        (current) => current + 1
+      )
+
+      return res.status(200).json({
+        ok: true,
+        notification:
+          normalizeNotification(data),
+      })
+    }
+
+    const {
+      data: existing,
+      error: existingError,
+    } = await supabase
+      .from(
+        'author_story_notifications'
+      )
+      .select('*')
+      .eq('id', notificationId)
+      .eq(
+        'author_id',
+        authorPage.id
+      )
+      .maybeSingle()
+
+    if (existingError) throw existingError
+
+    if (!existing) {
       return res.status(404).json({
         ok: false,
         message:
@@ -479,7 +576,7 @@ export async function markMyAuthorStoryNotificationUnread(
     return res.status(200).json({
       ok: true,
       notification:
-        normalizeNotification(data),
+        normalizeNotification(existing),
     })
   } catch (error) {
     console.error(
@@ -543,7 +640,7 @@ export async function deleteMyAuthorStoryNotification(
           'author_id',
           authorPage.id
         )
-        .select('id')
+        .select('id, is_read')
         .maybeSingle()
 
     if (error) throw error
@@ -554,6 +651,13 @@ export async function deleteMyAuthorStoryNotification(
         message:
           'Notification not found',
       })
+    }
+
+    if (!data.is_read) {
+      updateDashboardStoryUnreadCache(
+        userId,
+        (current) => current - 1
+      )
     }
 
     return res.status(200).json({
@@ -722,6 +826,11 @@ export async function markAllMyAuthorStoryNotificationsRead(
       .eq('is_read', false)
 
     if (error) throw error
+
+    updateDashboardStoryUnreadCache(
+      userId,
+      () => 0
+    )
 
     return res.status(200).json({
       ok: true,
