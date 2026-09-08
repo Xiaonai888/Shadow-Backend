@@ -37,6 +37,7 @@ function getEntry(key) {
       value: null,
       expiresAt: 0,
       request: null,
+      version: 0,
       lastAccessAt: Date.now(),
     }
     cache.set(key, entry)
@@ -193,17 +194,24 @@ export async function serveAuthorCachedJson({
   }
 
   if (!entry.request) {
+    const requestVersion = Number(
+      entry.version || 0
+    )
+
     entry.request = executeHandler(req, handler)
       .then((result) => {
         if (
           result.statusCode >= 200 &&
-          result.statusCode < 300
+          result.statusCode < 300 &&
+          Number(entry.version || 0) ===
+            requestVersion
         ) {
           entry.value = result
           entry.expiresAt = Date.now() + ttl
+          return result
         }
 
-        return result
+        return entry.value || result
       })
       .finally(() => {
         entry.request = null
@@ -214,6 +222,66 @@ export async function serveAuthorCachedJson({
   const result = await entry.request
 
   return replayResult(res, result)
+}
+
+
+export function updateAuthorRequestCache({
+  userId,
+  namespace = '',
+  variant = '',
+  updater,
+} = {}) {
+  const normalizedUserId = String(
+    userId || ''
+  ).trim()
+  const normalizedNamespace = String(
+    namespace || ''
+  ).trim()
+
+  if (
+    !normalizedUserId ||
+    !normalizedNamespace ||
+    typeof updater !== 'function'
+  ) {
+    return false
+  }
+
+  const key = buildKey(
+    normalizedNamespace,
+    normalizedUserId,
+    variant
+  )
+  const entry = cache.get(key)
+
+  if (!entry) return false
+
+  if (!entry.value) {
+    if (entry.request) {
+      entry.version =
+        Number(entry.version || 0) + 1
+      cache.delete(key)
+    }
+
+    return false
+  }
+
+  const nextBody = updater(
+    entry.value.body
+  )
+
+  if (nextBody === undefined) {
+    return false
+  }
+
+  entry.version =
+    Number(entry.version || 0) + 1
+  entry.value = {
+    ...entry.value,
+    body: nextBody,
+  }
+  entry.lastAccessAt = Date.now()
+
+  return true
 }
 
 export function invalidateAuthorRequestCache({
