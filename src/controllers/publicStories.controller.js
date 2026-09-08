@@ -23,6 +23,34 @@ const FALLBACK_UNLOCK_RULES = {
 const WAIT_FREE_DAYS = 7
 const WAIT_FREE_MS = WAIT_FREE_DAYS * 24 * 60 * 60 * 1000
 
+const PUBLIC_STORY_LIST_SELECT = [
+  'id',
+  'author_id',
+  'user_id',
+  'title',
+  'story_type',
+  'story_language',
+  'main_genre',
+  'story_status',
+  'tags',
+  'description',
+  'is_adult',
+  'cover_url',
+  'landscape_thumbnail_url',
+  'status',
+  'access_type',
+  'is_shadow_exclusive',
+  'exclusive_status',
+  'exclusive_sections',
+  'update_days',
+  'total_episodes',
+  'total_views',
+  'total_likes',
+  'total_comments',
+  'created_at',
+  'updated_at',
+].join(', ')
+
 function publicAuthorPage(page) {
   if (!page) return null
 
@@ -48,22 +76,22 @@ async function getStoryRankByViews(story) {
     story?.total_views || 0
   )
 
-  const { data, error } = await supabase
+  const { count, error } = await supabase
     .from('stories')
-    .select('id')
+    .select('id', {
+      count: 'exact',
+      head: true,
+    })
     .eq('status', 'published')
     .is('deleted_at', null)
     .or(
       'ranking_visibility_status.is.null,ranking_visibility_status.eq.visible'
     )
     .gt('total_views', totalViews)
-    .limit(100)
 
   if (error) throw error
 
-  const higherCount = (
-    data || []
-  ).length
+  const higherCount = Number(count || 0)
 
   return higherCount >= 100
     ? 101
@@ -1012,7 +1040,7 @@ export async function getPublicStories(req, res) {
     ) => {
       let nextQuery = supabase
         .from('stories')
-        .select('*')
+        .select(PUBLIC_STORY_LIST_SELECT)
         .eq('status', 'published')
         .is('deleted_at', null)
         .or(
@@ -1488,7 +1516,7 @@ export async function getPublicStoryRecommendations(
     const buildBaseQuery = (limit) => {
       let query = supabase
         .from('stories')
-        .select('*')
+        .select(PUBLIC_STORY_LIST_SELECT)
         .eq('status', 'published')
         .is('deleted_at', null)
         .or(
@@ -1819,7 +1847,7 @@ export async function getPublicShadowExclusiveStories(
 
     let query = supabase
       .from('stories')
-      .select('*')
+      .select(PUBLIC_STORY_LIST_SELECT)
       .eq(
         'status',
         'published'
