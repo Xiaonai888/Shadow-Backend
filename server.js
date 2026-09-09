@@ -40,6 +40,7 @@ import adminReaderMailsRoutes from './src/routes/adminReaderMails.routes.js'
 import authorMediaRoutes from './src/routes/authorMedia.routes.js'
 import authorStoreRoutes from './src/routes/authorStore.routes.js'
 import adminIncomeRoutes from './src/routes/adminIncome.routes.js'
+import adminBalanceRoutes from './src/routes/adminBalance.routes.js'
 import visitorAnalyticsRoutes from './src/routes/visitorAnalytics.routes.js'
 import { createSpamGuard } from './src/middleware/spamGuard.middleware.js'
 import { globalMediaUploadGuard } from './src/middleware/globalMediaUploadGuard.middleware.js'
@@ -673,6 +674,7 @@ app.use('/api/admin/block-list', adminBlockListRoutes)
 app.use('/api/admin/mails', adminReaderMailsRoutes)
 app.use('/api/author-store', authorStoreSpamGuard, authorStoreRoutes)
 app.use('/api/admin/income', adminIncomeRoutes)
+app.use('/api/admin/balance', adminBalanceRoutes)
 app.use('/api/visitors', visitorTrackingSpamGuard, visitorAnalyticsRoutes)
 app.use('/api/task-center', adminTaskCenterRoutes)
 app.use('/api/admin/login-guard', adminLoginGuardRoutes)
