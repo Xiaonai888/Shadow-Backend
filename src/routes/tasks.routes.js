@@ -18,6 +18,7 @@ import {
   getDailyVoteReward,
   getTaskOverview,
 } from '../controllers/tasks.controller.js'
+import { getWeeklyReading, trackWeeklyReadingProgress, claimWeeklyReadingReward } from '../controllers/weeklyReading.controller.js'
 
 const router = express.Router()
 router.get('/overview', requireUser, getTaskOverview)
@@ -31,6 +32,9 @@ router.post('/reward-chest/claim', requireUser, claimRewardChest)
 router.get('/reading-reward', requireUser, getReadingReward)
 router.post('/reading-reward/progress', requireUser, trackReadingRewardProgress)
 router.post('/reading-reward/claim', requireUser, claimReadingReward)
+router.get('/weekly-reading', requireUser, getWeeklyReading)
+router.post('/weekly-reading/progress', requireUser, trackWeeklyReadingProgress)
+router.post('/weekly-reading/claim', requireUser, claimWeeklyReadingReward)
 
 router.post('/reading-session/progress', requireUser, trackReadingSessionProgress)
 
