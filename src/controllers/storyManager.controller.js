@@ -1,6 +1,13 @@
 import { supabase } from '../config/supabase.js'
 
-function publicManagerEpisode(episode, commentCounts) {
+const EARNINGS_PAGE_SIZE = 1000
+
+function numberValue(value) {
+  const number = Number(value || 0)
+  return Number.isFinite(number) ? number : 0
+}
+
+function publicManagerEpisode(episode, commentCounts, earningTotals) {
   return {
     id: episode.id,
     story_id: episode.story_id,
@@ -14,6 +21,7 @@ function publicManagerEpisode(episode, commentCounts) {
     total_views: Number(episode.total_views || 0),
     total_likes: Number(episode.total_likes || 0),
     total_comments: Number(commentCounts.get(String(episode.id)) || 0),
+    total_earnings_usd: numberValue(earningTotals.get(String(episode.id))),
     is_adult: Boolean(episode.is_adult),
     is_free_published: Boolean(episode.is_free_published),
     published_at: episode.published_at || null,
@@ -21,6 +29,74 @@ function publicManagerEpisode(episode, commentCounts) {
     created_at: episode.created_at,
     updated_at: episode.updated_at,
   }
+}
+
+async function getEpisodeCommentCounts(storyId, episodeIds) {
+  const counts = new Map()
+
+  if (!episodeIds.length) return counts
+
+  const { data, error } = await supabase
+    .from('comments')
+    .select('episode_id')
+    .eq('story_id', storyId)
+    .in('episode_id', episodeIds)
+    .eq('is_hidden', false)
+    .is('deleted_at', null)
+
+  if (error) {
+    console.error('GET STORY MANAGER COMMENT COUNTS ERROR:', error)
+    return counts
+  }
+
+  for (const comment of data || []) {
+    const key = String(comment.episode_id || '')
+    if (!key) continue
+    counts.set(key, Number(counts.get(key) || 0) + 1)
+  }
+
+  return counts
+}
+
+async function getEpisodeEarningTotals(userId, storyId, episodeIds) {
+  const totals = new Map()
+
+  if (!episodeIds.length) return totals
+
+  let from = 0
+
+  while (true) {
+    const { data, error } = await supabase
+      .from('author_earnings')
+      .select('episode_id, author_net_payout_usd')
+      .eq('author_user_id', userId)
+      .eq('story_id', storyId)
+      .eq('source_type', 'diamond_unlock')
+      .eq('currency', 'diamond')
+      .neq('earning_status', 'void')
+      .in('episode_id', episodeIds)
+      .range(from, from + EARNINGS_PAGE_SIZE - 1)
+
+    if (error) {
+      console.error('GET STORY MANAGER EARNINGS ERROR:', error)
+      return totals
+    }
+
+    for (const earning of data || []) {
+      const key = String(earning.episode_id || '')
+      if (!key) continue
+      totals.set(
+        key,
+        numberValue(totals.get(key)) +
+          numberValue(earning.author_net_payout_usd)
+      )
+    }
+
+    if (!data || data.length < EARNINGS_PAGE_SIZE) break
+    from += EARNINGS_PAGE_SIZE
+  }
+
+  return totals
 }
 
 export async function getStoryManagerEpisodes(req, res) {
@@ -63,30 +139,18 @@ export async function getStoryManagerEpisodes(req, res) {
     if (episodeError) throw episodeError
 
     const episodeIds = (episodes || []).map((episode) => episode.id).filter(Boolean)
-    const commentCounts = new Map()
 
-    if (episodeIds.length) {
-      const { data: comments, error: commentError } = await supabase
-        .from('comments')
-        .select('episode_id')
-        .eq('story_id', storyId)
-        .in('episode_id', episodeIds)
-        .eq('is_hidden', false)
-        .is('deleted_at', null)
-
-      if (!commentError) {
-        for (const comment of comments || []) {
-          const key = String(comment.episode_id || '')
-          if (!key) continue
-          commentCounts.set(key, Number(commentCounts.get(key) || 0) + 1)
-        }
-      }
-    }
+    const [commentCounts, earningTotals] = await Promise.all([
+      getEpisodeCommentCounts(storyId, episodeIds),
+      getEpisodeEarningTotals(userId, storyId, episodeIds),
+    ])
 
     return res.status(200).json({
       ok: true,
       story_type: story.story_type || 'novel',
-      episodes: (episodes || []).map((episode) => publicManagerEpisode(episode, commentCounts)),
+      episodes: (episodes || []).map((episode) =>
+        publicManagerEpisode(episode, commentCounts, earningTotals)
+      ),
     })
   } catch (error) {
     console.error('GET STORY MANAGER EPISODES ERROR:', error)
