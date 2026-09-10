@@ -17,6 +17,39 @@ function cleanVisibilityState(value) {
     : 'visible'
 }
 
+function countryNameFromCode(value) {
+  const code = String(value || '').trim().slice(0, 2).toUpperCase()
+  if (!/^[A-Z]{2}$/.test(code) || code === 'XX') return ''
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'region' }).of(code) || code
+  } catch {
+    return code
+  }
+}
+
+function getRequestCountry(req) {
+  const raw =
+    req.headers['cf-ipcountry'] ||
+    req.headers['x-vercel-ip-country'] ||
+    req.headers['x-country-code'] ||
+    req.headers['cloudfront-viewer-country'] ||
+    ''
+  const countryCode = String(Array.isArray(raw) ? raw[0] : raw)
+    .trim()
+    .slice(0, 2)
+    .toUpperCase()
+
+  if (!/^[A-Z]{2}$/.test(countryCode) || countryCode === 'XX') {
+    return { countryCode: '', countryName: '' }
+  }
+
+  return {
+    countryCode,
+    countryName: countryNameFromCode(countryCode),
+  }
+}
+
+
 export async function heartbeatReaderPresence(req, res) {
   try {
     const userId = String(
@@ -47,18 +80,22 @@ export async function heartbeatReaderPresence(req, res) {
       req.headers['user-agent'] || ''
     ).slice(0, 1000)
 
+    const { countryCode, countryName } = getRequestCountry(req)
+
     const { error } = await supabase.rpc(
-      'touch_reader_presence',
+      'touch_reader_presence_with_country',
       {
         p_user_id: userId,
         p_session_id: sessionId,
         p_current_path: currentPath,
-        p_visibility_state:
-          visibilityState,
+        p_visibility_state: visibilityState,
         p_is_active: isActive,
         p_user_agent: userAgent,
+        p_country_code: countryCode,
+        p_country_name: countryName,
       }
     )
+
 
     if (error) throw error
 
