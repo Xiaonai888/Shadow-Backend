@@ -1588,9 +1588,25 @@ export async function trackReadingSessionProgress(req, res) {
         readingReward.claimable_coins || 0
       )
 
+      let weeklyReading = null
+
+      if (episodeId && readingPercent >= 80) {
+        try {
+          weeklyReading = await recordWeeklyReadingEpisode({
+            userId,
+            storyId,
+            episodeId,
+            readingPercent,
+          })
+        } catch (error) {
+          console.error('WEEKLY_READING_SESSION_ERROR', error)
+        }
+      }
+
       return {
         reading_reward: readingReward,
         missions: updatedMissions,
+        weekly_reading: weeklyReading,
         claimable: {
           daily_coins: dailyCoins,
           mission_ids: claimableMissions.map(
