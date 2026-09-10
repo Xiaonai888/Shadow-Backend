@@ -1136,6 +1136,198 @@ export async function getCommentReplies(
 }
 
 
+export async function getCommentThread(
+  req,
+  res
+) {
+  try {
+    const commentId = String(
+      req.params.commentId || ''
+    ).trim()
+    const userId =
+      getRequestUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!commentId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment id is required',
+      })
+    }
+
+    const {
+      data: target,
+      error: targetError,
+    } = await supabase
+      .from('comments')
+      .select(
+        '*, user:users(id, name, username, avatar_url, role)'
+      )
+      .eq('id', commentId)
+      .maybeSingle()
+
+    if (targetError) {
+      throw targetError
+    }
+
+    if (!target) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
+
+    const access =
+      await canModerateStory(
+        target.story_id,
+        userId
+      )
+
+    if (
+      !access.ok ||
+      (!access.isAuthor &&
+        !access.isAdmin)
+    ) {
+      return res.status(403).json({
+        ok: false,
+        message: 'Author access is required',
+      })
+    }
+
+    let root = target
+
+    if (target.parent_id) {
+      const {
+        data: parent,
+        error: parentError,
+      } = await supabase
+        .from('comments')
+        .select(
+          '*, user:users(id, name, username, avatar_url, role)'
+        )
+        .eq('id', target.parent_id)
+        .eq('story_id', target.story_id)
+        .maybeSingle()
+
+      if (parentError) {
+        throw parentError
+      }
+
+      if (!parent) {
+        return res.status(404).json({
+          ok: false,
+          message: 'Comment thread not found',
+        })
+      }
+
+      root = parent
+    }
+
+    const result =
+      await loadReplyPage({
+        parentId: root.id,
+        storyId: root.story_id,
+        episodeId:
+          root.episode_id || null,
+        page: 1,
+        limit: 20,
+      })
+
+    const replyRows = [
+      ...result.rows,
+    ]
+
+    if (
+      target.parent_id &&
+      !replyRows.some(
+        (item) =>
+          String(item.id) ===
+          String(target.id)
+      )
+    ) {
+      replyRows.push(target)
+      replyRows.sort(
+        (first, second) =>
+          new Date(
+            first.created_at || 0
+          ).getTime() -
+          new Date(
+            second.created_at || 0
+          ).getTime()
+      )
+    }
+
+    const reactionMap =
+      await getReactionMap(
+        [
+          root.id,
+          ...replyRows.map(
+            (item) => item.id
+          ),
+        ],
+        userId
+      )
+
+    const rootComment = {
+      ...publicComment(
+        root,
+        reactionMap
+      ),
+      replies:
+        replyRows.map(
+          (reply) =>
+            publicComment(
+              reply,
+              reactionMap
+            )
+        ),
+      reply_total: Math.max(
+        Number(result.total || 0),
+        replyRows.length
+      ),
+      reply_page:
+        result.total > 0
+          ? Number(result.page || 1)
+          : 0,
+      reply_has_more:
+        Boolean(result.hasMore),
+    }
+
+    return res.status(200).json({
+      ok: true,
+      target_comment_id:
+        target.id,
+      story: {
+        id: access.story.id,
+        title:
+          access.story.title || '',
+      },
+      episode_id:
+        root.episode_id || null,
+      root_comment:
+        rootComment,
+    })
+  } catch (error) {
+    console.error(
+      'GET COMMENT THREAD ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to load comment thread',
+      error: error.message,
+    })
+  }
+}
+
 export async function getStoryComments(
   req,
   res
