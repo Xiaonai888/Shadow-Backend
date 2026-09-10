@@ -18,6 +18,11 @@ function cleanSort(value) {
   return String(value || '').trim().toLowerCase() === 'asc' ? 'asc' : 'desc'
 }
 
+function cleanBoolean(value) {
+  const text = String(value || '').trim().toLowerCase()
+  return text === '1' || text === 'true' || text === 'yes'
+}
+
 function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     String(value || '').trim()
@@ -36,30 +41,52 @@ function cleanCursorKey(value) {
   return text ? text.slice(0, 200) : null
 }
 
-function cacheKey({ page, limit, search, sort }) {
-  return JSON.stringify([page, limit, search.toLowerCase(), sort])
+function cacheKey({
+  page,
+  limit,
+  search,
+  sort,
+  dormantOnly,
+  dormantDays,
+}) {
+  return JSON.stringify([
+    page,
+    limit,
+    search.toLowerCase(),
+    sort,
+    dormantOnly,
+    dormantDays,
+  ])
 }
 
 function readCache(key) {
   const cached = balanceCache.get(key)
   if (!cached) return null
+
   if (Date.now() >= cached.expiresAt) {
     balanceCache.delete(key)
     return null
   }
+
   return cached.data
 }
 
 function writeCache(key, data) {
   const now = Date.now()
+
   for (const [entryKey, entry] of balanceCache) {
     if (now >= entry.expiresAt) balanceCache.delete(entryKey)
   }
+
   if (balanceCache.size >= CACHE_MAX_ENTRIES) {
     const oldestKey = balanceCache.keys().next().value
     if (oldestKey) balanceCache.delete(oldestKey)
   }
-  balanceCache.set(key, { data, expiresAt: now + CACHE_TTL_MS })
+
+  balanceCache.set(key, {
+    data,
+    expiresAt: now + CACHE_TTL_MS,
+  })
 }
 
 export async function getAdminBalanceWallets(req, res) {
@@ -68,11 +95,21 @@ export async function getAdminBalanceWallets(req, res) {
     const limit = toPositiveInt(req.query.limit, 20, 50)
     const search = cleanSearch(req.query.q)
     const sort = cleanSort(req.query.sort)
+    const dormantOnly = cleanBoolean(req.query.dormant)
+    const dormantDays = toPositiveInt(req.query.dormant_days, 90, 3650)
     const refresh = String(req.query.refresh || '') === '1'
-    const key = cacheKey({ page, limit, search, sort })
+    const key = cacheKey({
+      page,
+      limit,
+      search,
+      sort,
+      dormantOnly,
+      dormantDays,
+    })
 
     if (!refresh) {
       const cached = readCache(key)
+
       if (cached) {
         return res.status(200).json({
           ...cached,
@@ -83,12 +120,14 @@ export async function getAdminBalanceWallets(req, res) {
     }
 
     const { data, error } = await supabase.rpc(
-      'get_admin_balance_wallets_v1',
+      'get_admin_balance_wallets_v2',
       {
         p_page: page,
         p_limit: limit,
         p_search: search,
         p_sort: sort,
+        p_dormant_only: dormantOnly,
+        p_dormant_days: dormantDays,
       }
     )
 
@@ -105,6 +144,10 @@ export async function getAdminBalanceWallets(req, res) {
       },
       sort,
       search,
+      filters: {
+        dormant_only: dormantOnly,
+        dormant_days: dormantDays,
+      },
     }
 
     writeCache(key, payload)
@@ -116,6 +159,7 @@ export async function getAdminBalanceWallets(req, res) {
     })
   } catch (error) {
     console.error('ADMIN BALANCE WALLETS ERROR:', error)
+
     return res.status(500).json({
       ok: false,
       message: 'Failed to load reader balances',
@@ -147,7 +191,10 @@ export async function getAdminBalanceDiamondHistory(req, res) {
       })
     }
 
-    if ((beforeCreatedAt && !beforeEventKey) || (!beforeCreatedAt && beforeEventKey)) {
+    if (
+      (beforeCreatedAt && !beforeEventKey) ||
+      (!beforeCreatedAt && beforeEventKey)
+    ) {
       return res.status(400).json({
         ok: false,
         message: 'Incomplete history cursor',
@@ -180,6 +227,7 @@ export async function getAdminBalanceDiamondHistory(req, res) {
     )
   } catch (error) {
     console.error('ADMIN BALANCE DIAMOND HISTORY ERROR:', error)
+
     return res.status(500).json({
       ok: false,
       message: 'Failed to load Diamond history',
