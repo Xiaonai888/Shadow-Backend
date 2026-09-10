@@ -305,129 +305,97 @@ export async function getWeeklyReading(req, res) {
   }
 }
 
-export async function trackWeeklyReadingProgress(req, res) {
-  try {
-    const userId = getUserId(req)
-    const storyId = String(req.body.story_id || '').trim()
-    const episodeId = String(req.body.episode_id || '').trim()
-    const readingPercent = Math.min(
-      100,
-      Math.max(0, Number(req.body.reading_percent || 0))
-    )
+export async function recordWeeklyReadingEpisode({
+  userId,
+  storyId,
+  episodeId,
+  readingPercent = 0,
+}) {
+  const cleanUserId = String(userId || '').trim()
+  const cleanStoryId = String(storyId || '').trim()
+  const cleanEpisodeId = String(episodeId || '').trim()
+  const rawPercent = Number(readingPercent)
+  const percent = Number.isFinite(rawPercent)
+    ? Math.min(100, Math.max(0, rawPercent))
+    : 0
 
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'User is required' })
-    }
-
-    if (!isUuid(storyId) || !isUuid(episodeId)) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Valid story_id and episode_id are required',
-      })
-    }
-
-    const profile = await getUserProfile(userId)
-    const isPremium = isPremiumRole(profile?.role)
-
-    const result = await withWeeklyReadingLock(userId, async () => {
-      const weekStart = getWeekStartKey()
-      const currentCount = await getEpisodeCount(userId, weekStart)
-
-      if (currentCount >= TARGET_EPISODES) {
-        return {
-          counted: false,
-          reason: 'weekly_target_completed',
-          weeklyReading: await buildWeeklyReadingState(userId, isPremium),
-        }
-      }
-
-      if (readingPercent < READ_THRESHOLD_PERCENT) {
-        return {
-          counted: false,
-          reason: 'reading_not_completed',
-          weeklyReading: await buildWeeklyReadingState(userId, isPremium),
-        }
-      }
-
-      const [
-        { data: story, error: storyError },
-        { data: episode, error: episodeError },
-      ] = await Promise.all([
-        supabase
-          .from('stories')
-          .select('id')
-          .eq('id', storyId)
-          .eq('status', 'published')
-          .is('deleted_at', null)
-          .maybeSingle(),
-        supabase
-          .from('episodes')
-          .select('id, story_id')
-          .eq('id', episodeId)
-          .eq('story_id', storyId)
-          .eq('status', 'published')
-          .is('deleted_at', null)
-          .maybeSingle(),
-      ])
-
-      if (storyError) throw storyError
-      if (episodeError) throw episodeError
-
-      if (!story || !episode) {
-        return {
-          notFound: true,
-        }
-      }
-
-      const { error: insertError } = await supabase
-        .from('reader_weekly_reading_episodes')
-        .insert({
-          user_id: userId,
-          week_start: weekStart,
-          story_id: storyId,
-          episode_id: episodeId,
-        })
-
-      let counted = true
-
-      if (insertError) {
-        if (insertError.code === '23505') {
-          counted = false
-        } else {
-          throw insertError
-        }
-      }
-
-      const weeklyReading = await buildWeeklyReadingState(userId, isPremium)
-
-      return {
-        counted,
-        reason: counted ? 'counted' : 'episode_already_counted',
-        weeklyReading,
-      }
-    })
-
-    if (result.notFound) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Story or episode was not found',
-      })
-    }
-
-    return res.json({
-      ok: true,
-      counted: result.counted,
-      reason: result.reason,
-      weekly_reading: result.weeklyReading,
-    })
-  } catch (error) {
-    console.error('TRACK_WEEKLY_READING_ERROR', error)
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to update Weekly Reading',
-      error: error.message,
-    })
+  if (
+    !isUuid(cleanUserId) ||
+    !isUuid(cleanStoryId) ||
+    !isUuid(cleanEpisodeId) ||
+    percent < READ_THRESHOLD_PERCENT
+  ) {
+    return null
   }
+
+  const profile = await getUserProfile(cleanUserId)
+  const isPremium = isPremiumRole(profile?.role)
+
+  return withWeeklyReadingLock(cleanUserId, async () => {
+    const weekStart = getWeekStartKey()
+    const currentCount = await getEpisodeCount(cleanUserId, weekStart)
+
+    if (currentCount >= TARGET_EPISODES) {
+      return buildWeeklyReadingState(cleanUserId, isPremium)
+    }
+
+    const { data: existing, error: existingError } = await supabase
+      .from('reader_weekly_reading_episodes')
+      .select('id')
+      .eq('user_id', cleanUserId)
+      .eq('week_start', weekStart)
+      .eq('episode_id', cleanEpisodeId)
+      .maybeSingle()
+
+    if (existingError) throw existingError
+
+    if (existing) {
+      return buildWeeklyReadingState(cleanUserId, isPremium)
+    }
+
+    const [
+      { data: story, error: storyError },
+      { data: episode, error: episodeError },
+    ] = await Promise.all([
+      supabase
+        .from('stories')
+        .select('id')
+        .eq('id', cleanStoryId)
+        .eq('status', 'published')
+        .is('deleted_at', null)
+        .maybeSingle(),
+      supabase
+        .from('episodes')
+        .select('id, story_id')
+        .eq('id', cleanEpisodeId)
+        .eq('story_id', cleanStoryId)
+        .eq('status', 'published')
+        .is('deleted_at', null)
+        .maybeSingle(),
+    ])
+
+    if (storyError) throw storyError
+    if (episodeError) throw episodeError
+
+    if (!story || !episode) {
+      return null
+    }
+
+    const { error: insertError } = await supabase
+      .from('reader_weekly_reading_episodes')
+      .insert({
+        user_id: cleanUserId,
+        week_start: weekStart,
+        story_id: cleanStoryId,
+        episode_id: cleanEpisodeId,
+      })
+
+    if (insertError && insertError.code !== '23505') {
+      throw insertError
+    }
+
+    return buildWeeklyReadingState(cleanUserId, isPremium)
+  })
 }
 
 export async function claimWeeklyReadingReward(req, res) {
