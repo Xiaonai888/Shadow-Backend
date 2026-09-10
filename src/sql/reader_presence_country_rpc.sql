@@ -42,7 +42,14 @@ BEGIN
     last_country_name = COALESCE(v_name, v_code),
     country_first_seen_at = COALESCE(country_first_seen_at, v_now),
     country_last_seen_at = v_now
-  WHERE user_id = p_user_id;
+  WHERE user_id = p_user_id
+    AND (
+      NULLIF(first_country_code, '') IS NULL
+      OR NULLIF(last_country_code, '') IS DISTINCT FROM v_code
+      OR NULLIF(last_country_name, '') IS NULL
+      OR country_last_seen_at IS NULL
+      OR country_last_seen_at < v_now - INTERVAL '12 hours'
+    );
 END;
 $$;
 
