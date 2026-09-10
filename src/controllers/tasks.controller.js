@@ -1,5 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { ensureTaskCenterAutoRotation } from '../services/taskCenterAuto.service.js'
+import { recordWeeklyReadingEpisode } from './weeklyReading.controller.js'
+
 
 const DAILY_REWARDS = [
   { day: 1, gems: 50, coins: 50, vouchers: 0, story_cards: 0, gift: false },
@@ -1426,6 +1428,11 @@ export async function trackReadingSessionProgress(req, res) {
     const userId = getUserId(req)
     const storyId = cleanUuid(req.body?.story_id)
     const episodeId = cleanUuid(req.body?.episode_id)
+    const rawReadingPercent = Number(req.body?.reading_percent || 0)
+    const readingPercent = Number.isFinite(rawReadingPercent)
+  ? Math.min(100, Math.max(0, rawReadingPercent))
+  : 0
+
     const requestedSeconds = Math.floor(
       Number(req.body?.seconds || req.body?.seconds_added || 0)
     )
