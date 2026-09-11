@@ -16,3 +16,6 @@ export const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, {
     autoRefreshToken: false,
   },
 })
+export function getSupabaseClient() {
+  return supabase
+}
