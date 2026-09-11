@@ -2903,6 +2903,59 @@ export async function getMyCommentActivities(
 
         activities = data || []
       }
+    } else if (filter === 'story') {
+      const {
+        data: ownedStories,
+        error: ownedStoriesError,
+      } = await supabase
+        .from('stories')
+        .select('id')
+        .eq('user_id', userId)
+
+      if (ownedStoriesError) {
+        throw ownedStoriesError
+      }
+
+      const storyIds =
+        (ownedStories || []).map(
+          (item) => item.id
+        )
+
+      if (storyIds.length) {
+        const {
+          data,
+          error,
+        } = await supabase
+          .from('comments')
+          .select(
+            'id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at'
+          )
+          .in(
+            'story_id',
+            storyIds
+          )
+          .neq(
+            'user_id',
+            userId
+          )
+          .eq(
+            'is_hidden',
+            false
+          )
+          .is(
+            'deleted_at',
+            null
+          )
+          .order(
+            'created_at',
+            { ascending: false }
+          )
+          .limit(80)
+
+        if (error) throw error
+
+        activities = data || []
+      }
     } else if (
       filter === 'mentions'
     ) {
