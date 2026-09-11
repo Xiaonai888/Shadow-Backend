@@ -4,7 +4,7 @@ export const GAME_REGISTRY = Object.freeze([
     name: 'Spin',
     profile: null,
     hidden: false,
-    disabled: false,ា
+    disabled: false,
   }),
 ])
 
