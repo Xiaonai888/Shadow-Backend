@@ -24,15 +24,16 @@ router.get(
 
 router.get(
   '/:userId/diamond-history',
-  router.get(
+  requireAdmin,
+  adminBalanceReadGuard,
+  getAdminBalanceDiamondHistory
+)
+
+router.get(
   '/:userId/spend-summary',
   requireAdmin,
   adminBalanceReadGuard,
   getAdminBalanceSpendSummary
-)
-  requireAdmin,
-  adminBalanceReadGuard,
-  getAdminBalanceDiamondHistory
 )
 
 export default router
