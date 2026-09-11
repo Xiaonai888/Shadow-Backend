@@ -2783,6 +2783,8 @@ function publicMyCommentActivity(
     activity_type: type,
     story_id:
       comment.story_id,
+    episode_id:
+      comment.episode_id || null,
     parent_id:
       comment.parent_id,
     text: comment.text,
@@ -2793,13 +2795,103 @@ function publicMyCommentActivity(
       Boolean(
         comment.is_hidden
       ),
-    is_read: true,
+    is_read:
+      type === 'story'
+        ? Boolean(
+            comment.author_read_at
+          )
+        : true,
     notification_id: null,
     created_at:
       comment.created_at,
     updated_at:
       comment.updated_at,
     story,
+  }
+}
+
+export async function markMyAuthorCommentRead(
+  req,
+  res
+) {
+  try {
+    const userId =
+      req.user?.user_id
+    const commentId =
+      String(
+        req.params.commentId || ''
+      ).trim()
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!commentId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment id is required',
+      })
+    }
+
+    const comment =
+      await getComment(commentId)
+
+    if (!comment) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
+
+    const access =
+      await canModerateStory(
+        comment.story_id,
+        userId
+      )
+
+    if (!access.isAuthor) {
+      return res.status(403).json({
+        ok: false,
+        message:
+          'Author access is required',
+      })
+    }
+
+    const readAt =
+      new Date().toISOString()
+
+    const { error } =
+      await supabase
+        .from('comments')
+        .update({
+          author_read_at: readAt,
+        })
+        .eq('id', commentId)
+        .is('deleted_at', null)
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      comment_id: commentId,
+      is_read: true,
+      author_read_at: readAt,
+    })
+  } catch (error) {
+    console.error(
+      'MARK AUTHOR COMMENT READ ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to mark comment as read',
+      error: error.message,
+    })
   }
 }
 
@@ -2928,7 +3020,7 @@ export async function getMyCommentActivities(
         } = await supabase
           .from('comments')
           .select(
-            'id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at'
+            'id, story_id, episode_id, user_id, parent_id, text, is_hidden, author_read_at, created_at, updated_at'
           )
           .in(
             'story_id',
