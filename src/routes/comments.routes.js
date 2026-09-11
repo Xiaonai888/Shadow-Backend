@@ -9,6 +9,7 @@ import {
   createStoryComment,
   getMyCommentActivities,
   getStoryComments,
+  markMyAuthorCommentRead,
   moderateComment,
   toggleCommentLike,
   updateOwnComment,
@@ -29,6 +30,11 @@ router.get('/story/:storyId', getStoryComments)
 router.post('/story/:storyId', requireUser, createStoryComment)
 router.get('/:commentId/replies', getCommentReplies)
 router.get('/:commentId/thread', requireUser, getCommentThread)
+router.patch(
+  '/:commentId/author-read',
+  requireUser,
+  markMyAuthorCommentRead
+)
 router.post('/:commentId/like', requireUser, toggleCommentLike)
 router.patch('/:commentId', requireUser, updateOwnComment)
 router.patch('/:commentId/moderate', requireUser, moderateComment)
