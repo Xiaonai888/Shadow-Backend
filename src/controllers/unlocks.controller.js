@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
 import { createAuthorEarningsFromDiamondUnlock } from '../services/authorRevenue.service.js'
-import { createStoryReadingIncomeSafely } from '../services/storyReadingIncome.service.js'
+import { createStoryReadingIncome } from '../services/storyReadingIncome.service.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 import {
   applyEpisodeAccess,
