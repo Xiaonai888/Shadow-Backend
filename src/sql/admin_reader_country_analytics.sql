@@ -2,8 +2,12 @@ CREATE TABLE IF NOT EXISTS public.admin_reader_country_analytics_snapshot (
   id smallint PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   generated_at timestamptz,
+  source_updated_at timestamptz,
   updated_at timestamptz NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE public.admin_reader_country_analytics_snapshot
+  ADD COLUMN IF NOT EXISTS source_updated_at timestamptz;
 
 INSERT INTO public.admin_reader_country_analytics_snapshot (id)
 VALUES (1)
@@ -26,38 +30,67 @@ DECLARE
   v_now timestamptz := NOW();
   v_payload jsonb;
   v_generated_at timestamptz;
-  v_should_refresh boolean;
+  v_snapshot_source_updated_at timestamptz;
+  v_current_source_updated_at timestamptz;
+  v_has_snapshot boolean := false;
   v_total_readers bigint := 0;
   v_readers_with_country bigint := 0;
   v_unknown_country bigint := 0;
   v_countries_reached bigint := 0;
   v_rows jsonb := '[]'::jsonb;
   v_top_country jsonb;
-  v_source_updated_at timestamptz;
 BEGIN
-  SELECT payload, generated_at
-  INTO v_payload, v_generated_at
+  SELECT
+    payload,
+    generated_at,
+    COALESCE(
+      source_updated_at,
+      NULLIF(payload->>'source_updated_at', '')::timestamptz
+    )
+  INTO
+    v_payload,
+    v_generated_at,
+    v_snapshot_source_updated_at
   FROM public.admin_reader_country_analytics_snapshot
   WHERE id = 1;
 
-  v_should_refresh :=
-    v_generated_at IS NULL
-    OR v_payload IS NULL
-    OR v_payload = '{}'::jsonb
-    OR v_generated_at <= v_now - INTERVAL '12 hours'
-    OR (
-      COALESCE(p_force, false)
-      AND v_generated_at <= v_now - INTERVAL '10 minutes'
-    );
+  v_has_snapshot :=
+    v_generated_at IS NOT NULL
+    AND v_payload IS NOT NULL
+    AND v_payload <> '{}'::jsonb;
 
-  IF NOT v_should_refresh THEN
+  IF
+    v_has_snapshot
+    AND NOT COALESCE(p_force, false)
+    AND v_generated_at > v_now - INTERVAL '12 hours'
+  THEN
     RETURN jsonb_build_object(
       'data', v_payload,
       'meta', jsonb_build_object(
         'refreshed', false,
-        'refresh_reason', CASE WHEN COALESCE(p_force, false) THEN 'manual_cooldown' ELSE 'fresh_cache' END,
+        'refresh_reason', 'fresh_cache',
         'checked_at', v_now,
         'generated_at', v_generated_at,
+        'source_updated_at', v_snapshot_source_updated_at,
+        'next_auto_refresh_at', v_generated_at + INTERVAL '12 hours',
+        'manual_refresh_available_at', v_generated_at + INTERVAL '10 minutes'
+      )
+    );
+  END IF;
+
+  IF
+    v_has_snapshot
+    AND COALESCE(p_force, false)
+    AND v_generated_at > v_now - INTERVAL '10 minutes'
+  THEN
+    RETURN jsonb_build_object(
+      'data', v_payload,
+      'meta', jsonb_build_object(
+        'refreshed', false,
+        'refresh_reason', 'manual_cooldown',
+        'checked_at', v_now,
+        'generated_at', v_generated_at,
+        'source_updated_at', v_snapshot_source_updated_at,
         'next_auto_refresh_at', v_generated_at + INTERVAL '12 hours',
         'manual_refresh_available_at', v_generated_at + INTERVAL '10 minutes'
       )
@@ -66,22 +99,30 @@ BEGIN
 
   PERFORM pg_advisory_xact_lock(hashtext('admin_reader_country_analytics'));
 
-  SELECT payload, generated_at
-  INTO v_payload, v_generated_at
+  SELECT
+    payload,
+    generated_at,
+    COALESCE(
+      source_updated_at,
+      NULLIF(payload->>'source_updated_at', '')::timestamptz
+    )
+  INTO
+    v_payload,
+    v_generated_at,
+    v_snapshot_source_updated_at
   FROM public.admin_reader_country_analytics_snapshot
   WHERE id = 1;
 
-  v_should_refresh :=
-    v_generated_at IS NULL
-    OR v_payload IS NULL
-    OR v_payload = '{}'::jsonb
-    OR v_generated_at <= v_now - INTERVAL '12 hours'
-    OR (
-      COALESCE(p_force, false)
-      AND v_generated_at <= v_now - INTERVAL '10 minutes'
-    );
+  v_has_snapshot :=
+    v_generated_at IS NOT NULL
+    AND v_payload IS NOT NULL
+    AND v_payload <> '{}'::jsonb;
 
-  IF NOT v_should_refresh THEN
+  IF
+    v_has_snapshot
+    AND NOT COALESCE(p_force, false)
+    AND v_generated_at > v_now - INTERVAL '12 hours'
+  THEN
     RETURN jsonb_build_object(
       'data', v_payload,
       'meta', jsonb_build_object(
@@ -89,8 +130,65 @@ BEGIN
         'refresh_reason', 'refreshed_by_another_request',
         'checked_at', v_now,
         'generated_at', v_generated_at,
+        'source_updated_at', v_snapshot_source_updated_at,
         'next_auto_refresh_at', v_generated_at + INTERVAL '12 hours',
         'manual_refresh_available_at', v_generated_at + INTERVAL '10 minutes'
+      )
+    );
+  END IF;
+
+  IF
+    v_has_snapshot
+    AND COALESCE(p_force, false)
+    AND v_generated_at > v_now - INTERVAL '10 minutes'
+  THEN
+    RETURN jsonb_build_object(
+      'data', v_payload,
+      'meta', jsonb_build_object(
+        'refreshed', false,
+        'refresh_reason', 'manual_cooldown',
+        'checked_at', v_now,
+        'generated_at', v_generated_at,
+        'source_updated_at', v_snapshot_source_updated_at,
+        'next_auto_refresh_at', v_generated_at + INTERVAL '12 hours',
+        'manual_refresh_available_at', v_generated_at + INTERVAL '10 minutes'
+      )
+    );
+  END IF;
+
+  SELECT NULLIF(
+    GREATEST(
+      COALESCE(
+        (SELECT MAX(created_at) FROM public.users),
+        '-infinity'::timestamptz
+      ),
+      COALESCE(
+        (SELECT MAX(updated_at) FROM public.reader_presence),
+        '-infinity'::timestamptz
+      ),
+      COALESCE(
+        (SELECT MAX(country_last_seen_at) FROM public.reader_presence),
+        '-infinity'::timestamptz
+      )
+    ),
+    '-infinity'::timestamptz
+  )
+  INTO v_current_source_updated_at;
+
+  IF
+    v_has_snapshot
+    AND v_current_source_updated_at IS NOT DISTINCT FROM v_snapshot_source_updated_at
+  THEN
+    RETURN jsonb_build_object(
+      'data', v_payload,
+      'meta', jsonb_build_object(
+        'refreshed', false,
+        'refresh_reason', 'source_unchanged',
+        'checked_at', v_now,
+        'generated_at', v_generated_at,
+        'source_updated_at', v_current_source_updated_at,
+        'next_auto_refresh_at', v_now + INTERVAL '12 hours',
+        'manual_refresh_available_at', v_now + INTERVAL '10 minutes'
       )
     );
   END IF;
@@ -98,11 +196,21 @@ BEGIN
   WITH reader_base AS (
     SELECT
       u.id,
-      NULLIF(UPPER(TRIM(rp.last_country_code)), '') AS country_code,
-      COALESCE(
-        NULLIF(TRIM(rp.last_country_name), ''),
-        NULLIF(UPPER(TRIM(rp.last_country_code)), '')
-      ) AS country_name,
+      CASE
+        WHEN NULLIF(UPPER(TRIM(rp.last_country_code)), '') ~ '^[A-Z]{2}$'
+          AND NULLIF(UPPER(TRIM(rp.last_country_code)), '') NOT IN ('XX', 'T1')
+        THEN NULLIF(UPPER(TRIM(rp.last_country_code)), '')
+        ELSE NULL
+      END AS country_code,
+      CASE
+        WHEN NULLIF(UPPER(TRIM(rp.last_country_code)), '') ~ '^[A-Z]{2}$'
+          AND NULLIF(UPPER(TRIM(rp.last_country_code)), '') NOT IN ('XX', 'T1')
+        THEN COALESCE(
+          NULLIF(TRIM(rp.last_country_name), ''),
+          NULLIF(UPPER(TRIM(rp.last_country_code)), '')
+        )
+        ELSE NULL
+      END AS country_name,
       rp.last_seen_at,
       rp.last_activity_at
     FROM public.users u
@@ -112,8 +220,12 @@ BEGIN
   totals AS (
     SELECT
       COUNT(*) AS total_readers,
-      COUNT(*) FILTER (WHERE country_code IS NOT NULL) AS readers_with_country,
-      COUNT(DISTINCT country_code) FILTER (WHERE country_code IS NOT NULL) AS countries_reached
+      COUNT(*) FILTER (
+        WHERE country_code IS NOT NULL
+      ) AS readers_with_country,
+      COUNT(DISTINCT country_code) FILTER (
+        WHERE country_code IS NOT NULL
+      ) AS countries_reached
     FROM reader_base
   ),
   country_stats AS (
@@ -204,19 +316,9 @@ BEGIN
     v_top_country
   FROM totals t;
 
-  SELECT NULLIF(
-    GREATEST(
-      COALESCE((SELECT MAX(created_at) FROM public.users), '-infinity'::timestamptz),
-      COALESCE((SELECT MAX(updated_at) FROM public.reader_presence), '-infinity'::timestamptz),
-      COALESCE((SELECT MAX(country_last_seen_at) FROM public.reader_presence), '-infinity'::timestamptz)
-    ),
-    '-infinity'::timestamptz
-  )
-  INTO v_source_updated_at;
-
   v_payload := jsonb_build_object(
     'generated_at', v_now,
-    'source_updated_at', v_source_updated_at,
+    'source_updated_at', v_current_source_updated_at,
     'refresh_window_hours', 12,
     'manual_refresh_cooldown_minutes', 10,
     'totals', jsonb_build_object(
@@ -233,6 +335,7 @@ BEGIN
   SET
     payload = v_payload,
     generated_at = v_now,
+    source_updated_at = v_current_source_updated_at,
     updated_at = v_now
   WHERE id = 1;
 
@@ -240,9 +343,15 @@ BEGIN
     'data', v_payload,
     'meta', jsonb_build_object(
       'refreshed', true,
-      'refresh_reason', CASE WHEN COALESCE(p_force, false) THEN 'manual_refresh' ELSE 'stale_or_missing_snapshot' END,
+      'refresh_reason',
+        CASE
+          WHEN COALESCE(p_force, false) THEN 'manual_refresh'
+          WHEN NOT v_has_snapshot THEN 'missing_snapshot'
+          ELSE 'source_changed'
+        END,
       'checked_at', v_now,
       'generated_at', v_now,
+      'source_updated_at', v_current_source_updated_at,
       'next_auto_refresh_at', v_now + INTERVAL '12 hours',
       'manual_refresh_available_at', v_now + INTERVAL '10 minutes'
     )
@@ -272,7 +381,10 @@ DECLARE
   v_total bigint := 0;
   v_rows jsonb := '[]'::jsonb;
 BEGIN
-  IF v_code <> 'UNKNOWN' AND v_code !~ '^[A-Z]{2}$' THEN
+  IF v_code <> 'UNKNOWN' AND (
+    v_code !~ '^[A-Z]{2}$'
+    OR v_code IN ('XX', 'T1')
+  ) THEN
     RAISE EXCEPTION 'Invalid country code';
   END IF;
 
@@ -286,7 +398,10 @@ BEGIN
   WHERE
     CASE
       WHEN v_code = 'UNKNOWN'
-      THEN NULLIF(TRIM(rp.last_country_code), '') IS NULL
+      THEN
+        NULLIF(UPPER(TRIM(rp.last_country_code)), '') IS NULL
+        OR NULLIF(UPPER(TRIM(rp.last_country_code)), '') !~ '^[A-Z]{2}$'
+        OR NULLIF(UPPER(TRIM(rp.last_country_code)), '') IN ('XX', 'T1')
       ELSE UPPER(NULLIF(TRIM(rp.last_country_code), '')) = v_code
     END;
 
@@ -321,13 +436,26 @@ BEGIN
       COALESCE(u.email, '') AS email,
       COALESCE(u.avatar_url, '') AS avatar_url,
       COALESCE(u.is_author, false) AS is_author,
-      CASE WHEN u.is_active = false THEN 'inactive' ELSE 'active' END AS status,
+      CASE
+        WHEN u.is_active = false THEN 'inactive'
+        ELSE 'active'
+      END AS status,
       u.created_at AS joined_at,
-      NULLIF(UPPER(TRIM(rp.last_country_code)), '') AS country_code,
-      COALESCE(
-        NULLIF(TRIM(rp.last_country_name), ''),
-        NULLIF(UPPER(TRIM(rp.last_country_code)), '')
-      ) AS country_name,
+      CASE
+        WHEN NULLIF(UPPER(TRIM(rp.last_country_code)), '') ~ '^[A-Z]{2}$'
+          AND NULLIF(UPPER(TRIM(rp.last_country_code)), '') NOT IN ('XX', 'T1')
+        THEN NULLIF(UPPER(TRIM(rp.last_country_code)), '')
+        ELSE NULL
+      END AS country_code,
+      CASE
+        WHEN NULLIF(UPPER(TRIM(rp.last_country_code)), '') ~ '^[A-Z]{2}$'
+          AND NULLIF(UPPER(TRIM(rp.last_country_code)), '') NOT IN ('XX', 'T1')
+        THEN COALESCE(
+          NULLIF(TRIM(rp.last_country_name), ''),
+          NULLIF(UPPER(TRIM(rp.last_country_code)), '')
+        )
+        ELSE NULL
+      END AS country_name,
       rp.last_seen_at,
       rp.last_activity_at,
       CASE
@@ -350,7 +478,10 @@ BEGIN
     WHERE
       CASE
         WHEN v_code = 'UNKNOWN'
-        THEN NULLIF(TRIM(rp.last_country_code), '') IS NULL
+        THEN
+          NULLIF(UPPER(TRIM(rp.last_country_code)), '') IS NULL
+          OR NULLIF(UPPER(TRIM(rp.last_country_code)), '') !~ '^[A-Z]{2}$'
+          OR NULLIF(UPPER(TRIM(rp.last_country_code)), '') IN ('XX', 'T1')
         ELSE UPPER(NULLIF(TRIM(rp.last_country_code), '')) = v_code
       END
     ORDER BY rp.last_activity_at DESC NULLS LAST, u.created_at DESC
@@ -363,10 +494,11 @@ BEGIN
     'page', v_page,
     'limit', v_limit,
     'total', v_total,
-    'total_pages', CASE
-      WHEN v_total = 0 THEN 0
-      ELSE CEIL(v_total::numeric / v_limit)::integer
-    END,
+    'total_pages',
+      CASE
+        WHEN v_total = 0 THEN 0
+        ELSE CEIL(v_total::numeric / v_limit)::integer
+      END,
     'rows', v_rows
   );
 END;
