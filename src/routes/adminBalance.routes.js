@@ -5,6 +5,7 @@ import {
   getAdminBalanceDiamondHistory,
   getAdminBalanceWallets,
 } from '../controllers/adminBalance.controller.js'
+import { getAdminBalanceSpendSummary } from '../controllers/adminBalanceSpendSummary.controller.js'
 
 const router = express.Router()
 
@@ -23,6 +24,12 @@ router.get(
 
 router.get(
   '/:userId/diamond-history',
+  router.get(
+  '/:userId/spend-summary',
+  requireAdmin,
+  adminBalanceReadGuard,
+  getAdminBalanceSpendSummary
+)
   requireAdmin,
   adminBalanceReadGuard,
   getAdminBalanceDiamondHistory
