@@ -18,7 +18,7 @@ DECLARE
   v_code text := UPPER(NULLIF(TRIM(p_country_code), ''));
   v_name text := NULLIF(TRIM(p_country_name), '');
 BEGIN
-  PERFORM public.touch_reader_presence(
+  PERFORM public.upsert_reader_presence_heartbeat(
     p_user_id,
     p_session_id,
     p_current_path,
