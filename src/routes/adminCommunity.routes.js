@@ -7,6 +7,8 @@ import {
   getAdminReaderPresence,
   getAdminCommunityVisitorOverview,
   getAdminCommunityVisitors,
+  getAdminReaderCountryAnalytics,
+  getAdminReaderCountryReaders,
   getAdminDashboardGrowth,
   getAdminDashboardPaidOrders,
 } from '../controllers/adminCommunity.controller.js'
@@ -19,6 +21,8 @@ router.get('/overview', requireAdminPermission('community.view'), getAdminCommun
 router.get('/readers', requireAdminPermission('community.view'), getAdminCommunityReaders)
 router.get('/readers/today', requireAdminPermission('readers.view'), getAdminCommunityReadersToday)
 router.get('/reader-presence', requireAdmin, getAdminReaderPresence)
+router.get('/reader-countries', requireAdminPermission('community.view'), getAdminReaderCountryAnalytics)
+router.get('/reader-countries/:countryCode/readers', requireAdminPermission('community.view'), getAdminReaderCountryReaders)
 router.get('/authors', requireAdminPermission('community.view'), getAdminCommunityAuthors)
 router.get('/visitors/overview', requireAdminPermission('community.view'), getAdminCommunityVisitorOverview)
 router.get('/visitors', requireAdminPermission('community.view'), getAdminCommunityVisitors)
