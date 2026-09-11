@@ -879,6 +879,28 @@ async function getAuthorEarningsForTransactions(
   return data || []
 }
 
+async function getStoryReadingIncomeForPurchase(
+  purchaseKey
+) {
+  const { data, error } = await supabase
+    .from('story_reading_income_transactions')
+    .select(
+      'purchase_key, paid_diamonds, author_share_percent, platform_share_percent, income_status'
+    )
+    .eq('purchase_key', purchaseKey)
+    .maybeSingle()
+
+  if (error) throw error
+
+  return data || null
+}
+
+function waitForAccountingRetry(milliseconds) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds)
+  })
+}
+
 async function recordDiamondUnlockAccounting({
   purchaseKey,
   userId,
@@ -889,55 +911,124 @@ async function recordDiamondUnlockAccounting({
   unlockScope,
   metadata,
 }) {
-  if (!transactions?.length) return []
-
-  const createdEarnings =
-    await createAuthorEarningsFromDiamondUnlock({
-      transactions,
-    })
-
-  const earningRows = Array.isArray(createdEarnings) &&
-    createdEarnings.length
-    ? createdEarnings
-    : await getAuthorEarningsForTransactions(
-        transactions
-      )
-
-  if (!earningRows.length) {
+  if (!transactions?.length) {
     throw new Error(
-      'Diamond unlock earnings were not created'
+      'Diamond unlock transactions were not created'
+    )
+  }
+
+  const expectedTransactionIds = new Set(
+    transactions
+      .map((transaction) =>
+        String(transaction?.id || '').trim()
+      )
+      .filter(Boolean)
+  )
+
+  if (
+    !expectedTransactionIds.size ||
+    expectedTransactionIds.size !==
+      transactions.length
+  ) {
+    throw new Error(
+      'Diamond unlock transactions are incomplete'
+    )
+  }
+
+  await createAuthorEarningsFromDiamondUnlock({
+    transactions,
+  })
+
+  const earningRows =
+    await getAuthorEarningsForTransactions(
+      transactions
+    )
+
+  const earningTransactionIds = new Set(
+    earningRows
+      .map((row) =>
+        String(
+          row?.unlock_transaction_id || ''
+        ).trim()
+      )
+      .filter(Boolean)
+  )
+
+  const missingTransactionIds = [
+    ...expectedTransactionIds,
+  ].filter(
+    (id) => !earningTransactionIds.has(id)
+  )
+
+  if (missingTransactionIds.length) {
+    throw new Error(
+      `Diamond unlock earnings are incomplete (${earningTransactionIds.size}/${expectedTransactionIds.size})`
+    )
+  }
+
+  const recordedPaidDiamonds =
+    earningRows.reduce(
+      (sum, row) =>
+        sum + Number(row.paid_diamonds || 0),
+      0
+    )
+  const expectedPaidDiamonds = Number(
+    transactionAmount || 0
+  )
+
+  if (
+    Math.abs(
+      recordedPaidDiamonds -
+        expectedPaidDiamonds
+    ) > 0.000001
+  ) {
+    throw new Error(
+      'Diamond unlock earnings total does not match purchase amount'
     )
   }
 
   const firstEarning = earningRows[0]
-  const authorEarnedDiamonds = earningRows.reduce(
-    (sum, row) =>
-      sum + Number(row.author_earned_diamonds || 0),
-    0
-  )
-  const platformEarnedDiamonds = earningRows.reduce(
-    (sum, row) =>
-      sum + Number(row.platform_earned_diamonds || 0),
-    0
-  )
+  const authorEarnedDiamonds =
+    earningRows.reduce(
+      (sum, row) =>
+        sum +
+        Number(
+          row.author_earned_diamonds || 0
+        ),
+      0
+    )
+  const platformEarnedDiamonds =
+    earningRows.reduce(
+      (sum, row) =>
+        sum +
+        Number(
+          row.platform_earned_diamonds || 0
+        ),
+      0
+    )
   const distributableNetRevenueDiamonds =
     earningRows.reduce(
       (sum, row) =>
-        sum + Number(row.net_paid_diamonds || 0),
+        sum +
+        Number(row.net_paid_diamonds || 0),
       0
     )
   const directCostDiamonds = Math.max(
     0,
-    Number(transactionAmount || 0) -
+    expectedPaidDiamonds -
       distributableNetRevenueDiamonds
   )
+  const incomePurchaseKey =
+    `diamond-unlock:${purchaseKey}`
 
-  await createStoryReadingIncomeSafely({
-    purchaseKey: `diamond-unlock:${purchaseKey}`,
+  await createStoryReadingIncome({
+    purchaseKey: incomePurchaseKey,
     readerId: userId,
     storyId,
-    authorId: episodes[0]?.author_id || null,
-    firstEpisodeId: episodes[0]?.id || null,
+    authorId:
+      episodes[0]?.author_id || null,
+    firstEpisodeId:
+      episodes[0]?.id || null,
     packageKey:
       metadata?.package_key ||
       unlockScope ||
@@ -945,17 +1036,20 @@ async function recordDiamondUnlockAccounting({
     episodeCount: episodes.length,
     originalDiamonds:
       metadata?.original_price ||
-      transactionAmount,
+      expectedPaidDiamonds,
     packageDiscountPercent:
       metadata?.package_discount_percent ??
       metadata?.discount_percent ??
       0,
     blackSundayDiscountPercent:
-      metadata?.black_sunday_discount_percent || 0,
-    paidDiamonds: transactionAmount,
+      metadata
+        ?.black_sunday_discount_percent ||
+      0,
+    paidDiamonds: expectedPaidDiamonds,
     authorSharePercent:
       firstEarning.author_share_percent,
-    shareSource: firstEarning.share_source,
+    shareSource:
+      firstEarning.share_source,
     authorEarnedDiamonds,
     platformEarnedDiamonds,
     directCostDiamonds,
@@ -964,15 +1058,72 @@ async function recordDiamondUnlockAccounting({
       ...metadata,
       purchase_key: purchaseKey,
       revenue_source: 'author_earnings',
-      effective_author_share_percent: Number(
-        firstEarning.author_share_percent || 0
-      ),
+      effective_author_share_percent:
+        Number(
+          firstEarning
+            .author_share_percent || 0
+        ),
       effective_share_source:
         firstEarning.share_source || '',
     },
   })
 
+  const incomeRow =
+    await getStoryReadingIncomeForPurchase(
+      incomePurchaseKey
+    )
+
+  if (!incomeRow) {
+    throw new Error(
+      'Diamond unlock story income was not created'
+    )
+  }
+
+  if (
+    Math.abs(
+      Number(incomeRow.paid_diamonds || 0) -
+        expectedPaidDiamonds
+    ) > 0.000001
+  ) {
+    throw new Error(
+      'Diamond unlock story income total does not match purchase amount'
+    )
+  }
+
   return earningRows
+}
+
+async function recordDiamondUnlockAccountingWithRetry(
+  payload
+) {
+  let lastError = null
+
+  for (
+    let attempt = 1;
+    attempt <= 3;
+    attempt += 1
+  ) {
+    try {
+      return await recordDiamondUnlockAccounting(
+        payload
+      )
+    } catch (error) {
+      lastError = error
+
+      console.error(
+        `DIAMOND UNLOCK ACCOUNTING ATTEMPT ${attempt} ERROR:`,
+        error
+      )
+
+      if (attempt < 3) {
+        await waitForAccountingRetry(
+          attempt * 200
+        )
+      }
+    }
+  }
+
+  throw lastError
 }
 
 function allocateEpisodeAmounts(totalAmount, episodes) {
@@ -1475,7 +1626,7 @@ export async function unlockEpisodePackageWithDiamonds(
       const metadata =
         transactions[0]?.metadata || {}
 
-      await recordDiamondUnlockAccounting({
+      await recordDiamondUnlockAccountingWithRetry({
         purchaseKey,
         userId,
         storyId,
@@ -1629,7 +1780,7 @@ reader_tier: tier,
         metadata,
       })
 
-    await recordDiamondUnlockAccounting({
+    await recordDiamondUnlockAccountingWithRetry({
       purchaseKey,
       userId,
       storyId,
