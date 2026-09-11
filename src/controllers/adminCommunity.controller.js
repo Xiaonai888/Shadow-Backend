@@ -873,6 +873,145 @@ export async function getAdminReaderPresence(req, res) {
   }
 }
 
+const COUNTRY_ANALYTICS_MEMORY_TTL_MS = 5 * 60 * 1000
+let countryAnalyticsMemoryCache = {
+  value: null,
+  expires_at: 0,
+}
+
+function isCountryAnalyticsForceRefresh(value) {
+  return ['1', 'true', 'yes'].includes(
+    String(value || '').trim().toLowerCase()
+  )
+}
+
+export async function getAdminReaderCountryAnalytics(req, res) {
+  try {
+    const force = isCountryAnalyticsForceRefresh(req.query.refresh)
+    const now = Date.now()
+
+    if (
+      !force &&
+      countryAnalyticsMemoryCache.value &&
+      countryAnalyticsMemoryCache.expires_at > now
+    ) {
+      const cached = countryAnalyticsMemoryCache.value
+
+      return res.status(200).json({
+        ok: true,
+        ...cached,
+        meta: {
+          ...(cached.meta || {}),
+          served_from_memory: true,
+        },
+      })
+    }
+
+    const { data, error } = await supabase.rpc(
+      'get_admin_reader_country_analytics',
+      {
+        p_force: force,
+      }
+    )
+
+    if (error) throw error
+
+    const result = data && typeof data === 'object'
+      ? data
+      : {
+          data: {
+            totals: {
+              total_readers: 0,
+              countries_reached: 0,
+              readers_with_country: 0,
+              unknown_country: 0,
+              top_country: null,
+            },
+            rows: [],
+          },
+          meta: {},
+        }
+
+    countryAnalyticsMemoryCache = {
+      value: result,
+      expires_at: now + COUNTRY_ANALYTICS_MEMORY_TTL_MS,
+    }
+
+    return res.status(200).json({
+      ok: true,
+      ...result,
+      meta: {
+        ...(result.meta || {}),
+        served_from_memory: false,
+      },
+    })
+  } catch (error) {
+    console.error('ADMIN READER COUNTRY ANALYTICS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load reader country analytics',
+      error: error.message,
+    })
+  }
+}
+
+export async function getAdminReaderCountryReaders(req, res) {
+  try {
+    const countryCode = String(
+      req.params.countryCode ||
+      req.query.country_code ||
+      ''
+    )
+      .trim()
+      .toUpperCase()
+
+    if (
+      countryCode !== 'UNKNOWN' &&
+      !/^[A-Z]{2}$/.test(countryCode)
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid country code',
+      })
+    }
+
+    const page = toPositiveInt(req.query.page, 1, 100000)
+    const limit = toPositiveInt(req.query.limit, 25, 50)
+
+    const { data, error } = await supabase.rpc(
+      'get_admin_reader_country_readers',
+      {
+        p_country_code: countryCode,
+        p_page: page,
+        p_limit: limit,
+      }
+    )
+
+    if (error) throw error
+
+    return res.status(200).json({
+      ok: true,
+      ...(data || {
+        country_code: countryCode,
+        page,
+        limit,
+        total: 0,
+        total_pages: 0,
+        rows: [],
+      }),
+    })
+  } catch (error) {
+    console.error('ADMIN READER COUNTRY READERS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load readers for country',
+      error: error.message,
+    })
+  }
+}
+
 
 const DASHBOARD_MALL_PAID_STATUSES = [
   'under_review',
