@@ -92,6 +92,8 @@ import {
 } from './src/services/memoryIncidentTracer.service.js'
 import storyTranslationRoutes from './src/routes/storyTranslation.routes.js'
 import spinRoutes from './src/routes/spin.routes.js'
+import gameSettingsRoutes from './src/routes/gameSettings.routes.js'
+import adminGameSettingsRoutes from './src/routes/adminGameSettings.routes.js'
 
 dotenv.config()
 
@@ -705,6 +707,8 @@ app.use('/api/admin/accounts', adminAccountsRoutes)
 app.use('/api/admin/search-insights', adminSearchInsightsRoutes)
 app.use('/api/music', musicRoutes)
 app.use('/api/story-translation', storyTranslationSpamGuard, storyTranslationRoutes)
+app.use('/api/games', readerReadSpamGuard, gameSettingsRoutes)
+app.use('/api/admin/games', adminGameSettingsRoutes)
 
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
