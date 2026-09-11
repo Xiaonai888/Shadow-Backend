@@ -5,6 +5,13 @@ export const GAME_REGISTRY = Object.freeze([
     profile: null,
     hidden: false,
     disabled: false,
+   }),
+  Object.freeze({
+    gameKey: 'test',
+    name: 'Test',
+    profile: null,
+    hidden: false,
+    disabled: true,
   }),
 ])
 
