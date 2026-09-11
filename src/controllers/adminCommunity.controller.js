@@ -873,16 +873,62 @@ export async function getAdminReaderPresence(req, res) {
   }
 }
 
-const COUNTRY_ANALYTICS_MEMORY_TTL_MS = 5 * 60 * 1000
-let countryAnalyticsMemoryCache = {
-  value: null,
-  expires_at: 0,
-}
-
 function isCountryAnalyticsForceRefresh(value) {
   return ['1', 'true', 'yes'].includes(
     String(value || '').trim().toLowerCase()
   )
+}
+
+export async function getAdminReaderCountryAnalytics(req, res) {
+  try {
+    const force = isCountryAnalyticsForceRefresh(req.query.refresh)
+
+    const { data, error } = await supabase.rpc(
+      'get_admin_reader_country_analytics',
+      {
+        p_force: force,
+      }
+    )
+
+    if (error) throw error
+
+    const result = data && typeof data === 'object'
+      ? data
+      : {
+          data: {
+            totals: {
+              total_readers: 0,
+              countries_reached: 0,
+              readers_with_country: 0,
+              unknown_country: 0,
+              top_country: null,
+            },
+            rows: [],
+          },
+          meta: {},
+        }
+
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+    res.set('Pragma', 'no-cache')
+    res.set('Expires', '0')
+
+    return res.status(200).json({
+      ok: true,
+      ...result,
+      meta: {
+        ...(result.meta || {}),
+        served_from_memory: false,
+      },
+    })
+  } catch (error) {
+    console.error('ADMIN READER COUNTRY ANALYTICS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load reader country analytics',
+      error: error.message,
+    })
+  }
 }
 
 export async function getAdminReaderCountryAnalytics(req, res) {
