@@ -81,7 +81,6 @@ import {
 } from '../controllers/authorPostEchoes.controller.js'
 
 import {
-  activateMyAuthorLifetimeBoost,
   getMyAuthor49DayEvent,
   getMyAuthorIncome,
   getMyAuthorPaymentMethods,
@@ -161,7 +160,6 @@ router.get('/me/dashboard', requireUser, getMyAuthorDashboard)
 router.get('/me/dashboard-badges', requireUser, getMyAuthorDashboardBadges)
 router.get('/me', requireUser, getMyAuthorPage)
 router.get('/me/quest', requireUser, getMyAuthorQuest)
-router.post('/me/quest/boost/activate', requireUser, activateMyAuthorLifetimeBoost)
 router.get('/me/income', requireUser, getMyAuthorIncome)
 router.get('/me/diamonds', requireUser, getMyAuthorDiamonds)
 router.get('/me/gifts', requireUser, getMyAuthorGifts)
