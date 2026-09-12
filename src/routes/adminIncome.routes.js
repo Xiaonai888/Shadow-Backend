@@ -2,6 +2,7 @@ import express from 'express'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { getAdminDiamondGifts } from '../controllers/adminDiamondGifts.controller.js'
 import { getAdminAuthorPageIncome } from '../controllers/adminAuthorPageIncome.controller.js'
+import { getAdminAuthorIncome } from '../controllers/adminAuthorIncome.controller.js'
 import { getAdminShadowMallIncome } from '../controllers/adminShadowMallIncome.controller.js'
 import { streamAdminIncomeEvents } from '../services/adminIncomeEvents.service.js'
 import {
@@ -17,6 +18,7 @@ const router = express.Router()
 router.get('/events', requireAdmin, streamAdminIncomeEvents)
 router.get('/summary', requireAdmin, getAdminIncomeSummary)
 router.get('/episode-sales', requireAdmin, getAdminEpisodeSales)
+router.get('/author-income', requireAdmin, getAdminAuthorIncome)
 router.get('/diamond-gifts', requireAdmin, getAdminDiamondGifts)
 router.get('/author-page', requireAdmin, getAdminAuthorPageIncome)
 router.get('/shadow-mall', requireAdmin, getAdminShadowMallIncome)
