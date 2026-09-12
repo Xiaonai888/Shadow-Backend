@@ -14,6 +14,7 @@ import {
   toggleCommentLike,
   updateOwnComment,
 } from '../controllers/comments.controller.js'
+import { getMyAuthorUnreadCommentCount } from '../controllers/authorCommentUnread.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
@@ -22,6 +23,11 @@ router.get('/episode-totals', getEpisodeCommentTotals)
 router.get('/episode/:episodeId', getEpisodeComments)
 router.post('/episode/:episodeId', requireUser, createEpisodeComment)
 router.get('/me/activities', requireUser, getMyCommentActivities)
+router.get(
+  '/me/author-unread-count',
+  requireUser,
+  getMyAuthorUnreadCommentCount
+)
 router.get(
   '/story/:storyId/latest',
   getLatestStoryComment
