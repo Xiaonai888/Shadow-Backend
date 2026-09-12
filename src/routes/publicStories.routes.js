@@ -12,10 +12,11 @@ import {
 } from '../controllers/publicStories.controller.js'
 import { getPublicWeeklyUpdates } from '../controllers/weeklyUpdates.controller.js'
 import { getPublicStoryUpdates } from '../controllers/storyUpdates.controller.js'
+import { cachePublicStoriesResponse } from '../services/publicStoriesResponseCache.service.js'
 
 const router = express.Router()
 
-router.get('/stories', getPublicStories)
+router.get('/stories', cachePublicStoriesResponse, getPublicStories)
 router.get('/weekly-updates', getPublicWeeklyUpdates)
 router.get('/story-updates', getPublicStoryUpdates)
 router.get('/shadow-exclusive/stories', getPublicShadowExclusiveStories)
