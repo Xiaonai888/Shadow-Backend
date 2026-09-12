@@ -17,7 +17,6 @@ create index if not exists author_page_post_views_viewer_time_idx
 create index if not exists author_page_post_views_source_idx
   on public.author_page_post_views (post_id, source);
 
-
 alter table public.author_page_follows
   add column if not exists source_post_id text;
 
