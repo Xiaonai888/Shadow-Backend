@@ -761,25 +761,88 @@ async function getOrCreateLifetimeBoost({ authorPage, lastStage }) {
 
   if (oldError) throw oldError
 
+  const shouldActivate = Boolean(lastStage?.completed)
+  const now = new Date()
+  const nowIso = now.toISOString()
+
   if (oldBoost) {
-    if (oldBoost.status === 'locked' && lastStage.completed) {
-      const { data: updatedBoost, error: updateError } = await supabase
-        .from('author_lifetime_boosts')
-        .update({
-          status: 'eligible',
-          eligible_at: oldBoost.eligible_at || new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', oldBoost.id)
-        .select()
-        .single()
+    if (
+      shouldActivate &&
+      ['locked', 'eligible'].includes(
+        String(oldBoost.status || '').toLowerCase()
+      )
+    ) {
+      const eligibleAt = oldBoost.eligible_at
+        ? new Date(oldBoost.eligible_at)
+        : now
+      const startedAt = Number.isNaN(eligibleAt.getTime())
+        ? now
+        : eligibleAt
+      const endedAt = new Date(
+        startedAt.getTime() +
+          100 * 24 * 60 * 60 * 1000
+      )
+      const status =
+        endedAt.getTime() <= now.getTime()
+          ? 'expired'
+          : 'active'
+
+      const { data: updatedBoost, error: updateError } =
+        await supabase
+          .from('author_lifetime_boosts')
+          .update({
+            status,
+            share_percent: 100,
+            duration_days: 100,
+            eligible_at:
+              oldBoost.eligible_at ||
+              startedAt.toISOString(),
+            started_at: startedAt.toISOString(),
+            ended_at: endedAt.toISOString(),
+            used_at:
+              oldBoost.used_at ||
+              startedAt.toISOString(),
+            updated_at: nowIso,
+          })
+          .eq('id', oldBoost.id)
+          .in('status', ['locked', 'eligible'])
+          .select()
+          .maybeSingle()
 
       if (updateError) throw updateError
 
-      return updatedBoost
+      return updatedBoost || oldBoost
     }
 
     return oldBoost
+  }
+
+  if (shouldActivate) {
+    const endedAt = new Date(
+      now.getTime() +
+        100 * 24 * 60 * 60 * 1000
+    )
+
+    const { data, error } = await supabase
+      .from('author_lifetime_boosts')
+      .insert({
+        author_id: authorPage.id,
+        user_id: authorPage.user_id,
+        boost_type: '100_percent_100_days',
+        share_percent: 100,
+        duration_days: 100,
+        status: 'active',
+        eligible_at: nowIso,
+        started_at: nowIso,
+        ended_at: endedAt.toISOString(),
+        used_at: nowIso,
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return data
   }
 
   const { data, error } = await supabase
@@ -790,8 +853,8 @@ async function getOrCreateLifetimeBoost({ authorPage, lastStage }) {
       boost_type: '100_percent_100_days',
       share_percent: 100,
       duration_days: 100,
-      status: lastStage.completed ? 'eligible' : 'locked',
-      eligible_at: lastStage.completed ? new Date().toISOString() : null,
+      status: 'locked',
+      eligible_at: null,
     })
     .select()
     .single()
