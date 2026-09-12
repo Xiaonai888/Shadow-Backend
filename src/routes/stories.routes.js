@@ -34,6 +34,7 @@ import {
 import { enforcePaidContentRequirement } from '../middleware/paidContentRequirement.middleware.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { invalidateMyStoriesCache } from '../services/myStoriesCache.service.js'
+import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
 
 const router = express.Router()
 
@@ -42,11 +43,14 @@ function invalidateMyStoriesAfterMutation(req, res, next) {
 
   res.once('finish', () => {
     if (
-      userId &&
       res.statusCode >= 200 &&
       res.statusCode < 300
     ) {
-      invalidateMyStoriesCache(userId)
+      if (userId) {
+        invalidateMyStoriesCache(userId)
+      }
+
+      invalidatePublicStoriesCache()
     }
   })
 
