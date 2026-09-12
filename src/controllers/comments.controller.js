@@ -2908,6 +2908,27 @@ export async function getMyCommentActivities(
       )
         .trim()
         .toLowerCase()
+    const requestedPage =
+      Number(req.query.page || 1)
+    const requestedLimit =
+      Number(req.query.limit || 20)
+    const page =
+      Number.isFinite(requestedPage)
+        ? Math.max(
+            1,
+            Math.floor(requestedPage)
+          )
+        : 1
+    const limit =
+      Number.isFinite(requestedLimit)
+        ? Math.min(
+            30,
+            Math.max(
+              1,
+              Math.floor(requestedLimit)
+            )
+          )
+        : 20
 
     if (!userId) {
       return res.status(401).json({
@@ -2932,6 +2953,7 @@ export async function getMyCommentActivities(
     }
 
     let activities = []
+    let hasMore = false
 
     if (filter === 'replies') {
       const {
@@ -3014,6 +3036,11 @@ export async function getMyCommentActivities(
         )
 
       if (storyIds.length) {
+        const from =
+          (page - 1) * limit
+        const to =
+          from + limit
+
         const {
           data,
           error,
@@ -3042,11 +3069,15 @@ export async function getMyCommentActivities(
             'created_at',
             { ascending: false }
           )
-          .limit(80)
+          .range(from, to)
 
         if (error) throw error
 
-        activities = data || []
+        const rows = data || []
+        hasMore =
+          rows.length > limit
+        activities =
+          rows.slice(0, limit)
       }
     } else if (
       filter === 'mentions'
@@ -3138,6 +3169,18 @@ export async function getMyCommentActivities(
     return res.status(200).json({
       ok: true,
       filter,
+      page:
+        filter === 'story'
+          ? page
+          : 1,
+      limit:
+        filter === 'story'
+          ? limit
+          : activities.length,
+      has_more:
+        filter === 'story'
+          ? hasMore
+          : false,
       activities:
         activities.map(
           (item) =>
