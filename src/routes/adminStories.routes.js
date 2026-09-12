@@ -11,11 +11,29 @@ import {
   downloadAdminStoryMedia
 } from '../controllers/adminStories.controller.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
+import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
 
 const router = express.Router()
 
 const viewStories = requireAdminPermission('stories.view')
 const manageStories = requireAdminPermission('stories.manage')
+
+function invalidatePublicStoriesAfterMutation(
+  _req,
+  res,
+  next
+) {
+  res.once('finish', () => {
+    if (
+      res.statusCode >= 200 &&
+      res.statusCode < 300
+    ) {
+      invalidatePublicStoriesCache()
+    }
+  })
+
+  next()
+}
 
 router.get('/overview', viewStories, getAdminStoriesOverview)
 router.get('/update-activity', viewStories, getAdminStoryUpdateActivity)
@@ -24,7 +42,12 @@ router.get('/', viewStories, getAdminStories)
 router.get('/:storyId', viewStories, getAdminStoryById)
 router.get('/:storyId/media/:mediaType/:mediaIndex/download', viewStories, downloadAdminStoryMedia)
 
-router.patch('/:storyId/visibility', manageStories, updateStoryAdminVisibility)
+router.patch(
+  '/:storyId/visibility',
+  manageStories,
+  invalidatePublicStoriesAfterMutation,
+  updateStoryAdminVisibility
+)
 router.post('/:storyId/warnings', manageStories, issueStoryWarning)
 router.patch('/authors/:authorId/status', manageStories, updateAuthorAdminStatus)
 
