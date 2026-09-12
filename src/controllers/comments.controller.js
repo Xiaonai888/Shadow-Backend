@@ -1305,6 +1305,10 @@ export async function getCommentThread(
         target.id,
       story: {
         id: access.story.id,
+        user_id:
+          access.story.user_id || null,
+        author_id:
+          access.story.author_id || null,
         title:
           access.story.title || '',
       },
