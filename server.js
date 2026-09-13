@@ -393,12 +393,16 @@ const publicReadSpamGuard = (req, res, next) => {
   const path = String(req.path || '')
 
   if (
-    req.method === 'GET' &&
-    path === '/stories'
-  ) {
-    return next()
-  }
-
+  req.method === 'GET' &&
+  (
+    path === '/stories' ||
+    path === '/content-versions' ||
+    path === '/versions' ||
+    path === '/version'
+  )
+) {
+  return next()
+}
   if (req.method === 'GET') {
     return readerReadSpamGuard(req, res, next)
   }
