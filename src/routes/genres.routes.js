@@ -521,8 +521,20 @@ async function updateFeaturedGenreTabs(req, res) {
   }
 }
 
-router.get('/', getGenres)
-router.get('/featured-tabs', getFeaturedGenreTabs)
+router.get(
+  '/',
+  publicGenresCacheHitLimit,
+  cacheGenresResponse,
+  publicGenresReadSpamGuard,
+  getGenres
+)
+router.get(
+  '/featured-tabs',
+  publicGenresCacheHitLimit,
+  cacheGenresResponse,
+  publicGenresReadSpamGuard,
+  getFeaturedGenreTabs
+)
 router.get('/admin/records', getAdminGenres)
 
 router.post(
@@ -532,9 +544,25 @@ router.post(
   uploadGenreBanner
 )
 
-router.post('/admin/records', createGenre)
-router.put('/admin/records/:id', updateGenre)
-router.delete('/admin/records/:id', deleteGenre)
-router.put('/admin/featured-tabs', updateFeaturedGenreTabs)
+router.post(
+  '/admin/records',
+  invalidateGenresAfterMutation,
+  createGenre
+)
+router.put(
+  '/admin/records/:id',
+  invalidateGenresAfterMutation,
+  updateGenre
+)
+router.delete(
+  '/admin/records/:id',
+  invalidateGenresAfterMutation,
+  deleteGenre
+)
+router.put(
+  '/admin/featured-tabs',
+  invalidateGenresAfterMutation,
+  updateFeaturedGenreTabs
+)
 
 export default router
