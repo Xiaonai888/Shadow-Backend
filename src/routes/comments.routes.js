@@ -20,15 +20,41 @@ import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseC
 
 const router = express.Router()
 
-function invalidatePublicStoriesAfterMutation(req, res, next) {
+function invalidateVisibleCommentCreate(req, res, next) {
   res.once('finish', () => {
-    if (
-      res.statusCode >= 200 &&
-      res.statusCode < 300
-    ) {
+    if (res.statusCode === 201) {
       invalidatePublicStoriesCache()
     }
   })
+
+  next()
+}
+
+function invalidateCommentEditIfCountChanged(req, res, next) {
+  res.once('finish', () => {
+    if (res.statusCode === 202) {
+      invalidatePublicStoriesCache()
+    }
+  })
+
+  next()
+}
+
+function invalidateCommentModerationIfCountChanged(req, res, next) {
+  const action = String(req.body?.action || '')
+    .trim()
+    .toLowerCase()
+
+  if (action === 'hide' || action === 'unhide') {
+    res.once('finish', () => {
+      if (
+        res.statusCode >= 200 &&
+        res.statusCode < 300
+      ) {
+        invalidatePublicStoriesCache()
+      }
+    })
+  }
 
   next()
 }
@@ -38,7 +64,7 @@ router.get('/episode/:episodeId', getEpisodeComments)
 router.post(
   '/episode/:episodeId',
   requireUser,
-  invalidatePublicStoriesAfterMutation,
+  invalidateVisibleCommentCreate,
   createEpisodeComment
 )
 router.get('/me/activities', requireUser, getMyCommentActivities)
@@ -55,7 +81,7 @@ router.get('/story/:storyId', getStoryComments)
 router.post(
   '/story/:storyId',
   requireUser,
-  invalidatePublicStoriesAfterMutation,
+  invalidateVisibleCommentCreate,
   createStoryComment
 )
 router.get('/:commentId/replies', getCommentReplies)
@@ -69,13 +95,13 @@ router.post('/:commentId/like', requireUser, toggleCommentLike)
 router.patch(
   '/:commentId',
   requireUser,
-  invalidatePublicStoriesAfterMutation,
+  invalidateCommentEditIfCountChanged,
   updateOwnComment
 )
 router.patch(
   '/:commentId/moderate',
   requireUser,
-  invalidatePublicStoriesAfterMutation,
+  invalidateCommentModerationIfCountChanged,
   moderateComment
 )
 
