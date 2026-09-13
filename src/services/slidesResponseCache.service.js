@@ -1,6 +1,8 @@
 const MAX_CACHE_ENTRIES = 100
 
 const slidesResponseCache = new Map()
+const slidesResponseInFlight = new Map()
+let slidesResponseCacheVersion = 0
 
 function getCacheKey(req) {
   const entries = Object.entries(
@@ -44,6 +46,7 @@ function setCacheEntry(key, entry) {
 
 export function invalidateSlidesResponseCache() {
   slidesResponseCache.clear()
+  slidesResponseCacheVersion += 1
 }
 
 export function cacheSlidesResponse(
@@ -76,26 +79,106 @@ export function cacheSlidesResponse(
       .json(cached.body)
   }
 
+  const existingInFlight =
+    slidesResponseInFlight.get(key)
+
+  if (existingInFlight) {
+    res.setHeader(
+      'X-Shadow-Slides-Cache',
+      'WAIT'
+    )
+
+    existingInFlight.then((entry) => {
+      if (res.headersSent) return
+
+      if (entry) {
+        if (entry.cacheControl) {
+          res.setHeader(
+            'Cache-Control',
+            entry.cacheControl
+          )
+        }
+
+        return res
+          .status(entry.statusCode || 200)
+          .json(entry.body)
+      }
+
+      return next()
+    })
+
+    return
+  }
+
   res.setHeader(
     'X-Shadow-Slides-Cache',
     'MISS'
   )
 
+  const requestVersion =
+    slidesResponseCacheVersion
+
+  let resolveInFlight
+  const inFlightPromise =
+    new Promise((resolve) => {
+      resolveInFlight = resolve
+    })
+
+  slidesResponseInFlight.set(
+    key,
+    inFlightPromise
+  )
+
+  let settled = false
+
+  const settleInFlight = (
+    entry = null
+  ) => {
+    if (settled) return
+    settled = true
+
+    if (
+      slidesResponseInFlight.get(key) ===
+      inFlightPromise
+    ) {
+      slidesResponseInFlight.delete(key)
+    }
+
+    resolveInFlight(entry)
+  }
+
+  res.once(
+    'finish',
+    () => settleInFlight(null)
+  )
+  res.once(
+    'close',
+    () => settleInFlight(null)
+  )
+
   const originalJson = res.json.bind(res)
 
   res.json = (body) => {
+    let entry = null
+
     if (
       res.statusCode >= 200 &&
       res.statusCode < 300 &&
-      body?.ok !== false
+      body?.ok !== false &&
+      slidesResponseCacheVersion ===
+        requestVersion
     ) {
-      setCacheEntry(key, {
+      entry = {
         body,
         statusCode: res.statusCode,
         cacheControl:
           res.getHeader('Cache-Control') || '',
-      })
+      }
+
+      setCacheEntry(key, entry)
     }
+
+    settleInFlight(entry)
 
     return originalJson(body)
   }
