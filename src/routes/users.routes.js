@@ -23,6 +23,7 @@ import {
 import { requireUser } from '../middleware/user.middleware.js'
 import { verifyTurnstile } from '../middleware/turnstile.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
+import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
 
 const router = express.Router()
 
@@ -75,6 +76,19 @@ const readerEmailChangeConfirmLimit = createRateLimit({
   message: 'Too many email verification attempts. Please wait and try again.',
 })
 
+function invalidatePublicStoriesAfterMutation(req, res, next) {
+  res.once('finish', () => {
+    if (
+      res.statusCode >= 200 &&
+      res.statusCode < 300
+    ) {
+      invalidatePublicStoriesCache()
+    }
+  })
+
+  next()
+}
+
 router.post('/register', readerRegisterLimit, verifyTurnstile, registerUser)
 router.post('/login', readerLoginLimit, loginUser)
 router.post('/forgot-password', readerPasswordRequestLimit, requestPasswordReset)
@@ -84,7 +98,12 @@ router.get('/me/summary', requireUser, getMeSummary)
 router.get('/suggestions', requireUser, getUserSuggestions)
 router.put('/avatar', requireUser, updateUserAvatar)
 router.put('/profile', requireUser, updateUserProfile)
-router.put('/date-of-birth', requireUser, updateDateOfBirth)
+router.put(
+  '/date-of-birth',
+  requireUser,
+  invalidatePublicStoriesAfterMutation,
+  updateDateOfBirth
+)
 router.put('/change-password', readerChangePasswordLimit, requireUser, changePassword)
 router.post(
   '/email-change/request',
