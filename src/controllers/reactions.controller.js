@@ -61,8 +61,9 @@ async function countStoryReactions(storyId) {
 }
 
 async function syncStoryTotalLikes(storyId) {
-  const totalLikes = Number(story.total_likes || 0)
-
+  const totalLikes =
+    await countStoryReactions(storyId)
+  
   const { error } = await supabase
     .from('stories')
     .update({
@@ -111,8 +112,7 @@ export async function getStoryReactionStatus(
       myReaction = data || null
     }
 
-    const totalLikes =
-      await syncStoryTotalLikes(storyId)
+   const totalLikes = Number(story.total_likes || 0)
 
     return res.status(200).json({
       ok: true,
