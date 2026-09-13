@@ -1,8 +1,5 @@
 import crypto from 'node:crypto'
 
-const DYNAMIC_CACHE_MS = 30 * 60 * 1000
-const UPDATE_CACHE_MS = 2 * 60 * 60 * 1000
-const DEFAULT_CACHE_MS = 6 * 60 * 60 * 1000
 const MAX_CACHE_ENTRIES = 300
 
 const publicStoriesCache = new Map()
@@ -25,39 +22,6 @@ function getRequestScope(req) {
     .slice(0, 20)
 }
 
-function getCacheMaxAge(req) {
-  const sort = String(
-    req.query.sort || 'latest'
-  )
-    .trim()
-    .toLowerCase()
-
-  if (
-    [
-      'popular',
-      'trending',
-      'weekly_top',
-      'weekly',
-      'views',
-      'likes',
-      'comments',
-    ].includes(sort)
-  ) {
-    return DYNAMIC_CACHE_MS
-  }
-
-  if (
-    [
-      'episode_updated',
-      'weekly_updates',
-    ].includes(sort)
-  ) {
-    return UPDATE_CACHE_MS
-  }
-
-  return DEFAULT_CACHE_MS
-}
-
 function getCacheKey(req) {
   const entries = Object.entries(
     req.query || {}
@@ -78,45 +42,23 @@ function getCacheKey(req) {
   })
 }
 
-function pruneCache() {
-  const now = Date.now()
-
-  for (
-    const [key, entry] of
-    publicStoriesCache.entries()
-  ) {
-    if (
-      !entry ||
-      now >= Number(entry.expiresAt || 0)
-    ) {
-      publicStoriesCache.delete(key)
-    }
-  }
-
-  if (
-    publicStoriesCache.size <=
-    MAX_CACHE_ENTRIES
-  ) {
-    return
-  }
-
-  const overflow =
-    publicStoriesCache.size -
-    MAX_CACHE_ENTRIES
-
-  const oldestKeys = [
-    ...publicStoriesCache.entries(),
-  ]
-    .sort(
-      (left, right) =>
-        Number(left[1]?.cachedAt || 0) -
-        Number(right[1]?.cachedAt || 0)
-    )
-    .slice(0, overflow)
-    .map(([key]) => key)
-
-  for (const key of oldestKeys) {
+function setCacheEntry(key, entry) {
+  if (publicStoriesCache.has(key)) {
     publicStoriesCache.delete(key)
+  }
+
+  publicStoriesCache.set(key, entry)
+
+  while (
+    publicStoriesCache.size >
+    MAX_CACHE_ENTRIES
+  ) {
+    const oldestKey =
+      publicStoriesCache.keys().next().value
+
+    if (!oldestKey) break
+
+    publicStoriesCache.delete(oldestKey)
   }
 }
 
@@ -130,14 +72,13 @@ export function cachePublicStoriesResponse(
   next
 ) {
   const key = getCacheKey(req)
-  const now = Date.now()
   const cached =
     publicStoriesCache.get(key)
 
-  if (
-    cached &&
-    now < Number(cached.expiresAt || 0)
-  ) {
+  if (cached) {
+    publicStoriesCache.delete(key)
+    publicStoriesCache.set(key, cached)
+
     res.setHeader(
       'X-Shadow-Public-Stories-Cache',
       'HIT'
@@ -146,10 +87,6 @@ export function cachePublicStoriesResponse(
     return res
       .status(cached.statusCode || 200)
       .json(cached.body)
-  }
-
-  if (cached) {
-    publicStoriesCache.delete(key)
   }
 
   res.setHeader(
@@ -165,18 +102,11 @@ export function cachePublicStoriesResponse(
       res.statusCode < 300 &&
       body?.ok !== false
     ) {
-      const maxAgeMs =
-        getCacheMaxAge(req)
-
-      publicStoriesCache.set(key, {
+      setCacheEntry(key, {
         body,
         statusCode: res.statusCode,
         cachedAt: Date.now(),
-        expiresAt:
-          Date.now() + maxAgeMs,
       })
-
-      pruneCache()
     }
 
     return originalJson(body)
