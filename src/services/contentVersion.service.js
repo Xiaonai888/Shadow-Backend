@@ -12,6 +12,9 @@ const DEFAULT_KEYS = [
   'library',
 ]
 
+const versionCache = new Map()
+const keyLoadPromises = new Map()
+
 function cleanKey(value) {
   return String(value || '')
     .trim()
@@ -20,87 +23,235 @@ function cleanKey(value) {
     .slice(0, 80)
 }
 
-function fallbackVersions(keys = DEFAULT_KEYS) {
-  const now = new Date().toISOString()
-
-  return keys.reduce((acc, key) => {
-    const clean = cleanKey(key)
-
-    if (clean) {
-      acc[clean] = {
-        key: clean,
-        version: 1,
-        updated_at: now,
-      }
-    }
-
-    return acc
-  }, {})
+function normalizeKeys(keys) {
+  return [
+    ...new Set(
+      (
+        Array.isArray(keys)
+          ? keys
+          : DEFAULT_KEYS
+      )
+        .map(cleanKey)
+        .filter(Boolean)
+    ),
+  ]
 }
 
-export async function getContentVersions(keys = DEFAULT_KEYS) {
-  const cleanKeys = [...new Set((Array.isArray(keys) ? keys : DEFAULT_KEYS).map(cleanKey).filter(Boolean))]
-  const now = new Date().toISOString()
-
-  if (!cleanKeys.length) return {}
-
-  try {
-    const { data, error } = await supabase
-      .from('content_versions')
-      .select('content_key, version, updated_at')
-      .in('content_key', cleanKeys)
-
-    if (error) throw error
-
-    const map = fallbackVersions(cleanKeys)
-
-    for (const row of data || []) {
-      map[row.content_key] = {
-        key: row.content_key,
-        version: Number(row.version || 1),
-        updated_at: row.updated_at || now,
-      }
-    }
-
-    return map
-  } catch (error) {
-    console.warn('GET CONTENT VERSIONS WARNING:', error.message)
-    return fallbackVersions(cleanKeys)
+function fallbackVersion(key) {
+  return {
+    key,
+    version: 1,
+    updated_at:
+      new Date().toISOString(),
   }
 }
 
-export async function bumpContentVersions(keys = []) {
-  const cleanKeys = [...new Set((Array.isArray(keys) ? keys : [keys]).map(cleanKey).filter(Boolean))]
-  const now = new Date().toISOString()
+function cacheRow(row) {
+  const key = cleanKey(
+    row?.content_key ||
+    row?.key
+  )
+
+  if (!key) return null
+
+  const value = {
+    key,
+    version: Number(
+      row?.version || 1
+    ),
+    updated_at:
+      row?.updated_at ||
+      new Date().toISOString(),
+  }
+
+  versionCache.set(key, value)
+  return value
+}
+
+async function loadMissingKeys(keys) {
+  const missing = keys.filter(
+    (key) =>
+      !versionCache.has(key) &&
+      !keyLoadPromises.has(key)
+  )
+
+  if (missing.length) {
+    const loadPromise = (async () => {
+      const { data, error } =
+        await supabase
+          .from('content_versions')
+          .select(
+            'content_key, version, updated_at'
+          )
+          .in(
+            'content_key',
+            missing
+          )
+
+      if (error) throw error
+
+      const found = new Set()
+
+      for (const row of data || []) {
+        const cached = cacheRow(row)
+        if (cached) {
+          found.add(cached.key)
+        }
+      }
+
+      for (const key of missing) {
+        if (!found.has(key)) {
+          versionCache.set(
+            key,
+            fallbackVersion(key)
+          )
+        }
+      }
+    })()
+
+    for (const key of missing) {
+      keyLoadPromises.set(
+        key,
+        loadPromise
+      )
+    }
+
+    loadPromise.finally(() => {
+      for (const key of missing) {
+        if (
+          keyLoadPromises.get(key) ===
+          loadPromise
+        ) {
+          keyLoadPromises.delete(key)
+        }
+      }
+    })
+  }
+
+  const waits = [
+    ...new Set(
+      keys
+        .map((key) =>
+          keyLoadPromises.get(key)
+        )
+        .filter(Boolean)
+    ),
+  ]
+
+  if (waits.length) {
+    await Promise.all(waits)
+  }
+}
+
+export async function getContentVersions(
+  keys = DEFAULT_KEYS
+) {
+  const cleanKeys = normalizeKeys(keys)
 
   if (!cleanKeys.length) return {}
 
   try {
-    const current = await getContentVersions(cleanKeys)
-    const payload = cleanKeys.map((key) => ({
-      content_key: key,
-      version: Number(current[key]?.version || 1) + 1,
-      updated_at: now,
-    }))
+    await loadMissingKeys(cleanKeys)
+  } catch (error) {
+    console.warn(
+      'GET CONTENT VERSIONS WARNING:',
+      error.message
+    )
+  }
 
-    const { data, error } = await supabase
-      .from('content_versions')
-      .upsert(payload, { onConflict: 'content_key' })
-      .select('content_key, version, updated_at')
+  return cleanKeys.reduce(
+    (acc, key) => {
+      acc[key] =
+        versionCache.get(key) ||
+        fallbackVersion(key)
+
+      return acc
+    },
+    {}
+  )
+}
+
+export async function bumpContentVersions(
+  keys = []
+) {
+  const cleanKeys = normalizeKeys(
+    Array.isArray(keys)
+      ? keys
+      : [keys]
+  )
+
+  if (!cleanKeys.length) return {}
+
+  try {
+    const current =
+      await getContentVersions(
+        cleanKeys
+      )
+    const now =
+      new Date().toISOString()
+
+    const payload = cleanKeys.map(
+      (key) => ({
+        content_key: key,
+        version:
+          Number(
+            current[key]?.version || 1
+          ) + 1,
+        updated_at: now,
+      })
+    )
+
+    const { data, error } =
+      await supabase
+        .from('content_versions')
+        .upsert(
+          payload,
+          {
+            onConflict:
+              'content_key',
+          }
+        )
+        .select(
+          'content_key, version, updated_at'
+        )
 
     if (error) throw error
 
-    return (data || []).reduce((acc, row) => {
-      acc[row.content_key] = {
-        key: row.content_key,
-        version: Number(row.version || 1),
-        updated_at: row.updated_at || now,
-      }
+    const result = {}
 
-      return acc
-    }, {})
+    for (const row of data || []) {
+      const cached = cacheRow(row)
+
+      if (cached) {
+        result[cached.key] = cached
+      }
+    }
+
+    for (const item of payload) {
+      const key = item.content_key
+
+      if (!result[key]) {
+        const cached =
+          cacheRow(item)
+        result[key] = cached
+      }
+    }
+
+    return result
   } catch (error) {
-    console.warn('BUMP CONTENT VERSIONS WARNING:', error.message)
-    return fallbackVersions(cleanKeys)
+    console.warn(
+      'BUMP CONTENT VERSIONS WARNING:',
+      error.message
+    )
+
+    return cleanKeys.reduce(
+      (acc, key) => {
+        acc[key] =
+          versionCache.get(key) ||
+          fallbackVersion(key)
+        return acc
+      },
+      {}
+    )
   }
 }
