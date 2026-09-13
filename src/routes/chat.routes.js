@@ -27,10 +27,11 @@ import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
 
 const router = express.Router()
 
-const chatReadGuard = createSpamGuard({
-  scope: 'chat_read',
-  threshold: 180,
-  windowSeconds: 60,
+const chatReadGuard = createRateLimit({
+  key: 'chat-read',
+  windowMs: 60 * 1000,
+  max: 180,
+  identity: (req) => req.user?.user_id,
 })
 
 const chatWriteGuard = createSpamGuard({
