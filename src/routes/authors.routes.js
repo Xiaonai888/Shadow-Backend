@@ -115,7 +115,7 @@ import {
 } from '../controllers/authorCommentProtectionSettings.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { invalidateMyAuthorPageCache } from '../services/myAuthorPageCache.service.js'
-
+import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
 import {
   deleteMyAuthorPageNotification,
   getMyAuthorPageNotificationUnreadCount,
@@ -155,6 +155,45 @@ function invalidateMyAuthorPageAfterMutation(
   next()
 }
 
+function invalidatePublicStoriesAfterMutation(
+  req,
+  res,
+  next
+) {
+  res.once('finish', () => {
+    if (
+      res.statusCode >= 200 &&
+      res.statusCode < 300
+    ) {
+      invalidatePublicStoriesCache()
+    }
+  })
+
+  next()
+}
+
+function invalidatePublicStoriesAfterHiddenRestore(
+  req,
+  res,
+  next
+) {
+  const action = String(
+    req.body?.action || ''
+  )
+    .trim()
+    .toLowerCase()
+
+  if (action !== 'restore') {
+    return next()
+  }
+
+  return invalidatePublicStoriesAfterMutation(
+    req,
+    res,
+    next
+  )
+}
+
 router.get('/me/49-day-event', requireUser, getMyAuthor49DayEvent)
 router.get('/me/dashboard', requireUser, getMyAuthorDashboard)
 router.get('/me/dashboard-badges', requireUser, getMyAuthorDashboardBadges)
@@ -167,7 +206,12 @@ router.get('/me/comment-protection/blocked-words', requireUser, getMyAuthorBlock
 router.post('/me/comment-protection/blocked-words', requireUser, createMyAuthorBlockedWord)
 router.delete('/me/comment-protection/blocked-words/:wordId', requireUser, deleteMyAuthorBlockedWord)
 router.get('/me/comment-protection/hidden-comments', requireUser, getMyAuthorHiddenComments)
-router.patch('/me/comment-protection/hidden-comments/:reviewId', requireUser, reviewMyAuthorHiddenComment)
+router.patch(
+  '/me/comment-protection/hidden-comments/:reviewId',
+  requireUser,
+  invalidatePublicStoriesAfterHiddenRestore,
+  reviewMyAuthorHiddenComment
+)
 router.get('/me/comment-protection/blocked-readers', requireUser, getMyAuthorBlockedReaders)
 router.get('/me/comment-protection/blocked-readers/search', requireUser, searchMyAuthorReaders)
 router.get('/me/comment-protection/blocked-readers/stories', requireUser, getMyAuthorBlockStories)
@@ -207,13 +251,47 @@ router.get('/page/:pageUsername/block-status', requireUser, getReaderAuthorPageB
 router.post('/page/:pageUsername/block', requireUser, blockReaderAuthorPage)
 router.delete('/page/:pageUsername/block', requireUser, unblockReaderAuthorPage)
 router.get('/page/:pageUsername', getPublicAuthorPage)
-router.post('/page/:pageUsername/follow', requireUser, followAuthorPage)
-router.delete('/page/:pageUsername/follow', requireUser, unfollowAuthorPage)
+router.post(
+  '/page/:pageUsername/follow',
+  requireUser,
+  invalidatePublicStoriesAfterMutation,
+  followAuthorPage
+)
+router.delete(
+  '/page/:pageUsername/follow',
+  requireUser,
+  invalidatePublicStoriesAfterMutation,
+  unfollowAuthorPage
+)
 router.post('/me/payment-methods', requireUser, saveMyAuthorPaymentMethod)
-router.post('/create', requireUser, invalidateMyAuthorPageAfterMutation, createAuthorPage)
-router.put('/avatar', requireUser, invalidateMyAuthorPageAfterMutation, updateAuthorAvatar)
-router.put('/profile-images', requireUser, invalidateMyAuthorPageAfterMutation, updateAuthorProfileImages)
-router.put('/me', requireUser, invalidateMyAuthorPageAfterMutation, updateMyAuthorPage)
+router.post(
+  '/create',
+  requireUser,
+  invalidateMyAuthorPageAfterMutation,
+  invalidatePublicStoriesAfterMutation,
+  createAuthorPage
+)
+router.put(
+  '/avatar',
+  requireUser,
+  invalidateMyAuthorPageAfterMutation,
+  invalidatePublicStoriesAfterMutation,
+  updateAuthorAvatar
+)
+router.put(
+  '/profile-images',
+  requireUser,
+  invalidateMyAuthorPageAfterMutation,
+  invalidatePublicStoriesAfterMutation,
+  updateAuthorProfileImages
+)
+router.put(
+  '/me',
+  requireUser,
+  invalidateMyAuthorPageAfterMutation,
+  invalidatePublicStoriesAfterMutation,
+  updateMyAuthorPage
+)
 router.get('/page/:pageUsername/posts', getAuthorPagePosts)
 router.post('/me/posts', requireUser, createMyAuthorPost)
 router.get('/me/posts/trash', requireUser, getMyAuthorPostTrash)
