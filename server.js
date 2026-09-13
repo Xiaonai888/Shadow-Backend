@@ -390,20 +390,28 @@ const mediaUploadSpamGuard = createSpamGuard({
 })
 
 const publicReadSpamGuard = (req, res, next) => {
+  const path = String(req.path || '')
+
+  if (
+    req.method === 'GET' &&
+    path === '/stories'
+  ) {
+    return next()
+  }
+
   if (req.method === 'GET') {
     return readerReadSpamGuard(req, res, next)
   }
 
   if (
     req.method === 'POST' &&
-    String(req.path || '').endsWith('/view')
+    path.endsWith('/view')
   ) {
     return episodeViewSpamGuard(req, res, next)
   }
 
   return next()
 }
-
 const communityRouteSpamGuard = (req, res, next) => {
   if (req.method === 'GET') {
     return readerReadSpamGuard(req, res, next)
