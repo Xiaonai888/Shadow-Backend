@@ -1,3 +1,4 @@
+import { cacheAdvertisementResponse } from '../services/advertisementsResponseCache.service.js'
 import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
@@ -64,7 +65,7 @@ function uploadAdvertisementImage(req, res, next) {
   })
 }
 
-router.get('/public', getPublicAdvertisement)
+router.get('/public', cacheAdvertisementResponse, getPublicAdvertisement)
 router.get('/admin', requireAdmin, getAdminAdvertisements)
 router.get('/admin/logs', requireAdmin, getAdminAdvertisementLogs)
 
