@@ -2425,47 +2425,6 @@ export async function updateOwnComment(
       })
     }
 
-        if (error) throw error
-
-    const visibilityChanged =
-      (
-        action === 'hide' &&
-        !comment.is_hidden
-      ) ||
-      (
-        action === 'unhide' &&
-        Boolean(comment.is_hidden)
-      )
-
-    if (visibilityChanged) {
-      const currentCount = Number(
-        permission.story?.total_comments || 0
-      )
-      const nextCount = Math.max(
-        0,
-        currentCount +
-          (action === 'hide' ? -1 : 1)
-      )
-
-      const {
-        error: storyUpdateError,
-      } = await supabase
-        .from('stories')
-        .update({
-          total_comments: nextCount,
-          updated_at:
-            new Date().toISOString(),
-        })
-        .eq(
-          'id',
-          comment.story_id
-        )
-
-      if (storyUpdateError) {
-        throw storyUpdateError
-      }
-    }
-
     const updatedComment =
       await getPublicComment(
         data.id,
@@ -2750,6 +2709,45 @@ export async function moderateComment(
         .single()
 
     if (error) throw error
+
+    const visibilityChanged =
+      (
+        action === 'hide' &&
+        !comment.is_hidden
+      ) ||
+      (
+        action === 'unhide' &&
+        Boolean(comment.is_hidden)
+      )
+
+    if (visibilityChanged) {
+      const currentCount = Number(
+        permission.story?.total_comments || 0
+      )
+      const nextCount = Math.max(
+        0,
+        currentCount +
+          (action === 'hide' ? -1 : 1)
+      )
+
+      const {
+        error: storyUpdateError,
+      } = await supabase
+        .from('stories')
+        .update({
+          total_comments: nextCount,
+          updated_at:
+            new Date().toISOString(),
+        })
+        .eq(
+          'id',
+          comment.story_id
+        )
+
+      if (storyUpdateError) {
+        throw storyUpdateError
+      }
+    }
 
     const updatedComment =
       await getPublicComment(
