@@ -87,6 +87,7 @@ import {
   getMyAuthorQuest,
   saveMyAuthorPaymentMethod,
 } from '../controllers/authorRevenue.controller.js'
+import { getMyAuthorRecentEarnings } from '../controllers/authorRecentEarnings.controller.js'
 import {
   getMyAuthorDiamonds,
   getMyAuthorGifts,
@@ -200,6 +201,7 @@ router.get('/me/dashboard-badges', requireUser, getMyAuthorDashboardBadges)
 router.get('/me', requireUser, getMyAuthorPage)
 router.get('/me/quest', requireUser, getMyAuthorQuest)
 router.get('/me/income', requireUser, getMyAuthorIncome)
+router.get('/me/recent-earnings', requireUser, getMyAuthorRecentEarnings)
 router.get('/me/diamonds', requireUser, getMyAuthorDiamonds)
 router.get('/me/gifts', requireUser, getMyAuthorGifts)
 router.get('/me/comment-protection/blocked-words', requireUser, getMyAuthorBlockedWords)
