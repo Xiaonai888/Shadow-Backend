@@ -3,6 +3,8 @@ import crypto from 'node:crypto'
 const MAX_CACHE_ENTRIES = 300
 
 const publicStoriesCache = new Map()
+const publicStoriesInFlight = new Map()
+let publicStoriesCacheVersion = 0
 
 function getRequestScope(req) {
   const authHeader = String(
@@ -64,6 +66,7 @@ function setCacheEntry(key, entry) {
 
 export function invalidatePublicStoriesCache() {
   publicStoriesCache.clear()
+  publicStoriesCacheVersion += 1
 }
 
 export function cachePublicStoriesResponse(
@@ -89,25 +92,98 @@ export function cachePublicStoriesResponse(
       .json(cached.body)
   }
 
+  const existingInFlight =
+    publicStoriesInFlight.get(key)
+
+  if (existingInFlight) {
+    res.setHeader(
+      'X-Shadow-Public-Stories-Cache',
+      'WAIT'
+    )
+
+    existingInFlight.then((entry) => {
+      if (res.headersSent) return
+
+      if (entry) {
+        return res
+          .status(entry.statusCode || 200)
+          .json(entry.body)
+      }
+
+      return next()
+    })
+
+    return
+  }
+
   res.setHeader(
     'X-Shadow-Public-Stories-Cache',
     'MISS'
   )
 
+  const requestVersion =
+    publicStoriesCacheVersion
+
+  let resolveInFlight
+  const inFlightPromise =
+    new Promise((resolve) => {
+      resolveInFlight = resolve
+    })
+
+  publicStoriesInFlight.set(
+    key,
+    inFlightPromise
+  )
+
+  let settled = false
+
+  const settleInFlight = (
+    entry = null
+  ) => {
+    if (settled) return
+    settled = true
+
+    if (
+      publicStoriesInFlight.get(key) ===
+      inFlightPromise
+    ) {
+      publicStoriesInFlight.delete(key)
+    }
+
+    resolveInFlight(entry)
+  }
+
+  res.once(
+    'finish',
+    () => settleInFlight(null)
+  )
+  res.once(
+    'close',
+    () => settleInFlight(null)
+  )
+
   const originalJson = res.json.bind(res)
 
   res.json = (body) => {
+    let entry = null
+
     if (
       res.statusCode >= 200 &&
       res.statusCode < 300 &&
-      body?.ok !== false
+      body?.ok !== false &&
+      publicStoriesCacheVersion ===
+        requestVersion
     ) {
-      setCacheEntry(key, {
+      entry = {
         body,
         statusCode: res.statusCode,
         cachedAt: Date.now(),
-      })
+      }
+
+      setCacheEntry(key, entry)
     }
+
+    settleInFlight(entry)
 
     return originalJson(body)
   }
