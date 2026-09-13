@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { invalidatePublicStoriesCache } from './publicStoriesResponseCache.service.js'
 
 const DELETE_ERROR_MESSAGES = {
   INVALID_DELETE_REQUEST: 'Invalid comment delete request',
@@ -34,6 +35,16 @@ async function runTrashRpc(functionName, params) {
   return normalizeResult(data)
 }
 
+async function runStoryTrashRpc(functionName, params) {
+  const result = await runTrashRpc(functionName, params)
+
+  if (result?.ok) {
+    invalidatePublicStoriesCache()
+  }
+
+  return result
+}
+
 export function getCommentTrashStatus(result) {
   const code = String(result?.code || '')
 
@@ -60,7 +71,7 @@ export async function deleteStoryCommentToTrash({
   actorId,
   reason = '',
 }) {
-  return runTrashRpc('soft_delete_story_comment', {
+  return runStoryTrashRpc('soft_delete_story_comment', {
     p_comment_id: commentId,
     p_actor_type: actorType,
     p_actor_id: actorId,
@@ -73,7 +84,7 @@ export async function recoverStoryCommentFromTrash({
   actorType,
   actorId,
 }) {
-  return runTrashRpc('recover_story_comment', {
+  return runStoryTrashRpc('recover_story_comment', {
     p_comment_id: commentId,
     p_actor_type: actorType,
     p_actor_id: actorId,
