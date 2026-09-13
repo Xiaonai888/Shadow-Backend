@@ -1,3 +1,4 @@
+import { invalidateAdvertisementResponseCache } from '../services/advertisementsResponseCache.service.js'
 import { supabase } from '../config/supabase.js'
 import {
   deleteR2ObjectByUrl,
@@ -254,7 +255,9 @@ export async function updateAdminAdvertisement(req, res) {
 
     if (error) throw error
 
-    await createAdvertisementLog(req, data).catch((logError) => {
+invalidateAdvertisementResponseCache(placement)
+
+await createAdvertisementLog(req, data).catch((logError) => {
       console.error('CREATE ADVERTISEMENT LOG ERROR:', logError)
     })
 
