@@ -2813,12 +2813,23 @@ async function fetchStoryMap(
 function publicMyCommentActivity(
   comment,
   storyMap,
-  type
+  type,
+  viewerUserId
 ) {
   const story =
     storyMap.get(
       comment.story_id
     ) || null
+  const isOwnComment =
+    String(
+      comment.user_id || ''
+    ) === String(
+      viewerUserId || ''
+    )
+  const user =
+    publicUser(
+      comment.user
+    )
 
   return {
     id: comment.id,
@@ -2829,18 +2840,32 @@ function publicMyCommentActivity(
       comment.episode_id || null,
     parent_id:
       comment.parent_id,
+    user_id:
+      comment.user_id || null,
+    user,
+    actor_type:
+      isOwnComment
+        ? 'author'
+        : 'reader',
+    is_own_comment:
+      isOwnComment,
     text: comment.text,
     message: comment.text,
     link:
-      `/story/${comment.story_id}`,
+      comment.episode_id
+        ? `/story/${comment.story_id}/episode/${comment.episode_id}?comment=${comment.id}`
+        : `/story/${comment.story_id}?comment=${comment.id}`,
     is_hidden:
       Boolean(
         comment.is_hidden
       ),
     is_read:
       type === 'story'
-        ? Boolean(
-            comment.author_read_at
+        ? (
+            isOwnComment ||
+            Boolean(
+              comment.author_read_at
+            )
           )
         : true,
     notification_id: null,
@@ -2994,6 +3019,29 @@ export async function getMyCommentActivities(
       throw userError
     }
 
+    const {
+      data: ownedStories,
+      error: ownedStoriesError,
+    } = await supabase
+      .from('stories')
+      .select('id')
+      .eq('user_id', userId)
+
+    if (ownedStoriesError) {
+      throw ownedStoriesError
+    }
+
+    const ownedStoryIds =
+      (ownedStories || [])
+        .map((item) => item.id)
+        .filter(Boolean)
+    const ownedStoryIdSet =
+      new Set(
+        ownedStoryIds.map(
+          (id) => String(id)
+        )
+      )
+
     let activities = []
     let hasMore = false
 
@@ -3031,7 +3079,7 @@ export async function getMyCommentActivities(
         } = await supabase
           .from('comments')
           .select(
-            'id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at'
+            'id, story_id, episode_id, user_id, parent_id, text, is_hidden, created_at, updated_at, user:users(id, name, username, avatar_url, role)'
           )
           .in(
             'parent_id',
@@ -3060,24 +3108,7 @@ export async function getMyCommentActivities(
         activities = data || []
       }
     } else if (filter === 'story') {
-      const {
-        data: ownedStories,
-        error: ownedStoriesError,
-      } = await supabase
-        .from('stories')
-        .select('id')
-        .eq('user_id', userId)
-
-      if (ownedStoriesError) {
-        throw ownedStoriesError
-      }
-
-      const storyIds =
-        (ownedStories || []).map(
-          (item) => item.id
-        )
-
-      if (storyIds.length) {
+      if (ownedStoryIds.length) {
         const from =
           (page - 1) * limit
         const to =
@@ -3089,15 +3120,11 @@ export async function getMyCommentActivities(
         } = await supabase
           .from('comments')
           .select(
-            'id, story_id, episode_id, user_id, parent_id, text, is_hidden, author_read_at, created_at, updated_at'
+            'id, story_id, episode_id, user_id, parent_id, text, is_hidden, author_read_at, created_at, updated_at, user:users(id, name, username, avatar_url, role)'
           )
           .in(
             'story_id',
-            storyIds
-          )
-          .neq(
-            'user_id',
-            userId
+            ownedStoryIds
           )
           .eq(
             'is_hidden',
@@ -3136,7 +3163,7 @@ export async function getMyCommentActivities(
         } = await supabase
           .from('comments')
           .select(
-            'id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at'
+            'id, story_id, episode_id, user_id, parent_id, text, is_hidden, created_at, updated_at, user:users(id, name, username, avatar_url, role)'
           )
           .ilike(
             'text',
@@ -3171,7 +3198,7 @@ export async function getMyCommentActivities(
       } = await supabase
         .from('comments')
         .select(
-          'id, story_id, user_id, parent_id, text, is_hidden, created_at, updated_at'
+          'id, story_id, episode_id, user_id, parent_id, text, is_hidden, created_at, updated_at, user:users(id, name, username, avatar_url, role)'
         )
         .eq('user_id', userId)
         .eq(
@@ -3186,11 +3213,21 @@ export async function getMyCommentActivities(
           'created_at',
           { ascending: false }
         )
-        .limit(80)
+        .limit(300)
 
       if (error) throw error
 
-      activities = data || []
+      activities =
+        (data || [])
+          .filter(
+            (item) =>
+              !ownedStoryIdSet.has(
+                String(
+                  item.story_id
+                )
+              )
+          )
+          .slice(0, 80)
     }
 
     const storyMap =
@@ -3229,7 +3266,8 @@ export async function getMyCommentActivities(
             publicMyCommentActivity(
               item,
               storyMap,
-              activityType
+              activityType,
+              userId
             )
         ),
       counts: {
