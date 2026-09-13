@@ -18,6 +18,8 @@ import { getAdditiveDiscountResult } from '../services/revenueRules.service.js'
 const CAMBODIA_TIME_OFFSET_MS =
   7 * 60 * 60 * 1000
 
+const AD_ACCESS_MINUTES = 15
+
 const FALLBACK_RULES = {
   diamond_per_episode: 10,
   gem_per_episode: 1000,
@@ -1520,11 +1522,11 @@ voucher_access: {
       ad_access: {
   currency: 'ad',
   amount: 1,
-  access_days: getRuleNumber(payload.rules, 'gem_access_days'),
+  access_minutes: AD_ACCESS_MINUTES,
   access_type: 'temporary',
-  available: payload.gemWait.available,
-  available_at: payload.gemWait.available_at,
-  wait_seconds: payload.gemWait.wait_seconds,
+  available: true,
+  available_at: null,
+  wait_seconds: 0,
 },
       
       package_options: payload.packageOptions,
@@ -2299,7 +2301,12 @@ export async function unlockEpisodeWithAd(req, res) {
     const { storyId, episodeId } = req.params
     const tier = getReaderTier(req)
 
-    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId, tier })
+    const payload = await getUnlockStatusPayload({
+      userId,
+      storyId,
+      episodeId,
+      tier,
+    })
 
     if (payload.notFound) {
       return res.status(404).json({
@@ -2317,19 +2324,9 @@ export async function unlockEpisodeWithAd(req, res) {
       })
     }
 
-    if (!payload.gemWait.available) {
-      return res.status(403).json({
-        ok: false,
-        code: 'AD_WAIT_REQUIRED',
-        message: 'This episode is newly released. Watch Ad unlock is not available yet.',
-        available_at: payload.gemWait.available_at,
-        wait_seconds: payload.gemWait.wait_seconds,
-        wallet: publicWallet(payload.wallet),
-      })
-    }
-
-    const accessDays = getRuleNumber(payload.rules, 'gem_access_days')
-    const expiresAt = new Date(Date.now() + accessDays * 24 * 60 * 60 * 1000).toISOString()
+    const expiresAt = new Date(
+      Date.now() + AD_ACCESS_MINUTES * 60 * 1000
+    ).toISOString()
 
     const unlocks = await createUnlocksAndTransactions({
       userId,
@@ -2343,7 +2340,7 @@ export async function unlockEpisodeWithAd(req, res) {
       transactionCurrency: 'ad',
       transactionAmount: 1,
       metadata: {
-        access_days: accessDays,
+        access_minutes: AD_ACCESS_MINUTES,
         reader_tier: tier,
       },
     })
@@ -2353,8 +2350,11 @@ export async function unlockEpisodeWithAd(req, res) {
       message: 'Episode unlocked with Ad',
       unlocked: true,
       access_type: 'temporary',
+      access_minutes: AD_ACCESS_MINUTES,
       expires_at: expiresAt,
-      unlocked_episode_ids: unlocks.map((unlock) => unlock.episode_id),
+      unlocked_episode_ids: unlocks.map(
+        (unlock) => unlock.episode_id
+      ),
       wallet: publicWallet(payload.wallet),
     })
   } catch (error) {
