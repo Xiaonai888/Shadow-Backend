@@ -1069,8 +1069,9 @@ async function getRecentEarnings(authorId) {
     .eq('currency', 'diamond')
     .eq('source_type', 'diamond_unlock')
     .neq('earning_status', 'void')
+    .gte('created_at', startOfTodayIso())
     .order('created_at', { ascending: false })
-    .limit(10)
+    .limit(3)
 
   if (error) throw error
 
