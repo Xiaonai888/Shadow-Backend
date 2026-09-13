@@ -429,6 +429,22 @@ const slidesReadSpamGuard = (req, res, next) => {
   return publicReadSpamGuard(req, res, next)
 }
 
+const genresReadSpamGuard = (req, res, next) => {
+  const path = String(req.path || '')
+
+  if (
+    req.method === 'GET' &&
+    (
+      path === '/' ||
+      path === '/featured-tabs'
+    )
+  ) {
+    return next()
+  }
+
+  return publicReadSpamGuard(req, res, next)
+}
+
 const communityRouteSpamGuard = (req, res, next) => {
   if (req.method === 'GET') {
     return readerReadSpamGuard(req, res, next)
