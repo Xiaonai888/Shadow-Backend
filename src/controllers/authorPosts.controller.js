@@ -1172,11 +1172,40 @@ export async function setMyAuthorPostReaction(req, res) {
   try {
     const userId = req.user?.user_id
     const postId = req.params.postId
-    const reactionType = String(
-      req.body?.reaction_type ||
-      req.body?.reactionType ||
-      'love'
-    ).trim().toLowerCase()
+    const body = req.body || {}
+    const hasDesiredReaction =
+      Object.prototype.hasOwnProperty.call(
+        body,
+        'desired_reaction_type'
+      ) ||
+      Object.prototype.hasOwnProperty.call(
+        body,
+        'desiredReactionType'
+      )
+
+    const rawReaction = hasDesiredReaction
+      ? (
+          Object.prototype.hasOwnProperty.call(
+            body,
+            'desired_reaction_type'
+          )
+            ? body.desired_reaction_type
+            : body.desiredReactionType
+        )
+      : (
+          body.reaction_type ||
+          body.reactionType ||
+          'love'
+        )
+
+    const reactionType =
+      rawReaction === null ||
+      rawReaction === undefined ||
+      String(rawReaction).trim() === ''
+        ? null
+        : String(rawReaction)
+            .trim()
+            .toLowerCase()
 
     const allowedReactions = new Set([
       'love',
@@ -1202,19 +1231,30 @@ export async function setMyAuthorPostReaction(req, res) {
       })
     }
 
-    if (!allowedReactions.has(reactionType)) {
+    if (
+      reactionType &&
+      !allowedReactions.has(reactionType)
+    ) {
       return res.status(400).json({
         ok: false,
         message: 'Invalid reaction type',
       })
     }
 
-    const { data: post, error: postError } = await supabase
-      .from('author_page_posts')
-      .select('*')
-      .eq('id', postId)
-      .eq('status', 'active')
-      .maybeSingle()
+    if (!hasDesiredReaction && !reactionType) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid reaction type',
+      })
+    }
+
+    const { data: post, error: postError } =
+      await supabase
+        .from('author_page_posts')
+        .select('*')
+        .eq('id', postId)
+        .eq('status', 'active')
+        .maybeSingle()
 
     if (postError) throw postError
 
@@ -1225,69 +1265,158 @@ export async function setMyAuthorPostReaction(req, res) {
       })
     }
 
-    const { data: existingReaction, error: existingError } =
-      await supabase
-        .from('author_page_post_reactions')
-        .select('id, reaction_type')
-        .eq('post_id', postId)
-        .eq('user_id', userId)
-        .maybeSingle()
+    const {
+      data: existingReaction,
+      error: existingError,
+    } = await supabase
+      .from('author_page_post_reactions')
+      .select('id, reaction_type')
+      .eq('post_id', postId)
+      .eq('user_id', userId)
+      .maybeSingle()
 
     if (existingError) throw existingError
 
-    let reacted = true
+    let reacted = Boolean(reactionType)
     let nextReactionType = reactionType
     let interactionCreated = false
+    let reactionChanged = false
 
-    if (existingReaction?.reaction_type === reactionType) {
-      const { error: deleteError } = await supabase
-        .from('author_page_post_reactions')
-        .delete()
-        .eq('id', existingReaction.id)
+    if (hasDesiredReaction) {
+      if (!reactionType) {
+        reacted = false
+        nextReactionType = null
+
+        if (existingReaction?.id) {
+          const { error: deleteError } =
+            await supabase
+              .from('author_page_post_reactions')
+              .delete()
+              .eq('id', existingReaction.id)
+
+          if (deleteError) throw deleteError
+
+          reactionChanged = true
+        }
+      } else if (
+        existingReaction?.reaction_type ===
+        reactionType
+      ) {
+        reacted = true
+        nextReactionType = reactionType
+      } else if (existingReaction?.id) {
+        const { error: updateReactionError } =
+          await supabase
+            .from('author_page_post_reactions')
+            .update({
+              reaction_type: reactionType,
+              updated_at:
+                new Date().toISOString(),
+            })
+            .eq('id', existingReaction.id)
+
+        if (updateReactionError) {
+          throw updateReactionError
+        }
+
+        reactionChanged = true
+      } else {
+        const { error: insertReactionError } =
+          await supabase
+            .from('author_page_post_reactions')
+            .insert({
+              post_id: postId,
+              user_id: userId,
+              reaction_type: reactionType,
+            })
+
+        if (insertReactionError) {
+          throw insertReactionError
+        }
+
+        interactionCreated = true
+        reactionChanged = true
+      }
+    } else if (
+      existingReaction?.reaction_type ===
+      reactionType
+    ) {
+      const { error: deleteError } =
+        await supabase
+          .from('author_page_post_reactions')
+          .delete()
+          .eq('id', existingReaction.id)
 
       if (deleteError) throw deleteError
 
       reacted = false
       nextReactionType = null
+      reactionChanged = true
     } else if (existingReaction?.id) {
-      const { error: updateReactionError } = await supabase
-        .from('author_page_post_reactions')
-        .update({
-          reaction_type: reactionType,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', existingReaction.id)
+      const { error: updateReactionError } =
+        await supabase
+          .from('author_page_post_reactions')
+          .update({
+            reaction_type: reactionType,
+            updated_at:
+              new Date().toISOString(),
+          })
+          .eq('id', existingReaction.id)
 
-      if (updateReactionError) throw updateReactionError
+      if (updateReactionError) {
+        throw updateReactionError
+      }
+
+      reactionChanged = true
     } else {
-      const { error: insertReactionError } = await supabase
-        .from('author_page_post_reactions')
-        .insert({
-          post_id: postId,
-          user_id: userId,
-          reaction_type: reactionType,
-        })
+      const { error: insertReactionError } =
+        await supabase
+          .from('author_page_post_reactions')
+          .insert({
+            post_id: postId,
+            user_id: userId,
+            reaction_type: reactionType,
+          })
 
-      if (insertReactionError) throw insertReactionError
+      if (insertReactionError) {
+        throw insertReactionError
+      }
 
       interactionCreated = true
+      reactionChanged = true
     }
 
-    const { data: reactionRows, error: reactionSummaryError } =
-      await supabase
-        .from('author_page_post_reactions')
-        .select('post_id, reaction_type')
-        .eq('post_id', postId)
+    const {
+      data: reactionRows,
+      error: reactionSummaryError,
+    } = await supabase
+      .from('author_page_post_reactions')
+      .select('post_id, reaction_type')
+      .eq('post_id', postId)
 
-    if (reactionSummaryError) throw reactionSummaryError
+    if (reactionSummaryError) {
+      throw reactionSummaryError
+    }
 
     const reactionSummary =
-      buildReactionSummaryMap(reactionRows || []).get(postId) || []
+      buildReactionSummaryMap(
+        reactionRows || []
+      ).get(postId) || []
 
-    const nextLikeCount = Number((reactionRows || []).length)
+    const nextLikeCount = Number(
+      (reactionRows || []).length
+    )
 
-    const { data: updatedPost, error: updatePostError } =
-      await supabase
+    let updatedPost = post
+
+    if (
+      Number(post.like_count || 0) !==
+      nextLikeCount
+    ) {
+      const {
+        data: nextPost,
+        error: updatePostError,
+      } = await supabase
         .from('author_page_posts')
         .update({
           like_count: nextLikeCount,
@@ -1297,42 +1426,65 @@ export async function setMyAuthorPostReaction(req, res) {
         .select()
         .single()
 
-    if (updatePostError) throw updatePostError
+      if (updatePostError) {
+        throw updatePostError
+      }
+
+      updatedPost = nextPost
+    }
 
     const isOwner =
-      String(post.user_id || '') === String(userId)
+      String(post.user_id || '') ===
+      String(userId)
 
-    if (interactionCreated && !isOwner) {
-  await recordPostHashtagInterestSignalSafely({
-    userId,
-    postId,
-    signal: 'reaction',
-  })
-}
+    if (
+      interactionCreated &&
+      !isOwner
+    ) {
+      await recordPostHashtagInterestSignalSafely({
+        userId,
+        postId,
+        signal: 'reaction',
+      })
+    }
 
-    if (!isOwner && post.author_page_id) {
-      const sourceKey = `author-post-reaction:${postId}:${userId}`
+    if (
+      reactionChanged &&
+      !isOwner &&
+      post.author_page_id
+    ) {
+      const sourceKey =
+        `author-post-reaction:${postId}:${userId}`
 
       if (!reacted) {
         await deleteAuthorPageNotificationBySourceKeySafely({
-          authorPageId: post.author_page_id,
+          authorPageId:
+            post.author_page_id,
           type: 'reaction',
           sourceKey,
         })
       } else {
-        const { data: reader, error: readerError } = await supabase
+        const {
+          data: reader,
+          error: readerError,
+        } = await supabase
           .from('users')
-          .select('id, name, username, avatar_url')
+          .select(
+            'id, name, username, avatar_url'
+          )
           .eq('id', userId)
           .maybeSingle()
 
         if (readerError) throw readerError
 
         const readerName =
-          reader?.name || reader?.username || 'A reader'
+          reader?.name ||
+          reader?.username ||
+          'A reader'
 
         await deleteAuthorPageNotificationBySourceKeySafely({
-          authorPageId: post.author_page_id,
+          authorPageId:
+            post.author_page_id,
           type: 'reaction',
           sourceKey,
         })
@@ -1345,19 +1497,26 @@ export async function setMyAuthorPostReaction(req, res) {
               )
             : Promise.resolve(),
           createAuthorPageNotificationSafely({
-            authorPageId: post.author_page_id,
+            authorPageId:
+              post.author_page_id,
             authorUserId: post.user_id,
             type: 'reaction',
-            title: `${readerName} reacted ${reactionType} to your post`,
-            targetUrl: `/author/page?post=${postId}`,
+            title:
+              `${readerName} reacted ${reactionType} to your post`,
+            targetUrl:
+              `/author/page?post=${postId}`,
             sourceKey,
             metadata: {
               post_id: postId,
-              reaction_type: reactionType,
+              reaction_type:
+                reactionType,
               reader_id: userId,
-              reader_name: readerName,
-              reader_username: reader?.username || '',
-              reader_avatar_url: reader?.avatar_url || '',
+              reader_name:
+                readerName,
+              reader_username:
+                reader?.username || '',
+              reader_avatar_url:
+                reader?.avatar_url || '',
             },
           }),
         ])
@@ -1383,7 +1542,8 @@ export async function setMyAuthorPostReaction(req, res) {
 
     return res.status(500).json({
       ok: false,
-      message: 'Failed to update post reaction',
+      message:
+        'Failed to update post reaction',
       error: error.message,
     })
   }
