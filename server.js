@@ -412,6 +412,23 @@ const publicReadSpamGuard = (req, res, next) => {
 
   return next()
 }
+
+const slidesReadSpamGuard = (req, res, next) => {
+  const path = String(req.path || '')
+
+  if (
+    req.method === 'GET' &&
+    (
+      path === '/' ||
+      path === '/home-batch'
+    )
+  ) {
+    return next()
+  }
+
+  return publicReadSpamGuard(req, res, next)
+}
+
 const communityRouteSpamGuard = (req, res, next) => {
   if (req.method === 'GET') {
     return readerReadSpamGuard(req, res, next)
@@ -641,7 +658,7 @@ app.get('/', (req, res) => {
 
 app.use('/health', healthRoutes)
 app.use('/api/auth', accountAccessSpamGuard, authRoutes)
-app.use('/api/slides', publicReadSpamGuard, slidesRoutes)
+app.use('/api/slides', slidesReadSpamGuard, slidesRoutes)
 app.use('/api/books', publicReadSpamGuard, booksRoutes)
 app.use('/api/users', accountAccessSpamGuard, usersRoutes)
 app.use('/api/authors/media', mediaUploadRouteSpamGuard, authorMediaRoutes)
