@@ -6,9 +6,27 @@ import { supabase } from '../config/supabase.js'
 import { getAdminActor, logAdminActivity } from '../services/adminActivity.service.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 import { bumpContentVersions } from '../services/contentVersion.service.js'
+import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
+import { createRateLimit } from '../middleware/rateLimit.middleware.js'
+import {
+  cacheGenresResponse,
+  invalidateGenresResponseCache,
+} from '../services/genresResponseCache.service.js'
 
 const router = express.Router()
 const MAX_FEATURED_TABS = 12
+const publicGenresCacheHitLimit = createRateLimit({
+  key: 'public-genres-cache-hit',
+  windowMs: 60 * 1000,
+  max: 1500,
+  message: 'Too many requests. Please wait before trying again.',
+})
+
+const publicGenresReadSpamGuard = createSpamGuard({
+  scope: 'reader_read',
+  threshold: 300,
+  windowSeconds: 60,
+})
 
 const upload = multer({
   dest: os.tmpdir(),
@@ -68,6 +86,19 @@ async function notifyContentChange(keys) {
   } catch (error) {
     console.warn('BUMP CONTENT VERSION WARNING:', error.message)
   }
+}
+
+function invalidateGenresAfterMutation(req, res, next) {
+  res.once('finish', () => {
+    if (
+      res.statusCode >= 200 &&
+      res.statusCode < 300
+    ) {
+      invalidateGenresResponseCache()
+    }
+  })
+
+  next()
 }
 
 async function uploadGenreBanner(req, res) {
