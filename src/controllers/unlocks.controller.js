@@ -19,6 +19,7 @@ const CAMBODIA_TIME_OFFSET_MS =
   7 * 60 * 60 * 1000
 
 const AD_ACCESS_MINUTES = 15
+const AD_DAILY_LIMIT = 5
 
 const FALLBACK_RULES = {
   diamond_per_episode: 10,
@@ -660,6 +661,19 @@ async function countGemUnlocksThisMonthForStory({ userId, storyId }) {
     .eq('story_id', storyId)
     .eq('currency', 'gem')
     .gte('created_at', startOfMonthIso())
+
+  if (error) throw error
+  return Number(count || 0)
+}
+
+async function countAdUnlocksToday(userId) {
+  const { count, error } = await supabase
+    .from('episode_unlock_transactions')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('currency', 'ad')
+    .eq('transaction_type', 'unlock')
+    .gte('created_at', startOfTodayIso())
 
   if (error) throw error
   return Number(count || 0)
@@ -1399,7 +1413,13 @@ export async function getEpisodeUnlockStatus(req, res) {
       })
     }
 
-    const adPolicy = getEpisodeAdPolicy({
+    const adUsedToday = await countAdUnlocksToday(userId)
+const adRemainingToday = Math.max(
+  0,
+  AD_DAILY_LIMIT - adUsedToday
+)
+
+const adPolicy = getEpisodeAdPolicy({
   tier,
   unlock: payload.unlock,
   freeEpisode: payload.freeEpisode,
@@ -1524,7 +1544,10 @@ voucher_access: {
   amount: 1,
   access_minutes: AD_ACCESS_MINUTES,
   access_type: 'temporary',
-  available: true,
+  daily_limit: AD_DAILY_LIMIT,
+  used_today: adUsedToday,
+  remaining_today: adRemainingToday,
+  available: adUsedToday < AD_DAILY_LIMIT,
   available_at: null,
   wait_seconds: 0,
 },
@@ -2030,10 +2053,22 @@ export async function unlockEpisodeWithGems(req, res) {
       })
     }
 
-    const expiresAt = new Date(
-      Date.now() +
-        accessDays * 24 * 60 * 60 * 1000
-    ).toISOString()
+    const adUsedToday = await countAdUnlocksToday(userId)
+
+if (adUsedToday >= AD_DAILY_LIMIT) {
+  return res.status(403).json({
+    ok: false,
+    code: 'AD_DAILY_LIMIT_REACHED',
+    message: 'Daily rewarded unlock limit reached',
+    daily_limit: AD_DAILY_LIMIT,
+    used_today: adUsedToday,
+    remaining_today: 0,
+  })
+}
+
+const expiresAt = new Date(
+  Date.now() + AD_ACCESS_MINUTES * 60 * 1000
+).toISOString()
 
     const updatedWallet = await updateGemBalance({
       userId,
