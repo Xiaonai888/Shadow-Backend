@@ -21,6 +21,7 @@ import {
   touchChatPresenceController,
 } from '../controllers/chatQuickContacts.controller.js'
 import { searchChatUsersController } from '../controllers/chatUserSearch.controller.js'
+import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
 
@@ -43,6 +44,17 @@ const chatRequestGuard = createSpamGuard({
   threshold: 5,
   windowSeconds: 60,
 })
+
+const chatPresenceRateLimit =
+  createRateLimit({
+    key: 'chat-presence',
+    windowMs: 60 * 1000,
+    max: 30,
+    message:
+      'Too many presence updates. Please wait before trying again.',
+    identity: (req) =>
+      req.user?.user_id,
+  })
 
 router.use(requireUser)
 router.use(chatConversationManagementRoutes)
@@ -80,7 +92,7 @@ router.get(
 
 router.patch(
   '/presence',
-  chatWriteGuard,
+  chatPresenceRateLimit,
   touchChatPresenceController
 )
 
