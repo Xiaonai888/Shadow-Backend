@@ -105,6 +105,38 @@ export async function recordWorkIncidentResolved({
   }
 }
 
+export async function listWorkIncidents({
+  status = 'active',
+  source = '',
+  limit = 50,
+} = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100)
+  const safeStatus = cleanText(status, 20).toLowerCase()
+  const safeSource = cleanText(source, 20).toUpperCase()
+
+  let query = supabase
+    .from('work_incidents')
+    .select(
+      'id,source,method,path,status,peak_requests_per_minute,first_detected_at,last_detected_at,resolved_at,reopen_count,occurrence_count,updated_at'
+    )
+    .order('updated_at', { ascending: false })
+    .limit(safeLimit)
+
+  if (safeStatus === 'active' || safeStatus === 'resolved') {
+    query = query.eq('status', safeStatus)
+  }
+
+  if (['WEB', 'ADMIN', 'BACKEND', 'UNKNOWN'].includes(safeSource)) {
+    query = query.eq('source', safeSource)
+  }
+
+  const { data, error } = await query
+
+  if (error) throw error
+
+  return Array.isArray(data) ? data : []
+}
+
 export async function cleanupResolvedWorkIncidents() {
   try {
     const cutoff = new Date(
