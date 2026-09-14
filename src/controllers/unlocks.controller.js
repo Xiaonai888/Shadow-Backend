@@ -2052,22 +2052,10 @@ export async function unlockEpisodeWithGems(req, res) {
       })
     }
 
-    const adUsedToday = await countAdUnlocksToday(userId)
-
-if (adUsedToday >= AD_DAILY_LIMIT) {
-  return res.status(403).json({
-    ok: false,
-    code: 'AD_DAILY_LIMIT_REACHED',
-    message: 'Daily rewarded unlock limit reached',
-    daily_limit: AD_DAILY_LIMIT,
-    used_today: adUsedToday,
-    remaining_today: 0,
-  })
-}
-
-const expiresAt = new Date(
-  Date.now() + AD_ACCESS_MINUTES * 60 * 1000
-).toISOString()
+    const expiresAt = new Date(
+      Date.now() +
+        accessDays * 24 * 60 * 60 * 1000
+    ).toISOString()
 
     const updatedWallet = await updateGemBalance({
       userId,
@@ -2355,6 +2343,19 @@ export async function unlockEpisodeWithAd(req, res) {
         message: 'Episode already unlocked',
         unlocked: true,
         wallet: publicWallet(payload.wallet),
+      })
+    }
+
+    const adUsedToday = await countAdUnlocksToday(userId)
+
+    if (adUsedToday >= AD_DAILY_LIMIT) {
+      return res.status(403).json({
+        ok: false,
+        code: 'AD_DAILY_LIMIT_REACHED',
+        message: 'Daily rewarded unlock limit reached',
+        daily_limit: AD_DAILY_LIMIT,
+        used_today: adUsedToday,
+        remaining_today: 0,
       })
     }
 
