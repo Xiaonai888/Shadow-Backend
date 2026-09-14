@@ -188,9 +188,7 @@ async function readPromotionById(id) {
     .eq('id', id)
     .maybeSingle()
 
-  if (error) throw error
-
-invalidateShadowMallPromotionsCache()
+ if (error) throw error
 
 return data
 }
