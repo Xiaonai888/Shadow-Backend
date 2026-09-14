@@ -1,4 +1,5 @@
 import { cacheAdvertisementResponse } from '../services/advertisementsResponseCache.service.js'
+import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
@@ -21,6 +22,11 @@ import {
 import { requireAdmin } from '../middleware/auth.middleware.js'
 
 const router = express.Router()
+const publicAdvertisementRateLimit = createRateLimit({
+  key: 'public_advertisements',
+  windowMs: 60000,
+  max: 120,
+})
 
 const upload = multer({
   dest: os.tmpdir(),
