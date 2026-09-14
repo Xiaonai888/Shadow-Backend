@@ -19,9 +19,26 @@ function normalizeMethod(value) {
 }
 
 function normalizePath(value) {
-  const path = cleanText(value, 500)
-  if (!path) return '/'
-  return path.startsWith('/') ? path : `/${path}`
+  const raw = cleanText(value, 500) || '/'
+
+  return raw
+    .split('?')[0]
+    .split('/')
+    .map((segment) => {
+      if (!segment) return segment
+      if (/^\d+$/.test(segment)) return ':id'
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(segment)) return ':id'
+      if (/^[0-9a-f]{16,}$/i.test(segment)) return ':id'
+      if (/^[A-Za-z0-9_-]{32,}$/.test(segment)) return ':id'
+      return segment.slice(0, 100)
+    })
+    .join('/') || '/'
+}
+
+export function findIpsDefense(incident = {}) {
+  const item = activeIncidents.get(fingerprintOf(incident))
+  if (!item || item.state !== 'defending') return null
+  return cloneIncident(item)
 }
 
 function fingerprintOf(incident = {}) {
