@@ -1,5 +1,6 @@
 import express from 'express'
 import { requireAdmin } from '../middleware/auth.middleware.js'
+import { createSecurityGate } from '../middleware/securityGate.middleware.js'
 import {
   addAdminTrustedIp,
   getAdminGuardEvents,
@@ -16,18 +17,56 @@ import {
 
 const router = express.Router()
 
+const loginSecurityMutationGate = createSecurityGate({
+  gateId: 'admin_login_security_mutation',
+  roles: ['owner', 'admin'],
+  allowOwner: true,
+  allowInSafeMode: false,
+})
+
+const loginSecurityDefenseGate = createSecurityGate({
+  gateId: 'admin_login_security_defense',
+  roles: ['owner', 'admin'],
+  allowOwner: true,
+  allowInSafeMode: true,
+})
+
 router.use(requireAdmin)
 
 router.get('/overview', getAdminGuardOverview)
 router.get('/states', getAdminGuardStates)
 router.get('/events', getAdminGuardEvents)
-router.patch('/states/:stateId/release', releaseAdminGuardBlock)
-router.patch('/states/:stateId/permanent-block', permanentBlockAdminGuard)
-router.patch('/states/:stateId/unblock', unblockAdminGuardPermanent)
+router.patch(
+  '/states/:stateId/release',
+  loginSecurityMutationGate,
+  releaseAdminGuardBlock
+)
+router.patch(
+  '/states/:stateId/permanent-block',
+  loginSecurityDefenseGate,
+  permanentBlockAdminGuard
+)
+router.patch(
+  '/states/:stateId/unblock',
+  loginSecurityMutationGate,
+  unblockAdminGuardPermanent
+)
 router.get('/trusted-devices', getAdminTrustedDevices)
-router.patch('/trusted-devices/:deviceId/revoke', revokeAdminTrustedDevice)
+router.patch(
+  '/trusted-devices/:deviceId/revoke',
+  loginSecurityDefenseGate,
+  revokeAdminTrustedDevice
+)
 router.get('/trusted-ips', getAdminTrustedIps)
-router.post('/trusted-ips', addAdminTrustedIp)
-router.patch('/trusted-ips/:ipId/revoke', revokeAdminTrustedIp)
+router.post(
+  '/trusted-ips',
+  loginSecurityMutationGate,
+  addAdminTrustedIp
+)
+router.patch(
+  '/trusted-ips/:ipId/revoke',
+  loginSecurityDefenseGate,
+  revokeAdminTrustedIp
+)
 
 export default router
