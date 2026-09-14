@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { invalidateShadowMallPromotionsCache } from '../services/shadowMallPromotionsResponseCache.service.js'
 
 const COMMENT_LIMIT = 1000
 const DEFAULT_PAGE_SIZE = 20
@@ -849,6 +850,8 @@ export async function setShadowMallPromotionReaction(
       likeCount
     )
 
+    invalidateShadowMallPromotionsCache()
+
     return res.status(200).json({
       ok: true,
       reacted,
@@ -1230,6 +1233,8 @@ export async function createShadowMallPromotionComment(
       commentCount
     )
 
+    invalidateShadowMallPromotionsCache()
+
     return res.status(201).json({
       ok: true,
       comment: publicComment(
@@ -1479,6 +1484,8 @@ export async function deleteOwnShadowMallPromotionComment(
       existingComment.promotion_id,
       commentCount
     )
+
+    invalidateShadowMallPromotionsCache()
 
     return res.status(200).json({
       ok: true,
@@ -1900,6 +1907,8 @@ export async function createShadowMallPromotionEcho(
       promotionId,
       echoCount
     )
+
+    invalidateShadowMallPromotionsCache()
 
     const reader =
       await readUser(userId)
