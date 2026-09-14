@@ -1,9 +1,21 @@
 import { isIP } from 'node:net'
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
+import {
+  publishSecurityEvent,
+  reportGuardState,
+} from '../services/securityControlPlane.service.js'
 
 const MAX_RESTRICTION_SECONDS = 7 * 24 * 60 * 60
 const DEFAULT_IP_FALLBACK_MULTIPLIER = 5
+const MAX_ACTIVE_RESTRICTIONS = 500
+const BLOCK_EVENT_THROTTLE_MS = 60 * 1000
+
+const activeRestrictions = new Map()
+const lastBlockEventAt = new Map()
+
+let degraded = false
+let lastReportedState = ''
 
 function cleanText(value, maxLength = 500) {
   return String(value || '').trim().slice(0, maxLength)
@@ -201,6 +213,9 @@ function resolveRestriction(result) {
       message:
         'Suspicious activity was detected. Access is temporarily restricted.',
       retryAfter,
+      severity: retryAfter >= 24 * 60 * 60
+        ? 'critical'
+        : 'high',
     }
   }
 
@@ -211,6 +226,7 @@ function resolveRestriction(result) {
     message:
       'Too many requests. Please wait before trying again.',
     retryAfter,
+    severity: 'medium',
   }
 }
 
@@ -276,6 +292,209 @@ function buildGuardSnapshot({
   }
 }
 
+function restrictionKey(scope, guardKey) {
+  return `${scope}|${guardKey}`
+}
+
+function evictOldestRestriction() {
+  let oldestKey = ''
+  let oldestUntil = Infinity
+
+  for (const [key, item] of activeRestrictions.entries()) {
+    if (item.until < oldestUntil) {
+      oldestUntil = item.until
+      oldestKey = key
+    }
+  }
+
+  if (oldestKey) {
+    activeRestrictions.delete(oldestKey)
+    lastBlockEventAt.delete(oldestKey)
+  }
+}
+
+function pruneRestrictions(now = Date.now()) {
+  for (const [key, item] of activeRestrictions.entries()) {
+    if (item.until <= now) {
+      activeRestrictions.delete(key)
+      lastBlockEventAt.delete(key)
+    }
+  }
+}
+
+function reportSpamGuardState(
+  state,
+  reason,
+  severity = 'info',
+  force = false
+) {
+  if (!force && state === lastReportedState) return
+
+  lastReportedState = state
+
+  reportGuardState({
+    guard: 'spam_guard',
+    state,
+    reason,
+    details: {
+      active_restrictions: activeRestrictions.size,
+      degraded,
+    },
+    severity,
+  })
+}
+
+function publishSpamGuardEvent(
+  type,
+  severity,
+  {
+    scope,
+    identityType,
+    requestPath,
+    method,
+    result,
+    resolved,
+  } = {}
+) {
+  publishSecurityEvent({
+    source: 'spam_guard',
+    target: 'control_plane',
+    type,
+    severity,
+    payload: {
+      scope: scope || null,
+      identity_type: identityType || null,
+      path: requestPath || null,
+      method: cleanText(method, 16).toUpperCase() || null,
+      block_status:
+        resolved?.status
+        || result?.block_status
+        || result?.status
+        || null,
+      retry_after_seconds:
+        resolved?.retryAfter
+        || Number(result?.retry_after_seconds || 0),
+      offense_count: Number(result?.offense_count || 0),
+      spam_score: Number(result?.spam_score || 0),
+    },
+  })
+}
+
+function recordRestriction({
+  scope,
+  guardKey,
+  identityType,
+  requestPath,
+  method,
+  result,
+  resolved,
+}) {
+  const now = Date.now()
+  const key = restrictionKey(scope, guardKey)
+
+  if (
+    !activeRestrictions.has(key)
+    && activeRestrictions.size >= MAX_ACTIVE_RESTRICTIONS
+  ) {
+    evictOldestRestriction()
+  }
+
+  activeRestrictions.set(key, {
+    until: now + resolved.retryAfter * 1000,
+  })
+
+  const lastEventAt = lastBlockEventAt.get(key) || 0
+
+  if (now - lastEventAt >= BLOCK_EVENT_THROTTLE_MS) {
+    lastBlockEventAt.set(key, now)
+
+    publishSpamGuardEvent(
+      'spam_guard_blocked',
+      resolved.severity,
+      {
+        scope,
+        identityType,
+        requestPath,
+        method,
+        result,
+        resolved,
+      }
+    )
+  }
+
+  reportSpamGuardState(
+    'defending',
+    'Spam Guard actively restricting abusive traffic',
+    resolved.severity
+  )
+}
+
+function markHealthy() {
+  const wasDegraded = degraded
+  degraded = false
+
+  pruneRestrictions()
+
+  if (wasDegraded) {
+    publishSecurityEvent({
+      source: 'spam_guard',
+      target: 'control_plane',
+      type: 'spam_guard_recovered',
+      severity: 'info',
+      payload: {
+        active_restrictions: activeRestrictions.size,
+      },
+    })
+
+    reportSpamGuardState(
+      activeRestrictions.size > 0 ? 'defending' : 'monitoring',
+      'Spam Guard recovered',
+      'info',
+      true
+    )
+
+    return
+  }
+
+  if (
+    activeRestrictions.size === 0
+    && lastReportedState === 'defending'
+  ) {
+    reportSpamGuardState(
+      'monitoring',
+      'No active Spam Guard restrictions',
+      'info',
+      true
+    )
+  }
+}
+
+function markDegraded(error, scope, requestPath) {
+  const wasDegraded = degraded
+  degraded = true
+
+  if (!wasDegraded) {
+    publishSecurityEvent({
+      source: 'spam_guard',
+      target: 'control_plane',
+      type: 'spam_guard_degraded',
+      severity: 'high',
+      payload: {
+        scope,
+        path: requestPath,
+        error: cleanText(error?.message || error, 300),
+      },
+    })
+  }
+
+  reportSpamGuardState(
+    'degraded',
+    'Spam Guard evaluation failed',
+    'high',
+    !wasDegraded
+  )
+}
+
 export function createSpamGuard({
   scope = 'global',
   threshold = 120,
@@ -296,8 +515,16 @@ export function createSpamGuard({
       || DEFAULT_IP_FALLBACK_MULTIPLIER
   )
 
+  reportSpamGuardState(
+    'monitoring',
+    'Spam Guard ready',
+    'info'
+  )
+
   return async function spamGuardMiddleware(req, res, next) {
     if (req.method === 'OPTIONS') return next()
+
+    pruneRestrictions()
 
     const requestPath = cleanText(
       req.originalUrl || req.url || '/',
@@ -355,6 +582,8 @@ export function createSpamGuard({
         }
       }
 
+      markHealthy()
+
       if (!result) return next()
 
       req.spamGuard = buildGuardSnapshot({
@@ -367,6 +596,16 @@ export function createSpamGuard({
       if (result.allowed !== false) return next()
 
       const resolved = resolveRestriction(result)
+
+      recordRestriction({
+        scope: effectiveScope,
+        guardKey: effectiveGuardKey,
+        identityType: effectiveIdentityType,
+        requestPath,
+        method: req.method,
+        result,
+        resolved,
+      })
 
       res.setHeader(
         'Retry-After',
@@ -398,6 +637,8 @@ export function createSpamGuard({
           || 'Request limit exceeded',
       })
     } catch (error) {
+      markDegraded(error, safeScope, requestPath)
+
       console.error('SPAM GUARD ERROR:', {
         scope: safeScope,
         path: requestPath,
