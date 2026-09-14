@@ -434,7 +434,7 @@ function publicPackageOption({
       : Number(rule.count || 0)
   const canUseAllReleased =
     rule.key !== 'all_released' ||
-    availableCount > 70 ||
+    availableCount >= 70 ||
     isStoryCompleted(story)
   const enabled =
     availableCount >= requiredCount &&
