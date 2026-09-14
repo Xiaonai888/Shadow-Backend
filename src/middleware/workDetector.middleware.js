@@ -4,6 +4,7 @@ import {
   startWorkIncidentCleanup,
 } from '../services/workIncident.service.js'
 import { publishWorkRealtimeEvent } from '../services/workRealtime.service.js'
+import { wakeIps, releaseIps } from '../services/ipsCore.service.js'
 
 const ANALYZE_INTERVAL_MS = 15000
 const ENTRY_IDLE_TTL_MS = 30 * 60 * 1000
@@ -144,6 +145,7 @@ function realtimeIncident(item, now, count) {
 }
 
 function emit(event, item, count, baseline) {
+  wakeIps(realtimeIncident(item, now, count))
   console.warn(
     event,
     JSON.stringify({
@@ -220,6 +222,7 @@ function analyzeTracker(item, now) {
         item.state = 'resolved'
         item.resolvedAt = now
         emit('WORK_LOOP_RESOLVED', item, count, baseline)
+        releaseIps(realtimeIncident(item, now, count))
         void recordWorkIncidentResolved({
           source: item.source,
           method: item.method,
