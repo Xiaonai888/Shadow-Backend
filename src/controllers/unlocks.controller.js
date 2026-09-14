@@ -345,15 +345,15 @@ function calculateDiamondCost({
         label: 'Premium',
         percent: premiumDiscount,
       },
-      {
+            {
         key: 'black_sunday',
         label: 'Black Sunday',
         percent: blackSunday.discount_percent,
         active: blackSunday.event.active,
       },
-    ]
+    ],
+    50
   )
-
   const total =
     original > 0
       ? Math.max(
