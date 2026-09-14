@@ -15,6 +15,7 @@ import {
   createAdminOpeningAdItem,
   getAdminOpeningRotation,
   getPublicOpeningAdvertisement,
+  restoreAdminOpeningAdItem,
   updateAdminOpeningAdItem,
   updateAdminOpeningRotationSettings,
   updateLegacyOpeningAdvertisement,
@@ -110,6 +111,7 @@ router.put(
   updateAdminOpeningAdItem,
 )
 router.delete('/admin/opening-rotation/items/:id', requireAdmin, archiveAdminOpeningAdItem)
+router.post('/admin/opening-rotation/items/:id/restore', requireAdmin, restoreAdminOpeningAdItem)
 
 router.put(
   '/admin/:placement',
