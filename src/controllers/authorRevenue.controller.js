@@ -3,6 +3,7 @@ import { serveAuthorCachedJson } from '../services/authorRequestCache.service.js
 import { getAuthorProfileSummary } from '../services/authorProfileSummary.service.js'
 import { getAuthorIncomeRecordData } from '../services/authorIncomeRecords.service.js'
 import { getAuthorTopSupportersPage } from '../services/authorTopSupporters.service.js'
+import { getAuthorMonthlyEarningsPage } from '../services/authorMonthlyEarnings.service.js'
 import {
   deleteR2ObjectByUrl,
   uploadFileToR2,
@@ -1090,17 +1091,14 @@ async function getTopSupporters(userId) {
   return result.items || []
 }
 
-async function getPayoutHistory(authorId) {
-  const { data, error } = await supabase
-    .from('author_payouts')
-    .select('*')
-    .eq('author_id', authorId)
-    .order('created_at', { ascending: false })
-    .limit(10)
+async function getMonthlyEarnings(userId) {
+  const result = await getAuthorMonthlyEarningsPage({
+    userId,
+    page: 1,
+    limit: 3,
+  })
 
-  if (error) throw error
-
-  return data || []
+  return result.items || []
 }
 
 export async function getMyAuthorQuest(req, res) {
@@ -1352,7 +1350,7 @@ async function getMyAuthorIncomeUncached(req, res) {
     const activeIncomeBoost =
   await getActiveLifetimeBoost(authorPage.id)
 
-    const [settings, quest, paymentMethod, todayIncome, weekIncome, monthIncome, totalIncome, recentEarnings, topSupporters, payoutHistory] = await Promise.all([
+    const [settings, quest, paymentMethod, todayIncome, weekIncome, monthIncome, totalIncome, recentEarnings, topSupporters, monthlyEarnings] = await Promise.all([
       getRevenueSettings(),
       supabase
         .from('author_quest_progress')
@@ -1366,7 +1364,7 @@ async function getMyAuthorIncomeUncached(req, res) {
       sumAuthorIncome({ authorId: authorPage.id }),
       getRecentEarnings(authorPage.id),
       getTopSupporters(userId),
-      getPayoutHistory(authorPage.id),
+      getMonthlyEarnings(userId),
     ])
 
     if (quest.error) throw quest.error
@@ -1443,7 +1441,7 @@ boost_ends_at:
       },
       recent_earnings: recentEarnings,
       top_supporters: topSupporters,
-      payout_history: payoutHistory,
+      monthly_earnings: monthlyEarnings,
     })
   } catch (error) {
     console.error('GET MY AUTHOR INCOME ERROR:', error)
