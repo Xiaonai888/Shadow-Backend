@@ -29,7 +29,11 @@ function positiveAmount(value) {
 
 const MAX_TOTAL_DISCOUNT_PERCENT = 90
 
-export function getAdditiveDiscountResult(originalAmount, discountItems = []) {
+export function getAdditiveDiscountResult(
+  originalAmount,
+  discountItems = [],
+  maxTotalDiscountPercent = MAX_TOTAL_DISCOUNT_PERCENT
+) {
   const baseAmount = positiveAmount(originalAmount)
   const appliedDiscounts = (Array.isArray(discountItems) ? discountItems : [])
     .filter((item) => item && item.active !== false)
@@ -45,9 +49,9 @@ export function getAdditiveDiscountResult(originalAmount, discountItems = []) {
     0
   )
   const totalDiscountPercent = Math.min(
-    MAX_TOTAL_DISCOUNT_PERCENT,
-    roundValue(rawTotalDiscountPercent)
-  )
+  clampPercent(maxTotalDiscountPercent),
+  roundValue(rawTotalDiscountPercent)
+)
   const discountAmount = roundValue(
     baseAmount * (totalDiscountPercent / 100)
   )
