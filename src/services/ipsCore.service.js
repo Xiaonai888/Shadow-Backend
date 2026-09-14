@@ -41,13 +41,31 @@ export function findIpsDefense(incident = {}) {
   return cloneIncident(item)
 }
 
+unction normalizeIdentityKey(incident = {}) {
+  const direct = cleanText(incident.identity_key, 250)
+  if (direct) return direct
+
+  const accountId = cleanText(incident.account_id, 200)
+  if (accountId) return `account:${accountId}`
+
+  const visitorId = cleanText(incident.visitor_id, 200)
+  if (visitorId) return `visitor:${visitorId}`
+
+  const ipAddress = cleanText(incident.ip_address, 150)
+  if (ipAddress) return `ip:${ipAddress}`
+
+  return 'unknown'
+}
+
 function fingerprintOf(incident = {}) {
   return [
+    normalizeIdentityKey(incident),
     normalizeSource(incident.source),
     normalizeMethod(incident.method),
     normalizePath(incident.path),
   ].join('|')
 }
+
 
 function safeNumber(value) {
   return Math.max(0, Math.round(Number(value) || 0))
@@ -82,7 +100,12 @@ export function wakeIps(incident = {}) {
     }
 
     item = {
-      fingerprint,
+       fingerprint,
+      identity_key: normalizeIdentityKey(incident),
+      identity_type: cleanText(incident.identity_type, 20) || 'unknown',
+      account_id: cleanText(incident.account_id, 200) || null,
+      visitor_id: cleanText(incident.visitor_id, 200) || null,
+      ip_address: cleanText(incident.ip_address, 150) || null,
       source: normalizeSource(incident.source),
       method: normalizeMethod(incident.method),
       path: normalizePath(incident.path),
