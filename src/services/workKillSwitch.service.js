@@ -1,15 +1,23 @@
 import { supabase } from '../config/supabase.js'
+import {
+  publishSecurityEvent,
+  reportGuardState,
+} from './securityControlPlane.service.js'
 
 const ACTIVE_SWITCH_LIMIT = 500
 const USAGE_FLUSH_INTERVAL_MS = 60 * 1000
 const EXPIRY_CHECK_INTERVAL_MS = 30 * 1000
+const BLOCK_EVENT_THROTTLE_MS = 60 * 1000
 
 const activeSwitches = new Map()
 const pendingUsage = new Map()
+const lastBlockedEventAt = new Map()
 
 let usageTimer = null
 let expiryTimer = null
 let started = false
+let lastReportedState = ''
+let lastReportedCount = -1
 
 function cleanText(value, maxLength = 500) {
   return String(value || '').trim().slice(0, maxLength)
@@ -84,6 +92,63 @@ function pathMatches(patternValue, pathValue) {
   })
 }
 
+function reportKillSwitchState(
+  reason,
+  severity = 'info',
+  force = false,
+  overrideState = ''
+) {
+  const count = activeSwitches.size
+  const state = overrideState || (count > 0 ? 'defending' : 'sleeping')
+
+  if (
+    !force
+    && state === lastReportedState
+    && count === lastReportedCount
+  ) {
+    return
+  }
+
+  lastReportedState = state
+  lastReportedCount = count
+
+  reportGuardState({
+    guard: 'kill_switch',
+    state,
+    reason,
+    details: {
+      active_count: count,
+      pending_usage_count: pendingUsage.size,
+    },
+    severity,
+  })
+}
+
+function publishKillSwitchEvent(
+  type,
+  severity,
+  record = null,
+  extra = {}
+) {
+  publishSecurityEvent({
+    source: 'kill_switch',
+    target: 'control_plane',
+    type,
+    severity,
+    payload: {
+      id: record?.id || null,
+      target_type: record?.target_type || null,
+      source: record?.source || null,
+      method: record?.method || null,
+      path: record?.path || null,
+      mode: record?.mode || null,
+      reason: record?.reason || null,
+      expires_at: record?.expires_at || null,
+      ...extra,
+    },
+  })
+}
+
 function updateCache(record) {
   if (!record?.id) return
 
@@ -91,6 +156,8 @@ function updateCache(record) {
     activeSwitches.set(record.id, record)
   } else {
     activeSwitches.delete(record.id)
+    pendingUsage.delete(record.id)
+    lastBlockedEventAt.delete(record.id)
   }
 }
 
@@ -98,6 +165,8 @@ async function disableExpiredRecord(record) {
   if (!record?.id) return
 
   activeSwitches.delete(record.id)
+  pendingUsage.delete(record.id)
+  lastBlockedEventAt.delete(record.id)
 
   try {
     const { data, error } = await supabase.rpc('set_work_kill_switch', {
@@ -116,9 +185,45 @@ async function disableExpiredRecord(record) {
     if (error) throw error
 
     const nextRecord = Array.isArray(data) ? data[0] : data
-    if (nextRecord?.id) updateCache(nextRecord)
+
+    if (nextRecord?.id) {
+      updateCache(nextRecord)
+    }
+
+    publishKillSwitchEvent(
+      'kill_switch_expired',
+      'info',
+      record
+    )
+
+    reportKillSwitchState(
+      activeSwitches.size > 0
+        ? 'Kill Switch target expired; other defenses remain active'
+        : 'Kill Switch sleeping; no active targets',
+      'info',
+      true
+    )
   } catch (error) {
-    console.error('WORK_KILL_SWITCH_EXPIRE_ERROR:', error?.message || error)
+    reportKillSwitchState(
+      'Kill Switch expiry persistence failed',
+      'high',
+      true,
+      'degraded'
+    )
+
+    publishKillSwitchEvent(
+      'kill_switch_expiry_failed',
+      'high',
+      record,
+      {
+        error: cleanText(error?.message || error, 300),
+      }
+    )
+
+    console.error(
+      'WORK_KILL_SWITCH_EXPIRE_ERROR:',
+      error?.message || error
+    )
   }
 }
 
@@ -154,11 +259,25 @@ export async function reloadActiveWorkKillSwitches() {
     activeSwitches.set(id, record)
   }
 
+  for (const id of [...lastBlockedEventAt.keys()]) {
+    if (!activeSwitches.has(id)) {
+      lastBlockedEventAt.delete(id)
+    }
+  }
+
   if (next.size >= ACTIVE_SWITCH_LIMIT) {
     console.warn(
       `WORK_KILL_SWITCH_ACTIVE_LIMIT_REACHED: ${ACTIVE_SWITCH_LIMIT}`
     )
   }
+
+  reportKillSwitchState(
+    next.size > 0
+      ? 'Kill Switch active targets loaded'
+      : 'Kill Switch sleeping; no active targets',
+    'info',
+    true
+  )
 
   return [...activeSwitches.values()]
 }
@@ -223,7 +342,32 @@ export async function setWorkKillSwitch({
     throw new Error('Kill Switch save returned no record')
   }
 
+  const previouslyActive = activeSwitches.has(record.id)
+
   updateCache(record)
+
+  if (record.enabled && !previouslyActive) {
+    publishKillSwitchEvent(
+      'kill_switch_activated',
+      record.mode === 'automatic' ? 'high' : 'medium',
+      record
+    )
+  } else if (!record.enabled && previouslyActive) {
+    publishKillSwitchEvent(
+      'kill_switch_released',
+      'info',
+      record
+    )
+  }
+
+  reportKillSwitchState(
+    activeSwitches.size > 0
+      ? 'Kill Switch has active protection targets'
+      : 'Kill Switch sleeping; no active targets',
+    record.enabled ? 'medium' : 'info',
+    true
+  )
+
   return record
 }
 
@@ -251,8 +395,8 @@ export function findActiveWorkKillSwitch({
     if (record.source !== 'ALL' && record.source !== safeSource) continue
 
     if (
-      safeTargetType === 'api' &&
-      normalizeMethod(record.method) !== safeMethod
+      safeTargetType === 'api'
+      && normalizeMethod(record.method) !== safeMethod
     ) {
       continue
     }
@@ -276,6 +420,29 @@ export function recordWorkKillSwitchBlocked(record) {
   current.count += 1
   current.lastTriggeredAt = new Date().toISOString()
   pendingUsage.set(record.id, current)
+
+  const now = Date.now()
+  const lastReportedAt = lastBlockedEventAt.get(record.id) || 0
+
+  if (now - lastReportedAt >= BLOCK_EVENT_THROTTLE_MS) {
+    lastBlockedEventAt.set(record.id, now)
+
+    publishKillSwitchEvent(
+      'kill_switch_blocking',
+      'high',
+      record,
+      {
+        pending_blocked_requests: current.count,
+      }
+    )
+
+    reportKillSwitchState(
+      'Kill Switch actively blocking requests',
+      'high',
+      true,
+      'blocked'
+    )
+  }
 }
 
 export async function flushWorkKillSwitchUsage() {
@@ -308,19 +475,30 @@ export async function flushWorkKillSwitchUsage() {
       current.count += usage.count
 
       if (
-        !current.lastTriggeredAt ||
-        new Date(usage.lastTriggeredAt).getTime() >
-          new Date(current.lastTriggeredAt).getTime()
+        !current.lastTriggeredAt
+        || new Date(usage.lastTriggeredAt).getTime()
+          > new Date(current.lastTriggeredAt).getTime()
       ) {
         current.lastTriggeredAt = usage.lastTriggeredAt
       }
 
       pendingUsage.set(id, current)
+
       console.error(
         'WORK_KILL_SWITCH_USAGE_FLUSH_ERROR:',
         error?.message || error
       )
     }
+  }
+
+  if (flushed > 0) {
+    reportKillSwitchState(
+      activeSwitches.size > 0
+        ? 'Kill Switch active after usage flush'
+        : 'Kill Switch sleeping; no active targets',
+      'info',
+      true
+    )
   }
 
   return flushed
@@ -398,7 +576,12 @@ export function getActivePageKillSwitches(source = 'WEB') {
       continue
     }
 
-    if (record.source !== 'ALL' && record.source !== safeSource) continue
+    if (
+      record.source !== 'ALL'
+      && record.source !== safeSource
+    ) {
+      continue
+    }
 
     records.push({
       id: record.id,
@@ -450,7 +633,32 @@ export async function startWorkKillSwitchService() {
 
   try {
     await reloadActiveWorkKillSwitches()
+
+    publishKillSwitchEvent(
+      'kill_switch_ready',
+      'info',
+      null,
+      {
+        active_count: activeSwitches.size,
+      }
+    )
   } catch (error) {
+    reportKillSwitchState(
+      'Kill Switch bootstrap failed',
+      'critical',
+      true,
+      'degraded'
+    )
+
+    publishKillSwitchEvent(
+      'kill_switch_bootstrap_failed',
+      'critical',
+      null,
+      {
+        error: cleanText(error?.message || error, 300),
+      }
+    )
+
     console.error(
       'WORK_KILL_SWITCH_BOOTSTRAP_ERROR:',
       error?.message || error
