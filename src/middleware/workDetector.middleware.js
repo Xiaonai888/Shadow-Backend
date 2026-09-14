@@ -1,3 +1,9 @@
+import {
+  recordWorkIncidentActive,
+  recordWorkIncidentResolved,
+  startWorkIncidentCleanup,
+} from '../services/workIncident.service.js'
+
 const ANALYZE_INTERVAL_MS = 15000
 const ENTRY_IDLE_TTL_MS = 30 * 60 * 1000
 const RESOLVED_TTL_MS = 10 * 60 * 1000
@@ -111,6 +117,17 @@ function ratePerMinute(count) {
   return Math.round(count * (60000 / ANALYZE_INTERVAL_MS))
 }
 
+function incidentData(item, now = Date.now()) {
+  return {
+    source: item.source,
+    method: item.method,
+    path: item.path,
+    peakRequestsPerMinute: item.peakPerMinute,
+    detectedAt: item.detectedAt ? new Date(item.detectedAt).toISOString() : new Date(now).toISOString(),
+    lastDetectedAt: new Date(now).toISOString(),
+  }
+}
+
 function emit(event, item, count, baseline) {
   console.warn(
     event,
@@ -137,6 +154,7 @@ function activate(item, now, count, baseline, event = 'WORK_LOOP_ACTIVE') {
   item.suspiciousWindows = ACTIVE_WINDOWS_REQUIRED
   item.peakPerMinute = Math.max(item.peakPerMinute, ratePerMinute(count))
   emit(event, item, count, baseline)
+  void recordWorkIncidentActive(incidentData(item, now))
 }
 
 function analyzeTracker(item, now) {
@@ -182,6 +200,13 @@ function analyzeTracker(item, now) {
         item.state = 'resolved'
         item.resolvedAt = now
         emit('WORK_LOOP_RESOLVED', item, count, baseline)
+        void recordWorkIncidentResolved({
+          source: item.source,
+          method: item.method,
+          path: item.path,
+          resolvedAt: new Date(now).toISOString(),
+          peakRequestsPerMinute: item.peakPerMinute,
+        })
       }
     } else {
       item.recoveryWindows = 0
@@ -252,6 +277,8 @@ export function startWorkDetectorMonitor() {
     console.log('WORK_DETECTOR: disabled')
     return null
   }
+
+  startWorkIncidentCleanup()
 
   monitorTimer = setInterval(analyzeAll, ANALYZE_INTERVAL_MS)
   monitorTimer.unref?.()
