@@ -9,6 +9,10 @@ import {
   unlockEpisodeWithStoryCard,
   unlockEpisodeWithAd,
 } from '../controllers/unlocks.controller.js'
+import {
+  consumeRewardedAdChallenge,
+  createRewardedAdChallenge,
+} from '../controllers/rewardedAds.controller.js'
 import { getPlatformUnlockRules } from '../controllers/unlockRules.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
@@ -22,7 +26,7 @@ router.post('/stories/:storyId/episodes/:episodeId/package', requireUser, unlock
 router.post('/stories/:storyId/episodes/:episodeId/gem', requireUser, unlockEpisodeWithGems)
 router.post('/stories/:storyId/episodes/:episodeId/voucher', requireUser, unlockEpisodeWithVoucher)
 router.post('/stories/:storyId/episodes/:episodeId/story-card', requireUser, unlockEpisodeWithStoryCard)
-router.post('/stories/:storyId/episodes/:episodeId/ad', requireUser, unlockEpisodeWithAd)
-
+router.post('/stories/:storyId/episodes/:episodeId/ad/challenge', requireUser, createRewardedAdChallenge)
+router.post('/stories/:storyId/episodes/:episodeId/ad', requireUser, consumeRewardedAdChallenge, unlockEpisodeWithAd)
 
 export default router
