@@ -108,19 +108,24 @@ export async function recordWorkIncidentResolved({
 export async function listWorkIncidents({
   status = 'active',
   source = '',
+  page = 1,
   limit = 50,
 } = {}) {
+  const safePage = Math.max(Number(page) || 1, 1)
   const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 100)
   const safeStatus = cleanText(status, 20).toLowerCase()
   const safeSource = cleanText(source, 20).toUpperCase()
+  const from = (safePage - 1) * safeLimit
+  const to = from + safeLimit - 1
 
   let query = supabase
     .from('work_incidents')
     .select(
-      'id,source,method,path,status,peak_requests_per_minute,first_detected_at,last_detected_at,resolved_at,reopen_count,occurrence_count,updated_at'
+      'id,source,method,path,status,peak_requests_per_minute,first_detected_at,last_detected_at,resolved_at,reopen_count,occurrence_count,updated_at',
+      { count: 'exact' }
     )
     .order('updated_at', { ascending: false })
-    .limit(safeLimit)
+    .range(from, to)
 
   if (safeStatus === 'active' || safeStatus === 'resolved') {
     query = query.eq('status', safeStatus)
@@ -130,11 +135,22 @@ export async function listWorkIncidents({
     query = query.eq('source', safeSource)
   }
 
-  const { data, error } = await query
+  const { data, count, error } = await query
 
   if (error) throw error
 
-  return Array.isArray(data) ? data : []
+  const incidents = Array.isArray(data) ? data : []
+  const total = Math.max(Number(count) || 0, 0)
+
+  return {
+    incidents,
+    pagination: {
+      page: safePage,
+      limit: safeLimit,
+      total,
+      has_more: from + incidents.length < total,
+    },
+  }
 }
 
 export async function cleanupResolvedWorkIncidents() {
