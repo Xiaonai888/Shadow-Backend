@@ -545,6 +545,8 @@ const { data, error } = await supabase
 
     if (error) throw error
 
+    invalidateShadowMallPromotionsCache()
+
     return data
   } catch (error) {
     await deleteUrls(images.uploadedUrls)
@@ -580,6 +582,7 @@ const { data, error } = await supabase
     if (error) throw error
 
     await deleteUrls(images.replacedUrls)
+    invalidateShadowMallPromotionsCache()
 
     return data
   } catch (error) {
@@ -869,6 +872,8 @@ export async function updateAdminShadowMallPromotionStatus(
 
     if (error) throw error
 
+    invalidateShadowMallPromotionsCache()
+
     return res.status(200).json({
       ok: true,
       promotion: normalizePromotion(data),
@@ -916,6 +921,8 @@ export async function deleteAdminShadowMallPromotion(
       current.image_url,
       current.profile_image_url,
     ])
+
+    invalidateShadowMallPromotionsCache()
 
     return res.status(200).json({
       ok: true,
@@ -969,6 +976,8 @@ export async function reorderAdminShadowMallPromotions(
 
       if (error) throw error
     }
+
+    invalidateShadowMallPromotionsCache()
 
     const promotions = await readPromotions({
       limit: 100,
