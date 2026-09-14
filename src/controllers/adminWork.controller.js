@@ -1,4 +1,8 @@
 import { listWorkIncidents } from '../services/workIncident.service.js'
+import {
+  addWorkRealtimeClient,
+  sendWorkRealtimeReady,
+} from '../services/workRealtime.service.js'
 
 export async function getWorkIncidents(req, res) {
   try {
@@ -22,4 +26,21 @@ export async function getWorkIncidents(req, res) {
       message: 'Failed to load Work incidents',
     })
   }
+}
+
+export function streamWorkIncidents(req, res) {
+  res.status(200)
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  })
+  res.flushHeaders?.()
+
+  const removeClient = addWorkRealtimeClient(res)
+  sendWorkRealtimeReady(res)
+
+  req.on('close', removeClient)
+  req.on('aborted', removeClient)
 }
