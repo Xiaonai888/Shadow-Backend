@@ -41,6 +41,7 @@ export function streamWorkIncidents(req, res) {
   const removeClient = addWorkRealtimeClient(res)
   sendWorkRealtimeReady(res)
 
-  req.on('close', removeClient)
-  req.on('aborted', removeClient)
+  res.on('close', removeClient)
+res.on('error', removeClient)
+req.on('aborted', removeClient)
 }
