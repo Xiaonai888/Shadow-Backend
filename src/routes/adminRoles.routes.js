@@ -2,10 +2,12 @@ import express from 'express'
 import { supabase } from '../config/supabase.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { getAdminActor, logAdminActivity } from '../services/adminActivity.service.js'
+import { createSecurityGate } from '../middleware/securityGate.middleware.js'
 
 const router = express.Router()
 const viewRoles = requireAdminPermission('roles.view')
 const manageRoles = requireAdminPermission('roles.manage')
+const rolePermissionGate = createSecurityGate({ gateId: 'admin_role_permission_mutation', roles: ['owner'], allowOwner: true, allowInSafeMode: false })
 
 const OWNER_ONLY_PERMISSION_KEYS = new Set([
   'roles.manage',
@@ -292,7 +294,7 @@ router.get('/', viewRoles, async (req, res) => {
   }
 })
 
-router.post('/', manageRoles, requireOwner, async (req, res) => {
+router.post('/', manageRoles, requireOwner, rolePermissionGate, async (req, res) => {
   let createdRole = null
 
   try {
@@ -386,7 +388,7 @@ router.post('/', manageRoles, requireOwner, async (req, res) => {
   }
 })
 
-router.patch('/:roleId', manageRoles, requireOwner, async (req, res) => {
+router.patch('/:roleId', manageRoles, requireOwner, rolePermissionGate, async (req, res) => {
   try {
     const role = await loadRole(req.params.roleId)
 
@@ -482,7 +484,7 @@ router.patch('/:roleId', manageRoles, requireOwner, async (req, res) => {
   }
 })
 
-router.delete('/:roleId', manageRoles, requireOwner, async (req, res) => {
+router.delete('/:roleId', manageRoles, requireOwner, rolePermissionGate, async (req, res) => {
   try {
     const role = await loadRole(req.params.roleId)
 
