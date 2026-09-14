@@ -9,6 +9,15 @@ import {
   getPublicAdvertisement,
   updateAdminAdvertisement,
 } from '../controllers/advertisements.controller.js'
+import {
+  archiveAdminOpeningAdItem,
+  createAdminOpeningAdItem,
+  getAdminOpeningRotation,
+  getPublicOpeningAdvertisement,
+  updateAdminOpeningAdItem,
+  updateAdminOpeningRotationSettings,
+  updateLegacyOpeningAdvertisement,
+} from '../controllers/openingAdRotation.controller.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 
 const router = express.Router()
@@ -46,35 +55,62 @@ function uploadAdvertisementImage(req, res, next) {
 
     removeTempFile(req).catch(() => {})
 
-    const status =
-      error.code === 'LIMIT_FILE_SIZE'
-        ? 413
-        : 400
+    const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400
 
     return res.status(status).json({
       ok: false,
-      code:
-        error.code ||
-        'ADVERTISEMENT_IMAGE_UPLOAD_INVALID',
+      code: error.code || 'ADVERTISEMENT_IMAGE_UPLOAD_INVALID',
       message:
         error.code === 'LIMIT_FILE_SIZE'
           ? 'Image must be 5 MB or smaller'
-          : error.message ||
-            'Invalid advertisement image',
+          : error.message || 'Invalid advertisement image',
     })
   })
 }
 
-router.get('/public', cacheAdvertisementResponse, getPublicAdvertisement)
+function getPublicAdvertisementHandler(req, res, next) {
+  if (String(req.query?.placement || '').trim() === 'opening') {
+    return getPublicOpeningAdvertisement(req, res)
+  }
+
+  return cacheAdvertisementResponse(req, res, () => getPublicAdvertisement(req, res, next))
+}
+
+function updateAdvertisementHandler(req, res, next) {
+  if (String(req.params?.placement || '').trim() === 'opening') {
+    return updateLegacyOpeningAdvertisement(req, res)
+  }
+
+  return updateAdminAdvertisement(req, res, next)
+}
+
+router.get('/public', getPublicAdvertisementHandler)
 router.get('/admin', requireAdmin, getAdminAdvertisements)
 router.get('/admin/logs', requireAdmin, getAdminAdvertisementLogs)
+router.get('/admin/opening-rotation', requireAdmin, getAdminOpeningRotation)
+router.put('/admin/opening-rotation/settings', requireAdmin, updateAdminOpeningRotationSettings)
+router.post(
+  '/admin/opening-rotation/items',
+  requireAdmin,
+  uploadAdvertisementImage,
+  cleanupTempFile,
+  createAdminOpeningAdItem,
+)
+router.put(
+  '/admin/opening-rotation/items/:id',
+  requireAdmin,
+  uploadAdvertisementImage,
+  cleanupTempFile,
+  updateAdminOpeningAdItem,
+)
+router.delete('/admin/opening-rotation/items/:id', requireAdmin, archiveAdminOpeningAdItem)
 
 router.put(
   '/admin/:placement',
   requireAdmin,
   uploadAdvertisementImage,
   cleanupTempFile,
-  updateAdminAdvertisement
+  updateAdvertisementHandler,
 )
 
 export default router
