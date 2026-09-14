@@ -2,6 +2,7 @@ import { supabase } from '../config/supabase.js'
 import { serveAuthorCachedJson } from '../services/authorRequestCache.service.js'
 import { getAuthorProfileSummary } from '../services/authorProfileSummary.service.js'
 import { getAuthorIncomeRecordData } from '../services/authorIncomeRecords.service.js'
+import { getAuthorTopSupportersPage } from '../services/authorTopSupporters.service.js'
 import {
   deleteR2ObjectByUrl,
   uploadFileToR2,
@@ -1078,43 +1079,15 @@ async function getRecentEarnings(authorId) {
   return data || []
 }
 
-async function getTopSupporters(authorId) {
-  const { data, error } = await supabase
-    .from('author_earnings')
-    .select(
-      'reader_id, author_earned_diamonds, author_net_payout_usd'
-    )
-    .eq('author_id', authorId)
-    .eq('currency', 'diamond')
-    .eq('source_type', 'diamond_unlock')
-    .neq('earning_status', 'void')
-    .not('reader_id', 'is', null)
+async function getTopSupporters(userId) {
+  const result = await getAuthorTopSupportersPage({
+    userId,
+    month: getMonthKey(),
+    page: 1,
+    limit: 3,
+  })
 
-  if (error) throw error
-
-  const supporters = new Map()
-
-  for (const item of data || []) {
-    const readerId = item.reader_id
-
-    if (!supporters.has(readerId)) {
-      supporters.set(readerId, {
-        reader_id: readerId,
-        total_diamonds: 0,
-        total_usd: 0,
-      })
-    }
-
-    const supporter = supporters.get(readerId)
-    supporter.total_diamonds +=
-      numberValue(item.author_earned_diamonds)
-    supporter.total_usd +=
-      numberValue(item.author_net_payout_usd)
-  }
-
-  return Array.from(supporters.values())
-    .sort((a, b) => b.total_usd - a.total_usd)
-    .slice(0, 10)
+  return result.items || []
 }
 
 async function getPayoutHistory(authorId) {
@@ -1392,7 +1365,7 @@ async function getMyAuthorIncomeUncached(req, res) {
       sumAuthorIncome({ authorId: authorPage.id, from: startOfMonthIso() }),
       sumAuthorIncome({ authorId: authorPage.id }),
       getRecentEarnings(authorPage.id),
-      getTopSupporters(authorPage.id),
+      getTopSupporters(userId),
       getPayoutHistory(authorPage.id),
     ])
 
