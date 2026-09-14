@@ -85,7 +85,7 @@ function buildIpsIdentity(req) {
       ? `visitor:${visitorId}`
       : ipAddress
         ? `ip:${ipAddress}`
-        : 'unknown'
+        : ''
 
   return {
     identity_key: identityKey,
@@ -128,6 +128,7 @@ function requestSource(req, path) {
       const hostname = new URL(candidate).hostname.toLowerCase()
 
       if (hostname === 'admin.shadowerabook.site') return 'ADMIN'
+
       if (
         hostname === 'shadowerabook.site'
         || hostname === 'www.shadowerabook.site'
@@ -158,6 +159,39 @@ function shouldSkip(method, path) {
   return false
 }
 
+function findDefense({ identity, source, method, path }) {
+  if (identity.identity_key) {
+    const primary = findIpsDefense({
+      ...identity,
+      source,
+      method,
+      path,
+    })
+
+    if (primary) return primary
+  }
+
+  if (
+    identity.ip_address
+    && identity.identity_key !== `ip:${identity.ip_address}`
+  ) {
+    const fallback = findIpsDefense({
+      identity_key: `ip:${identity.ip_address}`,
+      identity_type: 'ip_fallback',
+      account_id: null,
+      visitor_id: null,
+      ip_address: identity.ip_address,
+      source,
+      method,
+      path,
+    })
+
+    if (fallback) return fallback
+  }
+
+  return null
+}
+
 function blockResponse(res, defense) {
   const action = String(defense.action || 'restrict').toLowerCase()
 
@@ -172,6 +206,18 @@ function blockResponse(res, defense) {
       code: 'IPS_TEMPORARY_RESTRICTION',
       message: 'Request activity is temporarily restricted.',
       retry_after_seconds: 60,
+    })
+
+    return true
+  }
+
+  if (action === 'isolate') {
+    res.setHeader('X-Shadow-IPS', 'isolated')
+
+    res.status(403).json({
+      ok: false,
+      code: 'IPS_IDENTITY_ISOLATED',
+      message: 'Request identity is temporarily isolated for security reasons.',
     })
 
     return true
@@ -197,8 +243,9 @@ export function ipsEnforcement(req, res, next) {
 
     const source = requestSource(req, path)
     const identity = buildIpsIdentity(req)
-    const defense = findIpsDefense({
-      ...identity,
+
+    const defense = findDefense({
+      identity,
       source,
       method,
       path,
@@ -209,7 +256,11 @@ export function ipsEnforcement(req, res, next) {
 
     return undefined
   } catch (error) {
-    console.error('IPS_ENFORCEMENT_ERROR:', error?.message || error)
+    console.error(
+      'IPS_ENFORCEMENT_ERROR:',
+      error?.message || error
+    )
+
     return next()
   }
 }
