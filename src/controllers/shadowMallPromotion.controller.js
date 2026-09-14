@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { invalidateShadowMallPromotionsCache } from '../services/shadowMallPromotionsResponseCache.service.js'
 import {
   deleteR2ObjectByUrl,
   uploadImageToR2AsWebP,
@@ -189,7 +190,9 @@ async function readPromotionById(id) {
 
   if (error) throw error
 
-  return data
+invalidateShadowMallPromotionsCache()
+
+return data
 }
 
 async function readFirstPromotion(activeOnly = false) {
