@@ -433,9 +433,8 @@ function publicPackageOption({
       ? availableCount
       : Number(rule.count || 0)
   const canUseAllReleased =
-    rule.key !== 'all_released' ||
-    availableCount >= 70 ||
-    isStoryCompleted(story)
+  rule.key !== 'all_released' ||
+  availableCount >= 70
   const enabled =
     availableCount >= requiredCount &&
     requiredCount > 0 &&
@@ -458,7 +457,7 @@ function publicPackageOption({
     disabled_reason: enabled
       ? ''
       : rule.key === 'all_released'
-        ? 'All Released Episodes works when the story has at least 70 released locked episodes or the story is completed.'
+        ? 'All Released Episodes works when the story has at least 70 released locked episodes.'
         : `This story does not have ${requiredCount} locked released episodes available from this point.`,
     discount_percent:
       cost.total_discount_percent,
