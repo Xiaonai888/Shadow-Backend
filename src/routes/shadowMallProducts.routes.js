@@ -71,7 +71,15 @@ import {
   updateShadowMallPublisher,
 } from '../controllers/shadowMallPublishers.controller.js'
 
+import { createRateLimit } from '../middleware/rateLimit.middleware.js'
+import { cacheShadowMallPromotionsResponse } from '../services/shadowMallPromotionsResponseCache.service.js'
+
 const router = express.Router()
+const publicPromotionRateLimit = createRateLimit({
+  key: 'public_shadow_mall_promotions',
+  windowMs: 60000,
+  max: 120,
+})
 
 const upload = multer({
   dest: os.tmpdir(),
@@ -161,8 +169,8 @@ function runUpload(handler) {
 }
 
 router.get('/home', getShadowMallHome)
-router.get('/promotion', getPublicShadowMallPromotion)
-router.get('/promotions', getPublicShadowMallPromotions)
+router.get('/promotion', publicPromotionRateLimit, cacheShadowMallPromotionsResponse, getPublicShadowMallPromotion)
+router.get('/promotions', publicPromotionRateLimit, cacheShadowMallPromotionsResponse, getPublicShadowMallPromotions)
 router.get('/products', getShadowMallProducts)
 
 router.get(
