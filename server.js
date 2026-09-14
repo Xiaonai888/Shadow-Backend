@@ -610,6 +610,13 @@ const shortStorySpamGuard = (req, res, next) => {
 const shadowMallSpamGuard = (req, res, next) => {
   const path = String(req.path || '')
 
+  if (
+    req.method === 'GET' &&
+    (path === '/promotion' || path === '/promotions')
+  ) {
+    return next()
+  }
+
   if (req.method === 'GET') {
     return readerReadSpamGuard(req, res, next)
   }
