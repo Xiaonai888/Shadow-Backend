@@ -6,6 +6,18 @@ function getCacheKey(req) {
   return String(req.query?.placement || '').trim()
 }
 
+function getExpiresAt(key, body) {
+  if (key !== 'opening') return 0
+  if (body?.rotation?.mode !== 'auto') return 0
+
+  const seconds = Number(body?.rotation?.rotate_every_seconds || 0)
+  const ttlMs = Number.isFinite(seconds) && seconds > 0
+    ? Math.max(1000, Math.min(seconds * 1000, 60000))
+    : 60000
+
+  return Date.now() + ttlMs
+}
+
 export function invalidateAdvertisementResponseCache(placement = '') {
   const key = String(placement || '').trim()
 
@@ -25,7 +37,12 @@ export function cacheAdvertisementResponse(req, res, next) {
 
   if (!key) return next()
 
-  const cached = advertisementResponseCache.get(key)
+  let cached = advertisementResponseCache.get(key)
+
+  if (cached?.expiresAt && cached.expiresAt <= Date.now()) {
+    advertisementResponseCache.delete(key)
+    cached = null
+  }
 
   if (cached) {
     res.setHeader('X-Shadow-Advertisement-Cache', 'HIT')
@@ -88,6 +105,7 @@ export function cacheAdvertisementResponse(req, res, next) {
       entry = {
         body,
         statusCode: res.statusCode,
+        expiresAt: getExpiresAt(key, body),
       }
 
       advertisementResponseCache.set(key, entry)
