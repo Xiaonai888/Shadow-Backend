@@ -4,7 +4,7 @@ import {
   startWorkIncidentCleanup,
 } from '../services/workIncident.service.js'
 import { publishWorkRealtimeEvent } from '../services/workRealtime.service.js'
-import { wakeIps, releaseIps } from '../services/ipsCore.service.js'
+import { defendIps, releaseIps } from '../services/ipsCore.service.js'
 
 const ANALYZE_INTERVAL_MS = 15000
 const ENTRY_IDLE_TTL_MS = 30 * 60 * 1000
@@ -170,7 +170,7 @@ function activate(item, now, count, baseline, event = 'WORK_LOOP_ACTIVE') {
   item.suspiciousWindows = ACTIVE_WINDOWS_REQUIRED
   item.peakPerMinute = Math.max(item.peakPerMinute, ratePerMinute(count))
   emit(event, item, count, baseline)
-  wakeIps(realtimeIncident(item, now, count))
+  defendIps(realtimeIncident(item, now, count), 'restrict')
   void recordWorkIncidentActive(incidentData(item, now))
 
   publishWorkRealtimeEvent(
