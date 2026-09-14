@@ -6,6 +6,10 @@ import {
 } from '../services/workIncident.service.js'
 import { publishWorkRealtimeEvent } from '../services/workRealtime.service.js'
 import { defendIps, releaseIps } from '../services/ipsCore.service.js'
+import {
+  publishSecurityEvent,
+  reportGuardState,
+} from '../services/securityControlPlane.service.js'
 
 const ANALYZE_INTERVAL_MS = 15000
 const ENTRY_IDLE_TTL_MS = 30 * 60 * 1000
@@ -430,6 +434,41 @@ function activateRoute(
   item.peakWindowCount = Math.max(item.peakWindowCount, count)
 
   routeEmit(event, item, count, baseline)
+
+  const severity = count >= ISOLATE_COUNT
+    ? 'critical'
+    : 'high'
+
+  reportGuardState({
+    guard: 'worker',
+    state: 'defending',
+    reason: 'Active route incident detected',
+    details: {
+      source: item.source,
+      method: item.method,
+      path: item.path,
+      estimated_requests_per_minute: ratePerMinute(count),
+      peak_requests_per_minute: item.peakPerMinute,
+    },
+    severity,
+  })
+
+  publishSecurityEvent({
+    source: 'worker',
+    target: 'all',
+    type: event === 'WORK_LOOP_REOPENED'
+      ? 'route_incident_reopened'
+      : 'route_incident_active',
+    severity,
+    payload: {
+      source: item.source,
+      method: item.method,
+      path: item.path,
+      estimated_requests_per_minute: ratePerMinute(count),
+      peak_requests_per_minute: item.peakPerMinute,
+    },
+  })
+
   void recordWorkIncidentActive(incidentData(item, now))
 
   publishWorkRealtimeEvent(
@@ -514,6 +553,31 @@ function analyzeRouteTracker(item, now) {
           'resolved',
           realtimeIncident(item, now, count)
         )
+
+        publishSecurityEvent({
+          source: 'worker',
+          target: 'all',
+          type: 'route_incident_resolved',
+          severity: 'info',
+          payload: {
+            source: item.source,
+            method: item.method,
+            path: item.path,
+            peak_requests_per_minute: item.peakPerMinute,
+          },
+        })
+
+        const hasActiveRoute = [...routeTrackers.values()]
+          .some((entry) => entry.state === 'active')
+
+        if (!hasActiveRoute) {
+          reportGuardState({
+            guard: 'worker',
+            state: 'monitoring',
+            reason: 'No active route incidents',
+            severity: 'info',
+          })
+        }
       }
     } else {
       item.recoveryWindows = 0
@@ -749,6 +813,13 @@ export function startWorkDetectorMonitor() {
     .toLowerCase() !== 'false'
 
   if (!enabled) {
+    reportGuardState({
+      guard: 'worker',
+      state: 'offline',
+      reason: 'Worker detector disabled',
+      severity: 'low',
+    })
+
     console.log('WORK_DETECTOR: disabled')
     return null
   }
@@ -761,6 +832,18 @@ export function startWorkDetectorMonitor() {
   )
 
   monitorTimer.unref?.()
+
+  reportGuardState({
+    guard: 'worker',
+    state: 'monitoring',
+    reason: 'Worker detector ready',
+    details: {
+      analyze_interval_ms: ANALYZE_INTERVAL_MS,
+      route_tracker_limit: MAX_ROUTE_TRACKED_KEYS,
+      identity_tracker_limit: MAX_IDENTITY_TRACKED_KEYS,
+    },
+    severity: 'info',
+  })
 
   console.log(
     'WORK_DETECTOR: route + identity defense enabled'
