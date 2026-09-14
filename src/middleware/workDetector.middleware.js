@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import {
   recordWorkIncidentActive,
   recordWorkIncidentResolved,
@@ -22,6 +23,107 @@ const RECOVERY_WINDOWS_REQUIRED = 4
 const trackers = new Map()
 let monitorTimer = null
 let enabled = true
+
+function cleanText(value, maxLength = 500) {
+  return String(value || '').trim().slice(0, maxLength)
+}
+
+function normalizeSingleIp(value) {
+  const raw = cleanText(value, 150)
+    .trim()
+    .replace(/^::ffff:/, '')
+
+  return isIP(raw) ? raw : ''
+}
+
+function getForwardedIp(value) {
+  return String(value || '')
+    .split(',')
+    .map((item) => normalizeSingleIp(item))
+    .find(Boolean) || ''
+}
+
+function getClientIp(req) {
+  return (
+    normalizeSingleIp(req.headers['cf-connecting-ip'])
+    || normalizeSingleIp(req.headers['true-client-ip'])
+    || normalizeSingleIp(req.headers['x-real-ip'])
+    || getForwardedIp(req.headers['x-forwarded-for'])
+    || normalizeSingleIp(req.socket?.remoteAddress)
+    || ''
+  )
+}
+
+function readCookieValue(req, name) {
+  const cookieHeader = String(req.headers.cookie || '')
+  if (!cookieHeader) return ''
+
+  const prefix = `${name}=`
+  const pair = cookieHeader
+    .split(';')
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(prefix))
+
+  if (!pair) return ''
+
+  try {
+    return decodeURIComponent(pair.slice(prefix.length))
+  } catch {
+    return pair.slice(prefix.length)
+  }
+}
+
+function normalizeVisitorId(value) {
+  const visitorId = cleanText(value, 200)
+
+  if (!visitorId) return ''
+  if (!/^[a-zA-Z0-9._:-]{6,200}$/.test(visitorId)) return ''
+
+  return visitorId
+}
+
+function getVisitorId(req) {
+  return normalizeVisitorId(
+    req.headers['x-shadow-visitor-id']
+      || req.headers['x-visitor-id']
+      || req.query?.visitor_id
+      || readCookieValue(req, 'shadow_visitor_id')
+      || readCookieValue(req, 'shadowVisitorId')
+  )
+}
+
+function buildIpsIdentity(req) {
+  const accountId = cleanText(
+    req.user?.user_id
+      || req.user?.admin_id
+      || req.user?.id,
+    200
+  )
+  const visitorId = getVisitorId(req)
+  const ipAddress = getClientIp(req)
+
+  const identityKey = accountId
+    ? `account:${accountId}`
+    : visitorId
+      ? `visitor:${visitorId}`
+      : ipAddress
+        ? `ip:${ipAddress}`
+        : 'unknown'
+
+  return {
+    identityKey,
+    identityType: accountId
+      ? 'account'
+      : visitorId
+        ? 'visitor'
+        : ipAddress
+          ? 'ip'
+          : 'unknown',
+    accountId,
+    visitorId,
+    ipAddress,
+  }
+}
 
 function normalizePath(req) {
   const raw = String(req.originalUrl || req.url || req.path || '/')
@@ -85,7 +187,7 @@ function evictOldest() {
   if (oldestKey) trackers.delete(oldestKey)
 }
 
-function getTracker({ key, source, method, path, now }) {
+function getTracker({ key, source, method, path, identity, now }) {
   let item = trackers.get(key)
 
   if (!item) {
@@ -96,6 +198,11 @@ function getTracker({ key, source, method, path, now }) {
       source,
       method,
       path,
+      identityKey: identity.identityKey,
+      identityType: identity.identityType,
+      accountId: identity.accountId,
+      visitorId: identity.visitorId,
+      ipAddress: identity.ipAddress,
       state: 'normal',
       windowCount: 0,
       lastWindowCount: 0,
@@ -144,6 +251,17 @@ function realtimeIncident(item, now, count) {
   }
 }
 
+function ipsIncident(item, now, count) {
+  return {
+    ...realtimeIncident(item, now, count),
+    identity_key: item.identityKey,
+    identity_type: item.identityType,
+    account_id: item.accountId || null,
+    visitor_id: item.visitorId || null,
+    ip_address: item.ipAddress || null,
+  }
+}
+
 function emit(event, item, count, baseline) {
   console.warn(
     event,
@@ -152,6 +270,7 @@ function emit(event, item, count, baseline) {
       method: item.method,
       path: item.path,
       state: item.state,
+      identity_type: item.identityType,
       window_requests: count,
       estimated_requests_per_minute: ratePerMinute(count),
       baseline_window_requests: Number(baseline.toFixed(1)),
@@ -170,7 +289,7 @@ function activate(item, now, count, baseline, event = 'WORK_LOOP_ACTIVE') {
   item.suspiciousWindows = ACTIVE_WINDOWS_REQUIRED
   item.peakPerMinute = Math.max(item.peakPerMinute, ratePerMinute(count))
   emit(event, item, count, baseline)
-  defendIps(realtimeIncident(item, now, count), 'restrict')
+  defendIps(ipsIncident(item, now, count), 'restrict')
   void recordWorkIncidentActive(incidentData(item, now))
 
   publishWorkRealtimeEvent(
@@ -222,7 +341,7 @@ function analyzeTracker(item, now) {
         item.state = 'resolved'
         item.resolvedAt = now
         emit('WORK_LOOP_RESOLVED', item, count, baseline)
-        releaseIps(realtimeIncident(item, now, count))
+        releaseIps(ipsIncident(item, now, count))
         void recordWorkIncidentResolved({
           source: item.source,
           method: item.method,
@@ -277,9 +396,17 @@ export function workDetector(req, res, next) {
     if (shouldSkip(method, path)) return next()
 
     const source = requestSource(req, path)
+    const identity = buildIpsIdentity(req)
     const now = Date.now()
-    const key = `${source}|${method}|${path}`
-    const item = getTracker({ key, source, method, path, now })
+    const key = `${identity.identityKey}|${source}|${method}|${path}`
+    const item = getTracker({
+      key,
+      source,
+      method,
+      path,
+      identity,
+      now,
+    })
 
     item.windowCount += 1
     item.lastSeenAt = now
@@ -322,6 +449,7 @@ export function getWorkDetectorSnapshot() {
       method: item.method,
       path: item.path,
       state: item.state,
+      identity_type: item.identityType,
       last_window_requests: item.lastWindowCount,
       estimated_requests_per_minute: ratePerMinute(item.lastWindowCount),
       peak_requests_per_minute: item.peakPerMinute,
