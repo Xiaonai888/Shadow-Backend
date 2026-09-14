@@ -76,11 +76,12 @@ function uploadAdvertisementImage(req, res, next) {
 }
 
 function getPublicAdvertisementHandler(req, res, next) {
-  if (String(req.query?.placement || '').trim() === 'opening') {
-    return getPublicOpeningAdvertisement(req, res)
-  }
-
-  return cacheAdvertisementResponse(req, res, () => getPublicAdvertisement(req, res, next))
+  return cacheAdvertisementResponse(req, res, () => {
+    if (String(req.query?.placement || '').trim() === 'opening') {
+      return getPublicOpeningAdvertisement(req, res)
+    }
+    return getPublicAdvertisement(req, res, next)
+  })
 }
 
 function updateAdvertisementHandler(req, res, next) {
