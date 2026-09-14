@@ -11,11 +11,21 @@ function getExpiresAt(key, body) {
   if (body?.rotation?.mode !== 'auto') return 0
 
   const seconds = Number(body?.rotation?.rotate_every_seconds || 0)
-  const ttlMs = Number.isFinite(seconds) && seconds > 0
-    ? Math.max(1000, Math.min(seconds * 1000, 60000))
-    : 60000
+  const startedAt = Date.parse(body?.rotation?.rotation_started_at || '')
 
-  return Date.now() + ttlMs
+  if (!Number.isFinite(seconds) || seconds <= 0) return Date.now() + 1000
+
+  const now = Date.now()
+  const stepMs = seconds * 1000
+
+  if (!Number.isFinite(startedAt)) {
+    return now + Math.min(stepMs, 60000)
+  }
+
+  const elapsedMs = Math.max(0, now - startedAt)
+  const remainingMs = stepMs - (elapsedMs % stepMs)
+
+  return now + Math.max(1, remainingMs)
 }
 
 export function invalidateAdvertisementResponseCache(placement = '') {
