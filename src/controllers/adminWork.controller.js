@@ -2,15 +2,17 @@ import { listWorkIncidents } from '../services/workIncident.service.js'
 
 export async function getWorkIncidents(req, res) {
   try {
-    const incidents = await listWorkIncidents({
+    const result = await listWorkIncidents({
       status: req.query.status || 'active',
       source: req.query.source || '',
+      page: req.query.page || 1,
       limit: req.query.limit || 50,
     })
 
     return res.status(200).json({
       ok: true,
-      incidents,
+      incidents: result.incidents,
+      pagination: result.pagination,
     })
   } catch (error) {
     console.error('ADMIN WORK INCIDENTS ERROR:', error)
