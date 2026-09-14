@@ -223,10 +223,11 @@ export async function getPublicOpeningAdvertisement(req, res) {
     return res.status(200).json({
       ok: true,
       advertisement: publicItem(item),
-      rotation: settings
+     rotation: settings
         ? {
             mode: settings.mode,
             rotate_every_seconds: Number(settings.rotate_every_seconds || 0),
+            rotation_started_at: settings.rotation_started_at || null,
           }
         : null,
     })
