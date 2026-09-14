@@ -145,7 +145,6 @@ function realtimeIncident(item, now, count) {
 }
 
 function emit(event, item, count, baseline) {
-  wakeIps(realtimeIncident(item, now, count))
   console.warn(
     event,
     JSON.stringify({
@@ -171,6 +170,7 @@ function activate(item, now, count, baseline, event = 'WORK_LOOP_ACTIVE') {
   item.suspiciousWindows = ACTIVE_WINDOWS_REQUIRED
   item.peakPerMinute = Math.max(item.peakPerMinute, ratePerMinute(count))
   emit(event, item, count, baseline)
+  wakeIps(realtimeIncident(item, now, count))
   void recordWorkIncidentActive(incidentData(item, now))
 
   publishWorkRealtimeEvent(
