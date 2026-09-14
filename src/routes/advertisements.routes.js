@@ -90,7 +90,7 @@ function updateAdvertisementHandler(req, res, next) {
   return updateAdminAdvertisement(req, res, next)
 }
 
-router.get('/public', getPublicAdvertisementHandler)
+router.get('/public', publicAdvertisementRateLimit, getPublicAdvertisementHandler)
 router.get('/admin', requireAdmin, getAdminAdvertisements)
 router.get('/admin/logs', requireAdmin, getAdminAdvertisementLogs)
 router.get('/admin/opening-rotation', requireAdmin, getAdminOpeningRotation)
