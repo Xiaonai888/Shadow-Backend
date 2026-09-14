@@ -480,6 +480,50 @@ export async function archiveAdminOpeningAdItem(req, res) {
   }
 }
 
+export async function restoreAdminOpeningAdItem(req, res) {
+  try {
+    const current = await getItem(req.params.id)
+    if (!current) return res.status(404).json({ ok: false, message: 'Opening ad item not found' })
+    if (!current.is_archived) return res.status(200).json({ ok: true, item: current })
+
+    const { data: lastItem, error: lastItemError } = await supabase
+      .from('shadow_advertisement_items')
+      .select('sort_order')
+      .eq('placement', PLACEMENT)
+      .eq('is_archived', false)
+      .order('sort_order', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (lastItemError) throw lastItemError
+
+    const { data, error } = await supabase
+      .from('shadow_advertisement_items')
+      .update({
+        enabled: false,
+        in_loop: false,
+        is_archived: false,
+        sort_order: Number(lastItem?.sort_order || 0) + 1,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('placement', PLACEMENT)
+      .eq('id', current.id)
+      .select('*')
+      .single()
+
+    if (error) throw error
+
+    invalidateAdvertisementResponseCache(PLACEMENT)
+    await createLog(req, 'UPDATE', `Opening Ad item restored: ${data.name}.`, data, false).catch(() => {})
+
+    return res.status(200).json({ ok: true, item: data })
+  } catch (error) {
+    console.error('RESTORE ADMIN OPENING AD ITEM ERROR:', error)
+    return res.status(500).json({ ok: false, message: error.message || 'Failed to restore opening ad item' })
+  }
+}
+
+
 export async function updateLegacyOpeningAdvertisement(req, res) {
   let uploadedImageUrl = ''
   let uploadedImagePersisted = false
