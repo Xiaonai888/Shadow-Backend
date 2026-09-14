@@ -98,6 +98,25 @@ async function getItem(id) {
   return data || null
 }
 
+async function deleteImageIfUnused(imageUrl, excludeId = null) {
+  const url = text(imageUrl)
+  if (!url) return
+
+  let query = supabase
+    .from('shadow_advertisement_items')
+    .select('id')
+    .eq('image_url', url)
+
+  if (excludeId) {
+    query = query.neq('id', Number(excludeId))
+  }
+
+  const { data, error } = await query.limit(1).maybeSingle()
+
+  if (error) throw error
+  if (!data) await deleteR2ObjectByUrl(url)
+}
+
 async function getFirstAvailableItem() {
   const { data, error } = await supabase
     .from('shadow_advertisement_items')
@@ -419,7 +438,7 @@ export async function updateAdminOpeningAdItem(req, res) {
     uploadedImagePersisted = Boolean(uploadedImageUrl)
 
     if (uploadedImageUrl && current.image_url && current.image_url !== uploadedImageUrl) {
-      await deleteR2ObjectByUrl(current.image_url).catch(() => {})
+      await deleteImageIfUnused(current.image_url, current.id).catch(() => {})
     }
 
     const settings = await getSettings()
@@ -584,7 +603,7 @@ export async function updateLegacyOpeningAdvertisement(req, res) {
     await syncLegacyAdvertisement(data, enabled)
 
     if (uploadedImageUrl && current.image_url && current.image_url !== uploadedImageUrl) {
-      await deleteR2ObjectByUrl(current.image_url).catch(() => {})
+      await deleteImageIfUnused(current.image_url, current.id).catch(() => {})
     }
 
     invalidateAdvertisementResponseCache(PLACEMENT)
