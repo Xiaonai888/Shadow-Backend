@@ -45,6 +45,7 @@ import adminBalanceRoutes from './src/routes/adminBalance.routes.js'
 import visitorAnalyticsRoutes from './src/routes/visitorAnalytics.routes.js'
 import { createSpamGuard } from './src/middleware/spamGuard.middleware.js'
 import { globalMediaUploadGuard } from './src/middleware/globalMediaUploadGuard.middleware.js'
+import { workDetector, startWorkDetectorMonitor } from './src/middleware/workDetector.middleware.js'
 import adminTaskCenterRoutes from './src/routes/adminTaskCenter.routes.js'
 import adminLoginGuardRoutes from './src/routes/adminLoginGuard.routes.js'
 import adminDeviceAccessRoutes from './src/routes/adminDeviceAccess.routes.js'
@@ -210,6 +211,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions))
 app.options('*', cors(corsOptions))
+app.use(workDetector)
 
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
@@ -780,7 +782,7 @@ app.listen(PORT, () => {
   void startMangaR2DeleteRetryWorker()
   startHeavyMediaWorkerCoordinator()
   startMemoryIncidentMonitor()
-  
+  startWorkDetectorMonitor()
 
   if (process.env.ENABLE_TELEGRAM_USER_LISTENER === 'true') {
     startTelegramUserListener().catch((error) => {
