@@ -3,6 +3,7 @@ import {
   recordWorkIncidentResolved,
   startWorkIncidentCleanup,
 } from '../services/workIncident.service.js'
+import { publishWorkRealtimeEvent } from '../services/workRealtime.service.js'
 
 const ANALYZE_INTERVAL_MS = 15000
 const ENTRY_IDLE_TTL_MS = 30 * 60 * 1000
@@ -128,6 +129,20 @@ function incidentData(item, now = Date.now()) {
   }
 }
 
+function realtimeIncident(item, now, count) {
+  return {
+    source: item.source,
+    method: item.method,
+    path: item.path,
+    status: item.state,
+    estimated_requests_per_minute: ratePerMinute(count),
+    peak_requests_per_minute: item.peakPerMinute,
+    detected_at: item.detectedAt ? new Date(item.detectedAt).toISOString() : null,
+    resolved_at: item.resolvedAt ? new Date(item.resolvedAt).toISOString() : null,
+    last_seen_at: new Date(now).toISOString(),
+  }
+}
+
 function emit(event, item, count, baseline) {
   console.warn(
     event,
@@ -155,6 +170,11 @@ function activate(item, now, count, baseline, event = 'WORK_LOOP_ACTIVE') {
   item.peakPerMinute = Math.max(item.peakPerMinute, ratePerMinute(count))
   emit(event, item, count, baseline)
   void recordWorkIncidentActive(incidentData(item, now))
+
+  publishWorkRealtimeEvent(
+    event === 'WORK_LOOP_REOPENED' ? 'reopened' : 'active',
+    realtimeIncident(item, now, count)
+  )
 }
 
 function analyzeTracker(item, now) {
@@ -207,6 +227,11 @@ function analyzeTracker(item, now) {
           resolvedAt: new Date(now).toISOString(),
           peakRequestsPerMinute: item.peakPerMinute,
         })
+
+        publishWorkRealtimeEvent(
+          'resolved',
+          realtimeIncident(item, now, count)
+        )
       }
     } else {
       item.recoveryWindows = 0
