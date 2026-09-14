@@ -41,7 +41,7 @@ export function findIpsDefense(incident = {}) {
   return cloneIncident(item)
 }
 
-unction normalizeIdentityKey(incident = {}) {
+function normalizeIdentityKey(incident = {}) {
   const direct = cleanText(incident.identity_key, 250)
   if (direct) return direct
 
