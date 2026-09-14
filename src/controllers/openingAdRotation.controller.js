@@ -117,6 +117,24 @@ async function deleteImageIfUnused(imageUrl, excludeId = null) {
   if (!data) await deleteR2ObjectByUrl(url)
 }
 
+async function restartAutoRotation(settings, shouldRestart) {
+  if (!shouldRestart || settings?.mode !== 'auto') return settings
+
+  const now = new Date().toISOString()
+  const { data, error } = await supabase
+    .from('shadow_advertisement_rotation_settings')
+    .update({
+      rotation_started_at: now,
+      updated_at: now,
+    })
+    .eq('placement', PLACEMENT)
+    .select('*')
+    .single()
+
+  if (error) throw error
+  return data
+}
+
 async function getFirstAvailableItem() {
   const { data, error } = await supabase
     .from('shadow_advertisement_items')
@@ -344,7 +362,10 @@ export async function updateAdminOpeningRotationSettings(req, res) {
     const selectedItem = data.mode === 'manual' && data.manual_ad_id
       ? await getItem(data.manual_ad_id)
       : await selectPublicItem(data)
-    await syncLegacyAdvertisement(selectedItem, data.enabled).catch(() => {})
+    await syncLegacyAdvertisement(
+      selectedItem,
+      Boolean(data.enabled && selectedItem?.enabled && !selectedItem?.is_archived),
+    ).catch(() => {})
     invalidateAdvertisementResponseCache(PLACEMENT)
     await createLog(req, data.enabled ? 'UPDATE' : 'DISABLE', `Opening Ad rotation settings updated. Mode: ${data.mode}.`, selectedItem, data.enabled).catch(() => {})
 
@@ -392,12 +413,7 @@ export async function createAdminOpeningAdItem(req, res) {
     uploadedImagePersisted = Boolean(uploadedImageUrl)
 
     const settings = await getSettings()
-    if (settings && !settings.manual_ad_id) {
-      await supabase
-        .from('shadow_advertisement_rotation_settings')
-        .update({ manual_ad_id: data.id, updated_at: new Date().toISOString() })
-        .eq('placement', PLACEMENT)
-    }
+    await restartAutoRotation(settings, Boolean(data.enabled && data.in_loop))
 
     invalidateAdvertisementResponseCache(PLACEMENT)
     await createLog(req, 'UPDATE', `Opening Ad item created: ${data.name}.`, data, data.enabled).catch(() => {})
@@ -442,8 +458,18 @@ export async function updateAdminOpeningAdItem(req, res) {
     }
 
     const settings = await getSettings()
+    const autoCandidateChanged =
+      Boolean(current.enabled) !== Boolean(data.enabled) ||
+      Boolean(current.in_loop) !== Boolean(data.in_loop) ||
+      Number(current.sort_order) !== Number(data.sort_order)
+
+    await restartAutoRotation(settings, autoCandidateChanged)
+
     if (settings?.mode === 'manual' && Number(settings.manual_ad_id) === Number(data.id)) {
-      await syncLegacyAdvertisement(data, settings.enabled).catch(() => {})
+      await syncLegacyAdvertisement(
+        data,
+        Boolean(settings.enabled && data.enabled && !data.is_archived),
+      ).catch(() => {})
     }
 
     invalidateAdvertisementResponseCache(PLACEMENT)
@@ -479,16 +505,17 @@ export async function archiveAdminOpeningAdItem(req, res) {
 
     const settings = await getSettings()
     if (Number(settings?.manual_ad_id) === Number(current.id)) {
-      const replacement = await getFirstAvailableItem()
       await supabase
         .from('shadow_advertisement_rotation_settings')
         .update({
-          manual_ad_id: replacement?.id || null,
+          manual_ad_id: null,
           updated_at: new Date().toISOString(),
         })
         .eq('placement', PLACEMENT)
-      await syncLegacyAdvertisement(replacement, settings.enabled).catch(() => {})
+      await syncLegacyAdvertisement(null, false).catch(() => {})
     }
+
+    await restartAutoRotation(settings, Boolean(current.enabled && current.in_loop))
 
     invalidateAdvertisementResponseCache(PLACEMENT)
     await createLog(req, 'DISABLE', `Opening Ad item archived: ${current.name}.`, data, false).catch(() => {})
