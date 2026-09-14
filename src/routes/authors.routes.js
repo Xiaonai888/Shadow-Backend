@@ -4,6 +4,7 @@ import { getFollowedAuthorPostsFeed } from '../controllers/followedAuthorPostsFe
 import { getDiscoverAuthorSuggestions } from '../controllers/authorDiscovery.controller.js'
 import { getDiscoverAuthorPostsFeed } from '../controllers/discoverAuthorPostsFeed.controller.js'
 import { inviteAuthorPageFriend } from '../controllers/authorPageInvites.controller.js'
+import { getMyAuthorTopSupporters } from '../controllers/authorTopSupporters.controller.js'
 import {
   getAuthorHashtagSuggestions,
   recordAuthorHashtagInterest,
@@ -202,6 +203,7 @@ router.get('/me', requireUser, getMyAuthorPage)
 router.get('/me/quest', requireUser, getMyAuthorQuest)
 router.get('/me/income', requireUser, getMyAuthorIncome)
 router.get('/me/recent-earnings', requireUser, getMyAuthorRecentEarnings)
+router.get('/me/top-supporters', requireUser, getMyAuthorTopSupporters)
 router.get('/me/diamonds', requireUser, getMyAuthorDiamonds)
 router.get('/me/gifts', requireUser, getMyAuthorGifts)
 router.get('/me/comment-protection/blocked-words', requireUser, getMyAuthorBlockedWords)
