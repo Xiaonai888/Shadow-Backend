@@ -2,12 +2,14 @@ const advertisementResponseCache = new Map()
 const advertisementResponseInFlight = new Map()
 let advertisementResponseCacheVersion = 0
 
+const ROTATING_PLACEMENTS = new Set(['opening', 'freeUnlock', 'me'])
+
 function getCacheKey(req) {
   return String(req.query?.placement || '').trim()
 }
 
 function getExpiresAt(key, body) {
-  if (key !== 'opening') return 0
+  if (!ROTATING_PLACEMENTS.has(key)) return 0
   if (body?.rotation?.mode !== 'auto') return 0
 
   const seconds = Number(body?.rotation?.rotate_every_seconds || 0)
