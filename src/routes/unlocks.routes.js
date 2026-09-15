@@ -13,13 +13,19 @@ import {
   consumeRewardedAdChallenge,
   createRewardedAdChallenge,
 } from '../controllers/rewardedAds.controller.js'
+import {
+  getAdminRewardedAdAnalytics,
+  trackRewardedAdEvent,
+} from '../controllers/rewardedAdAnalytics.controller.js'
 import { getPlatformUnlockRules } from '../controllers/unlockRules.controller.js'
+import { requireAdmin } from '../middleware/auth.middleware.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
 
 router.get('/rules', getPlatformUnlockRules)
 router.get('/events/writer-wednesday', getWriterWednesdayStatus)
+router.get('/admin/rewarded-ad-analytics', requireAdmin, getAdminRewardedAdAnalytics)
 router.get('/stories/:storyId/episodes/:episodeId/status', requireUser, getEpisodeUnlockStatus)
 router.post('/stories/:storyId/episodes/:episodeId/diamond', requireUser, unlockEpisodeWithDiamonds)
 router.post('/stories/:storyId/episodes/:episodeId/package', requireUser, unlockEpisodePackageWithDiamonds)
@@ -27,6 +33,7 @@ router.post('/stories/:storyId/episodes/:episodeId/gem', requireUser, unlockEpis
 router.post('/stories/:storyId/episodes/:episodeId/voucher', requireUser, unlockEpisodeWithVoucher)
 router.post('/stories/:storyId/episodes/:episodeId/story-card', requireUser, unlockEpisodeWithStoryCard)
 router.post('/stories/:storyId/episodes/:episodeId/ad/challenge', requireUser, createRewardedAdChallenge)
+router.post('/stories/:storyId/episodes/:episodeId/ad/event', requireUser, trackRewardedAdEvent)
 router.post('/stories/:storyId/episodes/:episodeId/ad', requireUser, consumeRewardedAdChallenge, unlockEpisodeWithAd)
 
 export default router
