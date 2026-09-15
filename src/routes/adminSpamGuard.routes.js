@@ -2,6 +2,7 @@ import express from 'express'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { createSecurityGate } from '../middleware/securityGate.middleware.js'
+import { guardSecurityMutation } from '../services/tamperGuard.service.js'
 import {
   applyAdminSpamGuardRestriction,
   getAdminSpamGuardEvents,
@@ -31,6 +32,34 @@ const spamGuardReleaseGate = createSecurityGate({
   allowInSafeMode: false,
 })
 
+const observeSpamGuardRelease = (action) => (req, res, next) => {
+  const role = String(req.admin?.role || '').trim().toLowerCase()
+
+  guardSecurityMutation({
+    target: 'spam_guard',
+    action,
+    actor:
+      req.admin?.admin_id
+      || req.admin?.id
+      || req.admin?.email
+      || role
+      || 'admin',
+    authorized: role === 'owner' || role === 'admin',
+    allowInSafeMode: false,
+    reason:
+      role === 'owner' || role === 'admin'
+        ? 'Spam Guard protection release attempted during protected state'
+        : 'Unauthorized role attempted to release Spam Guard protection',
+    details: {
+      role: role || 'unknown',
+      state_id: req.params?.stateId || null,
+      path: req.originalUrl || req.path || '',
+    },
+  })
+
+  return next()
+}
+
 router.use(requireAdmin)
 
 router.get('/overview', getAdminSpamGuardOverview)
@@ -39,6 +68,7 @@ router.get('/events', getAdminSpamGuardEvents)
 router.patch(
   '/states/:stateId/release',
   manageSpamGuard,
+  observeSpamGuardRelease('unblock'),
   spamGuardReleaseGate,
   releaseAdminSpamGuardCooldown
 )
@@ -51,6 +81,7 @@ router.patch(
 router.patch(
   '/states/:stateId/release-restriction',
   manageSpamGuard,
+  observeSpamGuardRelease('release'),
   spamGuardReleaseGate,
   releaseAdminSpamGuardRestriction
 )
