@@ -16,6 +16,7 @@ import {
   getAdminOpeningRotation,
   getPublicOpeningAdvertisement,
   restoreAdminOpeningAdItem,
+  reorderAdminOpeningAdItems,
   updateAdminOpeningAdItem,
   updateAdminOpeningRotationSettings,
   updateLegacyOpeningAdvertisement,
@@ -26,6 +27,7 @@ import {
   getAdminRotatingAdvertisement,
   getPublicRotatingAdvertisement,
   restoreAdminRotatingAdvertisementItem,
+  reorderAdminRotatingAdvertisementItems,
   updateAdminRotatingAdvertisementItem,
   updateAdminRotatingAdvertisementSettings,
   updateLegacyRotatingAdvertisement,
@@ -137,6 +139,7 @@ router.put(
 )
 router.delete('/admin/opening-rotation/items/:id', requireAdmin, archiveAdminOpeningAdItem)
 router.post('/admin/opening-rotation/items/:id/restore', requireAdmin, restoreAdminOpeningAdItem)
+router.post('/admin/opening-rotation/reorder', requireAdmin, reorderAdminOpeningAdItems)
 
 router.get('/admin/rotation/:placement', requireAdmin, getAdminRotatingAdvertisement)
 router.put('/admin/rotation/:placement/settings', requireAdmin, updateAdminRotatingAdvertisementSettings)
@@ -163,6 +166,11 @@ router.post(
   '/admin/rotation/:placement/items/:id/restore',
   requireAdmin,
   restoreAdminRotatingAdvertisementItem,
+)
+router.post(
+  '/admin/rotation/:placement/reorder',
+  requireAdmin,
+  reorderAdminRotatingAdvertisementItems,
 )
 
 router.put(
