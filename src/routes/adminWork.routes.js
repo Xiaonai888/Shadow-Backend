@@ -7,6 +7,10 @@ import {
 import { getAdminWorkKillSwitches, setAdminWorkKillSwitch } from '../controllers/adminWorkKillSwitch.controller.js'
 import { createSecurityGate } from '../middleware/securityGate.middleware.js'
 import { guardSecurityMutation } from '../services/tamperGuard.service.js'
+import {
+  getSecurityResponseAssistantSnapshot,
+  resolveSecurityResponse,
+} from '../services/securityResponseAssistant.service.js'
 
 const router = express.Router()
 
@@ -22,6 +26,13 @@ const killSwitchDisableGate = createSecurityGate({
   roles: ['owner'],
   allowOwner: true,
   allowInSafeMode: false,
+})
+
+const securityResponseOwnerGate = createSecurityGate({
+  gateId: 'security_response_owner',
+  roles: ['owner'],
+  allowOwner: true,
+  allowInSafeMode: true,
 })
 
 const observeKillSwitchTamper = (req, res, next) => {
@@ -61,5 +72,51 @@ router.get('/events', streamWorkIncidents)
 router.get('/incidents', getWorkIncidents)
 router.get('/kill-switches', getAdminWorkKillSwitches)
 router.put('/kill-switches', observeKillSwitchTamper, protectKillSwitchMutation, setAdminWorkKillSwitch)
+
+router.get('/security-response', securityResponseOwnerGate, (req, res) => {
+  return res.status(200).json({
+    ok: true,
+    assistant: getSecurityResponseAssistantSnapshot(),
+  })
+})
+
+router.post(
+  '/security-response/:responseId/resolve',
+  securityResponseOwnerGate,
+  (req, res) => {
+    if (req.body?.approved !== true) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Explicit approval is required',
+      })
+    }
+
+    const actor =
+      req.admin?.admin_id
+      || req.admin?.id
+      || req.admin?.email
+      || 'owner'
+
+    const resolved = resolveSecurityResponse({
+      responseId: req.params.responseId,
+      approved: true,
+      actor,
+      reason: req.body?.reason || 'Security response manually resolved by Owner',
+    })
+
+    if (!resolved) {
+      return res.status(409).json({
+        ok: false,
+        message: 'Security response could not be resolved',
+      })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      response_id: req.params.responseId,
+      resolved: true,
+    })
+  }
+)
 
 export default router
