@@ -47,6 +47,7 @@ import { createSpamGuard } from './src/middleware/spamGuard.middleware.js'
 import { globalMediaUploadGuard } from './src/middleware/globalMediaUploadGuard.middleware.js'
 import { workDetector, startWorkDetectorMonitor } from './src/middleware/workDetector.middleware.js'
 import { ipsEnforcement } from './src/middleware/ipsEnforcement.middleware.js'
+import { sensitivePathGuard } from './src/middleware/sensitivePathGuard.middleware.js'
 import { workKillSwitch } from './src/middleware/workKillSwitch.middleware.js'
 import { startWorkKillSwitchService } from './src/services/workKillSwitch.service.js'
 import { startSecurityResponseAssistant } from './src/services/securityResponseAssistant.service.js'
@@ -106,6 +107,7 @@ dotenv.config()
 
 const app = express()
 app.use(memoryIncidentTracer)
+app.use(sensitivePathGuard)
 
 const STORAGE_CLEANUP_INTERVAL_MS =
   24 * 60 * 60 * 1000
