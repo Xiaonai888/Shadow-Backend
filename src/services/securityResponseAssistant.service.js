@@ -4,9 +4,11 @@ import {
   reportGuardState,
   subscribeSecurityEvents,
 } from './securityControlPlane.service.js'
+import { executeSecurityResponsePlaybook } from './securityResponsePlaybooks.service.js'
 
 const MAX_RESPONSES = 250
 const MAX_SEEN_EVENTS = 1000
+const MAX_EXECUTION_ATTEMPTS = 2
 
 const triggerTypes = new Set([
   'route_incident_active',
@@ -22,9 +24,13 @@ const resolutionTypes = new Set([
   'route_incident_resolved',
   'tamper_incident_resolved',
   'ips_defense_released',
-  'spam_guard_recovered',
   'kill_switch_released',
   'kill_switch_expired',
+])
+
+const passiveCompletionPlaybooks = new Set([
+  'identity_containment_followup',
+  'spam_escalation_followup',
 ])
 
 const responses = new Map()
@@ -159,6 +165,7 @@ function cloneResponse(item) {
     ? {
         ...item,
         payload: safeObject(item.payload),
+        action_result: safeObject(item.action_result),
       }
     : null
 }
@@ -232,7 +239,13 @@ function reportAssistantState(reason, severity = 'info', force = false) {
   })
 }
 
-function publishAssistantEvent(type, severity, response, parentEvent = null) {
+function publishAssistantEvent(
+  type,
+  severity,
+  response,
+  parentEvent = null,
+  extra = {}
+) {
   const parentHop = Math.max(
     0,
     Math.round(Number(parentEvent?.hop_count) || 0)
@@ -242,6 +255,7 @@ function publishAssistantEvent(type, severity, response, parentEvent = null) {
     root_event_id:
       cleanText(parentEvent?.root_event_id, 100)
       || cleanText(parentEvent?.event_id, 100)
+      || response.root_event_id
       || undefined,
     parent_event_id:
       cleanText(parentEvent?.event_id, 100)
@@ -260,8 +274,194 @@ function publishAssistantEvent(type, severity, response, parentEvent = null) {
       trigger_severity: response.trigger_severity,
       status: response.status,
       signal_count: response.signal_count,
+      execution_status: response.execution_status,
+      execution_attempts: response.execution_attempts,
+      ...safeObject(extra),
     },
   })
+}
+
+function resolveResponseRecord(response, event, reason) {
+  if (!response || response.status !== 'pending') return false
+
+  response.status = 'resolved'
+  response.updated_at = Date.now()
+  response.resolved_at = response.updated_at
+  response.resolution_reason = cleanText(reason, 500)
+    || 'Related security signal resolved'
+
+  if (activeByKey.get(response.key) === response.id) {
+    activeByKey.delete(response.key)
+  }
+
+  publishAssistantEvent(
+    'security_response_resolved',
+    'info',
+    response,
+    event
+  )
+
+  reportAssistantState(
+    activeCount() > 0
+      ? 'Security Response Assistant still has pending responses'
+      : 'Security Response Assistant sleeping; no pending responses',
+    'info',
+    true
+  )
+
+  return true
+}
+
+async function runResponsePlaybook(responseId, event = null) {
+  const response = responses.get(responseId)
+
+  if (!response || response.status !== 'pending') return
+
+  if (
+    response.execution_status === 'running'
+    || response.execution_status === 'executed'
+    || response.execution_status === 'no_action'
+  ) {
+    return
+  }
+
+  if (
+    response.execution_status === 'waiting'
+    && response.trigger_severity !== 'critical'
+  ) {
+    return
+  }
+
+  if (
+    response.execution_status === 'failed'
+    && response.execution_attempts >= MAX_EXECUTION_ATTEMPTS
+  ) {
+    return
+  }
+
+  response.execution_status = 'running'
+  response.execution_attempts += 1
+  response.updated_at = Date.now()
+
+  try {
+    const result = await executeSecurityResponsePlaybook(
+      cloneResponse(response)
+    )
+
+    const current = responses.get(responseId)
+    if (!current || current.status !== 'pending') return
+
+    current.action_result = safeObject(result)
+    current.execution_code = cleanText(result?.code, 100) || null
+    current.updated_at = Date.now()
+
+    if (result?.executed) {
+      current.execution_status = 'executed'
+      current.executed_at = current.updated_at
+
+      publishAssistantEvent(
+        'security_response_action_executed',
+        current.trigger_severity,
+        current,
+        event,
+        {
+          action: cleanText(result?.action, 100) || null,
+          code: current.execution_code,
+        }
+      )
+
+      reportAssistantState(
+        `Security response action executed: ${current.playbook}`,
+        current.trigger_severity,
+        true
+      )
+
+      return
+    }
+
+    if (result?.code === 'PLAYBOOK_WAITING_FOR_CRITICAL') {
+      current.execution_status = 'waiting'
+
+      if (
+        current.trigger_severity === 'critical'
+        && current.execution_attempts < MAX_EXECUTION_ATTEMPTS
+      ) {
+        void runResponsePlaybook(current.id, event)
+      }
+
+      return
+    }
+
+    if (result?.ok) {
+      current.execution_status = 'no_action'
+
+      publishAssistantEvent(
+        'security_response_no_action',
+        'info',
+        current,
+        event,
+        {
+          code: current.execution_code,
+        }
+      )
+
+      if (passiveCompletionPlaybooks.has(current.playbook)) {
+        resolveResponseRecord(
+          current,
+          event,
+          'Existing security guard already owns containment; no additional action required'
+        )
+      }
+
+      return
+    }
+
+    current.execution_status = 'failed'
+    current.execution_error = current.execution_code
+      || 'PLAYBOOK_EXECUTION_FAILED'
+
+    publishAssistantEvent(
+      'security_response_action_failed',
+      'high',
+      current,
+      event,
+      {
+        code: current.execution_code,
+      }
+    )
+
+    reportAssistantState(
+      `Security response action failed: ${current.playbook}`,
+      'high',
+      true
+    )
+  } catch (error) {
+    const current = responses.get(responseId)
+    if (!current || current.status !== 'pending') return
+
+    current.execution_status = 'failed'
+    current.execution_error = cleanText(
+      error?.message || error,
+      300
+    ) || 'PLAYBOOK_EXECUTION_FAILED'
+    current.updated_at = Date.now()
+
+    publishAssistantEvent(
+      'security_response_action_failed',
+      'high',
+      current,
+      event,
+      {
+        error: current.execution_error,
+      }
+    )
+
+    reportAssistantState(
+      `Security response action failed: ${current.playbook}`,
+      'high',
+      true
+    )
+  }
 }
 
 function createOrCorrelateResponse(event) {
@@ -273,12 +473,28 @@ function createOrCorrelateResponse(event) {
     const existing = responses.get(existingId)
 
     if (existing && existing.status === 'pending') {
+      const becameCritical =
+        event.severity === 'critical'
+        && existing.trigger_severity !== 'critical'
+
       existing.signal_count += 1
       existing.updated_at = now
       existing.last_event_id = cleanText(event.event_id, 100) || null
+      existing.payload = safeObject(event.payload)
 
-      if (event.severity === 'critical') {
+      if (becameCritical) {
         existing.trigger_severity = 'critical'
+      }
+
+      if (
+        becameCritical
+        || (
+          event.severity === 'critical'
+          && existing.execution_status === 'failed'
+          && existing.execution_attempts < MAX_EXECUTION_ATTEMPTS
+        )
+      ) {
+        void runResponsePlaybook(existing.id, event)
       }
 
       return cloneResponse(existing)
@@ -307,6 +523,12 @@ function createOrCorrelateResponse(event) {
     last_event_id: cleanText(event.event_id, 100) || null,
     signal_count: 1,
     payload: safeObject(event.payload),
+    execution_status: 'idle',
+    execution_attempts: 0,
+    execution_code: null,
+    execution_error: null,
+    action_result: {},
+    executed_at: null,
     created_at: now,
     updated_at: now,
     resolved_at: null,
@@ -329,6 +551,8 @@ function createOrCorrelateResponse(event) {
     true
   )
 
+  void runResponsePlaybook(response.id, event)
+
   return cloneResponse(response)
 }
 
@@ -337,35 +561,38 @@ function resolveByKey(key, event, reason) {
   if (!responseId) return false
 
   const response = responses.get(responseId)
+
   if (!response || response.status !== 'pending') {
     activeByKey.delete(key)
     return false
   }
 
-  response.status = 'resolved'
-  response.updated_at = Date.now()
-  response.resolved_at = response.updated_at
-  response.resolution_reason = cleanText(reason, 500)
-    || 'Related security signal resolved'
+  return resolveResponseRecord(response, event, reason)
+}
 
-  activeByKey.delete(key)
+function resolveSpamGuardRecovery(event) {
+  let resolved = 0
 
-  publishAssistantEvent(
-    'security_response_resolved',
-    'info',
-    response,
-    event
-  )
+  for (const response of responses.values()) {
+    if (
+      response.status !== 'pending'
+      || response.trigger_type !== 'spam_guard_degraded'
+    ) {
+      continue
+    }
 
-  reportAssistantState(
-    activeCount() > 0
-      ? 'Security Response Assistant still has pending responses'
-      : 'Security Response Assistant sleeping; no pending responses',
-    'info',
-    true
-  )
+    if (
+      resolveResponseRecord(
+        response,
+        event,
+        'Spam Guard recovered'
+      )
+    ) {
+      resolved += 1
+    }
+  }
 
-  return true
+  return resolved
 }
 
 function handleSecurityEvent(event) {
@@ -376,6 +603,11 @@ function handleSecurityEvent(event) {
 
   if (source === 'security_response_assistant') return
   if (!rememberEventId(event.event_id)) return
+
+  if (type === 'spam_guard_recovered') {
+    resolveSpamGuardRecovery(event)
+    return
+  }
 
   if (resolutionTypes.has(type)) {
     resolveByKey(
@@ -448,31 +680,11 @@ export function resolveSecurityResponse({
 
   if (!response || response.status !== 'pending') return false
 
-  response.status = 'resolved'
-  response.updated_at = Date.now()
-  response.resolved_at = response.updated_at
-  response.resolution_reason = cleanText(reason, 500)
-    || 'Security response resolved'
-
-  if (activeByKey.get(response.key) === response.id) {
-    activeByKey.delete(response.key)
-  }
-
-  publishAssistantEvent(
-    'security_response_resolved',
-    'info',
-    response
+  return resolveResponseRecord(
+    response,
+    null,
+    reason
   )
-
-  reportAssistantState(
-    activeCount() > 0
-      ? 'Security Response Assistant still has pending responses'
-      : 'Security Response Assistant sleeping; no pending responses',
-    'info',
-    true
-  )
-
-  return true
 }
 
 export function getSecurityResponseAssistantSnapshot() {
