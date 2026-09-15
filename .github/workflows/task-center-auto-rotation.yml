@@ -5,6 +5,8 @@ on:
     - cron: '0 17 * * *'
   workflow_dispatch:
 
+permissions: {}
+
 concurrency:
   group: task-center-auto-rotation
   cancel-in-progress: false
