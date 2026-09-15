@@ -2,6 +2,7 @@ import { supabase } from '../config/supabase.js'
 import { invalidateAdvertisementResponseCache } from '../services/advertisementsResponseCache.service.js'
 import { deleteR2ObjectByUrl, uploadFileToR2 } from '../services/r2Storage.service.js'
 import { assertR2MediaReference } from '../services/mediaStoragePolicy.service.js'
+import { getRotationAdminSnapshot, reorderRotationItems } from '../services/adRotationAdmin.service.js'
 
 const PLACEMENT = 'opening'
 const MODES = ['manual', 'auto']
@@ -276,32 +277,52 @@ export async function getPublicOpeningAdvertisement(req, res) {
 
 export async function getAdminOpeningRotation(req, res) {
   try {
-    const [settingsResult, itemsResult] = await Promise.all([
-      supabase
-        .from('shadow_advertisement_rotation_settings')
-        .select('*')
-        .eq('placement', PLACEMENT)
-        .maybeSingle(),
-      supabase
-        .from('shadow_advertisement_items')
-        .select('*')
-        .eq('placement', PLACEMENT)
-        .order('is_archived', { ascending: true })
-        .order('sort_order', { ascending: true })
-        .order('id', { ascending: true }),
-    ])
+    const settings = await getSettings()
+    const snapshot = await getRotationAdminSnapshot({
+      placement: PLACEMENT,
+      settings,
+      req,
+    })
 
-    if (settingsResult.error) throw settingsResult.error
-    if (itemsResult.error) throw itemsResult.error
-
+    res.setHeader('Cache-Control', 'no-store')
     return res.status(200).json({
       ok: true,
-      settings: settingsResult.data || null,
-      items: itemsResult.data || [],
+      settings,
+      ...snapshot,
     })
   } catch (error) {
     console.error('GET ADMIN OPENING ROTATION ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load opening ad rotation' })
+    return res.status(500).json({
+      ok: false,
+      message: error.message || 'Failed to load opening ad rotation',
+    })
+  }
+}
+
+export async function reorderAdminOpeningAdItems(req, res) {
+  try {
+    const itemId = Number(req.body?.item_id)
+    const targetItemId = req.body?.target_item_id ? Number(req.body.target_item_id) : null
+    const direction = String(req.body?.direction || '').trim()
+
+    await reorderRotationItems({
+      placement: PLACEMENT,
+      itemId,
+      targetItemId,
+      direction,
+    })
+
+    const settings = await getSettings()
+    await restartAutoRotation(settings, settings?.mode === 'auto')
+    invalidateAdvertisementResponseCache(PLACEMENT)
+
+    return res.status(200).json({ ok: true })
+  } catch (error) {
+    console.error('REORDER ADMIN OPENING ADS ERROR:', error)
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      message: error.message || 'Failed to reorder opening advertisements',
+    })
   }
 }
 
