@@ -20,6 +20,16 @@ import {
   updateAdminOpeningRotationSettings,
   updateLegacyOpeningAdvertisement,
 } from '../controllers/openingAdRotation.controller.js'
+import {
+  archiveAdminRotatingAdvertisementItem,
+  createAdminRotatingAdvertisementItem,
+  getAdminRotatingAdvertisement,
+  getPublicRotatingAdvertisement,
+  restoreAdminRotatingAdvertisementItem,
+  updateAdminRotatingAdvertisementItem,
+  updateAdminRotatingAdvertisementSettings,
+  updateLegacyRotatingAdvertisement,
+} from '../controllers/adRotation.controller.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 
 const router = express.Router()
@@ -77,16 +87,29 @@ function uploadAdvertisementImage(req, res, next) {
 
 function getPublicAdvertisementHandler(req, res, next) {
   return cacheAdvertisementResponse(req, res, () => {
-    if (String(req.query?.placement || '').trim() === 'opening') {
+    const placement = String(req.query?.placement || '').trim()
+
+    if (placement === 'opening') {
       return getPublicOpeningAdvertisement(req, res)
     }
+
+    if (placement === 'freeUnlock' || placement === 'me') {
+      return getPublicRotatingAdvertisement(req, res)
+    }
+
     return getPublicAdvertisement(req, res, next)
   })
 }
 
 function updateAdvertisementHandler(req, res, next) {
-  if (String(req.params?.placement || '').trim() === 'opening') {
+  const placement = String(req.params?.placement || '').trim()
+
+  if (placement === 'opening') {
     return updateLegacyOpeningAdvertisement(req, res)
+  }
+
+  if (placement === 'freeUnlock' || placement === 'me') {
+    return updateLegacyRotatingAdvertisement(req, res)
   }
 
   return updateAdminAdvertisement(req, res, next)
@@ -95,6 +118,7 @@ function updateAdvertisementHandler(req, res, next) {
 router.get('/public', publicAdvertisementRateLimit, getPublicAdvertisementHandler)
 router.get('/admin', requireAdmin, getAdminAdvertisements)
 router.get('/admin/logs', requireAdmin, getAdminAdvertisementLogs)
+
 router.get('/admin/opening-rotation', requireAdmin, getAdminOpeningRotation)
 router.put('/admin/opening-rotation/settings', requireAdmin, updateAdminOpeningRotationSettings)
 router.post(
@@ -113,6 +137,33 @@ router.put(
 )
 router.delete('/admin/opening-rotation/items/:id', requireAdmin, archiveAdminOpeningAdItem)
 router.post('/admin/opening-rotation/items/:id/restore', requireAdmin, restoreAdminOpeningAdItem)
+
+router.get('/admin/rotation/:placement', requireAdmin, getAdminRotatingAdvertisement)
+router.put('/admin/rotation/:placement/settings', requireAdmin, updateAdminRotatingAdvertisementSettings)
+router.post(
+  '/admin/rotation/:placement/items',
+  requireAdmin,
+  uploadAdvertisementImage,
+  cleanupTempFile,
+  createAdminRotatingAdvertisementItem,
+)
+router.put(
+  '/admin/rotation/:placement/items/:id',
+  requireAdmin,
+  uploadAdvertisementImage,
+  cleanupTempFile,
+  updateAdminRotatingAdvertisementItem,
+)
+router.delete(
+  '/admin/rotation/:placement/items/:id',
+  requireAdmin,
+  archiveAdminRotatingAdvertisementItem,
+)
+router.post(
+  '/admin/rotation/:placement/items/:id/restore',
+  requireAdmin,
+  restoreAdminRotatingAdvertisementItem,
+)
 
 router.put(
   '/admin/:placement',
