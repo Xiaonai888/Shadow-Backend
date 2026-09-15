@@ -2,10 +2,18 @@ import express from 'express'
 import { supabase } from '../config/supabase.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { getAdminActor, logAdminActivity } from '../services/adminActivity.service.js'
+import { createSecurityGate } from '../middleware/securityGate.middleware.js'
 
 const router = express.Router()
 const viewAccounts = requireAdminPermission('accounts.view')
 const manageAccounts = requireAdminPermission('accounts.manage')
+const accountMutationGate = createSecurityGate({
+  gateId: 'admin_account_mutation',
+  roles: ['owner', 'admin', 'staff'],
+  permissions: ['accounts.manage'],
+  allowOwner: true,
+  allowInSafeMode: false,
+})
 
 function cleanText(value, maxLength = 200) {
   return String(value || '').trim().slice(0, maxLength)
@@ -178,7 +186,7 @@ router.get('/', viewAccounts, async (req, res) => {
   }
 })
 
-router.post('/', manageAccounts, async (req, res) => {
+router.post('/', manageAccounts, accountMutationGate, async (req, res) => {
   try {
     const name = cleanText(req.body?.name, 120)
     const email = cleanEmail(req.body?.email)
@@ -294,7 +302,7 @@ router.post('/', manageAccounts, async (req, res) => {
   }
 })
 
-router.patch('/:accountId', manageAccounts, async (req, res) => {
+router.patch('/:accountId', manageAccounts, accountMutationGate, async (req, res) => {
   try {
     const account = await loadAccount(req.params.accountId)
 
