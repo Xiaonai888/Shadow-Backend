@@ -15,6 +15,7 @@ import { requireAdmin } from '../middleware/auth.middleware.js'
 import { requireAdminSession } from '../middleware/adminPermission.middleware.js'
 import { verifyTurnstile } from '../middleware/turnstile.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
+import { createSecurityGate } from '../middleware/securityGate.middleware.js'
 
 const router = express.Router()
 
@@ -46,8 +47,9 @@ router.post('/login/2fa/email/send', adminLoginLimit, adminLoginTwoFactorEmailSe
 router.post('/admin-forgot-password', adminResetRequestLimit, verifyTurnstile, adminForgotPassword)
 router.post('/admin-reset-password', adminResetConfirmLimit, verifyTurnstile, adminResetPassword)
 router.get('/me', requireAdminSession, checkAdmin)
-router.patch('/change-password', requireAdmin, changeAdminPassword)
+router.patch('/change-password', requireAdmin, passwordChangeGate, changeAdminPassword)
 router.post('/login/passkey-pin/reset/email/send', adminLoginLimit, adminLoginPasskeyPinResetEmailSend)
 router.post('/login/passkey-pin/reset/confirm', adminLoginLimit, adminLoginPasskeyPinResetConfirm)
+const passwordChangeGate = createSecurityGate({ gateId: 'admin_password_change', roles: ['owner', 'admin', 'staff'], allowOwner: true, allowInSafeMode: true })
 
 export default router
