@@ -15,6 +15,7 @@ const allowedGuards = new Set([
   'kill_switch',
   'security_gate',
   'tamper_guard',
+  'security_response_assistant',
   'control_plane',
 ])
 
