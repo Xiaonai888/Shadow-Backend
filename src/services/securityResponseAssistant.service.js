@@ -4,7 +4,10 @@ import {
   reportGuardState,
   subscribeSecurityEvents,
 } from './securityControlPlane.service.js'
-import { executeSecurityResponsePlaybook } from './securityResponsePlaybooks.service.js'
+import {
+  executeSecurityResponsePlaybook,
+  executeSecurityResponseResolution,
+} from './securityResponsePlaybooks.service.js'
 
 const MAX_RESPONSES = 250
 const MAX_SEEN_EVENTS = 1000
@@ -673,12 +676,39 @@ export function stopSecurityResponseAssistant() {
 
 export function resolveSecurityResponse({
   responseId,
+  approved = false,
+  actor = '',
   reason = 'Security response resolved',
 } = {}) {
   const id = cleanText(responseId, 100)
   const response = responses.get(id)
 
   if (!response || response.status !== 'pending') return false
+
+  const result = executeSecurityResponseResolution(
+    cloneResponse(response),
+    {
+      approved: approved === true,
+      actor: cleanText(actor, 200),
+      reason: cleanText(reason, 500),
+    }
+  )
+
+  response.resolution_code = cleanText(result?.code, 100) || null
+  response.resolution_error = result?.ok
+    ? null
+    : response.resolution_code || 'PLAYBOOK_RESOLUTION_FAILED'
+  response.updated_at = Date.now()
+
+  if (!result?.ok) return false
+  if (response.status === 'resolved') return true
+
+  if (
+    response.playbook === 'tamper_containment'
+    && !result?.executed
+  ) {
+    return false
+  }
 
   return resolveResponseRecord(
     response,
