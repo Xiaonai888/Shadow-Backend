@@ -4,7 +4,17 @@ import { deleteR2ObjectByUrl, uploadFileToR2 } from '../services/r2Storage.servi
 import { assertR2MediaReference } from '../services/mediaStoragePolicy.service.js'
 import { getRotationAdminSnapshot, reorderRotationItems } from '../services/adRotationAdmin.service.js'
 
-const PLACEMENT = 'opening'
+const PLACEMENTS = {
+  freeUnlock: {
+    label: 'Free Unlock & Read Ad',
+    folder: 'advertisements/freeUnlock',
+  },
+  me: {
+    label: 'Me Ads',
+    folder: 'advertisements/me',
+  },
+}
+
 const MODES = ['manual', 'auto']
 const FREQUENCIES = ['once_per_session', 'once_per_day', 'every_visit', 'every_unlock']
 const BADGES = ['', 'HOT', 'NEW', 'TOP', 'END', 'UP']
@@ -38,12 +48,25 @@ function frequency(value, fallback = 'once_per_session') {
   return FREQUENCIES.includes(normalized) ? normalized : fallback
 }
 
-function publicItem(item) {
+function resolvePlacement(req) {
+  const placement = text(req.params?.placement || req.query?.placement)
+  const config = PLACEMENTS[placement]
+
+  if (!config) {
+    const error = new Error('Invalid rotating advertisement placement')
+    error.statusCode = 400
+    throw error
+  }
+
+  return { placement, config }
+}
+
+function publicItem(item, placement) {
   if (!item) return null
 
   return {
     id: item.id,
-    placement: PLACEMENT,
+    placement,
     name: item.name || '',
     enabled: Boolean(item.enabled),
     image_url: item.image_url || '',
@@ -69,29 +92,111 @@ function safeImage(value, currentValue = '') {
   })
 }
 
-async function uploadImage(file) {
-  return uploadFileToR2(file, 'advertisements/opening')
+async function uploadImage(file, config) {
+  return uploadFileToR2(file, config.folder)
 }
 
-async function getSettings() {
+async function getLegacyAdvertisement(placement) {
   const { data, error } = await supabase
-    .from('shadow_advertisement_rotation_settings')
-    .select('*')
-    .eq('placement', PLACEMENT)
+    .from('shadow_advertisements')
+    .select('placement, enabled, image_url, link_url, badge, duration_seconds, close_after_seconds, frequency, updated_at')
+    .eq('placement', placement)
     .maybeSingle()
 
   if (error) throw error
   return data || null
 }
 
-async function getItem(id) {
+async function getFirstAvailableItem(placement) {
+  const { data, error } = await supabase
+    .from('shadow_advertisement_items')
+    .select('*')
+    .eq('placement', placement)
+    .eq('is_archived', false)
+    .order('sort_order', { ascending: true })
+    .order('id', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) throw error
+  return data || null
+}
+
+async function ensureRotationState(placement, config) {
+  const { data: existingSettings, error: settingsError } = await supabase
+    .from('shadow_advertisement_rotation_settings')
+    .select('*')
+    .eq('placement', placement)
+    .maybeSingle()
+
+  if (settingsError) throw settingsError
+  if (existingSettings) return existingSettings
+
+  const legacy = await getLegacyAdvertisement(placement)
+  let manualItem = await getFirstAvailableItem(placement)
+
+  if (!manualItem && legacy) {
+    const payload = {
+      placement,
+      name: `${config.label} 1`,
+      enabled: Boolean(legacy.enabled),
+      image_url: legacy.image_url || '',
+      link_url: legacy.link_url || '',
+      badge: badge(legacy.badge, ''),
+      duration_seconds: integer(legacy.duration_seconds, 5, 0),
+      close_after_seconds: integer(legacy.close_after_seconds, 3, 0),
+      frequency: frequency(legacy.frequency, 'once_per_session'),
+      sort_order: 1,
+      in_loop: true,
+      is_archived: false,
+      updated_at: new Date().toISOString(),
+    }
+
+    const { data, error } = await supabase
+      .from('shadow_advertisement_items')
+      .insert(payload)
+      .select('*')
+      .single()
+
+    if (error) throw error
+    manualItem = data
+  }
+
+  const now = new Date().toISOString()
+  const payload = {
+    placement,
+    enabled: legacy ? Boolean(legacy.enabled) : Boolean(manualItem?.enabled),
+    mode: 'manual',
+    manual_ad_id: manualItem?.id || null,
+    rotate_every_seconds: 3600,
+    max_ads: 1,
+    rotation_started_at: now,
+    created_at: now,
+    updated_at: now,
+  }
+
+  const { data, error } = await supabase
+    .from('shadow_advertisement_rotation_settings')
+    .upsert(payload, { onConflict: 'placement' })
+    .select('*')
+    .single()
+
+  if (error) throw error
+  return data
+}
+
+async function getSettings(placement, config) {
+  return ensureRotationState(placement, config)
+}
+
+async function getItem(placement, id) {
   const numericId = Number(id)
   if (!Number.isInteger(numericId) || numericId <= 0) return null
 
   const { data, error } = await supabase
     .from('shadow_advertisement_items')
     .select('*')
-    .eq('placement', PLACEMENT)
+    .eq('placement', placement)
     .eq('id', numericId)
     .maybeSingle()
 
@@ -118,7 +223,7 @@ async function deleteImageIfUnused(imageUrl, excludeId = null) {
   if (!data) await deleteR2ObjectByUrl(url)
 }
 
-async function restartAutoRotation(settings, shouldRestart) {
+async function restartAutoRotation(placement, settings, shouldRestart) {
   if (!shouldRestart || settings?.mode !== 'auto') return settings
 
   const now = new Date().toISOString()
@@ -128,7 +233,7 @@ async function restartAutoRotation(settings, shouldRestart) {
       rotation_started_at: now,
       updated_at: now,
     })
-    .eq('placement', PLACEMENT)
+    .eq('placement', placement)
     .select('*')
     .single()
 
@@ -136,22 +241,7 @@ async function restartAutoRotation(settings, shouldRestart) {
   return data
 }
 
-async function getFirstAvailableItem() {
-  const { data, error } = await supabase
-    .from('shadow_advertisement_items')
-    .select('*')
-    .eq('placement', PLACEMENT)
-    .eq('is_archived', false)
-    .order('sort_order', { ascending: true })
-    .order('id', { ascending: true })
-    .limit(1)
-    .maybeSingle()
-
-  if (error) throw error
-  return data || null
-}
-
-async function selectPublicItem(settings) {
+async function selectPublicItem(placement, settings) {
   if (!settings?.enabled) return null
 
   if (settings.mode === 'manual') {
@@ -160,7 +250,7 @@ async function selectPublicItem(settings) {
     const { data, error } = await supabase
       .from('shadow_advertisement_items')
       .select('*')
-      .eq('placement', PLACEMENT)
+      .eq('placement', placement)
       .eq('id', settings.manual_ad_id)
       .eq('enabled', true)
       .eq('is_archived', false)
@@ -174,7 +264,7 @@ async function selectPublicItem(settings) {
   const { data, error } = await supabase
     .from('shadow_advertisement_items')
     .select('*')
-    .eq('placement', PLACEMENT)
+    .eq('placement', placement)
     .eq('enabled', true)
     .eq('in_loop', true)
     .eq('is_archived', false)
@@ -195,9 +285,9 @@ async function selectPublicItem(settings) {
   return items[index] || items[0]
 }
 
-async function syncLegacyAdvertisement(item, enabled) {
+async function syncLegacyAdvertisement(placement, item, enabled) {
   const payload = {
-    placement: PLACEMENT,
+    placement,
     enabled: Boolean(enabled),
     image_url: item?.image_url || '',
     link_url: item?.link_url || '',
@@ -215,11 +305,11 @@ async function syncLegacyAdvertisement(item, enabled) {
   if (error) throw error
 }
 
-async function createLog(req, action, details, item = null, enabled = true) {
+async function createLog(req, placement, config, action, details, item = null, enabled = true) {
   await supabase.from('shadow_advertisement_logs').insert({
-    placement: PLACEMENT,
+    placement,
     action,
-    details,
+    details: details || `${config.label} updated.`,
     actor: req.admin?.username || req.admin?.email || req.user?.username || req.user?.email || 'Admin',
     image_url: item?.image_url || '',
     frequency: item?.frequency || '',
@@ -227,9 +317,9 @@ async function createLog(req, action, details, item = null, enabled = true) {
   })
 }
 
-function itemPayload(body, current = null, imageUrl = null) {
+function itemPayload(placement, body, current = null, imageUrl = null) {
   return {
-    placement: PLACEMENT,
+    placement,
     name: has(body, 'name') ? text(body.name) || 'Untitled Ad' : current?.name || 'Untitled Ad',
     enabled: has(body, 'enabled') ? bool(body.enabled) : Boolean(current?.enabled ?? true),
     image_url: imageUrl ?? current?.image_url ?? '',
@@ -253,15 +343,16 @@ function itemPayload(body, current = null, imageUrl = null) {
   }
 }
 
-export async function getPublicOpeningAdvertisement(req, res) {
+export async function getPublicRotatingAdvertisement(req, res) {
   try {
-    const settings = await getSettings()
-    const item = await selectPublicItem(settings)
+    const { placement, config } = resolvePlacement(req)
+    const settings = await getSettings(placement, config)
+    const item = await selectPublicItem(placement, settings)
 
     return res.status(200).json({
       ok: true,
-      advertisement: publicItem(item),
-     rotation: settings
+      advertisement: publicItem(item, placement),
+      rotation: settings
         ? {
             mode: settings.mode,
             rotate_every_seconds: Number(settings.rotate_every_seconds || 0),
@@ -270,16 +361,20 @@ export async function getPublicOpeningAdvertisement(req, res) {
         : null,
     })
   } catch (error) {
-    console.error('GET PUBLIC OPENING AD ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load opening advertisement' })
+    console.error('GET PUBLIC ROTATING AD ERROR:', error)
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      message: error.message || 'Failed to load rotating advertisement',
+    })
   }
 }
 
-export async function getAdminOpeningRotation(req, res) {
+export async function getAdminRotatingAdvertisement(req, res) {
   try {
-    const settings = await getSettings()
+    const { placement, config } = resolvePlacement(req)
+    const settings = await getSettings(placement, config)
     const snapshot = await getRotationAdminSnapshot({
-      placement: PLACEMENT,
+      placement,
       settings,
       req,
     })
@@ -291,49 +386,50 @@ export async function getAdminOpeningRotation(req, res) {
       ...snapshot,
     })
   } catch (error) {
-    console.error('GET ADMIN OPENING ROTATION ERROR:', error)
-    return res.status(500).json({
+    console.error('GET ADMIN ROTATING AD ERROR:', error)
+    return res.status(error.statusCode || 500).json({
       ok: false,
-      message: error.message || 'Failed to load opening ad rotation',
+      message: error.message || 'Failed to load rotating advertisement',
     })
   }
 }
 
-export async function reorderAdminOpeningAdItems(req, res) {
+export async function reorderAdminRotatingAdvertisementItems(req, res) {
   try {
+    const { placement, config } = resolvePlacement(req)
     const itemId = Number(req.body?.item_id)
     const targetItemId = req.body?.target_item_id ? Number(req.body.target_item_id) : null
     const direction = String(req.body?.direction || '').trim()
 
     await reorderRotationItems({
-      placement: PLACEMENT,
+      placement,
       itemId,
       targetItemId,
       direction,
     })
 
-    const settings = await getSettings()
-    await restartAutoRotation(settings, settings?.mode === 'auto')
-    invalidateAdvertisementResponseCache(PLACEMENT)
+    const settings = await getSettings(placement, config)
+    await restartAutoRotation(placement, settings, settings?.mode === 'auto')
+    invalidateAdvertisementResponseCache(placement)
 
     return res.status(200).json({ ok: true })
   } catch (error) {
-    console.error('REORDER ADMIN OPENING ADS ERROR:', error)
+    console.error('REORDER ADMIN ROTATING ADS ERROR:', error)
     return res.status(error.statusCode || 500).json({
       ok: false,
-      message: error.message || 'Failed to reorder opening advertisements',
+      message: error.message || 'Failed to reorder advertisements',
     })
   }
 }
 
-export async function updateAdminOpeningRotationSettings(req, res) {
+export async function updateAdminRotatingAdvertisementSettings(req, res) {
   try {
-    const current = await getSettings()
-    if (!current) return res.status(404).json({ ok: false, message: 'Opening rotation settings not found' })
+    const { placement, config } = resolvePlacement(req)
+    const current = await getSettings(placement, config)
 
     const nextMode = has(req.body, 'mode') ? text(req.body.mode) : current.mode
     if (!MODES.includes(nextMode)) {
-      return res.status(400).json({ ok: false, message: 'Invalid opening ad mode' })
+      return res.status(400).json({ ok: false, message: 'Invalid advertisement mode' })
     }
 
     let manualAdId = current.manual_ad_id
@@ -342,9 +438,9 @@ export async function updateAdminOpeningRotationSettings(req, res) {
       manualAdId = rawId ? Number(rawId) : null
 
       if (manualAdId !== null) {
-        const item = await getItem(manualAdId)
+        const item = await getItem(placement, manualAdId)
         if (!item || item.is_archived) {
-          return res.status(400).json({ ok: false, message: 'Invalid manual opening ad' })
+          return res.status(400).json({ ok: false, message: 'Invalid manual advertisement' })
         }
       }
     }
@@ -355,6 +451,7 @@ export async function updateAdminOpeningRotationSettings(req, res) {
     const nextMaxAds = has(req.body, 'max_ads')
       ? integer(req.body.max_ads, 1, 1)
       : Number(current.max_ads || 1)
+
     const shouldRestart =
       bool(req.body.restart_rotation) ||
       nextMode !== current.mode ||
@@ -374,38 +471,57 @@ export async function updateAdminOpeningRotationSettings(req, res) {
     const { data, error } = await supabase
       .from('shadow_advertisement_rotation_settings')
       .update(payload)
-      .eq('placement', PLACEMENT)
+      .eq('placement', placement)
       .select('*')
       .single()
 
     if (error) throw error
 
-    const selectedItem = data.mode === 'manual' && data.manual_ad_id
-      ? await getItem(data.manual_ad_id)
-      : await selectPublicItem(data)
+    const selectedItem =
+      data.mode === 'manual' && data.manual_ad_id
+        ? await getItem(placement, data.manual_ad_id)
+        : await selectPublicItem(placement, data)
+
     await syncLegacyAdvertisement(
+      placement,
       selectedItem,
       Boolean(data.enabled && selectedItem?.enabled && !selectedItem?.is_archived),
     ).catch(() => {})
-    invalidateAdvertisementResponseCache(PLACEMENT)
-    await createLog(req, data.enabled ? 'UPDATE' : 'DISABLE', `Opening Ad rotation settings updated. Mode: ${data.mode}.`, selectedItem, data.enabled).catch(() => {})
+
+    invalidateAdvertisementResponseCache(placement)
+
+    await createLog(
+      req,
+      placement,
+      config,
+      data.enabled ? 'UPDATE' : 'DISABLE',
+      `${config.label} rotation settings updated. Mode: ${data.mode}.`,
+      selectedItem,
+      data.enabled,
+    ).catch(() => {})
 
     return res.status(200).json({ ok: true, settings: data })
   } catch (error) {
-    console.error('UPDATE ADMIN OPENING ROTATION SETTINGS ERROR:', error)
-    return res.status(500).json({ ok: false, message: error.message || 'Failed to update opening ad rotation settings' })
+    console.error('UPDATE ADMIN ROTATING AD SETTINGS ERROR:', error)
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      message: error.message || 'Failed to update rotating advertisement settings',
+    })
   }
 }
 
-export async function createAdminOpeningAdItem(req, res) {
+export async function createAdminRotatingAdvertisementItem(req, res) {
   let uploadedImageUrl = ''
   let uploadedImagePersisted = false
 
   try {
+    const { placement, config } = resolvePlacement(req)
+    const settings = await getSettings(placement, config)
+
     const { data: lastItem, error: lastItemError } = await supabase
       .from('shadow_advertisement_items')
       .select('sort_order')
-      .eq('placement', PLACEMENT)
+      .eq('placement', placement)
       .eq('is_archived', false)
       .order('sort_order', { ascending: false })
       .limit(1)
@@ -413,12 +529,16 @@ export async function createAdminOpeningAdItem(req, res) {
 
     if (lastItemError) throw lastItemError
 
-    if (req.file) uploadedImageUrl = await uploadImage(req.file)
+    if (req.file) uploadedImageUrl = await uploadImage(req.file, config)
+
     const imageUrl = uploadedImageUrl || safeImage(req.body.image_url, '')
     const payload = itemPayload(
+      placement,
       {
         ...req.body,
-        sort_order: has(req.body, 'sort_order') ? req.body.sort_order : Number(lastItem?.sort_order || 0) + 1,
+        sort_order: has(req.body, 'sort_order')
+          ? req.body.sort_order
+          : Number(lastItem?.sort_order || 0) + 1,
       },
       null,
       imageUrl,
@@ -433,40 +553,68 @@ export async function createAdminOpeningAdItem(req, res) {
     if (error) throw error
     uploadedImagePersisted = Boolean(uploadedImageUrl)
 
-    const settings = await getSettings()
-    await restartAutoRotation(settings, Boolean(data.enabled && data.in_loop))
+    await restartAutoRotation(
+      placement,
+      settings,
+      Boolean(data.enabled && data.in_loop),
+    )
 
-    invalidateAdvertisementResponseCache(PLACEMENT)
-    await createLog(req, 'UPDATE', `Opening Ad item created: ${data.name}.`, data, data.enabled).catch(() => {})
+    invalidateAdvertisementResponseCache(placement)
+
+    await createLog(
+      req,
+      placement,
+      config,
+      'UPDATE',
+      `${config.label} item created: ${data.name}.`,
+      data,
+      data.enabled,
+    ).catch(() => {})
 
     return res.status(201).json({ ok: true, item: data })
   } catch (error) {
-    if (uploadedImageUrl && !uploadedImagePersisted) await deleteR2ObjectByUrl(uploadedImageUrl).catch(() => {})
-    console.error('CREATE ADMIN OPENING AD ITEM ERROR:', error)
-    return res.status(error.statusCode || 500).json({ ok: false, message: error.message || 'Failed to create opening ad item' })
+    if (uploadedImageUrl && !uploadedImagePersisted) {
+      await deleteR2ObjectByUrl(uploadedImageUrl).catch(() => {})
+    }
+
+    console.error('CREATE ADMIN ROTATING AD ITEM ERROR:', error)
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      message: error.message || 'Failed to create rotating advertisement',
+    })
   }
 }
 
-export async function updateAdminOpeningAdItem(req, res) {
+export async function updateAdminRotatingAdvertisementItem(req, res) {
   let uploadedImageUrl = ''
   let uploadedImagePersisted = false
 
   try {
-    const current = await getItem(req.params.id)
-    if (!current) return res.status(404).json({ ok: false, message: 'Opening ad item not found' })
-    if (current.is_archived) return res.status(409).json({ ok: false, message: 'Archived opening ad cannot be edited' })
+    const { placement, config } = resolvePlacement(req)
+    const current = await getItem(placement, req.params.id)
 
-    if (req.file) uploadedImageUrl = await uploadImage(req.file)
+    if (!current) {
+      return res.status(404).json({ ok: false, message: 'Advertisement item not found' })
+    }
 
-    const imageUrl = uploadedImageUrl || (has(req.body, 'image_url')
-      ? safeImage(req.body.image_url, current.image_url)
-      : current.image_url)
-    const payload = itemPayload(req.body, current, imageUrl)
+    if (current.is_archived) {
+      return res.status(409).json({ ok: false, message: 'Archived advertisement cannot be edited' })
+    }
+
+    if (req.file) uploadedImageUrl = await uploadImage(req.file, config)
+
+    const imageUrl =
+      uploadedImageUrl ||
+      (has(req.body, 'image_url')
+        ? safeImage(req.body.image_url, current.image_url)
+        : current.image_url)
+
+    const payload = itemPayload(placement, req.body, current, imageUrl)
 
     const { data, error } = await supabase
       .from('shadow_advertisement_items')
       .update(payload)
-      .eq('placement', PLACEMENT)
+      .eq('placement', placement)
       .eq('id', current.id)
       .select('*')
       .single()
@@ -478,36 +626,59 @@ export async function updateAdminOpeningAdItem(req, res) {
       await deleteImageIfUnused(current.image_url, current.id).catch(() => {})
     }
 
-    const settings = await getSettings()
+    const settings = await getSettings(placement, config)
     const autoCandidateChanged =
       Boolean(current.enabled) !== Boolean(data.enabled) ||
       Boolean(current.in_loop) !== Boolean(data.in_loop) ||
       Number(current.sort_order) !== Number(data.sort_order)
 
-    await restartAutoRotation(settings, autoCandidateChanged)
+    await restartAutoRotation(placement, settings, autoCandidateChanged)
 
-    if (settings?.mode === 'manual' && Number(settings.manual_ad_id) === Number(data.id)) {
+    if (
+      settings?.mode === 'manual' &&
+      Number(settings.manual_ad_id) === Number(data.id)
+    ) {
       await syncLegacyAdvertisement(
+        placement,
         data,
         Boolean(settings.enabled && data.enabled && !data.is_archived),
       ).catch(() => {})
     }
 
-    invalidateAdvertisementResponseCache(PLACEMENT)
-    await createLog(req, data.enabled ? 'UPDATE' : 'DISABLE', `Opening Ad item updated: ${data.name}.`, data, data.enabled).catch(() => {})
+    invalidateAdvertisementResponseCache(placement)
+
+    await createLog(
+      req,
+      placement,
+      config,
+      data.enabled ? 'UPDATE' : 'DISABLE',
+      `${config.label} item updated: ${data.name}.`,
+      data,
+      data.enabled,
+    ).catch(() => {})
 
     return res.status(200).json({ ok: true, item: data })
   } catch (error) {
-    if (uploadedImageUrl && !uploadedImagePersisted) await deleteR2ObjectByUrl(uploadedImageUrl).catch(() => {})
-    console.error('UPDATE ADMIN OPENING AD ITEM ERROR:', error)
-    return res.status(error.statusCode || 500).json({ ok: false, message: error.message || 'Failed to update opening ad item' })
+    if (uploadedImageUrl && !uploadedImagePersisted) {
+      await deleteR2ObjectByUrl(uploadedImageUrl).catch(() => {})
+    }
+
+    console.error('UPDATE ADMIN ROTATING AD ITEM ERROR:', error)
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      message: error.message || 'Failed to update rotating advertisement',
+    })
   }
 }
 
-export async function archiveAdminOpeningAdItem(req, res) {
+export async function archiveAdminRotatingAdvertisementItem(req, res) {
   try {
-    const current = await getItem(req.params.id)
-    if (!current) return res.status(404).json({ ok: false, message: 'Opening ad item not found' })
+    const { placement, config } = resolvePlacement(req)
+    const current = await getItem(placement, req.params.id)
+
+    if (!current) {
+      return res.status(404).json({ ok: false, message: 'Advertisement item not found' })
+    }
 
     const { data, error } = await supabase
       .from('shadow_advertisement_items')
@@ -517,14 +688,15 @@ export async function archiveAdminOpeningAdItem(req, res) {
         is_archived: true,
         updated_at: new Date().toISOString(),
       })
-      .eq('placement', PLACEMENT)
+      .eq('placement', placement)
       .eq('id', current.id)
       .select('*')
       .single()
 
     if (error) throw error
 
-    const settings = await getSettings()
+    const settings = await getSettings(placement, config)
+
     if (Number(settings?.manual_ad_id) === Number(current.id)) {
       await supabase
         .from('shadow_advertisement_rotation_settings')
@@ -532,32 +704,56 @@ export async function archiveAdminOpeningAdItem(req, res) {
           manual_ad_id: null,
           updated_at: new Date().toISOString(),
         })
-        .eq('placement', PLACEMENT)
-      await syncLegacyAdvertisement(null, false).catch(() => {})
+        .eq('placement', placement)
+
+      await syncLegacyAdvertisement(placement, null, false).catch(() => {})
     }
 
-    await restartAutoRotation(settings, Boolean(current.enabled && current.in_loop))
+    await restartAutoRotation(
+      placement,
+      settings,
+      Boolean(current.enabled && current.in_loop),
+    )
 
-    invalidateAdvertisementResponseCache(PLACEMENT)
-    await createLog(req, 'DISABLE', `Opening Ad item archived: ${current.name}.`, data, false).catch(() => {})
+    invalidateAdvertisementResponseCache(placement)
+
+    await createLog(
+      req,
+      placement,
+      config,
+      'DISABLE',
+      `${config.label} item archived: ${current.name}.`,
+      data,
+      false,
+    ).catch(() => {})
 
     return res.status(200).json({ ok: true, item: data })
   } catch (error) {
-    console.error('ARCHIVE ADMIN OPENING AD ITEM ERROR:', error)
-    return res.status(500).json({ ok: false, message: error.message || 'Failed to archive opening ad item' })
+    console.error('ARCHIVE ADMIN ROTATING AD ITEM ERROR:', error)
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      message: error.message || 'Failed to archive rotating advertisement',
+    })
   }
 }
 
-export async function restoreAdminOpeningAdItem(req, res) {
+export async function restoreAdminRotatingAdvertisementItem(req, res) {
   try {
-    const current = await getItem(req.params.id)
-    if (!current) return res.status(404).json({ ok: false, message: 'Opening ad item not found' })
-    if (!current.is_archived) return res.status(200).json({ ok: true, item: current })
+    const { placement, config } = resolvePlacement(req)
+    const current = await getItem(placement, req.params.id)
+
+    if (!current) {
+      return res.status(404).json({ ok: false, message: 'Advertisement item not found' })
+    }
+
+    if (!current.is_archived) {
+      return res.status(200).json({ ok: true, item: current })
+    }
 
     const { data: lastItem, error: lastItemError } = await supabase
       .from('shadow_advertisement_items')
       .select('sort_order')
-      .eq('placement', PLACEMENT)
+      .eq('placement', placement)
       .eq('is_archived', false)
       .order('sort_order', { ascending: false })
       .limit(1)
@@ -574,41 +770,57 @@ export async function restoreAdminOpeningAdItem(req, res) {
         sort_order: Number(lastItem?.sort_order || 0) + 1,
         updated_at: new Date().toISOString(),
       })
-      .eq('placement', PLACEMENT)
+      .eq('placement', placement)
       .eq('id', current.id)
       .select('*')
       .single()
 
     if (error) throw error
 
-    invalidateAdvertisementResponseCache(PLACEMENT)
-    await createLog(req, 'UPDATE', `Opening Ad item restored: ${data.name}.`, data, false).catch(() => {})
+    invalidateAdvertisementResponseCache(placement)
+
+    await createLog(
+      req,
+      placement,
+      config,
+      'UPDATE',
+      `${config.label} item restored: ${data.name}.`,
+      data,
+      false,
+    ).catch(() => {})
 
     return res.status(200).json({ ok: true, item: data })
   } catch (error) {
-    console.error('RESTORE ADMIN OPENING AD ITEM ERROR:', error)
-    return res.status(500).json({ ok: false, message: error.message || 'Failed to restore opening ad item' })
+    console.error('RESTORE ADMIN ROTATING AD ITEM ERROR:', error)
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      message: error.message || 'Failed to restore rotating advertisement',
+    })
   }
 }
 
-
-export async function updateLegacyOpeningAdvertisement(req, res) {
+export async function updateLegacyRotatingAdvertisement(req, res) {
   let uploadedImageUrl = ''
   let uploadedImagePersisted = false
 
   try {
-    const settings = await getSettings()
-    if (!settings) return res.status(404).json({ ok: false, message: 'Opening rotation settings not found' })
+    const { placement, config } = resolvePlacement(req)
+    const settings = await getSettings(placement, config)
 
-    let current = settings.manual_ad_id ? await getItem(settings.manual_ad_id) : null
-    if (!current || current.is_archived) current = await getFirstAvailableItem()
+    let current = settings.manual_ad_id
+      ? await getItem(placement, settings.manual_ad_id)
+      : null
+
+    if (!current || current.is_archived) {
+      current = await getFirstAvailableItem(placement)
+    }
 
     if (!current) {
       const { data, error } = await supabase
         .from('shadow_advertisement_items')
         .insert({
-          placement: PLACEMENT,
-          name: 'Opening Ad 1',
+          placement,
+          name: `${config.label} 1`,
           enabled: true,
           sort_order: 1,
           in_loop: true,
@@ -620,14 +832,18 @@ export async function updateLegacyOpeningAdvertisement(req, res) {
       current = data
     }
 
-    if (req.file) uploadedImageUrl = await uploadImage(req.file)
-    const imageUrl = uploadedImageUrl || safeImage(req.body.image_url, current.image_url)
-    const item = itemPayload(req.body, current, imageUrl)
+    if (req.file) uploadedImageUrl = await uploadImage(req.file, config)
+
+    const imageUrl =
+      uploadedImageUrl ||
+      safeImage(req.body.image_url, current.image_url)
+
+    const item = itemPayload(placement, req.body, current, imageUrl)
 
     const { data, error } = await supabase
       .from('shadow_advertisement_items')
       .update(item)
-      .eq('placement', PLACEMENT)
+      .eq('placement', placement)
       .eq('id', current.id)
       .select('*')
       .single()
@@ -636,6 +852,7 @@ export async function updateLegacyOpeningAdvertisement(req, res) {
     uploadedImagePersisted = Boolean(uploadedImageUrl)
 
     const enabled = bool(req.body.enabled, settings.enabled)
+
     const { error: settingsError } = await supabase
       .from('shadow_advertisement_rotation_settings')
       .update({
@@ -644,23 +861,32 @@ export async function updateLegacyOpeningAdvertisement(req, res) {
         manual_ad_id: data.id,
         updated_at: new Date().toISOString(),
       })
-      .eq('placement', PLACEMENT)
+      .eq('placement', placement)
 
     if (settingsError) throw settingsError
 
-    await syncLegacyAdvertisement(data, enabled)
+    await syncLegacyAdvertisement(placement, data, enabled)
 
     if (uploadedImageUrl && current.image_url && current.image_url !== uploadedImageUrl) {
       await deleteImageIfUnused(current.image_url, current.id).catch(() => {})
     }
 
-    invalidateAdvertisementResponseCache(PLACEMENT)
-    await createLog(req, enabled ? 'UPDATE' : 'DISABLE', `Opening Ad updated. Status: ${enabled ? 'Enabled' : 'Disabled'}. Frequency: ${data.frequency}.`, data, enabled).catch(() => {})
+    invalidateAdvertisementResponseCache(placement)
+
+    await createLog(
+      req,
+      placement,
+      config,
+      enabled ? 'UPDATE' : 'DISABLE',
+      `${config.label} updated. Status: ${enabled ? 'Enabled' : 'Disabled'}. Frequency: ${data.frequency}.`,
+      data,
+      enabled,
+    ).catch(() => {})
 
     return res.status(200).json({
       ok: true,
       advertisement: {
-        placement: PLACEMENT,
+        placement,
         enabled,
         image_url: data.image_url || '',
         link_url: data.link_url || '',
@@ -672,8 +898,14 @@ export async function updateLegacyOpeningAdvertisement(req, res) {
       },
     })
   } catch (error) {
-    if (uploadedImageUrl && !uploadedImagePersisted) await deleteR2ObjectByUrl(uploadedImageUrl).catch(() => {})
-    console.error('UPDATE LEGACY OPENING AD ERROR:', error)
-    return res.status(error.statusCode || 500).json({ ok: false, message: error.message || 'Failed to save opening advertisement' })
+    if (uploadedImageUrl && !uploadedImagePersisted) {
+      await deleteR2ObjectByUrl(uploadedImageUrl).catch(() => {})
+    }
+
+    console.error('UPDATE LEGACY ROTATING AD ERROR:', error)
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      message: error.message || 'Failed to save rotating advertisement',
+    })
   }
 }
