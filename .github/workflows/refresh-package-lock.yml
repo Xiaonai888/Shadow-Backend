@@ -1,27 +1,45 @@
-name: Refresh Package Lock
+name: Dependency Security
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - package.json
+      - .github/workflows/refresh-package-lock.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - package.json
+      - package-lock.json
+      - .github/workflows/refresh-package-lock.yml
+  schedule:
+    - cron: '0 18 * * 3'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   refresh-lockfile:
+    if: ${{ github.event_name == 'push' }}
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 20
           cache: npm
 
       - name: Refresh package-lock.json
-        run: npm install --package-lock-only --ignore-scripts
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
 
       - name: Commit refreshed lockfile
         run: |
@@ -34,3 +52,78 @@ jobs:
           git add package-lock.json
           git commit -m "chore: refresh package lock"
           git push
+
+  audit-after-refresh:
+    if: ${{ github.event_name == 'push' }}
+    needs: refresh-lockfile
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Verify lockfile matches package.json
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs'
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'))
+          const root = lock.packages?.[''] || {}
+          const same = (a = {}, b = {}) =>
+            JSON.stringify(Object.fromEntries(Object.entries(a).sort())) ===
+            JSON.stringify(Object.fromEntries(Object.entries(b).sort()))
+          if (!same(pkg.dependencies, root.dependencies) ||
+              !same(pkg.devDependencies, root.devDependencies)) {
+            console.error('package-lock.json is out of sync with package.json')
+            process.exit(1)
+          }
+          NODE
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  audit:
+    if: ${{ github.event_name != 'push' }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Verify lockfile matches package.json
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs'
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'))
+          const root = lock.packages?.[''] || {}
+          const same = (a = {}, b = {}) =>
+            JSON.stringify(Object.fromEntries(Object.entries(a).sort())) ===
+            JSON.stringify(Object.fromEntries(Object.entries(b).sort()))
+          if (!same(pkg.dependencies, root.dependencies) ||
+              !same(pkg.devDependencies, root.devDependencies)) {
+            console.error('package-lock.json is out of sync with package.json')
+            process.exit(1)
+          }
+          NODE
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
