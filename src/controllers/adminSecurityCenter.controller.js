@@ -25,6 +25,14 @@ function countPendingResponses(assistant) {
   return assistant.responses.filter((item) => item.status === 'pending').length
 }
 
+function countPendingApprovals(assistant) {
+  return assistant.responses.filter(
+    (item) =>
+      item.status === 'pending'
+      && item.playbook === 'tamper_containment'
+  ).length
+}
+
 function statusForIps(state) {
   if (state === 'isolated') return ['Isolating', 'danger']
   if (state === 'blocked') return ['Blocking', 'danger']
@@ -170,8 +178,9 @@ export async function getAdminSecurityCenter(req, res) {
   )
 
   const pendingResponses = countPendingResponses(assistant)
-  const assistantStatus = pendingResponses > 0
-    ? 'Waiting Review'
+  const pendingApprovals = countPendingApprovals(assistant)
+  const assistantStatus = pendingApprovals > 0
+    ? 'Waiting Approval'
     : assistant.state === 'awake'
       ? 'Responding'
       : assistant.started
@@ -179,7 +188,7 @@ export async function getAdminSecurityCenter(req, res) {
         : 'Offline'
   const assistantTone = !assistant.started
     ? 'danger'
-    : pendingResponses > 0
+    : pendingApprovals > 0
       ? 'warning'
       : assistant.state === 'awake'
         ? 'info'
@@ -311,7 +320,7 @@ export async function getAdminSecurityCenter(req, res) {
     summary: {
       total_guards: guards.length,
       active_defenses: guards.filter((guard) => guard.active).length,
-      pending_approvals: pendingResponses,
+      pending_approvals: pendingApprovals,
       safe_mode: safeMode,
     },
     guards,
