@@ -5,6 +5,7 @@ import {
   streamWorkIncidents,
 } from '../controllers/adminWork.controller.js'
 import { getAdminWorkKillSwitches, setAdminWorkKillSwitch } from '../controllers/adminWorkKillSwitch.controller.js'
+import { getAdminSecurityCenter } from '../controllers/adminSecurityCenter.controller.js'
 import { createSecurityGate } from '../middleware/securityGate.middleware.js'
 import { guardSecurityMutation } from '../services/tamperGuard.service.js'
 import {
@@ -72,6 +73,7 @@ router.get('/events', streamWorkIncidents)
 router.get('/incidents', getWorkIncidents)
 router.get('/kill-switches', getAdminWorkKillSwitches)
 router.put('/kill-switches', observeKillSwitchTamper, protectKillSwitchMutation, setAdminWorkKillSwitch)
+router.get('/security-center', getAdminSecurityCenter)
 
 router.get('/security-response', securityResponseOwnerGate, (req, res) => {
   return res.status(200).json({
