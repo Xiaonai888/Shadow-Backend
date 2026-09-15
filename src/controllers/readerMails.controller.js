@@ -483,10 +483,10 @@ export async function sendDailyCheckInReminderMails() {
 
 export async function runDailyCheckInReminderMails(req, res) {
   try {
-    const secret = String(req.headers['x-cron-secret'] || req.query.secret || '')
-    const expectedSecret = String(process.env.CRON_SECRET || '')
+    const secret = String(req.headers['x-cron-secret'] || '')
+const expectedSecret = String(process.env.CRON_SECRET || '')
 
-    if (expectedSecret && secret !== expectedSecret) {
+if (!expectedSecret || !secret || secret !== expectedSecret) {
       return res.status(403).json({ ok: false, message: 'Forbidden' })
     }
 
