@@ -1,3 +1,4 @@
+import { resolveTamperIncident } from './tamperGuard.service.js'
 import { setWorkKillSwitch } from './workKillSwitch.service.js'
 
 const AUTO_ROUTE_CONTAINMENT_MS = 10 * 60 * 1000
@@ -101,5 +102,82 @@ export async function executeSecurityResponsePlaybook(response = {}) {
     ok: true,
     executed: false,
     code: 'PLAYBOOK_NO_AUTOMATIC_ACTION',
+  }
+}
+
+export function executeSecurityResponseResolution(
+  response = {},
+  {
+    approved = false,
+    actor = '',
+    reason = '',
+  } = {}
+) {
+  const playbook = cleanText(response?.playbook, 100).toLowerCase()
+
+  if (!approved) {
+    return {
+      ok: false,
+      executed: false,
+      code: 'PLAYBOOK_RESOLUTION_APPROVAL_REQUIRED',
+    }
+  }
+
+  if (!playbook) {
+    return {
+      ok: false,
+      executed: false,
+      code: 'PLAYBOOK_REQUIRED',
+    }
+  }
+
+  if (playbook !== 'tamper_containment') {
+    return {
+      ok: true,
+      executed: false,
+      code: 'PLAYBOOK_NO_RESOLUTION_ACTION',
+    }
+  }
+
+  const payload = safeObject(response?.payload)
+  const incidentId = cleanText(payload.incident_id, 100)
+  const safeActor = cleanText(actor, 200)
+
+  if (!incidentId) {
+    return {
+      ok: false,
+      executed: false,
+      code: 'PLAYBOOK_TAMPER_INCIDENT_REQUIRED',
+    }
+  }
+
+  if (!safeActor) {
+    return {
+      ok: false,
+      executed: false,
+      code: 'PLAYBOOK_RESOLUTION_ACTOR_REQUIRED',
+    }
+  }
+
+  const resolved = resolveTamperIncident({
+    incidentId,
+    actor: safeActor,
+    reason: cleanText(reason, 500) || 'Tamper incident manually approved as resolved',
+  })
+
+  if (!resolved) {
+    return {
+      ok: false,
+      executed: false,
+      code: 'PLAYBOOK_TAMPER_INCIDENT_NOT_FOUND',
+    }
+  }
+
+  return {
+    ok: true,
+    executed: true,
+    code: 'PLAYBOOK_TAMPER_RESOLVED',
+    action: 'tamper_incident_resolve',
+    incident_id: incidentId,
   }
 }
