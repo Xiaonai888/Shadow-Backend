@@ -2,6 +2,7 @@ import { supabase } from '../config/supabase.js'
 import { invalidateAdvertisementResponseCache } from '../services/advertisementsResponseCache.service.js'
 import { deleteR2ObjectByUrl, uploadFileToR2 } from '../services/r2Storage.service.js'
 import { assertR2MediaReference } from '../services/mediaStoragePolicy.service.js'
+import { getRotationAdminSnapshot, reorderRotationItems } from '../services/adRotationAdmin.service.js'
 
 const PLACEMENTS = {
   freeUnlock: {
@@ -372,28 +373,51 @@ export async function getAdminRotatingAdvertisement(req, res) {
   try {
     const { placement, config } = resolvePlacement(req)
     const settings = await getSettings(placement, config)
-
-    const { data, error } = await supabase
-      .from('shadow_advertisement_items')
-      .select('*')
-      .eq('placement', placement)
-      .order('is_archived', { ascending: true })
-      .order('sort_order', { ascending: true })
-      .order('id', { ascending: true })
-
-    if (error) throw error
+    const snapshot = await getRotationAdminSnapshot({
+      placement,
+      settings,
+      req,
+    })
 
     res.setHeader('Cache-Control', 'no-store')
     return res.status(200).json({
       ok: true,
       settings,
-      items: data || [],
+      ...snapshot,
     })
   } catch (error) {
     console.error('GET ADMIN ROTATING AD ERROR:', error)
     return res.status(error.statusCode || 500).json({
       ok: false,
       message: error.message || 'Failed to load rotating advertisement',
+    })
+  }
+}
+
+export async function reorderAdminRotatingAdvertisementItems(req, res) {
+  try {
+    const { placement, config } = resolvePlacement(req)
+    const itemId = Number(req.body?.item_id)
+    const targetItemId = req.body?.target_item_id ? Number(req.body.target_item_id) : null
+    const direction = String(req.body?.direction || '').trim()
+
+    await reorderRotationItems({
+      placement,
+      itemId,
+      targetItemId,
+      direction,
+    })
+
+    const settings = await getSettings(placement, config)
+    await restartAutoRotation(placement, settings, settings?.mode === 'auto')
+    invalidateAdvertisementResponseCache(placement)
+
+    return res.status(200).json({ ok: true })
+  } catch (error) {
+    console.error('REORDER ADMIN ROTATING ADS ERROR:', error)
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      message: error.message || 'Failed to reorder advertisements',
     })
   }
 }
