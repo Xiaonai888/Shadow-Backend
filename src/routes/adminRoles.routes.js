@@ -3,6 +3,7 @@ import { supabase } from '../config/supabase.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { getAdminActor, logAdminActivity } from '../services/adminActivity.service.js'
 import { createSecurityGate } from '../middleware/securityGate.middleware.js'
+import { guardSecurityMutation } from '../services/tamperGuard.service.js'
 
 const router = express.Router()
 const viewRoles = requireAdminPermission('roles.view')
@@ -30,6 +31,38 @@ function requireOwner(req, res, next) {
 
 function cleanText(value, maxLength = 300) {
   return String(value || '').trim().slice(0, maxLength)
+}
+
+function observeRoleSecurityMutation(action) {
+  return (req, res, next) => {
+    const role = String(req.admin?.role || '').trim().toLowerCase()
+    const authorized = role === 'owner'
+
+    guardSecurityMutation({
+      target: 'security_config',
+      action,
+      actor:
+        req.admin?.admin_id
+        || req.admin?.id
+        || req.admin?.email
+        || role
+        || 'admin',
+      authorized,
+      allowInSafeMode: false,
+      reason: authorized
+        ? 'Admin role or permission mutation attempted during protected state'
+        : 'Non-owner attempted to modify admin roles or permissions',
+      details: {
+        control: 'admin_roles_permissions',
+        role: role || 'unknown',
+        role_id: req.params?.roleId || null,
+        method: req.method,
+        path: req.originalUrl || req.path || '',
+      },
+    })
+
+    return next()
+  }
 }
 
 function cleanPermissionKeys(value) {
@@ -170,24 +203,24 @@ async function loadRolesWithPermissions() {
 
   if (linksError) throw linksError
 
-const { data: assignedAccounts, error: accountsError } = await supabase
-  .from('admin_users')
-  .select('role_id')
-  .in('role_id', roleIds)
+  const { data: assignedAccounts, error: accountsError } = await supabase
+    .from('admin_users')
+    .select('role_id')
+    .in('role_id', roleIds)
 
-if (accountsError) throw accountsError
+  if (accountsError) throw accountsError
 
-const staffCountByRole = new Map()
+  const staffCountByRole = new Map()
 
-for (const account of assignedAccounts || []) {
-  if (!account.role_id) continue
-  staffCountByRole.set(
-    account.role_id,
-    (staffCountByRole.get(account.role_id) || 0) + 1
-  )
-}
+  for (const account of assignedAccounts || []) {
+    if (!account.role_id) continue
+    staffCountByRole.set(
+      account.role_id,
+      (staffCountByRole.get(account.role_id) || 0) + 1
+    )
+  }
 
-const permissionById = new Map(
+  const permissionById = new Map(
     permissions.map((permission) => [permission.id, permission])
   )
 
@@ -294,122 +327,19 @@ router.get('/', viewRoles, async (req, res) => {
   }
 })
 
-router.post('/', manageRoles, requireOwner, rolePermissionGate, async (req, res) => {
-  let createdRole = null
+router.post(
+  '/',
+  manageRoles,
+  observeRoleSecurityMutation('config_change'),
+  requireOwner,
+  rolePermissionGate,
+  async (req, res) => {
+    let createdRole = null
 
-  try {
-    const name = cleanText(req.body?.name, 60)
-    const description = cleanText(req.body?.description, 300)
-    const permissionKeys = cleanPermissionKeys(req.body?.permission_keys)
-
-    if (name.length < 2) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Role name must be at least 2 characters',
-      })
-    }
-
-    if (isReservedRoleName(name)) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Owner is a protected system role',
-      })
-    }
-
-    const resolved = await resolvePermissionIds(permissionKeys)
-
-    const { data, error } = await supabase
-      .from('admin_roles')
-      .insert({
-        name,
-        description,
-        is_system: false,
-        is_protected: false,
-        created_by_admin_id: req.admin?.admin_id || null,
-        created_by_name: getAdminActor(req),
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-
-    createdRole = data
-
-    if (resolved.ids.length > 0) {
-      const { error: linkError } = await supabase
-        .from('admin_role_permissions')
-        .insert(
-          resolved.ids.map((permissionId) => ({
-            role_id: data.id,
-            permission_id: permissionId,
-          }))
-        )
-
-      if (linkError) throw linkError
-    }
-
-    await logAdminActivity({
-      action: 'ROLE_CREATE',
-      section_key: 'roles',
-      item_id: data.id,
-      title: data.name,
-      actor: getAdminActor(req),
-      details: `Created role ${data.name} with ${resolved.keys.length} permissions.`,
-    })
-
-    const roles = await loadRolesWithPermissions()
-    const role = roles.find((item) => item.id === data.id) || data
-
-    return res.status(201).json({
-      ok: true,
-      role,
-    })
-  } catch (error) {
-    if (createdRole?.id) {
-      await supabase
-        .from('admin_roles')
-        .delete()
-        .eq('id', createdRole.id)
-    }
-
-    console.error('CREATE ADMIN ROLE ERROR:', error)
-
-    if (error?.code === '23505') {
-      return res.status(409).json({
-        ok: false,
-        message: 'A role with this name already exists',
-      })
-    }
-
-    return res.status(error.status || 500).json({
-      ok: false,
-      message: error.message || 'Failed to create role',
-    })
-  }
-})
-
-router.patch('/:roleId', manageRoles, requireOwner, rolePermissionGate, async (req, res) => {
-  try {
-    const role = await loadRole(req.params.roleId)
-
-    if (!role) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Role not found',
-      })
-    }
-
-    if (role.is_system || role.is_protected) {
-      return res.status(403).json({
-        ok: false,
-        message: 'Protected system roles cannot be edited',
-      })
-    }
-
-    const updates = {}
-
-    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'name')) {
+    try {
       const name = cleanText(req.body?.name, 60)
+      const description = cleanText(req.body?.description, 300)
+      const permissionKeys = cleanPermissionKeys(req.body?.permission_keys)
 
       if (name.length < 2) {
         return res.status(400).json({
@@ -425,111 +355,235 @@ router.patch('/:roleId', manageRoles, requireOwner, rolePermissionGate, async (r
         })
       }
 
-      updates.name = name
-    }
+      const resolved = await resolvePermissionIds(permissionKeys)
 
-    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'description')) {
-      updates.description = cleanText(req.body?.description, 300)
-    }
-
-    let resolved = null
-
-    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'permission_keys')) {
-      resolved = await resolvePermissionIds(req.body?.permission_keys)
-    }
-
-    if (Object.keys(updates).length > 0) {
-      const { error: updateError } = await supabase
+      const { data, error } = await supabase
         .from('admin_roles')
-        .update(updates)
+        .insert({
+          name,
+          description,
+          is_system: false,
+          is_protected: false,
+          created_by_admin_id: req.admin?.admin_id || null,
+          created_by_name: getAdminActor(req),
+        })
+        .select()
+        .single()
+
+      if (error) throw error
+
+      createdRole = data
+
+      if (resolved.ids.length > 0) {
+        const { error: linkError } = await supabase
+          .from('admin_role_permissions')
+          .insert(
+            resolved.ids.map((permissionId) => ({
+              role_id: data.id,
+              permission_id: permissionId,
+            }))
+          )
+
+        if (linkError) throw linkError
+      }
+
+      await logAdminActivity({
+        action: 'ROLE_CREATE',
+        section_key: 'roles',
+        item_id: data.id,
+        title: data.name,
+        actor: getAdminActor(req),
+        details: `Created role ${data.name} with ${resolved.keys.length} permissions.`,
+      })
+
+      const roles = await loadRolesWithPermissions()
+      const role = roles.find((item) => item.id === data.id) || data
+
+      return res.status(201).json({
+        ok: true,
+        role,
+      })
+    } catch (error) {
+      if (createdRole?.id) {
+        await supabase
+          .from('admin_roles')
+          .delete()
+          .eq('id', createdRole.id)
+      }
+
+      console.error('CREATE ADMIN ROLE ERROR:', error)
+
+      if (error?.code === '23505') {
+        return res.status(409).json({
+          ok: false,
+          message: 'A role with this name already exists',
+        })
+      }
+
+      return res.status(error.status || 500).json({
+        ok: false,
+        message: error.message || 'Failed to create role',
+      })
+    }
+  }
+)
+
+router.patch(
+  '/:roleId',
+  manageRoles,
+  observeRoleSecurityMutation('config_change'),
+  requireOwner,
+  rolePermissionGate,
+  async (req, res) => {
+    try {
+      const role = await loadRole(req.params.roleId)
+
+      if (!role) {
+        return res.status(404).json({
+          ok: false,
+          message: 'Role not found',
+        })
+      }
+
+      if (role.is_system || role.is_protected) {
+        return res.status(403).json({
+          ok: false,
+          message: 'Protected system roles cannot be edited',
+        })
+      }
+
+      const updates = {}
+
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, 'name')) {
+        const name = cleanText(req.body?.name, 60)
+
+        if (name.length < 2) {
+          return res.status(400).json({
+            ok: false,
+            message: 'Role name must be at least 2 characters',
+          })
+        }
+
+        if (isReservedRoleName(name)) {
+          return res.status(400).json({
+            ok: false,
+            message: 'Owner is a protected system role',
+          })
+        }
+
+        updates.name = name
+      }
+
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, 'description')) {
+        updates.description = cleanText(req.body?.description, 300)
+      }
+
+      let resolved = null
+
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, 'permission_keys')) {
+        resolved = await resolvePermissionIds(req.body?.permission_keys)
+      }
+
+      if (Object.keys(updates).length > 0) {
+        const { error: updateError } = await supabase
+          .from('admin_roles')
+          .update(updates)
+          .eq('id', role.id)
+
+        if (updateError) throw updateError
+      }
+
+      if (resolved) {
+        await replaceRolePermissions(role.id, resolved.ids)
+      }
+
+      const roles = await loadRolesWithPermissions()
+      const updatedRole = roles.find((item) => item.id === role.id)
+
+      await logAdminActivity({
+        action: 'ROLE_UPDATE',
+        section_key: 'roles',
+        item_id: role.id,
+        title: updatedRole?.name || role.name,
+        actor: getAdminActor(req),
+        details: `Updated role ${updatedRole?.name || role.name}.`,
+      })
+
+      return res.status(200).json({
+        ok: true,
+        role: updatedRole,
+      })
+    } catch (error) {
+      console.error('UPDATE ADMIN ROLE ERROR:', error)
+
+      if (error?.code === '23505') {
+        return res.status(409).json({
+          ok: false,
+          message: 'A role with this name already exists',
+        })
+      }
+
+      return res.status(error.status || 500).json({
+        ok: false,
+        message: error.message || 'Failed to update role',
+      })
+    }
+  }
+)
+
+router.delete(
+  '/:roleId',
+  manageRoles,
+  observeRoleSecurityMutation('remove'),
+  requireOwner,
+  rolePermissionGate,
+  async (req, res) => {
+    try {
+      const role = await loadRole(req.params.roleId)
+
+      if (!role) {
+        return res.status(404).json({
+          ok: false,
+          message: 'Role not found',
+        })
+      }
+
+      if (role.is_system || role.is_protected) {
+        return res.status(403).json({
+          ok: false,
+          message: 'Protected system roles cannot be deleted',
+        })
+      }
+
+      const { error } = await supabase
+        .from('admin_roles')
+        .delete()
         .eq('id', role.id)
 
-      if (updateError) throw updateError
-    }
+      if (error) throw error
 
-    if (resolved) {
-      await replaceRolePermissions(role.id, resolved.ids)
-    }
+      await logAdminActivity({
+        action: 'ROLE_DELETE',
+        section_key: 'roles',
+        item_id: role.id,
+        title: role.name,
+        actor: getAdminActor(req),
+        details: `Deleted role ${role.name}.`,
+      })
 
-    const roles = await loadRolesWithPermissions()
-    const updatedRole = roles.find((item) => item.id === role.id)
+      return res.status(200).json({
+        ok: true,
+        deleted_role_id: role.id,
+      })
+    } catch (error) {
+      console.error('DELETE ADMIN ROLE ERROR:', error)
 
-    await logAdminActivity({
-      action: 'ROLE_UPDATE',
-      section_key: 'roles',
-      item_id: role.id,
-      title: updatedRole?.name || role.name,
-      actor: getAdminActor(req),
-      details: `Updated role ${updatedRole?.name || role.name}.`,
-    })
-
-    return res.status(200).json({
-      ok: true,
-      role: updatedRole,
-    })
-  } catch (error) {
-    console.error('UPDATE ADMIN ROLE ERROR:', error)
-
-    if (error?.code === '23505') {
-      return res.status(409).json({
+      return res.status(500).json({
         ok: false,
-        message: 'A role with this name already exists',
+        message: 'Failed to delete role',
       })
     }
-
-    return res.status(error.status || 500).json({
-      ok: false,
-      message: error.message || 'Failed to update role',
-    })
   }
-})
-
-router.delete('/:roleId', manageRoles, requireOwner, rolePermissionGate, async (req, res) => {
-  try {
-    const role = await loadRole(req.params.roleId)
-
-    if (!role) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Role not found',
-      })
-    }
-
-    if (role.is_system || role.is_protected) {
-      return res.status(403).json({
-        ok: false,
-        message: 'Protected system roles cannot be deleted',
-      })
-    }
-
-    const { error } = await supabase
-      .from('admin_roles')
-      .delete()
-      .eq('id', role.id)
-
-    if (error) throw error
-
-    await logAdminActivity({
-      action: 'ROLE_DELETE',
-      section_key: 'roles',
-      item_id: role.id,
-      title: role.name,
-      actor: getAdminActor(req),
-      details: `Deleted role ${role.name}.`,
-    })
-
-    return res.status(200).json({
-      ok: true,
-      deleted_role_id: role.id,
-    })
-  } catch (error) {
-    console.error('DELETE ADMIN ROLE ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to delete role',
-    })
-  }
-})
+)
 
 export default router
