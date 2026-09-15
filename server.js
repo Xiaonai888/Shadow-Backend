@@ -49,6 +49,7 @@ import { workDetector, startWorkDetectorMonitor } from './src/middleware/workDet
 import { ipsEnforcement } from './src/middleware/ipsEnforcement.middleware.js'
 import { workKillSwitch } from './src/middleware/workKillSwitch.middleware.js'
 import { startWorkKillSwitchService } from './src/services/workKillSwitch.service.js'
+import { startSecurityResponseAssistant } from './src/services/securityResponseAssistant.service.js'
 import adminTaskCenterRoutes from './src/routes/adminTaskCenter.routes.js'
 import adminLoginGuardRoutes from './src/routes/adminLoginGuard.routes.js'
 import adminDeviceAccessRoutes from './src/routes/adminDeviceAccess.routes.js'
@@ -783,6 +784,7 @@ app.use((error, req, res, next) => {
 
 const PORT = process.env.PORT || 5000
 
+startSecurityResponseAssistant()
 await startWorkKillSwitchService()
 
 app.listen(PORT, () => {
