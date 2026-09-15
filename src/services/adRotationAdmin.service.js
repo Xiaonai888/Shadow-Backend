@@ -16,7 +16,7 @@ function cleanSearch(value) {
 function listQuery(placement, archived, filter, search, options = {}) {
   let query = supabase
     .from('shadow_advertisement_items')
-    .select(options.select || '*', options.count ? { count: 'exact' } : undefined)
+    .select(options.select || '*', options.count ? { count: 'exact', head: true } : undefined)
     .eq('placement', placement)
     .eq('is_archived', archived)
 
