@@ -397,67 +397,77 @@ export async function getDiscoverStoriesFeed(
     const groups = new Map()
 
     for (const story of authorStories) {
-      const page = authorById.get(
-        story.author_page_id
-      )
+  const page = authorById.get(
+    story.author_page_id
+  )
 
-      if (
-        !page ||
-        !followedAuthorIds.has(page.id)
-      ) {
-        continue
-      }
+  const isOwner =
+    String(page?.user_id || '') ===
+    String(userId)
 
-      const key = `author:${page.id}`
+  const isFollowing =
+    Boolean(page?.id) &&
+    followedAuthorIds.has(page.id)
 
-      if (!groups.has(key)) {
-        groups.set(key, {
-          key,
-          creator: {
-            type: 'author',
-            id: page.id,
-            user_id: page.user_id,
-            name:
-              page.page_name || 'Author',
-            username:
-              page.page_username || '',
-            avatar_url:
-              page.avatar_url || '',
-          },
-          is_owner: false,
-          is_following: true,
-          is_mutual: false,
-          recent_view_count:
-            authorViewCounts.get(
-              page.id
-            ) || 0,
-          latest_created_at:
-            story.created_at,
-          stories: [],
-        })
-      }
+  if (
+    !page ||
+    (!isOwner && !isFollowing)
+  ) {
+    continue
+  }
 
-      const group = groups.get(key)
+  const key = `author:${page.id}`
 
-      if (
-        asTime(story.created_at) >
-        asTime(
-          group.latest_created_at
+  if (!groups.has(key)) {
+    groups.set(key, {
+      key,
+      creator: {
+        type: 'author',
+        id: page.id,
+        user_id: page.user_id,
+        name:
+          page.page_name || 'Author',
+        username:
+          page.page_username || '',
+        avatar_url:
+          page.avatar_url || '',
+      },
+      is_owner: isOwner,
+      is_following: isFollowing,
+      is_mutual: false,
+      recent_view_count:
+        authorViewCounts.get(
+          page.id
+        ) || 0,
+      latest_created_at:
+        story.created_at,
+      stories: [],
+    })
+  }
+
+  const group = groups.get(key)
+
+  if (
+    asTime(story.created_at) >
+    asTime(
+      group.latest_created_at
+    )
+  ) {
+    group.latest_created_at =
+      story.created_at
+  }
+
+  group.stories.push(
+    makeAuthorStory(
+      story,
+      isOwner ||
+        viewedAuthorStoryIds.has(
+          story.id
         )
-      ) {
-        group.latest_created_at =
-          story.created_at
-      }
+    )
+  )
+}
 
-      group.stories.push(
-        makeAuthorStory(
-          story,
-          viewedAuthorStoryIds.has(
-            story.id
-          )
-        )
-      )
-    }
 
     for (const story of readerStories) {
       const reader = readerById.get(
