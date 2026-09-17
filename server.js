@@ -219,7 +219,7 @@ const corsOptions = {
     'X-Admin-Id',
     'X-Shadow-Visitor-Id',
   ],
-  exposedHeaders: ['X-Reader-Token'],
+  exposedHeaders: ['X-Reader-Token', 'X-Spin-Search-Remaining'],
 }
 
 app.use(cors(corsOptions))
