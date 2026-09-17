@@ -1,12 +1,17 @@
 import express from 'express'
-import { requireAdmin } from '../middleware/auth.middleware.js'
+import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { getSystemUsageCurrentSnapshot } from '../services/systemUsageMonitor.service.js'
 import { getSystemUsageAnomalySnapshot } from '../services/systemUsageAnomaly.service.js'
 import { listSystemUsageIncidents } from '../services/systemUsageIncident.service.js'
 
 const router = express.Router()
+const viewSystemControl = requireAdminPermission('system_control.view')
 
-router.use(requireAdmin)
+router.use(viewSystemControl)
+router.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store')
+  next()
+})
 
 router.get('/snapshot', (req, res) => {
   return res.status(200).json({
