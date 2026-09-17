@@ -1,5 +1,6 @@
 import http from 'node:http'
 import https from 'node:https'
+import { AsyncLocalStorage } from 'node:async_hooks'
 
 const ENABLED =
   String(process.env.TRAFFIC_DIAGNOSTIC_ENABLED ?? 'true')
@@ -10,6 +11,7 @@ const FLUSH_MS = 60 * 1000
 const MAX_ROWS = 25
 const inbound = new Map()
 const outbound = new Map()
+const requestContext = new AsyncLocalStorage()
 
 function bytesOf(value, encoding) {
   if (value === null || value === undefined) return 0
@@ -128,7 +130,7 @@ function installFetchDiagnostic() {
     const method = String(
       init.method || (input instanceof Request ? input.method : 'GET') || 'GET'
     ).toUpperCase()
-    const key = `${destination(url.hostname)} ${method} ${normalizePath(url.pathname)}`
+    const key = `${requestContext.getStore()?.route || 'BACKGROUND'} -> ${destination(url.hostname)} ${method} ${normalizePath(url.pathname)}`
     const requestBytes = fetchRequestBytes(input, init)
 
     try {
@@ -192,7 +194,7 @@ function installHttpDiagnostic(moduleObject) {
 
   moduleObject.request = function wrappedRequest(...args) {
     const meta = httpMeta(args)
-    const key = `${destination(meta.hostname)} ${meta.method} ${normalizePath(meta.path)}`
+    const key = `${requestContext.getStore()?.route || 'BACKGROUND'} -> ${destination(meta.hostname)} ${meta.method} ${normalizePath(meta.path)}`
     const startedAt = Date.now()
     const request = nativeRequest.apply(this, args)
     let writtenBytes = 0
@@ -226,7 +228,7 @@ function installHttpDiagnostic(moduleObject) {
 }
 
 export function trafficDiagnosticMiddleware(req, res, next) {
-  if (!ENABLED) return next()
+  if (!ENABLED) return requestContext.run({ route: key }, next)
 
   const startedAt = Date.now()
   const key = `${String(req.method || 'GET').toUpperCase()} ${normalizePath(
