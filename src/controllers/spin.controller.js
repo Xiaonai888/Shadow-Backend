@@ -756,3 +756,85 @@ export async function deleteSpinMedia(req, res) {
     })
   }
 }
+
+export async function getSpinGameSessionStatus(req, res) {
+  try {
+    const userId = getUserId(req)
+
+    const { data, error } = await supabase.rpc(
+      'get_spin_game_status',
+      {
+        p_user_id: userId,
+      }
+    )
+
+    if (error) throw error
+
+    return res.status(200).json(data || {
+      ok: false,
+      code: 'SPIN_STATUS_EMPTY',
+      message: 'Spin status is unavailable',
+    })
+  } catch (error) {
+    console.error('GET SPIN GAME STATUS ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      code: 'SPIN_STATUS_FAILED',
+      message: error.message || 'Failed to load Spin status',
+    })
+  }
+}
+
+export async function startSpinGameSession(req, res) {
+  try {
+    const userId = getUserId(req)
+    const mode = cleanText(req.body?.mode, 20).toLowerCase()
+    const requestKey = cleanText(req.body?.request_key, 120)
+
+    if (!requestKey) {
+      return res.status(400).json({
+        ok: false,
+        code: 'SPIN_REQUEST_KEY_REQUIRED',
+        message: 'Request key is required',
+      })
+    }
+
+    const { data, error } = await supabase.rpc(
+      'start_spin_game_session',
+      {
+        p_user_id: userId,
+        p_mode: mode,
+        p_request_key: requestKey,
+      }
+    )
+
+    if (error) throw error
+
+    if (data?.ok === false) {
+      const statusCode =
+        data.code === 'INSUFFICIENT_COINS' ||
+        data.code === 'INSUFFICIENT_DIAMONDS'
+          ? 402
+          : data.code === 'SPIN_DAILY_LIMIT' ||
+              data.code === 'SPIN_COOLDOWN'
+            ? 429
+            : 400
+
+      return res.status(statusCode).json(data)
+    }
+
+    return res
+      .status(data?.idempotent ? 200 : 201)
+      .json(data)
+  } catch (error) {
+    console.error('START SPIN GAME SESSION ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      code: 'SPIN_SESSION_START_FAILED',
+      message: error.message || 'Failed to start Spin game',
+    })
+  }
+}
+
