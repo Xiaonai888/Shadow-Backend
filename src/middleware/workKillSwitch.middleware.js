@@ -5,6 +5,7 @@ import {
 
 const ALWAYS_BYPASS_PREFIXES = [
   '/api/admin/work',
+  '/api/admin/system-control',
 ]
 
 const AUTO_BYPASS_PREFIXES = [
