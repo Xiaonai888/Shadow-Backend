@@ -4,6 +4,7 @@ import os from 'node:os'
 import { unlink } from 'node:fs/promises'
 import { requireUser } from '../middleware/user.middleware.js'
 import {
+  searchSpinGameSession,
   clearSpinResults,
   createSpinResult,
   createSpinWheel,
@@ -56,6 +57,7 @@ router.use(requireUser)
 
 router.get('/sessions/status', getSpinGameSessionStatus)
 router.post('/sessions/start', startSpinGameSession)
+router.get('/sessions/:sessionId/search', searchSpinGameSession)
 
 router.get('/wheels', getSpinWheels)
 router.post('/wheels', createSpinWheel)
