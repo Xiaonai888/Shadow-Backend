@@ -11,6 +11,8 @@ import {
   deleteSpinResult,
   deleteSpinWheel,
   getSpinResults,
+  getSpinGameSessionStatus,
+  startSpinGameSession,
   getSpinWheels,
   updateSpinWheel,
   uploadSpinMedia,
@@ -51,6 +53,9 @@ function uploadImage(req, res, next) {
 }
 
 router.use(requireUser)
+
+router.get('/sessions/status', getSpinGameSessionStatus)
+router.post('/sessions/start', startSpinGameSession)
 
 router.get('/wheels', getSpinWheels)
 router.post('/wheels', createSpinWheel)
