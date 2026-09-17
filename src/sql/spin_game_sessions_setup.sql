@@ -442,3 +442,89 @@ to service_role;
 
 grant execute on function public.start_spin_game_session(uuid, text, text)
 to service_role;
+
+create or replace function public.consume_spin_search_request(
+  p_user_id uuid,
+  p_session_id uuid,
+  p_expected_mode text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_expected_mode text;
+  v_session public.spin_game_sessions%rowtype;
+begin
+  if p_user_id is null then
+    return jsonb_build_object('ok', false, 'code', 'SPIN_USER_REQUIRED', 'message', 'User is required');
+  end if;
+
+  if p_session_id is null then
+    return jsonb_build_object('ok', false, 'code', 'SPIN_SESSION_REQUIRED', 'message', 'Spin session is required');
+  end if;
+
+  v_expected_mode := lower(trim(coalesce(p_expected_mode, '')));
+
+  if v_expected_mode not in ('reader', 'book', 'author') then
+    return jsonb_build_object('ok', false, 'code', 'SPIN_SEARCH_MODE_INVALID', 'message', 'Invalid Spin search mode');
+  end if;
+
+  select *
+  into v_session
+  from public.spin_game_sessions
+  where id = p_session_id
+    and user_id = p_user_id
+  for update;
+
+  if not found then
+    return jsonb_build_object('ok', false, 'code', 'SPIN_SESSION_NOT_FOUND', 'message', 'Spin session not found');
+  end if;
+
+  if v_session.expires_at <= now() then
+    return jsonb_build_object('ok', false, 'code', 'SPIN_SESSION_EXPIRED', 'message', 'Spin session expired');
+  end if;
+
+  if v_session.mode <> v_expected_mode then
+    return jsonb_build_object('ok', false, 'code', 'SPIN_SESSION_MODE_MISMATCH', 'message', 'Spin session does not match this search type');
+  end if;
+
+  if v_session.search_limit <= 0 then
+    return jsonb_build_object('ok', false, 'code', 'SPIN_SEARCH_DISABLED', 'message', 'Search is not available for this Spin mode');
+  end if;
+
+  if v_session.search_count >= v_session.search_limit then
+    return jsonb_build_object(
+      'ok', false,
+      'code', 'SPIN_SEARCH_LIMIT',
+      'message', 'Spin search limit reached',
+      'used', v_session.search_count,
+      'limit', v_session.search_limit,
+      'remaining', 0
+    );
+  end if;
+
+  update public.spin_game_sessions
+  set search_count = search_count + 1
+  where id = v_session.id
+  returning *
+  into v_session;
+
+  return jsonb_build_object(
+    'ok', true,
+    'session_id', v_session.id,
+    'mode', v_session.mode,
+    'used', v_session.search_count,
+    'limit', v_session.search_limit,
+    'remaining', greatest(0, v_session.search_limit - v_session.search_count),
+    'expires_at', v_session.expires_at
+  );
+end;
+$$;
+
+revoke all on function public.consume_spin_search_request(uuid, uuid, text)
+from public, anon, authenticated;
+
+grant execute on function public.consume_spin_search_request(uuid, uuid, text)
+to service_role;
