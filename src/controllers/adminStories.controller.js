@@ -755,20 +755,50 @@ export async function getAdminStories(req, res) {
     const to = from + limit - 1
     const tab = cleanText(req.query.tab || 'active').toLowerCase()
     const search = cleanText(req.query.q || req.query.search || req.query.keyword)
-    const storyStatus = cleanText(req.query.status || 'all').toLowerCase()
+    const publishStatus = cleanText(req.query.status || 'all').toLowerCase()
     const visibility = cleanText(req.query.visibility || 'all').toLowerCase()
     const genre = cleanText(req.query.genre || 'all')
     const storyType = cleanText(req.query.story_type || req.query.storyType || 'all').toLowerCase()
+    const lifecycle = cleanText(req.query.lifecycle || 'all').toLowerCase()
+    const sort = cleanText(req.query.sort || 'newest').toLowerCase()
     const authorId = cleanText(req.query.author_id || req.query.authorId)
 
-    let query = supabase.from('stories').select('*', { count: 'exact' })
+    const storyFields = [
+      'id', 'author_id', 'user_id', 'title', 'story_type', 'story_language',
+      'main_genre', 'story_status', 'tags', 'description', 'is_adult', 'cover_url',
+      'status', 'access_type', 'is_shadow_exclusive', 'exclusive_status',
+      'exclusive_sections', 'update_days', 'total_episodes', 'total_views',
+      'total_likes', 'total_comments', 'deleted_at', 'delete_expires_at',
+      'admin_archive_expires_at', 'deleted_by_user_id', 'admin_visibility_status',
+      'admin_restriction_reason', 'admin_restricted_at', 'admin_restricted_by',
+      'policy_warning_count', 'last_policy_warning_at', 'admin_note', 'created_at',
+      'updated_at',
+    ].join(',')
+
+    let matchedAuthorIds = []
+    const exactStoryId = isUuid(search) ? search : ''
+
+    if (search && !exactStoryId) {
+      const authorSearch = normalizeStoryPickerSearch(search).replace(/^@/, '')
+      if (authorSearch) {
+        const { data: matchedAuthors, error: authorSearchError } = await supabase
+          .from('author_pages')
+          .select('id')
+          .or(`page_name.ilike.%${authorSearch}%,page_username.ilike.%${authorSearch}%`)
+          .limit(100)
+        if (authorSearchError) throw authorSearchError
+        matchedAuthorIds = (matchedAuthors || []).map((author) => author.id).filter(Boolean)
+      }
+    }
+
+    let query = supabase.from('stories').select(storyFields, { count: 'exact' })
 
     if (tab === 'deleted') query = query.not('deleted_at', 'is', null)
-    if (tab === 'active') query = query.is('deleted_at', null)
+    if (tab === 'active' || tab === 'library') query = query.is('deleted_at', null)
     if (tab === 'restricted') query = query.in('admin_visibility_status', ['restricted', 'disabled']).is('deleted_at', null)
     if (tab === 'warnings') query = query.gt('policy_warning_count', 0)
 
-    if (storyStatus !== 'all') query = query.eq('status', storyStatus)
+    if (publishStatus !== 'all') query = query.eq('status', publishStatus)
     if (visibility !== 'all') query = query.eq('admin_visibility_status', visibility)
     if (genre !== 'all') query = query.eq('main_genre', genre)
     if (storyType === 'novel') query = query.or('story_type.eq.novel,story_type.is.null')
@@ -776,24 +806,80 @@ export async function getAdminStories(req, res) {
     if (storyType === 'chat_story') query = query.eq('story_type', 'chat_story')
     if (authorId) query = query.eq('author_id', authorId)
 
+    if (lifecycle === 'new') {
+      query = query.eq('total_episodes', 1).or('story_status.neq.Completed,story_status.is.null')
+    }
+    if (lifecycle === 'ongoing') {
+      query = query.gte('total_episodes', 2).or('story_status.neq.Completed,story_status.is.null')
+    }
+    if (lifecycle === 'completed') query = query.eq('story_status', 'Completed')
+
     if (search) {
-      if (isUuid(search)) {
-        query = query.eq('id', search)
+      if (exactStoryId) {
+        query = query.eq('id', exactStoryId)
       } else {
-        const safeSearch = search.replace(/[%_]/g, '\\$&')
-        query = query.or(`title.ilike.%${safeSearch}%,main_genre.ilike.%${safeSearch}%,story_language.ilike.%${safeSearch}%`)
+        const safeSearch = normalizeStoryPickerSearch(search)
+        const filters = [
+          `title.ilike.%${safeSearch}%`,
+          `main_genre.ilike.%${safeSearch}%`,
+          `story_language.ilike.%${safeSearch}%`,
+        ]
+        if (matchedAuthorIds.length) filters.push(`author_id.in.(${matchedAuthorIds.join(',')})`)
+        query = query.or(filters.join(','))
       }
     }
 
-    const { data, count, error } = await query
-      .order(tab === 'deleted' ? 'deleted_at' : 'updated_at', { ascending: false, nullsFirst: false })
-      .range(from, to)
+    if (tab === 'deleted') {
+      query = query.order('deleted_at', { ascending: false, nullsFirst: false })
+    } else if (sort === 'oldest') {
+      query = query.order('created_at', { ascending: true, nullsFirst: false })
+    } else if (sort === 'most_views') {
+      query = query.order('total_views', { ascending: false, nullsFirst: false })
+    } else {
+      query = query.order('created_at', { ascending: false, nullsFirst: false })
+    }
 
+    const { data, count, error } = await query.range(from, to)
     if (error) throw error
 
-    const authors = await fetchAuthors((data || []).map((story) => story.author_id))
-    const stories = (data || []).map((story) => publicStory(story, authors.get(story.author_id)))
-    const total = count || 0
+    const rows = data || []
+    const storyIds = rows.map((story) => story.id).filter(Boolean)
+    const [authors, episodeResult] = await Promise.all([
+      fetchAuthors(rows.map((story) => story.author_id)),
+      storyIds.length
+        ? supabase
+            .from('episodes')
+            .select('story_id, first_published_at')
+            .in('story_id', storyIds)
+            .eq('status', 'published')
+            .is('deleted_at', null)
+            .not('first_published_at', 'is', null)
+            .order('first_published_at', { ascending: true })
+        : Promise.resolve({ data: [], error: null }),
+    ])
+
+    if (episodeResult.error) throw episodeResult.error
+
+    const firstPublishedByStory = new Map()
+    ;(episodeResult.data || []).forEach((episode) => {
+      if (!firstPublishedByStory.has(episode.story_id)) {
+        firstPublishedByStory.set(episode.story_id, episode.first_published_at)
+      }
+    })
+
+    const stories = rows.map((story) => {
+      const totalEpisodes = Number(story.total_episodes || 0)
+      const completed = String(story.story_status || '').toLowerCase() === 'completed'
+      const lifecycleLabel = completed ? 'Completed' : totalEpisodes === 1 ? 'New' : totalEpisodes >= 2 ? 'Ongoing' : 'No Episodes'
+
+      return {
+        ...publicStory(story, authors.get(story.author_id)),
+        lifecycle: lifecycleLabel,
+        published_at: firstPublishedByStory.get(story.id) || null,
+      }
+    })
+
+    const total = Number(count || 0)
     const totalPages = Math.max(1, Math.ceil(total / limit))
 
     return res.status(200).json({
