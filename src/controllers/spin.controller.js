@@ -1,5 +1,6 @@
 import { unlink } from 'node:fs/promises'
 import { supabase } from '../config/supabase.js'
+import { searchDiscover } from './discoverSearch.controller.js'
 import {
   deleteR2ObjectByUrl,
   uploadImageToR2AsWebP,
@@ -834,6 +835,84 @@ export async function startSpinGameSession(req, res) {
       ok: false,
       code: 'SPIN_SESSION_START_FAILED',
       message: error.message || 'Failed to start Spin game',
+    })
+  }
+}
+
+export async function searchSpinGameSession(req, res) {
+  try {
+    const userId = getUserId(req)
+    const sessionId = cleanUuid(req.params.sessionId)
+    const rawType = cleanText(req.query.type, 20).toLowerCase()
+    const configByType = {
+      reader: { mode: 'reader', type: 'readers' },
+      readers: { mode: 'reader', type: 'readers' },
+      author: { mode: 'author', type: 'pages' },
+      authors: { mode: 'author', type: 'pages' },
+      page: { mode: 'author', type: 'pages' },
+      pages: { mode: 'author', type: 'pages' },
+      book: { mode: 'book', type: 'stories' },
+      books: { mode: 'book', type: 'stories' },
+      story: { mode: 'book', type: 'stories' },
+      stories: { mode: 'book', type: 'stories' },
+    }
+    const config = configByType[rawType]
+
+    if (!sessionId) {
+      return res.status(400).json({
+        ok: false,
+        code: 'SPIN_SESSION_INVALID',
+        message: 'Invalid Spin session ID',
+      })
+    }
+
+    if (!config) {
+      return res.status(400).json({
+        ok: false,
+        code: 'SPIN_SEARCH_TYPE_INVALID',
+        message: 'Spin search supports Reader, Author, or Book only',
+      })
+    }
+
+    const { data, error } = await supabase.rpc(
+      'consume_spin_search_request',
+      {
+        p_user_id: userId,
+        p_session_id: sessionId,
+        p_expected_mode: config.mode,
+      }
+    )
+
+    if (error) throw error
+
+    if (data?.ok === false) {
+      const statusCode =
+        data.code === 'SPIN_SESSION_NOT_FOUND'
+          ? 404
+          : data.code === 'SPIN_SESSION_EXPIRED'
+            ? 410
+            : data.code === 'SPIN_SEARCH_LIMIT'
+              ? 429
+              : 400
+
+      return res.status(statusCode).json(data)
+    }
+
+    res.set('X-Spin-Search-Remaining', String(data?.remaining ?? 0))
+
+    req.query.type = config.type
+    req.query.limit = String(
+      Math.min(20, Math.max(1, Number(req.query.limit || 20)))
+    )
+
+    return searchDiscover(req, res)
+  } catch (error) {
+    console.error('SPIN SESSION SEARCH ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      code: 'SPIN_SEARCH_FAILED',
+      message: error.message || 'Failed to search Spin entries',
     })
   }
 }
