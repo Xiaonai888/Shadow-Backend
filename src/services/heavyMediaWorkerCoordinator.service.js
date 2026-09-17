@@ -10,11 +10,13 @@ import {
   evaluateHeavyJobAdmission,
   getMemoryGuardSnapshot,
 } from './memoryGuard.service.js'
+import { recordSystemUsage } from './systemUsageMonitor.service.js'
 
 const POLL_INTERVAL_MS = 2000
 const WORKER_LEASE_SECONDS = 900
 const WORKER_TIMEOUT_MS = 12 * 60 * 1000
 const WORKER_KILL_GRACE_MS = 5000
+const MAX_WORKER_USAGE_COUNT = 100
 const JOB_TYPES = ['manga_page_v2']
 const WORKER_FILE = fileURLToPath(
   new URL(
@@ -55,6 +57,52 @@ function workerIdForJob() {
     process.pid,
     randomUUID(),
   ].join(':')
+}
+
+function recordWorkerSystemUsage(message) {
+  const usage =
+    message?.usage && typeof message.usage === 'object'
+      ? message.usage
+      : null
+
+  if (!usage) return
+
+  const key = String(usage.key || '').trim().slice(0, 1400)
+  if (!key) return
+
+  const count = Math.min(
+    MAX_WORKER_USAGE_COUNT,
+    Math.max(1, Math.floor(Number(usage.count) || 1))
+  )
+  const totalBytes = Math.max(0, Number(usage.bytes) || 0)
+  const totalDuration = Math.max(
+    0,
+    Number(usage.duration_ms) || 0
+  )
+  const bytesPerEvent = totalBytes / count
+  const durationPerEvent = totalDuration / count
+
+  for (let index = 0; index < count; index += 1) {
+    recordSystemUsage({
+      kind:
+        usage.kind === 'http_response'
+          ? 'http_response'
+          : 'external_request',
+      key,
+      bytes: bytesPerEvent,
+      error: Boolean(usage.error),
+      duration_ms: durationPerEvent,
+    })
+  }
+
+  if (activeWorker) {
+    activeWorker.telemetryEvents += count
+    activeWorker.telemetryBytes += totalBytes
+
+    if (usage.error) {
+      activeWorker.telemetryErrors += count
+    }
+  }
 }
 
 async function markAbnormalWorkerFailure(
@@ -150,6 +198,9 @@ function startClaimedWorker(job, workerId) {
     workerId,
     startedAt,
     emergencyStopping: false,
+    telemetryEvents: 0,
+    telemetryBytes: 0,
+    telemetryErrors: 0,
   }
 
   const startMemory = getMemoryGuardSnapshot()
@@ -193,6 +244,11 @@ function startClaimedWorker(job, workerId) {
   child.on('message', (message) => {
     if (!message || typeof message !== 'object') return
 
+    if (message.type === 'system_usage') {
+      recordWorkerSystemUsage(message)
+      return
+    }
+
     const memory = getMemoryGuardSnapshot()
 
     if (
@@ -229,6 +285,10 @@ function startClaimedWorker(job, workerId) {
           status: message.status || null,
           worker_peak_rss_mb: message.peak_rss_mb || null,
           container_total_mb: memory.container_total_mb,
+          source_bytes: Number(message.source_bytes || 0),
+          output_bytes: Number(message.output_bytes || 0),
+          part_count: Number(message.part_count || 0),
+          usage: message.usage || null,
         })
       )
     }
@@ -254,6 +314,17 @@ function startClaimedWorker(job, workerId) {
     const emergencyStopped = Boolean(
       activeWorker?.emergencyStopping
     )
+    const telemetry = activeWorker
+      ? {
+          events: activeWorker.telemetryEvents,
+          bytes: activeWorker.telemetryBytes,
+          errors: activeWorker.telemetryErrors,
+        }
+      : {
+          events: 0,
+          bytes: 0,
+          errors: 0,
+        }
 
     console.log(
       'MEMORY_JOB_END:',
@@ -268,6 +339,9 @@ function startClaimedWorker(job, workerId) {
         duration_ms: Date.now() - startedAt,
         parent_rss_mb: endMemory.rss_mb,
         container_total_mb: endMemory.container_total_mb,
+        worker_usage_events: telemetry.events,
+        worker_usage_bytes: telemetry.bytes,
+        worker_usage_errors: telemetry.errors,
       })
     )
 
