@@ -209,6 +209,24 @@ async function cleanupResolvedIncidents() {
   }
 }
 
+export async function listSystemUsageIncidents(limit = 20) {
+  const safeLimit = Math.min(
+    50,
+    Math.max(1, Number(limit) || 20)
+  )
+
+  const { data, error } = await supabase
+    .from('system_usage_incidents')
+    .select(
+      'id,status,severity,feature,source_route,dependency,first_seen_at,last_seen_at,resolved_at,recurrence_count,evidence'
+    )
+    .order('last_seen_at', { ascending: false })
+    .limit(safeLimit)
+
+  if (error) throw error
+  return data || []
+}
+
 export function getSystemUsageIncidentRuntime() {
   return {
     active_incident_id: activeIncidentId,
