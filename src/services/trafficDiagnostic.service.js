@@ -1,7 +1,7 @@
 import http from 'node:http'
 import https from 'node:https'
 import { AsyncLocalStorage } from 'node:async_hooks'
-
+import { recordSystemUsage } from './systemUsageMonitor.service.js'
 const ENABLED =
   String(process.env.TRAFFIC_DIAGNOSTIC_ENABLED ?? 'true')
     .trim()
