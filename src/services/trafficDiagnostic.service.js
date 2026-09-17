@@ -228,7 +228,7 @@ function installHttpDiagnostic(moduleObject) {
 }
 
 export function trafficDiagnosticMiddleware(req, res, next) {
-  if (!ENABLED) return requestContext.run({ route: key }, next)
+  if (!ENABLED) return next()
 
   const startedAt = Date.now()
   const key = `${String(req.method || 'GET').toUpperCase()} ${normalizePath(
@@ -266,7 +266,7 @@ export function trafficDiagnosticMiddleware(req, res, next) {
 
   res.once('finish', record)
   res.once('close', record)
-  next()
+  requestContext.run({ route: key }, next)
 }
 
 if (ENABLED) {
