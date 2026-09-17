@@ -105,6 +105,7 @@ import adminGameSettingsRoutes from './src/routes/adminGameSettings.routes.js'
 import adminWorkRoutes from './src/routes/adminWork.routes.js'
 import adminSystemControlRoutes from './src/routes/adminSystemControl.routes.js'
 import { startSystemUsagePersistence } from './src/services/systemUsagePersistence.service.js'
+import { startSystemUsageAnomalyDetector } from './src/services/systemUsageAnomaly.service.js'
 
 dotenv.config()
 
@@ -807,6 +808,7 @@ app.listen(PORT, () => {
   startMemoryIncidentMonitor()
   startWorkDetectorMonitor()
   startSystemUsagePersistence()
+  startSystemUsageAnomalyDetector()
 
   if (process.env.ENABLE_TELEGRAM_USER_LISTENER === 'true') {
     startTelegramUserListener().catch((error) => {
