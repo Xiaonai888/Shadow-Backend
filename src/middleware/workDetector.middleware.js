@@ -197,7 +197,7 @@ function shouldSkip(method, path) {
   if (method === 'OPTIONS') return true
   if (path === '/' || path === '/favicon.ico') return true
   if (path === '/health' || path.startsWith('/health/')) return true
-  if (path === '/api/admin/work' || path.startsWith('/api/admin/work/')) return true
+  if (path === '/api/admin/system-control' || path.startsWith('/api/admin/system-control/')) return true
   return false
 }
 
