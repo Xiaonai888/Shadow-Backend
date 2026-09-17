@@ -1,6 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
+import { trafficDiagnosticMiddleware } from './src/services/trafficDiagnostic.service.js'
 
 import healthRoutes from './src/routes/health.routes.js'
 import slidesRoutes from './src/routes/slides.routes.js'
@@ -106,6 +107,7 @@ import adminWorkRoutes from './src/routes/adminWork.routes.js'
 dotenv.config()
 
 const app = express()
+app.use(trafficDiagnosticMiddleware)
 app.use(memoryIncidentTracer)
 app.use(sensitivePathGuard)
 
