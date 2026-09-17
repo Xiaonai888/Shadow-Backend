@@ -60,6 +60,14 @@ function add(map, key, bytes = 0, error = false, durationMs = 0) {
   current.errors += error ? 1 : 0
   current.duration_ms += Math.max(0, Number(durationMs) || 0)
   map.set(key, current)
+
+  recordSystemUsage({
+    kind: map === outbound ? 'external_request' : 'http_response',
+    key,
+    bytes,
+    error,
+    duration_ms: durationMs,
+  })
 }
 
 function rows(map) {
