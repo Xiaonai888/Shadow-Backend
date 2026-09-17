@@ -103,6 +103,7 @@ import spinRoutes from './src/routes/spin.routes.js'
 import gameSettingsRoutes from './src/routes/gameSettings.routes.js'
 import adminGameSettingsRoutes from './src/routes/adminGameSettings.routes.js'
 import adminWorkRoutes from './src/routes/adminWork.routes.js'
+import adminSystemControlRoutes from './src/routes/adminSystemControl.routes.js'
 
 dotenv.config()
 
@@ -776,7 +777,7 @@ app.use('/api/story-translation', storyTranslationSpamGuard, storyTranslationRou
 app.use('/api/games', readerReadSpamGuard, gameSettingsRoutes)
 app.use('/api/admin/games', adminGameSettingsRoutes)
 app.use('/api/admin/work', adminWorkRoutes)
-
+app.use('/api/admin/system-control', adminSystemControlRoutes)
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
 })
