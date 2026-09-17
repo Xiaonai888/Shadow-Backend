@@ -1,19 +1,61 @@
 import { supabase } from '../config/supabase.js'
 import { getSystemUsageAnomalySnapshot } from './systemUsageAnomaly.service.js'
+import { setWorkKillSwitch } from './workKillSwitch.service.js'
 
 const CHECK_MS = 15 * 1000
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const CLEANUP_MS = 24 * 60 * 60 * 1000
+const AUTO_CONTAINMENT_MS = 10 * 60 * 1000
+const AUTO_METHODS = new Set([
+  'GET',
+  'POST',
+  'PUT',
+  'PATCH',
+  'DELETE',
+])
+const AUTO_BYPASS_PREFIXES = [
+  '/api/auth',
+  '/api/admin/login-guard',
+  '/api/admin/work',
+  '/api/admin/system-control',
+  '/api/purchase/aba/callback',
+  '/api/telegram/webhook',
+]
 
 let timer = null
 let cleanupTimer = null
-let lastStatus = null
+let lastStatus = 'startup'
+let lastSignature = ''
 let activeIncidentId = null
 let activeFingerprint = null
+let activeProtection = null
 let syncing = false
 
 function clean(value, maxLength = 500) {
   return String(value || '').trim().slice(0, maxLength)
+}
+
+function normalizeSeverity(value) {
+  const severity = clean(value, 20).toLowerCase()
+  return ['info', 'medium', 'high', 'critical'].includes(severity)
+    ? severity
+    : 'medium'
+}
+
+function normalizePath(value) {
+  const raw = clean(value, 500).split('?')[0] || '/'
+  const path = raw.startsWith('/') ? raw : `/${raw}`
+  return path.replace(/\/{2,}/g, '/')
+}
+
+function startsWithPrefix(path, prefix) {
+  return path === prefix || path.startsWith(`${prefix}/`)
+}
+
+function isAutoBypassedPath(path) {
+  return AUTO_BYPASS_PREFIXES.some((prefix) =>
+    startsWithPrefix(path, prefix)
+  )
 }
 
 function buildFingerprint(snapshot) {
@@ -26,13 +68,98 @@ function buildFingerprint(snapshot) {
   ].join('|')
 }
 
-function buildEvidence(snapshot) {
+function protectionPlan(snapshot) {
+  const severity = normalizeSeverity(snapshot?.severity)
+  const classification = clean(
+    snapshot?.classification || 'unknown',
+    80
+  ).toLowerCase()
+  const driver = snapshot?.top_driver || {}
+  const method = clean(
+    driver.source_method || '',
+    16
+  ).toUpperCase()
+  const path = normalizePath(driver.source_path || '/')
+
+  if (severity !== 'critical') {
+    return {
+      eligible: false,
+      reason: 'severity_below_critical',
+    }
+  }
+
+  if (
+    classification === 'background_egress' ||
+    classification === 'background_job'
+  ) {
+    return {
+      eligible: false,
+      reason: 'background_requires_worker_control',
+    }
+  }
+
+  if (!AUTO_METHODS.has(method)) {
+    return {
+      eligible: false,
+      reason: 'unsupported_method',
+    }
+  }
+
+  if (!path.startsWith('/api/')) {
+    return {
+      eligible: false,
+      reason: 'non_api_target',
+    }
+  }
+
+  if (isAutoBypassedPath(path)) {
+    return {
+      eligible: false,
+      reason: 'protected_bypass_route',
+    }
+  }
+
   return {
-    signals: Array.isArray(snapshot?.signals) ? snapshot.signals : [],
+    eligible: true,
+    reason: 'critical_api_anomaly',
+    source: 'ALL',
+    method,
+    path,
+    duration_ms: AUTO_CONTAINMENT_MS,
+  }
+}
+
+function buildEvidence(snapshot, protection = activeProtection) {
+  return {
+    severity: normalizeSeverity(snapshot?.severity),
+    classification:
+      clean(snapshot?.classification || 'unknown', 80) || 'unknown',
+    signals: Array.isArray(snapshot?.signals)
+      ? snapshot.signals
+      : [],
     current: snapshot?.current || null,
     baseline: snapshot?.baseline || null,
+    thresholds: snapshot?.thresholds || null,
     top_driver: snapshot?.top_driver || null,
+    protection:
+      protection || {
+        status: 'inactive',
+        plan: protectionPlan(snapshot),
+      },
   }
+}
+
+function snapshotSignature(snapshot) {
+  const signals = Array.isArray(snapshot?.signals)
+    ? [...snapshot.signals].sort().join(',')
+    : ''
+
+  return [
+    clean(snapshot?.status || 'learning', 40).toLowerCase(),
+    normalizeSeverity(snapshot?.severity),
+    clean(snapshot?.classification || 'unknown', 80).toLowerCase(),
+    signals,
+  ].join('|')
 }
 
 async function findReusableIncident(fingerprint) {
@@ -52,13 +179,16 @@ async function findReusableIncident(fingerprint) {
   const resolvedAt = new Date(data.resolved_at || 0).getTime()
   if (!Number.isFinite(resolvedAt)) return null
 
-  return Date.now() - resolvedAt <= RETENTION_MS ? data : null
+  return Date.now() - resolvedAt <= RETENTION_MS
+    ? data
+    : null
 }
 
 async function openOrReopen(snapshot) {
   const fingerprint = buildFingerprint(snapshot)
   const now = new Date().toISOString()
   const reusable = await findReusableIncident(fingerprint)
+  const severity = normalizeSeverity(snapshot?.severity)
   const evidence = buildEvidence(snapshot)
 
   if (reusable) {
@@ -71,13 +201,17 @@ async function openOrReopen(snapshot) {
       .from('system_usage_incidents')
       .update({
         status: 'OPEN',
+        severity,
         last_seen_at: now,
         resolved_at: null,
         delete_after: null,
         recurrence_count: recurrence,
-        feature: snapshot?.top_driver?.feature || 'unknown',
-        source_route: snapshot?.top_driver?.source_route || 'UNKNOWN',
-        dependency: snapshot?.top_driver?.dependency || 'UNKNOWN',
+        feature:
+          snapshot?.top_driver?.feature || 'unknown',
+        source_route:
+          snapshot?.top_driver?.source_route || 'UNKNOWN',
+        dependency:
+          snapshot?.top_driver?.dependency || 'UNKNOWN',
         evidence,
       })
       .eq('id', reusable.id)
@@ -88,7 +222,7 @@ async function openOrReopen(snapshot) {
 
     activeIncidentId = data.id
     activeFingerprint = fingerprint
-    return
+    return data.id
   }
 
   const { data, error } = await supabase
@@ -96,10 +230,13 @@ async function openOrReopen(snapshot) {
     .insert({
       fingerprint,
       status: 'OPEN',
-      severity: 'medium',
-      feature: snapshot?.top_driver?.feature || 'unknown',
-      source_route: snapshot?.top_driver?.source_route || 'UNKNOWN',
-      dependency: snapshot?.top_driver?.dependency || 'UNKNOWN',
+      severity,
+      feature:
+        snapshot?.top_driver?.feature || 'unknown',
+      source_route:
+        snapshot?.top_driver?.source_route || 'UNKNOWN',
+      dependency:
+        snapshot?.top_driver?.dependency || 'UNKNOWN',
       first_seen_at: now,
       last_seen_at: now,
       recurrence_count: 0,
@@ -112,17 +249,164 @@ async function openOrReopen(snapshot) {
 
   activeIncidentId = data.id
   activeFingerprint = fingerprint
+  return data.id
 }
 
-async function updateInvestigating(snapshot) {
+async function activateProtection(snapshot) {
+  const plan = protectionPlan(snapshot)
+
+  if (!plan.eligible) {
+    return {
+      status: 'not_activated',
+      plan,
+    }
+  }
+
+  if (
+    activeProtection?.status === 'active' &&
+    activeProtection.method === plan.method &&
+    activeProtection.path === plan.path &&
+    new Date(activeProtection.expires_at || 0).getTime()
+      > Date.now()
+  ) {
+    return activeProtection
+  }
+
+  const expiresAt = new Date(
+    Date.now() + AUTO_CONTAINMENT_MS
+  ).toISOString()
+
+  try {
+    const record = await setWorkKillSwitch({
+      targetType: 'api',
+      source: 'ALL',
+      method: plan.method,
+      path: plan.path,
+      enabled: true,
+      mode: 'automatic',
+      reason:
+        'System Control critical usage anomaly containment',
+      incidentId: activeIncidentId
+        ? String(activeIncidentId)
+        : null,
+      expiresAt,
+      actor: 'system:system-control',
+    })
+
+    activeProtection = {
+      status: 'active',
+      kind: 'kill_switch',
+      switch_id: record?.id || null,
+      incident_id: activeIncidentId,
+      source: 'ALL',
+      method: plan.method,
+      path: plan.path,
+      activated_at: new Date().toISOString(),
+      expires_at: record?.expires_at || expiresAt,
+      plan,
+    }
+
+    return activeProtection
+  } catch (error) {
+    const failed = {
+      status: 'failed',
+      kind: 'kill_switch',
+      incident_id: activeIncidentId,
+      source: 'ALL',
+      method: plan.method,
+      path: plan.path,
+      error: clean(error?.message || error, 300),
+      plan,
+    }
+
+    console.error(
+      'SYSTEM_USAGE_PROTECTION_ACTIVATE_ERROR:',
+      failed.error
+    )
+
+    return failed
+  }
+}
+
+async function releaseProtection(reason = 'usage_recovery') {
+  if (activeProtection?.status !== 'active') {
+    return activeProtection
+  }
+
+  const current = activeProtection
+
+  try {
+    const record = await setWorkKillSwitch({
+      targetType: 'api',
+      source: current.source || 'ALL',
+      method: current.method,
+      path: current.path,
+      enabled: false,
+      mode: 'automatic',
+      reason: `System Control ${reason}`,
+      incidentId: current.incident_id
+        ? String(current.incident_id)
+        : null,
+      expiresAt: null,
+      actor: 'system:system-control',
+    })
+
+    const released = {
+      ...current,
+      status: 'released',
+      released_at: new Date().toISOString(),
+      release_reason: reason,
+      switch_id: record?.id || current.switch_id || null,
+    }
+
+    activeProtection = null
+    return released
+  } catch (error) {
+    const failed = {
+      ...current,
+      status: 'release_failed',
+      release_reason: reason,
+      error: clean(error?.message || error, 300),
+    }
+
+    console.error(
+      'SYSTEM_USAGE_PROTECTION_RELEASE_ERROR:',
+      failed.error
+    )
+
+    return failed
+  }
+}
+
+async function updateOpenEvidence(snapshot, protection) {
   if (!activeIncidentId) return
 
   const { error } = await supabase
     .from('system_usage_incidents')
     .update({
-      status: 'INVESTIGATING',
+      severity: normalizeSeverity(snapshot?.severity),
       last_seen_at: new Date().toISOString(),
-      evidence: buildEvidence(snapshot),
+      evidence: buildEvidence(snapshot, protection),
+    })
+    .eq('id', activeIncidentId)
+
+  if (error) throw error
+}
+
+async function updateInvestigating(snapshot) {
+  if (!activeIncidentId) return
+
+  const protection = await releaseProtection(
+    'anomaly_entered_recovery'
+  )
+
+  const { error } = await supabase
+    .from('system_usage_incidents')
+    .update({
+      status: 'INVESTIGATING',
+      severity: normalizeSeverity(snapshot?.severity),
+      last_seen_at: new Date().toISOString(),
+      evidence: buildEvidence(snapshot, protection),
     })
     .eq('id', activeIncidentId)
 
@@ -132,18 +416,25 @@ async function updateInvestigating(snapshot) {
 async function resolveIncident(snapshot) {
   if (!activeIncidentId) return
 
+  const incidentId = activeIncidentId
   const now = Date.now()
+  const protection = await releaseProtection(
+    'incident_resolved'
+  )
 
   const { error } = await supabase
     .from('system_usage_incidents')
     .update({
       status: 'RESOLVED',
+      severity: normalizeSeverity(snapshot?.severity),
       last_seen_at: new Date(now).toISOString(),
       resolved_at: new Date(now).toISOString(),
-      delete_after: new Date(now + RETENTION_MS).toISOString(),
-      evidence: buildEvidence(snapshot),
+      delete_after: new Date(
+        now + RETENTION_MS
+      ).toISOString(),
+      evidence: buildEvidence(snapshot, protection),
     })
-    .eq('id', activeIncidentId)
+    .eq('id', incidentId)
 
   if (error) throw error
 
@@ -155,14 +446,18 @@ async function syncTransition() {
   if (syncing) return
 
   const snapshot = getSystemUsageAnomalySnapshot()
-  const status = clean(snapshot?.status || 'learning', 40).toLowerCase()
+  const status = clean(
+    snapshot?.status || 'learning',
+    40
+  ).toLowerCase()
+  const signature = snapshotSignature(snapshot)
 
-  if (lastStatus === null) {
-    lastStatus = status
+  if (
+    signature === lastSignature &&
+    status === lastStatus
+  ) {
     return
   }
-
-  if (status === lastStatus) return
 
   syncing = true
   const previous = lastStatus
@@ -170,7 +465,17 @@ async function syncTransition() {
   try {
     if (status === 'active') {
       await openOrReopen(snapshot)
-    } else if (status === 'recovery' && previous === 'active') {
+
+      const protection = await activateProtection(snapshot)
+
+      await updateOpenEvidence(
+        snapshot,
+        protection
+      )
+    } else if (
+      status === 'recovery' &&
+      ['active', 'startup'].includes(previous)
+    ) {
       await updateInvestigating(snapshot)
     } else if (
       status === 'normal' &&
@@ -180,6 +485,7 @@ async function syncTransition() {
     }
 
     lastStatus = status
+    lastSignature = signature
   } catch (error) {
     console.error(
       'SYSTEM_USAGE_INCIDENT_TRANSITION_ERROR:',
@@ -232,13 +538,14 @@ export function getSystemUsageIncidentRuntime() {
     active_incident_id: activeIncidentId,
     active_fingerprint: activeFingerprint,
     last_status: lastStatus,
+    active_protection: activeProtection,
   }
 }
 
 export function startSystemUsageIncidentService() {
   if (timer) return
 
-  lastStatus = getSystemUsageAnomalySnapshot()?.status || 'learning'
+  void syncTransition()
 
   timer = setInterval(
     () => void syncTransition(),
