@@ -35,13 +35,10 @@ set search_path = public
 as $$
 declare
   v_day_start timestamptz;
-  v_manual integer := 0;
   v_reader integer := 0;
   v_book integer := 0;
   v_author integer := 0;
   v_total integer := 0;
-  v_last_start timestamptz;
-  v_wait_seconds integer := 0;
   v_coin bigint := 0;
   v_diamond bigint := 0;
 begin
@@ -58,33 +55,18 @@ begin
     at time zone 'Asia/Phnom_Penh';
 
   select
-    count(*) filter (where mode = 'manual'),
     count(*) filter (where mode = 'reader'),
     count(*) filter (where mode = 'book'),
     count(*) filter (where mode = 'author'),
-    count(*),
-    max(started_at)
+    count(*) filter (where mode in ('reader', 'book', 'author'))
   into
-    v_manual,
     v_reader,
     v_book,
     v_author,
-    v_total,
-    v_last_start
+    v_total
   from public.spin_game_sessions
   where user_id = p_user_id
     and started_at >= v_day_start;
-
-  if v_total > 0 and mod(v_total, 10) = 0 and v_last_start is not null then
-    v_wait_seconds := greatest(
-      0,
-      ceil(
-        extract(
-          epoch from (v_last_start + interval '2 minutes' - now())
-        )
-      )::integer
-    );
-  end if;
 
   select
     coalesce(gem_balance, 0)::bigint,
@@ -106,7 +88,8 @@ begin
       'manual', jsonb_build_object(
         'daily_limit', 100,
         'cost_currency', null,
-        'cost_amount', 0
+        'cost_amount', 0,
+        'tracking', 'local'
       ),
       'reader', jsonb_build_object(
         'daily_limit', 20,
@@ -126,14 +109,14 @@ begin
       'shared', jsonb_build_object(
         'cooldown_every_games', 10,
         'cooldown_seconds', 120,
+        'cooldown_tracking', 'local',
         'search_limit_per_game', 20
       )
     ),
     'usage', jsonb_build_object(
       'manual', jsonb_build_object(
-        'used', v_manual,
-        'limit', 100,
-        'remaining', greatest(0, 100 - v_manual)
+        'local', true,
+        'limit', 100
       ),
       'reader', jsonb_build_object(
         'used', v_reader,
@@ -153,8 +136,9 @@ begin
       'total', v_total
     ),
     'cooldown', jsonb_build_object(
-      'active', v_wait_seconds > 0,
-      'wait_seconds', v_wait_seconds
+      'active', false,
+      'wait_seconds', 0,
+      'tracking', 'local'
     ),
     'wallet', jsonb_build_object(
       'coin_balance', v_coin,
@@ -180,9 +164,6 @@ declare
   v_day_start timestamptz;
   v_daily_used integer := 0;
   v_daily_limit integer := 0;
-  v_total integer := 0;
-  v_last_start timestamptz;
-  v_wait_seconds integer := 0;
   v_cost integer := 0;
   v_currency text := null;
   v_search_limit integer := 20;
@@ -201,7 +182,15 @@ begin
   v_mode := lower(trim(coalesce(p_mode, '')));
   v_request_key := left(trim(coalesce(p_request_key, '')), 120);
 
-  if v_mode not in ('manual', 'reader', 'book', 'author') then
+  if v_mode = 'manual' then
+    return jsonb_build_object(
+      'ok', false,
+      'code', 'SPIN_MANUAL_LOCAL',
+      'message', 'Manual Spin games are local-only'
+    );
+  end if;
+
+  if v_mode not in ('reader', 'book', 'author') then
     return jsonb_build_object(
       'ok', false,
       'code', 'SPIN_MODE_INVALID',
@@ -246,26 +235,18 @@ begin
     );
   end if;
 
-  if v_mode = 'manual' then
-    v_daily_limit := 100;
-    v_cost := 0;
-    v_currency := null;
-    v_search_limit := 0;
-  elsif v_mode = 'reader' then
+  if v_mode = 'reader' then
     v_daily_limit := 20;
     v_cost := 100;
     v_currency := 'coin';
-    v_search_limit := 20;
   elsif v_mode = 'book' then
     v_daily_limit := 20;
     v_cost := 100;
     v_currency := 'coin';
-    v_search_limit := 20;
   else
     v_daily_limit := 100;
     v_cost := 10;
     v_currency := 'diamond';
-    v_search_limit := 20;
   end if;
 
   v_day_start :=
@@ -290,34 +271,6 @@ begin
       'remaining', 0,
       'status', public.get_spin_game_status(p_user_id)
     );
-  end if;
-
-  select count(*), max(started_at)
-  into v_total, v_last_start
-  from public.spin_game_sessions
-  where user_id = p_user_id
-    and started_at >= v_day_start;
-
-  if v_total > 0 and mod(v_total, 10) = 0 and v_last_start is not null then
-    v_wait_seconds := greatest(
-      0,
-      ceil(
-        extract(
-          epoch from (v_last_start + interval '2 minutes' - now())
-        )
-      )::integer
-    );
-
-    if v_wait_seconds > 0 then
-      return jsonb_build_object(
-        'ok', false,
-        'code', 'SPIN_COOLDOWN',
-        'message', 'Please wait before starting another Spin game',
-        'wait_seconds', v_wait_seconds,
-        'cooldown_seconds', 120,
-        'status', public.get_spin_game_status(p_user_id)
-      );
-    end if;
   end if;
 
   insert into public.user_wallets (user_id)
