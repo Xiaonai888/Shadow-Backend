@@ -761,20 +761,40 @@ export async function deleteSpinMedia(req, res) {
 export async function getSpinGameSessionStatus(req, res) {
   try {
     const userId = getUserId(req)
+    const now = new Date().toISOString()
 
-    const { data, error } = await supabase.rpc(
-      'get_spin_game_status',
-      {
+    const [statusResponse, sessionResponse] = await Promise.all([
+      supabase.rpc('get_spin_game_status', {
         p_user_id: userId,
-      }
-    )
+      }),
+      supabase
+        .from('spin_game_sessions')
+        .select(
+          'id, mode, cost_currency, cost_amount, search_count, search_limit, started_at, expires_at'
+        )
+        .eq('user_id', userId)
+        .gt('expires_at', now)
+        .order('started_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ])
 
-    if (error) throw error
+    if (statusResponse.error) throw statusResponse.error
+    if (sessionResponse.error) throw sessionResponse.error
 
-    return res.status(200).json(data || {
-      ok: false,
-      code: 'SPIN_STATUS_EMPTY',
-      message: 'Spin status is unavailable',
+    const status = statusResponse.data
+
+    if (!status) {
+      return res.status(200).json({
+        ok: false,
+        code: 'SPIN_STATUS_EMPTY',
+        message: 'Spin status is unavailable',
+      })
+    }
+
+    return res.status(200).json({
+      ...status,
+      active_session: sessionResponse.data || null,
     })
   } catch (error) {
     console.error('GET SPIN GAME STATUS ERROR:', error)
