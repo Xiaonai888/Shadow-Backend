@@ -15,6 +15,20 @@ dotenv.config()
 const MB = 1024 * 1024
 const MANGA_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 const SAMPLE_INTERVAL_MS = 2000
+const WORKER_ROUTE = 'WORKER /manga-v2'
+
+let usageJobId = ''
+
+const usageTotals = {
+  events: 0,
+  errors: 0,
+  supabase_calls: 0,
+  r2_get_count: 0,
+  r2_get_bytes: 0,
+  r2_put_count: 0,
+  r2_put_bytes: 0,
+  r2_delete_count: 0,
+}
 
 function cleanText(value, maxLength = 1000) {
   return String(value || '').trim().slice(0, maxLength)
@@ -22,6 +36,23 @@ function cleanText(value, maxLength = 1000) {
 
 function memoryMb(bytes) {
   return Number((Number(bytes || 0) / MB).toFixed(1))
+}
+
+function jsonBytes(value) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value ?? null))
+  } catch {
+    return 0
+  }
+}
+
+function positiveNumber(value) {
+  return Math.max(0, Number(value) || 0)
+}
+
+function positiveInteger(value, fallback = 1) {
+  const number = Math.floor(Number(value) || 0)
+  return number > 0 ? number : fallback
 }
 
 function sendMessage(message) {
@@ -33,13 +64,169 @@ function sendMessage(message) {
   }
 }
 
-async function deleteTempSafely(key) {
-  if (!key) return
+function updateUsageTotals({
+  dependency,
+  operationMethod,
+  bytes,
+  error,
+  count,
+}) {
+  const safeCount = positiveInteger(count)
+  const safeBytes = positiveNumber(bytes)
+  const dep = cleanText(dependency, 80).toUpperCase()
+  const method = cleanText(operationMethod, 20).toUpperCase()
+
+  usageTotals.events += safeCount
+  usageTotals.errors += error ? safeCount : 0
+
+  if (dep === 'SUPABASE') {
+    usageTotals.supabase_calls += safeCount
+  }
+
+  if (dep === 'CLOUDFLARE_R2' && method === 'GET') {
+    usageTotals.r2_get_count += safeCount
+    usageTotals.r2_get_bytes += safeBytes
+  }
+
+  if (dep === 'CLOUDFLARE_R2' && method === 'PUT') {
+    usageTotals.r2_put_count += safeCount
+    usageTotals.r2_put_bytes += safeBytes
+  }
+
+  if (dep === 'CLOUDFLARE_R2' && method === 'DELETE') {
+    usageTotals.r2_delete_count += safeCount
+  }
+}
+
+function sendUsage({
+  dependency,
+  operationMethod,
+  targetPath,
+  bytes = 0,
+  error = false,
+  durationMs = 0,
+  count = 1,
+  direction = 'outbound',
+  action = 'external',
+}) {
+  const safeDependency =
+    cleanText(dependency, 80).toUpperCase() || 'UNKNOWN'
+  const safeMethod =
+    cleanText(operationMethod, 20).toUpperCase() || 'CALL'
+  const safeTarget =
+    cleanText(targetPath, 300) || '/worker/unknown'
+  const safeBytes = positiveNumber(bytes)
+  const safeCount = positiveInteger(count)
+
+  updateUsageTotals({
+    dependency: safeDependency,
+    operationMethod: safeMethod,
+    bytes: safeBytes,
+    error: Boolean(error),
+    count: safeCount,
+  })
+
+  sendMessage({
+    type: 'system_usage',
+    usage: {
+      kind: 'external_request',
+      key: `${WORKER_ROUTE} -> ${safeDependency} ${safeMethod} ${safeTarget}`,
+      bytes: safeBytes,
+      error: Boolean(error),
+      duration_ms: positiveNumber(durationMs),
+      count: safeCount,
+      direction: cleanText(direction, 40) || 'outbound',
+      cause: 'BACKGROUND',
+      feature: 'manga_v2_worker',
+      job_id: usageJobId || null,
+      action: cleanText(action, 120) || 'external',
+    },
+  })
+}
+
+async function measureUsage(
+  {
+    dependency,
+    operationMethod,
+    targetPath,
+    bytes = 0,
+    bytesFromResult = null,
+    count = 1,
+    countFromResult = null,
+    direction = 'outbound',
+    action = 'external',
+  },
+  work
+) {
+  const startedAt = Date.now()
 
   try {
-    await deleteMangaTempObject(key)
+    const result = await work()
+    const measuredBytes =
+      typeof bytesFromResult === 'function'
+        ? positiveNumber(bytesFromResult(result))
+        : positiveNumber(bytes)
+    const measuredCount =
+      typeof countFromResult === 'function'
+        ? positiveInteger(countFromResult(result), positiveInteger(count))
+        : positiveInteger(count)
+
+    sendUsage({
+      dependency,
+      operationMethod,
+      targetPath,
+      bytes: measuredBytes,
+      error: false,
+      durationMs: Date.now() - startedAt,
+      count: measuredCount,
+      direction,
+      action,
+    })
+
+    return result
+  } catch (error) {
+    sendUsage({
+      dependency,
+      operationMethod,
+      targetPath,
+      bytes: positiveNumber(bytes),
+      error: true,
+      durationMs: Date.now() - startedAt,
+      count: positiveInteger(count),
+      direction,
+      action,
+    })
+
+    throw error
+  }
+}
+
+async function deleteTempSafely(key) {
+  if (!key) return false
+
+  try {
+    await measureUsage(
+      {
+        dependency: 'CLOUDFLARE_R2',
+        operationMethod: 'DELETE',
+        targetPath: '/manga-v2/temp-source',
+        direction: 'outbound',
+        action: 'temp_cleanup',
+      },
+      () => deleteMangaTempObject(key)
+    )
+    return true
   } catch (error) {
     console.error('MANGA WORKER TEMP CLEANUP ERROR:', error)
+    return false
+  }
+}
+
+function usageSummary() {
+  return {
+    ...usageTotals,
+    r2_get_mb: Number((usageTotals.r2_get_bytes / MB).toFixed(4)),
+    r2_put_mb: Number((usageTotals.r2_put_bytes / MB).toFixed(4)),
   }
 }
 
@@ -51,12 +238,16 @@ async function main() {
     throw new Error('Manga worker requires jobId and workerId.')
   }
 
+  usageJobId = jobId
+
   let peakRss = process.memoryUsage().rss
   let tempObjectKey = ''
   let sourceFilePath = ''
   let storedParts = []
   let completionPersisted = false
   let deleteStoredMangaParts = null
+  let sourceTransferredBytes = 0
+  let outputTransferredBytes = 0
 
   const sampleTimer = setInterval(() => {
     const rss = process.memoryUsage().rss
@@ -72,7 +263,17 @@ async function main() {
   sampleTimer.unref?.()
 
   try {
-    const job = await getHeavyMediaJob({ jobId })
+    const job = await measureUsage(
+      {
+        dependency: 'SUPABASE',
+        operationMethod: 'CALL',
+        targetPath: '/heavy-media-jobs/get',
+        bytes: jsonBytes({ job_id: jobId }),
+        direction: 'outbound',
+        action: 'job_lookup',
+      },
+      () => getHeavyMediaJob({ jobId })
+    )
 
     if (
       !job ||
@@ -100,11 +301,25 @@ async function main() {
     }
 
     const sourceBytes = Number(payload.source_bytes || 0)
-    const sourceFile = await downloadMangaTempFile(
-      tempObjectKey,
-      MANGA_IMAGE_MAX_BYTES
+
+    const sourceFile = await measureUsage(
+      {
+        dependency: 'CLOUDFLARE_R2',
+        operationMethod: 'GET',
+        targetPath: '/manga-v2/temp-source',
+        bytesFromResult: (result) => Number(result?.size || 0),
+        direction: 'inbound',
+        action: 'source_download',
+      },
+      () =>
+        downloadMangaTempFile(
+          tempObjectKey,
+          MANGA_IMAGE_MAX_BYTES
+        )
     )
+
     sourceFilePath = sourceFile.path
+    sourceTransferredBytes = Number(sourceFile.size || 0)
 
     if (sourceBytes > 0 && sourceFile.size !== sourceBytes) {
       const error = new Error(
@@ -142,10 +357,34 @@ async function main() {
       },
       {
         onPart: async (part) => {
-          const stored = await uploadProcessedMangaPart({
-            part,
-            folder,
-          })
+          const partBytes = Number(
+            part?.size ||
+            part?.fileSize ||
+            part?.buffer?.length ||
+            0
+          )
+
+          const stored = await measureUsage(
+            {
+              dependency: 'CLOUDFLARE_R2',
+              operationMethod: 'PUT',
+              targetPath: '/manga-v2/processed-part',
+              bytes: partBytes,
+              bytesFromResult: (result) =>
+                Number(result?.file_size || partBytes),
+              direction: 'outbound',
+              action: 'processed_part_upload',
+            },
+            () =>
+              uploadProcessedMangaPart({
+                part,
+                folder,
+              })
+          )
+
+          outputTransferredBytes += Number(
+            stored?.file_size || partBytes || 0
+          )
           storedParts.push(stored)
           return stored
         },
@@ -176,12 +415,28 @@ async function main() {
       parts,
     }
 
-    const completed = await completeHeavyMediaJob({
-      jobId,
-      workerId,
-      result,
-      finalObjectKey: firstPart.storage_path || null,
-    })
+    const completed = await measureUsage(
+      {
+        dependency: 'SUPABASE',
+        operationMethod: 'CALL',
+        targetPath: '/heavy-media-jobs/complete',
+        bytes: jsonBytes({
+          job_id: jobId,
+          worker_id: workerId,
+          result,
+          final_object_key: firstPart.storage_path || null,
+        }),
+        direction: 'outbound',
+        action: 'job_complete',
+      },
+      () =>
+        completeHeavyMediaJob({
+          jobId,
+          workerId,
+          result,
+          finalObjectKey: firstPart.storage_path || null,
+        })
+    )
 
     if (!completed) {
       const error = new Error(
@@ -201,13 +456,27 @@ async function main() {
       type: 'done',
       status: 'done',
       peak_rss_mb: memoryMb(peakRss),
+      source_bytes: sourceTransferredBytes,
+      output_bytes: outputTransferredBytes || totalBytes,
+      part_count: Number(result.part_count || 0),
+      usage: usageSummary(),
     })
   } catch (error) {
     console.error('MANGA BACKGROUND WORKER ERROR:', error)
 
     if (storedParts.length > 0 && !completionPersisted) {
       try {
-        const latestJob = await getHeavyMediaJob({ jobId })
+        const latestJob = await measureUsage(
+          {
+            dependency: 'SUPABASE',
+            operationMethod: 'CALL',
+            targetPath: '/heavy-media-jobs/get',
+            bytes: jsonBytes({ job_id: jobId }),
+            direction: 'outbound',
+            action: 'job_recheck',
+          },
+          () => getHeavyMediaJob({ jobId })
+        )
 
         if (latestJob?.status === 'done') {
           completionPersisted = true
@@ -219,12 +488,30 @@ async function main() {
             type: 'done',
             status: 'done',
             peak_rss_mb: memoryMb(peakRss),
+            source_bytes: sourceTransferredBytes,
+            output_bytes: outputTransferredBytes,
+            usage: usageSummary(),
           })
           return
         }
 
         if (typeof deleteStoredMangaParts === 'function') {
-          await deleteStoredMangaParts(storedParts)
+          const rollbackParts = [...storedParts]
+
+          await measureUsage(
+            {
+              dependency: 'CLOUDFLARE_R2',
+              operationMethod: 'DELETE',
+              targetPath: '/manga-v2/rollback-parts',
+              count: rollbackParts.length || 1,
+              countFromResult: (result) =>
+                Number(result?.requested || rollbackParts.length || 1),
+              direction: 'outbound',
+              action: 'rollback_cleanup',
+            },
+            () => deleteStoredMangaParts(rollbackParts)
+          )
+
           storedParts = []
         }
       } catch (cleanupError) {
@@ -236,20 +523,37 @@ async function main() {
     }
 
     let failedJob = null
+    const failurePayload = {
+      job_id: jobId,
+      worker_id: workerId,
+      error_code:
+        cleanText(error?.code, 120) ||
+        'MANGA_PROCESSING_FAILED',
+      error_message:
+        cleanText(error?.message, 1000) ||
+        'Manga background processing failed.',
+    }
 
     try {
-      failedJob = await failHeavyMediaJob({
-        jobId,
-        workerId,
-        errorCode:
-          cleanText(error?.code, 120) ||
-          'MANGA_PROCESSING_FAILED',
-        errorMessage:
-          cleanText(error?.message, 1000) ||
-          'Manga background processing failed.',
-        retry: false,
-        retryDelaySeconds: 0,
-      })
+      failedJob = await measureUsage(
+        {
+          dependency: 'SUPABASE',
+          operationMethod: 'CALL',
+          targetPath: '/heavy-media-jobs/fail',
+          bytes: jsonBytes(failurePayload),
+          direction: 'outbound',
+          action: 'job_fail',
+        },
+        () =>
+          failHeavyMediaJob({
+            jobId,
+            workerId,
+            errorCode: failurePayload.error_code,
+            errorMessage: failurePayload.error_message,
+            retry: false,
+            retryDelaySeconds: 0,
+          })
+      )
     } catch (syncError) {
       console.error('MANGA WORKER FAILURE SYNC ERROR:', syncError)
       throw error
@@ -265,6 +569,9 @@ async function main() {
       type: 'failed',
       status: failedJob?.status || 'failed',
       peak_rss_mb: memoryMb(peakRss),
+      source_bytes: sourceTransferredBytes,
+      output_bytes: outputTransferredBytes,
+      usage: usageSummary(),
     })
   } finally {
     clearInterval(sampleTimer)
