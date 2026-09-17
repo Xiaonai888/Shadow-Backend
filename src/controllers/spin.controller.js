@@ -773,6 +773,7 @@ export async function getSpinGameSessionStatus(req, res) {
           'id, mode, cost_currency, cost_amount, search_count, search_limit, started_at, expires_at'
         )
         .eq('user_id', userId)
+        .neq('mode', 'manual')
         .gt('expires_at', now)
         .order('started_at', { ascending: false })
         .limit(1)
@@ -813,6 +814,14 @@ export async function startSpinGameSession(req, res) {
     const mode = cleanText(req.body?.mode, 20).toLowerCase()
     const requestKey = cleanText(req.body?.request_key, 120)
 
+    if (mode === 'manual') {
+      return res.status(400).json({
+        ok: false,
+        code: 'SPIN_MANUAL_LOCAL',
+        message: 'Manual Spin games are local-only',
+      })
+    }
+
     if (!requestKey) {
       return res.status(400).json({
         ok: false,
@@ -837,8 +846,7 @@ export async function startSpinGameSession(req, res) {
         data.code === 'INSUFFICIENT_COINS' ||
         data.code === 'INSUFFICIENT_DIAMONDS'
           ? 402
-          : data.code === 'SPIN_DAILY_LIMIT' ||
-              data.code === 'SPIN_COOLDOWN'
+          : data.code === 'SPIN_DAILY_LIMIT'
             ? 429
             : 400
 
