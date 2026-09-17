@@ -314,6 +314,22 @@ export function recordSystemUsage(input = {}) {
   }
 }
 
+export function getSystemUsageCurrentSnapshot() {
+  rotateWindows()
+
+  return {
+    generated_at: Date.now(),
+    monitor: {
+      events_recorded: monitorStats.events_recorded,
+      dropped_keys: monitorStats.dropped_keys,
+      processing_ms: Number(monitorStats.processing_ns / 1_000_000n),
+      started_at: monitorStats.started_at,
+    },
+    live: summarize(liveWindow),
+    minute: summarize(minuteWindow),
+  }
+}
+
 export function getSystemUsageSnapshot() {
   rotateWindows()
 
