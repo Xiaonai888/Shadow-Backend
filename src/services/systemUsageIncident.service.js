@@ -1389,26 +1389,130 @@ export async function archiveSystemUsageIncident({
 }
 
 export async function listSystemUsageIncidents(
-  limit = 20
+  options = 20
 ) {
+  const source =
+    options &&
+    typeof options === 'object'
+      ? options
+      : { limit: options }
+
   const safeLimit = Math.min(
-    50,
+    200,
     Math.max(
       1,
-      Number(limit) || 20
+      Number(source.limit) || 50
     )
   )
 
-  const { data, error } = await supabase
+  const fromText =
+    String(source.from || '').trim()
+  const toText =
+    String(source.to || '').trim()
+  const status =
+    clean(source.status || '', 40).toUpperCase()
+
+  const fromMs = fromText
+    ? new Date(fromText).getTime()
+    : null
+  const toMs = toText
+    ? new Date(toText).getTime()
+    : null
+
+  if (
+    fromText &&
+    !Number.isFinite(fromMs)
+  ) {
+    throw new Error(
+      'Valid incident start date is required.'
+    )
+  }
+
+  if (
+    toText &&
+    !Number.isFinite(toMs)
+  ) {
+    throw new Error(
+      'Valid incident end date is required.'
+    )
+  }
+
+  if (
+    Number.isFinite(fromMs) &&
+    Number.isFinite(toMs) &&
+    toMs <= fromMs
+  ) {
+    throw new Error(
+      'Incident end date must be after start date.'
+    )
+  }
+
+  if (
+    Number.isFinite(fromMs) &&
+    Number.isFinite(toMs) &&
+    toMs - fromMs > 31 * DAY_MS
+  ) {
+    throw new Error(
+      'Incident date range cannot exceed 31 days.'
+    )
+  }
+
+  if (
+    Number.isFinite(toMs) &&
+    toMs > Date.now()
+  ) {
+    throw new Error(
+      'Incident date range must include past or current time.'
+    )
+  }
+
+  if (
+    status &&
+    status !== 'ALL' &&
+    !INCIDENT_STATUSES.has(status)
+  ) {
+    throw new Error(
+      'Unsupported incident status.'
+    )
+  }
+
+  let query = supabase
     .from('system_usage_incidents')
     .select(
       'id,status,severity,feature,source_route,dependency,first_seen_at,last_seen_at,fix_applied_at,verified_at,resolved_at,archived_at,recurrence_count,fix_summary,fix_commit,fix_version,verification_before,verification_after,resolution_summary,evidence'
     )
-    .order(
+
+  if (Number.isFinite(fromMs)) {
+    query = query.gte(
       'last_seen_at',
-      { ascending: false }
+      new Date(fromMs).toISOString()
     )
-    .limit(safeLimit)
+  }
+
+  if (Number.isFinite(toMs)) {
+    query = query.lte(
+      'last_seen_at',
+      new Date(toMs).toISOString()
+    )
+  }
+
+  if (
+    status &&
+    status !== 'ALL'
+  ) {
+    query = query.eq(
+      'status',
+      status
+    )
+  }
+
+  const { data, error } =
+    await query
+      .order(
+        'last_seen_at',
+        { ascending: false }
+      )
+      .limit(safeLimit)
 
   if (error) throw error
 
