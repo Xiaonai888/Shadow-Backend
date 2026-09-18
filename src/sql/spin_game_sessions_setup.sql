@@ -8,7 +8,7 @@ create table if not exists public.spin_game_sessions (
   cost_currency text check (cost_currency is null or cost_currency in ('coin', 'diamond')),
   cost_amount integer not null default 0 check (cost_amount >= 0),
   search_count integer not null default 0 check (search_count >= 0),
-  search_limit integer not null default 20 check (search_limit >= 0),
+  search_limit integer not null default 0 check (search_limit >= 0),
   wallet_coin_after bigint,
   wallet_diamond_after bigint,
   started_at timestamptz not null default now(),
@@ -23,6 +23,16 @@ create index if not exists spin_game_sessions_user_mode_started_idx
   on public.spin_game_sessions (user_id, mode, started_at desc);
 
 alter table public.spin_game_sessions enable row level security;
+
+alter table public.spin_game_sessions
+alter column search_limit set default 0;
+
+update public.spin_game_sessions
+set search_limit = 0
+where mode in ('reader', 'book', 'author')
+  and expires_at > now()
+  and search_limit <> 0;
+
 
 revoke all on public.spin_game_sessions from anon, authenticated;
 grant select, insert, update, delete on public.spin_game_sessions to service_role;
@@ -110,7 +120,7 @@ begin
         'cooldown_every_games', 10,
         'cooldown_seconds', 120,
         'cooldown_tracking', 'local',
-        'search_limit_per_game', 20
+        'search_limit_per_game', null
       )
     ),
     'usage', jsonb_build_object(
@@ -166,7 +176,7 @@ declare
   v_daily_limit integer := 0;
   v_cost integer := 0;
   v_currency text := null;
-  v_search_limit integer := 20;
+  v_search_limit integer := 0;
   v_coin bigint := 0;
   v_diamond bigint := 0;
   v_session public.spin_game_sessions%rowtype;
@@ -443,34 +453,45 @@ begin
     return jsonb_build_object('ok', false, 'code', 'SPIN_SESSION_MODE_MISMATCH', 'message', 'Spin session does not match this search type');
   end if;
 
-  if v_session.search_limit <= 0 then
-    return jsonb_build_object('ok', false, 'code', 'SPIN_SEARCH_DISABLED', 'message', 'Search is not available for this Spin mode');
-  end if;
+  if v_session.search_limit > 0 then
+    if v_session.search_count >= v_session.search_limit then
+      return jsonb_build_object(
+        'ok', false,
+        'code', 'SPIN_SEARCH_LIMIT',
+        'message', 'Spin search limit reached',
+        'used', v_session.search_count,
+        'limit', v_session.search_limit,
+        'remaining', 0
+      );
+    end if;
 
-  if v_session.search_count >= v_session.search_limit then
-    return jsonb_build_object(
-      'ok', false,
-      'code', 'SPIN_SEARCH_LIMIT',
-      'message', 'Spin search limit reached',
-      'used', v_session.search_count,
-      'limit', v_session.search_limit,
-      'remaining', 0
-    );
+    update public.spin_game_sessions
+    set search_count = search_count + 1
+    where id = v_session.id
+    returning *
+    into v_session;
   end if;
-
-  update public.spin_game_sessions
-  set search_count = search_count + 1
-  where id = v_session.id
-  returning *
-  into v_session;
 
   return jsonb_build_object(
     'ok', true,
     'session_id', v_session.id,
     'mode', v_session.mode,
     'used', v_session.search_count,
-    'limit', v_session.search_limit,
-    'remaining', greatest(0, v_session.search_limit - v_session.search_count),
+    'limit',
+      case
+        when v_session.search_limit > 0
+          then v_session.search_limit
+        else null
+      end,
+    'remaining',
+      case
+        when v_session.search_limit > 0
+          then greatest(
+            0,
+            v_session.search_limit - v_session.search_count
+          )
+        else null
+      end,
     'expires_at', v_session.expires_at
   );
 end;
