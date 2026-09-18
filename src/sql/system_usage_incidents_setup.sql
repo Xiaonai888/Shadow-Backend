@@ -8,17 +8,56 @@ create table if not exists public.system_usage_incidents (
   dependency text not null default 'UNKNOWN',
   first_seen_at timestamptz not null default now(),
   last_seen_at timestamptz not null default now(),
+  fix_applied_at timestamptz,
+  verified_at timestamptz,
   resolved_at timestamptz,
+  archived_at timestamptz,
   delete_after timestamptz,
   recurrence_count integer not null default 0,
+  fix_summary text,
+  fix_commit text,
+  fix_version text,
+  verification_before jsonb not null default '{}'::jsonb,
+  verification_after jsonb not null default '{}'::jsonb,
+  resolution_summary jsonb not null default '{}'::jsonb,
   evidence jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint system_usage_incidents_status_check
-    check (status in ('OPEN', 'INVESTIGATING', 'RESOLVED')),
-  constraint system_usage_incidents_recurrence_check
-    check (recurrence_count >= 0)
+  updated_at timestamptz not null default now()
 );
+
+alter table public.system_usage_incidents
+  add column if not exists fix_applied_at timestamptz,
+  add column if not exists verified_at timestamptz,
+  add column if not exists archived_at timestamptz,
+  add column if not exists fix_summary text,
+  add column if not exists fix_commit text,
+  add column if not exists fix_version text,
+  add column if not exists verification_before jsonb not null default '{}'::jsonb,
+  add column if not exists verification_after jsonb not null default '{}'::jsonb,
+  add column if not exists resolution_summary jsonb not null default '{}'::jsonb;
+
+alter table public.system_usage_incidents
+  drop constraint if exists system_usage_incidents_status_check;
+
+alter table public.system_usage_incidents
+  add constraint system_usage_incidents_status_check
+  check (
+    status in (
+      'OPEN',
+      'INVESTIGATING',
+      'FIX_APPLIED',
+      'VERIFIED',
+      'RESOLVED',
+      'ARCHIVED'
+    )
+  );
+
+alter table public.system_usage_incidents
+  drop constraint if exists system_usage_incidents_recurrence_check;
+
+alter table public.system_usage_incidents
+  add constraint system_usage_incidents_recurrence_check
+  check (recurrence_count >= 0);
 
 create index if not exists system_usage_incidents_status_idx
   on public.system_usage_incidents (status, last_seen_at desc);
@@ -26,9 +65,19 @@ create index if not exists system_usage_incidents_status_idx
 create index if not exists system_usage_incidents_fingerprint_idx
   on public.system_usage_incidents (fingerprint, last_seen_at desc);
 
-create index if not exists system_usage_incidents_cleanup_idx
+create index if not exists system_usage_incidents_verified_idx
+  on public.system_usage_incidents (verified_at desc)
+  where verified_at is not null;
+
+create index if not exists system_usage_incidents_archived_idx
+  on public.system_usage_incidents (archived_at desc)
+  where archived_at is not null;
+
+drop index if exists public.system_usage_incidents_cleanup_idx;
+
+create index system_usage_incidents_cleanup_idx
   on public.system_usage_incidents (delete_after)
-  where status = 'RESOLVED';
+  where status in ('RESOLVED', 'ARCHIVED');
 
 create or replace function public.touch_system_usage_incident_updated_at()
 returns trigger
