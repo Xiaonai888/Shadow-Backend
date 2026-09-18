@@ -37,6 +37,10 @@ const providerState = {
     status: 'not_configured',
     checked_at: null,
   },
+  cloudflare_r2: {
+    status: 'not_configured',
+    checked_at: null,
+  },
   reconciliation: null,
   poll_requests: 0,
   poll_errors: 0,
@@ -246,6 +250,77 @@ async function fetchJson(url, token) {
     }
 
     return data
+  } catch (error) {
+    providerState.poll_errors += 1
+    throw error
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function fetchCloudflareGraphql(
+  token,
+  query,
+  variables
+) {
+  const controller = new AbortController()
+  const timeout = setTimeout(
+    () => controller.abort(),
+    PROVIDER_TIMEOUT_MS
+  )
+
+  timeout.unref?.()
+
+  try {
+    providerState.poll_requests += 1
+
+    const response = await fetch(
+      'https://api.cloudflare.com/client/v4/graphql',
+      {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query,
+          variables,
+        }),
+      }
+    )
+
+    const payload =
+      await response.json().catch(() => null)
+
+    if (!response.ok) {
+      throw new Error(
+        `Cloudflare GraphQL failed with HTTP ${response.status}.`
+      )
+    }
+
+    if (
+      !payload ||
+      !payload.data ||
+      (
+        Array.isArray(payload.errors) &&
+        payload.errors.length > 0
+      )
+    ) {
+      const message =
+        Array.isArray(payload?.errors) &&
+        payload.errors.length > 0
+          ? payload.errors
+              .map((item) => item?.message)
+              .filter(Boolean)
+              .join('; ')
+          : 'Cloudflare GraphQL returned no data.'
+
+      throw new Error(message)
+    }
+
+    return payload.data
   } catch (error) {
     providerState.poll_errors += 1
     throw error
@@ -587,6 +662,560 @@ async function syncRenderProvider(now) {
   }
 }
 
+const R2_CLASS_A_ACTIONS = new Set([
+  'listbuckets',
+  'putbucket',
+  'listobjects',
+  'putobject',
+  'copyobject',
+  'completemultipartupload',
+  'createmultipartupload',
+  'lifecyclestoragetiertransition',
+  'listmultipartuploads',
+  'uploadpart',
+  'uploadpartcopy',
+  'listparts',
+  'putbucketencryption',
+  'putbucketcors',
+  'putbucketlifecycleconfiguration',
+])
+
+const R2_CLASS_B_ACTIONS = new Set([
+  'headbucket',
+  'headobject',
+  'getobject',
+  'usagesummary',
+  'getbucketencryption',
+  'getbucketlocation',
+  'getbucketcors',
+  'getbucketlifecycleconfiguration',
+])
+
+const R2_FREE_ACTIONS = new Set([
+  'deleteobject',
+  'deletebucket',
+  'abortmultipartupload',
+])
+
+function normalizeR2Action(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+}
+
+function r2ActionClass(action) {
+  const key = normalizeR2Action(action)
+
+  if (R2_CLASS_A_ACTIONS.has(key)) {
+    return 'class_a'
+  }
+
+  if (R2_CLASS_B_ACTIONS.has(key)) {
+    return 'class_b'
+  }
+
+  if (R2_FREE_ACTIONS.has(key)) {
+    return 'free'
+  }
+
+  return 'unclassified'
+}
+
+function cloudflareR2Config() {
+  return {
+    accountId: String(
+      process.env.CLOUDFLARE_ACCOUNT_ID ||
+        process.env.SYSTEM_CLOUDFLARE_ACCOUNT_ID ||
+        process.env.R2_ACCOUNT_ID ||
+        ''
+    ).trim(),
+    apiToken: String(
+      process.env.CLOUDFLARE_API_TOKEN ||
+        process.env.SYSTEM_CLOUDFLARE_API_TOKEN ||
+        ''
+    ).trim(),
+    bucketName: String(
+      process.env.CLOUDFLARE_R2_BUCKET ||
+        process.env.R2_BUCKET_NAME ||
+        ''
+    ).trim(),
+  }
+}
+
+function billingMonthStart(now) {
+  const date = new Date(now)
+
+  return new Date(
+    Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      1
+    )
+  ).toISOString()
+}
+
+function r2MetricPart(value) {
+  const source =
+    value && typeof value === 'object'
+      ? value
+      : {}
+
+  return {
+    payload_bytes:
+      safeNumber(
+        source.payloadSize ??
+          source.payload_size
+      ),
+    metadata_bytes:
+      safeNumber(
+        source.metadataSize ??
+          source.metadata_size
+      ),
+    objects:
+      safeNumber(source.objects),
+  }
+}
+
+function combineR2MetricParts(...parts) {
+  return parts.reduce(
+    (result, part) => {
+      result.payload_bytes +=
+        safeNumber(part?.payload_bytes)
+      result.metadata_bytes +=
+        safeNumber(part?.metadata_bytes)
+      result.objects +=
+        safeNumber(part?.objects)
+      return result
+    },
+    {
+      payload_bytes: 0,
+      metadata_bytes: 0,
+      objects: 0,
+    }
+  )
+}
+
+function parseCloudflareR2Storage(payload) {
+  const result =
+    payload?.result &&
+    typeof payload.result === 'object'
+      ? payload.result
+      : null
+
+  if (!result) return null
+
+  const standardSource =
+    result.standard || {}
+
+  const infrequentSource =
+    result.infrequentAccess ||
+    result.infrequent_access ||
+    {}
+
+  const standardPublished =
+    r2MetricPart(standardSource.published)
+
+  const standardUploaded =
+    r2MetricPart(standardSource.uploaded)
+
+  const infrequentPublished =
+    r2MetricPart(infrequentSource.published)
+
+  const infrequentUploaded =
+    r2MetricPart(infrequentSource.uploaded)
+
+  const standard = combineR2MetricParts(
+    standardPublished,
+    standardUploaded
+  )
+
+  const infrequentAccess =
+    combineR2MetricParts(
+      infrequentPublished,
+      infrequentUploaded
+    )
+
+  const total = combineR2MetricParts(
+    standard,
+    infrequentAccess
+  )
+
+  return {
+    scope: 'account',
+    standard: {
+      published: standardPublished,
+      uploaded: standardUploaded,
+      ...standard,
+      total_bytes:
+        standard.payload_bytes +
+        standard.metadata_bytes,
+      total_mb: toMb(
+        standard.payload_bytes +
+        standard.metadata_bytes
+      ),
+    },
+    infrequent_access: {
+      published: infrequentPublished,
+      uploaded: infrequentUploaded,
+      ...infrequentAccess,
+      total_bytes:
+        infrequentAccess.payload_bytes +
+        infrequentAccess.metadata_bytes,
+      total_mb: toMb(
+        infrequentAccess.payload_bytes +
+        infrequentAccess.metadata_bytes
+      ),
+    },
+    total: {
+      ...total,
+      total_bytes:
+        total.payload_bytes +
+        total.metadata_bytes,
+      total_mb: toMb(
+        total.payload_bytes +
+        total.metadata_bytes
+      ),
+    },
+  }
+}
+
+function parseCloudflareR2Operations(
+  data,
+  start,
+  end
+) {
+  const accounts =
+    data?.viewer?.accounts
+
+  const groups =
+    Array.isArray(accounts) &&
+    accounts.length > 0 &&
+    Array.isArray(
+      accounts[0]?.r2OperationsAdaptiveGroups
+    )
+      ? accounts[0]
+          .r2OperationsAdaptiveGroups
+      : []
+
+  const byAction = new Map()
+  const byBucket = new Map()
+
+  const totals = {
+    requests: 0,
+    success_requests: 0,
+    user_error_requests: 0,
+    internal_error_requests: 0,
+    class_a_requests: 0,
+    class_b_requests: 0,
+    free_requests: 0,
+    unclassified_requests: 0,
+  }
+
+  for (const group of groups) {
+    const dimensions =
+      group?.dimensions || {}
+
+    const action = String(
+      dimensions.actionType || 'UNKNOWN'
+    ).trim() || 'UNKNOWN'
+
+    const bucket = String(
+      dimensions.bucketName || 'UNKNOWN'
+    ).trim() || 'UNKNOWN'
+
+    const status = String(
+      dimensions.actionStatus || ''
+    )
+      .trim()
+      .toLowerCase()
+
+    const requests =
+      safeNumber(group?.sum?.requests)
+
+    const operationClass =
+      r2ActionClass(action)
+
+    totals.requests += requests
+
+    if (status === 'success') {
+      totals.success_requests += requests
+    } else if (status === 'usererror') {
+      totals.user_error_requests += requests
+    } else if (status === 'internalerror') {
+      totals.internal_error_requests += requests
+    }
+
+    if (operationClass === 'class_a') {
+      totals.class_a_requests += requests
+    } else if (operationClass === 'class_b') {
+      totals.class_b_requests += requests
+    } else if (operationClass === 'free') {
+      totals.free_requests += requests
+    } else {
+      totals.unclassified_requests +=
+        requests
+    }
+
+    const actionCurrent =
+      byAction.get(action) || {
+        action,
+        operation_class: operationClass,
+        requests: 0,
+        success_requests: 0,
+        user_error_requests: 0,
+        internal_error_requests: 0,
+      }
+
+    actionCurrent.requests += requests
+
+    if (status === 'success') {
+      actionCurrent.success_requests +=
+        requests
+    } else if (status === 'usererror') {
+      actionCurrent.user_error_requests +=
+        requests
+    } else if (status === 'internalerror') {
+      actionCurrent.internal_error_requests +=
+        requests
+    }
+
+    byAction.set(action, actionCurrent)
+
+    const bucketCurrent =
+      byBucket.get(bucket) || {
+        bucket,
+        requests: 0,
+      }
+
+    bucketCurrent.requests += requests
+    byBucket.set(bucket, bucketCurrent)
+  }
+
+  return {
+    scope: 'account',
+    window_start: start,
+    window_end: end,
+    groups: groups.length,
+    ...totals,
+    by_action: [...byAction.values()]
+      .sort(
+        (a, b) =>
+          b.requests - a.requests ||
+          a.action.localeCompare(b.action)
+      )
+      .slice(0, 100),
+    by_bucket: [...byBucket.values()]
+      .sort(
+        (a, b) =>
+          b.requests - a.requests ||
+          a.bucket.localeCompare(b.bucket)
+      )
+      .slice(0, 50),
+  }
+}
+
+function cloudflareR2PricingReference() {
+  return {
+    source: 'cloudflare_r2_pricing',
+    as_of: '2026-08-07',
+    egress_to_internet: {
+      billable: false,
+      usd_per_gb: 0,
+    },
+    standard: {
+      storage_usd_per_gb_month: 0.015,
+      class_a_usd_per_million: 4.5,
+      class_b_usd_per_million: 0.36,
+      retrieval_usd_per_gb: 0,
+      free_tier: {
+        storage_gb_month: 10,
+        class_a_requests: 1000000,
+        class_b_requests: 10000000,
+      },
+    },
+    infrequent_access: {
+      storage_usd_per_gb_month: 0.01,
+      class_a_usd_per_million: 9,
+      class_b_usd_per_million: 0.9,
+      retrieval_usd_per_gb: 0.01,
+      minimum_storage_days: 30,
+      free_tier_applies: false,
+    },
+    note:
+      'Rates are reference pricing, not a Cloudflare invoice. Storage billing uses GB-month and operation billing depends on storage class.',
+  }
+}
+
+async function syncCloudflareR2Provider(now) {
+  const {
+    accountId,
+    apiToken,
+    bucketName,
+  } = cloudflareR2Config()
+
+  if (!accountId || !apiToken) {
+    providerState.cloudflare_r2 = {
+      status: 'not_configured',
+      checked_at:
+        new Date(now).toISOString(),
+      missing: [
+        !accountId
+          ? 'CLOUDFLARE_ACCOUNT_ID_OR_R2_ACCOUNT_ID'
+          : null,
+        !apiToken
+          ? 'CLOUDFLARE_API_TOKEN'
+          : null,
+      ].filter(Boolean),
+      bucket_name:
+        bucketName || null,
+      pricing:
+        cloudflareR2PricingReference(),
+    }
+    return
+  }
+
+  const start =
+    billingMonthStart(now)
+
+  const end =
+    new Date(now).toISOString()
+
+  const operationsQuery = `
+    query R2Operations(
+      $accountTag: string!
+      $startDate: Time
+      $endDate: Time
+    ) {
+      viewer {
+        accounts(
+          filter: {
+            accountTag: $accountTag
+          }
+        ) {
+          r2OperationsAdaptiveGroups(
+            limit: 10000
+            filter: {
+              datetime_geq: $startDate
+              datetime_leq: $endDate
+            }
+          ) {
+            sum {
+              requests
+            }
+            dimensions {
+              actionType
+              actionStatus
+              bucketName
+            }
+          }
+        }
+      }
+    }
+  `
+
+  const [
+    storageResult,
+    operationsResult,
+  ] = await Promise.allSettled([
+    fetchJson(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(
+        accountId
+      )}/r2/metrics`,
+      apiToken
+    ),
+    fetchCloudflareGraphql(
+      apiToken,
+      operationsQuery,
+      {
+        accountTag: accountId,
+        startDate: start,
+        endDate: end,
+      }
+    ),
+  ])
+
+  const storage =
+    storageResult.status === 'fulfilled'
+      ? parseCloudflareR2Storage(
+          storageResult.value
+        )
+      : null
+
+  const operations =
+    operationsResult.status === 'fulfilled'
+      ? parseCloudflareR2Operations(
+          operationsResult.value,
+          start,
+          end
+        )
+      : null
+
+  const errors = []
+
+  if (storageResult.status === 'rejected') {
+    errors.push({
+      source: 'storage_metrics',
+      message: String(
+        storageResult.reason?.message ||
+          storageResult.reason ||
+          'Cloudflare R2 storage metrics failed.'
+      ).slice(0, 300),
+    })
+  }
+
+  if (
+    operationsResult.status === 'rejected'
+  ) {
+    errors.push({
+      source: 'operations_analytics',
+      message: String(
+        operationsResult.reason?.message ||
+          operationsResult.reason ||
+          'Cloudflare R2 operations analytics failed.'
+      ).slice(0, 300),
+    })
+  }
+
+  const successCount =
+    Number(Boolean(storage)) +
+    Number(Boolean(operations))
+
+  providerState.cloudflare_r2 = {
+    status:
+      successCount === 2
+        ? 'ok'
+        : successCount === 1
+          ? 'partial'
+          : 'error',
+    checked_at:
+      new Date(now).toISOString(),
+    account_id: accountId,
+    bucket_name:
+      bucketName || null,
+    scope: 'account',
+    storage,
+    operations,
+    pricing:
+      cloudflareR2PricingReference(),
+    cost_interpretation: {
+      egress_to_internet_billable: false,
+      storage_billable: true,
+      class_a_billable: true,
+      class_b_billable: true,
+      retrieval_billable:
+        safeNumber(
+          storage?.infrequent_access
+            ?.total_bytes
+        ) > 0,
+      exact_invoice_cost_available: false,
+      note:
+        'Provider metrics show usage drivers. They are not the Cloudflare invoice.',
+    },
+    errors,
+  }
+}
+
 async function syncSupabaseProvider(now) {
   const token = String(
     process.env.SUPABASE_MANAGEMENT_TOKEN ||
@@ -650,6 +1279,11 @@ function updateReconciliation(source, now) {
     'SUPABASE'
   )
 
+  const appR2 = summarizeDependency(
+    minutes,
+    'CLOUDFLARE_R2'
+  )
+
   const renderProviderBytes =
     Number.isFinite(
       providerState.render?.provider_bytes
@@ -698,12 +1332,27 @@ function updateReconciliation(source, now) {
         null,
       comparable_period: false,
     },
+    cloudflare_r2: {
+      app_attributed_calls: appR2.count,
+      app_attributed_bytes: appR2.bytes,
+      app_attributed_mb:
+        toMb(appR2.bytes),
+      provider_operation_requests:
+        providerState.cloudflare_r2
+          ?.operations?.requests ?? null,
+      provider_storage_bytes:
+        providerState.cloudflare_r2
+          ?.storage?.total?.total_bytes ??
+        null,
+      comparable_period: false,
+    },
   }
 }
 
 async function syncProvidersIfDue(
   source,
-  now = Date.now()
+  now = Date.now(),
+  force = false
 ) {
   if (providerSyncing) return
 
@@ -714,6 +1363,7 @@ async function syncProvidersIfDue(
     : 0
 
   if (
+    !force &&
     Number.isFinite(lastSync) &&
     lastSync > 0 &&
     now - lastSync < PROVIDER_SYNC_MS
@@ -727,6 +1377,7 @@ async function syncProvidersIfDue(
     await Promise.all([
       syncRenderProvider(now),
       syncSupabaseProvider(now),
+      syncCloudflareR2Provider(now),
     ])
 
     providerState.last_sync_at =
@@ -1371,6 +2022,26 @@ export async function getSystemUsageHistory({
     rows,
     series,
   }
+}
+
+
+export function getSystemUsageProviderState() {
+  return cloneProviderState()
+}
+
+export async function refreshSystemUsageProviders({
+  force = false,
+} = {}) {
+  const now = Date.now()
+  const source = getSystemUsageSnapshot()
+
+  await syncProvidersIfDue(
+    source,
+    now,
+    Boolean(force)
+  )
+
+  return cloneProviderState()
 }
 
 export function startSystemUsagePersistence() {
