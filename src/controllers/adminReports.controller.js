@@ -109,7 +109,11 @@ function publicReport(report, reporter = null) {
     reporter_user_id: report.reporter_user_id || null,
     reporter: publicReporter(reporter),
     report_type: report.report_type,
-    report_type_label: TYPE_LABELS[report.report_type] || report.report_type,
+    report_type_label:
+      report.report_type === 'comment' &&
+      String(report.target_title || '').startsWith('Review on ')
+        ? 'Author Review'
+        : TYPE_LABELS[report.report_type] || report.report_type,
     target_id: report.target_id,
     target_title: report.target_title || '',
     target_excerpt: report.target_excerpt || '',
@@ -368,6 +372,37 @@ export async function getAdminReport(req, res) {
   }
 }
 
+async function removeReportedAuthorReview(report) {
+  if (
+    report?.report_type !== 'comment' ||
+    !String(report?.target_title || '').startsWith('Review on ') ||
+    !isUuid(report?.target_id)
+  ) {
+    return false
+  }
+
+  const { data: review, error: findError } = await supabase
+    .from('author_page_reviews')
+    .select('id, status')
+    .eq('id', report.target_id)
+    .maybeSingle()
+
+  if (findError) throw findError
+  if (!review || review.status !== 'active') return false
+
+  const { error: deleteError } = await supabase
+    .from('author_page_reviews')
+    .update({
+      status: 'deleted',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', review.id)
+
+  if (deleteError) throw deleteError
+  return true
+}
+
+
 export async function updateAdminReport(req, res) {
   try {
     const reportId = cleanText(req.params.reportId)
@@ -444,6 +479,11 @@ export async function updateAdminReport(req, res) {
 
     if (updateError) throw updateError
 
+    const removedAuthorReview =
+      hasStatus && status === 'resolved'
+        ? await removeReportedAuthorReview(existingReport)
+        : false
+
     const changes = []
 
     if (hasStatus && existingReport.status !== status) {
@@ -452,6 +492,10 @@ export async function updateAdminReport(req, res) {
 
     if (hasAdminNote) {
       changes.push('admin note')
+    }
+
+    if (removedAuthorReview) {
+      changes.push('removed the reported author review')
     }
 
     await createActivityLog({
@@ -467,7 +511,9 @@ export async function updateAdminReport(req, res) {
 
     let message = 'Report updated successfully'
 
-    if (hasAdminNote && !hasStatus) {
+    if (removedAuthorReview) {
+      message = 'Report resolved and the author review was removed'
+    } else if (hasAdminNote && !hasStatus) {
       message = 'Admin note saved successfully'
     } else if (hasStatus && !hasAdminNote) {
       message = 'Report status updated successfully'
