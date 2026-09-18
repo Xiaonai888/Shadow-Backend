@@ -2215,25 +2215,27 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
       isPublicEpisode(episode, now)
     )
 
-        const commentCounts = new Map()
-    const visibleEpisodeIds = visibleEpisodes.map((episode) => episode.id).filter(Boolean)
+    const commentCounts = new Map()
+    const visibleEpisodeIds = visibleEpisodes
+      .map((episode) => episode.id)
+      .filter(Boolean)
 
     if (visibleEpisodeIds.length) {
-      const { data: comments, error: commentError } = await supabase
-        .from('comments')
-        .select('episode_id')
-        .eq('story_id', storyId)
-        .in('episode_id', visibleEpisodeIds)
-        .eq('is_hidden', false)
-        .is('deleted_at', null)
-        .is('parent_id', null)
+      const { data: totals, error: commentError } =
+        await supabase.rpc(
+          'get_episode_comment_totals',
+          {
+            p_episode_ids: visibleEpisodeIds,
+          }
+        )
 
       if (commentError) throw commentError
 
-      for (const comment of comments || []) {
-        const key = String(comment.episode_id || '')
-        if (!key) continue
-        commentCounts.set(key, Number(commentCounts.get(key) || 0) + 1)
+      for (const row of totals || []) {
+        commentCounts.set(
+          String(row.episode_id || ''),
+          Number(row.total || 0)
+        )
       }
     }
 
