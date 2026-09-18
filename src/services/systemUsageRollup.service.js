@@ -4,9 +4,8 @@ const HOUR_MS = 60 * 60 * 1000
 const DAY_MS = 24 * HOUR_MS
 const DETAIL_RETENTION_MS = 7 * DAY_MS
 const HOURLY_RETENTION_MS = 30 * DAY_MS
-const DAILY_RETENTION_MS = 365 * DAY_MS
-const MONTHLY_RETENTION_MS = 3 * 365 * DAY_MS
 const PAGE_SIZE = 1000
+const UPSERT_BATCH = 250
 const MAX_TOP_ROWS = 100
 
 function safeNumber(value) {
@@ -28,14 +27,39 @@ function floorDay(ms) {
 
 function floorMonth(ms) {
   const date = new Date(ms)
-  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)
+
+  return Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    1
+  )
+}
+
+function shiftUtcYears(ms, years) {
+  const date = new Date(ms)
+
+  return Date.UTC(
+    date.getUTCFullYear() + years,
+    date.getUTCMonth(),
+    date.getUTCDate(),
+    date.getUTCHours(),
+    date.getUTCMinutes(),
+    date.getUTCSeconds(),
+    date.getUTCMilliseconds()
+  )
 }
 
 function nextBucket(ms, granularity) {
-  if (granularity === 'hour') return ms + HOUR_MS
-  if (granularity === 'day') return ms + DAY_MS
+  if (granularity === 'hour') {
+    return ms + HOUR_MS
+  }
+
+  if (granularity === 'day') {
+    return ms + DAY_MS
+  }
 
   const date = new Date(ms)
+
   return Date.UTC(
     date.getUTCFullYear(),
     date.getUTCMonth() + 1,
@@ -44,8 +68,14 @@ function nextBucket(ms, granularity) {
 }
 
 function bucketStart(ms, granularity) {
-  if (granularity === 'hour') return floorHour(ms)
-  if (granularity === 'day') return floorDay(ms)
+  if (granularity === 'hour') {
+    return floorHour(ms)
+  }
+
+  if (granularity === 'day') {
+    return floorDay(ms)
+  }
+
   return floorMonth(ms)
 }
 
@@ -61,6 +91,7 @@ function detailKey(row) {
 function mergeDetailRows(target, rows = []) {
   for (const row of rows) {
     const key = detailKey(row)
+
     const current = target.get(key) || {
       kind: row.kind || 'unknown',
       feature: row.feature || 'unknown',
@@ -73,10 +104,13 @@ function mergeDetailRows(target, rows = []) {
     }
 
     const count = safeNumber(row.count)
+
     current.count += count
     current.bytes += safeNumber(row.bytes)
     current.errors += safeNumber(row.errors)
-    current.weighted_ms += safeNumber(row.avg_ms) * count
+    current.weighted_ms +=
+      safeNumber(row.avg_ms) * count
+
     target.set(key, current)
   }
 }
@@ -93,72 +127,177 @@ function serializeDetailRows(map) {
       mb: toMb(row.bytes),
       errors: row.errors,
       avg_ms: row.count
-        ? Number((row.weighted_ms / row.count).toFixed(1))
+        ? Number(
+            (
+              row.weighted_ms /
+              row.count
+            ).toFixed(1)
+          )
         : 0,
     }))
-    .sort((a, b) => b.bytes - a.bytes || b.count - a.count)
+    .sort(
+      (a, b) =>
+        b.bytes - a.bytes ||
+        b.count - a.count
+    )
     .slice(0, MAX_TOP_ROWS)
 }
 
-async function loadPaged({
+async function loadEligibleRows({
   table,
   select,
-  timeColumn,
-  fromIso,
-  toIso,
+  endColumn,
+  boundaryMs,
   granularity = null,
 }) {
   const rows = []
+  const boundaryIso =
+    new Date(boundaryMs).toISOString()
 
-  for (let offset = 0; ; offset += PAGE_SIZE) {
+  for (
+    let offset = 0;
+    ;
+    offset += PAGE_SIZE
+  ) {
     let query = supabase
       .from(table)
       .select(select)
-      .gte(timeColumn, fromIso)
-      .lt(timeColumn, toIso)
-      .order(timeColumn, { ascending: true })
-      .range(offset, offset + PAGE_SIZE - 1)
+      .lte(endColumn, boundaryIso)
+      .order(endColumn, {
+        ascending: true,
+      })
+      .range(
+        offset,
+        offset + PAGE_SIZE - 1
+      )
 
     if (granularity) {
-      query = query.eq('granularity', granularity)
+      query = query.eq(
+        'granularity',
+        granularity
+      )
     }
 
-    const { data, error } = await query
+    const { data, error } =
+      await query
+
     if (error) throw error
 
-    const page = Array.isArray(data) ? data : []
+    const page =
+      Array.isArray(data)
+        ? data
+        : []
+
     rows.push(...page)
 
-    if (page.length < PAGE_SIZE) break
+    if (page.length < PAGE_SIZE) {
+      break
+    }
   }
 
   return rows
 }
 
-async function loadSnapshotRows(fromMs, toMs) {
-  return loadPaged({
+async function loadSnapshotRowsBefore(
+  boundaryMs
+) {
+  return loadEligibleRows({
     table: 'system_usage_snapshots',
     select:
       'window_start,window_end,request_count,bytes,errors,payload',
-    timeColumn: 'window_start',
-    fromIso: new Date(fromMs).toISOString(),
-    toIso: new Date(toMs).toISOString(),
+    endColumn: 'window_end',
+    boundaryMs,
   })
 }
 
-async function loadRollupRows(granularity, fromMs, toMs) {
-  return loadPaged({
+async function loadRollupRowsBefore(
+  granularity,
+  boundaryMs
+) {
+  return loadEligibleRows({
     table: 'system_usage_rollups',
     select:
       'granularity,bucket_start,bucket_end,request_count,bytes,errors,source_rows,payload',
-    timeColumn: 'bucket_start',
-    fromIso: new Date(fromMs).toISOString(),
-    toIso: new Date(toMs).toISOString(),
+    endColumn: 'bucket_end',
+    boundaryMs,
     granularity,
   })
 }
 
-function groupSourceRows(rows, granularity, sourceType) {
+async function loadRollupRowsOverlap(
+  granularity,
+  fromMs,
+  toMs
+) {
+  if (toMs <= fromMs) {
+    return []
+  }
+
+  const rows = []
+  const fromIso =
+    new Date(fromMs).toISOString()
+  const toIso =
+    new Date(toMs).toISOString()
+
+  for (
+    let offset = 0;
+    ;
+    offset += PAGE_SIZE
+  ) {
+    const { data, error } =
+      await supabase
+        .from(
+          'system_usage_rollups'
+        )
+        .select(
+          'granularity,bucket_start,bucket_end,request_count,bytes,errors,source_rows,payload'
+        )
+        .eq(
+          'granularity',
+          granularity
+        )
+        .gt(
+          'bucket_end',
+          fromIso
+        )
+        .lt(
+          'bucket_start',
+          toIso
+        )
+        .order(
+          'bucket_start',
+          { ascending: true }
+        )
+        .range(
+          offset,
+          offset + PAGE_SIZE - 1
+        )
+
+    if (error) throw error
+
+    const page =
+      Array.isArray(data)
+        ? data
+        : []
+
+    rows.push(...page)
+
+    if (
+      page.length <
+      PAGE_SIZE
+    ) {
+      break
+    }
+  }
+
+  return rows
+}
+
+function groupSourceRows(
+  rows,
+  granularity,
+  sourceType
+) {
   const groups = new Map()
 
   for (const row of rows) {
@@ -166,175 +305,400 @@ function groupSourceRows(rows, granularity, sourceType) {
       sourceType === 'snapshot'
         ? row.window_start
         : row.bucket_start
-    const startMs = new Date(rawStart).getTime()
 
-    if (!Number.isFinite(startMs)) continue
+    const startMs =
+      new Date(
+        rawStart
+      ).getTime()
 
-    const start = bucketStart(startMs, granularity)
-    const end = nextBucket(start, granularity)
-    const key = `${granularity}:${start}`
-
-    const current = groups.get(key) || {
-      granularity,
-      bucket_start: new Date(start).toISOString(),
-      bucket_end: new Date(end).toISOString(),
-      request_count: 0,
-      bytes: 0,
-      errors: 0,
-      source_rows: 0,
-      details: new Map(),
+    if (!Number.isFinite(startMs)) {
+      continue
     }
 
-    current.request_count += safeNumber(row.request_count)
-    current.bytes += safeNumber(row.bytes)
-    current.errors += safeNumber(row.errors)
-    current.source_rows += 1
+    const start =
+      bucketStart(
+        startMs,
+        granularity
+      )
+
+    const end =
+      nextBucket(
+        start,
+        granularity
+      )
+
+    const key =
+      `${granularity}:${start}`
+
+    const current =
+      groups.get(key) || {
+        granularity,
+        bucket_start:
+          new Date(
+            start
+          ).toISOString(),
+        bucket_end:
+          new Date(
+            end
+          ).toISOString(),
+        request_count: 0,
+        bytes: 0,
+        errors: 0,
+        source_rows: 0,
+        details: new Map(),
+      }
+
+    current.request_count +=
+      safeNumber(
+        row.request_count
+      )
+
+    current.bytes +=
+      safeNumber(row.bytes)
+
+    current.errors +=
+      safeNumber(row.errors)
+
+    current.source_rows +=
+      sourceType === 'snapshot'
+        ? 1
+        : Math.max(
+            1,
+            Math.floor(
+              safeNumber(
+                row.source_rows
+              )
+            )
+          )
+
     mergeDetailRows(
       current.details,
-      row?.payload?.top_rows || []
+      row?.payload
+        ?.top_rows || []
     )
 
-    groups.set(key, current)
+    groups.set(
+      key,
+      current
+    )
   }
 
-  return [...groups.values()].map((group) => ({
-    granularity: group.granularity,
-    bucket_start: group.bucket_start,
-    bucket_end: group.bucket_end,
-    request_count: group.request_count,
-    bytes: group.bytes,
-    errors: group.errors,
-    source_rows: group.source_rows,
-    payload: {
-      version: 1,
-      granularity: group.granularity,
-      top_rows: serializeDetailRows(group.details),
-    },
-  }))
+  return [...groups.values()]
+    .map((group) => ({
+      granularity:
+        group.granularity,
+      bucket_start:
+        group.bucket_start,
+      bucket_end:
+        group.bucket_end,
+      request_count:
+        group.request_count,
+      bytes:
+        group.bytes,
+      errors:
+        group.errors,
+      source_rows:
+        group.source_rows,
+      payload: {
+        version: 2,
+        granularity:
+          group.granularity,
+        top_rows:
+          serializeDetailRows(
+            group.details
+          ),
+      },
+    }))
+    .sort(
+      (a, b) =>
+        new Date(
+          a.bucket_start
+        ).getTime() -
+        new Date(
+          b.bucket_start
+        ).getTime()
+    )
 }
 
 async function upsertRollups(rows) {
-  if (!rows.length) return 0
+  if (!rows.length) {
+    return 0
+  }
 
-  const { error } = await supabase
-    .from('system_usage_rollups')
-    .upsert(rows, {
-      onConflict: 'granularity,bucket_start,bucket_end',
-    })
+  for (
+    let index = 0;
+    index < rows.length;
+    index += UPSERT_BATCH
+  ) {
+    const batch =
+      rows.slice(
+        index,
+        index + UPSERT_BATCH
+      )
 
-  if (error) throw error
+    const { error } =
+      await supabase
+        .from(
+          'system_usage_rollups'
+        )
+        .upsert(
+          batch,
+          {
+            onConflict:
+              'granularity,bucket_start,bucket_end',
+          }
+        )
+
+    if (error) throw error
+  }
+
   return rows.length
 }
 
-async function rollupSnapshotsToHours(now) {
-  const from = floorHour(now - 8 * DAY_MS)
-  const to = floorHour(now)
-
-  if (to <= from) return 0
-
-  const rows = await loadSnapshotRows(from, to)
-  const groups = groupSourceRows(rows, 'hour', 'snapshot')
-  return upsertRollups(groups)
-}
-
-async function rollupHoursToDays(now) {
-  const from = floorDay(now - 32 * DAY_MS)
-  const to = floorDay(now)
-
-  if (to <= from) return 0
-
-  const rows = await loadRollupRows('hour', from, to)
-  const groups = groupSourceRows(rows, 'day', 'rollup')
-  return upsertRollups(groups)
-}
-
-async function rollupDaysToMonths(now) {
-  const date = new Date(now)
-  const from = Date.UTC(
-    date.getUTCFullYear(),
-    date.getUTCMonth() - 13,
-    1
-  )
-  const to = floorMonth(now)
-
-  if (to <= from) return 0
-
-  const rows = await loadRollupRows('day', from, to)
-  const groups = groupSourceRows(rows, 'month', 'rollup')
-  return upsertRollups(groups)
-}
-
-async function deleteOlderThan(table, column, cutoffIso, granularity) {
+async function deleteEligibleRows({
+  table,
+  endColumn,
+  boundaryMs,
+  granularity = null,
+}) {
   let query = supabase
     .from(table)
     .delete()
-    .lt(column, cutoffIso)
+    .lte(
+      endColumn,
+      new Date(
+        boundaryMs
+      ).toISOString()
+    )
 
   if (granularity) {
-    query = query.eq('granularity', granularity)
+    query = query.eq(
+      'granularity',
+      granularity
+    )
   }
 
-  const { error } = await query
+  const { error } =
+    await query
+
   if (error) throw error
 }
 
-async function cleanupRetention(now) {
-  await deleteOlderThan(
-    'system_usage_snapshots',
-    'window_end',
-    new Date(now - DETAIL_RETENTION_MS).toISOString()
+async function migrateTier({
+  sourceTable,
+  sourceGranularity = null,
+  targetGranularity,
+  sourceType,
+  boundaryMs,
+}) {
+  const rows =
+    sourceType === 'snapshot'
+      ? await loadSnapshotRowsBefore(
+          boundaryMs
+        )
+      : await loadRollupRowsBefore(
+          sourceGranularity,
+          boundaryMs
+        )
+
+  if (!rows.length) {
+    return {
+      source_rows: 0,
+      target_rows: 0,
+      deleted: false,
+    }
+  }
+
+  const groups =
+    groupSourceRows(
+      rows,
+      targetGranularity,
+      sourceType
+    )
+
+  await upsertRollups(
+    groups
   )
 
-  await deleteOlderThan(
-    'system_usage_rollups',
-    'bucket_end',
-    new Date(now - HOURLY_RETENTION_MS).toISOString(),
-    'hour'
-  )
+  await deleteEligibleRows({
+    table: sourceTable,
+    endColumn:
+      sourceType === 'snapshot'
+        ? 'window_end'
+        : 'bucket_end',
+    boundaryMs,
+    granularity:
+      sourceGranularity,
+  })
 
-  await deleteOlderThan(
-    'system_usage_rollups',
-    'bucket_end',
-    new Date(now - DAILY_RETENTION_MS).toISOString(),
-    'day'
-  )
+  return {
+    source_rows: rows.length,
+    target_rows: groups.length,
+    deleted: true,
+  }
+}
 
-  await deleteOlderThan(
-    'system_usage_rollups',
-    'bucket_end',
-    new Date(now - MONTHLY_RETENTION_MS).toISOString(),
-    'month'
-  )
+function retentionBoundaries(
+  now = Date.now()
+) {
+  const detailCutoff =
+    now -
+    DETAIL_RETENTION_MS
+
+  const hourlyCutoff =
+    now -
+    HOURLY_RETENTION_MS
+
+  const oneYearAgo =
+    shiftUtcYears(
+      now,
+      -1
+    )
+
+  const threeYearsAgo =
+    shiftUtcYears(
+      now,
+      -3
+    )
+
+  return {
+    detail:
+      floorHour(
+        detailCutoff
+      ),
+    hourly:
+      floorDay(
+        hourlyCutoff
+      ),
+    daily:
+      floorMonth(
+        oneYearAgo
+      ),
+    monthly:
+      floorMonth(
+        threeYearsAgo
+      ),
+  }
+}
+
+async function deleteExpiredMonthly(
+  boundaryMs
+) {
+  await deleteEligibleRows({
+    table:
+      'system_usage_rollups',
+    endColumn:
+      'bucket_end',
+    boundaryMs,
+    granularity:
+      'month',
+  })
 }
 
 export async function runSystemUsageRetention(
   now = Date.now()
 ) {
+  const boundaries =
+    retentionBoundaries(
+      now
+    )
+
   const result = {
-    hourly: 0,
-    daily: 0,
-    monthly: 0,
-    cleaned: false,
+    boundaries: {
+      detail:
+        new Date(
+          boundaries.detail
+        ).toISOString(),
+      hourly:
+        new Date(
+          boundaries.hourly
+        ).toISOString(),
+      daily:
+        new Date(
+          boundaries.daily
+        ).toISOString(),
+      monthly:
+        new Date(
+          boundaries.monthly
+        ).toISOString(),
+    },
+    hourly: null,
+    daily: null,
+    monthly: null,
+    monthly_cleanup: false,
   }
 
-  result.hourly = await rollupSnapshotsToHours(now)
-  result.daily = await rollupHoursToDays(now)
-  result.monthly = await rollupDaysToMonths(now)
+  result.hourly =
+    await migrateTier({
+      sourceTable:
+        'system_usage_snapshots',
+      targetGranularity:
+        'hour',
+      sourceType:
+        'snapshot',
+      boundaryMs:
+        boundaries.detail,
+    })
 
-  await cleanupRetention(now)
-  result.cleaned = true
+  result.daily =
+    await migrateTier({
+      sourceTable:
+        'system_usage_rollups',
+      sourceGranularity:
+        'hour',
+      targetGranularity:
+        'day',
+      sourceType:
+        'rollup',
+      boundaryMs:
+        boundaries.hourly,
+    })
+
+  result.monthly =
+    await migrateTier({
+      sourceTable:
+        'system_usage_rollups',
+      sourceGranularity:
+        'day',
+      targetGranularity:
+        'month',
+      sourceType:
+        'rollup',
+      boundaryMs:
+        boundaries.daily,
+    })
+
+  await deleteExpiredMonthly(
+    boundaries.monthly
+  )
+
+  result.monthly_cleanup = true
 
   return result
 }
 
-function normalizeArchivedRows(rows, source) {
+function normalizeArchivedRows(
+  rows,
+  granularity
+) {
+  const source =
+    `rollup_${granularity}`
+
   return rows.map((row) => ({
-    window_start: row.bucket_start,
-    window_end: row.bucket_end,
-    request_count: safeNumber(row.request_count),
-    bytes: safeNumber(row.bytes),
-    errors: safeNumber(row.errors),
-    payload: row.payload || {},
+    window_start:
+      row.bucket_start,
+    window_end:
+      row.bucket_end,
+    request_count:
+      safeNumber(
+        row.request_count
+      ),
+    bytes:
+      safeNumber(row.bytes),
+    errors:
+      safeNumber(row.errors),
+    payload:
+      row.payload || {},
     source,
   }))
 }
@@ -344,72 +708,130 @@ export async function loadArchivedUsageHistory({
   to,
   now = Date.now(),
 } = {}) {
-  const fromMs = new Date(from || '').getTime()
-  const toMs = new Date(to || '').getTime()
+  const fromMs =
+    new Date(
+      from || ''
+    ).getTime()
+
+  const toMs =
+    new Date(
+      to || ''
+    ).getTime()
 
   if (
-    !Number.isFinite(fromMs) ||
-    !Number.isFinite(toMs) ||
+    !Number.isFinite(
+      fromMs
+    ) ||
+    !Number.isFinite(
+      toMs
+    ) ||
     toMs <= fromMs
   ) {
     return []
   }
 
-  const detailCutoff = now - DETAIL_RETENTION_MS
-  const hourlyCutoff = now - HOURLY_RETENTION_MS
-  const dailyCutoff = now - DAILY_RETENTION_MS
+  const boundaries =
+    retentionBoundaries(
+      now
+    )
+
   const parts = []
 
-  if (fromMs < dailyCutoff) {
-    const end = Math.min(toMs, dailyCutoff)
-    if (end > fromMs) {
-      const rows = await loadRollupRows(
+  const monthEnd =
+    Math.min(
+      toMs,
+      boundaries.daily
+    )
+
+  if (
+    fromMs <
+    monthEnd
+  ) {
+    const rows =
+      await loadRollupRowsOverlap(
         'month',
         fromMs,
-        end
+        monthEnd
       )
-      parts.push(
-        ...normalizeArchivedRows(rows, 'month')
+
+    parts.push(
+      ...normalizeArchivedRows(
+        rows,
+        'month'
       )
-    }
+    )
   }
 
-  if (toMs > dailyCutoff && fromMs < hourlyCutoff) {
-    const start = Math.max(fromMs, dailyCutoff)
-    const end = Math.min(toMs, hourlyCutoff)
+  const dayStart =
+    Math.max(
+      fromMs,
+      boundaries.daily
+    )
 
-    if (end > start) {
-      const rows = await loadRollupRows(
+  const dayEnd =
+    Math.min(
+      toMs,
+      boundaries.hourly
+    )
+
+  if (
+    dayEnd >
+    dayStart
+  ) {
+    const rows =
+      await loadRollupRowsOverlap(
         'day',
-        start,
-        end
+        dayStart,
+        dayEnd
       )
-      parts.push(
-        ...normalizeArchivedRows(rows, 'day')
+
+    parts.push(
+      ...normalizeArchivedRows(
+        rows,
+        'day'
       )
-    }
+    )
   }
 
-  if (toMs > hourlyCutoff && fromMs < detailCutoff) {
-    const start = Math.max(fromMs, hourlyCutoff)
-    const end = Math.min(toMs, detailCutoff)
+  const hourStart =
+    Math.max(
+      fromMs,
+      boundaries.hourly
+    )
 
-    if (end > start) {
-      const rows = await loadRollupRows(
+  const hourEnd =
+    Math.min(
+      toMs,
+      boundaries.detail
+    )
+
+  if (
+    hourEnd >
+    hourStart
+  ) {
+    const rows =
+      await loadRollupRowsOverlap(
         'hour',
-        start,
-        end
+        hourStart,
+        hourEnd
       )
-      parts.push(
-        ...normalizeArchivedRows(rows, 'hour')
+
+    parts.push(
+      ...normalizeArchivedRows(
+        rows,
+        'hour'
       )
-    }
+    )
   }
 
   return parts.sort(
     (a, b) =>
-      new Date(a.window_start).getTime() -
-      new Date(b.window_start).getTime()
+      new Date(
+        a.window_start
+      ).getTime() -
+      new Date(
+        b.window_start
+      ).getTime()
   )
 }
 
@@ -419,6 +841,13 @@ export function getSystemUsageRetentionPolicy() {
     hourly_days: 30,
     daily_days: 365,
     monthly_days: 1095,
-    unresolved_incidents_delete: false,
+    daily_policy:
+      'one_calendar_year',
+    monthly_policy:
+      'three_calendar_years',
+    boundaries:
+      'completed_utc_buckets',
+    unresolved_incidents_delete:
+      false,
   }
 }
