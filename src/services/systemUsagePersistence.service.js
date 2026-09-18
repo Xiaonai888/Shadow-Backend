@@ -1434,6 +1434,11 @@ export async function persistSystemUsageSnapshot() {
   try {
     const now = Date.now()
     const initial = buildSnapshot(now)
+    if (
+  initial.totals.count === 0 &&
+  initial.totals.bytes === 0 &&
+  initial.totals.errors === 0
+) return
 
     await syncProvidersIfDue(
       initial.source,
