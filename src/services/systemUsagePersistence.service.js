@@ -1,19 +1,27 @@
 import { supabase } from '../config/supabase.js'
 import { getSystemUsageSnapshot } from './systemUsageMonitor.service.js'
+import {
+  getSystemUsageRetentionPolicy,
+  loadArchivedUsageHistory,
+  runSystemUsageRetention,
+} from './systemUsageRollup.service.js'
 
 const SNAPSHOT_MS = 15 * 60 * 1000
 const PROVIDER_SYNC_MS = 60 * 60 * 1000
 const PROVIDER_WINDOW_MS = 60 * 60 * 1000
 const PROVIDER_TIMEOUT_MS = 10 * 1000
-const RETENTION_MS = 7 * 24 * 60 * 60 * 1000
-const CLEANUP_MS = 24 * 60 * 60 * 1000
+const RETENTION_RUN_MS = 24 * 60 * 60 * 1000
+const RETENTION_RETRY_MS = 60 * 60 * 1000
+const HISTORY_MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000
+const HISTORY_PAGE_SIZE = 1000
 const MAX_DETAIL_ROWS = 100
 
 let startTimer = null
 let intervalTimer = null
 let writing = false
 let providerSyncing = false
-let lastCleanupAt = 0
+let retentionRunning = false
+let lastRetentionAt = 0
 
 const providerState = {
   last_sync_at: null,
@@ -48,41 +56,42 @@ function cloneProviderState() {
   return JSON.parse(JSON.stringify(providerState))
 }
 
-function aggregateRows(minutes) {
-  const rows = new Map()
+function rowKey(row) {
+  return [
+    row.kind || 'unknown',
+    row.feature || 'unknown',
+    row.source_route || 'UNKNOWN',
+    row.dependency || 'UNKNOWN',
+  ].join('\u001f')
+}
 
-  for (const minute of minutes) {
-    for (const row of minute.rows || []) {
-      const key = [
-        row.kind || 'unknown',
-        row.feature || 'unknown',
-        row.source_route || 'UNKNOWN',
-        row.dependency || 'UNKNOWN',
-      ].join('\u001f')
-
-      const current = rows.get(key) || {
-        kind: row.kind || 'unknown',
-        feature: row.feature || 'unknown',
-        source_route: row.source_route || 'UNKNOWN',
-        dependency: row.dependency || 'UNKNOWN',
-        count: 0,
-        bytes: 0,
-        errors: 0,
-        weighted_ms: 0,
-      }
-
-      const count = safeNumber(row.count)
-
-      current.count += count
-      current.bytes += safeNumber(row.bytes)
-      current.errors += safeNumber(row.errors)
-      current.weighted_ms += safeNumber(row.avg_ms) * count
-
-      rows.set(key, current)
+function mergeRows(target, rows = []) {
+  for (const row of rows) {
+    const key = rowKey(row)
+    const current = target.get(key) || {
+      kind: row.kind || 'unknown',
+      feature: row.feature || 'unknown',
+      source_route: row.source_route || 'UNKNOWN',
+      dependency: row.dependency || 'UNKNOWN',
+      count: 0,
+      bytes: 0,
+      errors: 0,
+      weighted_ms: 0,
     }
-  }
 
-  return [...rows.values()]
+    const count = safeNumber(row.count)
+
+    current.count += count
+    current.bytes += safeNumber(row.bytes)
+    current.errors += safeNumber(row.errors)
+    current.weighted_ms += safeNumber(row.avg_ms) * count
+
+    target.set(key, current)
+  }
+}
+
+function serializeRows(map) {
+  return [...map.values()]
     .map((row) => ({
       kind: row.kind,
       feature: row.feature,
@@ -98,6 +107,16 @@ function aggregateRows(minutes) {
     }))
     .sort((a, b) => b.bytes - a.bytes || b.count - a.count)
     .slice(0, MAX_DETAIL_ROWS)
+}
+
+function aggregateRows(minutes) {
+  const rows = new Map()
+
+  for (const minute of minutes) {
+    mergeRows(rows, minute.rows || [])
+  }
+
+  return serializeRows(rows)
 }
 
 function summarizeMinutes(minutes = []) {
@@ -119,7 +138,8 @@ function summarizeDependency(minutes = [], dependency) {
     (result, minute) => {
       for (const row of minute.rows || []) {
         if (
-          String(row.dependency || '').toUpperCase() !== expected
+          String(row.dependency || '').toUpperCase() !==
+          expected
         ) {
           continue
         }
@@ -217,11 +237,9 @@ async function fetchJson(url, token) {
     const data = await response.json().catch(() => null)
 
     if (!response.ok) {
-      const error = new Error(
+      throw new Error(
         `Provider request failed with HTTP ${response.status}.`
       )
-      error.statusCode = response.status
-      throw error
     }
 
     return data
@@ -278,7 +296,9 @@ function parseRenderBandwidth(data) {
     const multiplier = bytesMultiplier(unit)
 
     if (unit) units.add(unit)
-    if (!multiplier || !Array.isArray(series?.values)) continue
+    if (!multiplier || !Array.isArray(series?.values)) {
+      continue
+    }
 
     const nativeTotal = series.values.reduce(
       (sum, point) => sum + safeNumber(point?.value),
@@ -294,7 +314,9 @@ function parseRenderBandwidth(data) {
     series_count: data.length,
     comparable_series: comparableSeries,
     provider_bytes:
-      comparableSeries > 0 ? Math.round(totalBytes) : null,
+      comparableSeries > 0
+        ? Math.round(totalBytes)
+        : null,
     units: [...units].slice(0, 10),
   }
 }
@@ -339,13 +361,14 @@ function parseSupabaseUsageCounts(data) {
 async function syncRenderProvider(now) {
   const apiKey = String(
     process.env.RENDER_API_KEY ||
-    process.env.SYSTEM_RENDER_API_KEY ||
-    ''
+      process.env.SYSTEM_RENDER_API_KEY ||
+      ''
   ).trim()
+
   const serviceId = String(
     process.env.RENDER_SERVICE_ID ||
-    process.env.SYSTEM_RENDER_SERVICE_ID ||
-    ''
+      process.env.SYSTEM_RENDER_SERVICE_ID ||
+      ''
   ).trim()
 
   if (!apiKey || !serviceId) {
@@ -360,8 +383,12 @@ async function syncRenderProvider(now) {
     return
   }
 
-  const start = new Date(now - PROVIDER_WINDOW_MS).toISOString()
+  const start = new Date(
+    now - PROVIDER_WINDOW_MS
+  ).toISOString()
+
   const end = new Date(now).toISOString()
+
   const query = new URLSearchParams({
     startTime: start,
     endTime: end,
@@ -373,10 +400,13 @@ async function syncRenderProvider(now) {
       `https://api.render.com/v1/metrics/bandwidth?${query}`,
       apiKey
     )
+
     const parsed = parseRenderBandwidth(data)
 
     providerState.render = {
-      status: parsed.comparable ? 'ok' : 'unsupported_unit',
+      status: parsed.comparable
+        ? 'ok'
+        : 'unsupported_unit',
       checked_at: new Date(now).toISOString(),
       window_start: start,
       window_end: end,
@@ -390,9 +420,9 @@ async function syncRenderProvider(now) {
       window_start: start,
       window_end: end,
       service_id: serviceId,
-      error:
-        String(error?.message || 'Render provider sync failed.')
-          .slice(0, 300),
+      error: String(
+        error?.message || 'Render provider sync failed.'
+      ).slice(0, 300),
     }
   }
 }
@@ -400,9 +430,10 @@ async function syncRenderProvider(now) {
 async function syncSupabaseProvider(now) {
   const token = String(
     process.env.SUPABASE_MANAGEMENT_TOKEN ||
-    process.env.SYSTEM_SUPABASE_MANAGEMENT_TOKEN ||
-    ''
+      process.env.SYSTEM_SUPABASE_MANAGEMENT_TOKEN ||
+      ''
   ).trim()
+
   const projectRef = projectRefFromUrl()
 
   if (!token || !projectRef) {
@@ -410,8 +441,12 @@ async function syncSupabaseProvider(now) {
       status: 'not_configured',
       checked_at: new Date(now).toISOString(),
       missing: [
-        !token ? 'SUPABASE_MANAGEMENT_TOKEN' : null,
-        !projectRef ? 'SUPABASE_PROJECT_REF' : null,
+        !token
+          ? 'SUPABASE_MANAGEMENT_TOKEN'
+          : null,
+        !projectRef
+          ? 'SUPABASE_PROJECT_REF'
+          : null,
       ].filter(Boolean),
     }
     return
@@ -419,9 +454,12 @@ async function syncSupabaseProvider(now) {
 
   try {
     const data = await fetchJson(
-      `https://api.supabase.com/v1/projects/${encodeURIComponent(projectRef)}/analytics/endpoints/usage.api-counts`,
+      `https://api.supabase.com/v1/projects/${encodeURIComponent(
+        projectRef
+      )}/analytics/endpoints/usage.api-counts`,
       token
     )
+
     const parsed = parseSupabaseUsageCounts(data)
 
     providerState.supabase = {
@@ -436,9 +474,10 @@ async function syncSupabaseProvider(now) {
       status: 'error',
       checked_at: new Date(now).toISOString(),
       project_ref: projectRef,
-      error:
-        String(error?.message || 'Supabase provider sync failed.')
-          .slice(0, 300),
+      error: String(
+        error?.message ||
+          'Supabase provider sync failed.'
+      ).slice(0, 300),
     }
   }
 }
@@ -446,9 +485,15 @@ async function syncSupabaseProvider(now) {
 function updateReconciliation(source, now) {
   const minutes = recentProviderMinutes(source, now)
   const app = summarizeMinutes(minutes)
-  const appSupabase = summarizeDependency(minutes, 'SUPABASE')
+  const appSupabase = summarizeDependency(
+    minutes,
+    'SUPABASE'
+  )
+
   const renderProviderBytes =
-    Number.isFinite(providerState.render?.provider_bytes)
+    Number.isFinite(
+      providerState.render?.provider_bytes
+    )
       ? providerState.render.provider_bytes
       : null
 
@@ -470,28 +515,42 @@ function updateReconciliation(source, now) {
           : null,
       unattributed_bytes_estimate:
         renderProviderBytes !== null
-          ? Math.max(0, renderProviderBytes - app.bytes)
+          ? Math.max(
+              0,
+              renderProviderBytes - app.bytes
+            )
           : null,
       unattributed_mb_estimate:
         renderProviderBytes !== null
-          ? toMb(Math.max(0, renderProviderBytes - app.bytes))
+          ? toMb(
+              Math.max(
+                0,
+                renderProviderBytes - app.bytes
+              )
+            )
           : null,
     },
     supabase: {
       app_attributed_calls: appSupabase.count,
       app_attributed_bytes: appSupabase.bytes,
       provider_request_count:
-        providerState.supabase?.total_requests ?? null,
+        providerState.supabase?.total_requests ??
+        null,
       comparable_period: false,
     },
   }
 }
 
-async function syncProvidersIfDue(source, now = Date.now()) {
+async function syncProvidersIfDue(
+  source,
+  now = Date.now()
+) {
   if (providerSyncing) return
 
   const lastSync = providerState.last_sync_at
-    ? new Date(providerState.last_sync_at).getTime()
+    ? new Date(
+        providerState.last_sync_at
+      ).getTime()
     : 0
 
   if (
@@ -510,10 +569,13 @@ async function syncProvidersIfDue(source, now = Date.now()) {
       syncSupabaseProvider(now),
     ])
 
-    providerState.last_sync_at = new Date(now).toISOString()
-    providerState.next_sync_at = new Date(
-      now + PROVIDER_SYNC_MS
-    ).toISOString()
+    providerState.last_sync_at =
+      new Date(now).toISOString()
+
+    providerState.next_sync_at =
+      new Date(
+        now + PROVIDER_SYNC_MS
+      ).toISOString()
 
     updateReconciliation(source, now)
   } finally {
@@ -521,18 +583,36 @@ async function syncProvidersIfDue(source, now = Date.now()) {
   }
 }
 
-async function cleanupOldSnapshots(now = Date.now()) {
-  if (now - lastCleanupAt < CLEANUP_MS) return
+async function runRetentionIfDue(
+  now = Date.now(),
+  force = false
+) {
+  if (retentionRunning) return
 
-  const cutoff = new Date(now - RETENTION_MS).toISOString()
+  if (
+    !force &&
+    lastRetentionAt > 0 &&
+    now - lastRetentionAt < RETENTION_RUN_MS
+  ) {
+    return
+  }
 
-  const { error } = await supabase
-    .from('system_usage_snapshots')
-    .delete()
-    .lt('window_end', cutoff)
+  retentionRunning = true
 
-  if (error) throw error
-  lastCleanupAt = now
+  try {
+    await runSystemUsageRetention(now)
+    lastRetentionAt = now
+  } catch (error) {
+    lastRetentionAt =
+      now - RETENTION_RUN_MS + RETENTION_RETRY_MS
+
+    console.error(
+      'SYSTEM_USAGE_RETENTION_ERROR:',
+      error?.message || error
+    )
+  } finally {
+    retentionRunning = false
+  }
 }
 
 export async function persistSystemUsageSnapshot() {
@@ -544,31 +624,45 @@ export async function persistSystemUsageSnapshot() {
     const now = Date.now()
     const initial = buildSnapshot(now)
 
-    await syncProvidersIfDue(initial.source, now)
+    await syncProvidersIfDue(
+      initial.source,
+      now
+    )
 
     const snapshot = buildSnapshot(now)
 
-    if (snapshot.windowEnd <= snapshot.windowStart) return
+    if (
+      snapshot.windowEnd <=
+      snapshot.windowStart
+    ) {
+      return
+    }
 
     const { error } = await supabase
       .from('system_usage_snapshots')
       .upsert(
         {
-          window_start: new Date(snapshot.windowStart).toISOString(),
-          window_end: new Date(snapshot.windowEnd).toISOString(),
-          request_count: snapshot.totals.count,
+          window_start: new Date(
+            snapshot.windowStart
+          ).toISOString(),
+          window_end: new Date(
+            snapshot.windowEnd
+          ).toISOString(),
+          request_count:
+            snapshot.totals.count,
           bytes: snapshot.totals.bytes,
           errors: snapshot.totals.errors,
           payload: snapshot.payload,
         },
         {
-          onConflict: 'window_start,window_end',
+          onConflict:
+            'window_start,window_end',
         }
       )
 
     if (error) throw error
 
-    await cleanupOldSnapshots(now)
+    await runRetentionIfDue(now)
   } catch (error) {
     console.error(
       'SYSTEM_USAGE_SNAPSHOT_ERROR:',
@@ -579,47 +673,17 @@ export async function persistSystemUsageSnapshot() {
   }
 }
 
-const HISTORY_MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000
-const HISTORY_PAGE_SIZE = 1000
-
-function historyRowKey(row) {
-  return [
-    row.kind || 'unknown',
-    row.feature || 'unknown',
-    row.source_route || 'UNKNOWN',
-    row.dependency || 'UNKNOWN',
-  ].join('\u001f')
-}
-
-function mergeHistoryRows(target, rows = []) {
-  for (const row of rows) {
-    const key = historyRowKey(row)
-    const current = target.get(key) || {
-      kind: row.kind || 'unknown',
-      feature: row.feature || 'unknown',
-      source_route: row.source_route || 'UNKNOWN',
-      dependency: row.dependency || 'UNKNOWN',
-      count: 0,
-      bytes: 0,
-      errors: 0,
-      weighted_ms: 0,
-    }
-
-    const count = safeNumber(row.count)
-
-    current.count += count
-    current.bytes += safeNumber(row.bytes)
-    current.errors += safeNumber(row.errors)
-    current.weighted_ms += safeNumber(row.avg_ms) * count
-
-    target.set(key, current)
-  }
-}
-
-async function loadStoredHistory(fromIso, toIso) {
+async function loadStoredHistory(
+  fromIso,
+  toIso
+) {
   const rows = []
 
-  for (let offset = 0; ; offset += HISTORY_PAGE_SIZE) {
+  for (
+    let offset = 0;
+    ;
+    offset += HISTORY_PAGE_SIZE
+  ) {
     const { data, error } = await supabase
       .from('system_usage_snapshots')
       .select(
@@ -627,62 +691,202 @@ async function loadStoredHistory(fromIso, toIso) {
       )
       .gt('window_end', fromIso)
       .lt('window_start', toIso)
-      .order('window_start', { ascending: true })
-      .range(offset, offset + HISTORY_PAGE_SIZE - 1)
+      .order(
+        'window_start',
+        { ascending: true }
+      )
+      .range(
+        offset,
+        offset + HISTORY_PAGE_SIZE - 1
+      )
 
     if (error) throw error
 
-    const page = Array.isArray(data) ? data : []
+    const page = Array.isArray(data)
+      ? data
+      : []
+
     rows.push(...page)
 
-    if (page.length < HISTORY_PAGE_SIZE) break
-    if (rows.length >= 4000) break
+    if (
+      page.length < HISTORY_PAGE_SIZE ||
+      rows.length >= 4000
+    ) {
+      break
+    }
   }
 
   return rows
+}
+
+function historyRowToSeries(row) {
+  return {
+    started_at: row.window_start,
+    ended_at: row.window_end,
+    count: safeNumber(
+      row.request_count
+    ),
+    bytes: safeNumber(row.bytes),
+    mb: toMb(row.bytes),
+    errors: safeNumber(row.errors),
+    source: row.source || 'stored',
+  }
+}
+
+function overlapFreeArchive(
+  archived,
+  stored,
+  toMs
+) {
+  if (!archived.length) return []
+
+  const storedStart = stored.length
+    ? new Date(
+        stored[0].window_start
+      ).getTime()
+    : toMs
+
+  return archived.filter((row) => {
+    const end =
+      new Date(row.window_end).getTime()
+
+    return (
+      Number.isFinite(end) &&
+      end <= storedStart
+    )
+  })
 }
 
 export async function getSystemUsageHistory({
   from,
   to,
 } = {}) {
-  const fromMs = new Date(from || '').getTime()
-  const requestedToMs = new Date(to || '').getTime()
+  const fromMs =
+    new Date(from || '').getTime()
+
+  const requestedToMs =
+    new Date(to || '').getTime()
 
   if (
     !Number.isFinite(fromMs) ||
     !Number.isFinite(requestedToMs)
   ) {
-    throw new Error('Valid from and to date-times are required.')
+    throw new Error(
+      'Valid from and to date-times are required.'
+    )
   }
 
   if (requestedToMs <= fromMs) {
-    throw new Error('History end time must be after start time.')
+    throw new Error(
+      'History end time must be after start time.'
+    )
   }
 
-  if (requestedToMs - fromMs > HISTORY_MAX_RANGE_MS) {
-    throw new Error('History range cannot exceed 31 days.')
+  if (
+    requestedToMs - fromMs >
+    HISTORY_MAX_RANGE_MS
+  ) {
+    throw new Error(
+      'History range cannot exceed 31 days.'
+    )
   }
 
   const now = Date.now()
-  const toMs = Math.min(requestedToMs, now)
-  const fromIso = new Date(fromMs).toISOString()
-  const toIso = new Date(toMs).toISOString()
-
-  const stored = await loadStoredHistory(fromIso, toIso)
-  const source = getSystemUsageSnapshot()
-
-  const lastStoredEnd = stored.length
-    ? new Date(stored.at(-1).window_end).getTime()
-    : fromMs
-
-  const liveStart = Math.max(fromMs, lastStoredEnd)
-
-  const liveMinutes = (source.recent_minutes || []).filter(
-    (minute) =>
-      safeNumber(minute.started_at) >= liveStart &&
-      safeNumber(minute.started_at) < toMs
+  const toMs = Math.min(
+    requestedToMs,
+    now
   )
+
+  const fromIso =
+    new Date(fromMs).toISOString()
+
+  const toIso =
+    new Date(toMs).toISOString()
+
+  const policy =
+    getSystemUsageRetentionPolicy()
+
+  const detailCutoff =
+    now -
+    safeNumber(policy.detail_days) *
+      24 *
+      60 *
+      60 *
+      1000
+
+  const storedFromMs =
+    Math.max(
+      fromMs,
+      detailCutoff
+    )
+
+  const [archivedRaw, stored] =
+    await Promise.all([
+      loadArchivedUsageHistory({
+        from: fromIso,
+        to: toIso,
+        now,
+      }),
+      storedFromMs < toMs
+        ? loadStoredHistory(
+            new Date(
+              storedFromMs
+            ).toISOString(),
+            toIso
+          )
+        : Promise.resolve([]),
+    ])
+
+  const archived =
+    overlapFreeArchive(
+      archivedRaw,
+      stored,
+      toMs
+    )
+
+  const persisted = [
+    ...archived,
+    ...stored,
+  ].sort(
+    (a, b) =>
+      new Date(
+        a.window_start
+      ).getTime() -
+      new Date(
+        b.window_start
+      ).getTime()
+  )
+
+  const source =
+    getSystemUsageSnapshot()
+
+  const lastPersistedEnd =
+    persisted.length
+      ? new Date(
+          persisted.at(-1).window_end
+        ).getTime()
+      : fromMs
+
+  const liveStart =
+    Math.max(
+      fromMs,
+      Number.isFinite(
+        lastPersistedEnd
+      )
+        ? lastPersistedEnd
+        : fromMs
+    )
+
+  const liveMinutes =
+    (source.recent_minutes || []).filter(
+      (minute) =>
+        safeNumber(
+          minute.started_at
+        ) >= liveStart &&
+        safeNumber(
+          minute.started_at
+        ) < toMs
+    )
 
   const totals = {
     count: 0,
@@ -693,107 +897,156 @@ export async function getSystemUsageHistory({
   const rowMap = new Map()
   const series = []
 
-  for (const snapshot of stored) {
-    totals.count += safeNumber(snapshot.request_count)
-    totals.bytes += safeNumber(snapshot.bytes)
-    totals.errors += safeNumber(snapshot.errors)
-
-    mergeHistoryRows(
-      rowMap,
-      snapshot?.payload?.top_rows || []
+  for (const row of persisted) {
+    totals.count += safeNumber(
+      row.request_count
+    )
+    totals.bytes += safeNumber(
+      row.bytes
+    )
+    totals.errors += safeNumber(
+      row.errors
     )
 
-    series.push({
-      started_at: snapshot.window_start,
-      ended_at: snapshot.window_end,
-      count: safeNumber(snapshot.request_count),
-      bytes: safeNumber(snapshot.bytes),
-      mb: toMb(snapshot.bytes),
-      errors: safeNumber(snapshot.errors),
-      source: 'stored',
-    })
+    mergeRows(
+      rowMap,
+      row?.payload?.top_rows || []
+    )
+
+    series.push(
+      historyRowToSeries(row)
+    )
   }
 
   for (const minute of liveMinutes) {
-    totals.count += safeNumber(minute.count)
-    totals.bytes += safeNumber(minute.bytes)
-    totals.errors += safeNumber(minute.errors)
+    totals.count += safeNumber(
+      minute.count
+    )
+    totals.bytes += safeNumber(
+      minute.bytes
+    )
+    totals.errors += safeNumber(
+      minute.errors
+    )
 
-    mergeHistoryRows(rowMap, minute.rows || [])
+    mergeRows(
+      rowMap,
+      minute.rows || []
+    )
 
     series.push({
       started_at: new Date(
-        safeNumber(minute.started_at)
+        safeNumber(
+          minute.started_at
+        )
       ).toISOString(),
       ended_at: new Date(
-        safeNumber(minute.ended_at)
+        safeNumber(
+          minute.ended_at
+        )
       ).toISOString(),
-      count: safeNumber(minute.count),
-      bytes: safeNumber(minute.bytes),
-      mb: toMb(minute.bytes),
-      errors: safeNumber(minute.errors),
+      count: safeNumber(
+        minute.count
+      ),
+      bytes: safeNumber(
+        minute.bytes
+      ),
+      mb: toMb(
+        minute.bytes
+      ),
+      errors: safeNumber(
+        minute.errors
+      ),
       source: 'live',
     })
   }
 
-  const rows = [...rowMap.values()]
-    .map((row) => ({
-      kind: row.kind,
-      feature: row.feature,
-      source_route: row.source_route,
-      dependency: row.dependency,
-      count: row.count,
-      bytes: row.bytes,
-      mb: toMb(row.bytes),
-      errors: row.errors,
-      avg_ms: row.count
-        ? Number(
-            (row.weighted_ms / row.count).toFixed(1)
-          )
-        : 0,
-    }))
-    .sort(
-      (a, b) =>
-        b.bytes - a.bytes ||
-        b.count - a.count
-    )
-    .slice(0, MAX_DETAIL_ROWS)
-
   series.sort(
     (a, b) =>
-      new Date(a.started_at).getTime() -
-      new Date(b.started_at).getTime()
+      new Date(
+        a.started_at
+      ).getTime() -
+      new Date(
+        b.started_at
+      ).getTime()
   )
 
-  const availableStart = series.length
-    ? new Date(series[0].started_at).getTime()
-    : null
+  const rows =
+    serializeRows(rowMap)
 
-  const availableEnd = series.length
-    ? new Date(series.at(-1).ended_at).getTime()
-    : null
+  const availableStart =
+    series.length
+      ? new Date(
+          series[0].started_at
+        ).getTime()
+      : null
+
+  const availableEnd =
+    series.length
+      ? new Date(
+          series.at(-1).ended_at
+        ).getTime()
+      : null
+
+  const hasArchive =
+    archived.length > 0
+
+  const startTolerance =
+    hasArchive
+      ? 60 * 60 * 1000
+      : SNAPSHOT_MS
+
+  const archiveGranularities = [
+    ...new Set(
+      archived
+        .map(
+          (row) =>
+            row.source || null
+        )
+        .filter(Boolean)
+    ),
+  ]
 
   return {
     range: {
       requested_from: fromIso,
-      requested_to: new Date(requestedToMs).toISOString(),
+      requested_to:
+        new Date(
+          requestedToMs
+        ).toISOString(),
       effective_to: toIso,
       max_days: 31,
     },
     coverage: {
-      stored_snapshots: stored.length,
-      live_minutes: liveMinutes.length,
-      available_from: availableStart
-        ? new Date(availableStart).toISOString()
-        : null,
-      available_to: availableEnd
-        ? new Date(availableEnd).toISOString()
-        : null,
+      stored_snapshots:
+        stored.length,
+      archived_rollups:
+        archived.length,
+      archive_granularities:
+        archiveGranularities,
+      live_minutes:
+        liveMinutes.length,
+      available_from:
+        availableStart
+          ? new Date(
+              availableStart
+            ).toISOString()
+          : null,
+      available_to:
+        availableEnd
+          ? new Date(
+              availableEnd
+            ).toISOString()
+          : null,
       partial:
         !availableStart ||
-        availableStart > fromMs + SNAPSHOT_MS,
-      stored_granularity_minutes: 15,
-      live_granularity_minutes: 1,
+        availableStart >
+          fromMs + startTolerance,
+      stored_granularity_minutes:
+        15,
+      live_granularity_minutes:
+        1,
+      retention: policy,
     },
     totals: {
       requests: totals.count,
@@ -807,16 +1060,31 @@ export async function getSystemUsageHistory({
 }
 
 export function startSystemUsagePersistence() {
-  if (startTimer || intervalTimer) return
+  if (
+    startTimer ||
+    intervalTimer
+  ) {
+    return
+  }
+
+  void runRetentionIfDue(
+    Date.now(),
+    true
+  )
+
   const delay =
-    SNAPSHOT_MS - (Date.now() % SNAPSHOT_MS) + 1000
+    SNAPSHOT_MS -
+    (Date.now() % SNAPSHOT_MS) +
+    1000
 
   startTimer = setTimeout(() => {
     startTimer = null
+
     void persistSystemUsageSnapshot()
 
     intervalTimer = setInterval(
-      () => void persistSystemUsageSnapshot(),
+      () =>
+        void persistSystemUsageSnapshot(),
       SNAPSHOT_MS
     )
 
