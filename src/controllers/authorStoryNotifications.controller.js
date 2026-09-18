@@ -21,6 +21,10 @@ const NOTIFICATION_PAGE_SIZE = 30
 const RETENTION_DAYS = 30
 const RETAIN_MINIMUM = 30
 const CLEANUP_BATCH_SIZE = 1000
+const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000
+const CLEANUP_STATE_MAX = 1000
+const cleanupLastRun = new Map()
+const cleanupInFlight = new Set()
 
 function normalizeNotification(item) {
   return {
@@ -180,6 +184,59 @@ async function cleanupOldAuthorStoryNotifications(
   if (deleteError) throw deleteError
 }
 
+function scheduleAuthorStoryNotificationCleanup(
+  authorId
+) {
+  const key = String(authorId || '').trim()
+
+  if (!key || cleanupInFlight.has(key)) {
+    return
+  }
+
+  const now = Date.now()
+  const lastRun = Number(
+    cleanupLastRun.get(key) || 0
+  )
+
+  if (
+    lastRun > 0 &&
+    now - lastRun < CLEANUP_INTERVAL_MS
+  ) {
+    return
+  }
+
+  cleanupLastRun.set(key, now)
+  cleanupInFlight.add(key)
+
+  cleanupOldAuthorStoryNotifications(key)
+    .catch((error) => {
+      console.error(
+        'CLEANUP AUTHOR STORY NOTIFICATIONS ERROR:',
+        error
+      )
+    })
+    .finally(() => {
+      cleanupInFlight.delete(key)
+    })
+
+  if (
+    cleanupLastRun.size >
+    CLEANUP_STATE_MAX
+  ) {
+    const staleBefore =
+      now - CLEANUP_INTERVAL_MS * 2
+
+    for (const [storedKey, ranAt] of cleanupLastRun) {
+      if (
+        Number(ranAt || 0) <
+        staleBefore
+      ) {
+        cleanupLastRun.delete(storedKey)
+      }
+    }
+  }
+}
+
 export async function getMyAuthorStoryNotifications(
   req,
   res
@@ -207,6 +264,10 @@ export async function getMyAuthorStoryNotifications(
     const before = parseBeforeCursor(
       req.query.before
     )
+    const includeMeta =
+      String(
+        req.query.include_meta ?? 'true'
+      ).toLowerCase() !== 'false'
 
     if (!userId) {
       return res.status(401).json({
@@ -234,18 +295,15 @@ export async function getMyAuthorStoryNotifications(
       })
     }
 
-    await cleanupOldAuthorStoryNotifications(
+    scheduleAuthorStoryNotificationCleanup(
       authorPage.id
-    ).catch((error) => {
-      console.error(
-        'CLEANUP AUTHOR STORY NOTIFICATIONS ERROR:',
-        error
-      )
-    })
+    )
 
     let query = supabase
       .from('author_story_notifications')
-      .select('*')
+      .select(
+        'id, author_id, type, title, message, target_url, metadata, is_read, read_at, created_at'
+      )
       .eq('author_id', authorPage.id)
       .order('created_at', {
         ascending: false,
@@ -270,49 +328,64 @@ export async function getMyAuthorStoryNotifications(
       )
     }
 
-    const [
-      { data, error },
-      {
-        count,
-        error: countError,
-      },
-      {
-        data: preferenceRows,
-        error: preferenceError,
-      },
-    ] = await Promise.all([
-      query,
-      supabase
-        .from(
-          'author_story_notifications'
-        )
-        .select('id', {
-          count: 'exact',
-          head: true,
-        })
-        .eq(
-          'author_id',
-          authorPage.id
-        )
-        .eq('is_read', false),
-      supabase
-        .from(
-          'author_story_notification_preferences'
-        )
-        .select(
-          'type, is_enabled, frequency_level'
-        )
-        .eq(
-          'author_id',
-          authorPage.id
-        ),
-    ])
+    let data
+    let error
+    let count = null
+    let preferenceRows = null
+
+    if (includeMeta) {
+      const [
+        pageResult,
+        countResult,
+        preferenceResult,
+      ] = await Promise.all([
+        query,
+        supabase
+          .from(
+            'author_story_notifications'
+          )
+          .select('id', {
+            count: 'exact',
+            head: true,
+          })
+          .eq(
+            'author_id',
+            authorPage.id
+          )
+          .eq('is_read', false),
+        supabase
+          .from(
+            'author_story_notification_preferences'
+          )
+          .select(
+            'type, is_enabled, frequency_level'
+          )
+          .eq(
+            'author_id',
+            authorPage.id
+          ),
+      ])
+
+      data = pageResult.data
+      error = pageResult.error
+      count = countResult.count
+      preferenceRows =
+        preferenceResult.data
+
+      if (countResult.error) {
+        throw countResult.error
+      }
+
+      if (preferenceResult.error) {
+        throw preferenceResult.error
+      }
+    } else {
+      const pageResult = await query
+      data = pageResult.data
+      error = pageResult.error
+    }
 
     if (error) throw error
-    if (countError) throw countError
-    if (preferenceError) {
-      throw preferenceError
-    }
 
     const rows = data || []
     const hasMore =
@@ -336,11 +409,16 @@ export async function getMyAuthorStoryNotifications(
           normalizeNotification
         ),
       unread_count:
-        Number(count || 0),
+        includeMeta
+          ? Number(count || 0)
+          : null,
       preferences:
-        normalizePreferences(
-          preferenceRows || []
-        ),
+        includeMeta
+          ? normalizePreferences(
+              preferenceRows || []
+            )
+          : null,
+      meta_included: includeMeta,
       has_more: hasMore,
       next_cursor: nextCursor,
       page_size: limit,
