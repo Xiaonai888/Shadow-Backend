@@ -75,9 +75,7 @@ async function getCommentTarget(targetId) {
     }
 
     return {
-      title: storyTitle
-        ? `Comment on ${storyTitle}`
-        : 'Comment',
+      title: storyTitle ? `Comment on ${storyTitle}` : 'Comment',
       excerpt: excerpt(storyComment.text),
     }
   }
@@ -90,7 +88,7 @@ async function getCommentTarget(targetId) {
     .maybeSingle()
 
   if (postCommentError) throw postCommentError
-  if (!postComment) return null
+  if (!postComment) return getAuthorReviewTarget(targetId)
 
   let pageName = ''
 
@@ -111,21 +109,15 @@ async function getCommentTarget(targetId) {
         .maybeSingle()
 
       if (pageError) throw pageError
-      pageName = cleanText(
-        authorPage?.page_name ||
-          authorPage?.page_username
-      )
+      pageName = cleanText(authorPage?.page_name || authorPage?.page_username)
     }
   }
 
   return {
-    title: pageName
-      ? `Comment on ${pageName}`
-      : 'Author Page Comment',
+    title: pageName ? `Comment on ${pageName}` : 'Author Page Comment',
     excerpt: excerpt(postComment.text),
   }
 }
-
 
 async function getAuthorPageTarget(targetId) {
   const { data, error } = await supabase
@@ -189,13 +181,57 @@ async function getReaderPostTarget(targetId) {
   }
 }
 
+async function getAuthorReviewTarget(targetId) {
+  const { data, error } = await supabase
+    .from('author_page_reviews')
+    .select('id, author_page_id, reviewer_user_id, review_text, status')
+    .eq('id', targetId)
+    .eq('status', 'active')
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) return null
+
+  let pageName = ''
+  let reviewerName = ''
+
+  if (data.author_page_id) {
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('page_name, page_username')
+      .eq('id', data.author_page_id)
+      .maybeSingle()
+
+    if (pageError) throw pageError
+    pageName = cleanText(authorPage?.page_name || authorPage?.page_username)
+  }
+
+  if (data.reviewer_user_id) {
+    const { data: reviewer, error: reviewerError } = await supabase
+      .from('users')
+      .select('name, username')
+      .eq('id', data.reviewer_user_id)
+      .maybeSingle()
+
+    if (reviewerError) throw reviewerError
+    reviewerName = cleanText(reviewer?.name || reviewer?.username)
+  }
+
+  return {
+    title: pageName ? `Review on ${pageName}` : 'Author Page Review',
+    excerpt: reviewerName
+      ? `${reviewerName}: ${excerpt(data.review_text)}`
+      : excerpt(data.review_text),
+  }
+}
+
 async function resolveTarget(reportType, targetId) {
   if (reportType === 'story') return getStoryTarget(targetId)
   if (reportType === 'comment') return getCommentTarget(targetId)
   if (reportType === 'author_page') return getAuthorPageTarget(targetId)
   if (reportType === 'author_post') return getAuthorPostTarget(targetId)
-if (reportType === 'reader_post') return getReaderPostTarget(targetId)
-return null
+  if (reportType === 'reader_post') return getReaderPostTarget(targetId)
+  return null
 }
 
 export async function createContentReport(req, res) {
