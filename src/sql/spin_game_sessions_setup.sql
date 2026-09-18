@@ -5,12 +5,13 @@ create table if not exists public.spin_game_sessions (
   user_id uuid not null references public.users(id) on delete cascade,
   request_key text not null,
   mode text not null check (mode in ('manual', 'reader', 'book', 'author')),
-  cost_currency text check (cost_currency is null or cost_currency in ('coin', 'diamond')),
+  cost_currency text check (cost_currency is null or cost_currency in ('coin', 'diamond', 'voucher')),
   cost_amount integer not null default 0 check (cost_amount >= 0),
   search_count integer not null default 0 check (search_count >= 0),
   search_limit integer not null default 0 check (search_limit >= 0),
   wallet_coin_after bigint,
   wallet_diamond_after bigint,
+  wallet_voucher_after bigint,
   started_at timestamptz not null default now(),
   expires_at timestamptz not null default (now() + interval '24 hours'),
   unique (user_id, request_key)
@@ -23,6 +24,19 @@ create index if not exists spin_game_sessions_user_mode_started_idx
   on public.spin_game_sessions (user_id, mode, started_at desc);
 
 alter table public.spin_game_sessions enable row level security;
+
+alter table public.spin_game_sessions
+add column if not exists wallet_voucher_after bigint;
+
+alter table public.spin_game_sessions
+drop constraint if exists spin_game_sessions_cost_currency_check;
+
+alter table public.spin_game_sessions
+add constraint spin_game_sessions_cost_currency_check
+check (
+  cost_currency is null
+  or cost_currency in ('coin', 'diamond', 'voucher')
+);
 
 alter table public.spin_game_sessions
 alter column search_limit set default 0;
@@ -51,6 +65,7 @@ declare
   v_total integer := 0;
   v_coin bigint := 0;
   v_diamond bigint := 0;
+  v_voucher bigint := 0;
 begin
   if p_user_id is null then
     return jsonb_build_object(
@@ -80,16 +95,19 @@ begin
 
   select
     coalesce(gem_balance, 0)::bigint,
-    coalesce(diamond_balance, 0)::bigint
+    coalesce(diamond_balance, 0)::bigint,
+    coalesce(voucher_balance, 0)::bigint
   into
     v_coin,
-    v_diamond
+    v_diamond,
+    v_voucher
   from public.user_wallets
   where user_id = p_user_id
   limit 1;
 
   v_coin := coalesce(v_coin, 0);
   v_diamond := coalesce(v_diamond, 0);
+  v_voucher := coalesce(v_voucher, 0);
 
   return jsonb_build_object(
     'ok', true,
@@ -113,7 +131,7 @@ begin
       ),
       'author', jsonb_build_object(
         'daily_limit', 100,
-        'cost_currency', 'diamond',
+        'cost_currency', 'voucher',
         'cost_amount', 10
       ),
       'shared', jsonb_build_object(
@@ -152,7 +170,8 @@ begin
     ),
     'wallet', jsonb_build_object(
       'coin_balance', v_coin,
-      'diamond_balance', v_diamond
+      'diamond_balance', v_diamond,
+      'voucher_balance', v_voucher
     )
   );
 end;
@@ -179,6 +198,7 @@ declare
   v_search_limit integer := 0;
   v_coin bigint := 0;
   v_diamond bigint := 0;
+  v_voucher bigint := 0;
   v_session public.spin_game_sessions%rowtype;
 begin
   if p_user_id is null then
@@ -238,6 +258,9 @@ begin
         'cost_amount', v_session.cost_amount,
         'search_count', v_session.search_count,
         'search_limit', v_session.search_limit,
+        'wallet_coin_after', v_session.wallet_coin_after,
+        'wallet_diamond_after', v_session.wallet_diamond_after,
+        'wallet_voucher_after', v_session.wallet_voucher_after,
         'started_at', v_session.started_at,
         'expires_at', v_session.expires_at
       ),
@@ -256,7 +279,7 @@ begin
   else
     v_daily_limit := 100;
     v_cost := 10;
-    v_currency := 'diamond';
+    v_currency := 'voucher';
   end if;
 
   v_day_start :=
@@ -289,10 +312,12 @@ begin
 
   select
     coalesce(gem_balance, 0)::bigint,
-    coalesce(diamond_balance, 0)::bigint
+    coalesce(diamond_balance, 0)::bigint,
+    coalesce(voucher_balance, 0)::bigint
   into
     v_coin,
-    v_diamond
+    v_diamond,
+    v_voucher
   from public.user_wallets
   where user_id = p_user_id
   for update;
@@ -307,8 +332,10 @@ begin
         'need', greatest(0, v_cost - v_coin),
         'wallet', jsonb_build_object(
           'coin_balance', v_coin,
-          'diamond_balance', v_diamond
-        )
+          'diamond_balance', v_diamond,
+          'voucher_balance', v_voucher
+        ),
+        'status', public.get_spin_game_status(p_user_id)
       );
     end if;
 
@@ -329,8 +356,10 @@ begin
         'need', greatest(0, v_cost - v_diamond),
         'wallet', jsonb_build_object(
           'coin_balance', v_coin,
-          'diamond_balance', v_diamond
-        )
+          'diamond_balance', v_diamond,
+          'voucher_balance', v_voucher
+        ),
+        'status', public.get_spin_game_status(p_user_id)
       );
     end if;
 
@@ -341,6 +370,30 @@ begin
     where user_id = p_user_id;
 
     v_diamond := v_diamond - v_cost;
+  elsif v_currency = 'voucher' then
+    if v_voucher < v_cost then
+      return jsonb_build_object(
+        'ok', false,
+        'code', 'INSUFFICIENT_VOUCHERS',
+        'message', 'Not enough Vouchers',
+        'price', v_cost,
+        'need', greatest(0, v_cost - v_voucher),
+        'wallet', jsonb_build_object(
+          'coin_balance', v_coin,
+          'diamond_balance', v_diamond,
+          'voucher_balance', v_voucher
+        ),
+        'status', public.get_spin_game_status(p_user_id)
+      );
+    end if;
+
+    update public.user_wallets
+    set
+      voucher_balance = coalesce(voucher_balance, 0) - v_cost,
+      updated_at = now()
+    where user_id = p_user_id;
+
+    v_voucher := v_voucher - v_cost;
   end if;
 
   insert into public.spin_game_sessions (
@@ -353,6 +406,7 @@ begin
     search_limit,
     wallet_coin_after,
     wallet_diamond_after,
+    wallet_voucher_after,
     started_at,
     expires_at
   )
@@ -366,6 +420,7 @@ begin
     v_search_limit,
     v_coin,
     v_diamond,
+    v_voucher,
     now(),
     now() + interval '24 hours'
   )
@@ -382,12 +437,16 @@ begin
       'cost_amount', v_session.cost_amount,
       'search_count', v_session.search_count,
       'search_limit', v_session.search_limit,
+      'wallet_coin_after', v_session.wallet_coin_after,
+      'wallet_diamond_after', v_session.wallet_diamond_after,
+      'wallet_voucher_after', v_session.wallet_voucher_after,
       'started_at', v_session.started_at,
       'expires_at', v_session.expires_at
     ),
     'wallet', jsonb_build_object(
       'coin_balance', v_coin,
-      'diamond_balance', v_diamond
+      'diamond_balance', v_diamond,
+      'voucher_balance', v_voucher
     ),
     'status', public.get_spin_game_status(p_user_id)
   );
