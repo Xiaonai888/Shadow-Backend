@@ -3,8 +3,12 @@ import { getSystemUsageAnomalySnapshot } from './systemUsageAnomaly.service.js'
 import { setWorkKillSwitch } from './workKillSwitch.service.js'
 
 const CHECK_MS = 15 * 1000
-const RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
+const FULL_EVIDENCE_RETENTION_MS = 180 * DAY_MS
+const SUMMARY_RETENTION_MS = 3 * 365 * DAY_MS
+const REOPEN_WINDOW_MS = FULL_EVIDENCE_RETENTION_MS
 const CLEANUP_MS = 24 * 60 * 60 * 1000
+const CLEANUP_BATCH = 100
 const AUTO_CONTAINMENT_MS = 10 * 60 * 1000
 const AUTO_METHODS = new Set([
   'GET',
@@ -35,9 +39,20 @@ function clean(value, maxLength = 500) {
   return String(value || '').trim().slice(0, maxLength)
 }
 
+function safeNumber(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? Math.max(0, number) : 0
+}
+
 function normalizeSeverity(value) {
   const severity = clean(value, 20).toLowerCase()
-  return ['info', 'medium', 'high', 'critical'].includes(severity)
+
+  return [
+    'info',
+    'medium',
+    'high',
+    'critical',
+  ].includes(severity)
     ? severity
     : 'medium'
 }
@@ -45,6 +60,7 @@ function normalizeSeverity(value) {
 function normalizePath(value) {
   const raw = clean(value, 500).split('?')[0] || '/'
   const path = raw.startsWith('/') ? raw : `/${raw}`
+
   return path.replace(/\/{2,}/g, '/')
 }
 
@@ -129,11 +145,18 @@ function protectionPlan(snapshot) {
   }
 }
 
-function buildEvidence(snapshot, protection = activeProtection) {
+function buildEvidence(
+  snapshot,
+  protection = activeProtection
+) {
   return {
+    retention_tier: 'full',
     severity: normalizeSeverity(snapshot?.severity),
     classification:
-      clean(snapshot?.classification || 'unknown', 80) || 'unknown',
+      clean(
+        snapshot?.classification || 'unknown',
+        80
+      ) || 'unknown',
     signals: Array.isArray(snapshot?.signals)
       ? snapshot.signals
       : [],
@@ -149,15 +172,123 @@ function buildEvidence(snapshot, protection = activeProtection) {
   }
 }
 
+function compactTopDriver(driver) {
+  if (!driver || typeof driver !== 'object') {
+    return null
+  }
+
+  return {
+    kind: driver.kind || null,
+    feature: driver.feature || null,
+    source_route: driver.source_route || null,
+    source_method: driver.source_method || null,
+    source_path: driver.source_path || null,
+    dependency: driver.dependency || null,
+    count: safeNumber(driver.count),
+    bytes: safeNumber(driver.bytes),
+    mb: safeNumber(driver.mb),
+    errors: safeNumber(driver.errors),
+    avg_ms: safeNumber(driver.avg_ms),
+  }
+}
+
+function compactProtection(protection) {
+  if (
+    !protection ||
+    typeof protection !== 'object'
+  ) {
+    return null
+  }
+
+  return {
+    status: protection.status || 'inactive',
+    kind: protection.kind || null,
+    source: protection.source || null,
+    method: protection.method || null,
+    path: protection.path || null,
+    activated_at: protection.activated_at || null,
+    released_at: protection.released_at || null,
+    release_reason:
+      protection.release_reason || null,
+    plan: protection.plan
+      ? {
+          eligible:
+            protection.plan.eligible === true,
+          reason:
+            protection.plan.reason || null,
+          method:
+            protection.plan.method || null,
+          path:
+            protection.plan.path || null,
+        }
+      : null,
+  }
+}
+
+function buildCompactEvidence(incident) {
+  const evidence =
+    incident?.evidence &&
+    typeof incident.evidence === 'object'
+      ? incident.evidence
+      : {}
+
+  return {
+    retention_tier: 'summary',
+    compacted_at: new Date().toISOString(),
+    severity:
+      evidence.severity ||
+      incident.severity ||
+      'medium',
+    classification:
+      evidence.classification || 'unknown',
+    signals: Array.isArray(evidence.signals)
+      ? evidence.signals.slice(0, 20)
+      : [],
+    top_driver: compactTopDriver(
+      evidence.top_driver
+    ),
+    protection: compactProtection(
+      evidence.protection
+    ),
+    advisor:
+      evidence.advisor &&
+      typeof evidence.advisor === 'object'
+        ? evidence.advisor
+        : null,
+    resolution_summary: {
+      feature: incident.feature || 'unknown',
+      source_route:
+        incident.source_route || 'UNKNOWN',
+      dependency:
+        incident.dependency || 'UNKNOWN',
+      first_seen_at:
+        incident.first_seen_at || null,
+      last_seen_at:
+        incident.last_seen_at || null,
+      resolved_at:
+        incident.resolved_at || null,
+      recurrence_count: safeNumber(
+        incident.recurrence_count
+      ),
+    },
+  }
+}
+
 function snapshotSignature(snapshot) {
   const signals = Array.isArray(snapshot?.signals)
     ? [...snapshot.signals].sort().join(',')
     : ''
 
   return [
-    clean(snapshot?.status || 'learning', 40).toLowerCase(),
+    clean(
+      snapshot?.status || 'learning',
+      40
+    ).toLowerCase(),
     normalizeSeverity(snapshot?.severity),
-    clean(snapshot?.classification || 'unknown', 80).toLowerCase(),
+    clean(
+      snapshot?.classification || 'unknown',
+      80
+    ).toLowerCase(),
     signals,
   ].join('|')
 }
@@ -167,35 +298,59 @@ async function findReusableIncident(fingerprint) {
     .from('system_usage_incidents')
     .select('*')
     .eq('fingerprint', fingerprint)
-    .order('last_seen_at', { ascending: false })
+    .order(
+      'last_seen_at',
+      { ascending: false }
+    )
     .limit(1)
     .maybeSingle()
 
   if (error) throw error
   if (!data) return null
 
-  if (data.status !== 'RESOLVED') return data
+  if (data.status !== 'RESOLVED') {
+    return data
+  }
 
-  const resolvedAt = new Date(data.resolved_at || 0).getTime()
-  if (!Number.isFinite(resolvedAt)) return null
+  const resolvedAt = new Date(
+    data.resolved_at || 0
+  ).getTime()
 
-  return Date.now() - resolvedAt <= RETENTION_MS
+  if (!Number.isFinite(resolvedAt)) {
+    return null
+  }
+
+  return Date.now() - resolvedAt <=
+    REOPEN_WINDOW_MS
     ? data
     : null
 }
 
 async function openOrReopen(snapshot) {
-  const fingerprint = buildFingerprint(snapshot)
-  const now = new Date().toISOString()
-  const reusable = await findReusableIncident(fingerprint)
-  const severity = normalizeSeverity(snapshot?.severity)
-  const evidence = buildEvidence(snapshot)
+  const fingerprint =
+    buildFingerprint(snapshot)
+
+  const now =
+    new Date().toISOString()
+
+  const reusable =
+    await findReusableIncident(fingerprint)
+
+  const severity =
+    normalizeSeverity(snapshot?.severity)
+
+  const evidence =
+    buildEvidence(snapshot)
 
   if (reusable) {
     const recurrence =
       reusable.status === 'RESOLVED'
-        ? Number(reusable.recurrence_count || 0) + 1
-        : Number(reusable.recurrence_count || 0)
+        ? Number(
+            reusable.recurrence_count || 0
+          ) + 1
+        : Number(
+            reusable.recurrence_count || 0
+          )
 
     const { data, error } = await supabase
       .from('system_usage_incidents')
@@ -207,11 +362,14 @@ async function openOrReopen(snapshot) {
         delete_after: null,
         recurrence_count: recurrence,
         feature:
-          snapshot?.top_driver?.feature || 'unknown',
+          snapshot?.top_driver?.feature ||
+          'unknown',
         source_route:
-          snapshot?.top_driver?.source_route || 'UNKNOWN',
+          snapshot?.top_driver?.source_route ||
+          'UNKNOWN',
         dependency:
-          snapshot?.top_driver?.dependency || 'UNKNOWN',
+          snapshot?.top_driver?.dependency ||
+          'UNKNOWN',
         evidence,
       })
       .eq('id', reusable.id)
@@ -222,6 +380,7 @@ async function openOrReopen(snapshot) {
 
     activeIncidentId = data.id
     activeFingerprint = fingerprint
+
     return data.id
   }
 
@@ -232,11 +391,14 @@ async function openOrReopen(snapshot) {
       status: 'OPEN',
       severity,
       feature:
-        snapshot?.top_driver?.feature || 'unknown',
+        snapshot?.top_driver?.feature ||
+        'unknown',
       source_route:
-        snapshot?.top_driver?.source_route || 'UNKNOWN',
+        snapshot?.top_driver?.source_route ||
+        'UNKNOWN',
       dependency:
-        snapshot?.top_driver?.dependency || 'UNKNOWN',
+        snapshot?.top_driver?.dependency ||
+        'UNKNOWN',
       first_seen_at: now,
       last_seen_at: now,
       recurrence_count: 0,
@@ -249,6 +411,7 @@ async function openOrReopen(snapshot) {
 
   activeIncidentId = data.id
   activeFingerprint = fingerprint
+
   return data.id
 }
 
@@ -266,32 +429,35 @@ async function activateProtection(snapshot) {
     activeProtection?.status === 'active' &&
     activeProtection.method === plan.method &&
     activeProtection.path === plan.path &&
-    new Date(activeProtection.expires_at || 0).getTime()
-      > Date.now()
+    new Date(
+      activeProtection.expires_at || 0
+    ).getTime() > Date.now()
   ) {
     return activeProtection
   }
 
-  const expiresAt = new Date(
-    Date.now() + AUTO_CONTAINMENT_MS
-  ).toISOString()
+  const expiresAt =
+    new Date(
+      Date.now() + AUTO_CONTAINMENT_MS
+    ).toISOString()
 
   try {
-    const record = await setWorkKillSwitch({
-      targetType: 'api',
-      source: 'ALL',
-      method: plan.method,
-      path: plan.path,
-      enabled: true,
-      mode: 'automatic',
-      reason:
-        'System Control critical usage anomaly containment',
-      incidentId: activeIncidentId
-        ? String(activeIncidentId)
-        : null,
-      expiresAt,
-      actor: 'system:system-control',
-    })
+    const record =
+      await setWorkKillSwitch({
+        targetType: 'api',
+        source: 'ALL',
+        method: plan.method,
+        path: plan.path,
+        enabled: true,
+        mode: 'automatic',
+        reason:
+          'System Control critical usage anomaly containment',
+        incidentId: activeIncidentId
+          ? String(activeIncidentId)
+          : null,
+        expiresAt,
+        actor: 'system:system-control',
+      })
 
     activeProtection = {
       status: 'active',
@@ -301,8 +467,11 @@ async function activateProtection(snapshot) {
       source: 'ALL',
       method: plan.method,
       path: plan.path,
-      activated_at: new Date().toISOString(),
-      expires_at: record?.expires_at || expiresAt,
+      activated_at:
+        new Date().toISOString(),
+      expires_at:
+        record?.expires_at ||
+        expiresAt,
       plan,
     }
 
@@ -315,7 +484,10 @@ async function activateProtection(snapshot) {
       source: 'ALL',
       method: plan.method,
       path: plan.path,
-      error: clean(error?.message || error, 300),
+      error: clean(
+        error?.message || error,
+        300
+      ),
       plan,
     }
 
@@ -328,45 +500,63 @@ async function activateProtection(snapshot) {
   }
 }
 
-async function releaseProtection(reason = 'usage_recovery') {
-  if (activeProtection?.status !== 'active') {
+async function releaseProtection(
+  reason = 'usage_recovery'
+) {
+  if (
+    activeProtection?.status !== 'active'
+  ) {
     return activeProtection
   }
 
   const current = activeProtection
 
   try {
-    const record = await setWorkKillSwitch({
-      targetType: 'api',
-      source: current.source || 'ALL',
-      method: current.method,
-      path: current.path,
-      enabled: false,
-      mode: 'automatic',
-      reason: `System Control ${reason}`,
-      incidentId: current.incident_id
-        ? String(current.incident_id)
-        : null,
-      expiresAt: null,
-      actor: 'system:system-control',
-    })
+    const record =
+      await setWorkKillSwitch({
+        targetType: 'api',
+        source:
+          current.source || 'ALL',
+        method: current.method,
+        path: current.path,
+        enabled: false,
+        mode: 'automatic',
+        reason:
+          `System Control ${reason}`,
+        incidentId:
+          current.incident_id
+            ? String(
+                current.incident_id
+              )
+            : null,
+        expiresAt: null,
+        actor: 'system:system-control',
+      })
 
     const released = {
       ...current,
       status: 'released',
-      released_at: new Date().toISOString(),
+      released_at:
+        new Date().toISOString(),
       release_reason: reason,
-      switch_id: record?.id || current.switch_id || null,
+      switch_id:
+        record?.id ||
+        current.switch_id ||
+        null,
     }
 
     activeProtection = null
+
     return released
   } catch (error) {
     const failed = {
       ...current,
       status: 'release_failed',
       release_reason: reason,
-      error: clean(error?.message || error, 300),
+      error: clean(
+        error?.message || error,
+        300
+      ),
     }
 
     console.error(
@@ -378,15 +568,26 @@ async function releaseProtection(reason = 'usage_recovery') {
   }
 }
 
-async function updateOpenEvidence(snapshot, protection) {
+async function updateOpenEvidence(
+  snapshot,
+  protection
+) {
   if (!activeIncidentId) return
 
   const { error } = await supabase
     .from('system_usage_incidents')
     .update({
-      severity: normalizeSeverity(snapshot?.severity),
-      last_seen_at: new Date().toISOString(),
-      evidence: buildEvidence(snapshot, protection),
+      severity:
+        normalizeSeverity(
+          snapshot?.severity
+        ),
+      last_seen_at:
+        new Date().toISOString(),
+      evidence:
+        buildEvidence(
+          snapshot,
+          protection
+        ),
     })
     .eq('id', activeIncidentId)
 
@@ -396,17 +597,26 @@ async function updateOpenEvidence(snapshot, protection) {
 async function updateInvestigating(snapshot) {
   if (!activeIncidentId) return
 
-  const protection = await releaseProtection(
-    'anomaly_entered_recovery'
-  )
+  const protection =
+    await releaseProtection(
+      'anomaly_entered_recovery'
+    )
 
   const { error } = await supabase
     .from('system_usage_incidents')
     .update({
       status: 'INVESTIGATING',
-      severity: normalizeSeverity(snapshot?.severity),
-      last_seen_at: new Date().toISOString(),
-      evidence: buildEvidence(snapshot, protection),
+      severity:
+        normalizeSeverity(
+          snapshot?.severity
+        ),
+      last_seen_at:
+        new Date().toISOString(),
+      evidence:
+        buildEvidence(
+          snapshot,
+          protection
+        ),
     })
     .eq('id', activeIncidentId)
 
@@ -416,23 +626,38 @@ async function updateInvestigating(snapshot) {
 async function resolveIncident(snapshot) {
   if (!activeIncidentId) return
 
-  const incidentId = activeIncidentId
+  const incidentId =
+    activeIncidentId
+
   const now = Date.now()
-  const protection = await releaseProtection(
-    'incident_resolved'
-  )
+
+  const protection =
+    await releaseProtection(
+      'incident_resolved'
+    )
 
   const { error } = await supabase
     .from('system_usage_incidents')
     .update({
       status: 'RESOLVED',
-      severity: normalizeSeverity(snapshot?.severity),
-      last_seen_at: new Date(now).toISOString(),
-      resolved_at: new Date(now).toISOString(),
-      delete_after: new Date(
-        now + RETENTION_MS
-      ).toISOString(),
-      evidence: buildEvidence(snapshot, protection),
+      severity:
+        normalizeSeverity(
+          snapshot?.severity
+        ),
+      last_seen_at:
+        new Date(now).toISOString(),
+      resolved_at:
+        new Date(now).toISOString(),
+      delete_after:
+        new Date(
+          now +
+          FULL_EVIDENCE_RETENTION_MS
+        ).toISOString(),
+      evidence:
+        buildEvidence(
+          snapshot,
+          protection
+        ),
     })
     .eq('id', incidentId)
 
@@ -445,12 +670,16 @@ async function resolveIncident(snapshot) {
 async function syncTransition() {
   if (syncing) return
 
-  const snapshot = getSystemUsageAnomalySnapshot()
+  const snapshot =
+    getSystemUsageAnomalySnapshot()
+
   const status = clean(
     snapshot?.status || 'learning',
     40
   ).toLowerCase()
-  const signature = snapshotSignature(snapshot)
+
+  const signature =
+    snapshotSignature(snapshot)
 
   if (
     signature === lastSignature &&
@@ -466,7 +695,8 @@ async function syncTransition() {
     if (status === 'active') {
       await openOrReopen(snapshot)
 
-      const protection = await activateProtection(snapshot)
+      const protection =
+        await activateProtection(snapshot)
 
       await updateOpenEvidence(
         snapshot,
@@ -474,12 +704,16 @@ async function syncTransition() {
       )
     } else if (
       status === 'recovery' &&
-      ['active', 'startup'].includes(previous)
+      ['active', 'startup'].includes(
+        previous
+      )
     ) {
       await updateInvestigating(snapshot)
     } else if (
       status === 'normal' &&
-      ['active', 'recovery'].includes(previous)
+      ['active', 'recovery'].includes(
+        previous
+      )
     ) {
       await resolveIncident(snapshot)
     }
@@ -496,17 +730,114 @@ async function syncTransition() {
   }
 }
 
+function summaryDeleteAt(incident) {
+  const resolvedAt =
+    new Date(
+      incident.resolved_at ||
+      incident.last_seen_at ||
+      Date.now()
+    ).getTime()
+
+  const base =
+    Number.isFinite(resolvedAt)
+      ? resolvedAt
+      : Date.now()
+
+  return new Date(
+    base + SUMMARY_RETENTION_MS
+  ).toISOString()
+}
+
+async function compactResolvedIncident(
+  incident
+) {
+  const { error } = await supabase
+    .from('system_usage_incidents')
+    .update({
+      evidence:
+        buildCompactEvidence(incident),
+      delete_after:
+        summaryDeleteAt(incident),
+    })
+    .eq('id', incident.id)
+    .eq('status', 'RESOLVED')
+
+  if (error) throw error
+}
+
+async function deleteResolvedIncident(id) {
+  const { error } = await supabase
+    .from('system_usage_incidents')
+    .delete()
+    .eq('id', id)
+    .eq('status', 'RESOLVED')
+
+  if (error) throw error
+}
+
 async function cleanupResolvedIncidents() {
   try {
-    const now = new Date().toISOString()
+    const nowMs = Date.now()
+    const now =
+      new Date(nowMs).toISOString()
 
-    const { error } = await supabase
-      .from('system_usage_incidents')
-      .delete()
-      .eq('status', 'RESOLVED')
-      .lte('delete_after', now)
+    for (;;) {
+      const { data, error } = await supabase
+        .from('system_usage_incidents')
+        .select(
+          'id,status,severity,feature,source_route,dependency,first_seen_at,last_seen_at,resolved_at,delete_after,recurrence_count,evidence'
+        )
+        .eq('status', 'RESOLVED')
+        .lte('delete_after', now)
+        .order(
+          'delete_after',
+          { ascending: true }
+        )
+        .limit(CLEANUP_BATCH)
 
-    if (error) throw error
+      if (error) throw error
+
+      const rows =
+        Array.isArray(data)
+          ? data
+          : []
+
+      if (!rows.length) {
+        break
+      }
+
+      for (const incident of rows) {
+        const tier =
+          incident?.evidence
+            ?.retention_tier
+
+        const finalDeleteAt =
+          new Date(
+            summaryDeleteAt(incident)
+          ).getTime()
+
+        if (
+          tier === 'summary' &&
+          Number.isFinite(
+            finalDeleteAt
+          ) &&
+          finalDeleteAt <= nowMs
+        ) {
+          await deleteResolvedIncident(
+            incident.id
+          )
+          continue
+        }
+
+        await compactResolvedIncident(
+          incident
+        )
+      }
+
+      if (rows.length < CLEANUP_BATCH) {
+        break
+      }
+    }
   } catch (error) {
     console.error(
       'SYSTEM_USAGE_INCIDENT_CLEANUP_ERROR:',
@@ -515,10 +846,15 @@ async function cleanupResolvedIncidents() {
   }
 }
 
-export async function listSystemUsageIncidents(limit = 20) {
+export async function listSystemUsageIncidents(
+  limit = 20
+) {
   const safeLimit = Math.min(
     50,
-    Math.max(1, Number(limit) || 20)
+    Math.max(
+      1,
+      Number(limit) || 20
+    )
   )
 
   const { data, error } = await supabase
@@ -526,19 +862,32 @@ export async function listSystemUsageIncidents(limit = 20) {
     .select(
       'id,status,severity,feature,source_route,dependency,first_seen_at,last_seen_at,resolved_at,recurrence_count,evidence'
     )
-    .order('last_seen_at', { ascending: false })
+    .order(
+      'last_seen_at',
+      { ascending: false }
+    )
     .limit(safeLimit)
 
   if (error) throw error
+
   return data || []
 }
 
 export function getSystemUsageIncidentRuntime() {
   return {
-    active_incident_id: activeIncidentId,
-    active_fingerprint: activeFingerprint,
+    active_incident_id:
+      activeIncidentId,
+    active_fingerprint:
+      activeFingerprint,
     last_status: lastStatus,
-    active_protection: activeProtection,
+    active_protection:
+      activeProtection,
+    retention: {
+      unresolved_auto_delete: false,
+      full_evidence_days: 180,
+      summary_days: 1095,
+      reopen_window_days: 180,
+    },
   }
 }
 
@@ -546,6 +895,7 @@ export function startSystemUsageIncidentService() {
   if (timer) return
 
   void syncTransition()
+  void cleanupResolvedIncidents()
 
   timer = setInterval(
     () => void syncTransition(),
@@ -553,7 +903,8 @@ export function startSystemUsageIncidentService() {
   )
 
   cleanupTimer = setInterval(
-    () => void cleanupResolvedIncidents(),
+    () =>
+      void cleanupResolvedIncidents(),
     CLEANUP_MS
   )
 
