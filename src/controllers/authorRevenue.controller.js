@@ -1355,11 +1355,72 @@ export async function getMyAuthorQuest(req, res) {
       authorPage,
       lastStage,
     })
-    const activeBoost =
-  await getActiveLifetimeBoost(authorPage.id)
+    const [
+      activeBoost,
+      author49Event,
+      daily50Event,
+    ] = await Promise.all([
+      getActiveLifetimeBoost(authorPage.id),
+      getAuthor49DayEventState(authorPage),
+      getAuthorDaily50EventState(authorPage),
+    ])
 
-const currentLifetimeBoost =
-  activeBoost || lifetimeBoost
+    const currentLifetimeBoost =
+      activeBoost || lifetimeBoost
+
+    const questShareCandidates = [
+      {
+        source: 'quest_stage',
+        percent: percentValue(
+          progress.current_share_percent
+        ),
+        ends_at: null,
+      },
+      {
+        source: 'daily_50_event',
+        percent:
+          daily50Event?.status === 'active'
+            ? percentValue(
+                daily50Event.share_percent
+              )
+            : 0,
+        ends_at:
+          daily50Event?.status === 'active'
+            ? daily50Event.ends_at
+            : null,
+      },
+      {
+        source: '49_day_event',
+        percent:
+          author49Event?.status === 'active'
+            ? percentValue(
+                author49Event.share_percent
+              )
+            : 0,
+        ends_at:
+          author49Event?.status === 'active'
+            ? author49Event.ends_at
+            : null,
+      },
+      {
+        source: 'lifetime_boost',
+        percent:
+          activeBoost?.status === 'active'
+            ? percentValue(
+                activeBoost.share_percent
+              )
+            : 0,
+        ends_at:
+          activeBoost?.status === 'active'
+            ? activeBoost.ended_at
+            : null,
+      },
+    ]
+
+    const effectiveQuestShare =
+      questShareCandidates.sort(
+        (a, b) => b.percent - a.percent
+      )[0] || questShareCandidates[0]
 
 return res.status(200).json({
       ok: true,
@@ -1380,11 +1441,12 @@ return res.status(200).json({
         share_percent: percentValue(progress.current_share_percent),
       },
       active_share: {
-        share_percent: activeBoost?.status === 'active'
-          ? percentValue(activeBoost.share_percent)
-          : percentValue(progress.current_share_percent),
-        source: activeBoost?.status === 'active' ? 'lifetime_boost' : 'quest_stage',
-        boost_ends_at: activeBoost?.status === 'active' ? activeBoost.ended_at : null,
+        share_percent:
+          effectiveQuestShare.percent,
+        source:
+          effectiveQuestShare.source,
+        boost_ends_at:
+          effectiveQuestShare.ends_at,
       },
       next_stage: nextStage ? buildStageProgress(nextStage, totals) : null,
       totals,
