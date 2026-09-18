@@ -806,6 +806,7 @@ export async function getSystemUsageHistory({
     series,
   }
 }
+  export function startSystemUsagePersistence() {
   if (startTimer || intervalTimer) return
 
   const delay =
