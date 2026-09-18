@@ -2,7 +2,14 @@ import express from 'express'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { getSystemUsageCurrentSnapshot } from '../services/systemUsageMonitor.service.js'
 import { getSystemUsageAnomalySnapshot } from '../services/systemUsageAnomaly.service.js'
-import { listSystemUsageIncidents } from '../services/systemUsageIncident.service.js'
+import {
+  listSystemUsageIncidents,
+  getSystemUsageIncident,
+  applySystemUsageIncidentFix,
+  verifySystemUsageIncident,
+  resolveSystemUsageIncident,
+  archiveSystemUsageIncident,
+} from '../services/systemUsageIncident.service.js'
 import { getSystemUsageHistory } from '../services/systemUsagePersistence.service.js'
 import { generateSystemUsageReport } from '../services/systemUsageReport.service.js'
 
@@ -21,8 +28,37 @@ function isInvalidInput(message) {
     message.includes('after start') ||
     message.includes('cannot exceed') ||
     message.includes('must include past or current time') ||
-    message.includes('Unsupported report type')
+    message.includes('Unsupported report type') ||
+    message.includes('can only be applied') ||
+    message.includes('must be FIX_APPLIED') ||
+    message.includes('must be VERIFIED') ||
+    message.includes('cannot be verified') ||
+    message.includes('Only a RESOLVED incident')
   )
+}
+
+function incidentErrorStatus(message) {
+  if (message.includes('Incident not found')) return 404
+  return isInvalidInput(message) ? 400 : 500
+}
+
+function incidentError(res, error, fallback) {
+  const message = String(
+    error?.message || fallback
+  )
+  const status = incidentErrorStatus(message)
+
+  if (status === 500) {
+    console.error(
+      'ADMIN_SYSTEM_CONTROL_INCIDENT_ACTION_ERROR:',
+      error?.message || error
+    )
+  }
+
+  return res.status(status).json({
+    ok: false,
+    message,
+  })
 }
 
 router.get('/snapshot', (req, res) => {
@@ -64,8 +100,9 @@ router.get('/reports/download', async (req, res) => {
       to: req.query?.to,
     })
 
-    const filename = String(report.filename || 'system-control-report')
-      .replace(/[^a-zA-Z0-9._-]/g, '_')
+    const filename = String(
+      report.filename || 'system-control-report'
+    ).replace(/[^a-zA-Z0-9._-]/g, '_')
 
     res.set('Content-Type', report.contentType)
     res.set(
@@ -77,7 +114,8 @@ router.get('/reports/download', async (req, res) => {
     return res.status(200).send(report.body)
   } catch (error) {
     const message = String(
-      error?.message || 'Failed to generate System Control report.'
+      error?.message ||
+        'Failed to generate System Control report.'
     )
 
     if (!isInvalidInput(message)) {
@@ -96,7 +134,9 @@ router.get('/reports/download', async (req, res) => {
 
 router.get('/incidents', async (req, res) => {
   try {
-    const incidents = await listSystemUsageIncidents(req.query?.limit)
+    const incidents = await listSystemUsageIncidents(
+      req.query?.limit
+    )
 
     return res.status(200).json({
       ok: true,
@@ -112,6 +152,114 @@ router.get('/incidents', async (req, res) => {
       ok: false,
       message: 'Failed to load System Control incidents.',
     })
+  }
+})
+
+router.get('/incidents/:incidentId', async (req, res) => {
+  try {
+    const incident = await getSystemUsageIncident(
+      req.params.incidentId
+    )
+
+    return res.status(200).json({
+      ok: true,
+      incident,
+    })
+  } catch (error) {
+    return incidentError(
+      res,
+      error,
+      'Failed to load incident.'
+    )
+  }
+})
+
+router.post('/incidents/:incidentId/fix', async (req, res) => {
+  try {
+    const incident = await applySystemUsageIncidentFix({
+      incidentId: req.params.incidentId,
+      fixSummary:
+        req.body?.fix_summary ??
+        req.body?.fixSummary,
+      fixCommit:
+        req.body?.fix_commit ??
+        req.body?.fixCommit,
+      fixVersion:
+        req.body?.fix_version ??
+        req.body?.fixVersion,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      incident,
+    })
+  } catch (error) {
+    return incidentError(
+      res,
+      error,
+      'Failed to mark fix as applied.'
+    )
+  }
+})
+
+router.post('/incidents/:incidentId/verify', async (req, res) => {
+  try {
+    const incident = await verifySystemUsageIncident({
+      incidentId: req.params.incidentId,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      incident,
+    })
+  } catch (error) {
+    return incidentError(
+      res,
+      error,
+      'Failed to verify incident.'
+    )
+  }
+})
+
+router.post('/incidents/:incidentId/resolve', async (req, res) => {
+  try {
+    const incident = await resolveSystemUsageIncident({
+      incidentId: req.params.incidentId,
+      summary:
+        req.body?.summary ??
+        req.body?.resolution_summary ??
+        req.body?.resolutionSummary,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      incident,
+    })
+  } catch (error) {
+    return incidentError(
+      res,
+      error,
+      'Failed to resolve incident.'
+    )
+  }
+})
+
+router.post('/incidents/:incidentId/archive', async (req, res) => {
+  try {
+    const incident = await archiveSystemUsageIncident({
+      incidentId: req.params.incidentId,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      incident,
+    })
+  } catch (error) {
+    return incidentError(
+      res,
+      error,
+      'Failed to archive incident.'
+    )
   }
 })
 
