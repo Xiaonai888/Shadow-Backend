@@ -580,6 +580,232 @@ export async function persistSystemUsageSnapshot() {
 }
 
 export function startSystemUsagePersistence() {
+  const HISTORY_MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000
+const HISTORY_PAGE_SIZE = 1000
+
+function historyRowKey(row) {
+  return [
+    row.kind || 'unknown',
+    row.feature || 'unknown',
+    row.source_route || 'UNKNOWN',
+    row.dependency || 'UNKNOWN',
+  ].join('\u001f')
+}
+
+function mergeHistoryRows(target, rows = []) {
+  for (const row of rows) {
+    const key = historyRowKey(row)
+    const current = target.get(key) || {
+      kind: row.kind || 'unknown',
+      feature: row.feature || 'unknown',
+      source_route: row.source_route || 'UNKNOWN',
+      dependency: row.dependency || 'UNKNOWN',
+      count: 0,
+      bytes: 0,
+      errors: 0,
+      weighted_ms: 0,
+    }
+
+    const count = safeNumber(row.count)
+
+    current.count += count
+    current.bytes += safeNumber(row.bytes)
+    current.errors += safeNumber(row.errors)
+    current.weighted_ms += safeNumber(row.avg_ms) * count
+
+    target.set(key, current)
+  }
+}
+
+async function loadStoredHistory(fromIso, toIso) {
+  const rows = []
+
+  for (let offset = 0; ; offset += HISTORY_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from('system_usage_snapshots')
+      .select(
+        'window_start,window_end,request_count,bytes,errors,payload'
+      )
+      .gt('window_end', fromIso)
+      .lt('window_start', toIso)
+      .order('window_start', { ascending: true })
+      .range(offset, offset + HISTORY_PAGE_SIZE - 1)
+
+    if (error) throw error
+
+    const page = Array.isArray(data) ? data : []
+    rows.push(...page)
+
+    if (page.length < HISTORY_PAGE_SIZE) break
+    if (rows.length >= 4000) break
+  }
+
+  return rows
+}
+
+export async function getSystemUsageHistory({
+  from,
+  to,
+} = {}) {
+  const fromMs = new Date(from || '').getTime()
+  const requestedToMs = new Date(to || '').getTime()
+
+  if (
+    !Number.isFinite(fromMs) ||
+    !Number.isFinite(requestedToMs)
+  ) {
+    throw new Error('Valid from and to date-times are required.')
+  }
+
+  if (requestedToMs <= fromMs) {
+    throw new Error('History end time must be after start time.')
+  }
+
+  if (requestedToMs - fromMs > HISTORY_MAX_RANGE_MS) {
+    throw new Error('History range cannot exceed 31 days.')
+  }
+
+  const now = Date.now()
+  const toMs = Math.min(requestedToMs, now)
+  const fromIso = new Date(fromMs).toISOString()
+  const toIso = new Date(toMs).toISOString()
+
+  const stored = await loadStoredHistory(fromIso, toIso)
+  const source = getSystemUsageSnapshot()
+
+  const lastStoredEnd = stored.length
+    ? new Date(stored.at(-1).window_end).getTime()
+    : fromMs
+
+  const liveStart = Math.max(fromMs, lastStoredEnd)
+
+  const liveMinutes = (source.recent_minutes || []).filter(
+    (minute) =>
+      safeNumber(minute.started_at) >= liveStart &&
+      safeNumber(minute.started_at) < toMs
+  )
+
+  const totals = {
+    count: 0,
+    bytes: 0,
+    errors: 0,
+  }
+
+  const rowMap = new Map()
+  const series = []
+
+  for (const snapshot of stored) {
+    totals.count += safeNumber(snapshot.request_count)
+    totals.bytes += safeNumber(snapshot.bytes)
+    totals.errors += safeNumber(snapshot.errors)
+
+    mergeHistoryRows(
+      rowMap,
+      snapshot?.payload?.top_rows || []
+    )
+
+    series.push({
+      started_at: snapshot.window_start,
+      ended_at: snapshot.window_end,
+      count: safeNumber(snapshot.request_count),
+      bytes: safeNumber(snapshot.bytes),
+      mb: toMb(snapshot.bytes),
+      errors: safeNumber(snapshot.errors),
+      source: 'stored',
+    })
+  }
+
+  for (const minute of liveMinutes) {
+    totals.count += safeNumber(minute.count)
+    totals.bytes += safeNumber(minute.bytes)
+    totals.errors += safeNumber(minute.errors)
+
+    mergeHistoryRows(rowMap, minute.rows || [])
+
+    series.push({
+      started_at: new Date(
+        safeNumber(minute.started_at)
+      ).toISOString(),
+      ended_at: new Date(
+        safeNumber(minute.ended_at)
+      ).toISOString(),
+      count: safeNumber(minute.count),
+      bytes: safeNumber(minute.bytes),
+      mb: toMb(minute.bytes),
+      errors: safeNumber(minute.errors),
+      source: 'live',
+    })
+  }
+
+  const rows = [...rowMap.values()]
+    .map((row) => ({
+      kind: row.kind,
+      feature: row.feature,
+      source_route: row.source_route,
+      dependency: row.dependency,
+      count: row.count,
+      bytes: row.bytes,
+      mb: toMb(row.bytes),
+      errors: row.errors,
+      avg_ms: row.count
+        ? Number(
+            (row.weighted_ms / row.count).toFixed(1)
+          )
+        : 0,
+    }))
+    .sort(
+      (a, b) =>
+        b.bytes - a.bytes ||
+        b.count - a.count
+    )
+    .slice(0, MAX_DETAIL_ROWS)
+
+  series.sort(
+    (a, b) =>
+      new Date(a.started_at).getTime() -
+      new Date(b.started_at).getTime()
+  )
+
+  const availableStart = series.length
+    ? new Date(series[0].started_at).getTime()
+    : null
+
+  const availableEnd = series.length
+    ? new Date(series.at(-1).ended_at).getTime()
+    : null
+
+  return {
+    range: {
+      requested_from: fromIso,
+      requested_to: new Date(requestedToMs).toISOString(),
+      effective_to: toIso,
+      max_days: 31,
+    },
+    coverage: {
+      stored_snapshots: stored.length,
+      live_minutes: liveMinutes.length,
+      available_from: availableStart
+        ? new Date(availableStart).toISOString()
+        : null,
+      available_to: availableEnd
+        ? new Date(availableEnd).toISOString()
+        : null,
+      partial:
+        !availableStart ||
+        availableStart > fromMs + SNAPSHOT_MS,
+      stored_granularity_minutes: 15,
+      live_granularity_minutes: 1,
+    },
+    totals: {
+      requests: totals.count,
+      bytes: totals.bytes,
+      mb: toMb(totals.bytes),
+      errors: totals.errors,
+    },
+    rows,
+    series,
+  }
+}
   if (startTimer || intervalTimer) return
 
   const delay =
