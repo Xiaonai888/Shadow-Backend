@@ -926,7 +926,12 @@ export async function searchSpinGameSession(req, res) {
       return res.status(statusCode).json(data)
     }
 
-    res.set('X-Spin-Search-Remaining', String(data?.remaining ?? 0))
+    if (data?.remaining !== null && data?.remaining !== undefined) {
+      res.set(
+        'X-Spin-Search-Remaining',
+        String(data.remaining)
+      )
+    }
 
     req.query.type = config.type
     req.query.limit = String(
