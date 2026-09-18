@@ -662,16 +662,65 @@ async function upsertQuestProgress({
   return data
 }
 
+async function getActiveDaily50Boost(authorId) {
+  const { data, error } = await supabase
+    .from('author_daily_50_boost_progress')
+    .select('*')
+    .eq('author_id', authorId)
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) return null
+
+  const endsAt = new Date(data.ends_at).getTime()
+  const isActive =
+    data.status === 'active' &&
+    Number.isFinite(endsAt) &&
+    endsAt > Date.now()
+
+  if (isActive) {
+    return data
+  }
+
+  const activationCount = numberValue(
+    data.activation_count
+  )
+  const maxActivations = Math.max(
+    1,
+    numberValue(data.max_activations || 365)
+  )
+  const nextStatus =
+    activationCount >= maxActivations
+      ? 'finished'
+      : 'available'
+
+  if (data.status !== nextStatus) {
+    const { error: updateError } = await supabase
+      .from('author_daily_50_boost_progress')
+      .update({
+        status: nextStatus,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('author_id', authorId)
+
+    if (updateError) throw updateError
+  }
+
+  return null
+}
+
 async function getAuthorShareContext(
   authorPage,
   settings
 ) {
   const [
     active49DayEvent,
+    activeDaily50Boost,
     stages,
     totals,
   ] = await Promise.all([
     getActive49DayEvent(authorPage.id),
+    getActiveDaily50Boost(authorPage.id),
     getQuestStages(),
     getAuthorTotals(authorPage),
   ])
@@ -718,12 +767,18 @@ async function getAuthorShareContext(
       ? percentValue(activeBoost.share_percent)
       : 0
 
-  const eventSharePercent =
+  const eventSharePercent = Math.max(
     current49DayEvent?.status === 'active'
       ? percentValue(
           current49DayEvent.share_percent
         )
+      : 0,
+    activeDaily50Boost?.status === 'active'
+      ? percentValue(
+          activeDaily50Boost.share_percent
+        )
       : 0
+  )
 
   return {
     quest_share_percent: questSharePercent,
@@ -738,6 +793,7 @@ async function getAuthorShareContext(
         : null,
   }
 }
+
 
 async function getExistingEarningTransactionIds(
   transactionIds
