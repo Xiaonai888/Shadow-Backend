@@ -73,6 +73,7 @@ import { startCommentTrashCleanup } from './src/services/commentTrashCleanup.ser
 import fastRoutes from './src/routes/fast.routes.js'
 import contentReportsRoutes from './src/routes/contentReports.routes.js'
 import adminReportsRoutes from './src/routes/adminReports.routes.js'
+import adminAuthorReviewsRoutes from './src/routes/adminAuthorReviews.routes.js'
 import savedPostsRoutes from './src/routes/savedPosts.routes.js'
 import helpCenterRoutes from './src/routes/helpCenter.routes.js'
 import supportRequestsRoutes from './src/routes/supportRequests.routes.js'
@@ -763,6 +764,7 @@ app.use('/api/spin', readerActionSpamGuard, spinRoutes)
 app.use('/api/fast', mediaUploadRouteSpamGuard, fastRoutes)
 app.use('/api/reports', reportActionSpamGuard, contentReportsRoutes)
 app.use('/api/admin/reports', adminReportsRoutes)
+app.use('/api/admin/author-reviews', adminAuthorReviewsRoutes)
 app.use('/api/admin/chat-evidence', adminChatEvidenceRoutes)
 app.use('/api/reader-posts', communityRouteSpamGuard, readerPostsRoutes)
 app.use('/api/reading-progress', readingProgressSpamGuard, readingProgressRoutes)
