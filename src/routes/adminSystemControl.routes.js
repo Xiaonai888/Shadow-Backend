@@ -10,7 +10,11 @@ import {
   resolveSystemUsageIncident,
   archiveSystemUsageIncident,
 } from '../services/systemUsageIncident.service.js'
-import { getSystemUsageHistory } from '../services/systemUsagePersistence.service.js'
+import {
+  getSystemUsageHistory,
+  getSystemUsageProviderState,
+  refreshSystemUsageProviders,
+} from '../services/systemUsagePersistence.service.js'
 import { generateSystemUsageReport } from '../services/systemUsageReport.service.js'
 
 const router = express.Router()
@@ -61,13 +65,52 @@ function incidentError(res, error, fallback) {
   })
 }
 
-router.get('/snapshot', viewSystemControl, (req, res) => {
+router.get('/snapshot', viewSystemControl, async (req, res) => {
+  try {
+    await refreshSystemUsageProviders({ force: false })
+  } catch (error) {
+    console.error(
+      'ADMIN_SYSTEM_CONTROL_PROVIDER_REFRESH_ERROR:',
+      error?.message || error
+    )
+  }
+
   return res.status(200).json({
     ok: true,
     usage: getSystemUsageCurrentSnapshot(),
     anomaly: getSystemUsageAnomalySnapshot(),
+    providers: getSystemUsageProviderState(),
   })
 })
+
+router.post(
+  '/providers/refresh',
+  manageSystemControl,
+  async (req, res) => {
+    try {
+      const providers =
+        await refreshSystemUsageProviders({
+          force: true,
+        })
+
+      return res.status(200).json({
+        ok: true,
+        providers,
+      })
+    } catch (error) {
+      console.error(
+        'ADMIN_SYSTEM_CONTROL_PROVIDER_FORCE_REFRESH_ERROR:',
+        error?.message || error
+      )
+
+      return res.status(500).json({
+        ok: false,
+        message:
+          'Failed to refresh provider usage.',
+      })
+    }
+  }
+)
 
 router.get('/history', viewSystemControl, async (req, res) => {
   try {
