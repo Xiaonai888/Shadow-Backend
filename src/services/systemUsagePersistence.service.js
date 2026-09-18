@@ -579,8 +579,7 @@ export async function persistSystemUsageSnapshot() {
   }
 }
 
-export function startSystemUsagePersistence() {
-  const HISTORY_MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000
+const HISTORY_MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000
 const HISTORY_PAGE_SIZE = 1000
 
 function historyRowKey(row) {
@@ -806,9 +805,9 @@ export async function getSystemUsageHistory({
     series,
   }
 }
-  export function startSystemUsagePersistence() {
-  if (startTimer || intervalTimer) return
 
+export function startSystemUsagePersistence() {
+  if (startTimer || intervalTimer) return
   const delay =
     SNAPSHOT_MS - (Date.now() % SNAPSHOT_MS) + 1000
 
