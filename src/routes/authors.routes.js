@@ -84,6 +84,7 @@ import {
 
 import {
   getMyAuthor49DayEvent,
+  getMyAuthorDaily50Event,
   getMyAuthorIncome,
   getMyAuthorPaymentMethods,
   getMyAuthorQuest,
@@ -198,6 +199,7 @@ function invalidatePublicStoriesAfterHiddenRestore(
 }
 
 router.get('/me/49-day-event', requireUser, getMyAuthor49DayEvent)
+router.get('/me/daily-50-event', requireUser, getMyAuthorDaily50Event)
 router.get('/me/dashboard', requireUser, getMyAuthorDashboard)
 router.get('/me/dashboard-badges', requireUser, getMyAuthorDashboardBadges)
 router.get('/me', requireUser, getMyAuthorPage)
