@@ -1563,10 +1563,28 @@ async function getMyAuthorIncomeUncached(req, res) {
       }),
     ])
 
-    const activeIncomeBoost =
-  await getActiveLifetimeBoost(authorPage.id)
+    const [
+      activeIncomeBoost,
+      author49Event,
+      daily50Event,
+    ] = await Promise.all([
+      getActiveLifetimeBoost(authorPage.id),
+      getAuthor49DayEventState(authorPage),
+      getAuthorDaily50EventState(authorPage),
+    ])
 
-    const [settings, quest, paymentMethod, todayIncome, weekIncome, monthIncome, totalIncome, recentEarnings, topSupporters, monthlyEarnings] = await Promise.all([
+    const [
+      settings,
+      quest,
+      paymentMethod,
+      todayIncome,
+      weekIncome,
+      monthIncome,
+      totalIncome,
+      recentEarnings,
+      topSupporters,
+      monthlyEarnings,
+    ] = await Promise.all([
       getRevenueSettings(),
       supabase
         .from('author_quest_progress')
@@ -1574,9 +1592,18 @@ async function getMyAuthorIncomeUncached(req, res) {
         .eq('author_id', authorPage.id)
         .maybeSingle(),
       getPrimaryPaymentMethod(authorPage.id),
-      sumAuthorIncome({ authorId: authorPage.id, from: startOfTodayIso() }),
-      sumAuthorIncome({ authorId: authorPage.id, from: startOfWeekIso() }),
-      sumAuthorIncome({ authorId: authorPage.id, from: startOfMonthIso() }),
+      sumAuthorIncome({
+        authorId: authorPage.id,
+        from: startOfTodayIso(),
+      }),
+      sumAuthorIncome({
+        authorId: authorPage.id,
+        from: startOfWeekIso(),
+      }),
+      sumAuthorIncome({
+        authorId: authorPage.id,
+        from: startOfMonthIso(),
+      }),
       sumAuthorIncome({ authorId: authorPage.id }),
       getRecentEarnings(authorPage.id),
       getTopSupporters(userId),
@@ -1584,6 +1611,57 @@ async function getMyAuthorIncomeUncached(req, res) {
     ])
 
     if (quest.error) throw quest.error
+
+    const stageSharePercent = percentValue(
+      quest.data?.current_share_percent ||
+        settings.default_share_percent
+    )
+
+    const shareCandidates = [
+      {
+        source: 'quest_stage',
+        percent: stageSharePercent,
+        ends_at: null,
+      },
+      {
+        source: 'daily_50_event',
+        percent:
+          daily50Event?.status === 'active'
+            ? percentValue(daily50Event.share_percent)
+            : 0,
+        ends_at:
+          daily50Event?.status === 'active'
+            ? daily50Event.ends_at
+            : null,
+      },
+      {
+        source: '49_day_event',
+        percent:
+          author49Event?.status === 'active'
+            ? percentValue(author49Event.share_percent)
+            : 0,
+        ends_at:
+          author49Event?.status === 'active'
+            ? author49Event.ends_at
+            : null,
+      },
+      {
+        source: 'lifetime_boost',
+        percent:
+          activeIncomeBoost?.status === 'active'
+            ? percentValue(activeIncomeBoost.share_percent)
+            : 0,
+        ends_at:
+          activeIncomeBoost?.status === 'active'
+            ? activeIncomeBoost.ended_at
+            : null,
+      },
+    ]
+
+    const effectiveShare =
+      shareCandidates.sort(
+        (a, b) => b.percent - a.percent
+      )[0] || shareCandidates[0]
 
     const thisMonthKey = getMonthKey()
     const lastMonthKey = getPreviousMonthKey()
@@ -1631,20 +1709,11 @@ gifts: {
       income_summary: incomeRecordData.summary,
       income_record: incomeRecordData.record,
       current_share_percent:
-  activeIncomeBoost?.status === 'active'
-    ? percentValue(activeIncomeBoost.share_percent)
-    : percentValue(
-        quest.data?.current_share_percent ||
-          settings.default_share_percent
-      ),
-current_share_source:
-  activeIncomeBoost?.status === 'active'
-    ? 'lifetime_boost'
-    : 'quest_stage',
-boost_ends_at:
-  activeIncomeBoost?.status === 'active'
-    ? activeIncomeBoost.ended_at
-    : null,
+        effectiveShare.percent,
+      current_share_source:
+        effectiveShare.source,
+      boost_ends_at:
+        effectiveShare.ends_at,
       next_payout_date: getNextPayoutDate(settings),
       payment_method: {
         complete: Boolean(paymentMethod),
