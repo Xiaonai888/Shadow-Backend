@@ -1023,6 +1023,222 @@ export async function getMyAuthor49DayEvent(req, res) {
   }
 }
 
+function getCambodiaDayKey(date = new Date()) {
+  const cambodiaDate = new Date(
+    date.getTime() + CAMBODIA_OFFSET_MS
+  )
+
+  return cambodiaDate.toISOString().slice(0, 10)
+}
+
+function getNextCambodiaMidnightIso(date = new Date()) {
+  const cambodiaDate = new Date(
+    date.getTime() + CAMBODIA_OFFSET_MS
+  )
+
+  const nextMidnightUtc = Date.UTC(
+    cambodiaDate.getUTCFullYear(),
+    cambodiaDate.getUTCMonth(),
+    cambodiaDate.getUTCDate() + 1,
+    0,
+    0,
+    0
+  )
+
+  return new Date(
+    nextMidnightUtc - CAMBODIA_OFFSET_MS
+  ).toISOString()
+}
+
+async function getAuthorDaily50EventState(authorPage) {
+  const now = new Date()
+  const nowIso = now.toISOString()
+
+  const hiddenState = {
+    visible: false,
+    status: 'locked',
+    share_percent: 50,
+    activation_count: 0,
+    max_activations: 365,
+    can_activate_today: false,
+    started_at: null,
+    ends_at: null,
+    next_day_at: getNextCambodiaMidnightIso(now),
+    server_now: nowIso,
+  }
+
+  if (!authorPage) return hiddenState
+
+  const [
+    { data: day49, error: day49Error },
+    { data: dailyBoost, error: dailyBoostError },
+  ] = await Promise.all([
+    supabase
+      .from('author_49_day_event_progress')
+      .select('*')
+      .eq('author_id', authorPage.id)
+      .maybeSingle(),
+    supabase
+      .from('author_daily_50_boost_progress')
+      .select('*')
+      .eq('author_id', authorPage.id)
+      .maybeSingle(),
+  ])
+
+  if (day49Error) throw day49Error
+  if (dailyBoostError) throw dailyBoostError
+
+  let current49 = day49
+
+  if (
+    current49?.status === 'active' &&
+    current49?.ends_at &&
+    new Date(current49.ends_at).getTime() <=
+      now.getTime()
+  ) {
+    const { data: finished49, error } = await supabase
+      .from('author_49_day_event_progress')
+      .update({
+        status: 'finished',
+        ended_at: current49.ended_at || nowIso,
+        end_reason:
+          current49.end_reason || '49_days_completed',
+        updated_at: nowIso,
+      })
+      .eq('author_id', authorPage.id)
+      .eq('status', 'active')
+      .select()
+      .maybeSingle()
+
+    if (error) throw error
+    if (finished49) current49 = finished49
+  }
+
+  if (current49?.status !== 'finished') {
+    return hiddenState
+  }
+
+  if (!dailyBoost) {
+    return {
+      ...hiddenState,
+      visible: true,
+      status: 'available',
+      can_activate_today: true,
+    }
+  }
+
+  let currentBoost = dailyBoost
+  const activationCount = numberValue(
+    currentBoost.activation_count
+  )
+  const maxActivations = Math.max(
+    1,
+    numberValue(currentBoost.max_activations || 365)
+  )
+  const endsAt = new Date(
+    currentBoost.ends_at || ''
+  ).getTime()
+
+  if (
+    currentBoost.status === 'active' &&
+    (!Number.isFinite(endsAt) ||
+      endsAt <= now.getTime())
+  ) {
+    const nextStatus =
+      activationCount >= maxActivations
+        ? 'finished'
+        : 'available'
+
+    const { data: updated, error } = await supabase
+      .from('author_daily_50_boost_progress')
+      .update({
+        status: nextStatus,
+        updated_at: nowIso,
+      })
+      .eq('author_id', authorPage.id)
+      .select()
+      .maybeSingle()
+
+    if (error) throw error
+    if (updated) currentBoost = updated
+  }
+
+  const todayKey = getCambodiaDayKey(now)
+  const lastActivationDate = String(
+    currentBoost.last_activation_date || ''
+  )
+
+  return {
+    visible: currentBoost.status !== 'finished',
+    status: currentBoost.status || 'available',
+    share_percent: percentValue(
+      currentBoost.share_percent || 50
+    ),
+    activation_count: numberValue(
+      currentBoost.activation_count
+    ),
+    max_activations: Math.max(
+      1,
+      numberValue(
+        currentBoost.max_activations || 365
+      )
+    ),
+    can_activate_today:
+      currentBoost.status !== 'finished' &&
+      lastActivationDate !== todayKey &&
+      numberValue(currentBoost.activation_count) <
+        Math.max(
+          1,
+          numberValue(
+            currentBoost.max_activations || 365
+          )
+        ),
+    started_at: currentBoost.started_at || null,
+    ends_at: currentBoost.ends_at || null,
+    last_activation_date:
+      currentBoost.last_activation_date || null,
+    next_day_at: getNextCambodiaMidnightIso(now),
+    server_now: nowIso,
+  }
+}
+
+export async function getMyAuthorDaily50Event(
+  req,
+  res
+) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+    const event =
+      await getAuthorDaily50EventState(authorPage)
+
+    return res.status(200).json({
+      ok: true,
+      has_author_page: Boolean(authorPage),
+      event,
+    })
+  } catch (error) {
+    console.error(
+      'GET MY DAILY 50 AUTHOR EVENT ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load Daily 50 Author Event',
+      error: error.message,
+    })
+  }
+}
+
 async function getPrimaryPaymentMethod(authorId) {
   const { data, error } = await supabase
     .from('author_payment_methods')
