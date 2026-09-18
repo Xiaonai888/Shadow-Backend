@@ -26,6 +26,14 @@ const AUTO_BYPASS_PREFIXES = [
   '/api/purchase/aba/callback',
   '/api/telegram/webhook',
 ]
+const INCIDENT_STATUSES = new Set([
+  'OPEN',
+  'INVESTIGATING',
+  'FIX_APPLIED',
+  'VERIFIED',
+  'RESOLVED',
+  'ARCHIVED',
+])
 
 let timer = null
 let cleanupTimer = null
@@ -271,11 +279,29 @@ function buildCompactEvidence(incident) {
         incident.first_seen_at || null,
       last_seen_at:
         incident.last_seen_at || null,
+      fix_applied_at:
+        incident.fix_applied_at || null,
+      verified_at:
+        incident.verified_at || null,
       resolved_at:
         incident.resolved_at || null,
+      archived_at:
+        incident.archived_at || null,
+      fix_summary:
+        incident.fix_summary || null,
+      fix_commit:
+        incident.fix_commit || null,
+      fix_version:
+        incident.fix_version || null,
       recurrence_count: safeNumber(
         incident.recurrence_count
       ),
+      verification_before:
+        incident.verification_before || {},
+      verification_after:
+        incident.verification_after || {},
+      resolution:
+        incident.resolution_summary || {},
     },
   }
 }
@@ -299,6 +325,144 @@ function snapshotSignature(snapshot) {
   ].join('|')
 }
 
+function normalizeIncidentId(value) {
+  const id = Number(value)
+
+  if (
+    !Number.isInteger(id) ||
+    id <= 0
+  ) {
+    throw new Error(
+      'Valid incident id is required.'
+    )
+  }
+
+  return id
+}
+
+function normalizeIncidentStatus(value) {
+  const status =
+    clean(value, 40).toUpperCase()
+
+  return INCIDENT_STATUSES.has(status)
+    ? status
+    : 'OPEN'
+}
+
+function buildVerificationSnapshot(source = {}) {
+  const evidence =
+    source?.evidence &&
+    typeof source.evidence === 'object'
+      ? source.evidence
+      : source
+
+  const driver =
+    evidence?.top_driver || {}
+
+  return {
+    captured_at:
+      new Date().toISOString(),
+    status:
+      clean(
+        source?.status ||
+        evidence?.status ||
+        '',
+        40
+      ) || null,
+    severity:
+      normalizeSeverity(
+        source?.severity ||
+        evidence?.severity
+      ),
+    classification:
+      clean(
+        evidence?.classification ||
+        'unknown',
+        80
+      ),
+    signals:
+      Array.isArray(evidence?.signals)
+        ? evidence.signals.slice(0, 20)
+        : [],
+    current:
+      evidence?.current || null,
+    baseline:
+      evidence?.baseline || null,
+    top_driver:
+      compactTopDriver(driver),
+  }
+}
+
+async function loadIncidentById(value) {
+  const id =
+    normalizeIncidentId(value)
+
+  const { data, error } =
+    await supabase
+      .from('system_usage_incidents')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle()
+
+  if (error) throw error
+
+  if (!data) {
+    throw new Error(
+      'Incident not found.'
+    )
+  }
+
+  return data
+}
+
+function buildResolutionRecord(
+  incident,
+  summary,
+  resolvedAt
+) {
+  return {
+    summary:
+      clean(summary, 2000) ||
+      clean(
+        incident.fix_summary ||
+        'Verified recovery',
+        2000
+      ),
+    feature:
+      incident.feature ||
+      'unknown',
+    source_route:
+      incident.source_route ||
+      'UNKNOWN',
+    dependency:
+      incident.dependency ||
+      'UNKNOWN',
+    fix_summary:
+      incident.fix_summary ||
+      null,
+    fix_commit:
+      incident.fix_commit ||
+      null,
+    fix_version:
+      incident.fix_version ||
+      null,
+    fix_applied_at:
+      incident.fix_applied_at ||
+      null,
+    verified_at:
+      incident.verified_at ||
+      null,
+    resolved_at:
+      resolvedAt,
+    verification_before:
+      incident.verification_before ||
+      {},
+    verification_after:
+      incident.verification_after ||
+      {},
+  }
+}
+
 async function findReusableIncident(fingerprint) {
   const { data, error } = await supabase
     .from('system_usage_incidents')
@@ -314,7 +478,16 @@ async function findReusableIncident(fingerprint) {
   if (error) throw error
   if (!data) return null
 
-  if (data.status !== 'RESOLVED') {
+  const status =
+    normalizeIncidentStatus(
+      data.status
+    )
+
+  if (status === 'ARCHIVED') {
+    return null
+  }
+
+  if (status !== 'RESOLVED') {
     return data
   }
 
@@ -340,13 +513,19 @@ async function openOrReopen(snapshot) {
     new Date().toISOString()
 
   const reusable =
-    await findReusableIncident(fingerprint)
+    await findReusableIncident(
+      fingerprint
+    )
 
   const severity =
-    normalizeSeverity(snapshot?.severity)
+    normalizeSeverity(
+      snapshot?.severity
+    )
 
   activeAdvisor =
-    buildSystemUsageOptimizationAdvisor(snapshot)
+    buildSystemUsageOptimizationAdvisor(
+      snapshot
+    )
 
   const evidence =
     buildEvidence(
@@ -356,38 +535,81 @@ async function openOrReopen(snapshot) {
     )
 
   if (reusable) {
+    const currentStatus =
+      normalizeIncidentStatus(
+        reusable.status
+      )
+
+    const nextStatus =
+      currentStatus === 'FIX_APPLIED'
+        ? 'FIX_APPLIED'
+        : 'OPEN'
+
     const recurrence =
-      reusable.status === 'RESOLVED'
-        ? Number(
-            reusable.recurrence_count || 0
+      [
+        'INVESTIGATING',
+        'VERIFIED',
+        'RESOLVED',
+      ].includes(currentStatus)
+        ? safeNumber(
+            reusable.recurrence_count
           ) + 1
-        : Number(
-            reusable.recurrence_count || 0
+        : safeNumber(
+            reusable.recurrence_count
           )
 
-    const { data, error } = await supabase
-      .from('system_usage_incidents')
-      .update({
-        status: 'OPEN',
-        severity,
-        last_seen_at: now,
-        resolved_at: null,
-        delete_after: null,
-        recurrence_count: recurrence,
-        feature:
-          snapshot?.top_driver?.feature ||
-          'unknown',
-        source_route:
-          snapshot?.top_driver?.source_route ||
-          'UNKNOWN',
-        dependency:
-          snapshot?.top_driver?.dependency ||
-          'UNKNOWN',
-        evidence,
-      })
-      .eq('id', reusable.id)
-      .select('id')
-      .single()
+    const update = {
+      status: nextStatus,
+      severity,
+      last_seen_at: now,
+      recurrence_count: recurrence,
+      feature:
+        snapshot?.top_driver?.feature ||
+        'unknown',
+      source_route:
+        snapshot?.top_driver
+          ?.source_route ||
+        'UNKNOWN',
+      dependency:
+        snapshot?.top_driver
+          ?.dependency ||
+        'UNKNOWN',
+      evidence,
+    }
+
+    if (
+      nextStatus === 'OPEN' &&
+      currentStatus !== 'OPEN'
+    ) {
+      update.verified_at = null
+      update.resolved_at = null
+      update.archived_at = null
+      update.delete_after = null
+      update.verification_after = {}
+      update.resolution_summary = {}
+    }
+
+    if (
+      ['VERIFIED', 'RESOLVED'].includes(
+        currentStatus
+      )
+    ) {
+      update.fix_applied_at = null
+      update.fix_summary = null
+      update.fix_commit = null
+      update.fix_version = null
+      update.verification_before = {}
+    }
+
+    const { data, error } =
+      await supabase
+        .from(
+          'system_usage_incidents'
+        )
+        .update(update)
+        .eq('id', reusable.id)
+        .select('id,status')
+        .single()
 
     if (error) throw error
 
@@ -397,28 +619,32 @@ async function openOrReopen(snapshot) {
     return data.id
   }
 
-  const { data, error } = await supabase
-    .from('system_usage_incidents')
-    .insert({
-      fingerprint,
-      status: 'OPEN',
-      severity,
-      feature:
-        snapshot?.top_driver?.feature ||
-        'unknown',
-      source_route:
-        snapshot?.top_driver?.source_route ||
-        'UNKNOWN',
-      dependency:
-        snapshot?.top_driver?.dependency ||
-        'UNKNOWN',
-      first_seen_at: now,
-      last_seen_at: now,
-      recurrence_count: 0,
-      evidence,
-    })
-    .select('id')
-    .single()
+  const { data, error } =
+    await supabase
+      .from('system_usage_incidents')
+      .insert({
+        fingerprint,
+        status: 'OPEN',
+        severity,
+        feature:
+          snapshot?.top_driver
+            ?.feature ||
+          'unknown',
+        source_route:
+          snapshot?.top_driver
+            ?.source_route ||
+          'UNKNOWN',
+        dependency:
+          snapshot?.top_driver
+            ?.dependency ||
+          'UNKNOWN',
+        first_seen_at: now,
+        last_seen_at: now,
+        recurrence_count: 0,
+        evidence,
+      })
+      .select('id')
+      .single()
 
   if (error) throw error
 
@@ -614,15 +840,30 @@ async function updateOpenEvidence(
 async function updateInvestigating(snapshot) {
   if (!activeIncidentId) return
 
+  const incident =
+    await loadIncidentById(
+      activeIncidentId
+    )
+
+  const currentStatus =
+    normalizeIncidentStatus(
+      incident.status
+    )
+
   const protection =
     await releaseProtection(
       'anomaly_entered_recovery'
     )
 
+  const nextStatus =
+    currentStatus === 'FIX_APPLIED'
+      ? 'FIX_APPLIED'
+      : 'INVESTIGATING'
+
   const { error } = await supabase
     .from('system_usage_incidents')
     .update({
-      status: 'INVESTIGATING',
+      status: nextStatus,
       severity:
         normalizeSeverity(
           snapshot?.severity
@@ -641,46 +882,66 @@ async function updateInvestigating(snapshot) {
   if (error) throw error
 }
 
-async function resolveIncident(snapshot) {
+async function verifyRecoveredIncident(snapshot) {
   if (!activeIncidentId) return
 
   const incidentId =
     activeIncidentId
 
-  const now = Date.now()
+  const incident =
+    await loadIncidentById(
+      incidentId
+    )
+
+  const currentStatus =
+    normalizeIncidentStatus(
+      incident.status
+    )
 
   const protection =
     await releaseProtection(
-      'incident_resolved'
+      'incident_verified'
     )
 
-  const { error } = await supabase
-    .from('system_usage_incidents')
-    .update({
-      status: 'RESOLVED',
-      severity:
-        normalizeSeverity(
-          snapshot?.severity
-        ),
-      last_seen_at:
-        new Date(now).toISOString(),
-      resolved_at:
-        new Date(now).toISOString(),
-      delete_after:
-        new Date(
-          now +
-          FULL_EVIDENCE_RETENTION_MS
-        ).toISOString(),
-      evidence:
-        buildEvidence(
-          snapshot,
-          protection,
-          activeAdvisor
-        ),
-    })
-    .eq('id', incidentId)
+  if (
+    [
+      'OPEN',
+      'INVESTIGATING',
+      'FIX_APPLIED',
+    ].includes(currentStatus)
+  ) {
+    const now =
+      new Date().toISOString()
 
-  if (error) throw error
+    const { error } =
+      await supabase
+        .from(
+          'system_usage_incidents'
+        )
+        .update({
+          status: 'VERIFIED',
+          severity:
+            normalizeSeverity(
+              snapshot?.severity
+            ),
+          last_seen_at: now,
+          verified_at: now,
+          verification_after:
+            buildVerificationSnapshot(
+              snapshot
+            ),
+          delete_after: null,
+          evidence:
+            buildEvidence(
+              snapshot,
+              protection,
+              activeAdvisor
+            ),
+        })
+        .eq('id', incidentId)
+
+    if (error) throw error
+  }
 
   activeIncidentId = null
   activeFingerprint = null
@@ -735,7 +996,9 @@ async function syncTransition() {
         previous
       )
     ) {
-      await resolveIncident(snapshot)
+      await verifyRecoveredIncident(
+        snapshot
+      )
     }
 
     lastStatus = status
@@ -750,70 +1013,84 @@ async function syncTransition() {
   }
 }
 
-function summaryDeleteAt(incident) {
-  const resolvedAt =
-    new Date(
-      incident.resolved_at ||
-      incident.last_seen_at ||
-      Date.now()
-    ).getTime()
-
+function summaryDeleteAt(
+  archivedAt = Date.now()
+) {
   const base =
-    Number.isFinite(resolvedAt)
-      ? resolvedAt
+    archivedAt instanceof Date
+      ? archivedAt.getTime()
+      : new Date(
+          archivedAt
+        ).getTime()
+
+  const safeBase =
+    Number.isFinite(base)
+      ? base
       : Date.now()
 
   return new Date(
-    base + SUMMARY_RETENTION_MS
+    safeBase +
+    SUMMARY_RETENTION_MS
   ).toISOString()
 }
 
-async function compactResolvedIncident(
-  incident
+async function archiveIncidentRecord(
+  incident,
+  archivedAt =
+    new Date().toISOString()
 ) {
-  const { error } = await supabase
-    .from('system_usage_incidents')
-    .update({
-      evidence:
-        buildCompactEvidence(incident),
-      delete_after:
-        summaryDeleteAt(incident),
-    })
-    .eq('id', incident.id)
-    .eq('status', 'RESOLVED')
+  const compactSource = {
+    ...incident,
+    archived_at: archivedAt,
+  }
+
+  const { data, error } =
+    await supabase
+      .from('system_usage_incidents')
+      .update({
+        status: 'ARCHIVED',
+        archived_at: archivedAt,
+        evidence:
+          buildCompactEvidence(
+            compactSource
+          ),
+        delete_after:
+          summaryDeleteAt(
+            archivedAt
+          ),
+      })
+      .eq('id', incident.id)
+      .eq('status', 'RESOLVED')
+      .select('*')
+      .single()
 
   if (error) throw error
+
+  return data
 }
 
-async function deleteResolvedIncident(id) {
-  const { error } = await supabase
-    .from('system_usage_incidents')
-    .delete()
-    .eq('id', id)
-    .eq('status', 'RESOLVED')
-
-  if (error) throw error
-}
-
-async function cleanupResolvedIncidents() {
+async function cleanupIncidentRetention() {
   try {
-    const nowMs = Date.now()
     const now =
-      new Date(nowMs).toISOString()
+      new Date().toISOString()
 
     for (;;) {
-      const { data, error } = await supabase
-        .from('system_usage_incidents')
-        .select(
-          'id,status,severity,feature,source_route,dependency,first_seen_at,last_seen_at,resolved_at,delete_after,recurrence_count,evidence'
-        )
-        .eq('status', 'RESOLVED')
-        .lte('delete_after', now)
-        .order(
-          'delete_after',
-          { ascending: true }
-        )
-        .limit(CLEANUP_BATCH)
+      const { data, error } =
+        await supabase
+          .from(
+            'system_usage_incidents'
+          )
+          .select('*')
+          .eq('status', 'RESOLVED')
+          .lte(
+            'delete_after',
+            now
+          )
+          .order(
+            'delete_after',
+            { ascending: true }
+          )
+          .limit(CLEANUP_BATCH)
 
       if (error) throw error
 
@@ -822,41 +1099,38 @@ async function cleanupResolvedIncidents() {
           ? data
           : []
 
-      if (!rows.length) {
-        break
-      }
+      if (!rows.length) break
 
-      for (const incident of rows) {
-        const tier =
-          incident?.evidence
-            ?.retention_tier
-
-        const finalDeleteAt =
-          new Date(
-            summaryDeleteAt(incident)
-          ).getTime()
-
-        if (
-          tier === 'summary' &&
-          Number.isFinite(
-            finalDeleteAt
-          ) &&
-          finalDeleteAt <= nowMs
-        ) {
-          await deleteResolvedIncident(
-            incident.id
-          )
-          continue
-        }
-
-        await compactResolvedIncident(
+      for (
+        const incident of rows
+      ) {
+        await archiveIncidentRecord(
           incident
         )
       }
 
-      if (rows.length < CLEANUP_BATCH) {
+      if (
+        rows.length <
+        CLEANUP_BATCH
+      ) {
         break
       }
+    }
+
+    const { error: deleteError } =
+      await supabase
+        .from(
+          'system_usage_incidents'
+        )
+        .delete()
+        .eq('status', 'ARCHIVED')
+        .lte(
+          'delete_after',
+          now
+        )
+
+    if (deleteError) {
+      throw deleteError
     }
   } catch (error) {
     console.error(
@@ -864,6 +1138,254 @@ async function cleanupResolvedIncidents() {
       error?.message || error
     )
   }
+}
+
+export async function getSystemUsageIncident(
+  incidentId
+) {
+  return loadIncidentById(
+    incidentId
+  )
+}
+
+export async function applySystemUsageIncidentFix({
+  incidentId,
+  fixSummary,
+  fixCommit,
+  fixVersion,
+} = {}) {
+  const incident =
+    await loadIncidentById(
+      incidentId
+    )
+
+  const status =
+    normalizeIncidentStatus(
+      incident.status
+    )
+
+  if (
+    ![
+      'OPEN',
+      'INVESTIGATING',
+      'FIX_APPLIED',
+    ].includes(status)
+  ) {
+    throw new Error(
+      'Fix can only be applied to an open or investigating incident.'
+    )
+  }
+
+  const summary =
+    clean(fixSummary, 2000)
+
+  if (!summary) {
+    throw new Error(
+      'Fix summary is required.'
+    )
+  }
+
+  const now =
+    new Date().toISOString()
+
+  const before =
+    incident.verification_before &&
+    Object.keys(
+      incident.verification_before
+    ).length
+      ? incident.verification_before
+      : buildVerificationSnapshot(
+          incident
+        )
+
+  const { data, error } =
+    await supabase
+      .from('system_usage_incidents')
+      .update({
+        status: 'FIX_APPLIED',
+        fix_applied_at: now,
+        fix_summary: summary,
+        fix_commit:
+          clean(
+            fixCommit,
+            300
+          ) || null,
+        fix_version:
+          clean(
+            fixVersion,
+            120
+          ) || null,
+        verified_at: null,
+        resolved_at: null,
+        archived_at: null,
+        delete_after: null,
+        verification_before:
+          before,
+        verification_after: {},
+        resolution_summary: {},
+      })
+      .eq('id', incident.id)
+      .select('*')
+      .single()
+
+  if (error) throw error
+
+  return data
+}
+
+export async function verifySystemUsageIncident({
+  incidentId,
+} = {}) {
+  const incident =
+    await loadIncidentById(
+      incidentId
+    )
+
+  const status =
+    normalizeIncidentStatus(
+      incident.status
+    )
+
+  if (status === 'VERIFIED') {
+    return incident
+  }
+
+  if (status !== 'FIX_APPLIED') {
+    throw new Error(
+      'Incident must be FIX_APPLIED before manual verification.'
+    )
+  }
+
+  const snapshot =
+    getSystemUsageAnomalySnapshot()
+
+  if (
+    String(
+      snapshot?.status || ''
+    ).toLowerCase() ===
+      'active' &&
+    buildFingerprint(snapshot) ===
+      incident.fingerprint
+  ) {
+    throw new Error(
+      'Incident cannot be verified while the same anomaly is active.'
+    )
+  }
+
+  const now =
+    new Date().toISOString()
+
+  const { data, error } =
+    await supabase
+      .from('system_usage_incidents')
+      .update({
+        status: 'VERIFIED',
+        verified_at: now,
+        verification_after:
+          buildVerificationSnapshot(
+            snapshot
+          ),
+        delete_after: null,
+      })
+      .eq('id', incident.id)
+      .select('*')
+      .single()
+
+  if (error) throw error
+
+  if (
+    String(activeIncidentId) ===
+    String(incident.id)
+  ) {
+    activeIncidentId = null
+    activeFingerprint = null
+    activeAdvisor = null
+  }
+
+  return data
+}
+
+export async function resolveSystemUsageIncident({
+  incidentId,
+  summary,
+} = {}) {
+  const incident =
+    await loadIncidentById(
+      incidentId
+    )
+
+  const status =
+    normalizeIncidentStatus(
+      incident.status
+    )
+
+  if (status === 'RESOLVED') {
+    return incident
+  }
+
+  if (status !== 'VERIFIED') {
+    throw new Error(
+      'Incident must be VERIFIED before resolution.'
+    )
+  }
+
+  const now =
+    new Date().toISOString()
+
+  const { data, error } =
+    await supabase
+      .from('system_usage_incidents')
+      .update({
+        status: 'RESOLVED',
+        resolved_at: now,
+        archived_at: null,
+        delete_after:
+          new Date(
+            Date.now() +
+            FULL_EVIDENCE_RETENTION_MS
+          ).toISOString(),
+        resolution_summary:
+          buildResolutionRecord(
+            incident,
+            summary,
+            now
+          ),
+      })
+      .eq('id', incident.id)
+      .select('*')
+      .single()
+
+  if (error) throw error
+
+  return data
+}
+
+export async function archiveSystemUsageIncident({
+  incidentId,
+} = {}) {
+  const incident =
+    await loadIncidentById(
+      incidentId
+    )
+
+  const status =
+    normalizeIncidentStatus(
+      incident.status
+    )
+
+  if (status === 'ARCHIVED') {
+    return incident
+  }
+
+  if (status !== 'RESOLVED') {
+    throw new Error(
+      'Only a RESOLVED incident can be archived.'
+    )
+  }
+
+  return archiveIncidentRecord(
+    incident
+  )
 }
 
 export async function listSystemUsageIncidents(
@@ -880,7 +1402,7 @@ export async function listSystemUsageIncidents(
   const { data, error } = await supabase
     .from('system_usage_incidents')
     .select(
-      'id,status,severity,feature,source_route,dependency,first_seen_at,last_seen_at,resolved_at,recurrence_count,evidence'
+      'id,status,severity,feature,source_route,dependency,first_seen_at,last_seen_at,fix_applied_at,verified_at,resolved_at,archived_at,recurrence_count,fix_summary,fix_commit,fix_version,verification_before,verification_after,resolution_summary,evidence'
     )
     .order(
       'last_seen_at',
@@ -904,10 +1426,18 @@ export function getSystemUsageIncidentRuntime() {
       activeProtection,
     active_advisor:
       activeAdvisor,
+    workflow: [
+      'OPEN',
+      'INVESTIGATING',
+      'FIX_APPLIED',
+      'VERIFIED',
+      'RESOLVED',
+      'ARCHIVED',
+    ],
     retention: {
       unresolved_auto_delete: false,
       full_evidence_days: 180,
-      summary_days: 1095,
+      archived_summary_days: 1095,
       reopen_window_days: 180,
     },
   }
@@ -917,7 +1447,7 @@ export function startSystemUsageIncidentService() {
   if (timer) return
 
   void syncTransition()
-  void cleanupResolvedIncidents()
+  void cleanupIncidentRetention()
 
   timer = setInterval(
     () => void syncTransition(),
@@ -926,7 +1456,7 @@ export function startSystemUsageIncidentService() {
 
   cleanupTimer = setInterval(
     () =>
-      void cleanupResolvedIncidents(),
+      void cleanupIncidentRetention(),
     CLEANUP_MS
   )
 
