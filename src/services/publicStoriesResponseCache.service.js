@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 
 const MAX_CACHE_ENTRIES = 300
+const CACHE_TTL_MS = 60 * 1000
 
 const publicStoriesCache = new Map()
 const publicStoriesInFlight = new Map()
@@ -64,8 +65,42 @@ function setCacheEntry(key, entry) {
   }
 }
 
-export function invalidatePublicStoriesCache() {
-  publicStoriesCache.clear()
+export function invalidatePublicStoriesCache({
+  viewSensitiveOnly = false,
+} = {}) {
+  if (!viewSensitiveOnly) {
+    publicStoriesCache.clear()
+    publicStoriesCacheVersion += 1
+    return
+  }
+
+  const viewSensitiveSorts = new Set([
+    'views',
+    'popular',
+    'weekly_top',
+    'weekly',
+    'trending',
+  ])
+
+  for (const key of publicStoriesCache.keys()) {
+    try {
+      const parsed = JSON.parse(key)
+      const queryEntries = Array.isArray(parsed?.query)
+        ? parsed.query
+        : []
+      const query = Object.fromEntries(queryEntries)
+      const sort = String(query.sort || 'latest')
+        .trim()
+        .toLowerCase()
+
+      if (viewSensitiveSorts.has(sort)) {
+        publicStoriesCache.delete(key)
+      }
+    } catch {
+      publicStoriesCache.delete(key)
+    }
+  }
+
   publicStoriesCacheVersion += 1
 }
 
@@ -78,9 +113,20 @@ export function cachePublicStoriesResponse(
   const cached =
     publicStoriesCache.get(key)
 
-  if (cached) {
+  if (
+    cached &&
+    Date.now() - Number(cached.cachedAt || 0) >
+      CACHE_TTL_MS
+  ) {
     publicStoriesCache.delete(key)
-    publicStoriesCache.set(key, cached)
+  }
+
+  const freshCached =
+    publicStoriesCache.get(key)
+
+  if (freshCached) {
+    publicStoriesCache.delete(key)
+    publicStoriesCache.set(key, freshCached)
 
     res.setHeader(
       'X-Shadow-Public-Stories-Cache',
@@ -88,8 +134,8 @@ export function cachePublicStoriesResponse(
     )
 
     return res
-      .status(cached.statusCode || 200)
-      .json(cached.body)
+      .status(freshCached.statusCode || 200)
+      .json(freshCached.body)
   }
 
   const existingInFlight =
