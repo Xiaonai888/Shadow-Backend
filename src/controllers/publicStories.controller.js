@@ -1007,8 +1007,8 @@ export async function getPublicStories(req, res) {
       : normalizedSort === 'episode_updated'
   ? Math.min(Math.max(limit * 2, 30), 150)
   : normalizedSort === 'weekly_updates'
-    ? 500
-    : limit
+  ? Math.min(Math.max(limit * 5, 50), 150)
+  : limit
 
     const authorId = String(
       req.query.authorId ||
@@ -1838,11 +1838,11 @@ export async function getPublicShadowExclusiveStories(
         req.query.ranking || ''
       ) === '1'
 
-    const queryLimit = [
-      'episode_updated',
-      'weekly_updates',
-    ].includes(normalizedSort)
-      ? 500
+    const queryLimit =
+  normalizedSort === 'episode_updated'
+    ? Math.min(Math.max(limit * 2, 30), 150)
+    : normalizedSort === 'weekly_updates'
+      ? Math.min(Math.max(limit * 5, 50), 150)
       : limit
 
     let query = supabase
