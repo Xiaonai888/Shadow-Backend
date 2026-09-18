@@ -770,7 +770,7 @@ export async function getSpinGameSessionStatus(req, res) {
       supabase
         .from('spin_game_sessions')
         .select(
-          'id, mode, cost_currency, cost_amount, search_count, search_limit, started_at, expires_at'
+          'id, mode, cost_currency, cost_amount, search_count, search_limit, wallet_coin_after, wallet_diamond_after, wallet_voucher_after, started_at, expires_at'
         )
         .eq('user_id', userId)
         .neq('mode', 'manual')
@@ -844,7 +844,8 @@ export async function startSpinGameSession(req, res) {
     if (data?.ok === false) {
       const statusCode =
         data.code === 'INSUFFICIENT_COINS' ||
-        data.code === 'INSUFFICIENT_DIAMONDS'
+        data.code === 'INSUFFICIENT_DIAMONDS' ||
+        data.code === 'INSUFFICIENT_VOUCHERS'
           ? 402
           : data.code === 'SPIN_DAILY_LIMIT'
             ? 429
