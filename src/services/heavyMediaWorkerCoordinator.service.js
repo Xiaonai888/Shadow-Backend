@@ -12,7 +12,9 @@ import {
 } from './memoryGuard.service.js'
 import { recordSystemUsage } from './systemUsageMonitor.service.js'
 
-const POLL_INTERVAL_MS = 2000
+const ACTIVE_DRAIN_DELAY_MS = 250
+const IDLE_SAFETY_CHECK_MS = 10 * 60 * 1000
+const RETRY_CHECK_MS = 30 * 1000
 const WORKER_LEASE_SECONDS = 900
 const WORKER_TIMEOUT_MS = 12 * 60 * 1000
 const WORKER_KILL_GRACE_MS = 5000
@@ -38,7 +40,7 @@ function enabled() {
     .toLowerCase() !== 'false'
 }
 
-function scheduleNext(delayMs = POLL_INTERVAL_MS) {
+function scheduleNext(delayMs = IDLE_SAFETY_CHECK_MS) {
   if (!coordinatorStarted || !enabled()) return
 
   if (pollTimer) clearTimeout(pollTimer)
@@ -369,7 +371,7 @@ function startClaimedWorker(job, workerId) {
     }
 
     activeWorker = null
-    scheduleNext(250)
+    scheduleNext(ACTIVE_DRAIN_DELAY_MS)
   })
 }
 
@@ -384,6 +386,7 @@ async function runCoordinatorCycle() {
   }
 
   cycleRunning = true
+  let nextDelay = IDLE_SAFETY_CHECK_MS
 
   try {
     const admission = evaluateHeavyJobAdmission({
@@ -391,6 +394,8 @@ async function runCoordinatorCycle() {
     })
 
     if (!admission.allowed) {
+      nextDelay = RETRY_CHECK_MS
+
       console.warn(
         'MEMORY_GUARD_WAIT:',
         JSON.stringify({
@@ -418,11 +423,12 @@ async function runCoordinatorCycle() {
 
     startClaimedWorker(job, workerId)
   } catch (error) {
+    nextDelay = RETRY_CHECK_MS
     console.error('HEAVY_MEDIA_COORDINATOR_ERROR:', error)
   } finally {
     cycleRunning = false
 
-    if (!activeWorker) scheduleNext()
+    if (!activeWorker) scheduleNext(nextDelay)
   }
 }
 
