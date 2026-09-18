@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { getSystemUsageAnomalySnapshot } from './systemUsageAnomaly.service.js'
+import { buildSystemUsageOptimizationAdvisor } from './systemUsageOptimizationAdvisor.service.js'
 import { setWorkKillSwitch } from './workKillSwitch.service.js'
 
 const CHECK_MS = 15 * 1000
@@ -33,6 +34,7 @@ let lastSignature = ''
 let activeIncidentId = null
 let activeFingerprint = null
 let activeProtection = null
+let activeAdvisor = null
 let syncing = false
 
 function clean(value, maxLength = 500) {
@@ -147,7 +149,8 @@ function protectionPlan(snapshot) {
 
 function buildEvidence(
   snapshot,
-  protection = activeProtection
+  protection = activeProtection,
+  advisor = activeAdvisor
 ) {
   return {
     retention_tier: 'full',
@@ -169,6 +172,9 @@ function buildEvidence(
         status: 'inactive',
         plan: protectionPlan(snapshot),
       },
+    advisor:
+      advisor ||
+      buildSystemUsageOptimizationAdvisor(snapshot),
   }
 }
 
@@ -339,8 +345,15 @@ async function openOrReopen(snapshot) {
   const severity =
     normalizeSeverity(snapshot?.severity)
 
+  activeAdvisor =
+    buildSystemUsageOptimizationAdvisor(snapshot)
+
   const evidence =
-    buildEvidence(snapshot)
+    buildEvidence(
+      snapshot,
+      activeProtection,
+      activeAdvisor
+    )
 
   if (reusable) {
     const recurrence =
@@ -574,6 +587,9 @@ async function updateOpenEvidence(
 ) {
   if (!activeIncidentId) return
 
+  activeAdvisor =
+    buildSystemUsageOptimizationAdvisor(snapshot)
+
   const { error } = await supabase
     .from('system_usage_incidents')
     .update({
@@ -586,7 +602,8 @@ async function updateOpenEvidence(
       evidence:
         buildEvidence(
           snapshot,
-          protection
+          protection,
+          activeAdvisor
         ),
     })
     .eq('id', activeIncidentId)
@@ -615,7 +632,8 @@ async function updateInvestigating(snapshot) {
       evidence:
         buildEvidence(
           snapshot,
-          protection
+          protection,
+          activeAdvisor
         ),
     })
     .eq('id', activeIncidentId)
@@ -656,7 +674,8 @@ async function resolveIncident(snapshot) {
       evidence:
         buildEvidence(
           snapshot,
-          protection
+          protection,
+          activeAdvisor
         ),
     })
     .eq('id', incidentId)
@@ -665,6 +684,7 @@ async function resolveIncident(snapshot) {
 
   activeIncidentId = null
   activeFingerprint = null
+  activeAdvisor = null
 }
 
 async function syncTransition() {
@@ -882,6 +902,8 @@ export function getSystemUsageIncidentRuntime() {
     last_status: lastStatus,
     active_protection:
       activeProtection,
+    active_advisor:
+      activeAdvisor,
     retention: {
       unresolved_auto_delete: false,
       full_evidence_days: 180,
