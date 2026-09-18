@@ -3,6 +3,7 @@ import { requireAdminPermission } from '../middleware/adminPermission.middleware
 import { getSystemUsageCurrentSnapshot } from '../services/systemUsageMonitor.service.js'
 import { getSystemUsageAnomalySnapshot } from '../services/systemUsageAnomaly.service.js'
 import { listSystemUsageIncidents } from '../services/systemUsageIncident.service.js'
+import { getSystemUsageHistory } from '../services/systemUsagePersistence.service.js'
 
 const router = express.Router()
 const viewSystemControl = requireAdminPermission('system_control.view')
@@ -19,6 +20,31 @@ router.get('/snapshot', (req, res) => {
     usage: getSystemUsageCurrentSnapshot(),
     anomaly: getSystemUsageAnomalySnapshot(),
   })
+})
+
+router.get('/history', async (req, res) => {
+  try {
+    const history = await getSystemUsageHistory({
+      from: req.query?.from,
+      to: req.query?.to,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      history,
+    })
+  } catch (error) {
+    const message = String(error?.message || 'Failed to load usage history.')
+    const invalid =
+      message.includes('required') ||
+      message.includes('after start') ||
+      message.includes('cannot exceed')
+
+    return res.status(invalid ? 400 : 500).json({
+      ok: false,
+      message,
+    })
+  }
 })
 
 router.get('/incidents', async (req, res) => {
