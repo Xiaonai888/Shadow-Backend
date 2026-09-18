@@ -108,6 +108,7 @@ import adminSystemControlRoutes from './src/routes/adminSystemControl.routes.js'
 import { startSystemUsagePersistence } from './src/services/systemUsagePersistence.service.js'
 import { startSystemUsageAnomalyDetector } from './src/services/systemUsageAnomaly.service.js'
 import { startSystemUsageIncidentService } from './src/services/systemUsageIncident.service.js'
+import adminAppSettingsRoutes from './src/routes/adminAppSettings.routes.js'
 
 dotenv.config()
 
@@ -781,6 +782,7 @@ app.use('/api/music', musicRoutes)
 app.use('/api/story-translation', storyTranslationSpamGuard, storyTranslationRoutes)
 app.use('/api/games', readerReadSpamGuard, gameSettingsRoutes)
 app.use('/api/admin/games', adminGameSettingsRoutes)
+app.use('/api/admin/apps', adminAppSettingsRoutes)
 app.use('/api/admin/work', adminWorkRoutes)
 app.use('/api/admin/system-control', adminSystemControlRoutes)
 app.use((req, res) => {
