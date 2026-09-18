@@ -324,6 +324,135 @@ function parseRenderBandwidth(data) {
   }
 }
 
+function parseRenderBandwidthSources(data) {
+  const rows = Array.isArray(data?.data)
+    ? data.data
+    : []
+
+  const raw = {
+    total: 0,
+    http: 0,
+    websocket: 0,
+    nat: 0,
+    privatelink: 0,
+  }
+
+  for (const row of rows) {
+    const source = String(
+      row?.labels?.trafficSource || ''
+    )
+      .trim()
+      .toLowerCase()
+
+    if (!Object.prototype.hasOwnProperty.call(raw, source)) {
+      continue
+    }
+
+    raw[source] += (Array.isArray(row?.values)
+      ? row.values
+      : []
+    ).reduce(
+      (sum, point) =>
+        sum + safeNumber(point?.value),
+      0
+    )
+  }
+
+  const categoryRawTotal =
+    raw.http +
+    raw.websocket +
+    raw.nat +
+    raw.privatelink
+
+  return {
+    available:
+      rows.length > 0 &&
+      categoryRawTotal > 0,
+    series_count: rows.length,
+    raw,
+    category_raw_total: categoryRawTotal,
+  }
+}
+
+function renderBillingBreakdown(
+  providerBytes,
+  sources
+) {
+  const officialTotal =
+    Number.isFinite(providerBytes)
+      ? Math.max(0, providerBytes)
+      : null
+
+  if (
+    officialTotal === null ||
+    !sources?.available ||
+    safeNumber(sources.category_raw_total) <= 0
+  ) {
+    return null
+  }
+
+  const rawTotal =
+    safeNumber(sources.category_raw_total)
+
+  const scale =
+    officialTotal > 0
+      ? officialTotal / rawTotal
+      : 0
+
+  const httpBytes = Math.round(
+    safeNumber(sources.raw?.http) * scale
+  )
+  const websocketBytes = Math.round(
+    safeNumber(sources.raw?.websocket) * scale
+  )
+  const serviceBytes = Math.round(
+    safeNumber(sources.raw?.nat) * scale
+  )
+  const privateLinkBytes = Math.round(
+    safeNumber(sources.raw?.privatelink) * scale
+  )
+
+  const attributedBytes =
+    httpBytes +
+    websocketBytes +
+    serviceBytes +
+    privateLinkBytes
+
+  const unattributedBytes = Math.max(
+    0,
+    Math.round(
+      officialTotal - attributedBytes
+    )
+  )
+
+  return {
+    source: 'render_provider',
+    measured_window: 'provider_hourly',
+    total_bytes: Math.round(officialTotal),
+    total_mb: toMb(officialTotal),
+    http_response_bytes: httpBytes,
+    http_response_mb: toMb(httpBytes),
+    websocket_response_bytes:
+      websocketBytes,
+    websocket_response_mb:
+      toMb(websocketBytes),
+    service_initiated_bytes:
+      serviceBytes,
+    service_initiated_mb:
+      toMb(serviceBytes),
+    private_link_bytes:
+      privateLinkBytes,
+    private_link_mb:
+      toMb(privateLinkBytes),
+    unattributed_bytes:
+      unattributedBytes,
+    unattributed_mb:
+      toMb(unattributedBytes),
+    source_series_count:
+      sources.series_count,
+  }
+}
+
 function parseSupabaseUsageCounts(data) {
   const rows = Array.isArray(data?.result)
     ? data.result
@@ -399,12 +528,33 @@ async function syncRenderProvider(now) {
   })
 
   try {
-    const data = await fetchJson(
-      `https://api.render.com/v1/metrics/bandwidth?${query}`,
-      apiKey
-    )
+    const [
+      bandwidthData,
+      bandwidthSourcesData,
+    ] = await Promise.all([
+      fetchJson(
+        `https://api.render.com/v1/metrics/bandwidth?${query}`,
+        apiKey
+      ),
+      fetchJson(
+        `https://api.render.com/v1/metrics/bandwidth-sources?${query}`,
+        apiKey
+      ).catch(() => null),
+    ])
 
-    const parsed = parseRenderBandwidth(data)
+    const parsed =
+      parseRenderBandwidth(bandwidthData)
+
+    const sources =
+      parseRenderBandwidthSources(
+        bandwidthSourcesData
+      )
+
+    const billingBreakdown =
+      renderBillingBreakdown(
+        parsed.provider_bytes,
+        sources
+      )
 
     providerState.render = {
       status: parsed.comparable
@@ -415,6 +565,12 @@ async function syncRenderProvider(now) {
       window_end: end,
       service_id: serviceId,
       ...parsed,
+      traffic_sources_available:
+        Boolean(sources.available),
+      traffic_source_series_count:
+        sources.series_count,
+      billing_breakdown:
+        billingBreakdown,
     }
   } catch (error) {
     providerState.render = {
@@ -424,7 +580,8 @@ async function syncRenderProvider(now) {
       window_end: end,
       service_id: serviceId,
       error: String(
-        error?.message || 'Render provider sync failed.'
+        error?.message ||
+          'Render provider sync failed.'
       ).slice(0, 300),
     }
   }
