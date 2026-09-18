@@ -1,4 +1,4 @@
-import crypto from 'node:crypto'
+import { getReaderAgeAccess } from './storyAgeAccess.service.js'
 
 const MAX_CACHE_ENTRIES = 300
 const CACHE_TTL_MS = 60 * 1000
@@ -7,25 +7,15 @@ const publicStoriesCache = new Map()
 const publicStoriesInFlight = new Map()
 let publicStoriesCacheVersion = 0
 
-function getRequestScope(req) {
-  const authHeader = String(
-    req.headers.authorization || ''
-  )
+async function getRequestScope(req) {
+  const access = await getReaderAgeAccess(req)
 
-  const token = authHeader.startsWith('Bearer ')
-    ? authHeader.slice(7).trim()
-    : ''
-
-  if (!token) return 'anon'
-
-  return crypto
-    .createHash('sha256')
-    .update(token)
-    .digest('hex')
-    .slice(0, 20)
+  return access?.can_view_adult_stories
+    ? 'adult'
+    : 'restricted'
 }
 
-function getCacheKey(req) {
+async function getCacheKey(req) {
   const entries = Object.entries(
     req.query || {}
   )
@@ -40,7 +30,7 @@ function getCacheKey(req) {
     )
 
   return JSON.stringify({
-    scope: getRequestScope(req),
+    scope: await getRequestScope(req),
     query: entries,
   })
 }
@@ -104,12 +94,19 @@ export function invalidatePublicStoriesCache({
   publicStoriesCacheVersion += 1
 }
 
-export function cachePublicStoriesResponse(
+export async function cachePublicStoriesResponse(
   req,
   res,
   next
 ) {
-  const key = getCacheKey(req)
+  let key
+
+  try {
+    key = await getCacheKey(req)
+  } catch (error) {
+    return next(error)
+  }
+
   const cached =
     publicStoriesCache.get(key)
 
