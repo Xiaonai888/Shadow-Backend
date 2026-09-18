@@ -33,6 +33,7 @@ function isInvalidInput(message) {
     message.includes('cannot exceed') ||
     message.includes('must include past or current time') ||
     message.includes('Unsupported report type') ||
+    message.includes('Unsupported incident status') ||
     message.includes('can only be applied') ||
     message.includes('must be FIX_APPLIED') ||
     message.includes('must be VERIFIED') ||
@@ -177,24 +178,41 @@ router.get('/reports/download', viewSystemControl, async (req, res) => {
 
 router.get('/incidents', viewSystemControl, async (req, res) => {
   try {
-    const incidents = await listSystemUsageIncidents(
-      req.query?.limit
-    )
+    const incidents =
+      await listSystemUsageIncidents({
+        limit: req.query?.limit,
+        from: req.query?.from,
+        to: req.query?.to,
+        status: req.query?.status,
+      })
 
     return res.status(200).json({
       ok: true,
       incidents,
     })
   } catch (error) {
-    console.error(
-      'ADMIN_SYSTEM_CONTROL_INCIDENTS_ERROR:',
-      error?.message || error
+    const message = String(
+      error?.message ||
+        'Failed to load System Control incidents.'
     )
 
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load System Control incidents.',
-    })
+    if (!isInvalidInput(message)) {
+      console.error(
+        'ADMIN_SYSTEM_CONTROL_INCIDENTS_ERROR:',
+        error?.message || error
+      )
+    }
+
+    return res
+      .status(
+        isInvalidInput(message)
+          ? 400
+          : 500
+      )
+      .json({
+        ok: false,
+        message,
+      })
   }
 })
 
