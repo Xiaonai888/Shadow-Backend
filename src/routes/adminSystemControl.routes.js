@@ -15,8 +15,8 @@ import { generateSystemUsageReport } from '../services/systemUsageReport.service
 
 const router = express.Router()
 const viewSystemControl = requireAdminPermission('system_control.view')
+const manageSystemControl = requireAdminPermission('system_control.manage')
 
-router.use(viewSystemControl)
 router.use((req, res, next) => {
   res.set('Cache-Control', 'no-store')
   next()
@@ -61,7 +61,7 @@ function incidentError(res, error, fallback) {
   })
 }
 
-router.get('/snapshot', (req, res) => {
+router.get('/snapshot', viewSystemControl, (req, res) => {
   return res.status(200).json({
     ok: true,
     usage: getSystemUsageCurrentSnapshot(),
@@ -69,7 +69,7 @@ router.get('/snapshot', (req, res) => {
   })
 })
 
-router.get('/history', async (req, res) => {
+router.get('/history', viewSystemControl, async (req, res) => {
   try {
     const history = await getSystemUsageHistory({
       from: req.query?.from,
@@ -92,7 +92,7 @@ router.get('/history', async (req, res) => {
   }
 })
 
-router.get('/reports/download', async (req, res) => {
+router.get('/reports/download', viewSystemControl, async (req, res) => {
   try {
     const report = await generateSystemUsageReport({
       type: req.query?.type,
@@ -132,7 +132,7 @@ router.get('/reports/download', async (req, res) => {
   }
 })
 
-router.get('/incidents', async (req, res) => {
+router.get('/incidents', viewSystemControl, async (req, res) => {
   try {
     const incidents = await listSystemUsageIncidents(
       req.query?.limit
@@ -155,7 +155,7 @@ router.get('/incidents', async (req, res) => {
   }
 })
 
-router.get('/incidents/:incidentId', async (req, res) => {
+router.get('/incidents/:incidentId', viewSystemControl, async (req, res) => {
   try {
     const incident = await getSystemUsageIncident(
       req.params.incidentId
@@ -174,93 +174,109 @@ router.get('/incidents/:incidentId', async (req, res) => {
   }
 })
 
-router.post('/incidents/:incidentId/fix', async (req, res) => {
-  try {
-    const incident = await applySystemUsageIncidentFix({
-      incidentId: req.params.incidentId,
-      fixSummary:
-        req.body?.fix_summary ??
-        req.body?.fixSummary,
-      fixCommit:
-        req.body?.fix_commit ??
-        req.body?.fixCommit,
-      fixVersion:
-        req.body?.fix_version ??
-        req.body?.fixVersion,
-    })
+router.post(
+  '/incidents/:incidentId/fix',
+  manageSystemControl,
+  async (req, res) => {
+    try {
+      const incident = await applySystemUsageIncidentFix({
+        incidentId: req.params.incidentId,
+        fixSummary:
+          req.body?.fix_summary ??
+          req.body?.fixSummary,
+        fixCommit:
+          req.body?.fix_commit ??
+          req.body?.fixCommit,
+        fixVersion:
+          req.body?.fix_version ??
+          req.body?.fixVersion,
+      })
 
-    return res.status(200).json({
-      ok: true,
-      incident,
-    })
-  } catch (error) {
-    return incidentError(
-      res,
-      error,
-      'Failed to mark fix as applied.'
-    )
+      return res.status(200).json({
+        ok: true,
+        incident,
+      })
+    } catch (error) {
+      return incidentError(
+        res,
+        error,
+        'Failed to mark fix as applied.'
+      )
+    }
   }
-})
+)
 
-router.post('/incidents/:incidentId/verify', async (req, res) => {
-  try {
-    const incident = await verifySystemUsageIncident({
-      incidentId: req.params.incidentId,
-    })
+router.post(
+  '/incidents/:incidentId/verify',
+  manageSystemControl,
+  async (req, res) => {
+    try {
+      const incident = await verifySystemUsageIncident({
+        incidentId: req.params.incidentId,
+      })
 
-    return res.status(200).json({
-      ok: true,
-      incident,
-    })
-  } catch (error) {
-    return incidentError(
-      res,
-      error,
-      'Failed to verify incident.'
-    )
+      return res.status(200).json({
+        ok: true,
+        incident,
+      })
+    } catch (error) {
+      return incidentError(
+        res,
+        error,
+        'Failed to verify incident.'
+      )
+    }
   }
-})
+)
 
-router.post('/incidents/:incidentId/resolve', async (req, res) => {
-  try {
-    const incident = await resolveSystemUsageIncident({
-      incidentId: req.params.incidentId,
-      summary:
-        req.body?.summary ??
-        req.body?.resolution_summary ??
-        req.body?.resolutionSummary,
-    })
+router.post(
+  '/incidents/:incidentId/resolve',
+  manageSystemControl,
+  async (req, res) => {
+    try {
+      const incident = await resolveSystemUsageIncident({
+        incidentId: req.params.incidentId,
+        summary:
+          req.body?.summary ??
+          req.body?.resolution_summary ??
+          req.body?.resolutionSummary,
+      })
 
-    return res.status(200).json({
-      ok: true,
-      incident,
-    })
-  } catch (error) {
-    return incidentError(
-      res,
-      error,
-      'Failed to resolve incident.'
-    )
+      return res.status(200).json({
+        ok: true,
+        incident,
+      })
+    } catch (error) {
+      return incidentError(
+        res,
+        error,
+        'Failed to resolve incident.'
+      )
+    }
   }
-})
+)
 
-router.post('/incidents/:incidentId/archive', async (req, res) => {
-  try {
-    const incident = await archiveSystemUsageIncident({
-      incidentId: req.params.incidentId,
-    })
+router.post(
+  '/incidents/:incidentId/archive',
+  manageSystemControl,
+  async (req, res) => {
+    try {
+      const incident = await archiveSystemUsageIncident({
+        incidentId: req.params.incidentId,
+      })
 
-    return res.status(200).json({
-      ok: true,
-      incident,
-    })
-  } catch (error) {
-    return incidentError(
-      res,
-      error,
-      'Failed to archive incident.'
-    )
+      return res.status(200).json({
+        ok: true,
+        incident,
+      })
+    } catch (error) {
+      return incidentError(
+        res,
+        error,
+        'Failed to archive incident.'
+      )
+    }
   }
-})
+)
 
 export default router
