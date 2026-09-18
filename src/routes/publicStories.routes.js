@@ -44,7 +44,7 @@ function invalidatePublicStoriesAfterCountedView(req, res, next) {
       body?.ok !== false &&
       body?.view?.counted === true
     ) {
-      invalidatePublicStoriesCache()
+      invalidatePublicStoriesCache({ viewSensitiveOnly: true })
     }
 
     return originalJson(body)
