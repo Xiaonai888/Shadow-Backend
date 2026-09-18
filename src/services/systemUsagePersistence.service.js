@@ -6,13 +6,16 @@ import {
   runSystemUsageRetention,
 } from './systemUsageRollup.service.js'
 
-const SNAPSHOT_MS = 15 * 60 * 1000
-const PROVIDER_SYNC_MS = 60 * 60 * 1000
+const MINUTE_MS = 60 * 1000
+const HOUR_MS = 60 * MINUTE_MS
+const DAY_MS = 24 * HOUR_MS
+const SNAPSHOT_MS = 15 * MINUTE_MS
+const PROVIDER_SYNC_MS = HOUR_MS
 const PROVIDER_WINDOW_MS = 60 * 60 * 1000
 const PROVIDER_TIMEOUT_MS = 10 * 1000
-const RETENTION_RUN_MS = 24 * 60 * 60 * 1000
-const RETENTION_RETRY_MS = 60 * 60 * 1000
-const HISTORY_MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000
+const RETENTION_RUN_MS = 6 * HOUR_MS
+const RETENTION_RETRY_MS = HOUR_MS
+const HISTORY_MAX_RANGE_MS = 31 * DAY_MS
 const HISTORY_PAGE_SIZE = 1000
 const MAX_DETAIL_ROWS = 100
 
@@ -733,28 +736,168 @@ function historyRowToSeries(row) {
   }
 }
 
+function floorHour(ms) {
+  return Math.floor(ms / HOUR_MS) * HOUR_MS
+}
+
 function overlapFreeArchive(
   archived,
-  stored,
-  toMs
+  stored
 ) {
   if (!archived.length) return []
 
-  const storedStart = stored.length
-    ? new Date(
-        stored[0].window_start
-      ).getTime()
-    : toMs
+  if (!stored.length) {
+    return archived
+  }
+
+  const storedIntervals = stored
+    .map((row) => ({
+      start: new Date(
+        row.window_start
+      ).getTime(),
+      end: new Date(
+        row.window_end
+      ).getTime(),
+    }))
+    .filter(
+      (row) =>
+        Number.isFinite(row.start) &&
+        Number.isFinite(row.end) &&
+        row.end > row.start
+    )
+
+  if (!storedIntervals.length) {
+    return archived
+  }
 
   return archived.filter((row) => {
+    const start =
+      new Date(
+        row.window_start
+      ).getTime()
     const end =
-      new Date(row.window_end).getTime()
+      new Date(
+        row.window_end
+      ).getTime()
 
-    return (
-      Number.isFinite(end) &&
-      end <= storedStart
+    if (
+      !Number.isFinite(start) ||
+      !Number.isFinite(end) ||
+      end <= start
+    ) {
+      return false
+    }
+
+    return !storedIntervals.some(
+      (storedRow) =>
+        storedRow.end > start &&
+        storedRow.start < end
     )
   })
+}
+
+function analyzeHistoryCoverage(
+  series,
+  fromMs,
+  toMs
+) {
+  const intervals = (series || [])
+    .map((row) => ({
+      start: new Date(
+        row.started_at
+      ).getTime(),
+      end: new Date(
+        row.ended_at
+      ).getTime(),
+    }))
+    .filter(
+      (row) =>
+        Number.isFinite(row.start) &&
+        Number.isFinite(row.end) &&
+        row.end > row.start
+    )
+    .sort(
+      (a, b) =>
+        a.start - b.start ||
+        a.end - b.end
+    )
+
+  if (!intervals.length) {
+    return {
+      partial: true,
+      gap_count: 1,
+      missing_ms:
+        Math.max(
+          0,
+          toMs - fromMs
+        ),
+    }
+  }
+
+  let cursor = fromMs
+  let gapCount = 0
+  let missingMs = 0
+
+  for (const interval of intervals) {
+    if (
+      interval.end <= cursor ||
+      interval.start >= toMs
+    ) {
+      continue
+    }
+
+    const start =
+      Math.max(
+        fromMs,
+        interval.start
+      )
+
+    const end =
+      Math.min(
+        toMs,
+        interval.end
+      )
+
+    if (
+      start >
+      cursor + MINUTE_MS
+    ) {
+      gapCount += 1
+      missingMs +=
+        start - cursor
+    }
+
+    cursor =
+      Math.max(
+        cursor,
+        end
+      )
+
+    if (cursor >= toMs) {
+      break
+    }
+  }
+
+  if (
+    cursor <
+    toMs - MINUTE_MS
+  ) {
+    gapCount += 1
+    missingMs +=
+      toMs - cursor
+  }
+
+  return {
+    partial:
+      gapCount > 0,
+    gap_count:
+      gapCount,
+    missing_ms:
+      Math.max(
+        0,
+        missingMs
+      ),
+  }
 }
 
 export async function getSystemUsageHistory({
@@ -806,18 +949,19 @@ export async function getSystemUsageHistory({
   const policy =
     getSystemUsageRetentionPolicy()
 
-  const detailCutoff =
-    now -
-    safeNumber(policy.detail_days) *
-      24 *
-      60 *
-      60 *
-      1000
+  const detailBoundary =
+    floorHour(
+      now -
+      safeNumber(
+        policy.detail_days
+      ) *
+      DAY_MS
+    )
 
   const storedFromMs =
     Math.max(
       fromMs,
-      detailCutoff
+      detailBoundary
     )
 
   const [archivedRaw, stored] =
@@ -840,8 +984,7 @@ export async function getSystemUsageHistory({
   const archived =
     overlapFreeArchive(
       archivedRaw,
-      stored,
-      toMs
+      stored
     )
 
   const persisted = [
@@ -988,13 +1131,12 @@ export async function getSystemUsageHistory({
         ).getTime()
       : null
 
-  const hasArchive =
-    archived.length > 0
-
-  const startTolerance =
-    hasArchive
-      ? 60 * 60 * 1000
-      : SNAPSHOT_MS
+  const coverage =
+    analyzeHistoryCoverage(
+      series,
+      fromMs,
+      toMs
+    )
 
   const archiveGranularities = [
     ...new Set(
@@ -1039,13 +1181,28 @@ export async function getSystemUsageHistory({
             ).toISOString()
           : null,
       partial:
-        !availableStart ||
-        availableStart >
-          fromMs + startTolerance,
+        coverage.partial,
+      gap_count:
+        coverage.gap_count,
+      missing_minutes:
+        Number(
+          (
+            coverage.missing_ms /
+            MINUTE_MS
+          ).toFixed(2)
+        ),
       stored_granularity_minutes:
         15,
       live_granularity_minutes:
         1,
+      retention_boundary:
+        new Date(
+          detailBoundary
+        ).toISOString(),
+      granularity_note:
+        archiveGranularities.length
+          ? 'Archived ranges use completed UTC rollup buckets; custom boundaries can include the containing rollup bucket.'
+          : 'Stored history uses 15-minute snapshots and live history uses minute windows.',
       retention: policy,
     },
     totals: {
