@@ -19,7 +19,7 @@ const expected = [
   ['backend', 'src/services/workKillSwitch.service.js', '953708e3cfde5e0434f0e346dec07903f3433ff5'],
   ['backend', 'src/services/workKillSwitchBootstrap.service.js', '424f580bf5120d96775c449dd476134ea7599853'],
   ['backend', 'src/services/criticalCircuitPersistence.service.js', '3272d015c425e697cf2d3ef261c5505d63ef3bbc'],
-  ['backend', 'src/services/criticalCircuitCanary.service.js', '8c40389cd0759c1d10b88cf5054564a5da5c8c2a'],
+  ['backend', 'src/services/criticalCircuitCanary.service.js', '3408529cea0822bb374ec05645564d750a3f68af'],
   ['backend', 'src/controllers/adminWorkKillSwitch.controller.js', 'b89011415493313f1dc97065daac2f7130d4187c'],
   ['backend', 'src/routes/adminWork.routes.js', '8468899267fff3516f2b0b5f2c9a09919f2a06c3'],
   ['backend', 'src/controllers/readingProgress.controller.js', '3fd7f12cb0c3a1d2b2b4de030f3599ed129738e9'],
