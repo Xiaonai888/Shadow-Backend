@@ -2,6 +2,7 @@ import { isIP } from 'node:net'
 import { supabase } from '../config/supabase.js'
 
 const requestBuckets = new Map()
+const MAX_REQUEST_BUCKETS = 10000
 
 function cleanText(value, maxLength) {
   return String(value || '').trim().slice(0, maxLength)
@@ -217,13 +218,23 @@ function isRateLimited(key) {
   const maxRequests = 120
   const current = requestBuckets.get(key)
 
-  if (!current || now - current.startedAt >= windowMs) {
-    requestBuckets.set(key, { startedAt: now, count: 1 })
-    return false
+  if (current && now - current.startedAt < windowMs) {
+    current.count += 1
+    return current.count > maxRequests
   }
 
-  current.count += 1
-  return current.count > maxRequests
+  if (current) requestBuckets.delete(key)
+
+  if (requestBuckets.size >= MAX_REQUEST_BUCKETS) {
+    for (const [storedKey, bucket] of requestBuckets) {
+      if (now - bucket.startedAt < windowMs) break
+      requestBuckets.delete(storedKey)
+    }
+    if (requestBuckets.size >= MAX_REQUEST_BUCKETS) return true
+  }
+
+  requestBuckets.set(key, { startedAt: now, count: 1 })
+  return false
 }
 
 function debugErrorPayload(error) {
