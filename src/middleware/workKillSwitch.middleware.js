@@ -2,6 +2,7 @@ import {
   findActiveWorkKillSwitch,
   recordWorkKillSwitchBlocked,
 } from '../services/workKillSwitch.service.js'
+import { isCriticalRouteCircuitOpen } from './workDetector.middleware.js'
 
 const ALWAYS_BYPASS_PREFIXES = [
   '/api/admin/work',
@@ -29,6 +30,8 @@ function normalizePath(req) {
 }
 
 function requestSource(req, path) {
+  if (path.startsWith('/api/admin/')) return 'ADMIN'
+
   const candidate = String(
     req.headers.origin ||
     req.headers.referer ||
@@ -131,21 +134,23 @@ export function workKillSwitch(req, res, next) {
       path,
     })
 
-    if (!record) {
+    const locallyLatched = isCriticalRouteCircuitOpen({ method, path })
+
+    if (!record && !locallyLatched) {
       return next()
     }
 
     if (
-      record.mode === 'automatic' &&
+      (locallyLatched || record?.mode === 'automatic') &&
       isAutomaticBypassed(path)
     ) {
       return next()
     }
 
-    recordWorkKillSwitchBlocked(record)
+    if (record) recordWorkKillSwitchBlocked(record)
 
     const retryAfter = retryAfterSeconds(
-      record.expires_at
+      record?.expires_at
     )
 
     if (retryAfter) {
