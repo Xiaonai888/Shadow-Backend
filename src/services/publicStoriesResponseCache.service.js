@@ -3,9 +3,31 @@ import { getReaderAgeAccess } from './storyAgeAccess.service.js'
 const MAX_CACHE_ENTRIES = 300
 const CACHE_TTL_MS = 60 * 1000
 
+const VIEW_SENSITIVE_SORTS = new Set([
+  'views',
+  'popular',
+  'weekly_top',
+  'weekly',
+  'trending',
+])
+
 const publicStoriesCache = new Map()
 const publicStoriesInFlight = new Map()
+
 let publicStoriesCacheVersion = 0
+let publicStoriesViewSensitiveVersion = 0
+
+function getRequestSort(req) {
+  return String(req?.query?.sort || 'latest')
+    .trim()
+    .toLowerCase()
+}
+
+function isViewSensitiveRequest(req) {
+  return VIEW_SENSITIVE_SORTS.has(
+    getRequestSort(req)
+  )
+}
 
 async function getRequestScope(req) {
   const access = await getReaderAgeAccess(req)
@@ -64,14 +86,6 @@ export function invalidatePublicStoriesCache({
     return
   }
 
-  const viewSensitiveSorts = new Set([
-    'views',
-    'popular',
-    'weekly_top',
-    'weekly',
-    'trending',
-  ])
-
   for (const key of publicStoriesCache.keys()) {
     try {
       const parsed = JSON.parse(key)
@@ -83,7 +97,7 @@ export function invalidatePublicStoriesCache({
         .trim()
         .toLowerCase()
 
-      if (viewSensitiveSorts.has(sort)) {
+      if (VIEW_SENSITIVE_SORTS.has(sort)) {
         publicStoriesCache.delete(key)
       }
     } catch {
@@ -91,7 +105,7 @@ export function invalidatePublicStoriesCache({
     }
   }
 
-  publicStoriesCacheVersion += 1
+  publicStoriesViewSensitiveVersion += 1
 }
 
 export async function cachePublicStoriesResponse(
@@ -167,6 +181,12 @@ export async function cachePublicStoriesResponse(
   const requestVersion =
     publicStoriesCacheVersion
 
+  const requestViewSensitiveVersion =
+    publicStoriesViewSensitiveVersion
+
+  const requestIsViewSensitive =
+    isViewSensitiveRequest(req)
+
   let resolveInFlight
   const inFlightPromise =
     new Promise((resolve) => {
@@ -210,12 +230,21 @@ export async function cachePublicStoriesResponse(
   res.json = (body) => {
     let entry = null
 
+    const globalVersionMatches =
+      publicStoriesCacheVersion ===
+      requestVersion
+
+    const viewSensitiveVersionMatches =
+      !requestIsViewSensitive ||
+      publicStoriesViewSensitiveVersion ===
+        requestViewSensitiveVersion
+
     if (
       res.statusCode >= 200 &&
       res.statusCode < 300 &&
       body?.ok !== false &&
-      publicStoriesCacheVersion ===
-        requestVersion
+      globalVersionMatches &&
+      viewSensitiveVersionMatches
     ) {
       entry = {
         body,
