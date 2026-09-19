@@ -37,6 +37,51 @@ function normalizePath(value) {
     .join('/') || '/'
 }
 
+function getPublicStoriesSort(req, normalizedPath) {
+  if (normalizedPath !== '/api/public/stories') {
+    return ''
+  }
+
+  let value = 'latest'
+
+  try {
+    const url = new URL(
+      req.originalUrl || req.url || '/',
+      'http://shadow.local'
+    )
+
+    value =
+      url.searchParams.get('sort') ||
+      'latest'
+  } catch {
+    value = 'latest'
+  }
+
+  const cleanValue = String(value || 'latest')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 40)
+
+  return cleanValue || 'latest'
+}
+
+function getPublicStoriesCacheState(res) {
+  const value = String(
+    res.getHeader(
+      'X-Shadow-Public-Stories-Cache'
+    ) || 'NONE'
+  )
+    .trim()
+    .toUpperCase()
+
+  return ['HIT', 'MISS', 'WAIT'].includes(
+    value
+  )
+    ? value
+    : 'NONE'
+}
+
 function destination(hostname) {
   const host = String(hostname || '').toLowerCase()
   if (!host) return 'UNKNOWN'
@@ -239,9 +284,26 @@ export function trafficDiagnosticMiddleware(req, res, next) {
   if (!ENABLED) return next()
 
   const startedAt = Date.now()
-  const key = `${String(req.method || 'GET').toUpperCase()} ${normalizePath(
-    req.originalUrl || req.url || req.path
-  )}`
+  const method = String(
+    req.method || 'GET'
+  ).toUpperCase()
+
+  const normalizedPath = normalizePath(
+    req.originalUrl ||
+      req.url ||
+      req.path
+  )
+
+  const publicStoriesSort =
+    getPublicStoriesSort(
+      req,
+      normalizedPath
+    )
+
+  const sourceKey = publicStoriesSort
+    ? `${method} ${normalizedPath}?sort=${publicStoriesSort}`
+    : `${method} ${normalizedPath}`
+
   let responseBytes = 0
   let recorded = false
 
@@ -249,20 +311,47 @@ export function trafficDiagnosticMiddleware(req, res, next) {
   const nativeEnd = res.end.bind(res)
 
   res.write = (chunk, encoding, callback) => {
-    responseBytes += bytesOf(chunk, encoding)
-    return nativeWrite(chunk, encoding, callback)
+    responseBytes += bytesOf(
+      chunk,
+      encoding
+    )
+    return nativeWrite(
+      chunk,
+      encoding,
+      callback
+    )
   }
 
   res.end = (chunk, encoding, callback) => {
-    if (chunk !== undefined && chunk !== null) {
-      responseBytes += bytesOf(chunk, encoding)
+    if (
+      chunk !== undefined &&
+      chunk !== null
+    ) {
+      responseBytes += bytesOf(
+        chunk,
+        encoding
+      )
     }
-    return nativeEnd(chunk, encoding, callback)
+
+    return nativeEnd(
+      chunk,
+      encoding,
+      callback
+    )
   }
 
   const record = () => {
     if (recorded) return
     recorded = true
+
+    const key = publicStoriesSort
+      ? `${sourceKey}&cache=${getPublicStoriesCacheState(
+          res
+        )}&status=${Number(
+          res.statusCode || 0
+        )}`
+      : sourceKey
+
     add(
       inbound,
       key,
@@ -274,7 +363,11 @@ export function trafficDiagnosticMiddleware(req, res, next) {
 
   res.once('finish', record)
   res.once('close', record)
-  requestContext.run({ route: key }, next)
+
+  requestContext.run(
+    { route: sourceKey },
+    next
+  )
 }
 
 if (ENABLED) {
