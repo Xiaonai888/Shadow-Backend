@@ -220,6 +220,7 @@ const corsOptions = {
     'X-Admin-Actor',
     'X-Admin-Id',
     'X-Shadow-Visitor-Id',
+    'X-Shadow-Circuit-Canary',
   ],
   exposedHeaders: ['X-Reader-Token', 'X-Spin-Search-Remaining'],
 }
