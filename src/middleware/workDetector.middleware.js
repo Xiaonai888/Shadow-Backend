@@ -771,7 +771,22 @@ function cleanupTrackerMap(map, now) {
   }
 }
 
+function restorePersistedCriticalCircuits() {
+  for (const record of getActiveWorkKillSwitchSnapshot()) {
+    if (!restoreCriticalCircuit({ ...record, enabled: true })) continue
+    const key = criticalRouteKey(record.method, record.path)
+    if (criticalRouteCircuits.has(key)) continue
+    criticalRouteCircuits.set(key, {
+      source: record.source,
+      method: record.method,
+      path: record.path,
+      activated_at: record.activated_at,
+    })
+  }
+}
+
 function analyzeAll() {
+  restorePersistedCriticalCircuits()
   const now = Date.now()
 
   for (const item of routeTrackers.values()) {
@@ -898,16 +913,7 @@ export function workDetector(req, res, next) {
 export function startWorkDetectorMonitor() {
   if (monitorTimer) return monitorTimer
 
-  for (const record of getActiveWorkKillSwitchSnapshot()) {
-    if (!restoreCriticalCircuit({ ...record, enabled: true })) continue
-    criticalRouteCircuits.set(criticalRouteKey(record.method, record.path), {
-      source: record.source,
-      method: record.method,
-      path: record.path,
-      activated_at: record.activated_at,
-    })
-  }
-
+  restorePersistedCriticalCircuits()
   startCriticalCircuitPersistence()
 
   enabled = String(
