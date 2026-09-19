@@ -223,12 +223,11 @@ export async function sendStoryGift(req, res) {
       })
     }
 
-    const { data, error } = await supabase.rpc('send_story_gift', {
-      p_story_id: storyId,
-      p_user_id: userId,
-      p_gift_key: giftKey,
-      p_quantity: quantity,
-    })
+    const requestId = req.body?.request_id == null ? null : cleanUuid(req.body.request_id)
+if (req.body?.request_id != null && !requestId) return res.status(400).json({ ok: false, message: 'Invalid request ID.' })
+const args = { p_story_id: storyId, p_user_id: userId, p_gift_key: giftKey, p_quantity: quantity }
+if (requestId) args.p_request_id = requestId
+const { data, error } = await supabase.rpc(requestId ? 'send_story_gift_once' : 'send_story_gift', args)
 
     if (error) {
   const mapped = mapGiftError(error)
