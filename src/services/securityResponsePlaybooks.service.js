@@ -51,13 +51,13 @@ async function executeDistributedRouteContainment(response) {
 
   const record = await setWorkKillSwitch({
     targetType: 'api',
-    source,
+    source: 'ALL',
     method,
     path,
     enabled: true,
     mode: 'automatic',
-    reason: 'Security Response Assistant critical route containment; Owner release required',
-    incidentId: cleanText(response?.id, 100) || null,
+    reason: 'Critical route containment; Owner release required',
+    incidentId: null,
     expiresAt: null,
     actor: 'security_response_assistant',
   })
@@ -69,10 +69,10 @@ async function executeDistributedRouteContainment(response) {
     action: 'kill_switch_enable',
     target: {
       id: record?.id || null,
-      source,
+      source: 'ALL',
       method,
       path,
-      expires_at: record?.expires_at || null,
+      expires_at: null,
     },
   }
 }
@@ -122,6 +122,14 @@ export function executeSecurityResponseResolution(
       ok: false,
       executed: false,
       code: 'PLAYBOOK_REQUIRED',
+    }
+  }
+
+  if (playbook === 'distributed_route_containment') {
+    return {
+      ok: false,
+      executed: false,
+      code: 'PLAYBOOK_ROUTE_OWNER_RELEASE_REQUIRED',
     }
   }
 
