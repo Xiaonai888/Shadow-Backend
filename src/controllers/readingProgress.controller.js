@@ -164,8 +164,6 @@ export async function saveReadingProgress(req, res) {
       })
     }
 
-    const ageAccess = await getReaderAgeAccess(req)
-
     const [
       { data: story, error: storyError },
       { data: episode, error: episodeError },
@@ -197,7 +195,7 @@ export async function saveReadingProgress(req, res) {
       })
     }
 
-    if (!isStoryVisibleToReader(story, ageAccess)) {
+    if (story.is_adult && !isStoryVisibleToReader(story, await getReaderAgeAccess(req))) {
       return res.status(404).json({
         ok: false,
         message: 'Story or episode was not found',
