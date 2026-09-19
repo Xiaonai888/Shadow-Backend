@@ -26,11 +26,11 @@ const expected = [
   ['backend', 'src/controllers/readerPresence.controller.js', '072720d00c56a4e8955b861a25a6213a97e1b5cf'],
   ['backend', 'src/controllers/storySectionRank.controller.js', 'd9ecd4509f8609b2497bd21d7eea1031a3259bc1'],
   ['backend', 'src/controllers/authorStoryViews.controller.js', '2776a0c5b80401b2af1435b9c352e999c5f58386'],
-  ['backend', 'src/routes/visitorAnalytics.routes.js', '94e34d189df35cccd9eff29223a313a2b5359a02'],
+  ['backend', 'src/controllers/visitorAnalytics.controller.js', 'ef1ef9f2ca1cc0de4cd68b101fdd7d09535f6367'],
   ['web', 'src/hooks/useReadingProgressSync.js', '87aa895bdcacc067aa02477c35eca0f74e5a59c3'],
   ['web', 'src/utils/installReaderPresenceTracking.js', 'a5b9c87318f49e079497a23221966773844cfb15'],
   ['web', 'src/services/storySectionRankTracking.js', 'e390654965f81ad341a9825a3dc81116d9378a8e'],
-  ['web', 'src/services/storySectionRankTracking.js', '914da59397cef8e3c0c1e71d28a91597f359e7b4'],
+  ['web', 'src/components/VisitorTracker.jsx', '2125f9873bd941cde5939f9d4b8ac1a56dd89fb5'],
   ['admin', 'src/pages/AdminKillSwitchPage.jsx', '891fc9028f3a19e95bfa6cb5059e2db1b5a9d7fc'],
   ['admin', 'src/components/CriticalCanaryPanel.jsx', '60f647763a2bc3fe79866a3c01940b05311c911e'],
 ]
