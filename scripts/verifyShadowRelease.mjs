@@ -27,7 +27,7 @@ const expected = [
   ['backend', 'src/controllers/storySectionRank.controller.js', 'd9ecd4509f8609b2497bd21d7eea1031a3259bc1'],
   ['backend', 'src/controllers/authorStoryViews.controller.js', '2776a0c5b80401b2af1435b9c352e999c5f58386'],
   ['backend', 'src/routes/visitorAnalytics.routes.js', '94e34d189df35cccd9eff29223a313a2b5359a02'],
-  ['web', 'src/hooks/useReadingProgressSync.js', 'c770141211d5db9b10e9b8dff8a025a9ac2516f2'],
+  ['web', 'src/hooks/useReadingProgressSync.js', '87aa895bdcacc067aa02477c35eca0f74e5a59c3'],
   ['web', 'src/utils/installReaderPresenceTracking.js', 'becc3bae17528ff691f163500273f5b9fd863d46'],
   ['web', 'src/components/VisitorTracker.jsx', '2125f9873bd941cde5939f9d4b8ac1a56dd89fb5'],
   ['web', 'src/services/storySectionRankTracking.js', '914da59397cef8e3c0c1e71d28a91597f359e7b4'],
