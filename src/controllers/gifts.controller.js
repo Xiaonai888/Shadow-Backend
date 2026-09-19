@@ -231,7 +231,8 @@ export async function sendStoryGift(req, res) {
     })
 
     if (error) {
-      const mapped = mapGiftError(error)
+  const mapped = mapGiftError(error)
+  if (mapped.status === 500) console.error('SEND_STORY_GIFT_RPC_ERROR', { code: error.code, message: error.message })
 
       return res.status(mapped.status).json({
         ok: false,
@@ -315,9 +316,8 @@ export async function sendStoryGift(req, res) {
     const mapped = mapGiftError(error)
 
     return res.status(mapped.status).json({
-      ok: false,
-      message: mapped.message,
-      error: error.message,
-    })
+  ok: false,
+  message: mapped.message,
+})
   }
 }
