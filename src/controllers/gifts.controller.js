@@ -72,6 +72,18 @@ function mapGiftError(error) {
     return { status: 400, message: 'Not enough diamonds.' }
   }
 
+  if (message.includes('GIFT_REQUEST_ID_CONFLICT')) {
+    return { status: 409, message: 'This gift request ID was used for a different gift. Please contact support.' }
+  }
+
+  if (message.includes('GIFT_REQUEST_RETRY_LATER')) {
+    return { status: 503, message: 'Gift status is pending. Retry with the same request ID.' }
+  }
+
+  if (message.includes('REQUEST_ID_REQUIRED')) {
+    return { status: 400, message: 'A gift request ID is required.' }
+  }
+
   return { status: 500, message: 'Failed to send gift.' }
 }
 
@@ -194,6 +206,7 @@ export async function sendStoryGift(req, res) {
     const userId = cleanUuid(getUserId(req))
     const giftKey = String(req.body?.gift_key || '').trim().toLowerCase()
     const quantity = Number(req.body?.quantity || 1)
+    const requestId = cleanUuid(req.body?.request_id)
 
     if (!userId) {
       return res.status(401).json({
@@ -223,15 +236,29 @@ export async function sendStoryGift(req, res) {
       })
     }
 
-    const requestId = req.body?.request_id == null ? null : cleanUuid(req.body.request_id)
-if (req.body?.request_id != null && !requestId) return res.status(400).json({ ok: false, message: 'Invalid request ID.' })
-const args = { p_story_id: storyId, p_user_id: userId, p_gift_key: giftKey, p_quantity: quantity }
-if (requestId) args.p_request_id = requestId
-const { data, error } = await supabase.rpc(requestId ? 'send_story_gift_once' : 'send_story_gift', args)
+    if (!requestId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'A valid gift request ID is required. Refresh the reader page.',
+      })
+    }
+
+    const { data, error } = await supabase.rpc('send_story_gift_once', {
+      p_story_id: storyId,
+      p_user_id: userId,
+      p_gift_key: giftKey,
+      p_quantity: quantity,
+      p_request_id: requestId,
+    })
 
     if (error) {
-  const mapped = mapGiftError(error)
-  if (mapped.status === 500) console.error('SEND_STORY_GIFT_RPC_ERROR', { code: error.code, message: error.message })
+      const mapped = mapGiftError(error)
+      if (mapped.status >= 500) {
+        console.error('SEND_STORY_GIFT_RPC_ERROR', {
+          code: error.code,
+          message: error.message,
+        })
+      }
 
       return res.status(mapped.status).json({
         ok: false,
@@ -241,6 +268,15 @@ const { data, error } = await supabase.rpc(requestId ? 'send_story_gift_once' : 
 
     const result = Array.isArray(data) ? data[0] : data
     const gift = result?.gift || null
+
+    if (!gift?.id || !result?.wallet) {
+      console.error('SEND_STORY_GIFT_INVALID_RESULT', { requestId, storyId })
+      return res.status(503).json({
+        ok: false,
+        message: 'Gift result is pending. Retry with the same request ID.',
+      })
+    }
+
     const [story, reader] = await Promise.all([
       getStoryContextSafely(storyId),
       getReaderProfileSafely(userId),
@@ -252,7 +288,7 @@ const { data, error } = await supabase.rpc(requestId ? 'send_story_gift_once' : 
     ) {
       const readerName = reader?.name || reader?.username || 'A reader'
       const giftName = gift?.name || gift?.gift_name || giftKey
-      const giftId = gift?.id || gift?.gift_id || `${storyId}:${userId}:${Date.now()}`
+      const giftId = gift.id
       const giftImagePath =
         gift?.image_path ||
         gift?.image ||
@@ -269,7 +305,7 @@ const { data, error } = await supabase.rpc(requestId ? 'send_story_gift_once' : 
         readerAvatarUrl: reader?.avatar_url || '',
         storyId,
         storyTitle: story.title || 'Story',
-        giftId: gift?.id || gift?.gift_id || null,
+        giftId,
         giftKey,
         giftName,
         giftImagePath,
@@ -288,7 +324,7 @@ const { data, error } = await supabase.rpc(requestId ? 'send_story_gift_once' : 
         sourceKey: `story-gift:${giftId}`,
         metadata: {
           story_id: storyId,
-          gift_id: gift?.id || gift?.gift_id || null,
+          gift_id: giftId,
           gift_key: giftKey,
           gift_name: giftName,
           gift_image_path: giftImagePath,
@@ -307,7 +343,7 @@ const { data, error } = await supabase.rpc(requestId ? 'send_story_gift_once' : 
     return res.status(201).json({
       ok: true,
       gift,
-      wallet: result?.wallet || null,
+      wallet: result.wallet,
     })
   } catch (error) {
     console.error('SEND STORY GIFT ERROR:', error)
@@ -315,8 +351,8 @@ const { data, error } = await supabase.rpc(requestId ? 'send_story_gift_once' : 
     const mapped = mapGiftError(error)
 
     return res.status(mapped.status).json({
-  ok: false,
-  message: mapped.message,
-})
+      ok: false,
+      message: mapped.message,
+    })
   }
 }
