@@ -1,7 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import jwt from 'jsonwebtoken'
-import { findActiveWorkKillSwitch } from './workKillSwitch.service.js'
-import { isCriticalRouteCircuitOpen } from '../middleware/workDetector.middleware.js'
+import { getActiveWorkKillSwitchSnapshot } from './workKillSwitch.service.js'
 import { isKillSwitchBootstrapVerified } from './workKillSwitchBootstrap.service.js'
 import { publishSecurityEvent } from './securityControlPlane.service.js'
 
@@ -41,12 +40,12 @@ function view(trial) {
 }
 
 function activeAutomaticRecord(method, path) {
-  if (!isKillSwitchBootstrapVerified()) return null
-  for (const source of ['ADMIN', 'WEB', 'BACKEND']) {
-    const record = findActiveWorkKillSwitch({ targetType: 'api', source, method, path })
-    if (record?.enabled && record?.mode === 'automatic' && record?.source === 'ALL' && !record.expires_at) return record
-  }
-  return null
+  if (!isKillSwitchBootstrapVerified() || !targetKey(method, path)) return null
+  return getActiveWorkKillSwitchSnapshot().find((record) =>
+    record.target_type === 'api' && record.source === 'ALL' &&
+    record.method === 'GET' && record.path === path &&
+    record.mode === 'automatic' && !record.expires_at
+  ) || null
 }
 
 function matchesToken(token, digest) {
@@ -61,7 +60,7 @@ export function startCriticalCanary({ method, path, owner } = {}) {
   if (!key) throw new Error('Half-open supports exact GET API paths only')
   if (String(owner?.role || '').toLowerCase() !== 'owner' || !sessionId) throw new Error('Verified Owner session required')
   const record = activeAutomaticRecord('GET', path)
-  if (!record || !isCriticalRouteCircuitOpen({ method: 'GET', path })) throw new Error('Critical route must be persistently latched before testing')
+  if (!record) throw new Error('Critical route must be persistently latched before testing')
   const existing = trials.get(key)
   if (existing?.inFlight) throw new Error('A canary request is still running')
   const token = randomBytes(32).toString('hex')
@@ -123,7 +122,7 @@ export function criticalCanaryReadyForRelease({ method, path } = {}) {
   const trial = key ? trials.get(key) : null
   if (!trial || statusOf(trial) !== 'ready' || trial.inFlight || trial.successes < MIN_SUCCESSES) return false
   const record = activeAutomaticRecord(method, path)
-  return Boolean(record && record.id === trial.recordId && isCriticalRouteCircuitOpen({ method, path }))
+  return Boolean(record && record.id === trial.recordId)
 }
 
 export function clearCriticalCanary({ method, path } = {}) {
