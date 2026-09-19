@@ -1,0 +1,60 @@
+name: Shadow pre-deploy check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Backend
+        uses: actions/checkout@v4
+        with:
+          path: Shadow-Backend
+
+      - name: Checkout Reader
+        uses: actions/checkout@v4
+        with:
+          repository: Xiaonai888/Web-React-2
+          ref: main
+          path: Web-React-2
+
+      - name: Checkout Admin
+        uses: actions/checkout@v4
+        with:
+          repository: Xiaonai888/AdminDashboard
+          ref: main
+          path: AdminDashboard
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Show checked-out commits
+        run: |
+          git -C Shadow-Backend rev-parse HEAD
+          git -C Web-React-2 rev-parse HEAD
+          git -C AdminDashboard rev-parse HEAD
+
+      - name: Verify snapshots and Backend syntax
+        run: node Shadow-Backend/scripts/verifyShadowRelease.mjs
+
+      - name: Install Reader dependencies
+        working-directory: Web-React-2
+        run: npm ci --no-audit --no-fund
+
+      - name: Build Reader
+        working-directory: Web-React-2
+        run: npm run build
+
+      - name: Install Admin dependencies
+        working-directory: AdminDashboard
+        run: npm ci --no-audit --no-fund
+
+      - name: Build Admin
+        working-directory: AdminDashboard
+        run: npm run build
