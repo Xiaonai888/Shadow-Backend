@@ -3,6 +3,7 @@ import {
   recordWorkKillSwitchBlocked,
 } from '../services/workKillSwitch.service.js'
 import { isCriticalRouteCircuitOpen } from './workDetector.middleware.js'
+import { isKillSwitchBootstrapVerified, ensureKillSwitchBootstrapVerified } from '../services/workKillSwitchBootstrap.service.js'
 
 const ALWAYS_BYPASS_PREFIXES = [
   '/api/admin/work',
@@ -123,6 +124,18 @@ export function workKillSwitch(req, res, next) {
       isAlwaysBypassed(path)
     ) {
       return next()
+    }
+
+    if (!isKillSwitchBootstrapVerified()) {
+      ensureKillSwitchBootstrapVerified()
+      res.set('Retry-After', '30')
+      res.set('X-Shadow-Work-Switch', 'bootstrap-pending')
+      return res.status(503).json({
+        ok: false,
+        code: 'WORK_GUARD_BOOTSTRAP_PENDING',
+        maintenance: true,
+        message: 'Security controls are loading. Please try again shortly.',
+      })
     }
 
     const source = requestSource(req, path)
