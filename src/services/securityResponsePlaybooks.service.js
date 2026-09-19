@@ -1,5 +1,5 @@
 import { resolveTamperIncident } from './tamperGuard.service.js'
-import { setWorkKillSwitch } from './workKillSwitch.service.js'
+import { ensureCriticalCircuitPersisted } from './criticalCircuitPersistence.service.js'
 
 function cleanText(value, maxLength = 500) {
   return String(value || '').trim().slice(0, maxLength)
@@ -49,18 +49,15 @@ async function executeDistributedRouteContainment(response) {
     }
   }
 
-  const record = await setWorkKillSwitch({
-    targetType: 'api',
-    source: 'ALL',
-    method,
-    path,
-    enabled: true,
-    mode: 'automatic',
-    reason: 'Critical route containment; Owner release required',
-    incidentId: null,
-    expiresAt: null,
-    actor: 'security_response_assistant',
-  })
+  const record = await ensureCriticalCircuitPersisted({ method, path })
+
+  if (!record) {
+    return {
+      ok: false,
+      executed: false,
+      code: 'PLAYBOOK_CIRCUIT_PERSIST_PENDING',
+    }
+  }
 
   return {
     ok: true,
