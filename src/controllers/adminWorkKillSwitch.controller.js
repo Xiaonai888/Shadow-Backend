@@ -3,7 +3,8 @@ import {
   setWorkKillSwitch,
   getActiveWorkKillSwitchSnapshot,
 } from '../services/workKillSwitch.service.js'
-import { releaseCriticalRouteCircuit } from '../middleware/workDetector.middleware.js'
+import { isCriticalRouteCircuitOpen, releaseCriticalRouteCircuit } from '../middleware/workDetector.middleware.js'
+import { isKillSwitchBootstrapVerified } from '../services/workKillSwitchBootstrap.service.js'
 import { disableCriticalCircuit } from '../services/criticalCircuitPersistence.service.js'
 import { criticalCanaryReadyForRelease, clearCriticalCanary } from '../services/criticalCircuitCanary.service.js'
 
@@ -61,6 +62,9 @@ export async function setAdminWorkKillSwitch(req, res) {
       path,
       enabled,
       approved = false,
+      metrics_reviewed: metricsReviewed = false,
+      offline_verified: offlineVerified = false,
+      confirmed_target: confirmedTarget = '',
       mode = 'manual',
       reason = '',
       incident_id: incidentId = null,
@@ -83,21 +87,62 @@ export async function setAdminWorkKillSwitch(req, res) {
       })
     }
 
-    const automaticCircuit = enabled === false && targetType === 'api' && source === 'ALL' &&
-      getActiveWorkKillSwitchSnapshot().some((entry) =>
+    const safeMethod = String(method || '').trim().toUpperCase()
+    const isAllApi = targetType === 'api' && source === 'ALL'
+    const activeCriticalRecord = isAllApi
+      ? getActiveWorkKillSwitchSnapshot().find((entry) =>
         entry.mode === 'automatic' && entry.source === 'ALL' &&
-        entry.method === String(method || '').toUpperCase() && entry.path === safePath
+        entry.method === safeMethod && entry.path === safePath && !entry.expires_at
       )
+      : null
+    const isLatched = isAllApi && isCriticalRouteCircuitOpen({ method: safeMethod, path: safePath })
 
-    if (automaticCircuit && (
-      approved !== true || cleanText(reason, 1000).length < 12 ||
-      !criticalCanaryReadyForRelease({ method, path: safePath })
-    )) {
+    if (enabled === true && (activeCriticalRecord || isLatched)) {
       return res.status(409).json({
         ok: false,
-        code: 'CRITICAL_CIRCUIT_CANARY_REQUIRED',
-        message: 'Owner approval, a maintenance reason, and a successful unexpired half-open test are required.',
+        code: 'CRITICAL_CIRCUIT_ALREADY_LATCHED',
+        message: 'This critical route cannot be changed or given an expiry while latched. Complete Owner recovery first.',
       })
+    }
+
+    if (enabled === false && (activeCriticalRecord || isLatched)) {
+      if (!isKillSwitchBootstrapVerified() || !activeCriticalRecord) {
+        return res.status(409).json({
+          ok: false,
+          code: 'CRITICAL_CIRCUIT_PERSISTENCE_PENDING',
+          message: 'The critical circuit is not fully verified in persistent storage. Keep it closed and retry later.',
+        })
+      }
+
+      if (approved !== true || metricsReviewed !== true || cleanText(reason, 1000).length < 20) {
+        return res.status(409).json({
+          ok: false,
+          code: 'CRITICAL_CIRCUIT_OWNER_REVIEW_REQUIRED',
+          message: 'Owner approval, metrics review, and a repair reason of at least 20 characters are required.',
+        })
+      }
+
+      const supportsCanary = safeMethod === 'GET' && safePath.startsWith('/api/') &&
+        !safePath.includes(':') && !safePath.includes('*') &&
+        !safePath.includes('//') && !safePath.startsWith('/api/admin/work')
+
+      if (supportsCanary && !criticalCanaryReadyForRelease({ method: safeMethod, path: safePath })) {
+        return res.status(409).json({
+          ok: false,
+          code: 'CRITICAL_CIRCUIT_CANARY_REQUIRED',
+          message: 'Complete a successful unexpired Owner half-open GET test before release.',
+        })
+      }
+
+      if (!supportsCanary && (
+        offlineVerified !== true || cleanText(confirmedTarget, 600) !== `${safeMethod} ${safePath}`
+      )) {
+        return res.status(409).json({
+          ok: false,
+          code: 'CRITICAL_CIRCUIT_OFFLINE_VERIFICATION_REQUIRED',
+          message: 'Verify the repair outside production and confirm the exact route before Owner release.',
+        })
+      }
     }
 
     const record = enabled === false && targetType === 'api' && source === 'ALL'
