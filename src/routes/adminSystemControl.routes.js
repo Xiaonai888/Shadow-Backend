@@ -1,5 +1,6 @@
 import express from 'express'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
+import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { getSystemUsageCurrentSnapshot } from '../services/systemUsageMonitor.service.js'
 import { getSystemUsageAnomalySnapshot } from '../services/systemUsageAnomaly.service.js'
 import {
@@ -20,6 +21,13 @@ import { generateSystemUsageReport } from '../services/systemUsageReport.service
 const router = express.Router()
 const viewSystemControl = requireAdminPermission('system_control.view')
 const manageSystemControl = requireAdminPermission('system_control.manage')
+
+const snapshotGuard = createRateLimit({
+  key: 'admin-system-control-snapshot',
+  windowMs: 60 * 1000,
+  max: 20,
+  message: 'Too many System Control snapshot requests. Please wait before refreshing again.',
+})
 
 router.use((req, res, next) => {
   res.set('Cache-Control', 'no-store')
@@ -66,23 +74,28 @@ function incidentError(res, error, fallback) {
   })
 }
 
-router.get('/snapshot', viewSystemControl, async (req, res) => {
-  try {
-    await refreshSystemUsageProviders({ force: false })
-  } catch (error) {
-    console.error(
-      'ADMIN_SYSTEM_CONTROL_PROVIDER_REFRESH_ERROR:',
-      error?.message || error
-    )
-  }
+router.get(
+  '/snapshot',
+  snapshotGuard,
+  viewSystemControl,
+  async (req, res) => {
+    try {
+      await refreshSystemUsageProviders({ force: false })
+    } catch (error) {
+      console.error(
+        'ADMIN_SYSTEM_CONTROL_PROVIDER_REFRESH_ERROR:',
+        error?.message || error
+      )
+    }
 
-  return res.status(200).json({
-    ok: true,
-    usage: getSystemUsageCurrentSnapshot(),
-    anomaly: getSystemUsageAnomalySnapshot(),
-    providers: getSystemUsageProviderState(),
-  })
-})
+    return res.status(200).json({
+      ok: true,
+      usage: getSystemUsageCurrentSnapshot(),
+      anomaly: getSystemUsageAnomalySnapshot(),
+      providers: getSystemUsageProviderState(),
+    })
+  }
+)
 
 router.post(
   '/providers/refresh',
