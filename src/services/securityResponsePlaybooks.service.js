@@ -1,8 +1,6 @@
 import { resolveTamperIncident } from './tamperGuard.service.js'
 import { setWorkKillSwitch } from './workKillSwitch.service.js'
 
-const AUTO_ROUTE_CONTAINMENT_MS = 10 * 60 * 1000
-
 function cleanText(value, maxLength = 500) {
   return String(value || '').trim().slice(0, maxLength)
 }
@@ -51,10 +49,6 @@ async function executeDistributedRouteContainment(response) {
     }
   }
 
-  const expiresAt = new Date(
-    Date.now() + AUTO_ROUTE_CONTAINMENT_MS
-  ).toISOString()
-
   const record = await setWorkKillSwitch({
     targetType: 'api',
     source,
@@ -62,9 +56,9 @@ async function executeDistributedRouteContainment(response) {
     path,
     enabled: true,
     mode: 'automatic',
-    reason: 'Security Response Assistant critical route containment',
+    reason: 'Security Response Assistant critical route containment; Owner release required',
     incidentId: cleanText(response?.id, 100) || null,
-    expiresAt,
+    expiresAt: null,
     actor: 'security_response_assistant',
   })
 
@@ -78,7 +72,7 @@ async function executeDistributedRouteContainment(response) {
       source,
       method,
       path,
-      expires_at: record?.expires_at || expiresAt,
+      expires_at: record?.expires_at || null,
     },
   }
 }
