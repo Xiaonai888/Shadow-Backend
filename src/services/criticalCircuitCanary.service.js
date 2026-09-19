@@ -62,7 +62,7 @@ export function startCriticalCanary({ method, path, owner } = {}) {
   const record = activeAutomaticRecord('GET', path)
   if (!record) throw new Error('Critical route must be persistently latched before testing')
   const existing = trials.get(key)
-  if (existing?.inFlight) throw new Error('A canary request is still running')
+  if (existing?.inFlight && Date.now() < existing.expiresAt) throw new Error('A canary request is still running')
   const token = randomBytes(32).toString('hex')
   const trial = {
     key, method: 'GET', path, recordId: record.id,
