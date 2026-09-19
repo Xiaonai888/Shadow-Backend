@@ -1,6 +1,9 @@
 import {
   setWorkKillSwitch,
+  getActiveWorkKillSwitchSnapshot,
 } from './workKillSwitch.service.js'
+import { isKillSwitchBootstrapVerified } from './workKillSwitchBootstrap.service.js'
+import { releaseCriticalRouteCircuit } from '../middleware/workDetector.middleware.js'
 
 const RETRY_INTERVAL_MS = 30 * 1000
 const circuits = new Map()
@@ -155,6 +158,31 @@ export async function disableCriticalCircuit({
 export function startCriticalCircuitPersistence() {
   if (retryTimer) return
   retryTimer = setInterval(() => {
+    if (isKillSwitchBootstrapVerified()) {
+      const persisted = new Map()
+      for (const record of getActiveWorkKillSwitchSnapshot()) {
+        if (
+          record.target_type !== 'api' ||
+          record.source !== 'ALL' ||
+          record.mode !== 'automatic' ||
+          record.expires_at
+        ) continue
+        const key = routeKey(record.method, record.path)
+        if (key) persisted.set(key, record)
+      }
+
+      for (const [key, entry] of circuits) {
+        if (!entry.record || entry.releasing || inFlight.has(key)) continue
+        const current = persisted.get(key)
+        if (current) {
+          entry.record = current
+          continue
+        }
+        circuits.delete(key)
+        releaseCriticalRouteCircuit({ method: entry.method, path: entry.path })
+      }
+    }
+
     for (const [key, entry] of circuits) {
       if (!entry.record && !entry.releasing) void persistCircuit(key)
     }
