@@ -1,5 +1,32 @@
 import { supabase } from '../config/supabase.js'
 
+const CONFIRMED_VIEW_TTL_MS = 5 * 60 * 1000
+const MAX_CONFIRMED_VIEWS = 5000
+const confirmedViews = new Map()
+
+function viewKey(userId, storyId) {
+  return JSON.stringify([String(userId), String(storyId)])
+}
+
+function isConfirmedView(key) {
+  const expiresAt = confirmedViews.get(key)
+  if (!expiresAt) return false
+  if (expiresAt <= Date.now()) {
+    confirmedViews.delete(key)
+    return false
+  }
+  return true
+}
+
+function rememberConfirmedView(key) {
+  confirmedViews.delete(key)
+  confirmedViews.set(key, Date.now() + CONFIRMED_VIEW_TTL_MS)
+
+  while (confirmedViews.size > MAX_CONFIRMED_VIEWS) {
+    confirmedViews.delete(confirmedViews.keys().next().value)
+  }
+}
+
 export async function recordAuthorStoryView(req, res) {
   try {
     const userId = req.user?.user_id
@@ -62,29 +89,32 @@ export async function recordAuthorStoryView(req, res) {
       })
     }
 
-    const { data: existingView, error: existingViewError } = await supabase
-      .from('author_page_story_views')
-      .select('id')
-      .eq('story_id', story.id)
-      .eq('viewer_user_id', userId)
-      .maybeSingle()
-
-    if (existingViewError) throw existingViewError
-
+    const key = viewKey(userId, story.id)
     let counted = false
 
-    if (!existingView) {
-      const { error: insertError } = await supabase
+    if (!isConfirmedView(key)) {
+      const { data: existingView, error: existingViewError } = await supabase
         .from('author_page_story_views')
-        .insert({
-          story_id: story.id,
-          viewer_user_id: userId,
-          viewed_at: now,
-        })
+        .select('id')
+        .eq('story_id', story.id)
+        .eq('viewer_user_id', userId)
+        .maybeSingle()
 
-      if (insertError && insertError.code !== '23505') throw insertError
+      if (existingViewError) throw existingViewError
 
-      counted = !insertError
+      if (!existingView) {
+        const { error: insertError } = await supabase
+          .from('author_page_story_views')
+          .insert({
+            story_id: story.id,
+            viewer_user_id: userId,
+            viewed_at: now,
+          })
+
+        if (insertError && insertError.code !== '23505') throw insertError
+
+        counted = !insertError
+      }
     }
 
     const { data: updatedStory, error: updatedStoryError } = await supabase
@@ -94,6 +124,8 @@ export async function recordAuthorStoryView(req, res) {
       .single()
 
     if (updatedStoryError) throw updatedStoryError
+
+    rememberConfirmedView(key)
 
     return res.status(200).json({
       ok: true,
