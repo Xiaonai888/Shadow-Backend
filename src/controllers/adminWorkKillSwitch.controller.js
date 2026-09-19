@@ -3,6 +3,7 @@ import {
   setWorkKillSwitch,
   getActiveWorkKillSwitchSnapshot,
 } from '../services/workKillSwitch.service.js'
+import { releaseCriticalRouteCircuit } from '../middleware/workDetector.middleware.js'
 
 function adminActor(req) {
   return String(
@@ -91,6 +92,18 @@ export async function setAdminWorkKillSwitch(req, res) {
       expiresAt,
       actor: adminActor(req),
     })
+
+    if (
+      enabled === false &&
+      record?.enabled === false &&
+      record?.target_type === 'api' &&
+      record?.source === 'ALL'
+    ) {
+      releaseCriticalRouteCircuit({
+        method: record.method,
+        path: record.path,
+      })
+    }
 
     return res.status(200).json({
       ok: true,
