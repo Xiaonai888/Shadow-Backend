@@ -5,6 +5,7 @@ import {
 } from '../services/workKillSwitch.service.js'
 import { releaseCriticalRouteCircuit } from '../middleware/workDetector.middleware.js'
 import { disableCriticalCircuit } from '../services/criticalCircuitPersistence.service.js'
+import { criticalCanaryReadyForRelease, clearCriticalCanary } from '../services/criticalCircuitCanary.service.js'
 
 function adminActor(req) {
   return String(
@@ -59,6 +60,7 @@ export async function setAdminWorkKillSwitch(req, res) {
       method = null,
       path,
       enabled,
+      approved = false,
       mode = 'manual',
       reason = '',
       incident_id: incidentId = null,
@@ -78,6 +80,23 @@ export async function setAdminWorkKillSwitch(req, res) {
       return res.status(400).json({
         ok: false,
         message: 'A valid path is required',
+      })
+    }
+
+    const automaticCircuit = enabled === false && targetType === 'api' && source === 'ALL' &&
+      getActiveWorkKillSwitchSnapshot().some((entry) =>
+        entry.mode === 'automatic' && entry.source === 'ALL' &&
+        entry.method === String(method || '').toUpperCase() && entry.path === safePath
+      )
+
+    if (automaticCircuit && (
+      approved !== true || cleanText(reason, 1000).length < 12 ||
+      !criticalCanaryReadyForRelease({ method, path: safePath })
+    )) {
+      return res.status(409).json({
+        ok: false,
+        code: 'CRITICAL_CIRCUIT_CANARY_REQUIRED',
+        message: 'Owner approval, a maintenance reason, and a successful unexpired half-open test are required.',
       })
     }
 
@@ -113,6 +132,7 @@ export async function setAdminWorkKillSwitch(req, res) {
         method: record.method,
         path: record.path,
       })
+      clearCriticalCanary({ method: record.method, path: record.path })
     }
 
     return res.status(200).json({
