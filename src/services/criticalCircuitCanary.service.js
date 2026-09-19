@@ -112,7 +112,7 @@ export function tryCriticalCanaryRequest({ req, res, record, path } = {}) {
     if (trial.successes >= MIN_SUCCESSES) trial.state = 'ready'
     else if (trial.attempts >= MAX_REQUESTS) trial.state = 'failed'
   }
-  res.once('finish', () => finish(res.statusCode >= 200 && res.statusCode < 400))
+  res.once('finish', () => finish(res.statusCode >= 200 && res.statusCode < 300))
   res.once('close', () => finish(false))
   return true
 }
