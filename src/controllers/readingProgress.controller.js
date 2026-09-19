@@ -5,6 +5,11 @@ import {
   isStoryVisibleToReader,
 } from '../services/storyAgeAccess.service.js'
 
+const EPISODE_COUNT_CACHE_MS = 30 * 1000
+const EPISODE_COUNT_CACHE_LIMIT = 256
+const episodeCountCache = new Map()
+const episodeCountPending = new Map()
+
 function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     String(value || '').trim()
@@ -15,6 +20,47 @@ function clampPercent(value) {
   const number = Number(value)
   if (!Number.isFinite(number)) return 0
   return Math.min(100, Math.max(0, Math.round(number)))
+}
+
+async function publishedEpisodeCount(storyId) {
+  const now = Date.now()
+  const cached = episodeCountCache.get(storyId)
+  if (cached && cached.expiresAt > now) return cached.count
+  if (cached) episodeCountCache.delete(storyId)
+
+  if (episodeCountPending.has(storyId)) {
+    return episodeCountPending.get(storyId)
+  }
+
+  const pending = (async () => {
+    const { count, error } = await supabase
+      .from('episodes')
+      .select('id', { count: 'exact', head: true })
+      .eq('story_id', storyId)
+      .eq('status', 'published')
+      .is('deleted_at', null)
+
+    if (error) throw error
+
+    const safeCount = Math.max(0, Number(count || 0))
+    if (episodeCountCache.size >= EPISODE_COUNT_CACHE_LIMIT) {
+      episodeCountCache.delete(episodeCountCache.keys().next().value)
+    }
+    episodeCountCache.set(storyId, {
+      count: safeCount,
+      expiresAt: Date.now() + EPISODE_COUNT_CACHE_MS,
+    })
+    return safeCount
+  })()
+
+  episodeCountPending.set(storyId, pending)
+  try {
+    return await pending
+  } finally {
+    if (episodeCountPending.get(storyId) === pending) {
+      episodeCountPending.delete(storyId)
+    }
+  }
 }
 
 export async function getReadingProgress(req, res) {
@@ -158,15 +204,7 @@ export async function saveReadingProgress(req, res) {
       })
     }
 
-    const { count, error: countError } = await supabase
-      .from('episodes')
-      .select('id', { count: 'exact', head: true })
-      .eq('story_id', storyId)
-      .eq('status', 'published')
-      .is('deleted_at', null)
-
-    if (countError) throw countError
-
+    const count = await publishedEpisodeCount(storyId)
     const now = new Date().toISOString()
     const totalEpisodes = Math.max(
       1,
