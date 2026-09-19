@@ -1,4 +1,6 @@
 import { isIP } from 'node:net'
+import { getActiveWorkKillSwitchSnapshot } from '../services/workKillSwitch.service.js'
+import { queueCriticalCircuit, restoreCriticalCircuit, startCriticalCircuitPersistence } from '../services/criticalCircuitPersistence.service.js'
 import {
   recordWorkIncidentActive,
   recordWorkIncidentResolved,
@@ -516,6 +518,7 @@ function activateRoute(
       path: item.path,
       activated_at: new Date(now).toISOString(),
     })
+    queueCriticalCircuit({ method: item.method, path: item.path })
   }
 
   reportGuardState({
@@ -894,6 +897,18 @@ export function workDetector(req, res, next) {
 
 export function startWorkDetectorMonitor() {
   if (monitorTimer) return monitorTimer
+
+  for (const record of getActiveWorkKillSwitchSnapshot()) {
+    if (!restoreCriticalCircuit({ ...record, enabled: true })) continue
+    criticalRouteCircuits.set(criticalRouteKey(record.method, record.path), {
+      source: record.source,
+      method: record.method,
+      path: record.path,
+      activated_at: record.activated_at,
+    })
+  }
+
+  startCriticalCircuitPersistence()
 
   enabled = String(
     process.env.WORK_DETECTOR_ENABLED ?? 'true'
