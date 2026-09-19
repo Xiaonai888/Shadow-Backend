@@ -7,6 +7,7 @@ const GEO_FAILURE_TTL_MS = 10 * 60 * 1000
 const GEO_CACHE_MAX = 5000
 const GEO_TIMEOUT_MS = 2500
 const geoCache = new Map()
+const geoInFlight = new Map()
 
 function cleanSessionId(value) {
   return String(value || '').trim().slice(0, 120)
@@ -157,15 +158,7 @@ function writeGeoCache(ip, value, ttl) {
   })
 }
 
-async function lookupCountryByIp(ip) {
-  if (!ip || !isPublicIp(ip)) {
-    return { countryCode: '', countryName: '' }
-  }
-
-  const cached = readGeoCache(ip)
-
-  if (cached) return cached
-
+async function fetchCountryByIp(ip) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), GEO_TIMEOUT_MS)
 
@@ -216,6 +209,28 @@ async function lookupCountryByIp(ip) {
     return empty
   } finally {
     clearTimeout(timeout)
+  }
+}
+
+async function lookupCountryByIp(ip) {
+  if (!ip || !isPublicIp(ip)) {
+    return { countryCode: '', countryName: '' }
+  }
+
+  const cached = readGeoCache(ip)
+  if (cached) return cached
+
+  const key = getGeoCacheKey(ip)
+  const existing = geoInFlight.get(key)
+  if (existing) return existing
+
+  const pending = fetchCountryByIp(ip)
+  geoInFlight.set(key, pending)
+
+  try {
+    return await pending
+  } finally {
+    if (geoInFlight.get(key) === pending) geoInFlight.delete(key)
   }
 }
 
