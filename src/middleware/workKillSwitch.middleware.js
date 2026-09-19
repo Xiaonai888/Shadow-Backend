@@ -4,6 +4,7 @@ import {
 } from '../services/workKillSwitch.service.js'
 import { isCriticalRouteCircuitOpen } from './workDetector.middleware.js'
 import { isKillSwitchBootstrapVerified, ensureKillSwitchBootstrapVerified } from '../services/workKillSwitchBootstrap.service.js'
+import { tryCriticalCanaryRequest } from '../services/criticalCircuitCanary.service.js'
 
 const ALWAYS_BYPASS_PREFIXES = [
   '/api/admin/work',
@@ -156,6 +157,15 @@ export function workKillSwitch(req, res, next) {
     if (
       (locallyLatched || record?.mode === 'automatic') &&
       isAutomaticBypassed(path)
+    ) {
+      return next()
+    }
+
+    if (
+      record?.mode === 'automatic' &&
+      record?.source === 'ALL' &&
+      locallyLatched &&
+      tryCriticalCanaryRequest({ req, res, record, path })
     ) {
       return next()
     }
