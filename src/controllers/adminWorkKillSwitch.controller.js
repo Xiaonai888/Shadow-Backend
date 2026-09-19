@@ -4,6 +4,7 @@ import {
   getActiveWorkKillSwitchSnapshot,
 } from '../services/workKillSwitch.service.js'
 import { releaseCriticalRouteCircuit } from '../middleware/workDetector.middleware.js'
+import { disableCriticalCircuit } from '../services/criticalCircuitPersistence.service.js'
 
 function adminActor(req) {
   return String(
@@ -80,18 +81,27 @@ export async function setAdminWorkKillSwitch(req, res) {
       })
     }
 
-    const record = await setWorkKillSwitch({
-      targetType,
-      source,
-      method,
-      path: safePath,
-      enabled,
-      mode,
-      reason: cleanText(reason, 1000),
-      incidentId,
-      expiresAt,
-      actor: adminActor(req),
-    })
+    const record = enabled === false && targetType === 'api' && source === 'ALL'
+      ? await disableCriticalCircuit({
+        method,
+        path: safePath,
+        mode,
+        reason: cleanText(reason, 1000),
+        incidentId,
+        actor: adminActor(req),
+      })
+      : await setWorkKillSwitch({
+        targetType,
+        source,
+        method,
+        path: safePath,
+        enabled,
+        mode,
+        reason: cleanText(reason, 1000),
+        incidentId,
+        expiresAt,
+        actor: adminActor(req),
+      })
 
     if (
       enabled === false &&
