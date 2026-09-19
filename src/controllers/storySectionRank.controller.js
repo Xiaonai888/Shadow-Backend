@@ -12,6 +12,10 @@ const SECTION_KEYS = new Set([
 ])
 
 const ACTIONS = new Set(['view', 'read'])
+const MAX_CONFIRMED_EVENTS = 10000
+const confirmedEvents = new Set()
+const pendingEvents = new Map()
+let confirmedDay = ''
 
 function cleanText(value, maxLength = 200) {
   return String(value || '').trim().slice(0, maxLength)
@@ -54,6 +58,51 @@ function getVisitorActorKey(req) {
   return `visitor:${visitorId}`
 }
 
+function rememberConfirmedEvent(day, key) {
+  if (confirmedDay !== day) {
+    confirmedDay = day
+    confirmedEvents.clear()
+  }
+
+  confirmedEvents.add(key)
+  while (confirmedEvents.size > MAX_CONFIRMED_EVENTS) {
+    confirmedEvents.delete(confirmedEvents.values().next().value)
+  }
+}
+
+function wasConfirmedEvent(day, key) {
+  if (confirmedDay !== day) {
+    confirmedDay = day
+    confirmedEvents.clear()
+  }
+
+  return confirmedEvents.has(key)
+}
+
+async function persistRankEvent(key, event) {
+  let pending = pendingEvents.get(key)
+
+  if (!pending) {
+    pending = Promise.resolve(
+      supabase
+        .from('story_section_rank_events')
+        .upsert(event, {
+          onConflict: 'event_date,actor_key,section_key,story_id,action',
+          ignoreDuplicates: true,
+        })
+    )
+    pendingEvents.set(key, pending)
+  }
+
+  try {
+    return await pending
+  } finally {
+    if (pendingEvents.get(key) === pending) {
+      pendingEvents.delete(key)
+    }
+  }
+}
+
 export async function trackStorySectionRankEvent(req, res) {
   try {
     const sectionKey = cleanText(req.body?.section_key, 80).toLowerCase()
@@ -91,32 +140,29 @@ export async function trackStorySectionRankEvent(req, res) {
     }
 
     const eventDate = cambodiaDate()
+    const key = JSON.stringify([eventDate, actorKey, sectionKey, storyId, action])
 
-    const { error } = await supabase
-      .from('story_section_rank_events')
-      .upsert(
-        {
-          event_date: eventDate,
-          actor_key: actorKey,
-          section_key: sectionKey,
-          story_id: storyId,
-          action,
-        },
-        {
-          onConflict: 'event_date,actor_key,section_key,story_id,action',
-          ignoreDuplicates: true,
+    if (!wasConfirmedEvent(eventDate, key)) {
+      const { error } = await persistRankEvent(key, {
+        event_date: eventDate,
+        actor_key: actorKey,
+        section_key: sectionKey,
+        story_id: storyId,
+        action,
+      })
+
+      if (error) {
+        if (error.code === '23503') {
+          return res.status(404).json({
+            ok: false,
+            message: 'Story not found',
+          })
         }
-      )
 
-    if (error) {
-      if (error.code === '23503') {
-        return res.status(404).json({
-          ok: false,
-          message: 'Story not found',
-        })
+        throw error
       }
 
-      throw error
+      rememberConfirmedEvent(eventDate, key)
     }
 
     return res.status(200).json({
