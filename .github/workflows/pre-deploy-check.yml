@@ -40,7 +40,7 @@ jobs:
           git -C Web-React-2 rev-parse HEAD
           git -C AdminDashboard rev-parse HEAD
 
-        - name: Verify snapshots and Backend syntax
+      - name: Verify snapshots and Backend syntax
         run: node Shadow-Backend/scripts/verifyShadowRelease.mjs
 
       - name: Test Kill Switch Canary
