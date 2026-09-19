@@ -29,6 +29,7 @@ const RECOVERY_WINDOWS_REQUIRED = 4
 
 const routeTrackers = new Map()
 const identityTrackers = new Map()
+const criticalRouteCircuits = new Map()
 let monitorTimer = null
 let enabled = true
 
@@ -164,6 +165,8 @@ function normalizePath(req) {
 }
 
 function requestSource(req, path) {
+  if (path.startsWith('/api/admin/')) return 'ADMIN'
+
   const candidate = String(req.headers.origin || req.headers.referer || '').trim()
 
   if (candidate) {
@@ -303,6 +306,73 @@ function getIdentityTracker({
   return item
 }
 
+function criticalRouteKey(method, path) {
+  return `${String(method || '').toUpperCase()}|${normalizePath({ originalUrl: path })}`
+}
+
+export function isCriticalRouteCircuitOpen({ method, path } = {}) {
+  return criticalRouteCircuits.has(criticalRouteKey(method, path))
+}
+
+export function releaseCriticalRouteCircuit({ method, path } = {}) {
+  const key = criticalRouteKey(method, path)
+  if (!criticalRouteCircuits.has(key)) return false
+
+  criticalRouteCircuits.delete(key)
+  const now = Date.now()
+
+  for (const item of routeTrackers.values()) {
+    if (criticalRouteKey(item.method, item.path) !== key) continue
+    if (item.state === 'active' || item.state === 'suspect') {
+      void recordWorkIncidentResolved({
+        source: item.source,
+        method: item.method,
+        path: item.path,
+        resolvedAt: new Date(now).toISOString(),
+        peakRequestsPerMinute: item.peakPerMinute,
+      })
+
+      item.state = 'resolved'
+      item.resolvedAt = now
+      publishWorkRealtimeEvent('resolved', realtimeIncident(item, now, 0))
+
+      publishSecurityEvent({
+        source: 'worker',
+        target: 'all',
+        type: 'route_incident_resolved',
+        severity: 'info',
+        payload: {
+          source: item.source,
+          method: item.method,
+          path: item.path,
+          peak_requests_per_minute: item.peakPerMinute,
+        },
+      })
+    }
+
+    item.state = 'normal'
+    item.windowCount = 0
+    item.lastWindowCount = 0
+    item.baselineCount = 0
+    item.suspiciousWindows = 0
+    item.recoveryWindows = 0
+    item.peakWindowCount = 0
+    item.peakPerMinute = 0
+    item.detectedAt = null
+    item.resolvedAt = null
+    item.lastSeenAt = now
+  }
+
+  reportGuardState({
+    guard: 'worker',
+    state: criticalRouteCircuits.size > 0 ? 'defending' : 'monitoring',
+    reason: 'Owner released the critical route circuit after maintenance',
+    severity: 'info',
+  })
+
+  return true
+}
+
 function ratePerMinute(count) {
   return Math.round(count * (60000 / ANALYZE_INTERVAL_MS))
 }
@@ -439,6 +509,15 @@ function activateRoute(
     ? 'critical'
     : 'high'
 
+  if (severity === 'critical') {
+    criticalRouteCircuits.set(criticalRouteKey(item.method, item.path), {
+      source: item.source,
+      method: item.method,
+      path: item.path,
+      activated_at: new Date(now).toISOString(),
+    })
+  }
+
   reportGuardState({
     guard: 'worker',
     state: 'defending',
@@ -532,7 +611,9 @@ function analyzeRouteTracker(item, now) {
       item.peakWindowCount = 0
     }
   } else if (item.state === 'active') {
-    if (count <= state.recoverySafe) {
+    if (isCriticalRouteCircuitOpen({ method: item.method, path: item.path })) {
+      item.recoveryWindows = 0
+    } else if (count <= state.recoverySafe) {
       item.recoveryWindows += 1
 
       if (item.recoveryWindows >= RECOVERY_WINDOWS_REQUIRED) {
@@ -745,6 +826,14 @@ export function workDetector(req, res, next) {
       (item, at, count, baseline) =>
         activateRoute(item, at, count, baseline)
     )
+
+    if (
+      routeItem?.state === 'active' &&
+      routeItem.windowCount === IMMEDIATE_ACTIVE_COUNT &&
+      !isCriticalRouteCircuitOpen({ method, path })
+    ) {
+      activateRoute(routeItem, now, routeItem.windowCount, routeItem.baselineCount)
+    }
 
     if (identity.identityKey) {
       const identityKey =
