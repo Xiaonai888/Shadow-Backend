@@ -2,17 +2,19 @@ import { reloadActiveWorkKillSwitches } from './workKillSwitch.service.js'
 import { publishSecurityEvent, reportGuardState } from './securityControlPlane.service.js'
 
 const RETRY_MS = 30 * 1000
+const REFRESH_MS = 60 * 1000
 const MAX_ACTIVE_SWITCHES = 500
 let verified = false
 let loading = null
 let retryAfter = 0
+let refreshTimer = null
 
 export function isKillSwitchBootstrapVerified() {
   return verified
 }
 
-export function ensureKillSwitchBootstrapVerified() {
-  if (verified || loading || Date.now() < retryAfter) return
+export function ensureKillSwitchBootstrapVerified(forceRefresh = false) {
+  if (loading || Date.now() < retryAfter || (verified && !forceRefresh)) return
   retryAfter = Date.now() + RETRY_MS
   loading = reloadActiveWorkKillSwitches()
     .then((records) => {
@@ -20,10 +22,16 @@ export function ensureKillSwitchBootstrapVerified() {
         throw new Error('Kill Switch bootstrap returned an incomplete active switch list')
       }
       verified = true
+      if (!refreshTimer) {
+        refreshTimer = setInterval(() => {
+          ensureKillSwitchBootstrapVerified(true)
+        }, REFRESH_MS)
+        refreshTimer.unref?.()
+      }
       reportGuardState({
         guard: 'kill_switch',
         state: records.length > 0 ? 'defending' : 'monitoring',
-        reason: 'Kill Switch bootstrap verified; active targets restored',
+        reason: 'Kill Switch active targets verified against persistent storage',
         details: { active_count: records.length },
         severity: 'info',
       })
@@ -34,7 +42,7 @@ export function ensureKillSwitchBootstrapVerified() {
       reportGuardState({
         guard: 'kill_switch',
         state: 'degraded',
-        reason: 'Kill Switch bootstrap unverified; API fail-closed',
+        reason: 'Kill Switch storage unverified; API fail-closed',
         severity: 'critical',
       })
       publishSecurityEvent({
