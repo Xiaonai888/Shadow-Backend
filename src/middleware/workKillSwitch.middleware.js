@@ -5,6 +5,8 @@ import {
 import { isCriticalRouteCircuitOpen } from './workDetector.middleware.js'
 import { isKillSwitchBootstrapVerified, ensureKillSwitchBootstrapVerified } from '../services/workKillSwitchBootstrap.service.js'
 import { tryCriticalCanaryRequest } from '../services/criticalCircuitCanary.service.js'
+import jwt from 'jsonwebtoken'
+import { validateAdminSession } from '../services/adminDeviceAccess.service.js'
 
 const ALWAYS_BYPASS_PREFIXES = [
   '/api/admin/work',
@@ -107,7 +109,7 @@ function retryAfterSeconds(expiresAt) {
   )
 }
 
-export function workKillSwitch(req, res, next) {
+export async function workKillSwitch(req, res, next) {
   try {
     const method = String(
       req.method ||
@@ -167,7 +169,27 @@ export function workKillSwitch(req, res, next) {
       locallyLatched &&
       tryCriticalCanaryRequest({ req, res, record, path })
     ) {
-      return next()
+      try {
+        const authorization = String(req.headers.authorization || '')
+        const decoded = jwt.verify(authorization.slice(7), process.env.JWT_SECRET)
+        const verified = await validateAdminSession({ decoded, req })
+        if (!verified?.ok) {
+          return res.status(verified?.status || 401).json({
+            ok: false,
+            code: verified?.code || 'ADMIN_SESSION_INVALID',
+            message: 'Owner session is no longer valid.',
+          })
+        }
+        return next()
+      } catch (error) {
+        console.error('CRITICAL_CANARY_SESSION_ERROR:', error?.message || error)
+        return res.status(503).json({
+          ok: false,
+          code: 'CRITICAL_CANARY_SESSION_UNVERIFIED',
+          maintenance: true,
+          message: 'Owner session could not be validated. The circuit stays closed.',
+        })
+      }
     }
 
     if (record) recordWorkKillSwitchBlocked(record)
@@ -199,6 +221,11 @@ export function workKillSwitch(req, res, next) {
       error?.message || error
     )
 
-    return next()
+    return res.status(503).json({
+      ok: false,
+      code: 'WORK_GUARD_UNAVAILABLE',
+      maintenance: true,
+      message: 'Security controls are unavailable. Please try again later.',
+    })
   }
 }
