@@ -84,7 +84,7 @@ export async function getReadingProgress(req, res) {
       return res.json({ ok: true, items: [] })
     }
 
-        if (!progressRows.length) {
+    const ageAccess = await getReaderAgeAccess(req)
 
 
     const storyIds = [...new Set(progressRows.map((item) => item.story_id).filter(Boolean))]
