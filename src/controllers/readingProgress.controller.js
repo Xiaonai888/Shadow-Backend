@@ -5,7 +5,7 @@ import {
   isStoryVisibleToReader,
 } from '../services/storyAgeAccess.service.js'
 
-const EPISODE_COUNT_CACHE_MS = 30 * 1000
+const EPISODE_COUNT_CACHE_MS = 2 * 60 * 1000
 const EPISODE_COUNT_CACHE_LIMIT = 256
 const episodeCountCache = new Map()
 const episodeCountPending = new Map()
