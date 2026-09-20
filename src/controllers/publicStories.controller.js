@@ -2249,7 +2249,11 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
     const firstVisibleEpisodeId =
       access.publishedEpisodes[0]?.id ||
       getFirstVisibleEpisodeId(visibleEpisodes, now)
-          first_visible_episode_id: firstVisibleEpisodeId,
+
+    return res.status(200).json({
+      ok: true,
+      story_is_adult: Boolean(story.is_adult),
+      first_visible_episode_id: firstVisibleEpisodeId,
       free_published_episode_ids: [
         ...access.freePublishedEpisodeIds,
       ],
