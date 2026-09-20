@@ -1,490 +1,357 @@
-import http from 'node:http'
-import https from 'node:https'
-import { AsyncLocalStorage } from 'node:async_hooks'
-import jwt from 'jsonwebtoken'
-import { recordSystemUsage } from './systemUsageMonitor.service.js'
-const ENABLED =
-  String(process.env.TRAFFIC_DIAGNOSTIC_ENABLED ?? 'true')
-    .trim()
-    .toLowerCase() !== 'false'
+import express from 'express'
+import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
+import { createRateLimit } from '../middleware/rateLimit.middleware.js'
+import { getSystemUsageCurrentSnapshot } from '../services/systemUsageMonitor.service.js'
+import { getSystemUsageAnomalySnapshot } from '../services/systemUsageAnomaly.service.js'
+import { getRecentRequestEvidence } from '../services/trafficDiagnostic.service.js'
+import {
+  listSystemUsageIncidents,
+  getSystemUsageIncident,
+  applySystemUsageIncidentFix,
+  verifySystemUsageIncident,
+  resolveSystemUsageIncident,
+  archiveSystemUsageIncident,
+} from '../services/systemUsageIncident.service.js'
+import {
+  getSystemUsageHistory,
+  getSystemUsageProviderState,
+  refreshSystemUsageProviders,
+} from '../services/systemUsagePersistence.service.js'
+import { generateSystemUsageReport } from '../services/systemUsageReport.service.js'
 
-const FLUSH_MS = 60 * 1000
-const MAX_ROWS = 25
-const inbound = new Map()
-const outbound = new Map()
-const requestContext = new AsyncLocalStorage()
-const TRACE_SLOW_MS = 1500
-const TRACE_MAX_ERRORS_PER_MINUTE = 8
-const TRACE_MAX_EXPENSIVE_PER_MINUTE = 4
-let traceMinute = 0
-let traceErrors = 0
-let traceExpensive = 0
-let traceSequence = 0
-const RECENT_EVIDENCE_LIMIT = 12
-const RECENT_EVIDENCE_TTL_MS = 10 * 60 * 1000
-const recentEvidence = []
+const router = express.Router()
+const viewSystemControl = requireAdminPermission('system_control.view')
+const manageSystemControl = requireAdminPermission('system_control.manage')
 
-function bytesOf(value, encoding) {
-  if (value === null || value === undefined) return 0
-  if (Buffer.isBuffer(value)) return value.length
-  if (value instanceof Uint8Array) return value.byteLength
-  if (value instanceof ArrayBuffer) return value.byteLength
-  if (typeof value === 'string') return Buffer.byteLength(value, encoding)
-  return 0
+const snapshotGuard = createRateLimit({
+  key: 'admin-system-control-snapshot',
+  windowMs: 60 * 1000,
+  max: 6,
+  message: 'Too many System Control snapshot requests. Please wait before refreshing again.',
+})
+
+router.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store')
+  next()
+})
+
+function isInvalidInput(message) {
+  return (
+    message.includes('required') ||
+    message.includes('after start') ||
+    message.includes('cannot exceed') ||
+    message.includes('must include past or current time') ||
+    message.includes('Unsupported report type') ||
+    message.includes('Unsupported incident status') ||
+    message.includes('can only be applied') ||
+    message.includes('must be FIX_APPLIED') ||
+    message.includes('must be VERIFIED') ||
+    message.includes('cannot be verified') ||
+    message.includes('Only a RESOLVED incident')
+  )
 }
 
-function normalizePath(value) {
-  return String(value || '/')
-    .split('?')[0]
-    .split('/')
-    .map((part) => {
-      if (!part) return part
-      if (/^\d+$/.test(part)) return ':id'
-      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(part)) return ':id'
-      if (/^[0-9a-f]{16,}$/i.test(part)) return ':id'
-      if (/^[A-Za-z0-9_-]{32,}$/.test(part)) return ':id'
-      return part.slice(0, 100)
-    })
-    .join('/') || '/'
+function incidentErrorStatus(message) {
+  if (message.includes('Incident not found')) return 404
+  return isInvalidInput(message) ? 400 : 500
 }
 
-function getPublicStoriesSort(req, normalizedPath) {
-  if (normalizedPath !== '/api/public/stories') {
-    return ''
-  }
+function incidentError(res, error, fallback) {
+  const message = String(
+    error?.message || fallback
+  )
+  const status = incidentErrorStatus(message)
 
-  let value = 'latest'
-
-  try {
-    const url = new URL(
-      req.originalUrl || req.url || '/',
-      'http://shadow.local'
+  if (status === 500) {
+    console.error(
+      'ADMIN_SYSTEM_CONTROL_INCIDENT_ACTION_ERROR:',
+      error?.message || error
     )
-
-    value =
-      url.searchParams.get('sort') ||
-      'latest'
-  } catch {
-    value = 'latest'
   }
 
-  const cleanValue = String(value || 'latest')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, '')
-    .slice(0, 40)
-
-  return cleanValue || 'latest'
-}
-
-function getPublicStoriesCacheState(res) {
-  const value = String(
-    res.getHeader(
-      'X-Shadow-Public-Stories-Cache'
-    ) || 'NONE'
-  )
-    .trim()
-    .toUpperCase()
-
-  return ['HIT', 'MISS', 'WAIT'].includes(
-    value
-  )
-    ? value
-    : 'NONE'
-}
-
-function destination(hostname) {
-  const host = String(hostname || '').toLowerCase()
-  if (!host) return 'UNKNOWN'
-  if (host.endsWith('.supabase.co')) return 'SUPABASE'
-  if (host.includes('r2.cloudflarestorage.com')) return 'CLOUDFLARE_R2'
-  if (host === 'api.telegram.org') return 'TELEGRAM'
-  if (host === 'ipwho.is' || host.endsWith('.ipwho.is')) return 'IPWHO'
-  return `OTHER:${host}`
-}
-
-function add(map, key, bytes = 0, error = false, durationMs = 0) {
-  const current = map.get(key) || {
-    count: 0,
-    bytes: 0,
-    errors: 0,
-    duration_ms: 0,
-  }
-
-  current.count += 1
-  current.bytes += Math.max(0, Number(bytes) || 0)
-  current.errors += error ? 1 : 0
-  current.duration_ms += Math.max(0, Number(durationMs) || 0)
-  map.set(key, current)
-
-  recordSystemUsage({
-    kind: map === outbound ? 'external_request' : 'http_response',
-    key,
-    bytes,
-    error,
-    duration_ms: durationMs,
+  return res.status(status).json({
+    ok: false,
+    message,
   })
 }
 
-function recordDependency(context, target, failed) {
-  if (!context) return
-  context.external_calls += 1
-  if (failed) context.external_errors += 1
-  if (context.targets.size < 8 || context.targets.has(target)) {
-    context.targets.set(target, (context.targets.get(target) || 0) + 1)
-  }
-}
-
-function diagnosticActor(req) {
-  const userId = req.user?.user_id || req.user?.admin_id || req.user?.id
-  if (userId) return { type: 'authenticated', id: String(userId).slice(0, 120) }
-
-  try {
-    const header = String(req.headers.authorization || '')
-    if (!header.startsWith('Bearer ') || !process.env.JWT_SECRET) return { type: 'anonymous' }
-    const decoded = jwt.verify(header.slice(7), process.env.JWT_SECRET)
-    if (!['reader', 'admin'].includes(decoded?.type)) return { type: 'anonymous' }
-    const verified = decoded.user_id || decoded.admin_id || decoded.id
-    return verified
-      ? { type: 'authenticated', id: String(verified).slice(0, 120) }
-      : { type: 'anonymous' }
-  } catch {
-    return { type: 'anonymous' }
-  }
-}
-
-function logRequestEvidence(req, res, context, elapsedMs) {
-  if (!context || context.route.startsWith('GET /api/admin/system-control')) return
-
-  const status = Number(res.statusCode || 0)
-  const failed = status >= 500 || context.external_errors > 0
-  const expensive = context.external_calls >= 8 ||
-    (elapsedMs >= TRACE_SLOW_MS && context.external_calls > 0)
-  if (!failed && !expensive) return
-
-  const minute = Math.floor(Date.now() / 60000)
-  if (minute !== traceMinute) {
-    traceMinute = minute
-    traceErrors = 0
-    traceExpensive = 0
-  }
-  if (failed) {
-    if (traceErrors >= TRACE_MAX_ERRORS_PER_MINUTE) return
-    traceErrors += 1
-  } else {
-    if (traceExpensive >= TRACE_MAX_EXPENSIVE_PER_MINUTE) return
-    traceExpensive += 1
-  }
-
-  const visitor = String(req.headers['x-shadow-visitor-id'] || '')
-  const visitorClaim = /^[a-zA-Z0-9._:-]{6,80}$/.test(visitor) ? visitor : null
-  const cacheState = String(res.getHeader('X-Shadow-Recommendations-Cache') || 'NONE').toUpperCase()
-  const evidence = {
-    request_id: context.request_id,
-    time: new Date().toISOString(),
-    route: context.route,
-    http_status: status,
-    duration_ms: elapsedMs,
-    account: diagnosticActor(req),
-    visitor_claim: visitorClaim,
-    cache: ['HIT', 'MISS', 'WAIT'].includes(cacheState) ? cacheState : 'NONE',
-    observed_external_calls: context.external_calls,
-    observed_external_errors: context.external_errors,
-    targets: [...context.targets.entries()].map(([target, count]) => ({ target, count })),
-  }
-
-  recentEvidence.push(evidence)
-  if (recentEvidence.length > RECENT_EVIDENCE_LIMIT) recentEvidence.shift()
-  console.warn('SYSTEM_REQUEST_EVIDENCE', JSON.stringify(evidence))
-}
-
-export function getRecentRequestEvidence() {
-  const cutoff = Date.now() - RECENT_EVIDENCE_TTL_MS
-  return recentEvidence.filter((entry) => Date.parse(entry.time) >= cutoff)
-}
-
-function rows(map) {
-  return [...map.entries()]
-    .map(([key, value]) => ({
-      key,
-      count: value.count,
-      mb: Number((value.bytes / 1024 / 1024).toFixed(3)),
-      errors: value.errors,
-      avg_ms: value.count
-        ? Number((value.duration_ms / value.count).toFixed(1))
-        : 0,
-    }))
-    .sort((a, b) => b.mb - a.mb || b.count - a.count)
-    .slice(0, MAX_ROWS)
-}
-
-function flush() {
-  if (!ENABLED) return
-
-  const snapshot = {
-    window_seconds: FLUSH_MS / 1000,
-    inbound: rows(inbound),
-    outbound: rows(outbound),
-  }
-
-  console.log('TRAFFIC_DIAG_60S', JSON.stringify(snapshot))
-  inbound.clear()
-  outbound.clear()
-}
-
-function fetchRequestBytes(input, init = {}) {
-  let total = bytesOf(init.body)
-
-  try {
-    const request = input instanceof Request ? input : null
-    const url = new URL(request?.url || String(input))
-    total += Buffer.byteLength(`${init.method || request?.method || 'GET'} ${url.pathname}${url.search}`)
-
-    const headers = new Headers(init.headers || request?.headers || undefined)
-    headers.forEach((value, key) => {
-      total += Buffer.byteLength(key) + Buffer.byteLength(value) + 4
-    })
-  } catch {
-    return total
-  }
-
-  return total
-}
-
-function installFetchDiagnostic() {
-  if (!ENABLED || globalThis.__shadowTrafficFetchInstalled) return
-  if (typeof globalThis.fetch !== 'function') return
-
-  globalThis.__shadowTrafficFetchInstalled = true
-  const nativeFetch = globalThis.fetch.bind(globalThis)
-
-  globalThis.fetch = async (input, init = {}) => {
-    const startedAt = Date.now()
-    let url = null
-
+router.get(
+  '/snapshot',
+  snapshotGuard,
+  viewSystemControl,
+  async (req, res) => {
     try {
-      url = new URL(input instanceof Request ? input.url : String(input))
-    } catch {
-      return nativeFetch(input, init)
-    }
-
-    const method = String(
-      init.method || (input instanceof Request ? input.method : 'GET') || 'GET'
-    ).toUpperCase()
-    const key = `${requestContext.getStore()?.route || 'BACKGROUND'} -> ${destination(url.hostname)} ${method} ${normalizePath(url.pathname)}`
-    const requestBytes = fetchRequestBytes(input, init)
-
-    try {
-      const response = await nativeFetch(input, init)
-      recordDependency(requestContext.getStore(), `${destination(url.hostname)} ${method} ${normalizePath(url.pathname)}`, !response.ok)
-      add(
-        outbound,
-        key,
-        requestBytes,
-        !response.ok,
-        Date.now() - startedAt
-      )
-      return response
+      await refreshSystemUsageProviders({ force: false })
     } catch (error) {
-      recordDependency(requestContext.getStore(), `${destination(url.hostname)} ${method} ${normalizePath(url.pathname)}`, true)
-      add(outbound, key, requestBytes, true, Date.now() - startedAt)
-      throw error
-    }
-  }
-}
-
-function httpMeta(args) {
-  const first = args[0]
-
-  try {
-    if (first instanceof URL || typeof first === 'string') {
-      const url = new URL(first)
-      const options =
-        args[1] && typeof args[1] === 'object' && !(args[1] instanceof Function)
-          ? args[1]
-          : {}
-      return {
-        hostname: url.hostname,
-        method: String(options.method || 'GET').toUpperCase(),
-        path: url.pathname,
-      }
-    }
-
-    const options = first && typeof first === 'object' ? first : {}
-    const rawHost = String(
-      options.hostname || options.host || options.headers?.host || ''
-    ).replace(/^\[|\]$/g, '')
-    const hostname = rawHost.split(':')[0]
-
-    return {
-      hostname,
-      method: String(options.method || 'GET').toUpperCase(),
-      path: normalizePath(options.path || '/'),
-    }
-  } catch {
-    return {
-      hostname: '',
-      method: 'GET',
-      path: '/',
-    }
-  }
-}
-
-function installHttpDiagnostic(moduleObject) {
-  if (!ENABLED || !moduleObject?.request) return
-
-  const nativeRequest = moduleObject.request
-
-  moduleObject.request = function wrappedRequest(...args) {
-    const meta = httpMeta(args)
-    const key = `${requestContext.getStore()?.route || 'BACKGROUND'} -> ${destination(meta.hostname)} ${meta.method} ${normalizePath(meta.path)}`
-    const startedAt = Date.now()
-    const context = requestContext.getStore()
-    const request = nativeRequest.apply(this, args)
-    let writtenBytes = 0
-    let recorded = false
-
-    const nativeWrite = request.write.bind(request)
-    const nativeEnd = request.end.bind(request)
-
-    request.write = (chunk, encoding, callback) => {
-      writtenBytes += bytesOf(chunk, encoding)
-      return nativeWrite(chunk, encoding, callback)
-    }
-
-    request.end = (chunk, encoding, callback) => {
-      if (chunk !== undefined && chunk !== null) {
-        writtenBytes += bytesOf(chunk, encoding)
-      }
-      return nativeEnd(chunk, encoding, callback)
-    }
-
-    const record = (error = false) => {
-      if (recorded) return
-      recorded = true
-      recordDependency(context, `${destination(meta.hostname)} ${meta.method} ${normalizePath(meta.path)}`, error)
-      add(outbound, key, writtenBytes, error, Date.now() - startedAt)
-    }
-
-    request.once('finish', () => record(false))
-    request.once('error', () => record(true))
-    return request
-  }
-}
-
-export function trafficDiagnosticMiddleware(req, res, next) {
-  if (!ENABLED) return next()
-
-  const startedAt = Date.now()
-  const method = String(
-    req.method || 'GET'
-  ).toUpperCase()
-
-  const normalizedPath = normalizePath(
-    req.originalUrl ||
-      req.url ||
-      req.path
-  )
-
-  const publicStoriesSort =
-    getPublicStoriesSort(
-      req,
-      normalizedPath
-    )
-
-  const sourceKey = publicStoriesSort
-    ? `${method} ${normalizedPath}?sort=${publicStoriesSort}`
-    : `${method} ${normalizedPath}`
-
-  const context = {
-    route: sourceKey,
-    request_id: `${process.pid}-${startedAt}-${++traceSequence}`,
-    external_calls: 0,
-    external_errors: 0,
-    targets: new Map(),
-  }
-
-  let responseBytes = 0
-  let recorded = false
-
-  const nativeWrite = res.write.bind(res)
-  const nativeEnd = res.end.bind(res)
-
-  res.write = (chunk, encoding, callback) => {
-    responseBytes += bytesOf(
-      chunk,
-      encoding
-    )
-    return nativeWrite(
-      chunk,
-      encoding,
-      callback
-    )
-  }
-
-  res.end = (chunk, encoding, callback) => {
-    if (
-      chunk !== undefined &&
-      chunk !== null
-    ) {
-      responseBytes += bytesOf(
-        chunk,
-        encoding
+      console.error(
+        'ADMIN_SYSTEM_CONTROL_PROVIDER_REFRESH_ERROR:',
+        error?.message || error
       )
     }
 
-    return nativeEnd(
-      chunk,
-      encoding,
-      callback
+    return res.status(200).json({
+      ok: true,
+      usage: getSystemUsageCurrentSnapshot(),
+      anomaly: getSystemUsageAnomalySnapshot(),
+      providers: getSystemUsageProviderState(),
+    })
+  }
+)
+
+router.post(
+  '/providers/refresh',
+  manageSystemControl,
+  async (req, res) => {
+    try {
+      const providers =
+        await refreshSystemUsageProviders({
+          force: true,
+        })
+
+      return res.status(200).json({
+        ok: true,
+        providers,
+      })
+    } catch (error) {
+      console.error(
+        'ADMIN_SYSTEM_CONTROL_PROVIDER_FORCE_REFRESH_ERROR:',
+        error?.message || error
+      )
+
+      return res.status(500).json({
+        ok: false,
+        message:
+          'Failed to refresh provider usage.',
+      })
+    }
+  }
+)
+
+router.get('/history', viewSystemControl, async (req, res) => {
+  try {
+    const history = await getSystemUsageHistory({
+      from: req.query?.from,
+      to: req.query?.to,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      history,
+    })
+  } catch (error) {
+    const message = String(
+      error?.message || 'Failed to load usage history.'
+    )
+
+    return res.status(isInvalidInput(message) ? 400 : 500).json({
+      ok: false,
+      message,
+    })
+  }
+})
+
+router.get('/reports/download', viewSystemControl, async (req, res) => {
+  try {
+    const report = await generateSystemUsageReport({
+      type: req.query?.type,
+      from: req.query?.from,
+      to: req.query?.to,
+    })
+
+    const filename = String(
+      report.filename || 'system-control-report'
+    ).replace(/[^a-zA-Z0-9._-]/g, '_')
+
+    res.set('Content-Type', report.contentType)
+    res.set(
+      'Content-Disposition',
+      `attachment; filename="${filename}"`
+    )
+    res.set('Content-Length', String(report.body.length))
+
+    return res.status(200).send(report.body)
+  } catch (error) {
+    const message = String(
+      error?.message ||
+        'Failed to generate System Control report.'
+    )
+
+    if (!isInvalidInput(message)) {
+      console.error(
+        'ADMIN_SYSTEM_CONTROL_REPORT_ERROR:',
+        error?.message || error
+      )
+    }
+
+    return res.status(isInvalidInput(message) ? 400 : 500).json({
+      ok: false,
+      message,
+    })
+  }
+})
+
+router.get('/incidents', viewSystemControl, async (req, res) => {
+  try {
+    const incidents =
+      await listSystemUsageIncidents({
+        limit: req.query?.limit,
+        from: req.query?.from,
+        to: req.query?.to,
+        status: req.query?.status,
+      })
+
+    return res.status(200).json({
+      ok: true,
+      incidents,
+    })
+  } catch (error) {
+    const message = String(
+      error?.message ||
+        'Failed to load System Control incidents.'
+    )
+
+    if (!isInvalidInput(message)) {
+      console.error(
+        'ADMIN_SYSTEM_CONTROL_INCIDENTS_ERROR:',
+        error?.message || error
+      )
+    }
+
+    return res
+      .status(
+        isInvalidInput(message)
+          ? 400
+          : 500
+      )
+      .json({
+        ok: false,
+        message,
+      })
+  }
+})
+
+router.get('/incidents/:incidentId', viewSystemControl, async (req, res) => {
+  try {
+    const incident = await getSystemUsageIncident(
+      req.params.incidentId
+    )
+
+    return res.status(200).json({
+      ok: true,
+      incident,
+    })
+  } catch (error) {
+    return incidentError(
+      res,
+      error,
+      'Failed to load incident.'
     )
   }
+})
 
-  const record = () => {
-    if (recorded) return
-    recorded = true
+router.post(
+  '/incidents/:incidentId/fix',
+  manageSystemControl,
+  async (req, res) => {
+    try {
+      const incident = await applySystemUsageIncidentFix({
+        incidentId: req.params.incidentId,
+        fixSummary:
+          req.body?.fix_summary ??
+          req.body?.fixSummary,
+        fixCommit:
+          req.body?.fix_commit ??
+          req.body?.fixCommit,
+        fixVersion:
+          req.body?.fix_version ??
+          req.body?.fixVersion,
+      })
 
-    const recommendationCache = normalizedPath.endsWith('/recommendations')
-      ? String(
-          res.getHeader('X-Shadow-Recommendations-Cache') || 'NONE'
-        ).toUpperCase()
-      : ''
-
-    const key = recommendationCache
-      ? `${sourceKey}?cache=${recommendationCache}&status=${Number(res.statusCode || 0)}`
-      : publicStoriesSort
-        ? `${sourceKey}&cache=${getPublicStoriesCacheState(
-            res
-          )}&status=${Number(
-            res.statusCode || 0
-          )}`
-        : sourceKey
-
-    const elapsedMs = Date.now() - startedAt
-    add(
-      inbound,
-      key,
-      responseBytes,
-      res.statusCode >= 400,
-      elapsedMs
-    )
-    logRequestEvidence(req, res, context, elapsedMs)
+      return res.status(200).json({
+        ok: true,
+        incident,
+      })
+    } catch (error) {
+      return incidentError(
+        res,
+        error,
+        'Failed to mark fix as applied.'
+      )
+    }
   }
+)
 
-  res.once('finish', record)
-  res.once('close', record)
+router.post(
+  '/incidents/:incidentId/verify',
+  manageSystemControl,
+  async (req, res) => {
+    try {
+      const incident = await verifySystemUsageIncident({
+        incidentId: req.params.incidentId,
+      })
 
-  requestContext.run(
-    context,
-    next
-  )
-}
+      return res.status(200).json({
+        ok: true,
+        incident,
+      })
+    } catch (error) {
+      return incidentError(
+        res,
+        error,
+        'Failed to verify incident.'
+      )
+    }
+  }
+)
 
-if (ENABLED) {
-  installFetchDiagnostic()
-  installHttpDiagnostic(http)
-  installHttpDiagnostic(https)
-  const timer = setInterval(flush, FLUSH_MS)
-  timer.unref?.()
-  console.log('TRAFFIC_DIAG: enabled')
-}
+router.post(
+  '/incidents/:incidentId/resolve',
+  manageSystemControl,
+  async (req, res) => {
+    try {
+      const incident = await resolveSystemUsageIncident({
+        incidentId: req.params.incidentId,
+        summary:
+          req.body?.summary ??
+          req.body?.resolution_summary ??
+          req.body?.resolutionSummary,
+      })
+
+      return res.status(200).json({
+        ok: true,
+        incident,
+      })
+    } catch (error) {
+      return incidentError(
+        res,
+        error,
+        'Failed to resolve incident.'
+      )
+    }
+  }
+)
+
+router.post(
+  '/incidents/:incidentId/archive',
+  manageSystemControl,
+  async (req, res) => {
+    try {
+      const incident = await archiveSystemUsageIncident({
+        incidentId: req.params.incidentId,
+      })
+
+      return res.status(200).json({
+        ok: true,
+        incident,
+      })
+    } catch (error) {
+      return incidentError(
+        res,
+        error,
+        'Failed to archive incident.'
+      )
+    }
+  }
+)
+
+export default router
