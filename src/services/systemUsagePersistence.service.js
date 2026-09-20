@@ -2038,17 +2038,25 @@ export async function refreshSystemUsageProviders({
   force = false,
 } = {}) {
   const now = Date.now()
-  const source = getSystemUsageSnapshot()
+  const lastSync = Date.parse(providerState.last_sync_at || '')
+
+  if (
+    providerSyncing ||
+    (!force &&
+      Number.isFinite(lastSync) &&
+      now - lastSync < PROVIDER_SYNC_MS)
+  ) {
+    return cloneProviderState()
+  }
 
   await syncProvidersIfDue(
-    source,
+    getSystemUsageSnapshot(),
     now,
     Boolean(force)
   )
 
   return cloneProviderState()
 }
-
 export function startSystemUsagePersistence() {
   if (
     startTimer ||
