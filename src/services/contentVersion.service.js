@@ -12,7 +12,9 @@ const DEFAULT_KEYS = [
   'library',
 ]
 
+const VERSION_CACHE_TTL_MS = 60 * 1000
 const versionCache = new Map()
+const versionCacheFetchedAt = new Map()
 const keyLoadPromises = new Map()
 
 function cleanKey(value) {
@@ -65,14 +67,17 @@ function cacheRow(row) {
   }
 
   versionCache.set(key, value)
+  versionCacheFetchedAt.set(key, Date.now())
   return value
 }
 
 async function loadMissingKeys(keys) {
+  const now = Date.now()
   const missing = keys.filter(
     (key) =>
-      !versionCache.has(key) &&
-      !keyLoadPromises.has(key)
+      !keyLoadPromises.has(key) &&
+      (!versionCache.has(key) ||
+        now - Number(versionCacheFetchedAt.get(key) || 0) >= VERSION_CACHE_TTL_MS)
   )
 
   if (missing.length) {
@@ -105,6 +110,7 @@ async function loadMissingKeys(keys) {
             key,
             fallbackVersion(key)
           )
+          versionCacheFetchedAt.set(key, Date.now())
         }
       }
     })()
@@ -116,7 +122,7 @@ async function loadMissingKeys(keys) {
       )
     }
 
-    loadPromise.finally(() => {
+    const clearPending = () => {
       for (const key of missing) {
         if (
           keyLoadPromises.get(key) ===
@@ -125,7 +131,8 @@ async function loadMissingKeys(keys) {
           keyLoadPromises.delete(key)
         }
       }
-    })
+    }
+    void loadPromise.then(clearPending, clearPending)
   }
 
   const waits = [
@@ -198,8 +205,7 @@ export async function bumpContentVersions(
             current[key]?.version || 1
           ) + 1,
         updated_at: now,
-      })
-    )
+      }))
 
     const { data, error } =
       await supabase
