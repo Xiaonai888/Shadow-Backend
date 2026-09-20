@@ -157,7 +157,7 @@ function logRequestEvidence(req, res, context, elapsedMs) {
   if (!context || context.route.startsWith('GET /api/admin/system-control')) return
 
   const status = Number(res.statusCode || 0)
-  const failed = status >= 500 || context.external_errors > 0
+  const failed = status === 429 || status >= 500 || context.external_errors > 0
   const expensive = context.external_calls >= 8 ||
     (elapsedMs >= TRACE_SLOW_MS && context.external_calls > 0)
   if (!failed && !expensive) return
