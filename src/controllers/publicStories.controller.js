@@ -2249,9 +2249,7 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
     const firstVisibleEpisodeId =
       access.publishedEpisodes[0]?.id ||
       getFirstVisibleEpisodeId(visibleEpisodes, now)
-    return res.status(200).json({
-      ok: true,
-      first_visible_episode_id: firstVisibleEpisodeId,
+          first_visible_episode_id: firstVisibleEpisodeId,
       free_published_episode_ids: [
         ...access.freePublishedEpisodeIds,
       ],
