@@ -10,6 +10,7 @@ import {
   removeStoryFromLibrary,
   removeStoryFromSubscriptions,
 } from '../controllers/library.controller.js'
+import { getReaderLibraryTrash, restoreReaderLibraryTrash } from '../controllers/readerLibraryTrash.controller.js'
 
 const router = express.Router()
 
@@ -19,6 +20,8 @@ router.get(
   getStoryDetailReaderStatus
 )
 
+router.get('/library/trash', requireUser, getReaderLibraryTrash)
+router.post('/library/trash/:storyId/restore', requireUser, restoreReaderLibraryTrash)
 router.get('/library', requireUser, getReaderLibrary)
 router.post('/library/:storyId', requireUser, addStoryToLibrary)
 router.delete('/library/:storyId', requireUser, removeStoryFromLibrary)
