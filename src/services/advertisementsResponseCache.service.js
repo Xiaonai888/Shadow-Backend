@@ -3,31 +3,34 @@ const advertisementResponseInFlight = new Map()
 let advertisementResponseCacheVersion = 0
 
 const ROTATING_PLACEMENTS = new Set(['opening', 'freeUnlock', 'me'])
+const MAX_CACHE_AGE_MS = 5 * 60 * 1000
 
 function getCacheKey(req) {
   return String(req.query?.placement || '').trim()
 }
 
 function getExpiresAt(key, body) {
-  if (!ROTATING_PLACEMENTS.has(key)) return 0
-  if (body?.rotation?.mode !== 'auto') return 0
+  const now = Date.now()
+  const maxExpiresAt = now + MAX_CACHE_AGE_MS
+
+  if (!ROTATING_PLACEMENTS.has(key) || body?.rotation?.mode !== 'auto') {
+    return maxExpiresAt
+  }
 
   const seconds = Number(body?.rotation?.rotate_every_seconds || 0)
   const startedAt = Date.parse(body?.rotation?.rotation_started_at || '')
 
-  if (!Number.isFinite(seconds) || seconds <= 0) return Date.now() + 1000
+  if (!Number.isFinite(seconds) || seconds <= 0) return now + 1000
 
-  const now = Date.now()
   const stepMs = seconds * 1000
-
   if (!Number.isFinite(startedAt)) {
-    return now + Math.min(stepMs, 60000)
+    return now + Math.min(stepMs, 60000, MAX_CACHE_AGE_MS)
   }
 
   const elapsedMs = Math.max(0, now - startedAt)
   const remainingMs = stepMs - (elapsedMs % stepMs)
 
-  return now + Math.max(1, remainingMs)
+  return Math.min(maxExpiresAt, now + Math.max(1, remainingMs))
 }
 
 export function invalidateAdvertisementResponseCache(placement = '') {
