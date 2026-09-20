@@ -26,7 +26,7 @@ const manageSystemControl = requireAdminPermission('system_control.manage')
 const snapshotGuard = createRateLimit({
   key: 'admin-system-control-snapshot',
   windowMs: 60 * 1000,
-  max: 6,
+  max: 30,
   message: 'Too many System Control snapshot requests. Please wait before refreshing again.',
 })
 
