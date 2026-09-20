@@ -66,7 +66,10 @@ async function publishedEpisodeCount(storyId) {
 export async function getReadingProgress(req, res) {
   try {
     const userId = String(req.user?.user_id || '').trim()
-    const limit = Math.min(30, Math.max(1, Number(req.query.limit || 12)))
+    const parsedLimit = Number(req.query.limit || 12)
+const limit = Number.isFinite(parsedLimit)
+  ? Math.min(30, Math.max(1, Math.floor(parsedLimit)))
+  : 12
 
     const { data: rows, error } = await supabase
       .from('reading_progress')
