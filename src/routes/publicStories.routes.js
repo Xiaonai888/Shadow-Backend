@@ -18,6 +18,7 @@ import {
   cachePublicStoriesResponse,
   invalidatePublicStoriesCache,
 } from '../services/publicStoriesResponseCache.service.js'
+import { cachePublicStoryRecommendations } from '../services/publicStoryRecommendationsCache.service.js'
 
 const router = express.Router()
 
@@ -67,6 +68,7 @@ router.get('/shadow-exclusive/stories/:storyId', getPublicShadowExclusiveStoryBy
 
 router.get(
   '/stories/:storyId/recommendations',
+  cachePublicStoryRecommendations,
   getPublicStoryRecommendations
 )
 
