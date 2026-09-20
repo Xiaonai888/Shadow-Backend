@@ -20,6 +20,9 @@ let traceMinute = 0
 let traceErrors = 0
 let traceExpensive = 0
 let traceSequence = 0
+const RECENT_EVIDENCE_LIMIT = 12
+const RECENT_EVIDENCE_TTL_MS = 10 * 60 * 1000
+const recentEvidence = []
 
 function bytesOf(value, encoding) {
   if (value === null || value === undefined) return 0
@@ -176,7 +179,7 @@ function logRequestEvidence(req, res, context, elapsedMs) {
   const visitor = String(req.headers['x-shadow-visitor-id'] || '')
   const visitorClaim = /^[a-zA-Z0-9._:-]{6,80}$/.test(visitor) ? visitor : null
   const cacheState = String(res.getHeader('X-Shadow-Recommendations-Cache') || 'NONE').toUpperCase()
-  console.warn('SYSTEM_REQUEST_EVIDENCE', JSON.stringify({
+  const evidence = {
     request_id: context.request_id,
     time: new Date().toISOString(),
     route: context.route,
@@ -188,7 +191,16 @@ function logRequestEvidence(req, res, context, elapsedMs) {
     observed_external_calls: context.external_calls,
     observed_external_errors: context.external_errors,
     targets: [...context.targets.entries()].map(([target, count]) => ({ target, count })),
-  }))
+  }
+
+  recentEvidence.push(evidence)
+  if (recentEvidence.length > RECENT_EVIDENCE_LIMIT) recentEvidence.shift()
+  console.warn('SYSTEM_REQUEST_EVIDENCE', JSON.stringify(evidence))
+}
+
+export function getRecentRequestEvidence() {
+  const cutoff = Date.now() - RECENT_EVIDENCE_TTL_MS
+  return recentEvidence.filter((entry) => Date.parse(entry.time) >= cutoff)
 }
 
 function rows(map) {
