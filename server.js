@@ -70,6 +70,7 @@ import { startAuthorStoriesCleanup } from './src/controllers/authorStories.contr
 import { startAuthorCommentCleanup } from './src/services/authorCommentCleanup.service.js'
 import { startAuthorPostCleanup } from './src/services/authorPostCleanup.service.js'
 import { startCommentTrashCleanup } from './src/services/commentTrashCleanup.service.js'
+import { startReaderLibraryTrashCleanup } from './src/services/readerLibraryTrashCleanup.service.js'
 import fastRoutes from './src/routes/fast.routes.js'
 import contentReportsRoutes from './src/routes/contentReports.routes.js'
 import adminReportsRoutes from './src/routes/adminReports.routes.js'
@@ -109,6 +110,7 @@ import { startSystemUsagePersistence } from './src/services/systemUsagePersisten
 import { startSystemUsageAnomalyDetector } from './src/services/systemUsageAnomaly.service.js'
 import { startSystemUsageIncidentService } from './src/services/systemUsageIncident.service.js'
 import adminAppSettingsRoutes from './src/routes/adminAppSettings.routes.js'
+
 
 dotenv.config()
 
@@ -807,6 +809,7 @@ app.listen(PORT, () => {
   startAuthorCommentCleanup()
   startAuthorPostCleanup()
   startCommentTrashCleanup()
+  startReaderLibraryTrashCleanup()
   startChatRetentionCleanup()
   startStorageMigrationCleanupScheduler()
   void startMangaR2DeleteRetryWorker()
