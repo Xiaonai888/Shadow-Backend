@@ -344,13 +344,21 @@ export function trafficDiagnosticMiddleware(req, res, next) {
     if (recorded) return
     recorded = true
 
-    const key = publicStoriesSort
-      ? `${sourceKey}&cache=${getPublicStoriesCacheState(
-          res
-        )}&status=${Number(
-          res.statusCode || 0
-        )}`
-      : sourceKey
+    const recommendationCache = normalizedPath.endsWith('/recommendations')
+      ? String(
+          res.getHeader('X-Shadow-Recommendations-Cache') || 'NONE'
+        ).toUpperCase()
+      : ''
+
+    const key = recommendationCache
+      ? `${sourceKey}?cache=${recommendationCache}&status=${Number(res.statusCode || 0)}`
+      : publicStoriesSort
+        ? `${sourceKey}&cache=${getPublicStoriesCacheState(
+            res
+          )}&status=${Number(
+            res.statusCode || 0
+          )}`
+        : sourceKey
 
     add(
       inbound,
