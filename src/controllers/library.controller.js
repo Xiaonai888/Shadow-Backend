@@ -221,13 +221,12 @@ export async function removeStoryFromLibrary(req, res) {
       })
     }
 
-    const { error } = await supabase
-      .from('reader_library')
-      .delete()
-      .eq('user_id', userId)
-      .eq('story_id', storyId)
-
-    if (error) throw error
+    const { data: moved, error } = await supabase.rpc('move_reader_library_to_trash', {
+  p_user_id: userId,
+  p_story_id: storyId,
+})
+if (error) throw error
+if (!moved) return res.status(404).json({ ok: false, message: 'Story not found in library' })
 
     return res.status(200).json({
       ok: true,
