@@ -89,9 +89,10 @@ router.get(
       )
     }
 
-    return res.status(200).json({
+        return res.status(200).json({
       ok: true,
       usage: getSystemUsageCurrentSnapshot(),
+      evidence: getRecentRequestEvidence(),
       anomaly: getSystemUsageAnomalySnapshot(),
       providers: getSystemUsageProviderState(),
     })
