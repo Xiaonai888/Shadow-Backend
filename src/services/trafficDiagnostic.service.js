@@ -10,6 +10,7 @@ const ENABLED =
 
 const FLUSH_MS = 60 * 1000
 const MAX_ROWS = 25
+const MAX_KEYS_PER_MAP = 500
 const inbound = new Map()
 const outbound = new Map()
 const requestContext = new AsyncLocalStorage()
@@ -104,7 +105,11 @@ function destination(hostname) {
 }
 
 function add(map, key, bytes = 0, error = false, durationMs = 0) {
-  const current = map.get(key) || {
+  const overflowKey = map === outbound ? 'OVERFLOW:OUTBOUND' : 'OVERFLOW:INBOUND'
+  const mapKey = map.has(key) || map.size < MAX_KEYS_PER_MAP - 1
+    ? key
+    : overflowKey
+  const current = map.get(mapKey) || {
     count: 0,
     bytes: 0,
     errors: 0,
@@ -115,7 +120,7 @@ function add(map, key, bytes = 0, error = false, durationMs = 0) {
   current.bytes += Math.max(0, Number(bytes) || 0)
   current.errors += error ? 1 : 0
   current.duration_ms += Math.max(0, Number(durationMs) || 0)
-  map.set(key, current)
+  map.set(mapKey, current)
 
   recordSystemUsage({
     kind: map === outbound ? 'external_request' : 'http_response',
@@ -366,8 +371,11 @@ function installHttpDiagnostic(moduleObject) {
       add(outbound, key, writtenBytes, error, Date.now() - startedAt)
     }
 
-    request.once('finish', () => record(false))
+    request.once('response', (response) => {
+      record(Number(response.statusCode || 0) >= 400)
+    })
     request.once('error', () => record(true))
+    request.once('close', () => record(true))
     return request
   }
 }
