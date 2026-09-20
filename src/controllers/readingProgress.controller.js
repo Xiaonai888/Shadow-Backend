@@ -67,7 +67,6 @@ export async function getReadingProgress(req, res) {
   try {
     const userId = String(req.user?.user_id || '').trim()
     const limit = Math.min(30, Math.max(1, Number(req.query.limit || 12)))
-    const ageAccess = await getReaderAgeAccess(req)
 
     const { data: rows, error } = await supabase
       .from('reading_progress')
@@ -84,6 +83,9 @@ export async function getReadingProgress(req, res) {
     if (!progressRows.length) {
       return res.json({ ok: true, items: [] })
     }
+
+        if (!progressRows.length) {
+
 
     const storyIds = [...new Set(progressRows.map((item) => item.story_id).filter(Boolean))]
     const episodeIds = [...new Set(progressRows.map((item) => item.episode_id).filter(Boolean))]
