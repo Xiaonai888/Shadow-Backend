@@ -1,6 +1,7 @@
 import http from 'node:http'
 import https from 'node:https'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import jwt from 'jsonwebtoken'
 import { recordSystemUsage } from './systemUsageMonitor.service.js'
 const ENABLED =
   String(process.env.TRAFFIC_DIAGNOSTIC_ENABLED ?? 'true')
@@ -12,6 +13,13 @@ const MAX_ROWS = 25
 const inbound = new Map()
 const outbound = new Map()
 const requestContext = new AsyncLocalStorage()
+const TRACE_SLOW_MS = 1500
+const TRACE_MAX_ERRORS_PER_MINUTE = 8
+const TRACE_MAX_EXPENSIVE_PER_MINUTE = 4
+let traceMinute = 0
+let traceErrors = 0
+let traceExpensive = 0
+let traceSequence = 0
 
 function bytesOf(value, encoding) {
   if (value === null || value === undefined) return 0
@@ -115,6 +123,74 @@ function add(map, key, bytes = 0, error = false, durationMs = 0) {
   })
 }
 
+function recordDependency(context, target, failed) {
+  if (!context) return
+  context.external_calls += 1
+  if (failed) context.external_errors += 1
+  if (context.targets.size < 8 || context.targets.has(target)) {
+    context.targets.set(target, (context.targets.get(target) || 0) + 1)
+  }
+}
+
+function diagnosticActor(req) {
+  const userId = req.user?.user_id || req.user?.admin_id || req.user?.id
+  if (userId) return { type: 'authenticated', id: String(userId).slice(0, 120) }
+
+  try {
+    const header = String(req.headers.authorization || '')
+    if (!header.startsWith('Bearer ') || !process.env.JWT_SECRET) return { type: 'anonymous' }
+    const decoded = jwt.verify(header.slice(7), process.env.JWT_SECRET)
+    if (!['reader', 'admin'].includes(decoded?.type)) return { type: 'anonymous' }
+    const verified = decoded.user_id || decoded.admin_id || decoded.id
+    return verified
+      ? { type: 'authenticated', id: String(verified).slice(0, 120) }
+      : { type: 'anonymous' }
+  } catch {
+    return { type: 'anonymous' }
+  }
+}
+
+function logRequestEvidence(req, res, context, elapsedMs) {
+  if (!context || context.route.startsWith('GET /api/admin/system-control')) return
+
+  const status = Number(res.statusCode || 0)
+  const failed = status >= 500 || context.external_errors > 0
+  const expensive = context.external_calls >= 8 ||
+    (elapsedMs >= TRACE_SLOW_MS && context.external_calls > 0)
+  if (!failed && !expensive) return
+
+  const minute = Math.floor(Date.now() / 60000)
+  if (minute !== traceMinute) {
+    traceMinute = minute
+    traceErrors = 0
+    traceExpensive = 0
+  }
+  if (failed) {
+    if (traceErrors >= TRACE_MAX_ERRORS_PER_MINUTE) return
+    traceErrors += 1
+  } else {
+    if (traceExpensive >= TRACE_MAX_EXPENSIVE_PER_MINUTE) return
+    traceExpensive += 1
+  }
+
+  const visitor = String(req.headers['x-shadow-visitor-id'] || '')
+  const visitorClaim = /^[a-zA-Z0-9._:-]{6,80}$/.test(visitor) ? visitor : null
+  const cacheState = String(res.getHeader('X-Shadow-Recommendations-Cache') || 'NONE').toUpperCase()
+  console.warn('SYSTEM_REQUEST_EVIDENCE', JSON.stringify({
+    request_id: context.request_id,
+    time: new Date().toISOString(),
+    route: context.route,
+    http_status: status,
+    duration_ms: elapsedMs,
+    account: diagnosticActor(req),
+    visitor_claim: visitorClaim,
+    cache: ['HIT', 'MISS', 'WAIT'].includes(cacheState) ? cacheState : 'NONE',
+    observed_external_calls: context.external_calls,
+    observed_external_errors: context.external_errors,
+    targets: [...context.targets.entries()].map(([target, count]) => ({ target, count })),
+  }))
+}
+
 function rows(map) {
   return [...map.entries()]
     .map(([key, value]) => ({
@@ -188,6 +264,7 @@ function installFetchDiagnostic() {
 
     try {
       const response = await nativeFetch(input, init)
+      recordDependency(requestContext.getStore(), `${destination(url.hostname)} ${method} ${normalizePath(url.pathname)}`, !response.ok)
       add(
         outbound,
         key,
@@ -197,6 +274,7 @@ function installFetchDiagnostic() {
       )
       return response
     } catch (error) {
+      recordDependency(requestContext.getStore(), `${destination(url.hostname)} ${method} ${normalizePath(url.pathname)}`, true)
       add(outbound, key, requestBytes, true, Date.now() - startedAt)
       throw error
     }
@@ -249,6 +327,7 @@ function installHttpDiagnostic(moduleObject) {
     const meta = httpMeta(args)
     const key = `${requestContext.getStore()?.route || 'BACKGROUND'} -> ${destination(meta.hostname)} ${meta.method} ${normalizePath(meta.path)}`
     const startedAt = Date.now()
+    const context = requestContext.getStore()
     const request = nativeRequest.apply(this, args)
     let writtenBytes = 0
     let recorded = false
@@ -271,6 +350,7 @@ function installHttpDiagnostic(moduleObject) {
     const record = (error = false) => {
       if (recorded) return
       recorded = true
+      recordDependency(context, `${destination(meta.hostname)} ${meta.method} ${normalizePath(meta.path)}`, error)
       add(outbound, key, writtenBytes, error, Date.now() - startedAt)
     }
 
@@ -303,6 +383,14 @@ export function trafficDiagnosticMiddleware(req, res, next) {
   const sourceKey = publicStoriesSort
     ? `${method} ${normalizedPath}?sort=${publicStoriesSort}`
     : `${method} ${normalizedPath}`
+
+  const context = {
+    route: sourceKey,
+    request_id: `${process.pid}-${startedAt}-${++traceSequence}`,
+    external_calls: 0,
+    external_errors: 0,
+    targets: new Map(),
+  }
 
   let responseBytes = 0
   let recorded = false
@@ -360,20 +448,22 @@ export function trafficDiagnosticMiddleware(req, res, next) {
           )}`
         : sourceKey
 
+    const elapsedMs = Date.now() - startedAt
     add(
       inbound,
       key,
       responseBytes,
       res.statusCode >= 400,
-      Date.now() - startedAt
+      elapsedMs
     )
+    logRequestEvidence(req, res, context, elapsedMs)
   }
 
   res.once('finish', record)
   res.once('close', record)
 
   requestContext.run(
-    { route: sourceKey },
+    context,
     next
   )
 }
