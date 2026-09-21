@@ -276,14 +276,56 @@ function analyzeCompletedWindow() {
 
   state.last_analyzed_at = Date.now()
   state.baseline = baseline
+  const observedRows = latest.rows || []
+  const routeCounts = new Map()
+  let httpRequestsObserved = 0
+  let externalCallsObserved = 0
+  let supabaseCallsObserved = 0
+
+  for (const row of observedRows) {
+    if (isMonitorRow(row)) continue
+    const amount = Math.max(0, Number(row.count) || 0)
+    const route = String(row.source_route || 'UNKNOWN')
+    const totals = routeCounts.get(route) || {
+      route,
+      http_requests: 0,
+      supabase_calls: 0,
+      http_errors: 0,
+    }
+
+    if (row.kind === 'http_response') {
+      httpRequestsObserved += amount
+      totals.http_requests += amount
+      totals.http_errors += Math.max(0, Number(row.errors) || 0)
+    } else if (row.kind === 'external_request') {
+      externalCallsObserved += amount
+      if (row.dependency === 'SUPABASE') {
+        supabaseCallsObserved += amount
+        totals.supabase_calls += amount
+      }
+    }
+    routeCounts.set(route, totals)
+  }
+
+  const routes = [...routeCounts.values()].sort(
+    (a, b) => b.supabase_calls - a.supabase_calls ||
+      b.http_requests - a.http_requests
+  )
+  const busiestRoutes = routes.slice(0, 5)
+  const driverRoute = routeCounts.get(driver?.source_route)
+  if (driverRoute && !busiestRoutes.includes(driverRoute)) {
+    busiestRoutes.push(driverRoute)
+  }
+
   state.current = {
     ...current,
-    mb: Number(
-      (current.bytes / 1024 / 1024).toFixed(4)
-    ),
-    error_rate_percent: Number(
-      (current.error_rate * 100).toFixed(2)
-    ),
+    http_requests_observed: httpRequestsObserved,
+    external_calls_observed: externalCallsObserved,
+    supabase_calls_observed: supabaseCallsObserved,
+    route_breakdown: busiestRoutes,
+    coverage: observedRows.length >= 100 ? 'top_100_rows_only' : 'recorded_rows',
+    mb: Number((current.bytes / 1024 / 1024).toFixed(4)),
+    error_rate_percent: Number((current.error_rate * 100).toFixed(2)),
     window_start: latest.started_at,
     window_end: latest.ended_at,
   }
