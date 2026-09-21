@@ -6,6 +6,13 @@ export const APP_REGISTRY = Object.freeze([
     hidden: false,
     disabled: false,
   }),
+  Object.freeze({
+    appKey: 'shadow-docs',
+    name: 'Shadow Docs',
+    profile: null,
+    hidden: true,
+    disabled: true,
+  }),
 ])
 
 export function getAppDefinition(appKey) {
