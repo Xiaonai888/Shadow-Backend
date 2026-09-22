@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { verifyAdminPasskeyPin } from '../services/adminPasskeyPin.service.js'
 
 const PAID_MALL_STATUSES = [
   'under_review',
@@ -1886,50 +1887,72 @@ export async function generateAdminAuthorPayouts(
   }
 }
 
-export async function markAdminAuthorPayoutPaid(
-  req,
-  res
-) {
+export async function markAdminAuthorPayoutPaid(req, res) {
   try {
-    const payoutId =
-      String(req.params.id || '').trim()
-
-    if (!payoutId) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Payout ID is required',
-      })
+    if (String(req.admin?.role || '').toLowerCase() !== 'owner') {
+      return res.status(403).json({ ok: false, message: 'Owner access required for author payouts' })
     }
 
-    const adminNote =
-      String(req.body?.admin_note || '').trim()
+    const payoutId = String(req.params.id || '').trim()
+    const receiptPath = String(req.body?.receipt_path || '').trim()
+    const pin = String(req.body?.passkey_pin || '').trim()
 
-    const { data, error } = await supabase.rpc(
-      'mark_author_payout_paid',
-      {
-        p_payout_id: payoutId,
-        p_admin_note:
-          adminNote || null,
-      }
-    )
+    if (!/^[a-f0-9-]{36}$/i.test(payoutId)) {
+      return res.status(400).json({ ok: false, message: 'Invalid payout ID' })
+    }
+    if (!/^\d{6}$/.test(pin)) {
+      return res.status(400).json({ ok: false, message: 'A 6-digit owner Passkey is required' })
+    }
+    if (!receiptPath.startsWith(`payouts/${payoutId}/`) || !/^payouts\/[a-f0-9-]{36}\/[a-zA-Z0-9._-]{1,120}$/.test(receiptPath)) {
+      return res.status(400).json({ ok: false, message: 'A saved payment receipt for this payout is required' })
+    }
+
+    const { data: payout, error: payoutError } = await supabase
+      .from('author_payouts')
+      .select('id, status, net_payout_usd')
+      .eq('id', payoutId)
+      .maybeSingle()
+
+    if (payoutError) throw payoutError
+    if (!payout) return res.status(404).json({ ok: false, message: 'Payout not found' })
+    if (payout.status !== 'scheduled') {
+      return res.status(409).json({ ok: false, message: 'This payout is not awaiting payment' })
+    }
+    if (!(Number(payout.net_payout_usd) > 0)) {
+      return res.status(409).json({ ok: false, message: 'Invalid payout balance' })
+    }
+
+    const { data: receipt, error: receiptError } = await supabase.storage
+      .from('author-payout-receipts')
+      .download(receiptPath)
+
+    if (receiptError || !receipt || !['image/png', 'image/jpeg', 'image/webp'].includes(receipt.type) || receipt.size < 100 || receipt.size > 2 * 1024 * 1024) {
+      return res.status(400).json({ ok: false, message: 'Upload a valid payment receipt (PNG, JPG, or WEBP, max 2 MB) first' })
+    }
+
+    const verified = await verifyAdminPasskeyPin({
+      admin: req.admin,
+      req,
+      pin,
+      purpose: `author_payout:${payoutId}`,
+    })
+    if (!verified.ok) return res.status(verified.status || 403).json(verified)
+
+    const adminNote = String(req.body?.admin_note || '').trim().slice(0, 500)
+    const note = JSON.stringify({ receipt_path: receiptPath, admin_note: adminNote })
+    const { data, error } = await supabase.rpc('mark_author_payout_paid', {
+      p_payout_id: payoutId,
+      p_admin_note: note,
+    })
 
     if (error) throw error
-
-    return res.status(200).json({
-      ok: true,
-      result: data || null,
-    })
+    return res.status(200).json({ ok: true, result: data || null })
   } catch (error) {
-    console.error(
-      'MARK ADMIN AUTHOR PAYOUT PAID ERROR:',
-      error
-    )
-
+    console.error('MARK ADMIN AUTHOR PAYOUT PAID ERROR:', error)
     return res.status(500).json({
       ok: false,
-      message:
-        error.message ||
-        'Failed to mark author payout paid',
+      message: 'Failed to confirm author payout',
     })
   }
 }
+
