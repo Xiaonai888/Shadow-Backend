@@ -323,6 +323,7 @@ async function getActiveLifetimeBoost(authorId) {
 
   if (error) throw error
   if (!data) return null
+  if (data.admin_event_pause_cycle_id) return null
 
   if (
     data.ended_at &&
@@ -714,16 +715,7 @@ async function getAuthorShareContext(
   authorPage,
   settings
 ) {
-  const adminEvent = await getAuthor100PercentEventState(authorPage.id)
-  if (adminEvent?.active) {
-    return {
-      quest_share_percent: 0,
-      event_share_percent: 100,
-      boost_share_percent: 0,
-      quest_stage_number: 1,
-      lifetime_boost_id: null,
-    }
-  }
+  await getAuthor100PercentEventState(authorPage.id)
 
   const [
     active49DayEvent,
@@ -749,7 +741,7 @@ async function getAuthorShareContext(
       lastStage,
     })
   const activeBoost =
-    lifetimeBoost?.status === 'active'
+    lifetimeBoost?.status === 'active' && !lifetimeBoost.admin_event_pause_cycle_id
       ? lifetimeBoost
       : await getActiveLifetimeBoost(
           authorPage.id
@@ -965,7 +957,37 @@ export async function createAuthorEarningsFromDiamondUnlock({
   const settings = await getRevenueSettings()
   const shareContextMap = new Map()
   const rows = []
-  const batchDate = new Date()
+  const transactionTimes = newTransactions.map((transaction) => {
+    if (!transaction.created_at) throw new Error('Unlock transaction is missing created_at')
+    const time = new Date(transaction.created_at).getTime()
+    if (!Number.isFinite(time)) throw new Error('Unlock transaction has an invalid created_at timestamp')
+    return time
+  })
+  const earliestTransaction = new Date(transactionTimes.reduce((min, time) => Math.min(min, time), Infinity)).toISOString()
+  const latestTransaction = new Date(transactionTimes.reduce((max, time) => Math.max(max, time), -Infinity)).toISOString()
+  const adminWindowsByAuthor = new Map()
+  let windowOffset = 0
+
+  while (true) {
+    const { data: windows, error: windowError } = await supabase
+      .from('author_100_percent_event_windows')
+      .select('cycle_id,author_id,started_at,ends_at')
+      .in('author_id', authorIds)
+      .lte('started_at', latestTransaction)
+      .gt('ends_at', earliestTransaction)
+      .order('started_at', { ascending: true })
+      .order('cycle_id', { ascending: true })
+      .range(windowOffset, windowOffset + 99)
+
+    if (windowError) throw windowError
+    for (const window of windows || []) {
+      const authorWindows = adminWindowsByAuthor.get(window.author_id) || []
+      authorWindows.push(window)
+      adminWindowsByAuthor.set(window.author_id, authorWindows)
+    }
+    if (!windows || windows.length < 100) break
+    windowOffset += 100
+  }
 
   for (const transaction of newTransactions) {
     const authorPage = authorMap.get(
@@ -974,26 +996,26 @@ export async function createAuthorEarningsFromDiamondUnlock({
 
     if (!authorPage) continue
 
-    if (!shareContextMap.has(authorPage.id)) {
-      shareContextMap.set(
-        authorPage.id,
-        await getAuthorShareContext(
-          authorPage,
-          settings
-        )
-      )
+    const transactionDate = new Date(transaction.created_at)
+    const matchingWindows = (adminWindowsByAuthor.get(authorPage.id) || [])
+      .filter((window) => transactionDate >= new Date(window.started_at) && transactionDate < new Date(window.ends_at))
+    if (matchingWindows.length > 1) throw new Error('Overlapping Admin 100% Event windows')
+    const adminWindow = matchingWindows[0] || null
+
+    if (!adminWindow && !shareContextMap.has(authorPage.id)) {
+      shareContextMap.set(authorPage.id, await getAuthorShareContext(authorPage, settings))
     }
 
-    const shareContext = shareContextMap.get(
-      authorPage.id
-    )
-    const metadata = metadataValue(
-      transaction.metadata
-    )
-    const transactionDate = validDate(
-      transaction.created_at,
-      batchDate
-    )
+    const shareContext = adminWindow
+      ? {
+          quest_share_percent: 0,
+          event_share_percent: 100,
+          boost_share_percent: 0,
+          quest_stage_number: 1,
+          lifetime_boost_id: null,
+        }
+      : shareContextMap.get(authorPage.id)
+    const metadata = metadataValue(transaction.metadata)
     const netPaidDiamonds = numberValue(
       transaction.amount
     )
@@ -1127,6 +1149,7 @@ export async function createAuthorEarningsFromDiamondUnlock({
       ),
       metadata: {
         ...metadata,
+        admin_100_percent_event_cycle_id: adminWindow?.cycle_id || null,
         direct_cost_diamonds:
           directCostDiamonds,
         distributable_net_revenue_diamonds:
