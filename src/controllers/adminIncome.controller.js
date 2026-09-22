@@ -1851,6 +1851,7 @@ export async function generateAdminAuthorPayouts(
   res
 ) {
   try {
+    Function generateAdminAuthorPayouts
     const payoutMonth =
       normalizePayoutMonth(
         req.body?.payout_month
