@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { createReaderDeviceSession } from '../services/readerDeviceSessions.service.js'
+import { getReaderSecuritySettings, createReaderEmailChallenge, consumeReaderEmailChallenge, verifyReaderPinForUser } from '../services/readerSecurity.service.js'
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase()
@@ -487,6 +488,67 @@ export async function loginUser(req, res) {
       })
     }
 
+    const settings = await getReaderSecuritySettings(data.id)
+    const emailRequired = Boolean(settings.email_2fa_enabled)
+    const pinRequired = Boolean(settings.pin_hash)
+
+    if (emailRequired || pinRequired) {
+      const suppliedKey = String(req.body.deviceKey || '')
+      const deviceKey = /^[a-f0-9]{64}$/.test(suppliedKey)
+        ? suppliedKey
+        : crypto.randomBytes(32).toString('hex')
+      const { count, error: countError } = await supabase
+        .from('reader_security_challenges')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', data.id)
+        .eq('purpose', 'login')
+        .gte('created_at', new Date(Date.now() - 60 * 60 * 1000).toISOString())
+      if (countError) throw countError
+      if (Number(count || 0) >= 5) {
+        return res.status(429).json({
+          ok: false,
+          code: 'READER_LOGIN_CHALLENGE_LIMIT',
+          message: 'Too many login verification requests. Please try again later.',
+        })
+      }
+
+      let challengeId
+      let expiresAt
+      if (emailRequired) {
+        const result = await createReaderEmailChallenge({
+          userId: data.id,
+          email: data.email,
+          purpose: 'login',
+          deviceKey,
+        })
+        challengeId = result.challengeId
+        expiresAt = result.expiresAt
+      } else {
+        challengeId = crypto.randomUUID()
+        expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString()
+        const { error: challengeError } = await supabase
+          .from('reader_security_challenges')
+          .insert({
+            id: challengeId,
+            user_id: data.id,
+            purpose: 'login',
+            device_key_hash: crypto.createHash('sha256').update(deviceKey).digest('hex'),
+            expires_at: expiresAt,
+          })
+        if (challengeError) throw challengeError
+      }
+
+      return res.status(202).json({
+        ok: true,
+        verification_required: true,
+        challenge_id: challengeId,
+        email_required: emailRequired,
+        pin_required: pinRequired,
+        expires_at: expiresAt,
+        deviceKey,
+      })
+    }
+
     const session = await createReaderDeviceSession({
       req,
       userId: data.id,
@@ -509,6 +571,9 @@ export async function loginUser(req, res) {
         message: 'Maximum 5 active sessions. Please log out another device.',
       })
     }
+    if (['READER_EMAIL_CODE_RATE_LIMIT', 'READER_EMAIL_CODE_COOLDOWN'].includes(error.code)) {
+      return res.status(429).json({ ok: false, code: error.code, message: error.message })
+    }
     console.error('LOGIN USER ERROR:', error)
 
     return res.status(500).json({
@@ -519,6 +584,103 @@ export async function loginUser(req, res) {
   }
 }
 
+
+export async function verifyReaderLogin(req, res) {
+  try {
+    const challengeId = String(req.body?.challenge_id || '')
+    const deviceKey = String(req.body?.deviceKey || '')
+    const code = String(req.body?.code || '')
+    const pin = String(req.body?.pin || '')
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(challengeId) ||
+        !/^[a-f0-9]{64}$/.test(deviceKey)) {
+      return res.status(400).json({ ok: false, code: 'READER_LOGIN_CHALLENGE_INVALID' })
+    }
+
+    const { data: challenge, error: challengeError } = await supabase
+      .from('reader_security_challenges')
+      .select('id,user_id,email_code_hash,device_key_hash,expires_at,consumed_at')
+      .eq('id', challengeId)
+      .eq('purpose', 'login')
+      .is('consumed_at', null)
+      .maybeSingle()
+    if (challengeError) throw challengeError
+    if (!challenge || new Date(challenge.expires_at).getTime() <= Date.now() ||
+        !/^[a-f0-9]{64}$/.test(String(challenge.device_key_hash || ''))) {
+      return res.status(401).json({ ok: false, code: 'READER_LOGIN_CHALLENGE_EXPIRED' })
+    }
+    const actualKeyHash = crypto.createHash('sha256').update(deviceKey).digest('hex')
+    if (!crypto.timingSafeEqual(
+      Buffer.from(actualKeyHash, 'hex'),
+      Buffer.from(challenge.device_key_hash, 'hex')
+    )) {
+      return res.status(401).json({ ok: false, code: 'READER_LOGIN_DEVICE_MISMATCH' })
+    }
+
+    const { data: user, error: userError } = await supabase.from('users')
+      .select('*').eq('id', challenge.user_id).eq('is_active', true).maybeSingle()
+    if (userError) throw userError
+    if (!user) return res.status(401).json({ ok: false, code: 'READER_LOGIN_CHALLENGE_INVALID' })
+    const settings = await getReaderSecuritySettings(user.id)
+    if (settings.email_2fa_enabled && !challenge.email_code_hash) {
+      return res.status(401).json({ ok: false, code: 'READER_LOGIN_RESTART_REQUIRED' })
+    }
+    if (settings.pin_hash) {
+      const pinResult = await verifyReaderPinForUser(user.id, pin)
+      if (!pinResult.ok) {
+        return res.status(pinResult.code === 'READER_PIN_LOCKED' ? 429 : 401).json({
+          ok: false,
+          code: pinResult.code,
+          locked_until: pinResult.lockedUntil || null,
+          message: 'PIN is incorrect or temporarily locked.',
+        })
+      }
+    }
+
+    if (challenge.email_code_hash) {
+      const verified = await consumeReaderEmailChallenge({
+        userId: user.id,
+        challengeId,
+        purpose: 'login',
+        code,
+        deviceKey,
+      })
+      if (!verified.ok) {
+        return res.status(401).json({ ok: false, code: verified.code, message: 'Invalid or expired email code.' })
+      }
+    } else {
+      const { data: consumed, error: consumeError } = await supabase
+        .from('reader_security_challenges')
+        .update({ consumed_at: new Date().toISOString() })
+        .eq('id', challengeId)
+        .eq('user_id', user.id)
+        .eq('purpose', 'login')
+        .is('consumed_at', null)
+        .gt('expires_at', new Date().toISOString())
+        .select('id')
+        .maybeSingle()
+      if (consumeError) throw consumeError
+      if (!consumed) return res.status(401).json({ ok: false, code: 'READER_LOGIN_CHALLENGE_EXPIRED' })
+    }
+
+    const session = await createReaderDeviceSession({ req, userId: user.id, deviceKey })
+    const token = createUserToken(user, session)
+    return res.status(200).json({ ok: true, token, user: publicUser(user), deviceKey: session.deviceKey })
+  } catch (error) {
+    if (error.code === 'READER_SESSION_LIMIT_REACHED') {
+      return res.status(409).json({
+        ok: false,
+        code: 'READER_SESSION_LIMIT_REACHED',
+        message: 'Maximum 5 active sessions. Please log out another device.',
+      })
+    }
+    console.error('VERIFY READER LOGIN ERROR:', error)
+    return res.status(503).json({
+      ok: false,
+      code: 'READER_LOGIN_VERIFICATION_UNAVAILABLE',
+      message: 'Login verification is temporarily unavailable.',
+    })
+  }
+}
 
 export async function requestPasswordReset(req, res) {
   try {
