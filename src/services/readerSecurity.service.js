@@ -159,7 +159,7 @@ export function hashReaderPin(pin) {
 }
 
 export function verifyReaderPin(pin, storedHash) {
-  if (!/^\d{6}$/.test(String(pin || ''))) return false
+  if (!/^(?:\d{4}|\d{6})$/.test(String(pin || ''))) return false
   const [salt, digest] = String(storedHash || '').split(':')
   if (!/^[0-9a-f]{32}$/.test(salt || '') || !/^[0-9a-f]{128}$/.test(digest || '')) return false
   const candidate = crypto.scryptSync(pin, salt, 64)
