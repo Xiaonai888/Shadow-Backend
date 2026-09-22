@@ -625,7 +625,10 @@ export async function verifyReaderLogin(req, res) {
       return res.status(401).json({ ok: false, code: 'READER_LOGIN_RESTART_REQUIRED' })
     }
     if (settings.pin_hash) {
-      const pinResult = await verifyReaderPinForUser(user.id, pin)
+  if (!/^\d{6}$/.test(pin)) {
+    return res.status(400).json({ ok: false, code: 'READER_PIN_INVALID_FORMAT', message: 'PIN must contain exactly 6 digits.' })
+  }
+  const pinResult = await verifyReaderPinForUser(user.id, pin)
       if (!pinResult.ok) {
         return res.status(pinResult.code === 'READER_PIN_LOCKED' ? 429 : 401).json({
           ok: false,
