@@ -1629,6 +1629,7 @@ function normalizePayoutStatus(value) {
 
   const allowed = [
     'scheduled',
+    'awaiting_receipt',
     'paid',
     'failed',
     'missing_payment_method',
