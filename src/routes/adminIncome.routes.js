@@ -6,13 +6,16 @@ import { getAdminAuthorIncome } from '../controllers/adminAuthorIncome.controlle
 import { getAdminAuthorIncomeTransactions } from '../controllers/adminAuthorIncomeTransactions.controller.js'
 import { getAdminShadowMallIncome } from '../controllers/adminShadowMallIncome.controller.js'
 import { streamAdminIncomeEvents } from '../services/adminIncomeEvents.service.js'
-import { uploadAdminAuthorPayoutReceipt } from '../controllers/adminAuthorPayoutReceipt.controller.js'
+import {
+  recordAdminStoryPayoutTransfer,
+  uploadAdminStoryPayoutReceipt,
+  markAdminStoryPayoutPaid,
+} from '../controllers/adminStoryPayoutWorkflow.controller.js'
 import {
   generateAdminAuthorPayouts,
   getAdminAuthorPayouts,
   getAdminEpisodeSales,
   getAdminIncomeSummary,
-  markAdminAuthorPayoutPaid,
 } from '../controllers/adminIncome.controller.js'
 
 const router = express.Router()
@@ -26,16 +29,9 @@ router.get('/diamond-gifts', requireAdmin, getAdminDiamondGifts)
 router.get('/author-page', requireAdmin, getAdminAuthorPageIncome)
 router.get('/shadow-mall', requireAdmin, getAdminShadowMallIncome)
 router.get('/payouts', requireAdmin, getAdminAuthorPayouts)
-router.post(
-  '/payouts/generate',
-  requireAdmin,
-  generateAdminAuthorPayouts
-)
-router.post('/payouts/:id/receipt', requireAdmin, uploadAdminAuthorPayoutReceipt)
-router.post(
-  '/payouts/:id/paid',
-  requireAdmin,
-  markAdminAuthorPayoutPaid
-)
+router.post('/payouts/generate', requireAdmin, generateAdminAuthorPayouts)
+router.post('/payouts/:id/transfer-record', requireAdmin, recordAdminStoryPayoutTransfer)
+router.post('/payouts/:id/receipt', requireAdmin, uploadAdminStoryPayoutReceipt)
+router.post('/payouts/:id/paid', requireAdmin, markAdminStoryPayoutPaid)
 
 export default router
