@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { getAuthor100PercentEventState } from '../services/author100PercentEvent.service.js'
 import { serveAuthorCachedJson } from '../services/authorRequestCache.service.js'
 import { getAuthorProfileSummary } from '../services/authorProfileSummary.service.js'
 import { getAuthorIncomeRecordData } from '../services/authorIncomeRecords.service.js'
@@ -766,6 +767,47 @@ async function getOrCreateLifetimeBoost({ authorPage, lastStage }) {
   const shouldActivate = Boolean(lastStage?.completed)
   const now = new Date()
   const nowIso = now.toISOString()
+  const adminEvent = await getAuthor100PercentEventState(authorPage.id)
+
+  if (adminEvent?.active && shouldActivate) {
+    if (oldBoost) {
+      if (['locked', 'eligible'].includes(String(oldBoost.status || '').toLowerCase())) {
+        const { data: eligibleBoost, error: eligibleError } = await supabase
+          .from('author_lifetime_boosts')
+          .update({
+            status: 'eligible',
+            eligible_at: null,
+            updated_at: nowIso,
+          })
+          .eq('id', oldBoost.id)
+          .in('status', ['locked', 'eligible'])
+          .select()
+          .maybeSingle()
+
+        if (eligibleError) throw eligibleError
+        return eligibleBoost || oldBoost
+      }
+
+      return oldBoost
+    }
+
+    const { data: eligibleBoost, error: eligibleError } = await supabase
+      .from('author_lifetime_boosts')
+      .insert({
+        author_id: authorPage.id,
+        user_id: authorPage.user_id,
+        boost_type: '100_percent_100_days',
+        share_percent: 100,
+        duration_days: 100,
+        status: 'eligible',
+        eligible_at: null,
+      })
+      .select()
+      .single()
+
+    if (eligibleError) throw eligibleError
+    return eligibleBoost
+  }
 
   if (oldBoost) {
     if (
@@ -867,6 +909,8 @@ async function getOrCreateLifetimeBoost({ authorPage, lastStage }) {
 }
 
 async function getActiveLifetimeBoost(authorId) {
+  await getAuthor100PercentEventState(authorId)
+
   const { data, error } = await supabase
     .from('author_lifetime_boosts')
     .select('*')
@@ -878,6 +922,7 @@ async function getActiveLifetimeBoost(authorId) {
   if (error) throw error
 
   if (!data) return null
+  if (data.admin_event_pause_cycle_id) return null
 
   if (data.ended_at && new Date(data.ended_at).getTime() <= Date.now()) {
     const { data: updatedBoost, error: updateError } = await supabase
@@ -919,6 +964,15 @@ async function getAuthor49DayEventState(authorPage) {
   }
 
   if (!authorPage) return defaultState
+
+  const adminEvent = await getAuthor100PercentEventState(authorPage.id)
+  if (adminEvent?.active) {
+    return {
+      ...defaultState,
+      visible: false,
+      status: 'paused_by_admin_event',
+    }
+  }
 
   const [{ data: progress, error: progressError }, activeBoost] =
     await Promise.all([
@@ -1068,6 +1122,14 @@ async function getAuthorDaily50EventState(authorPage) {
   }
 
   if (!authorPage) return hiddenState
+
+  const adminEvent = await getAuthor100PercentEventState(authorPage.id)
+  if (adminEvent?.active) {
+    return {
+      ...hiddenState,
+      status: 'paused_by_admin_event',
+    }
+  }
 
   const [
     { data: day49, error: day49Error },
@@ -1367,8 +1429,14 @@ export async function getMyAuthorQuest(req, res) {
 
     const currentLifetimeBoost =
       activeBoost || lifetimeBoost
+    const adminEvent = await getAuthor100PercentEventState(authorPage.id)
 
     const questShareCandidates = [
+      {
+        source: 'admin_100_percent_event',
+        percent: adminEvent?.active ? 100 : 0,
+        ends_at: adminEvent?.active ? adminEvent.effective_ends_at : null,
+      },
       {
         source: 'quest_stage',
         percent: percentValue(
@@ -1448,12 +1516,16 @@ return res.status(200).json({
         boost_ends_at:
           effectiveQuestShare.ends_at,
       },
+      admin_100_percent_event: adminEvent,
       next_stage: nextStage ? buildStageProgress(nextStage, totals) : null,
       totals,
       stage_rules: stages.map((stage) => buildStageProgress(stage, totals)),
       lifetime_boost: {
   id: currentLifetimeBoost.id,
-  status: currentLifetimeBoost.status,
+  status: adminEvent?.active && currentLifetimeBoost.admin_event_pause_cycle_id
+    ? 'paused_by_admin_event'
+    : currentLifetimeBoost.status,
+  admin_event_remaining_seconds: currentLifetimeBoost.admin_event_remaining_seconds ?? null,
   share_percent: percentValue(
     currentLifetimeBoost.share_percent
   ),
@@ -1505,6 +1577,7 @@ export async function activateMyAuthorLifetimeBoost(
       })
     }
 
+    const adminEvent = await getAuthor100PercentEventState(authorPage.id)
     const totals = await getAuthorTotals(authorPage)
     const lastStage =
       buildLastStageProgress(totals)
@@ -1514,6 +1587,15 @@ export async function activateMyAuthorLifetimeBoost(
         authorPage,
         lastStage,
       })
+
+    if (adminEvent?.active) {
+      return res.status(409).json({
+        ok: false,
+        code: 'ADMIN_100_PERCENT_EVENT_ACTIVE',
+        message: 'The 100-Day Creator Boost will be available after the Admin 100% Event ends.',
+        lifetime_boost: lifetimeBoost,
+      })
+    }
 
     if (lifetimeBoost.status === 'active') {
       return res.status(200).json({
@@ -1678,8 +1760,14 @@ async function getMyAuthorIncomeUncached(req, res) {
       quest.data?.current_share_percent ||
         settings.default_share_percent
     )
+    const adminEvent = await getAuthor100PercentEventState(authorPage.id)
 
     const shareCandidates = [
+      {
+        source: 'admin_100_percent_event',
+        percent: adminEvent?.active ? 100 : 0,
+        ends_at: adminEvent?.active ? adminEvent.effective_ends_at : null,
+      },
       {
         source: 'quest_stage',
         percent: stageSharePercent,
@@ -1776,6 +1864,7 @@ gifts: {
         effectiveShare.source,
       boost_ends_at:
         effectiveShare.ends_at,
+      admin_100_percent_event: adminEvent,
       next_payout_date: getNextPayoutDate(settings),
       payment_method: {
         complete: Boolean(paymentMethod),
