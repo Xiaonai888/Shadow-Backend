@@ -21,6 +21,7 @@ import {
   updateUserProfile,
 } from '../controllers/users.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
+import readerDeviceAccessRoutes from './readerDeviceAccess.routes.js'
 import { verifyTurnstile } from '../middleware/turnstile.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
@@ -93,6 +94,7 @@ router.post('/register', readerRegisterLimit, verifyTurnstile, registerUser)
 router.post('/login', readerLoginLimit, loginUser)
 router.post('/forgot-password', readerPasswordRequestLimit, requestPasswordReset)
 router.post('/reset-password', readerPasswordResetLimit, resetPassword)
+router.use('/devices', readerDeviceAccessRoutes)
 router.get('/me', requireUser, getCurrentUser)
 router.get('/me/summary', requireUser, getMeSummary)
 router.get('/suggestions', requireUser, getUserSuggestions)
