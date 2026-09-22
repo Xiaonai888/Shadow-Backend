@@ -1511,6 +1511,13 @@ updated_at: new Date().toISOString(),
       author_page: publicAuthorPage(updatedPage),
     })
   } catch (error) {
+    if (error?.message === 'AUTHOR_PAGE_NAME_COOLDOWN') {
+  return res.status(409).json({
+    ok: false,
+    message: 'You can change your Page name once every 14 days after the first 3 changes.',
+    next_change_at: error.details?.replace(/^next_change_at=/, '') || null,
+  })
+}
     console.error('UPDATE MY AUTHOR PAGE ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to update author page', error: error.message })
   }
