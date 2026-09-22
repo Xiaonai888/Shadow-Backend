@@ -705,12 +705,9 @@ export async function resetPassword(req, res) {
 
     if (updateTokenError) throw updateTokenError
 
-    const authToken = createUserToken(updatedUser)
-
     return res.status(200).json({
       ok: true,
       message: 'Password reset successfully',
-      token: authToken,
       user: publicUser(updatedUser),
     })
   } catch (error) {
@@ -1149,7 +1146,11 @@ export async function confirmEmailChange(req, res) {
       ok: true,
       message: 'Email changed successfully',
       user: publicUser(updatedUser),
-      token: createUserToken(updatedUser),
+      token: createUserToken(updatedUser, {
+        sessionId: req.user.session_id,
+        deviceId: req.user.device_id,
+        jwtId: req.user.jwt_id,
+      }),
       next_change_at: new Date(
         now.getTime() + EMAIL_CHANGE_COOLDOWN_MS
       ).toISOString(),
@@ -1573,7 +1574,13 @@ if (!/^[A-Za-z0-9_]+$/.test(username)) {
       ok: true,
       message: 'Profile updated',
       user: publicUser(data),
-      token: isUsernameChanged ? createUserToken(data) : undefined,
+      token: isUsernameChanged
+        ? createUserToken(data, {
+            sessionId: req.user.session_id,
+            deviceId: req.user.device_id,
+            jwtId: req.user.jwt_id,
+          })
+        : undefined,
     })
   } catch (error) {
     console.error('UPDATE USER PROFILE ERROR:', error)
