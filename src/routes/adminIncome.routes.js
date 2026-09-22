@@ -6,6 +6,7 @@ import { getAdminAuthorIncome } from '../controllers/adminAuthorIncome.controlle
 import { getAdminAuthorIncomeTransactions } from '../controllers/adminAuthorIncomeTransactions.controller.js'
 import { getAdminShadowMallIncome } from '../controllers/adminShadowMallIncome.controller.js'
 import { streamAdminIncomeEvents } from '../services/adminIncomeEvents.service.js'
+import { uploadAdminAuthorPayoutReceipt } from '../controllers/adminAuthorPayoutReceipt.controller.js'
 import {
   generateAdminAuthorPayouts,
   getAdminAuthorPayouts,
@@ -30,6 +31,7 @@ router.post(
   requireAdmin,
   generateAdminAuthorPayouts
 )
+router.post('/payouts/:id/receipt', requireAdmin, uploadAdminAuthorPayoutReceipt)
 router.post(
   '/payouts/:id/paid',
   requireAdmin,
