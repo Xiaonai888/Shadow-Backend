@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { getAuthor100PercentEventState } from './author100PercentEvent.service.js'
 import {
   resolveEffectiveAuthorShare,
   splitDistributableRevenue,
@@ -724,6 +725,15 @@ async function getAuthorShareContext(
     getQuestStages(),
     getAuthorTotals(authorPage),
   ])
+
+    const adminEvent = await getAuthor100PercentEventState(authorPage.id)
+  if (adminEvent?.active) {
+    return {
+      quest_share_percent: 0, event_share_percent: 100,
+      boost_share_percent: 0, quest_stage_number: 1,
+      lifetime_boost_id: null,
+    }
+  }
 
   const bestStage = getBestStage(stages, totals)
   const progress = await upsertQuestProgress({
