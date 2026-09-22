@@ -6,6 +6,7 @@ import { getDiscoverAuthorPostsFeed } from '../controllers/discoverAuthorPostsFe
 import { inviteAuthorPageFriend } from '../controllers/authorPageInvites.controller.js'
 import { getMyAuthorTopSupporters } from '../controllers/authorTopSupporters.controller.js'
 import { getMyAuthorMonthlyEarnings } from '../controllers/authorMonthlyEarnings.controller.js'
+import { getMyAuthorStoryPayoutStatus } from '../controllers/authorStoryPayoutStatus.controller.js'
 import {
   getAuthorHashtagSuggestions,
   recordAuthorHashtagInterest,
@@ -205,6 +206,7 @@ router.get('/me/dashboard-badges', requireUser, getMyAuthorDashboardBadges)
 router.get('/me', requireUser, getMyAuthorPage)
 router.get('/me/quest', requireUser, getMyAuthorQuest)
 router.get('/me/income', requireUser, getMyAuthorIncome)
+router.get('/me/story-payout-status', requireUser, getMyAuthorStoryPayoutStatus)
 router.get('/me/recent-earnings', requireUser, getMyAuthorRecentEarnings)
 router.get('/me/top-supporters', requireUser, getMyAuthorTopSupporters)
 router.get('/me/monthly-earnings', requireUser, getMyAuthorMonthlyEarnings)
