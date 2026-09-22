@@ -3,6 +3,7 @@ import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
+import { getMyAuthorStoreOfflinePdfGrant } from '../controllers/authorStoreOfflinePdf.controller.js'
 import {
   createAuthorStoreOrder,
   createAuthorStoreOrderPayment,
@@ -141,6 +142,7 @@ router.post('/orders', createAuthorStoreOrder)
 router.post('/orders/create-payment', requireUser, createAuthorStoreOrderPayment)
 router.get('/orders/my', requireUser, getMyAuthorStoreBuyerOrders)
 router.get('/downloads/my', requireUser, getMyAuthorStoreReaderDownloads)
+router.get('/downloads/:productId/offline-grant', requireUser, getMyAuthorStoreOfflinePdfGrant)
 router.get('/orders/status/:orderId', requireUser, getAuthorStoreOrderStatus)
 router.post('/orders/callback', handleAuthorStoreAbaCallback)
 router.put('/me/products/:productId', requireUser, updateMyAuthorStoreProduct)
