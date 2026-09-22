@@ -1851,7 +1851,9 @@ export async function generateAdminAuthorPayouts(
   res
 ) {
   try {
-    Function generateAdminAuthorPayouts
+    if (String(req.admin?.role || '').toLowerCase() !== 'owner') {
+  return res.status(403).json({ ok: false, message: 'Owner access required to generate payouts' })
+}
     const payoutMonth =
       normalizePayoutMonth(
         req.body?.payout_month
