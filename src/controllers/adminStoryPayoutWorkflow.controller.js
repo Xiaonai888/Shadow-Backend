@@ -120,6 +120,10 @@ export function uploadAdminStoryPayoutReceipt(req, res) {
       if (payout.status !== 'awaiting_receipt' || !payout.transfer_recorded_at) {
         return res.status(409).json({ ok: false, message: 'Record the completed transfer first. Do not transfer again if it was already sent.' })
       }
+      if (payout.receipt_path) {
+        res.set('Cache-Control', 'no-store')
+        return res.status(200).json({ ok: true, receipt_path: payout.receipt_path, already_saved: true })
+      }
       const expected = IMAGE_TYPES[file.mimetype]
       try {
         const image = sharp(file.buffer, { limitInputPixels: 16_000_000, failOn: 'error' })
@@ -136,8 +140,26 @@ export function uploadAdminStoryPayoutReceipt(req, res) {
         upsert: false,
       })
       if (error) throw error
+      const { data: saved, error: saveError } = await supabase
+        .from('author_payouts')
+        .update({ receipt_path: receiptPath, updated_at: new Date().toISOString() })
+        .eq('id', id)
+        .eq('status', 'awaiting_receipt')
+        .not('transfer_recorded_at', 'is', null)
+        .is('receipt_path', null)
+        .select('id,receipt_path')
+        .maybeSingle()
+      if (saveError) throw saveError
+      if (!saved) {
+        const current = await loadPayout(id)
+        if (current?.status === 'awaiting_receipt' && current.receipt_path) {
+          res.set('Cache-Control', 'no-store')
+          return res.status(200).json({ ok: true, receipt_path: current.receipt_path, already_saved: true })
+        }
+        return res.status(409).json({ ok: false, message: 'Payout status changed. Check its status; do not transfer again.' })
+      }
       res.set('Cache-Control', 'no-store')
-      return res.status(201).json({ ok: true, receipt_path: receiptPath })
+      return res.status(201).json({ ok: true, receipt_path: saved.receipt_path })
     } catch (error) {
       console.error('UPLOAD STORY PAYOUT RECEIPT ERROR:', error)
       return res.status(500).json({ ok: false, message: 'Could not save receipt. Do not transfer money again.' })
@@ -161,6 +183,9 @@ export async function markAdminStoryPayoutPaid(req, res) {
     }
     if (payout.status !== 'awaiting_receipt' || !payout.transfer_recorded_at || !payout.payment_method_id || Number(payout.net_payout_usd) < 10) {
       return res.status(409).json({ ok: false, message: 'Transfer must be recorded before receipt confirmation' })
+    }
+    if (!payout.receipt_path || payout.receipt_path !== receiptPath) {
+      return res.status(409).json({ ok: false, message: 'The receipt must be saved on this payout before confirming paid' })
     }
     const { data: receipt, error: receiptError } = await supabase.storage.from(BUCKET).download(receiptPath)
     if (receiptError || !receipt || !IMAGE_TYPES[receipt.type] || receipt.size < 100 || receipt.size > MAX_RECEIPT_SIZE) {
