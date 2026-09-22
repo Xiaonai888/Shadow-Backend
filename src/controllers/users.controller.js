@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
+import { createReaderDeviceSession } from '../services/readerDeviceSessions.service.js'
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase()
@@ -168,7 +169,7 @@ async function sendEmailChangeOtpEmail({ to, otp }) {
   return true
 }
 
-function createUserToken(user) {
+function createUserToken(user, session = null) {
   return jwt.sign(
     {
       type: 'reader',
@@ -178,6 +179,7 @@ function createUserToken(user) {
       username: user.username,
       role: user.role,
       is_author: Boolean(user.is_author),
+            ...(session ? { session_id: session.sessionId, device_id: session.deviceId, jwt_id: session.jwtId } : {}),
     },
     process.env.JWT_SECRET,
     {
@@ -414,13 +416,20 @@ if (existingUsername) {
 
     if (error) throw error
 
-    const token = createUserToken(data)
+    const session = await createReaderDeviceSession({
+      req,
+      userId: data.id,
+      deviceKey: req.body.deviceKey,
+    })
+    const token = createUserToken(data, session)
 
-    return res.status(201).json({
+    return res.status(200).json({
       ok: true,
       token,
       user: publicUser(data),
+      deviceKey: session.deviceKey,
     })
+
   } catch (error) {
     console.error('REGISTER USER ERROR:', error)
 
