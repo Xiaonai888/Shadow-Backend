@@ -19,6 +19,8 @@ import {
   invalidatePublicStoriesCache,
 } from '../services/publicStoriesResponseCache.service.js'
 import { cachePublicStoryRecommendations } from '../services/publicStoryRecommendationsCache.service.js'
+import { APP_REGISTRY } from '../config/appRegistry.js'
+import { getSupabaseClient } from '../config/supabase.js'
 
 const router = express.Router()
 
@@ -53,6 +55,40 @@ function invalidatePublicStoriesAfterCountedView(req, res, next) {
 
   next()
 }
+
+router.get('/apps', async (req, res) => {
+  try {
+    const client = getSupabaseClient()
+    if (!client) {
+      return res.status(503).json({ ok: false, message: 'App settings unavailable' })
+    }
+
+    const { data, error } = await client
+      .from('app_settings')
+      .select('app_key,name,profile_url,hidden,disabled')
+      .in('app_key', APP_REGISTRY.map(({ appKey }) => appKey))
+
+    if (error) throw error
+
+    const stored = new Map((data || []).map((item) => [item.app_key, item]))
+    const apps = APP_REGISTRY.map((definition) => {
+      const row = stored.get(definition.appKey)
+      return {
+        appKey: definition.appKey,
+        name: row?.name || definition.name,
+        profile: row?.profile_url || definition.profile || null,
+        hidden: row?.hidden ?? definition.hidden,
+        disabled: row?.disabled ?? definition.disabled,
+      }
+    })
+
+    res.set('Cache-Control', 'public, max-age=30, must-revalidate')
+    return res.json({ ok: true, apps })
+  } catch (error) {
+    console.error('PUBLIC APPS ERROR:', error)
+    return res.status(503).json({ ok: false, message: 'App settings unavailable' })
+  }
+})
 
 router.get(
   '/stories',
