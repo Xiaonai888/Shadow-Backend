@@ -487,13 +487,20 @@ export async function loginUser(req, res) {
       })
     }
 
-    const token = createUserToken(data)
+    const session = await createReaderDeviceSession({
+      req,
+      userId: data.id,
+      deviceKey: req.body.deviceKey,
+    })
+    const token = createUserToken(data, session)
 
     return res.status(200).json({
       ok: true,
       token,
       user: publicUser(data),
+      deviceKey: session.deviceKey,
     })
+
   } catch (error) {
     console.error('LOGIN USER ERROR:', error)
 
