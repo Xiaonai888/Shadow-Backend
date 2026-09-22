@@ -600,12 +600,23 @@ const supportSpamGuard = (req, res, next) => {
   return supportActionSpamGuard(req, res, next)
 }
 
-const giftSpamGuard = (req, res, next) => {
-  if (req.method === 'GET') {
-    return readerReadSpamGuard(req, res, next)
-  }
+const giftFastSendGuard = createSpamGuard({
+  scope: 'gift_send_gap',
+  threshold: 1,
+  windowSeconds: 3,
+})
 
-  return giftActionSpamGuard(req, res, next)
+const giftMinuteSendGuard = createSpamGuard({
+  scope: 'gift_send_minute',
+  threshold: 10,
+  windowSeconds: 60,
+})
+
+const giftSpamGuard = (req, res, next) => {
+  if (req.method === 'GET') return readerReadSpamGuard(req, res, next)
+  return giftFastSendGuard(req, res, () =>
+    giftMinuteSendGuard(req, res, () => giftActionSpamGuard(req, res, next))
+  )
 }
 
 const shortStorySpamGuard = (req, res, next) => {
