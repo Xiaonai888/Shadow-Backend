@@ -37,7 +37,7 @@ export async function getMyAuthorStoryPayoutStatus(req, res) {
     const minimumUsd = Number(balance.minimum_payout_usd || 10)
     const method = methodResult.data || null
     const latest = payoutResult.data || null
-    const activePayout = latest && ['scheduled', 'missing_payment_method'].includes(latest.status) ? latest : null
+    const activePayout = latest && ['scheduled', 'missing_payment_method', 'awaiting_receipt'].includes(latest.status) ? latest : null
     const status = activePayout ? activePayout.status
       : readyUsd >= minimumUsd ? (method ? 'ready' : 'needs_payment_details')
         : 'carry_forward'
