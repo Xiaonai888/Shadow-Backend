@@ -1,6 +1,7 @@
 import express from 'express'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { supabase } from '../config/supabase.js'
+import { manageAuthor100PercentEvent } from '../controllers/adminAuthor100PercentEventActions.controller.js'
 
 const router = express.Router()
 const isUuid = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
@@ -60,5 +61,6 @@ router.get('/authors/:authorId/history', async (req, res) => {
     return res.status(500).json({ ok: false, message: 'Failed to load author event history' })
   }
 })
+router.post('/authors/:authorId/actions', manageAuthor100PercentEvent)
 
 export default router
