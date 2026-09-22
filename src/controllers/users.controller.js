@@ -502,6 +502,13 @@ export async function loginUser(req, res) {
     })
 
   } catch (error) {
+        if (error.code === 'READER_SESSION_LIMIT_REACHED') {
+      return res.status(409).json({
+        ok: false,
+        code: 'READER_SESSION_LIMIT_REACHED',
+        message: 'Maximum 5 active sessions. Please log out another device.',
+      })
+    }
     console.error('LOGIN USER ERROR:', error)
 
     return res.status(500).json({
