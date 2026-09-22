@@ -98,9 +98,9 @@ router.post('/confirm', confirmLimit, async (req, res) => {
     if (!allowedPurpose(purpose, settings)) {
       return res.status(400).json({ ok: false, code: 'READER_SECURITY_ACTION_UNAVAILABLE' })
     }
-    if (['setup_pin', 'change_pin', 'reset_pin'].includes(purpose) && !/^\d{4}$/.test(pin)) {
-      return res.status(400).json({ ok: false, code: 'READER_PIN_INVALID_FORMAT', message: 'PIN must contain exactly 4 digits.' })
-    }
+    if (['setup_pin', 'change_pin', 'reset_pin'].includes(purpose) && !/^\d{6}$/.test(pin)) {
+  return res.status(400).json({ ok: false, code: 'READER_PIN_INVALID_FORMAT', message: 'PIN must contain exactly 6 digits.' })
+}
     const verified = await consumeReaderEmailChallenge({ userId, challengeId, purpose, code })
     if (!verified.ok) {
       return res.status(400).json({ ok: false, code: verified.code, message: 'Invalid or expired security code.' })
