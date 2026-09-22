@@ -136,7 +136,7 @@ import {
   getReaderAuthorPageBlockStatus,
   unblockReaderAuthorPage,
 } from '../controllers/readerAuthorPageBlocks.controller.js'
-
+import { getAuthorPageTransparency } from '../controllers/authorPageTransparency.controller.js'
 const router = express.Router()
 
 function invalidateMyAuthorPageAfterMutation(
@@ -253,6 +253,7 @@ router.get('/discover/posts/feed', requireUser, getDiscoverAuthorPostsFeed)
 router.get('/top', getTopAuthorPages)
 router.get('/page/:pageUsername/followers', getAuthorPageFollowers)
 router.get('/page/:pageUsername/reviews', getAuthorPageReviews)
+router.get('/page/:pageUsername/transparency', getAuthorPageTransparency)
 router.put('/page/:pageUsername/reviews/me', requireUser, upsertMyAuthorPageReview)
 router.delete('/page/:pageUsername/reviews/me', requireUser, deleteMyAuthorPageReview)
 router.get('/page/:pageUsername/block-status', requireUser, getReaderAuthorPageBlockStatus)
