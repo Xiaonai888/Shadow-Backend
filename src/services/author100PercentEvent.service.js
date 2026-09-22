@@ -2,9 +2,7 @@ import { supabase } from '../config/supabase.js'
 
 const isUuid = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''))
 
-export async function getAuthor100PercentEventState(authorId, at = new Date()) {
-  if (!isUuid(authorId)) throw new Error('Invalid Author ID')
-
+async function loadOpenCycle(authorId) {
   const { data, error } = await supabase
     .from('author_100_percent_event_cycles')
     .select('id,author_id,status,duration_seconds,remaining_seconds,used_seconds,first_started_at,last_resumed_at,last_paused_at,completed_at,created_at')
@@ -15,10 +13,33 @@ export async function getAuthor100PercentEventState(authorId, at = new Date()) {
     .maybeSingle()
 
   if (error) throw error
-  if (!data) return null
+  return data
+}
+
+export async function getAuthor100PercentEventState(authorId, at = new Date()) {
+  if (!isUuid(authorId)) throw new Error('Invalid Author ID')
 
   const nowMs = at instanceof Date ? at.getTime() : new Date(at).getTime()
   if (!Number.isFinite(nowMs)) throw new Error('Invalid event lookup time')
+
+  let data = await loadOpenCycle(authorId)
+  if (!data) return null
+
+  if (data.status === 'active') {
+    const resumedMs = new Date(data.last_resumed_at).getTime()
+    const expiresMs = resumedMs + Number(data.remaining_seconds) * 1000
+
+    if (!Number.isFinite(expiresMs)) throw new Error('Invalid event expiration time')
+
+    if (expiresMs <= Date.now()) {
+      const { error } = await supabase.rpc('complete_expired_author_100_percent_event', {
+        p_author_id: authorId,
+      })
+      if (error) throw error
+      data = await loadOpenCycle(authorId)
+      if (!data) return null
+    }
+  }
 
   const storedRemaining = Math.max(0, Number(data.remaining_seconds || 0))
   const resumedMs = data.last_resumed_at ? new Date(data.last_resumed_at).getTime() : NaN
