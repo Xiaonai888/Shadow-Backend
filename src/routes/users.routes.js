@@ -9,6 +9,7 @@ import {
   getUserFollowing,
   getUserSuggestions,
   loginUser,
+  verifyReaderLogin,
   registerUser,
   requestPasswordReset,
   resetPassword,
@@ -93,6 +94,7 @@ function invalidatePublicStoriesAfterMutation(req, res, next) {
 
 router.post('/register', readerRegisterLimit, verifyTurnstile, registerUser)
 router.post('/login', readerLoginLimit, loginUser)
+router.post('/login/verify', readerLoginLimit, verifyReaderLogin)
 router.post('/forgot-password', readerPasswordRequestLimit, requestPasswordReset)
 router.post('/reset-password', readerPasswordResetLimit, resetPassword)
 router.use('/devices', readerDeviceAccessRoutes)
