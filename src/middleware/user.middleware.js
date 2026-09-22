@@ -30,10 +30,7 @@ export async function requireUser(req, res, next) {
       })
     }
 
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET
-    )
+    const decoded = jwt.verify(token, process.env.JWT_SECRET)
 
     if (decoded.type !== 'reader') {
       console.warn(
@@ -53,46 +50,44 @@ export async function requireUser(req, res, next) {
       })
     }
 
-        if (decoded.session_id || decoded.device_id || decoded.jwt_id) {
-      let session
-      try {
-        session = await validateReaderDeviceSession(decoded)
-      } catch (error) {
-        console.error('READER_SESSION_CHECK_ERROR:', error)
-        return res.status(503).json({
-          ok: false,
-          code: 'READER_SESSION_UNAVAILABLE',
-          message: 'Session verification is temporarily unavailable',
-        })
-      }
-      if (!session.ok) {
-        return res.status(401).json({
-          ok: false,
-          code: session.code,
-          message: 'Reader session is invalid or expired',
-        })
-      }
+    if (!decoded.session_id || !decoded.device_id || !decoded.jwt_id) {
+      return res.status(401).json({
+        ok: false,
+        code: 'READER_SESSION_REQUIRED',
+        message: 'Please sign in again to continue.',
+      })
     }
 
+    let session
+    try {
+      session = await validateReaderDeviceSession(decoded)
+    } catch (error) {
+      console.error('READER_SESSION_CHECK_ERROR:', error)
+      return res.status(503).json({
+        ok: false,
+        code: 'READER_SESSION_UNAVAILABLE',
+        message: 'Session verification is temporarily unavailable',
+      })
+    }
+
+    if (!session.ok) {
+      return res.status(401).json({
+        ok: false,
+        code: session.code,
+        message: 'Reader session is invalid or expired',
+      })
+    }
 
     const now = Math.floor(Date.now() / 1000)
 
-    if (
-      !decoded.iat ||
-      now - decoded.iat >= RENEW_AFTER_SECONDS
-    ) {
-      res.set(
-        'X-Reader-Token',
-        renewReaderToken(decoded)
-      )
+    if (!decoded.iat || now - decoded.iat >= RENEW_AFTER_SECONDS) {
+      res.set('X-Reader-Token', renewReaderToken(decoded))
     }
 
     req.user = decoded
     return next()
   } catch (error) {
-    const tokenInfo = token
-      ? jwt.decode(token)
-      : null
+    const tokenInfo = token ? jwt.decode(token) : null
 
     console.warn(
       'READER_AUTH_FAIL',
@@ -106,25 +101,18 @@ export async function requireUser(req, res, next) {
         expires_at: tokenInfo?.exp
           ? new Date(tokenInfo.exp * 1000).toISOString()
           : null,
-        secret_configured: Boolean(
-          process.env.JWT_SECRET
-        ),
+        secret_configured: Boolean(process.env.JWT_SECRET),
         path: req.originalUrl,
         method: req.method,
       })
     )
 
-    const expired =
-      error?.name === 'TokenExpiredError'
+    const expired = error?.name === 'TokenExpiredError'
 
     return res.status(401).json({
       ok: false,
-      code: expired
-        ? 'TOKEN_EXPIRED'
-        : 'TOKEN_INVALID',
-      message: expired
-        ? 'Token expired'
-        : 'Invalid token',
+      code: expired ? 'TOKEN_EXPIRED' : 'TOKEN_INVALID',
+      message: expired ? 'Token expired' : 'Invalid token',
     })
   }
 }
