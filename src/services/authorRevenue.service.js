@@ -725,6 +725,14 @@ async function getAuthorShareContext(
     getQuestStages(),
     getAuthorTotals(authorPage),
   ])
+    const adminEvent = await getAuthor100PercentEventState(authorPage.id)
+  if (adminEvent?.active) {
+    return {
+      quest_share_percent: 0, event_share_percent: 100,
+      boost_share_percent: 0, quest_stage_number: 1,
+      lifetime_boost_id: null,
+    }
+  }
 
     const adminEvent = await getAuthor100PercentEventState(authorPage.id)
   if (adminEvent?.active) {
