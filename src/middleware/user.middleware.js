@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken'
+import { validateReaderDeviceSession } from '../services/readerDeviceSessions.service.js'
 
 const READER_SESSION_DAYS = 60
 const RENEW_AFTER_SECONDS = 24 * 60 * 60
@@ -11,7 +12,7 @@ function renewReaderToken(decoded) {
   })
 }
 
-export function requireUser(req, res, next) {
+export async function requireUser(req, res, next) {
   let token = ''
 
   try {
@@ -51,6 +52,28 @@ export function requireUser(req, res, next) {
         message: 'Reader account token is required',
       })
     }
+
+        if (decoded.session_id || decoded.device_id || decoded.jwt_id) {
+      let session
+      try {
+        session = await validateReaderDeviceSession(decoded)
+      } catch (error) {
+        console.error('READER_SESSION_CHECK_ERROR:', error)
+        return res.status(503).json({
+          ok: false,
+          code: 'READER_SESSION_UNAVAILABLE',
+          message: 'Session verification is temporarily unavailable',
+        })
+      }
+      if (!session.ok) {
+        return res.status(401).json({
+          ok: false,
+          code: session.code,
+          message: 'Reader session is invalid or expired',
+        })
+      }
+    }
+
 
     const now = Math.floor(Date.now() / 1000)
 
