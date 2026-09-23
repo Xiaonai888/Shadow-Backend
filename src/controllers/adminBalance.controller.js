@@ -95,6 +95,7 @@ export async function getAdminBalanceWallets(req, res) {
     const limit = toPositiveInt(req.query.limit, 20, 50)
     const search = cleanSearch(req.query.q)
     const sort = cleanSort(req.query.sort)
+    const balanceType = ['diamond', 'coin', 'voucher', 'story_card'].includes(req.query.balance_type) ? req.query.balance_type : 'diamond'
     const dormantOnly = cleanBoolean(req.query.dormant)
     const dormantDays = toPositiveInt(req.query.dormant_days, 90, 3650)
     const refresh = String(req.query.refresh || '') === '1'
@@ -102,7 +103,7 @@ export async function getAdminBalanceWallets(req, res) {
       page,
       limit,
       search,
-      sort,
+      sort: `${sort}:${balanceType}`,
       dormantOnly,
       dormantDays,
     })
@@ -120,12 +121,13 @@ export async function getAdminBalanceWallets(req, res) {
     }
 
     const { data, error } = await supabase.rpc(
-      'get_admin_balance_wallets_v2',
+      'get_admin_balance_wallets_v3',
       {
         p_page: page,
         p_limit: limit,
         p_search: search,
         p_sort: sort,
+        p_balance_type: balanceType,
         p_dormant_only: dormantOnly,
         p_dormant_days: dormantDays,
       }
