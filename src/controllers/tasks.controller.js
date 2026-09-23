@@ -408,16 +408,20 @@ async function getActiveReadingMission(missionId) {
 async function getOrCreateReadingMissionProgress(
   userId,
   mission,
-  storyId = null
+  storyId = null,
+  prefetchedProgress = undefined
 ) {
   const todayKey = getPhnomPenhDateKey()
 
-  const { data: existingProgress, error: existingError } = await supabase
-    .from('reader_reading_mission_progress')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('mission_id', mission.id)
-    .maybeSingle()
+  const { data: existingProgress, error: existingError } =
+    prefetchedProgress === undefined
+      ? await supabase
+          .from('reader_reading_mission_progress')
+          .select('*')
+          .eq('user_id', userId)
+          .eq('mission_id', mission.id)
+          .maybeSingle()
+      : { data: prefetchedProgress, error: null }
 
   if (existingError) throw existingError
 
@@ -1524,13 +1528,34 @@ export async function trackReadingSessionProgress(req, res) {
         missionMatchesStory(mission, storyId)
       )
 
+      const { data: progressRows, error: progressRowsError } =
+        matchingMissions.length
+          ? await supabase
+              .from('reader_reading_mission_progress')
+              .select('*')
+              .eq('user_id', userId)
+              .in('mission_id', matchingMissions.map((mission) => mission.id))
+          : { data: [], error: null }
+
+      if (progressRowsError) throw progressRowsError
+
+      const progressByMissionId = new Map()
+      for (const row of progressRows || []) {
+        const key = String(row.mission_id)
+        if (progressByMissionId.has(key)) {
+          throw new Error('Duplicate reading mission progress')
+        }
+        progressByMissionId.set(key, row)
+      }
+
       const updatedMissions = []
 
       for (const mission of matchingMissions) {
         const progress = await getOrCreateReadingMissionProgress(
           userId,
           mission,
-          storyId
+          storyId,
+          progressByMissionId.get(String(mission.id)) ?? null
         )
 
         const targetSeconds = getMissionTargetSeconds(mission)
