@@ -1,6 +1,5 @@
 import { supabase } from '../config/supabase.js'
 import {
-  applyAdultStoryVisibility,
   getReaderAgeAccess,
   isStoryVisibleToReader,
 } from '../services/storyAgeAccess.service.js'
@@ -87,31 +86,21 @@ const limit = Number.isFinite(parsedLimit)
       return res.json({ ok: true, items: [] })
     }
 
-    const ageAccess = await getReaderAgeAccess(req)
-
-
     const storyIds = [...new Set(progressRows.map((item) => item.story_id).filter(Boolean))]
     const episodeIds = [...new Set(progressRows.map((item) => item.episode_id).filter(Boolean))]
-
-    let storiesQuery = supabase
-      .from('stories')
-      .select(
-        'id, title, cover_url, landscape_thumbnail_url, total_episodes, story_status, story_type, is_adult'
-      )
-      .in('id', storyIds)
-      .eq('status', 'published')
-      .is('deleted_at', null)
-
-    storiesQuery = applyAdultStoryVisibility(
-      storiesQuery,
-      ageAccess
-    )
 
     const [
       { data: stories, error: storiesError },
       { data: episodes, error: episodesError },
     ] = await Promise.all([
-      storiesQuery,
+      supabase
+        .from('stories')
+        .select(
+          'id, title, cover_url, landscape_thumbnail_url, total_episodes, story_status, story_type, is_adult'
+        )
+        .in('id', storyIds)
+        .eq('status', 'published')
+        .is('deleted_at', null),
       supabase
         .from('episodes')
         .select('id, story_id, title, episode_number')
@@ -123,7 +112,14 @@ const limit = Number.isFinite(parsedLimit)
     if (storiesError) throw storiesError
     if (episodesError) throw episodesError
 
-    const storyMap = new Map((stories || []).map((story) => [String(story.id), story]))
+    const ageAccess = (stories || []).some((story) => story.is_adult)
+      ? await getReaderAgeAccess(req)
+      : null
+    const storyMap = new Map(
+      (stories || [])
+        .filter((story) => isStoryVisibleToReader(story, ageAccess))
+        .map((story) => [String(story.id), story])
+    )
     const episodeMap = new Map((episodes || []).map((episode) => [String(episode.id), episode]))
 
     const items = progressRows
