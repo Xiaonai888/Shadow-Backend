@@ -2499,10 +2499,12 @@ export async function countQualifiedEpisodeView(req, res) {
       firstVisibleEpisodeId,
       access
     )
-    const activeUnlock = await hasActiveEpisodeUnlock({
-      userId: user.user_id,
-      episodeId,
-    })
+        const activeUnlock = freeEpisode
+      ? false
+      : await hasActiveEpisodeUnlock({
+          userId: user.user_id,
+          episodeId,
+        })
 
     if (!freeEpisode && !activeUnlock) {
       return res.status(423).json({
