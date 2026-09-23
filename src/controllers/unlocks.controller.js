@@ -602,9 +602,10 @@ async function getAvailableLockedEpisodes({
   storyId,
   fromEpisodeNumber,
   access,
+  unlockedIds = null,
 }) {
-  const unlockedIds =
-    await getActiveUnlockEpisodeIds({
+  const effectiveUnlockedIds =
+    unlockedIds ?? await getActiveUnlockEpisodeIds({
       userId,
       storyId,
     })
@@ -636,7 +637,7 @@ async function getAvailableLockedEpisodes({
       (episode) => !episode.is_free_published
     )
     .filter(
-      (episode) => !unlockedIds.has(episode.id)
+      (episode) => !effectiveUnlockedIds.has(episode.id)
     )
 }
 
@@ -741,10 +742,27 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
     rawEpisode,
     access
   )
-  const unlock = await getActiveUnlock({
-    userId,
-    episodeId,
-  })
+  const { data: activeUnlockRows, error: activeUnlockError } = await supabase
+    .from('episode_unlocks')
+    .select('episode_id, expires_at, unlock_type')
+    .eq('user_id', userId)
+    .eq('story_id', storyId)
+    .eq('unlock_status', 'active')
+
+  if (activeUnlockError) throw activeUnlockError
+
+  const unlockRows = activeUnlockRows || []
+  const currentUnlockRows = unlockRows.filter((item) => item.episode_id === episodeId)
+  if (currentUnlockRows.length > 1) throw new Error('Multiple active unlocks for episode')
+  const currentUnlock = currentUnlockRows[0] || null
+  const unlock = currentUnlock?.expires_at && new Date(currentUnlock.expires_at).getTime() < Date.now()
+    ? null
+    : currentUnlock
+  const unlockedIds = new Set(
+    unlockRows
+      .filter((item) => !item.expires_at || new Date(item.expires_at).getTime() >= Date.now())
+      .map((item) => item.episode_id)
+  )
   const freeEpisode = isEpisodeFreeForReader(
     episode,
     story,
@@ -759,6 +777,7 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
       fromEpisodeNumber:
         episode.episode_number,
       access,
+      unlockedIds,
     })
   const gemWait = getEpisodeAvailableForGemAt(
     episode,
