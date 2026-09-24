@@ -433,7 +433,7 @@ export async function updateAdminRotatingAdvertisementSettings(req, res) {
     }
 
     let manualAdId = current.manual_ad_id
-    if (has(req.body, 'manual_ad_id')) {
+    if (nextMode === 'manual' && has(req.body, 'manual_ad_id')) {
       const rawId = text(req.body.manual_ad_id)
       manualAdId = rawId ? Number(rawId) : null
 
@@ -445,10 +445,10 @@ export async function updateAdminRotatingAdvertisementSettings(req, res) {
       }
     }
 
-    const nextRotateEvery = has(req.body, 'rotate_every_seconds')
+    const nextRotateEvery = nextMode === 'auto' && has(req.body, 'rotate_every_seconds')
       ? integer(req.body.rotate_every_seconds, 3600, 1)
       : Number(current.rotate_every_seconds || 3600)
-    const nextMaxAds = has(req.body, 'max_ads')
+    const nextMaxAds = nextMode === 'auto' && has(req.body, 'max_ads')
       ? integer(req.body.max_ads, 1, 1)
       : Number(current.max_ads || 1)
 
@@ -482,11 +482,13 @@ export async function updateAdminRotatingAdvertisementSettings(req, res) {
         ? await getItem(placement, data.manual_ad_id)
         : await selectPublicItem(placement, data)
 
-    await syncLegacyAdvertisement(
-      placement,
-      selectedItem,
-      Boolean(data.enabled && selectedItem?.enabled && !selectedItem?.is_archived),
-    ).catch(() => {})
+    if (data.mode === 'manual') {
+      await syncLegacyAdvertisement(
+        placement,
+        selectedItem,
+        Boolean(data.enabled && selectedItem?.enabled && !selectedItem?.is_archived),
+      ).catch(() => {})
+    }
 
     invalidateAdvertisementResponseCache(placement)
 
