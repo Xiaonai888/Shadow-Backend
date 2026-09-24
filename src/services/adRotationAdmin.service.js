@@ -55,7 +55,7 @@ async function getManualItem(placement, settings) {
 async function getQueue(placement, settings) {
   if (settings?.mode !== 'auto') return []
 
-  const maxAds = integer(settings?.max_ads, 1, 1, 100)
+  const maxAds = integer(settings?.max_ads, 1, 1)
 
   const { data, error } = await supabase
     .from('shadow_advertisement_items')
