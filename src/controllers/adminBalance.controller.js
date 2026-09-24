@@ -90,12 +90,15 @@ function writeCache(key, data) {
 }
 
 export async function getAdminBalanceWallets(req, res) {
+  res.set('Cache-Control', 'private, no-store')
   try {
     const page = toPositiveInt(req.query.page, 1, 100000)
     const limit = toPositiveInt(req.query.limit, 20, 50)
     const search = cleanSearch(req.query.q)
     const sort = cleanSort(req.query.sort)
-    const balanceType = ['diamond', 'coin', 'voucher', 'story_card'].includes(req.query.balance_type) ? req.query.balance_type : 'diamond'
+    const balanceType = ['diamond', 'coin', 'voucher', 'story_card'].includes(req.query.balance_type)
+      ? req.query.balance_type
+      : 'diamond'
     const dormantOnly = cleanBoolean(req.query.dormant)
     const dormantDays = toPositiveInt(req.query.dormant_days, 90, 3650)
     const refresh = String(req.query.refresh || '') === '1'
@@ -107,61 +110,64 @@ export async function getAdminBalanceWallets(req, res) {
       dormantOnly,
       dormantDays,
     })
+    const balanceField = {
+      diamond: 'diamond_balance',
+      coin: 'coin_balance',
+      voucher: 'voucher_balance',
+      story_card: 'story_card_balance',
+    }[balanceType]
+
+    function isCorrectRanking(payload) {
+      if (
+        payload?.balance_type !== balanceType ||
+        payload?.sort !== sort ||
+        !Array.isArray(payload?.items)
+      ) return false
+
+      return payload.items.every((item, index, rows) => {
+        const current = Number(item?.[balanceField])
+        if (!Number.isFinite(current)) return false
+        if (index === 0) return true
+        const previous = Number(rows[index - 1]?.[balanceField])
+        return Number.isFinite(previous) &&
+          (sort === 'desc' ? previous >= current : previous <= current)
+      })
+    }
 
     if (!refresh) {
       const cached = readCache(key)
-
-      if (cached) {
-        return res.status(200).json({
-          ...cached,
-          cached: true,
-          cache_ttl_seconds: 60,
-        })
+      if (cached && isCorrectRanking(cached)) {
+        return res.status(200).json({ ...cached, cached: true, cache_ttl_seconds: 60 })
       }
+      if (cached) balanceCache.delete(key)
     }
 
-    const { data, error } = await supabase.rpc(
-      'get_admin_balance_wallets_v3',
-      {
-        p_page: page,
-        p_limit: limit,
-        p_search: search,
-        p_sort: sort,
-        p_balance_type: balanceType,
-        p_dormant_only: dormantOnly,
-        p_dormant_days: dormantDays,
-      }
-    )
-
+    const { data, error } = await supabase.rpc('get_admin_balance_wallets_v3', {
+      p_page: page,
+      p_limit: limit,
+      p_search: search,
+      p_sort: sort,
+      p_balance_type: balanceType,
+      p_dormant_only: dormantOnly,
+      p_dormant_days: dormantDays,
+    })
     if (error) throw error
 
-    const payload = data || {
-      ok: true,
-      items: [],
-      pagination: {
-        page,
-        limit,
-        has_prev: page > 1,
-        has_next: false,
-      },
-      sort,
-      search,
-      filters: {
-        dormant_only: dormantOnly,
-        dormant_days: dormantDays,
-      },
+    if (!isCorrectRanking(data)) {
+      return res.status(503).json({
+        ok: false,
+        message: 'Balance API returned an incorrect ranking. Verify the active Backend and Balance SQL v3.',
+      })
     }
 
-    writeCache(key, payload)
-
+    writeCache(key, data)
     return res.status(200).json({
-      ...payload,
+      ...data,
       cached: false,
       cache_ttl_seconds: 60,
     })
   } catch (error) {
     console.error('ADMIN BALANCE WALLETS ERROR:', error)
-
     return res.status(500).json({
       ok: false,
       message: 'Failed to load reader balances',
