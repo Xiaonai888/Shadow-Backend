@@ -1,4 +1,5 @@
 import express from 'express'
+import { getAdminStoryPayoutExcel } from '../controllers/adminStoryPayoutExcel.controller.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { getAdminDiamondGifts } from '../controllers/adminDiamondGifts.controller.js'
 import { getAdminAuthorPageIncome } from '../controllers/adminAuthorPageIncome.controller.js'
@@ -31,6 +32,7 @@ router.get('/author-page', requireAdmin, getAdminAuthorPageIncome)
 router.get('/shadow-mall', requireAdmin, getAdminShadowMallIncome)
 router.get('/payouts', requireAdmin, getAdminAuthorPayouts)
 router.get('/payouts/queue', requireAdmin, getAdminStoryPayoutQueue)
+router.get('/payouts/excel', requireAdmin, getAdminStoryPayoutExcel)
 router.post('/payouts/generate', requireAdmin, generateAdminAuthorPayouts)
 router.post('/payouts/:id/transfer-record', requireAdmin, recordAdminStoryPayoutTransfer)
 router.post('/payouts/:id/receipt', requireAdmin, uploadAdminStoryPayoutReceipt)
