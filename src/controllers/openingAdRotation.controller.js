@@ -599,6 +599,7 @@ export async function updateLegacyOpeningAdvertisement(req, res) {
   try {
     const settings = await getSettings()
     if (!settings) return res.status(404).json({ ok: false, message: 'Opening rotation settings not found' })
+    if (settings.mode === 'auto') return res.status(409).json({ ok: false, message: 'Auto Rotation is active. Use the Rotation Manager.' })
 
     let current = settings.manual_ad_id ? await getItem(settings.manual_ad_id) : null
     if (!current || current.is_archived) current = await getFirstAvailableItem()
