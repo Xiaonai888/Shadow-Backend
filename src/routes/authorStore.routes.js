@@ -52,6 +52,7 @@ import {
 } from '../controllers/authorStoreSalesReports.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
+import { getAdminAuthorStoreWithdrawalNotifications } from '../controllers/adminAuthorStoreWithdrawalNotifications.controller.js'
 
 const router = express.Router()
 
@@ -137,6 +138,7 @@ router.post('/me/withdrawals', requireUser, createMyAuthorStoreWithdrawal)
 router.get('/admin/orders', requireAdmin, getAdminAuthorStoreOrders)
 router.patch('/admin/orders/:orderId/status', requireAdmin, updateAdminAuthorStoreOrderStatus)
 router.get('/admin/withdrawals', requireAdmin, getAdminAuthorStoreWithdrawals)
+router.get('/admin/withdrawal-notifications', requireAdmin, getAdminAuthorStoreWithdrawalNotifications)
 router.patch('/admin/withdrawals/:withdrawalId/status', requireAdmin, updateAdminAuthorStoreWithdrawalStatus)
 router.post('/orders', createAuthorStoreOrder)
 router.post('/orders/create-payment', requireUser, createAuthorStoreOrderPayment)
