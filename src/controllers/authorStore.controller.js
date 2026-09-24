@@ -2475,7 +2475,7 @@ export async function unlockAuthorStorePdfDownloads(order) {
 
   const { data: products, error: productsError } = await supabase
     .from('author_store_products')
-    .select('id, author_page_id, title, cover_url, pdf_file_url, pdf_file_name, access_rule')
+    .select('id, author_page_id, title, cover_url, pdf_file_url, pdf_storage_key, pdf_file_name, access_rule')
     .in('id', productIds)
 
   if (productsError) throw productsError
@@ -2485,7 +2485,7 @@ export async function unlockAuthorStorePdfDownloads(order) {
   const payload = pdfItems
     .map((item) => {
       const product = productMap.get(String(item.product_id))
-      if (!product?.pdf_file_url) return null
+      if (!product?.pdf_file_url && !product?.pdf_storage_key) return null
 
       return {
         buyer_id: order.buyer_id,
