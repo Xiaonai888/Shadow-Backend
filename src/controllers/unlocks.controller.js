@@ -730,14 +730,15 @@ async function getUnlockStatusPayload({
       notFound: true,
     }
   }
-const ageAccess =
-  await getReaderAgeAccessByUserId(userId)
+  const ageAccess = story.is_adult
+    ? await getReaderAgeAccessByUserId(userId)
+    : null
 
-if (!isStoryVisibleToReader(story, ageAccess)) {
-  return {
-    notFound: true,
+  if (!isStoryVisibleToReader(story, ageAccess)) {
+    return {
+      notFound: true,
+    }
   }
-}
   const episode = applyEpisodeAccess(
     rawEpisode,
     access
