@@ -1488,18 +1488,15 @@ const paidProofFileName = cleanText(req.body.paid_proof_file_name || req.body.pa
       return res.status(404).json({ ok: false, message: 'Withdrawal request not found' })
     }
 
-    if (currentWithdrawal.status === 'paid') {
-      return res.status(400).json({ ok: false, message: 'This withdrawal is already paid' })
+    const allowedTransitions = {
+      in_review: ['approved', 'rejected', 'paid', 'cancelled'],
+      approved: ['rejected', 'paid', 'cancelled'],
     }
 
-    if (currentWithdrawal.status === 'rejected') {
-      return res.status(400).json({ ok: false, message: 'This withdrawal is already rejected' })
-    }
-
-    if (nextStatus === 'paid' && !['approved', 'in_review'].includes(currentWithdrawal.status)) {
-      return res.status(400).json({
+    if (!allowedTransitions[currentWithdrawal.status]?.includes(nextStatus)) {
+      return res.status(409).json({
         ok: false,
-        message: 'Only approved or in-review withdrawals can be marked as paid',
+        message: `Withdrawal is already ${currentWithdrawal.status}; refresh the list before taking any action`,
       })
     }
 
@@ -1531,10 +1528,18 @@ const paidProofFileName = cleanText(req.body.paid_proof_file_name || req.body.pa
       .from('author_store_withdrawal_requests')
       .update(payload)
       .eq('id', withdrawalId)
+      .eq('status', currentWithdrawal.status)
+      .is('deleted_at', null)
       .select('*')
-      .single()
+      .maybeSingle()
 
     if (updateError) throw updateError
+    if (!updatedWithdrawal) {
+      return res.status(409).json({
+        ok: false,
+        message: 'Withdrawal was changed by another admin. Refresh the list and check its current status before acting again',
+      })
+    }
 
     try {
       await sendAuthorStoreWithdrawalStatusAlert(updatedWithdrawal, nextStatus)
