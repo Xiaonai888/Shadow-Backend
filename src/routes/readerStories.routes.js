@@ -8,6 +8,7 @@ import {
   getMyReaderStories,
   recordReaderStoryView,
 } from '../controllers/readerStories.controller.js'
+import { repostReaderStory } from '../controllers/repostReaderStory.controller.js'
 import {
   saveMyReaderStoryExtras,
 } from '../controllers/storyExtras.controller.js'
@@ -82,6 +83,13 @@ router.post(
   uploadStoryMedia,
   cleanupStoryMediaTemp,
   createMyReaderStory
+)
+
+router.post(
+  '/me/repost',
+  requireUser,
+  enforceReaderStoryDailyLimit,
+  repostReaderStory
 )
 
 router.patch(
