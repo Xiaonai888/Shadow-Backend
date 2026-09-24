@@ -337,7 +337,7 @@ export async function updateAdminOpeningRotationSettings(req, res) {
     }
 
     let manualAdId = current.manual_ad_id
-    if (has(req.body, 'manual_ad_id')) {
+    if (nextMode === 'manual' && has(req.body, 'manual_ad_id')) {
       const rawId = text(req.body.manual_ad_id)
       manualAdId = rawId ? Number(rawId) : null
 
@@ -349,10 +349,10 @@ export async function updateAdminOpeningRotationSettings(req, res) {
       }
     }
 
-    const nextRotateEvery = has(req.body, 'rotate_every_seconds')
+    const nextRotateEvery = nextMode === 'auto' && has(req.body, 'rotate_every_seconds')
       ? integer(req.body.rotate_every_seconds, 3600, 1)
       : Number(current.rotate_every_seconds || 3600)
-    const nextMaxAds = has(req.body, 'max_ads')
+    const nextMaxAds = nextMode === 'auto' && has(req.body, 'max_ads')
       ? integer(req.body.max_ads, 1, 1)
       : Number(current.max_ads || 1)
     const shouldRestart =
@@ -383,10 +383,12 @@ export async function updateAdminOpeningRotationSettings(req, res) {
     const selectedItem = data.mode === 'manual' && data.manual_ad_id
       ? await getItem(data.manual_ad_id)
       : await selectPublicItem(data)
-    await syncLegacyAdvertisement(
-      selectedItem,
-      Boolean(data.enabled && selectedItem?.enabled && !selectedItem?.is_archived),
-    ).catch(() => {})
+    if (data.mode === 'manual') {
+      await syncLegacyAdvertisement(
+        selectedItem,
+        Boolean(data.enabled && selectedItem?.enabled && !selectedItem?.is_archived),
+      ).catch(() => {})
+    }
     invalidateAdvertisementResponseCache(PLACEMENT)
     await createLog(req, data.enabled ? 'UPDATE' : 'DISABLE', `Opening Ad rotation settings updated. Mode: ${data.mode}.`, selectedItem, data.enabled).catch(() => {})
 
@@ -533,7 +535,9 @@ export async function archiveAdminOpeningAdItem(req, res) {
           updated_at: new Date().toISOString(),
         })
         .eq('placement', PLACEMENT)
-      await syncLegacyAdvertisement(null, false).catch(() => {})
+      if (settings.mode === 'manual') {
+        await syncLegacyAdvertisement(null, false).catch(() => {})
+      }
     }
 
     await restartAutoRotation(settings, Boolean(current.enabled && current.in_loop))
