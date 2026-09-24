@@ -504,7 +504,7 @@ function authorPdfCompletedMessage(order, authorPage) {
     ...pdfLines,
     '',
     'Status: <b>Completed</b>',
-    'PDF unlocked in Reader Library Downloads.',
+    'PDF available in Reader Library Purchased.',
   ].filter(Boolean).join('\n')
 }
 
@@ -1049,13 +1049,42 @@ async function processAbaMessage(parsed, message) {
   const matchedAuthorOrder = authorStoreMatches[0]
 
   if (isAuthorPdfOrder(matchedAuthorOrder)) {
-    const completedOrder = await markAuthorPdfOrderCompleted(matchedAuthorOrder, telegramPayment, parsed)
-    await createAuthorStorePaidNotificationsSafely(completedOrder)
+    const paidOrder = await markAuthorPdfOrderCompleted(matchedAuthorOrder, telegramPayment, parsed)
+    const expectedCount = new Set(getOrderItems(paidOrder).map((item) => String(item.product_id)).filter(Boolean)).size
+    let completedOrder = null
 
     try {
-      await unlockAuthorStorePdfDownloads(completedOrder)
+      const grants = await unlockAuthorStorePdfDownloads(paidOrder)
+      if (!expectedCount || new Set(grants.map((grant) => String(grant.product_id))).size !== expectedCount) {
+        throw new Error('Not every purchased PDF was granted')
+      }
+      const now = new Date().toISOString()
+      const { data, error } = await supabase
+        .from('author_store_orders')
+        .update({ status: 'confirmed', order_status: 'confirmed', confirmed_at: now, pdf_unlock_status: 'unlocked', pdf_unlocked_at: now, pdf_unlock_count: grants.length, updated_at: now })
+        .eq('id', paidOrder.id)
+        .eq('status', 'under_review')
+        .select('*, items:author_store_order_items(*)')
+        .single()
+      if (error) throw error
+      completedOrder = data
     } catch (error) {
-      console.error('UNLOCK AUTHOR PDF DOWNLOAD ERROR:', error)
+      console.error('UNLOCK AUTHOR PDF PURCHASE ERROR:', error)
+      await supabase.from('author_store_orders').update({ pdf_unlock_status: 'failed', updated_at: new Date().toISOString() }).eq('id', paidOrder.id).eq('status', 'under_review')
+      await updateTelegramPayment(telegramPayment.id, {
+        matched_payment_id: null,
+        matched_user_id: paidOrder.buyer_id,
+        match_status: 'author_pdf_unlock_failed',
+        status: 'pending_review',
+        match_reason: `Payment matched but PDF access failed for order ${paidOrder.order_id || paidOrder.order_number}.`,
+      })
+      await replyTelegram(chatId, messageId, [
+        '⚠️ <b>AUTHOR PDF PAYMENT MATCHED — ACCESS PENDING</b>',
+        `📦 Order ID: <code>${html(paidOrder.order_id || paidOrder.order_number)}</code>`,
+        `🧾 Trx ID: <code>${html(paidOrder.aba_transaction_id)}</code>`,
+        'Payment has been recorded, but PDF access requires admin review.',
+      ].join('\n'))
+      return
     }
 
     await updateTelegramPayment(telegramPayment.id, {
@@ -1067,26 +1096,24 @@ async function processAbaMessage(parsed, message) {
     })
 
     try {
+      await createAuthorStorePaidNotificationsSafely(completedOrder)
       await sendAuthorPdfCompletedReport(completedOrder)
     } catch (error) {
-      console.error('SEND AUTHOR PDF COMPLETED REPORT ERROR:', error)
+      console.error('AUTHOR PDF COMPLETION NOTIFICATION ERROR:', error)
     }
 
     try {
       await replyTelegram(chatId, messageId, [
         '📄 <b>AUTHOR PDF MATCHED</b>',
-        '',
         `📦 Order ID: <code>${html(completedOrder.order_id || completedOrder.order_number)}</code>`,
         `💵 Amount: <b>${html(money(completedOrder.total_usd || completedOrder.total_amount))}</b>`,
         `🧾 Trx ID: <code>${html(completedOrder.aba_transaction_id)}</code>`,
-        '',
         'Status: <b>Completed</b>',
-        'PDF unlocked in Reader Library Downloads.',
+        'PDF is available in Reader Library Purchased.',
       ].join('\n'))
     } catch (error) {
       console.error('REPLY AUTHOR PDF ABA GROUP ERROR:', error)
     }
-
     return
   }
 
