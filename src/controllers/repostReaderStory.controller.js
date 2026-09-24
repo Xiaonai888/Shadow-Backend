@@ -107,11 +107,11 @@ export async function repostReaderStory(req, res) {
       MetadataDirective: 'COPY',
     }))
 
-    const creatorName = String(authorSource ? owner.page_name : owner.name || '').trim()
+    const creatorName = String((authorSource ? owner.page_name : owner.name) || '').trim()
     const username = String(authorSource ? owner.page_username : owner.username || '').trim().replace(/^@+/, '')
     const attribution = `Repost from ${creatorName || username || 'Shadow creator'}`
     const originalCaption = String(source.text_overlay || source.caption || '').trim()
-    const caption = `${attribution}${originalCaption ? ` · ${originalCaption}` : ''}`.slice(0, 200)
+    const caption = `${attribution}${text || originalCaption ? ` · ${text || originalCaption}` : ''}`.slice(0, 200)
     const linkUrl = username
       ? `https://www.shadowerabook.site${authorSource ? `/author/page/${encodeURIComponent(username)}` : `/profile?username=${encodeURIComponent(username)}`}`
       : null
@@ -126,7 +126,7 @@ export async function repostReaderStory(req, res) {
         mime_type: mimeType,
         file_size: source.file_size,
         caption,
-        text_overlay: text || originalCaption.slice(0, 200) || null,
+        text_overlay: caption,
         alt_text: source.alt_text || null,
         link_url: linkUrl,
         allow_messages: true,
