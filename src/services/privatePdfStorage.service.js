@@ -1,5 +1,6 @@
 import {
   DeleteObjectCommand,
+  GetObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
@@ -133,4 +134,13 @@ export async function deletePrivatePdfFromR2(storageKey) {
       Key: key,
     })
   )
+}
+
+export async function getPrivatePdfFromR2(storageKey) {
+  const key = String(storageKey || '').trim()
+  if (!key) throw new Error('Private PDF storage key is required')
+  return getPrivateR2Client().send(new GetObjectCommand({
+    Bucket: getPrivatePdfBucketName(),
+    Key: key,
+  }))
 }
