@@ -3207,27 +3207,25 @@ export async function createAuthorStoreOrderPayment(req, res) {
 
     const user = await getUserProfile(userId)
     const buyerProfile = await getBuyerProfileForAuthorStore(userId)
-
-    if (!buyerProfile?.phone_number || !buyerProfile?.delivery_address) {
-      return res.status(400).json({ ok: false, message: 'Buyer profile is required before payment' })
-    }
-
     const builtOrder = await buildAuthorStoreOrderItems(req.body.items)
     const authorPageId = builtOrder.authorPageId
     let orderItems = builtOrder.orderItems
+    const needsDelivery = orderItems.some((item) => String(item.product_type || '').toLowerCase() === 'book')
+
+    if (needsDelivery && (!buyerProfile?.phone_number || !buyerProfile?.delivery_address)) {
+      return res.status(400).json({ ok: false, message: 'Buyer profile is required before payment' })
+    }
+
     const promoUsedQuantities = await getAuthorStorePromoUsedQuantities(authorPageId)
     orderItems = applyAuthorStorePromoIncome(orderItems, promoUsedQuantities)
-    const subtotal = Number(orderItems.reduce((total, item) => total + item.total_usd, 0).toFixed(2))
-    const deliveryFee = AUTHOR_STORE_DELIVERY_FEE_USD
+    const subtotal = Number(orderItems.reduce((sum, item) => sum + Number(item.total_usd || 0), 0).toFixed(2))
+    const deliveryFee = needsDelivery ? AUTHOR_STORE_DELIVERY_FEE_USD : 0
     const total = Number((subtotal + deliveryFee).toFixed(2))
     const income = sumAuthorStoreIncomeItems(orderItems)
 
-    const deliveryCompany = req.body.delivery_company || {
-      key: 'jnt',
-      name: 'J&T Express',
-      shortName: 'J&T',
-    }
-
+    const deliveryCompany = needsDelivery
+      ? (req.body.delivery_company || { key: 'jnt', name: 'J&T Express', shortName: 'J&T' })
+      : null
     const cartSignature = createAuthorCartSignature(orderItems, deliveryCompany, authorPageId)
     const activeWindowStart = new Date(Date.now() - 20 * 60 * 1000).toISOString()
 
@@ -3244,7 +3242,7 @@ export async function createAuthorStoreOrderPayment(req, res) {
 
     if (currentOrderError) throw currentOrderError
 
-    if (currentOrder) {
+    if (currentOrder && Number(currentOrder.total_usd) === total && Number(currentOrder.delivery_fee_usd || 0) === deliveryFee) {
       return res.status(200).json({
         ok: true,
         reused: true,
@@ -3253,26 +3251,25 @@ export async function createAuthorStoreOrderPayment(req, res) {
     }
 
     const orderId = createAuthorStorePaymentOrderId()
+    const payItems = orderItems.map((item) => ({
+      name: item.title,
+      quantity: item.quantity,
+      price: item.unit_price_usd,
+    }))
 
-    const payItems = [
-      ...orderItems.map((item) => ({
-        name: item.title,
-        quantity: item.quantity,
-        price: item.unit_price_usd,
-      })),
-      {
+    if (needsDelivery) {
+      payItems.push({
         name: `${deliveryCompany.shortName || deliveryCompany.name || 'Delivery'} delivery fee`,
         quantity: 1,
         price: deliveryFee,
-      },
-    ]
+      })
+    }
 
-    const amount = formatUsd(total)
     const payload = buildAuthorStorePayWayPayload({
       orderId,
-      amount,
+      amount: formatUsd(total),
       user,
-      phone: buyerProfile.phone_number,
+      phone: buyerProfile?.phone_number || '',
       payItems,
     })
 
@@ -3291,18 +3288,18 @@ export async function createAuthorStoreOrderPayment(req, res) {
         items: orderItems,
         buyer_profile: {
           name: user?.name || user?.username || '',
-          phone_number: buyerProfile.phone_number,
-          telegram_username: buyerProfile.telegram_username || '',
-          facebook_link: buyerProfile.facebook_link || '',
-          province_city: buyerProfile.province_city,
-          delivery_address: buyerProfile.delivery_address,
-          delivery_note: buyerProfile.delivery_note || '',
+          phone_number: buyerProfile?.phone_number || '',
+          telegram_username: buyerProfile?.telegram_username || '',
+          facebook_link: buyerProfile?.facebook_link || '',
+          province_city: buyerProfile?.province_city || '',
+          delivery_address: needsDelivery ? buyerProfile?.delivery_address || '' : '',
+          delivery_note: needsDelivery ? buyerProfile?.delivery_note || '' : '',
         },
         delivery_company: deliveryCompany,
         buyer_name: user?.name || user?.username || '',
-        buyer_phone: buyerProfile.phone_number,
+        buyer_phone: buyerProfile?.phone_number || '',
         buyer_email: user?.email || '',
-        delivery_address: buyerProfile.delivery_address,
+        delivery_address: needsDelivery ? buyerProfile?.delivery_address || '' : '',
         subtotal,
         delivery_fee: deliveryFee,
         total_amount: total,
@@ -3321,7 +3318,7 @@ export async function createAuthorStoreOrderPayment(req, res) {
         status: 'waiting_payment',
         payment_status: 'pending',
         order_status: 'waiting_payment',
-        note: buyerProfile.delivery_note || '',
+        note: needsDelivery ? buyerProfile?.delivery_note || '' : '',
         request_payload: payload,
         aba_payload: aba.raw || {},
         expires_at: expiresAt,
@@ -3332,21 +3329,23 @@ export async function createAuthorStoreOrderPayment(req, res) {
 
     if (orderError) throw orderError
 
-    await supabase
-  .from('author_store_order_items')
-  .insert(orderItems.map((item) => ({
-    order_id: order.id,
-    product_id: item.product_id,
-    product_title: item.product_title,
-    product_type: item.product_type,
-    cover_url: item.cover_url,
-    quantity: item.quantity,
-    unit_price: item.unit_price_usd,
-    total_price: item.total_usd,
-    platform_fee_rate: item.platform_fee_rate,
-    platform_fee_usd: item.platform_fee_usd,
-    author_income_usd: item.author_income_usd,
-  })))
+    const { error: itemsError } = await supabase
+      .from('author_store_order_items')
+      .insert(orderItems.map((item) => ({
+        order_id: order.id,
+        product_id: item.product_id,
+        product_title: item.product_title,
+        product_type: item.product_type,
+        cover_url: item.cover_url,
+        quantity: item.quantity,
+        unit_price: item.unit_price_usd,
+        total_price: item.total_usd,
+        platform_fee_rate: item.platform_fee_rate,
+        platform_fee_usd: item.platform_fee_usd,
+        author_income_usd: item.author_income_usd,
+      })))
+
+    if (itemsError) throw itemsError
 
     return res.status(201).json({
       ok: true,
