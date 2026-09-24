@@ -221,7 +221,7 @@ export async function attachMyAuthorStorePrivatePdf(req, res) {
 
     const { data: product, error: productError } = await supabase
       .from('author_store_products')
-      .select('id, product_type, pdf_storage_key')
+      .select('id, product_type, pdf_storage_key, access_rule')
       .eq('id', productId)
       .eq('author_page_id', authorPage.id)
       .eq('user_id', userId)
@@ -273,7 +273,7 @@ export async function attachMyAuthorStorePrivatePdf(req, res) {
         pdf_mime_type: 'application/pdf',
         pdf_file_size_bytes: fileSizeBytes,
         pdf_file_name: fileName,
-        access_rule: 'Read online only',
+        access_rule: ['Download after payment', 'Read online only', 'Download and read online'].includes(product.access_rule) ? product.access_rule : 'Read online only',
         updated_at: new Date().toISOString(),
       })
       .eq('id', productId)
