@@ -17,6 +17,7 @@ import {
   getAdminEpisodeSales,
   getAdminIncomeSummary,
 } from '../controllers/adminIncome.controller.js'
+import { getAdminStoryPayoutQueue } from '../controllers/adminStoryPayoutQueue.controller.js'
 
 const router = express.Router()
 
@@ -29,6 +30,7 @@ router.get('/diamond-gifts', requireAdmin, getAdminDiamondGifts)
 router.get('/author-page', requireAdmin, getAdminAuthorPageIncome)
 router.get('/shadow-mall', requireAdmin, getAdminShadowMallIncome)
 router.get('/payouts', requireAdmin, getAdminAuthorPayouts)
+router.get('/payouts/queue', requireAdmin, getAdminStoryPayoutQueue)
 router.post('/payouts/generate', requireAdmin, generateAdminAuthorPayouts)
 router.post('/payouts/:id/transfer-record', requireAdmin, recordAdminStoryPayoutTransfer)
 router.post('/payouts/:id/receipt', requireAdmin, uploadAdminStoryPayoutReceipt)
