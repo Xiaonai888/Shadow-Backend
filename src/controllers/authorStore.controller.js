@@ -2495,7 +2495,7 @@ export async function unlockAuthorStorePdfDownloads(order) {
         order_number: order.order_id || order.order_number || '',
         title: product.title || item.title || item.product_title || '',
         cover_url: product.cover_url || item.cover_url || '',
-        pdf_file_url: product.pdf_file_url,
+        pdf_file_url: product.pdf_file_url || '',
         pdf_file_name: product.pdf_file_name || `${product.title || 'download'}.pdf`,
         access_rule: product.access_rule || 'download',
       }
@@ -3207,6 +3207,7 @@ export async function createAuthorStoreOrderPayment(req, res) {
 
     const user = await getUserProfile(userId)
     const buyerProfile = await getBuyerProfileForAuthorStore(userId)
+
     const builtOrder = await buildAuthorStoreOrderItems(req.body.items)
     const authorPageId = builtOrder.authorPageId
     let orderItems = builtOrder.orderItems
@@ -3215,10 +3216,9 @@ export async function createAuthorStoreOrderPayment(req, res) {
     if (needsDelivery && (!buyerProfile?.phone_number || !buyerProfile?.delivery_address)) {
       return res.status(400).json({ ok: false, message: 'Buyer profile is required before payment' })
     }
-
     const promoUsedQuantities = await getAuthorStorePromoUsedQuantities(authorPageId)
     orderItems = applyAuthorStorePromoIncome(orderItems, promoUsedQuantities)
-    const subtotal = Number(orderItems.reduce((sum, item) => sum + Number(item.total_usd || 0), 0).toFixed(2))
+    const subtotal = Number(orderItems.reduce((total, item) => total + item.total_usd, 0).toFixed(2))
     const deliveryFee = needsDelivery ? AUTHOR_STORE_DELIVERY_FEE_USD : 0
     const total = Number((subtotal + deliveryFee).toFixed(2))
     const income = sumAuthorStoreIncomeItems(orderItems)
@@ -3226,6 +3226,7 @@ export async function createAuthorStoreOrderPayment(req, res) {
     const deliveryCompany = needsDelivery
       ? (req.body.delivery_company || { key: 'jnt', name: 'J&T Express', shortName: 'J&T' })
       : null
+
     const cartSignature = createAuthorCartSignature(orderItems, deliveryCompany, authorPageId)
     const activeWindowStart = new Date(Date.now() - 20 * 60 * 1000).toISOString()
 
@@ -3251,6 +3252,7 @@ export async function createAuthorStoreOrderPayment(req, res) {
     }
 
     const orderId = createAuthorStorePaymentOrderId()
+
     const payItems = orderItems.map((item) => ({
       name: item.title,
       quantity: item.quantity,
@@ -3265,9 +3267,10 @@ export async function createAuthorStoreOrderPayment(req, res) {
       })
     }
 
+    const amount = formatUsd(total)
     const payload = buildAuthorStorePayWayPayload({
       orderId,
-      amount: formatUsd(total),
+      amount,
       user,
       phone: buyerProfile?.phone_number || '',
       payItems,
@@ -3332,17 +3335,17 @@ export async function createAuthorStoreOrderPayment(req, res) {
     const { error: itemsError } = await supabase
       .from('author_store_order_items')
       .insert(orderItems.map((item) => ({
-        order_id: order.id,
-        product_id: item.product_id,
-        product_title: item.product_title,
-        product_type: item.product_type,
-        cover_url: item.cover_url,
-        quantity: item.quantity,
-        unit_price: item.unit_price_usd,
-        total_price: item.total_usd,
-        platform_fee_rate: item.platform_fee_rate,
-        platform_fee_usd: item.platform_fee_usd,
-        author_income_usd: item.author_income_usd,
+    order_id: order.id,
+    product_id: item.product_id,
+    product_title: item.product_title,
+    product_type: item.product_type,
+    cover_url: item.cover_url,
+    quantity: item.quantity,
+    unit_price: item.unit_price_usd,
+    total_price: item.total_usd,
+    platform_fee_rate: item.platform_fee_rate,
+    platform_fee_usd: item.platform_fee_usd,
+    author_income_usd: item.author_income_usd,
       })))
 
     if (itemsError) throw itemsError
@@ -3765,6 +3768,34 @@ export async function handleAuthorStoreAbaCallback(req, res) {
       .single()
 
     if (updateError) throw updateError
+
+    const callbackItems = Array.isArray(updatedOrder.items) ? updatedOrder.items : []
+    const pdfOnly = callbackItems.length > 0 && callbackItems.every((item) => String(item.product_type || '').toLowerCase() === 'pdf')
+    if (pdfOnly) {
+      const expected = new Set(callbackItems.map((item) => String(item.product_id)).filter(Boolean)).size
+      try {
+        const grants = await unlockAuthorStorePdfDownloads(updatedOrder)
+        if (!expected || new Set(grants.map((grant) => String(grant.product_id))).size !== expected) {
+          throw new Error('Some PDF purchase grants could not be created')
+        }
+        const now = new Date().toISOString()
+        const { data: confirmedOrder, error: confirmError } = await supabase
+          .from('author_store_orders')
+          .update({ status: 'confirmed', order_status: 'confirmed', confirmed_at: now, pdf_unlock_status: 'unlocked', pdf_unlocked_at: now, pdf_unlock_count: grants.length, updated_at: now })
+          .eq('id', updatedOrder.id)
+          .eq('status', 'under_review')
+          .select('*, items:author_store_order_items(*)')
+          .single()
+        if (confirmError) throw confirmError
+        await createAuthorStorePaidNotificationsSafely(confirmedOrder)
+        return res.status(200).json({ ok: true })
+      } catch (pdfError) {
+        console.error('AUTHOR STORE PDF CALLBACK UNLOCK ERROR:', pdfError)
+        await supabase.from('author_store_orders').update({ pdf_unlock_status: 'failed', updated_at: new Date().toISOString() }).eq('id', updatedOrder.id).eq('status', 'under_review')
+        return res.status(200).json({ ok: true, pdf_unlock_status: 'failed' })
+      }
+    }
+
     await createAuthorStorePaidNotificationsSafely(updatedOrder)
 
     await deductAuthorStoreOrderStock(updatedOrder)
