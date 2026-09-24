@@ -41,6 +41,11 @@ import {
   getAdminAuthorStoreStoreDetails,
 } from '../controllers/authorStore.controller.js'
 import {
+  recordAdminAuthorStoreTransfer,
+  uploadAdminAuthorStoreReceipt,
+  getAdminAuthorStoreReceipt,
+} from '../controllers/adminAuthorStoreWithdrawalWorkflow.controller.js'
+import {
   attachMyAuthorStorePrivatePdf,
   uploadMyAuthorStorePrivatePdf,
 } from '../controllers/authorStorePdf.controller.js'
@@ -116,7 +121,6 @@ router.delete('/me/sales-reports/disconnect', requireUser, disconnectMyAuthorSto
 router.put('/me/delivery-settings', requireUser, updateMyAuthorStoreDeliverySettings)
 router.post('/me/categories', requireUser, createMyAuthorStoreCategory)
 router.patch('/me/categories/reorder', requireUser, reorderMyAuthorStoreCategories)
-router.patch('/me/categories/:categoryId', requireUser, updateMyAuthorStoreCategory)
 router.delete('/me/categories/:categoryId', requireUser, deleteMyAuthorStoreCategory)
 router.post('/me/products', requireUser, createMyAuthorStoreProduct)
 router.post(
@@ -139,6 +143,9 @@ router.get('/admin/orders', requireAdmin, getAdminAuthorStoreOrders)
 router.patch('/admin/orders/:orderId/status', requireAdmin, updateAdminAuthorStoreOrderStatus)
 router.get('/admin/withdrawals', requireAdmin, getAdminAuthorStoreWithdrawals)
 router.get('/admin/withdrawal-notifications', requireAdmin, getAdminAuthorStoreWithdrawalNotifications)
+router.post('/admin/withdrawals/:withdrawalId/transfer-record', requireAdmin, recordAdminAuthorStoreTransfer)
+router.post('/admin/withdrawals/:withdrawalId/receipt', requireAdmin, uploadAdminAuthorStoreReceipt)
+router.get('/admin/withdrawals/:withdrawalId/receipt', requireAdmin, getAdminAuthorStoreReceipt)
 router.patch('/admin/withdrawals/:withdrawalId/status', requireAdmin, updateAdminAuthorStoreWithdrawalStatus)
 router.post('/orders', createAuthorStoreOrder)
 router.post('/orders/create-payment', requireUser, createAuthorStoreOrderPayment)
