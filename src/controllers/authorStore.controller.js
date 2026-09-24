@@ -1471,9 +1471,22 @@ const paidProofFileName = cleanText(req.body.paid_proof_file_name || req.body.pa
       return res.status(400).json({ ok: false, message: 'Reject reason is required' })
     }
 
-    if (nextStatus === 'paid' && !paidProofUrl) {
-  return res.status(400).json({ ok: false, message: 'Payment proof URL is required' })
-}
+    if (nextStatus === 'paid') {
+      if (paidTransactionId.length < 4 || paidTransactionId.length > 120) {
+        return res.status(400).json({ ok: false, message: 'A bank transaction reference (4–120 characters) is required' })
+      }
+      if (paidProofUrl.length > 2048 || !/^https:\/\/[^\s]+$/i.test(paidProofUrl)) {
+        return res.status(400).json({ ok: false, message: 'A valid HTTPS bank receipt URL is required' })
+      }
+      try {
+        const receipt = new URL(paidProofUrl)
+        if (receipt.protocol !== 'https:' || !receipt.hostname || receipt.username || receipt.password) {
+          return res.status(400).json({ ok: false, message: 'Invalid bank receipt URL' })
+        }
+      } catch {
+        return res.status(400).json({ ok: false, message: 'Invalid bank receipt URL' })
+      }
+    }
 
     const { data: currentWithdrawal, error: currentError } = await supabase
       .from('author_store_withdrawal_requests')
@@ -1489,7 +1502,7 @@ const paidProofFileName = cleanText(req.body.paid_proof_file_name || req.body.pa
     }
 
     const allowedTransitions = {
-      in_review: ['approved', 'rejected', 'paid', 'cancelled'],
+      in_review: ['approved', 'rejected', 'cancelled'],
       approved: ['rejected', 'paid', 'cancelled'],
     }
 
@@ -1515,14 +1528,19 @@ const paidProofFileName = cleanText(req.body.paid_proof_file_name || req.body.pa
     }
 
     if (nextStatus === 'paid') {
-  payload.paid_at = now
-  payload.paid_amount_usd = Number.isFinite(paidAmountUsd) && paidAmountUsd > 0
-    ? paidAmountUsd
-    : Number(currentWithdrawal.amount_usd || 0)
-  payload.paid_transaction_id = paidTransactionId
-  payload.paid_proof_url = paidProofUrl
-  payload.paid_proof_file_name = paidProofFileName
-}
+      const expectedAmount = Number(currentWithdrawal.amount_usd)
+      if (!Number.isFinite(expectedAmount) || expectedAmount <= 0 || !Number.isFinite(paidAmountUsd) || Math.abs(paidAmountUsd - expectedAmount) > 0.004) {
+        return res.status(400).json({ ok: false, message: 'Paid amount must match the approved withdrawal amount exactly' })
+      }
+      if (!currentWithdrawal.payment_method_id) {
+        return res.status(409).json({ ok: false, message: 'Withdrawal has no saved payment method. Review before transferring money' })
+      }
+      payload.paid_at = now
+      payload.paid_amount_usd = expectedAmount
+      payload.paid_transaction_id = paidTransactionId
+      payload.paid_proof_url = paidProofUrl
+      payload.paid_proof_file_name = paidProofFileName
+    }
 
     const { data: updatedWithdrawal, error: updateError } = await supabase
       .from('author_store_withdrawal_requests')
