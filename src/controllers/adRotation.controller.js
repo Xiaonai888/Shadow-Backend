@@ -347,6 +347,7 @@ export async function getPublicRotatingAdvertisement(req, res) {
   try {
     const { placement, config } = resolvePlacement(req)
     const settings = await getSettings(placement, config)
+    if (settings.mode === 'auto') return res.status(409).json({ ok: false, message: 'Auto Rotation is active. Use the Rotation Manager.' })
     const item = await selectPublicItem(placement, settings)
 
     return res.status(200).json({
