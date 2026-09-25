@@ -900,6 +900,40 @@ async function getViewCooldownHours() {
 }
 
 
+async function recordEpisodeView({
+  userId,
+  storyId,
+  episodeId,
+  mode = 'fast',
+}) {
+  if (!userId || !storyId || !episodeId) {
+    return {
+      counted: false,
+      reason: 'missing_user_or_episode',
+    }
+  }
+
+  const cooldownHours = await getViewCooldownHours()
+  const normalizedMode = mode === 'qualified' ? 'qualified' : 'fast'
+
+  const { data, error } = await supabase.rpc('record_episode_view_v2', {
+    p_user_id: userId,
+    p_story_id: storyId,
+    p_episode_id: episodeId,
+    p_mode: normalizedMode,
+    p_fast_cooldown_minutes: FAST_VIEW_COOLDOWN_MINUTES,
+    p_fast_daily_limit: FAST_VIEW_DAILY_LIMIT,
+    p_normal_cooldown_hours: cooldownHours,
+  })
+
+  if (error) throw error
+
+  return data || {
+    counted: false,
+    reason: 'view_result_missing',
+  }
+}
+
 
 async function getActiveEpisodeUnlock({ userId, episodeId }) {
   if (!userId || !episodeId) return null
