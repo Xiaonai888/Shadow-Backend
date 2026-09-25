@@ -404,9 +404,9 @@ export async function createAdminOpeningAdItem(req, res) {
   let uploadedImagePersisted = false
 
   try {
-    const { data: lastItem, error: lastItemError } = await supabase
+    const { data: lastItem, error: lastItemError, count: activeCount } = await supabase
       .from('shadow_advertisement_items')
-      .select('sort_order')
+      .select('sort_order', { count: 'exact' })
       .eq('placement', PLACEMENT)
       .eq('is_archived', false)
       .order('sort_order', { ascending: false })
@@ -414,6 +414,7 @@ export async function createAdminOpeningAdItem(req, res) {
       .maybeSingle()
 
     if (lastItemError) throw lastItemError
+    if (Number(activeCount || 0) >= 100) return res.status(409).json({ ok: false, message: 'Opening Ad library is full (100 active Ads). Archive an Ad before creating another.' })
 
     if (req.file) uploadedImageUrl = await uploadImage(req.file)
     const imageUrl = uploadedImageUrl || safeImage(req.body.image_url, '')
@@ -435,8 +436,12 @@ export async function createAdminOpeningAdItem(req, res) {
     if (error) throw error
     uploadedImagePersisted = Boolean(uploadedImageUrl)
 
-    const settings = await getSettings()
-    await restartAutoRotation(settings, Boolean(data.enabled && data.in_loop))
+    try {
+      const settings = await getSettings()
+      await restartAutoRotation(settings, Boolean(data.enabled && data.in_loop))
+    } catch (rotationError) {
+      console.error('RESTART OPENING AD ROTATION AFTER CREATE ERROR:', rotationError)
+    }
 
     invalidateAdvertisementResponseCache(PLACEMENT)
     await createLog(req, 'UPDATE', `Opening Ad item created: ${data.name}.`, data, data.enabled).catch(() => {})
@@ -558,9 +563,9 @@ export async function restoreAdminOpeningAdItem(req, res) {
     if (!current) return res.status(404).json({ ok: false, message: 'Opening ad item not found' })
     if (!current.is_archived) return res.status(200).json({ ok: true, item: current })
 
-    const { data: lastItem, error: lastItemError } = await supabase
+    const { data: lastItem, error: lastItemError, count: activeCount } = await supabase
       .from('shadow_advertisement_items')
-      .select('sort_order')
+      .select('sort_order', { count: 'exact' })
       .eq('placement', PLACEMENT)
       .eq('is_archived', false)
       .order('sort_order', { ascending: false })
@@ -568,6 +573,7 @@ export async function restoreAdminOpeningAdItem(req, res) {
       .maybeSingle()
 
     if (lastItemError) throw lastItemError
+    if (Number(activeCount || 0) >= 100) return res.status(409).json({ ok: false, message: 'Opening Ad library is full (100 active Ads). Archive an Ad before restoring another.' })
 
     const { data, error } = await supabase
       .from('shadow_advertisement_items')
