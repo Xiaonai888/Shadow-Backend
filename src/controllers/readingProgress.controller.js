@@ -8,6 +8,7 @@ const EPISODE_COUNT_CACHE_MS = 2 * 60 * 1000
 const EPISODE_COUNT_CACHE_LIMIT = 256
 const episodeCountCache = new Map()
 const episodeCountPending = new Map()
+let embeddedStoryJoinAvailable = true
 
 function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -165,29 +166,59 @@ export async function saveReadingProgress(req, res) {
       })
     }
 
-    const [
-      { data: story, error: storyError },
-      { data: episode, error: episodeError },
-    ] = await Promise.all([
-      supabase
-        .from('stories')
-        .select('id, total_episodes, is_adult')
-        .eq('id', storyId)
-        .eq('status', 'published')
-        .is('deleted_at', null)
-        .maybeSingle(),
-      supabase
+    let story = null
+    let episode = null
+    let useSeparateQueries = !embeddedStoryJoinAvailable
+
+    if (!useSeparateQueries) {
+      const { data, error } = await supabase
         .from('episodes')
-        .select('id, story_id, episode_number')
+        .select('id, story_id, episode_number, story:stories!inner(id, total_episodes, is_adult, status, deleted_at)')
         .eq('id', episodeId)
         .eq('story_id', storyId)
         .eq('status', 'published')
         .is('deleted_at', null)
-        .maybeSingle(),
-    ])
+        .eq('story.status', 'published')
+        .is('story.deleted_at', null)
+        .maybeSingle()
 
-    if (storyError) throw storyError
-    if (episodeError) throw episodeError
+      if (error) {
+        if (error.code !== 'PGRST200' && error.code !== 'PGRST201') throw error
+        embeddedStoryJoinAvailable = false
+        useSeparateQueries = true
+      } else if (data) {
+        episode = data
+        story = Array.isArray(data.story) ? data.story[0] : data.story
+        if (!story || story.status !== 'published' || story.deleted_at) {
+          story = null
+        }
+      }
+    }
+
+    if (useSeparateQueries) {
+      const [storyResult, episodeResult] = await Promise.all([
+        supabase
+          .from('stories')
+          .select('id, total_episodes, is_adult')
+          .eq('id', storyId)
+          .eq('status', 'published')
+          .is('deleted_at', null)
+          .maybeSingle(),
+        supabase
+          .from('episodes')
+          .select('id, story_id, episode_number')
+          .eq('id', episodeId)
+          .eq('story_id', storyId)
+          .eq('status', 'published')
+          .is('deleted_at', null)
+          .maybeSingle(),
+      ])
+
+      if (storyResult.error) throw storyResult.error
+      if (episodeResult.error) throw episodeResult.error
+      story = storyResult.data
+      episode = episodeResult.data
+    }
 
     if (!story || !episode) {
       return res.status(404).json({
