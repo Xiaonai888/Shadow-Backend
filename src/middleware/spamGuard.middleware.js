@@ -14,6 +14,70 @@ const BLOCK_EVENT_THROTTLE_MS = 60 * 1000
 const activeRestrictions = new Map()
 const lastBlockEventAt = new Map()
 
+const READER_CACHE_TTL_MS = 2000
+const READER_CACHE_MAX_SKIPS = 30
+const READER_CACHE_MAX_BURST = 4
+const READER_CACHE_MAX_KEYS = 2048
+const readerReadCache = new Map()
+
+function readerCacheKey(identity) {
+  return `${identity.guardKey}|${identity.ipAddress || ''}`
+}
+
+function canUseReaderCache(scope, req, identity) {
+  if (scope !== 'reader_read' || req.method !== 'GET' || identity.identityType !== 'account' || !identity.accountId) return false
+
+  const item = readerReadCache.get(readerCacheKey(identity))
+  if (!item) return false
+
+  const now = Date.now()
+  if (item.periodUntil <= now) {
+    item.periodUntil = now + 60000
+    item.skipped = 0
+  }
+
+  if (item.expiresAt <= now || item.skipped >= READER_CACHE_MAX_SKIPS || item.burst >= READER_CACHE_MAX_BURST) return false
+
+  item.skipped += 1
+  item.burst += 1
+  req.spamGuard = { ...item.snapshot }
+  return true
+}
+
+function updateReaderCache(scope, req, identity, result, threshold) {
+  if (scope !== 'reader_read' || req.method !== 'GET' || identity.identityType !== 'account' || !identity.accountId) return
+
+  const now = Date.now()
+  const key = readerCacheKey(identity)
+  const item = readerReadCache.get(key) || { periodUntil: now + 60000, skipped: 0, burst: 0, expiresAt: 0, snapshot: null }
+  if (item.periodUntil <= now) {
+    item.periodUntil = now + 60000
+    item.skipped = 0
+  }
+
+  item.expiresAt = result?.allowed === true &&
+    result?.block_status === 'allowed' &&
+    Number(result.request_count) <= threshold - (READER_CACHE_MAX_SKIPS * 2) &&
+    Number(result.offense_count) === 0 &&
+    Number(result.spam_score) === 0 &&
+    !result.cooldown_until && !result.quarantine_until &&
+    !result.is_permanent_blocked && item.skipped < READER_CACHE_MAX_SKIPS
+      ? now + READER_CACHE_TTL_MS
+      : 0
+  item.burst = 0
+  item.snapshot = item.expiresAt ? buildGuardSnapshot({
+    result,
+    scope,
+    guardKey: identity.guardKey,
+    identityType: identity.identityType,
+  }) : null
+
+  readerReadCache.delete(key)
+  readerReadCache.set(key, item)
+  if (readerReadCache.size > READER_CACHE_MAX_KEYS) readerReadCache.delete(readerReadCache.keys().next().value)
+}
+
+
 let degraded = false
 let lastReportedState = ''
 
@@ -537,6 +601,8 @@ export function createSpamGuard({
 
     if (!identity.guardKey) return next()
 
+    if (canUseReaderCache(safeScope, req, identity)) return next()
+
     try {
       let effectiveScope = safeScope
       let effectiveGuardKey = identity.guardKey
@@ -585,6 +651,8 @@ export function createSpamGuard({
       markHealthy()
 
       if (!result) return next()
+
+      updateReaderCache(safeScope, req, identity, result, safeThreshold)
 
       req.spamGuard = buildGuardSnapshot({
         result,
