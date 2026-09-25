@@ -8,6 +8,7 @@ import { getAdminAuthorIncome } from '../controllers/adminAuthorIncome.controlle
 import { getAdminAuthorIncomeTransactions } from '../controllers/adminAuthorIncomeTransactions.controller.js'
 import { getAdminShadowMallIncome } from '../controllers/adminShadowMallIncome.controller.js'
 import { streamAdminIncomeEvents } from '../services/adminIncomeEvents.service.js'
+import { getAdminAuthorPageIncome } from '../controllers/adminAuthorPageIncome.controller.js'
 import {
   recordAdminStoryPayoutTransfer,
   uploadAdminStoryPayoutReceipt,
