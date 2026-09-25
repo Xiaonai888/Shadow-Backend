@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
+import { hydrateAuthorEchoPosts } from '../services/authorPageEchoSources.service.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import { recordPostHashtagInterestSignalSafely } from '../services/userHashtagInterest.service.js'
 import {
@@ -77,8 +78,7 @@ async function getAuthorPostCommentReactionMap(
     .from('author_page_post_comment_likes')
     .select('comment_id, reaction_type')
     .eq('user_id', userId)
-    .is('echo_source_type', null)
-    .gte('created_at', todayRange.start)
+    .in('comment_id', commentIds)
 
   if (error) throw error
 
@@ -133,6 +133,11 @@ is_pinned: Boolean(post.is_pinned),
     echo_count: Number(post.echo_count || 0),
     echo_state_loaded: Boolean(post.echo_state_loaded),
     reaction_summary: Array.isArray(post.reaction_summary) ? post.reaction_summary.slice(0, 3) : [],
+    echo_source_type: post.echo_source_type || null,
+    echo_source_id: post.echo_source_id || null,
+    echo_text: post.echo_text || '',
+    echo_source: post.echo_source || null,
+    echo_unavailable: Boolean(post.echo_unavailable),
     created_at: post.created_at,
     updated_at: post.updated_at,
   }
@@ -415,7 +420,10 @@ const before = String(req.query.before || '').trim()
 
 if (postsError) throw postsError
 
-const pagePosts = (postRows || []).slice(0, limit)
+const pagePosts = await hydrateAuthorEchoPosts(
+  (postRows || []).slice(0, limit),
+  supabase
+)
 const hasMore = (postRows || []).length > limit
 const nextBefore =
   hasMore && pagePosts.length
@@ -583,6 +591,8 @@ export async function getAuthorPostById(req, res) {
       })
     }
 
+    const hydratedPost = (await hydrateAuthorEchoPosts([post], supabase))[0]
+
     const authorPage = Array.isArray(post.author_page)
       ? post.author_page[0] || null
       : post.author_page || null
@@ -649,7 +659,7 @@ export async function getAuthorPostById(req, res) {
       ok: true,
       post: {
         ...publicAuthorPost({
-          ...post,
+          ...hydratedPost,
           like_count: Number(
             (reactionRows || []).length
           ),
@@ -820,6 +830,7 @@ export async function createMyAuthorPost(req, res) {
       })
       .eq('author_page_id', authorPage.id)
       .eq('user_id', userId)
+      .is('echo_source_type', null)
       .gte('created_at', todayRange.start)
       .lt('created_at', todayRange.end)
 
