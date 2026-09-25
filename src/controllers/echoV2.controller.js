@@ -971,6 +971,93 @@ export async function getEchoV2Health(
   }
 }
 
+async function createAuthorPageEchoV2(req, res, { userId, sourceType, sourceId, source }) {
+  let eventId = ''
+  let saved = false
+
+  try {
+    if (sourceType !== 'story') {
+      return res.status(400).json({ ok: false, message: 'Only stories can be echoed to an Author Page.' })
+    }
+
+    if (String(req.body?.audience || 'public').trim().toLowerCase() !== 'public') {
+      return res.status(400).json({ ok: false, message: 'Author Page echoes must be public.' })
+    }
+
+    const { data: page, error: pageError } = await supabase
+      .from('author_pages')
+      .select('id, user_id, page_name, page_username, avatar_url')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (pageError) throw pageError
+    if (!page) {
+      return res.status(403).json({ ok: false, message: 'You do not have an active Author Page.' })
+    }
+
+    const { data: existing, error: existingError } = await supabase
+      .from('author_page_posts')
+      .select('id')
+      .eq('author_page_id', page.id)
+      .eq('user_id', userId)
+      .eq('echo_source_type', sourceType)
+      .eq('echo_source_id', sourceId)
+      .eq('status', 'active')
+      .limit(1)
+      .maybeSingle()
+
+    if (existingError) throw existingError
+    if (existing) {
+      return res.status(409).json({ ok: false, message: 'This story is already echoed on your Author Page.' })
+    }
+
+    const reservation = await reserveShare({ userId, sourceType, sourceId })
+    eventId = reservation.eventId
+    const now = new Date().toISOString()
+    const echoText = cleanText(req.body?.echo_text, 280)
+
+    const { data: post, error: postError } = await supabase
+      .from('author_page_posts')
+      .insert({
+        author_page_id: page.id,
+        user_id: userId,
+        post_type: 'article',
+        content: echoText || source.name || 'Story',
+        image_urls: [],
+        photo_metadata: [],
+        is_pinned: false,
+        status: 'active',
+        published_at: now,
+        updated_at: now,
+        echo_source_type: sourceType,
+        echo_source_id: sourceId,
+        echo_text: echoText,
+      })
+      .select('id, author_page_id, user_id, echo_source_type, echo_source_id, echo_text, created_at')
+      .single()
+
+    if (postError) throw postError
+    saved = true
+
+    return res.status(201).json({
+      ok: true,
+      created: true,
+      destination: 'author_page',
+      post,
+      author_page: page,
+      source,
+      limits: {
+        same_source_remaining: reservation.sameSourceRemaining,
+        daily_remaining: reservation.dailyRemaining,
+      },
+    })
+  } catch (error) {
+    if (eventId && !saved) await releaseShare(eventId)
+    return sendError(res, error, 'Failed to echo to Author Page')
+  }
+}
+
 export async function createEchoV2(
   req,
   res
@@ -1015,6 +1102,17 @@ export async function createEchoV2(
         ok: false,
         message:
           'The shared content was not found or cannot be viewed',
+      })
+    }
+
+    if (
+      String(req.body?.destination || '').trim().toLowerCase() === 'author_page'
+    ) {
+      return createAuthorPageEchoV2(req, res, {
+        userId,
+        sourceType,
+        sourceId,
+        source,
       })
     }
 
