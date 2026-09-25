@@ -863,49 +863,39 @@ async function checkAndSaveFreeFirstEpisodeAccess({ user, storyId, episode }) {
 const FAST_VIEW_COOLDOWN_MINUTES = 1
 const FAST_VIEW_DAILY_LIMIT = 20
 
+const VIEW_COOLDOWN_CACHE_MS = 60 * 1000
+let cachedViewCooldown = null
+let pendingViewCooldown = null
+
 async function getViewCooldownHours() {
-  const { data, error } = await supabase
-    .from('platform_unlock_rules')
-    .select('view_count_cooldown_hours')
-    .eq('id', 1)
-    .maybeSingle()
-
-  if (error || !data) return 3
-
-  return Number(data.view_count_cooldown_hours || 3)
-}
-
-async function recordEpisodeView({
-  userId,
-  storyId,
-  episodeId,
-  mode = 'fast',
-}) {
-  if (!userId || !storyId || !episodeId) {
-    return {
-      counted: false,
-      reason: 'missing_user_or_episode',
-    }
+  if (cachedViewCooldown && Date.now() < cachedViewCooldown.expiresAt) {
+    return cachedViewCooldown.value
   }
 
-  const cooldownHours = await getViewCooldownHours()
-  const normalizedMode = mode === 'qualified' ? 'qualified' : 'fast'
+  if (pendingViewCooldown) return pendingViewCooldown
 
-  const { data, error } = await supabase.rpc('record_episode_view_v2', {
-    p_user_id: userId,
-    p_story_id: storyId,
-    p_episode_id: episodeId,
-    p_mode: normalizedMode,
-    p_fast_cooldown_minutes: FAST_VIEW_COOLDOWN_MINUTES,
-    p_fast_daily_limit: FAST_VIEW_DAILY_LIMIT,
-    p_normal_cooldown_hours: cooldownHours,
-  })
+  const pending = (async () => {
+    const { data, error } = await supabase
+      .from('platform_unlock_rules')
+      .select('view_count_cooldown_hours')
+      .eq('id', 1)
+      .maybeSingle()
 
-  if (error) throw error
+    if (error || !data) return 3
 
-  return data || {
-    counted: false,
-    reason: 'view_result_missing',
+    const value = Number(data.view_count_cooldown_hours || 3)
+    cachedViewCooldown = {
+      value,
+      expiresAt: Date.now() + VIEW_COOLDOWN_CACHE_MS,
+    }
+    return value
+  })()
+
+  pendingViewCooldown = pending
+  try {
+    return await pending
+  } finally {
+    if (pendingViewCooldown === pending) pendingViewCooldown = null
   }
 }
 
