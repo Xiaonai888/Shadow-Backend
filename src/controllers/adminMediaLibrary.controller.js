@@ -48,23 +48,63 @@ async function findImage(imageId) {
 
 export async function getAdminMediaLibrary(req, res) {
   try {
-    const [{ data: folders, error: foldersError }, { data: images, error: imagesError }] = await Promise.all([
-      supabase
+    const folderId = typeof req.query.folder_id === 'string' ? req.query.folder_id.trim() : ''
+    const foldersOnly = req.query.folders_only === '1'
+    const imagesOnly = req.query.images_only === '1' && Boolean(folderId)
+    const page = Number(req.query.page || 1)
+    const limit = 30
+
+    if (folderId && (folderId.length > 100 || !Number.isSafeInteger(page) || page < 1 || page > 10000)) {
+      return res.status(400).json({ ok: false, message: 'Invalid folder or page' })
+    }
+
+    const folderRequest = imagesOnly
+      ? Promise.resolve({ data: [], error: null })
+      : supabase
         .from('media_folders')
         .select(FOLDER_FIELDS)
         .order('sort_order', { ascending: true })
-        .order('created_at', { ascending: true }),
-      supabase
-        .from('media_library')
-        .select(IMAGE_FIELDS)
-        .order('sort_order', { ascending: true })
-        .order('created_at', { ascending: false }),
+        .order('created_at', { ascending: true })
+
+    const imageRequest = foldersOnly
+      ? Promise.resolve({ data: [], error: null })
+      : folderId
+        ? supabase
+          .from('media_library')
+          .select(IMAGE_FIELDS)
+          .eq('folder_id', folderId)
+          .order('sort_order', { ascending: true })
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: true })
+          .range((page - 1) * limit, page * limit)
+        : supabase
+          .from('media_library')
+          .select(IMAGE_FIELDS)
+          .order('sort_order', { ascending: true })
+          .order('created_at', { ascending: false })
+
+    const [{ data: folders, error: foldersError }, { data: images, error: imagesError }] = await Promise.all([
+      folderRequest,
+      imageRequest,
     ])
 
     if (foldersError) throw foldersError
     if (imagesError) throw imagesError
 
-    return res.status(200).json({ ok: true, folders: folders || [], images: images || [] })
+    if (!folderId && !foldersOnly) {
+      return res.status(200).json({ ok: true, folders: folders || [], images: images || [] })
+    }
+
+    const records = images || []
+    return res.status(200).json({
+      ok: true,
+      folders: folders || [],
+      images: records.slice(0, limit),
+      folder_id: folderId,
+      page: folderId ? page : 1,
+      limit,
+      has_more: records.length > limit,
+    })
   } catch (error) {
     console.error('GET ADMIN MEDIA LIBRARY ERROR:', error)
     return res.status(500).json({ ok: false, message: error.message || 'Failed to load media library' })
