@@ -520,7 +520,6 @@ async function getOrCreateReadingMissionProgress(
 
 async function getReaderReadingMissions(userId) {
   const missions = await getActiveSessionMissions()
-  if (missionsError) throw missionsError
 
   const missionList = missions || []
 
@@ -1544,15 +1543,7 @@ export async function trackReadingSessionProgress(req, res) {
         if (eventError) throw eventError
       }
 
-      const { data: missions, error: missionsError } = await supabase
-        .from('task_center_reading_missions')
-        .select('*')
-        .eq('is_active', true)
-        .order('sort_order', { ascending: true })
-        .order('created_at', { ascending: false })
-        .limit(20)
-
-      if (missionsError) throw missionsError
+      const missions = await getActiveSessionMissions()
 
       const matchingMissions = (missions || []).filter((mission) =>
         missionMatchesStory(mission, storyId)
