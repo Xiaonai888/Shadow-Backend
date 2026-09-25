@@ -1,0 +1,134 @@
+name: Spam Guard offline checks
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test-spam-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify reader cache and fail-safe without Supabase
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { readFileSync } from 'node:fs'
+          import { isIP } from 'node:net'
+          import vm from 'node:vm'
+          
+          let source = readFileSync('src/middleware/spamGuard.middleware.js', 'utf8')
+          const imports = [
+            /^import \{ isIP \} from 'node:net'\r?\n/m,
+            /^import jwt from 'jsonwebtoken'\r?\n/m,
+            /^import \{ supabase \} from '\.\.\/config\/supabase\.js'\r?\n/m,
+            /^import \{\r?\n  publishSecurityEvent,\r?\n  reportGuardState,\r?\n\} from '\.\.\/services\/securityControlPlane\.service\.js'\r?\n/m,
+          ]
+          for (const pattern of imports) {
+            assert.match(source, pattern)
+            source = source.replace(pattern, '')
+          }
+          assert.match(source, /export function createSpamGuard\(/)
+          source = source.replace('export function createSpamGuard(', 'function createSpamGuard(')
+          let calls = 0
+          let mode = 'allow'
+          const supabase = {
+            async rpc(name) {
+              assert.equal(name, 'evaluate_spam_guard')
+              calls += 1
+              if (mode === 'error') return { data: null, error: Error('simulated database failure') }
+              if (mode === 'blocked') return {
+                error: null,
+                data: {
+                  allowed: false,
+                  block_status: 'temporary_cooldown',
+                  retry_after_seconds: 60,
+                  request_count: 300,
+                  offense_count: 1,
+                  spam_score: 10,
+                  cooldown_until: new Date(Date.now() + 60000).toISOString(),
+                },
+              }
+              return {
+                error: null,
+                data: {
+                  allowed: true,
+                  block_status: 'allowed',
+                  request_count: 10,
+                  offense_count: 0,
+                  spam_score: 0,
+                  cooldown_until: null,
+                  quarantine_until: null,
+                },
+              }
+            },
+          }
+          const createGuard = vm.runInNewContext(
+            `${source}\ncreateSpamGuard`,
+            {
+              isIP,
+              jwt: { verify: () => ({}) },
+              supabase,
+              publishSecurityEvent: () => {},
+              reportGuardState: () => {},
+              console: { error: () => {} },
+              process: { env: {} },
+            },
+            { filename: 'spamGuard.middleware.js' }
+          )
+          
+          async function request(guard, accountId, method = 'GET') {
+            let allowed = false
+            let status = 200
+            let payload = null
+            const headers = {}
+            const req = {
+              method,
+              user: accountId ? { id: accountId } : {},
+              headers: {},
+              socket: { remoteAddress: '203.0.113.14' },
+              originalUrl: '/api/books/test',
+              url: '/api/books/test',
+            }
+            const res = {
+              setHeader(name, value) { headers[name] = value },
+              status(code) { status = code; return this },
+              json(body) { payload = body; return this },
+            }
+            await guard(req, res, () => { allowed = true })
+            return { allowed, status, payload, headers }
+          }
+          
+          const readerGuard = createGuard({ scope: 'reader_read', threshold: 300, windowSeconds: 60 })
+          for (let i = 0; i < 6; i += 1) {
+            const result = await request(readerGuard, 'test-account')
+            assert.equal(result.allowed, true)
+          }
+          assert.equal(calls, 2, 'Six allowed signed-in GET requests should trigger two simulated RPC calls')
+          console.log('PASS signed-in reader cache: 6 requests, 2 simulated RPC evaluations, 4 cache hits')
+          
+          mode = 'blocked'
+          const blocked = await request(readerGuard, 'blocked-account')
+          assert.equal(blocked.allowed, false)
+          assert.equal(blocked.status, 429)
+          assert.equal(blocked.headers['Retry-After'], '60')
+          console.log('PASS blocked account: HTTP 429 with Retry-After')
+          
+          mode = 'error'
+          const paymentGuard = createGuard({ scope: 'payment_actions', threshold: 30, windowSeconds: 60, failOpen: false })
+          const payment = await request(paymentGuard, 'payment-account', 'POST')
+          assert.equal(payment.allowed, false)
+          assert.equal(payment.status, 503)
+          assert.equal(payment.payload.code, 'SPAM_GUARD_UNAVAILABLE')
+          console.log('PASS sensitive action: simulated guard failure returns HTTP 503')
+          
+          mode = 'allow'
+          const beforeGuest = calls
+          assert.equal((await request(readerGuard, null)).allowed, true)
+          assert.equal((await request(readerGuard, null)).allowed, true)
+          assert.equal(calls - beforeGuest, 2)
+          console.log('PASS guest reader: cache bypassed, two simulated RPC evaluations')
+          console.log('All tests passed locally with mocked Supabase; no live database or website traffic was used.')
+          NODE
