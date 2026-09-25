@@ -77,7 +77,8 @@ async function getAuthorPostCommentReactionMap(
     .from('author_page_post_comment_likes')
     .select('comment_id, reaction_type')
     .eq('user_id', userId)
-    .in('comment_id', commentIds)
+    .is('echo_source_type', null)
+    .gte('created_at', todayRange.start)
 
   if (error) throw error
 
