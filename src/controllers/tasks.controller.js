@@ -30,6 +30,43 @@ const MAX_MISSION_EVENT_SECONDS = 30
 
 const readingSessionLocks = new Map()
 
+const ACTIVE_SESSION_MISSIONS_TTL_MS = 60 * 1000
+let activeSessionMissionsCache = null
+let activeSessionMissionsPending = null
+
+async function getActiveSessionMissions() {
+  if (activeSessionMissionsCache && Date.now() < activeSessionMissionsCache.expiresAt) {
+    return activeSessionMissionsCache.value
+  }
+
+  if (activeSessionMissionsPending) return activeSessionMissionsPending
+
+  const pending = (async () => {
+    const { data, error } = await supabase
+      .from('task_center_reading_missions')
+      .select('*')
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true })
+      .order('created_at', { ascending: false })
+      .limit(20)
+
+    if (error) throw error
+    const value = data || []
+    activeSessionMissionsCache = {
+      value,
+      expiresAt: Date.now() + ACTIVE_SESSION_MISSIONS_TTL_MS,
+    }
+    return value
+  })()
+
+  activeSessionMissionsPending = pending
+  try {
+    return await pending
+  } finally {
+    if (activeSessionMissionsPending === pending) activeSessionMissionsPending = null
+  }
+}
+
 async function withReadingSessionLock(userId, callback) {
   const previous = readingSessionLocks.get(userId) || Promise.resolve()
   let releaseCurrent
@@ -482,14 +519,7 @@ async function getOrCreateReadingMissionProgress(
 }
 
 async function getReaderReadingMissions(userId) {
-  const { data: missions, error: missionsError } = await supabase
-    .from('task_center_reading_missions')
-    .select('*')
-    .eq('is_active', true)
-    .order('sort_order', { ascending: true })
-    .order('created_at', { ascending: false })
-    .limit(20)
-
+  const missions = await getActiveSessionMissions()
   if (missionsError) throw missionsError
 
   const missionList = missions || []
