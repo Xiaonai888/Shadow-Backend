@@ -373,12 +373,14 @@ const rewardActionSpamGuard = createSpamGuard({
   scope: 'reward_actions',
   threshold: 30,
   windowSeconds: 60,
+  failOpen: false,
 })
 
 const giftActionSpamGuard = createSpamGuard({
   scope: 'gift_actions',
   threshold: 30,
   windowSeconds: 60,
+  failOpen: false,
 })
 
 const supportActionSpamGuard = createSpamGuard({
@@ -604,12 +606,14 @@ const giftFastSendGuard = createSpamGuard({
   scope: 'gift_send_gap',
   threshold: 1,
   windowSeconds: 3,
+  failOpen: false,
 })
 
 const giftMinuteSendGuard = createSpamGuard({
   scope: 'gift_send_minute',
   threshold: 10,
   windowSeconds: 60,
+  failOpen: false,
 })
 
 const giftSpamGuard = (req, res, next) => {
@@ -707,6 +711,7 @@ const paymentSpamGuard = createSpamGuard({
   scope: 'payment_actions',
   threshold: 30,
   windowSeconds: 60,
+  failOpen: false,
   skipPaths: [
     '/api/purchase/aba/callback*',
   ],
