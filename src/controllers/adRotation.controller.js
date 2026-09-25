@@ -520,9 +520,9 @@ export async function createAdminRotatingAdvertisementItem(req, res) {
     const { placement, config } = resolvePlacement(req)
     const settings = await getSettings(placement, config)
 
-    const { data: lastItem, error: lastItemError } = await supabase
+    const { data: lastItem, error: lastItemError, count: activeCount } = await supabase
       .from('shadow_advertisement_items')
-      .select('sort_order')
+      .select('sort_order', { count: 'exact' })
       .eq('placement', placement)
       .eq('is_archived', false)
       .order('sort_order', { ascending: false })
@@ -530,6 +530,7 @@ export async function createAdminRotatingAdvertisementItem(req, res) {
       .maybeSingle()
 
     if (lastItemError) throw lastItemError
+    if (Number(activeCount || 0) >= 100) return res.status(409).json({ ok: false, message: `${config.label} library is full (100 active Ads). Archive an Ad before creating another.` })
 
     if (req.file) uploadedImageUrl = await uploadImage(req.file, config)
 
@@ -559,7 +560,9 @@ export async function createAdminRotatingAdvertisementItem(req, res) {
       placement,
       settings,
       Boolean(data.enabled && data.in_loop),
-    )
+    ).catch(rotationError => {
+      console.error('RESTART ROTATING AD AFTER CREATE ERROR:', rotationError)
+    })
 
     invalidateAdvertisementResponseCache(placement)
 
@@ -752,9 +755,9 @@ export async function restoreAdminRotatingAdvertisementItem(req, res) {
       return res.status(200).json({ ok: true, item: current })
     }
 
-    const { data: lastItem, error: lastItemError } = await supabase
+    const { data: lastItem, error: lastItemError, count: activeCount } = await supabase
       .from('shadow_advertisement_items')
-      .select('sort_order')
+      .select('sort_order', { count: 'exact' })
       .eq('placement', placement)
       .eq('is_archived', false)
       .order('sort_order', { ascending: false })
@@ -762,6 +765,7 @@ export async function restoreAdminRotatingAdvertisementItem(req, res) {
       .maybeSingle()
 
     if (lastItemError) throw lastItemError
+    if (Number(activeCount || 0) >= 100) return res.status(409).json({ ok: false, message: `${config.label} library is full (100 active Ads). Archive an Ad before restoring another.` })
 
     const { data, error } = await supabase
       .from('shadow_advertisement_items')
