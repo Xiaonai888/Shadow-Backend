@@ -1030,7 +1030,7 @@ export async function getMyAuthorStoreIncome(req, res) {
 
     const { data: orders, error: ordersError } = await supabase
       .from('author_store_orders')
-      .select('id, payment_status, product_subtotal_usd, platform_fee_usd, author_income_usd')
+      .select('id, payment_status, product_subtotal_usd, platform_fee_usd, author_income_usd, delivery_fee_usd')
       .eq('author_page_id', authorPage.id)
 
     if (ordersError) throw ordersError
@@ -1039,8 +1039,7 @@ export async function getMyAuthorStoreIncome(req, res) {
 
     const grossSales = paidOrders.reduce((sum, order) => sum + Number(order.product_subtotal_usd || 0), 0)
     const platformFee = paidOrders.reduce((sum, order) => sum + Number(order.platform_fee_usd || 0), 0)
-    const authorIncome = paidOrders.reduce((sum, order) => sum + Number(order.author_income_usd || 0), 0)
-
+    const authorIncome = paidOrders.reduce((sum, order) => sum + Number(order.author_income_usd || 0) + Number(order.delivery_fee_usd || 0), 0)
     const { data: withdrawals, error: withdrawalsError } = await supabase
       .from('author_store_withdrawal_requests')
       .select('*')
@@ -1169,14 +1168,14 @@ export async function createMyAuthorStoreWithdrawal(req, res) {
 
     const { data: orders, error: ordersError } = await supabase
       .from('author_store_orders')
-      .select('payment_status, author_income_usd')
+      .select('payment_status, author_income_usd, delivery_fee_usd')
       .eq('author_page_id', authorPage.id)
 
     if (ordersError) throw ordersError
 
     const authorIncome = (orders || [])
       .filter((order) => order.payment_status === 'paid')
-      .reduce((sum, order) => sum + Number(order.author_income_usd || 0), 0)
+      .reduce((sum, order) => sum + Number(order.author_income_usd || 0) + Number(order.delivery_fee_usd || 0), 0)
 
     const { data: oldWithdrawals, error: withdrawalsError } = await supabase
       .from('author_store_withdrawal_requests')
