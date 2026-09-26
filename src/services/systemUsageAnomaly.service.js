@@ -36,6 +36,22 @@ const HARD_REQUESTS_15S = Math.max(
 )
 const ACTIVE_WINDOWS_REQUIRED = 2
 const RECOVERY_WINDOWS_REQUIRED = 4
+const ROUTE_BURST_RATIO = Math.max(
+  3,
+  Number(process.env.SYSTEM_USAGE_ROUTE_BURST_RATIO || 4)
+)
+const ROUTE_MIN_HTTP_15S = Math.max(
+  5,
+  Number(process.env.SYSTEM_USAGE_ROUTE_MIN_HTTP_15S || 10)
+)
+const ROUTE_MIN_SUPABASE_15S = Math.max(
+  10,
+  Number(process.env.SYSTEM_USAGE_ROUTE_MIN_SUPABASE_15S || 20)
+)
+const DB_FANOUT_RATIO = Math.max(
+  5,
+  Number(process.env.SYSTEM_USAGE_DB_FANOUT_RATIO || 8)
+)
 
 let timer = null
 let lastAnalyzedEnd = 0
@@ -134,8 +150,8 @@ function topDriver(rows = []) {
     .filter((item) => !isMonitorRow(item))
     .sort(
       (a, b) =>
-        Number(b.bytes || 0) - Number(a.bytes || 0) ||
-        Number(b.count || 0) - Number(a.count || 0)
+        Number(b.count || 0) - Number(a.count || 0) ||
+        Number(b.bytes || 0) - Number(a.bytes || 0)
     )[0]
 
   if (!row) return null
@@ -170,9 +186,291 @@ function ratio(current, baseline) {
   return safeCurrent / safeBaseline
 }
 
+function routeTotals(rows = []) {
+  const routes = new Map()
+
+  for (const row of rows) {
+    if (isMonitorRow(row)) continue
+
+    const route = String(row.source_route || 'UNKNOWN')
+    const amount = Math.max(0, Number(row.count) || 0)
+    const current = routes.get(route) || {
+      route,
+      http_requests: 0,
+      external_calls: 0,
+      supabase_calls: 0,
+      http_errors: 0,
+      top_target: '',
+      top_target_calls: 0,
+    }
+
+    if (row.kind === 'http_response') {
+      current.http_requests += amount
+      current.http_errors += Math.max(
+        0,
+        Number(row.errors) || 0
+      )
+    } else if (row.kind === 'external_request') {
+      current.external_calls += amount
+
+      if (
+        String(row.dependency || '').toUpperCase() ===
+        'SUPABASE'
+      ) {
+        current.supabase_calls += amount
+      }
+
+      if (amount > current.top_target_calls) {
+        current.top_target_calls = amount
+        current.top_target = [
+          row.dependency,
+          row.operation_method,
+          row.target_path,
+        ]
+          .filter(Boolean)
+          .join(' ')
+      }
+    }
+
+    routes.set(route, current)
+  }
+
+  return routes
+}
+
+function roundedRatio(current, baseline) {
+  const value = ratio(current, baseline)
+
+  return Number.isFinite(value)
+    ? Number(value.toFixed(2))
+    : null
+}
+
+function buildRouteDiagnostics(
+  liveRows = [],
+  minuteWindows = []
+) {
+  const minutes = minuteWindows
+    .filter((item) => Array.isArray(item?.rows))
+
+  const latestMinute = minutes.at(-1) || null
+  const baselineMinutes = minutes
+    .slice(0, -1)
+    .slice(-MAX_BASELINE_MINUTES)
+
+  const baselineReady =
+    baselineMinutes.length >= MIN_BASELINE_MINUTES
+
+  const liveMap = routeTotals(liveRows)
+  const minuteMap = routeTotals(
+    latestMinute?.rows || []
+  )
+  const baselineMaps = baselineMinutes.map(
+    (minute) => routeTotals(minute.rows || [])
+  )
+
+  const routeNames = new Set([
+    ...liveMap.keys(),
+    ...minuteMap.keys(),
+  ])
+
+  for (const map of baselineMaps) {
+    for (const route of map.keys()) {
+      routeNames.add(route)
+    }
+  }
+
+  const diagnostics = []
+
+  for (const route of routeNames) {
+    const live = liveMap.get(route) || {}
+    const minute = minuteMap.get(route) || {}
+
+    const httpBaseline1m = median(
+      baselineMaps.map(
+        (map) => map.get(route)?.http_requests || 0
+      )
+    )
+    const supabaseBaseline1m = median(
+      baselineMaps.map(
+        (map) => map.get(route)?.supabase_calls || 0
+      )
+    )
+
+    const http15s = Math.max(
+      0,
+      Number(live.http_requests) || 0
+    )
+    const supabase15s = Math.max(
+      0,
+      Number(live.supabase_calls) || 0
+    )
+    const http1m = Math.max(
+      0,
+      Number(minute.http_requests) || 0
+    )
+    const supabase1m = Math.max(
+      0,
+      Number(minute.supabase_calls) || 0
+    )
+
+    const httpRatio15s = ratio(
+      http15s,
+      httpBaseline1m / 4
+    )
+    const supabaseRatio15s = ratio(
+      supabase15s,
+      supabaseBaseline1m / 4
+    )
+    const httpRatio1m = ratio(
+      http1m,
+      httpBaseline1m
+    )
+    const supabaseRatio1m = ratio(
+      supabase1m,
+      supabaseBaseline1m
+    )
+
+    const httpBurst15s =
+      baselineReady &&
+      http15s >= ROUTE_MIN_HTTP_15S &&
+      httpRatio15s >= ROUTE_BURST_RATIO
+
+    const supabaseBurst15s =
+      baselineReady &&
+      supabase15s >= ROUTE_MIN_SUPABASE_15S &&
+      supabaseRatio15s >= ROUTE_BURST_RATIO
+
+    const httpBurst1m =
+      baselineReady &&
+      http1m >= ROUTE_MIN_HTTP_15S * 4 &&
+      httpRatio1m >= ROUTE_BURST_RATIO
+
+    const supabaseBurst1m =
+      baselineReady &&
+      supabase1m >= ROUTE_MIN_SUPABASE_15S * 4 &&
+      supabaseRatio1m >= ROUTE_BURST_RATIO
+
+    const dbPerHttp15s =
+      http15s > 0
+        ? supabase15s / http15s
+        : null
+
+    const dbPerHttp1m =
+      http1m > 0
+        ? supabase1m / http1m
+        : null
+
+    const databaseFanout =
+      (
+        http15s >= 5 &&
+        supabase15s >= ROUTE_MIN_SUPABASE_15S &&
+        dbPerHttp15s >= DB_FANOUT_RATIO
+      ) ||
+      (
+        http1m >= 20 &&
+        supabase1m >= ROUTE_MIN_SUPABASE_15S * 4 &&
+        dbPerHttp1m >= DB_FANOUT_RATIO
+      )
+
+    const persistentBurst =
+      (httpBurst15s && httpBurst1m) ||
+      (supabaseBurst15s && supabaseBurst1m)
+
+    const flags = []
+
+    if (httpBurst15s) flags.push('http_burst_15s')
+    if (supabaseBurst15s) {
+      flags.push('supabase_burst_15s')
+    }
+    if (httpBurst1m) flags.push('http_burst_1m')
+    if (supabaseBurst1m) {
+      flags.push('supabase_burst_1m')
+    }
+    if (databaseFanout) {
+      flags.push('database_fanout')
+    }
+    if (persistentBurst) {
+      flags.push('loop_or_polling_suspected')
+    }
+
+    diagnostics.push({
+      route,
+      baseline_ready: baselineReady,
+      http_requests_15s: http15s,
+      supabase_calls_15s: supabase15s,
+      http_requests_1m: http1m,
+      supabase_calls_1m: supabase1m,
+      baseline_http_1m: httpBaseline1m,
+      baseline_supabase_1m: supabaseBaseline1m,
+      http_ratio_15s: roundedRatio(
+        http15s,
+        httpBaseline1m / 4
+      ),
+      supabase_ratio_15s: roundedRatio(
+        supabase15s,
+        supabaseBaseline1m / 4
+      ),
+      http_ratio_1m: roundedRatio(
+        http1m,
+        httpBaseline1m
+      ),
+      supabase_ratio_1m: roundedRatio(
+        supabase1m,
+        supabaseBaseline1m
+      ),
+      db_per_http_15s:
+        dbPerHttp15s === null
+          ? null
+          : Number(dbPerHttp15s.toFixed(2)),
+      db_per_http_1m:
+        dbPerHttp1m === null
+          ? null
+          : Number(dbPerHttp1m.toFixed(2)),
+      external_calls_15s:
+        Math.max(
+          0,
+          Number(live.external_calls) || 0
+        ),
+      http_errors_15s:
+        Math.max(
+          0,
+          Number(live.http_errors) || 0
+        ),
+      top_target:
+        live.top_target ||
+        minute.top_target ||
+        '',
+      flags,
+      suspicious: flags.length > 0,
+    })
+  }
+
+  return diagnostics.sort(
+    (a, b) =>
+      Number(b.suspicious) - Number(a.suspicious) ||
+      b.supabase_calls_15s - a.supabase_calls_15s ||
+      b.http_requests_15s - a.http_requests_15s ||
+      b.supabase_calls_1m - a.supabase_calls_1m ||
+      b.http_requests_1m - a.http_requests_1m
+  )
+}
+
 function classify(driver, signals) {
   const route = String(driver?.source_route || '').toUpperCase()
   const dependency = String(driver?.dependency || '').toUpperCase()
+
+  if (signals.includes('route_loop_suspected')) {
+    return 'route_loop_suspected'
+  }
+
+  if (signals.includes('database_fanout')) {
+    return 'database_fanout'
+  }
+
+  if (signals.includes('route_burst')) {
+    return 'route_overload'
+  }
 
   if (
     route.startsWith('WORKER ') ||
@@ -212,6 +510,17 @@ function severityFor({
   hardLimitTriggered,
 }) {
   if (hardLimitTriggered) return 'critical'
+
+  if (signals.includes('route_loop_suspected')) {
+    return 'high'
+  }
+
+  if (
+    signals.includes('database_fanout') &&
+    signals.includes('route_burst')
+  ) {
+    return 'high'
+  }
 
   const byteRatio = ratio(
     current.bytes,
@@ -317,12 +626,22 @@ function analyzeCompletedWindow() {
     busiestRoutes.push(driverRoute)
   }
 
+  const routeDiagnostics = buildRouteDiagnostics(
+    observedRows,
+    snapshot.recent_minutes || []
+  )
+
   state.current = {
     ...current,
     http_requests_observed: httpRequestsObserved,
     external_calls_observed: externalCallsObserved,
     supabase_calls_observed: supabaseCallsObserved,
     route_breakdown: busiestRoutes,
+    route_diagnostics: routeDiagnostics.slice(0, 10),
+    route_diagnostics_baseline_ready:
+      routeDiagnostics.some(
+        (item) => item.baseline_ready === true
+      ),
     coverage: observedRows.length >= 100 ? 'top_100_rows_only' : 'recorded_rows',
     mb: Number((current.bytes / 1024 / 1024).toFixed(4)),
     error_rate_percent: Number((current.error_rate * 100).toFixed(2)),
@@ -355,9 +674,40 @@ function analyzeCompletedWindow() {
     errors_15s: errorLimit,
     hard_bytes_15s: HARD_BYTES_15S || null,
     hard_requests_15s: HARD_REQUESTS_15S || null,
+    route_burst_ratio: ROUTE_BURST_RATIO,
+    route_min_http_15s: ROUTE_MIN_HTTP_15S,
+    route_min_supabase_15s:
+      ROUTE_MIN_SUPABASE_15S,
+    db_fanout_ratio: DB_FANOUT_RATIO,
   }
 
   const signals = []
+
+  const loopRoute = routeDiagnostics.find(
+    (item) =>
+      item.flags.includes(
+        'loop_or_polling_suspected'
+      )
+  )
+  const burstRoute = routeDiagnostics.find(
+    (item) =>
+      item.flags.includes('http_burst_15s') ||
+      item.flags.includes('supabase_burst_15s')
+  )
+  const fanoutRoute = routeDiagnostics.find(
+    (item) =>
+      item.flags.includes('database_fanout')
+  )
+
+  if (loopRoute) {
+    signals.push('route_loop_suspected')
+  } else if (burstRoute) {
+    signals.push('route_burst')
+  }
+
+  if (fanoutRoute) {
+    signals.push('database_fanout')
+  }
 
   if (current.bytes >= byteLimit) {
     signals.push('bytes_spike')
@@ -462,6 +812,11 @@ export function getSystemUsageAnomalySnapshot() {
       min_error_delta: MIN_ERROR_DELTA,
       hard_bytes_15s: HARD_BYTES_15S || null,
       hard_requests_15s: HARD_REQUESTS_15S || null,
+      route_burst_ratio: ROUTE_BURST_RATIO,
+      route_min_http_15s: ROUTE_MIN_HTTP_15S,
+      route_min_supabase_15s:
+        ROUTE_MIN_SUPABASE_15S,
+      db_fanout_ratio: DB_FANOUT_RATIO,
       active_windows_required: ACTIVE_WINDOWS_REQUIRED,
       recovery_windows_required: RECOVERY_WINDOWS_REQUIRED,
     },
