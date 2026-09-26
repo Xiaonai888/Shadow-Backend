@@ -127,25 +127,6 @@ function serializeRows(map) {
     .slice(0, MAX_DETAIL_ROWS)
 }
 
-function serializeRows(map) {
-  return [...map.values()]
-    .map((row) => ({
-      kind: row.kind,
-      feature: row.feature,
-      source_route: row.source_route,
-      dependency: row.dependency,
-      count: row.count,
-      bytes: row.bytes,
-      mb: toMb(row.bytes),
-      errors: row.errors,
-      avg_ms: row.count
-        ? Number((row.weighted_ms / row.count).toFixed(1))
-        : 0,
-    }))
-    .sort((a, b) => b.bytes - a.bytes || b.count - a.count)
-    .slice(0, MAX_DETAIL_ROWS)
-}
-
 function aggregateRows(minutes) {
   const rows = new Map()
 
