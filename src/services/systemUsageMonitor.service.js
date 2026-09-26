@@ -229,7 +229,7 @@ function snapshotRows(window) {
         ? Number((row.duration_ms / row.count).toFixed(1))
         : 0,
     }))
-    .sort((a, b) => b.bytes - a.bytes || b.count - a.count)
+    .sort((a, b) => b.count - a.count || b.bytes - a.bytes)
     .slice(0, MAX_ROWS_PER_SNAPSHOT)
 }
 
