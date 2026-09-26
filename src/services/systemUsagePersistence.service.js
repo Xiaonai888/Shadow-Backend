@@ -69,17 +69,24 @@ function rowKey(row) {
     row.feature || 'unknown',
     row.source_route || 'UNKNOWN',
     row.dependency || 'UNKNOWN',
+    row.operation_method || 'UNKNOWN',
+    row.target_path || 'UNKNOWN',
   ].join('\u001f')
 }
 
 function mergeRows(target, rows = []) {
   for (const row of rows) {
     const key = rowKey(row)
+
     const current = target.get(key) || {
       kind: row.kind || 'unknown',
       feature: row.feature || 'unknown',
       source_route: row.source_route || 'UNKNOWN',
+      source_method: row.source_method || 'UNKNOWN',
+      source_path: row.source_path || 'UNKNOWN',
       dependency: row.dependency || 'UNKNOWN',
+      operation_method: row.operation_method || 'UNKNOWN',
+      target_path: row.target_path || 'UNKNOWN',
       count: 0,
       bytes: 0,
       errors: 0,
@@ -95,6 +102,29 @@ function mergeRows(target, rows = []) {
 
     target.set(key, current)
   }
+}
+
+function serializeRows(map) {
+  return [...map.values()]
+    .map((row) => ({
+      kind: row.kind,
+      feature: row.feature,
+      source_route: row.source_route,
+      source_method: row.source_method,
+      source_path: row.source_path,
+      dependency: row.dependency,
+      operation_method: row.operation_method,
+      target_path: row.target_path,
+      count: row.count,
+      bytes: row.bytes,
+      mb: toMb(row.bytes),
+      errors: row.errors,
+      avg_ms: row.count
+        ? Number((row.weighted_ms / row.count).toFixed(1))
+        : 0,
+    }))
+    .sort((a, b) => b.count - a.count || b.bytes - a.bytes)
+    .slice(0, MAX_DETAIL_ROWS)
 }
 
 function serializeRows(map) {
