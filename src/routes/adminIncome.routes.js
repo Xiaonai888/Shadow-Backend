@@ -3,7 +3,7 @@ import { getAdminStoryPayoutExcel } from '../controllers/adminStoryPayoutExcel.c
 import { getAdminAuthorStoreWithdrawalExcel } from '../controllers/adminAuthorStoreWithdrawalExcel.controller.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { getAdminDiamondGifts } from '../controllers/adminDiamondGifts.controller.js'
-import { getAdminAuthorLibrary, downloadAdminAuthorLibraryPdf } from '../controllers/adminAuthorLibrary.controller.js'
+import { getAdminAuthorLibrary, downloadAdminAuthorLibraryPdf, readAdminAuthorLibraryPdf } from '../controllers/adminAuthorLibrary.controller.js'
 import { getAdminAuthorIncome } from '../controllers/adminAuthorIncome.controller.js'
 import { getAdminAuthorIncomeTransactions } from '../controllers/adminAuthorIncomeTransactions.controller.js'
 import { getAdminShadowMallIncome } from '../controllers/adminShadowMallIncome.controller.js'
@@ -33,6 +33,7 @@ router.get('/diamond-gifts', requireAdmin, getAdminDiamondGifts)
 router.get('/author-page', requireAdmin, getAdminAuthorPageIncome)
 router.get('/author-library', requireAdmin, getAdminAuthorLibrary)
 router.post('/author-library/:productId/download', requireAdmin, downloadAdminAuthorLibraryPdf)
+router.post('/author-library/:productId/read', requireAdmin, readAdminAuthorLibraryPdf)
 router.get('/shadow-mall', requireAdmin, getAdminShadowMallIncome)
 router.get('/payouts', requireAdmin, getAdminAuthorPayouts)
 router.get('/payouts/queue', requireAdmin, getAdminStoryPayoutQueue)
