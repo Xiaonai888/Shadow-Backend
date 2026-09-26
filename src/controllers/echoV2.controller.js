@@ -976,8 +976,8 @@ async function createAuthorPageEchoV2(req, res, { userId, sourceType, sourceId, 
   let saved = false
 
   try {
-    if (sourceType !== 'story') {
-      return res.status(400).json({ ok: false, message: 'Only stories can be echoed to an Author Page.' })
+    if (sourceType !== 'story' && sourceType !== 'episode') {
+      return res.status(400).json({ ok: false, message: 'Only stories and episodes can be echoed to an Author Page.' })
     }
 
     if (String(req.body?.audience || 'public').trim().toLowerCase() !== 'public') {
@@ -1009,7 +1009,7 @@ async function createAuthorPageEchoV2(req, res, { userId, sourceType, sourceId, 
 
     if (existingError) throw existingError
     if (existing) {
-      return res.status(409).json({ ok: false, message: 'This story is already echoed on your Author Page.' })
+      return res.status(409).json({ ok: false, message: 'This story or episode is already echoed on your Author Page.' })
     }
 
     const reservation = await reserveShare({ userId, sourceType, sourceId })
