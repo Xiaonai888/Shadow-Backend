@@ -100,10 +100,9 @@ export async function getMyAuthorStorePurchasedPdf(req, res) {
     }
 
     const rule = String(product.access_rule || '').trim()
-    const canRead = rule === 'Read online only' || rule === 'Download and read online'
     const canDownload = rule === 'Download after payment' || rule === 'Download and read online'
-    if ((mode === 'read' && !canRead) || (mode === 'download' && !canDownload)) {
-      return res.status(403).json({ ok: false, message: 'This PDF access mode is not permitted' })
+    if (mode === 'download' && !canDownload) {
+      return res.status(403).json({ ok: false, message: 'This PDF download mode is not permitted' })
     }
 
     const key = String(product.pdf_storage_key || '')
