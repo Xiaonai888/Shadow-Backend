@@ -132,6 +132,62 @@ function aggregateBy(rows, keySelector) {
   )
 }
 
+function buildRouteDiagnostics(rows = []) {
+  const routes = new Map()
+
+  for (const row of rows) {
+    const route = String(row.source_route || 'UNKNOWN')
+    const current = routes.get(route) || {
+      route,
+      http_requests: 0,
+      external_calls: 0,
+      supabase_calls: 0,
+      errors: 0,
+      top_target: '',
+      top_target_calls: 0,
+    }
+
+    const count = safeNumber(row.count)
+    current.errors += safeNumber(row.errors)
+
+    if (row.kind === 'http_response') {
+      current.http_requests += count
+    }
+
+    if (row.kind === 'external_request') {
+      current.external_calls += count
+
+      if (String(row.dependency || '').toUpperCase() === 'SUPABASE') {
+        current.supabase_calls += count
+      }
+
+      if (count > current.top_target_calls) {
+        current.top_target_calls = count
+        current.top_target = [
+          row.dependency,
+          row.operation_method,
+          row.target_path,
+        ].filter(Boolean).join(' ')
+      }
+    }
+
+    routes.set(route, current)
+  }
+
+  return [...routes.values()]
+    .map((item) => ({
+      ...item,
+      supabase_per_http: item.http_requests > 0
+        ? Number((item.supabase_calls / item.http_requests).toFixed(2))
+        : null,
+    }))
+    .sort(
+      (a, b) =>
+        b.supabase_calls - a.supabase_calls ||
+        b.http_requests - a.http_requests
+    )
+}
+
 function buildSummaryStats(history, incidents) {
   const rows = Array.isArray(history?.rows) ? history.rows : []
 
@@ -158,6 +214,7 @@ function buildSummaryStats(history, incidents) {
   return {
     providers: byProvider.slice(0, 10),
     features: byFeature.slice(0, 10),
+    routes: buildRouteDiagnostics(rows).slice(0, 30),
     incidents: {
       total: incidents.length,
       active,
@@ -210,6 +267,19 @@ function summaryMarkdown(range, history, incidents, stats) {
     ])
   )
 
+  const routeTable = markdownTable(
+    ['Route', 'HTTP', 'Supabase', 'DB/HTTP', 'External', 'Errors', 'Top target'],
+    (stats.routes || []).map((item) => [
+      item.route,
+      item.http_requests,
+      item.supabase_calls,
+      item.supabase_per_http ?? '-',
+      item.external_calls,
+      item.errors,
+      item.top_target || '-',
+    ])
+  )
+
   return [
     '# Shadow System Control — Summary Report',
     '',
@@ -241,6 +311,10 @@ function summaryMarkdown(range, history, incidents, stats) {
     '## Top Features',
     '',
     featureTable,
+    '',
+    '## Route Diagnostics',
+    '',
+    routeTable,
     '',
   ].join('\n')
 }
