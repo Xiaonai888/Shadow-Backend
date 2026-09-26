@@ -699,6 +699,42 @@ function analyzeCompletedWindow() {
       item.flags.includes('database_fanout')
   )
 
+  const diagnosticRoute =
+    loopRoute || fanoutRoute || burstRoute
+
+  const diagnosticDriver = diagnosticRoute
+    ? topDriver(
+        observedRows.filter(
+          (row) =>
+            String(row.source_route || 'UNKNOWN') ===
+            diagnosticRoute.route
+        )
+      )
+    : null
+
+  const effectiveDriver =
+    diagnosticDriver || driver
+
+  state.top_driver = effectiveDriver
+
+  if (diagnosticRoute) {
+    const diagnosticBreakdown =
+      routeCounts.get(diagnosticRoute.route)
+
+    if (
+      diagnosticBreakdown &&
+      !state.current.route_breakdown.some(
+        (item) =>
+          item.route === diagnosticBreakdown.route
+      )
+    ) {
+      state.current.route_breakdown = [
+        ...state.current.route_breakdown,
+        diagnosticBreakdown,
+      ]
+    }
+  }
+
   if (loopRoute) {
     signals.push('route_loop_suspected')
   } else if (burstRoute) {
@@ -744,7 +780,7 @@ function analyzeCompletedWindow() {
 
   state.signals = [...new Set(signals)]
   state.classification = classify(
-    driver,
+    effectiveDriver,
     state.signals
   )
   state.severity = severityFor({
