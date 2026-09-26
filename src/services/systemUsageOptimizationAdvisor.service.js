@@ -44,9 +44,7 @@ function evidenceSummary(snapshot) {
     requests: safeNumber(current.count),
     bytes: safeNumber(current.bytes),
     errors: safeNumber(current.errors),
-    error_rate_percent: safeNumber(
-      current.error_rate_percent
-    ),
+    error_rate_percent: safeNumber(current.error_rate_percent),
     request_ratio: ratio(
       current.count,
       baseline.count_15s
@@ -63,6 +61,9 @@ function evidenceSummary(snapshot) {
     driver_bytes: safeNumber(driver.bytes),
     driver_errors: safeNumber(driver.errors),
     driver_avg_ms: safeNumber(driver.avg_ms),
+    route_diagnostics: Array.isArray(current.route_diagnostics)
+      ? current.route_diagnostics.slice(0, 5)
+      : [],
   }
 }
 
@@ -89,8 +90,7 @@ function baseAdvisor(snapshot) {
       'Compare request count, response size, errors, and latency with the normal baseline.',
       'Apply the smallest reversible optimization first and verify usage afterward.',
     ],
-    why_it_helps:
-      'Targeted changes reduce the chance of hiding the symptom while leaving the actual usage source unchanged.',
+    why_it_helps: 'Targeted changes reduce the chance of hiding the symptom while leaving the actual usage source unchanged.',
     expected_impact:
       'Potential reduction in unnecessary requests, transferred bytes, or repeated errors after the real driver is confirmed.',
     evidence: evidenceSummary(snapshot),
@@ -98,10 +98,7 @@ function baseAdvisor(snapshot) {
 }
 
 function setConfidence(advisor, score) {
-  const value = Math.max(
-    0,
-    Math.min(1, Number(score) || 0)
-  )
+  const value = Math.max(0, Math.min(1, Number(score) || 0))
 
   advisor.confidence = {
     score: Number(value.toFixed(2)),
@@ -112,22 +109,17 @@ function setConfidence(advisor, score) {
 }
 
 function hasSignal(snapshot, signal) {
-  return Array.isArray(snapshot?.signals) &&
-    snapshot.signals.includes(signal)
+  return Array.isArray(snapshot?.signals) && snapshot.signals.includes(signal)
 }
 
 function isBackground(snapshot) {
   const driver = snapshot?.top_driver || {}
-  const route = String(
-    driver.source_route || ''
-  ).toUpperCase()
+  const route = String(driver.source_route || '').toUpperCase()
 
   return (
     route === 'BACKGROUND' ||
     route.startsWith('WORKER ') ||
-    String(
-      driver.source_method || ''
-    ).toUpperCase() === 'WORKER' ||
+    String(driver.source_method || '').toUpperCase() === 'WORKER' ||
     ['background_job', 'background_egress'].includes(
       String(snapshot?.classification || '').toLowerCase()
     )
@@ -156,10 +148,7 @@ function applyErrorRule(advisor, snapshot) {
   advisor.expected_impact =
     'Lower repeated request volume, lower dependency traffic, and faster recovery during provider or route failures.'
 
-  return setConfidence(
-    advisor,
-    safeNumber(driver.errors) > 0 ? 0.9 : 0.82
-  )
+  return setConfidence(advisor, safeNumber(driver.errors) > 0 ? 0.9 : 0.82)
 }
 
 function applyBackgroundR2Rule(advisor) {
@@ -215,9 +204,7 @@ function applySupabaseRule(advisor, snapshot) {
 
 function applyLargeResponseRule(advisor, snapshot) {
   const driver = snapshot?.top_driver || {}
-  const method = String(
-    driver.source_method || ''
-  ).toUpperCase()
+  const method = String(driver.source_method || '').toUpperCase()
 
   advisor.what_happened =
     'Transferred bytes increased sharply, with one route or dependency contributing most of the measured data.'
@@ -248,9 +235,7 @@ function applyLargeResponseRule(advisor, snapshot) {
 
 function applyRequestSpikeRule(advisor, snapshot) {
   const driver = snapshot?.top_driver || {}
-  const method = String(
-    driver.source_method || ''
-  ).toUpperCase()
+  const method = String(driver.source_method || '').toUpperCase()
 
   advisor.what_happened =
     'Request volume rose sharply above the recent baseline for the top route.'
@@ -287,6 +272,118 @@ function applyRequestSpikeRule(advisor, snapshot) {
   )
 }
 
+function diagnosticRoute(snapshot) {
+  const rows = Array.isArray(snapshot?.current?.route_diagnostics)
+    ? snapshot.current.route_diagnostics
+    : []
+  const route = String(
+    snapshot?.top_driver?.source_route || 'UNKNOWN'
+  )
+
+  return (
+    rows.find(
+      (item) =>
+        item?.route === route &&
+        item?.suspicious === true
+    ) ||
+    rows.find((item) => item?.suspicious === true) ||
+    null
+  )
+}
+
+function applyLoopRule(advisor, snapshot) {
+  const driver = snapshot?.top_driver || {}
+  const method = String(
+    driver.source_method || ''
+  ).toUpperCase()
+  const diagnostic = diagnosticRoute(snapshot)
+
+  advisor.what_happened =
+    'The same route stayed abnormally busy across both the 15-second burst window and the 1-minute sustained window.'
+
+  advisor.likely_cause =
+    method === 'GET'
+      ? 'The route may be polling too frequently, running duplicate timers or effects, reconnecting repeatedly, or refetching unchanged data.'
+      : 'The route may be repeating an action through duplicate handlers, immediate retries, a loop, or a background trigger.'
+
+  advisor.recommended_fix = [
+    'Check the reported route and top target for duplicate timers, effects, subscriptions, handlers, retries, or recursive calls.',
+    'Deduplicate identical in-flight work and add a short cooldown for repeated calls that do not require real-time updates.',
+    'Pause polling while the page is hidden and stop timers or subscriptions on unmount or navigation.',
+    'Use bounded retry with backoff and make write operations idempotent so repeated delivery cannot repeat expensive work.',
+  ]
+
+  advisor.why_it_helps =
+    'Stopping repeated triggers at their source reduces HTTP, Supabase, and downstream calls together instead of only hiding the resulting load.'
+
+  advisor.expected_impact =
+    'Lower sustained request volume and fewer repeated dependency calls on the reported route.'
+
+  if (diagnostic) {
+    advisor.evidence.route_diagnostic = diagnostic
+  }
+
+  return setConfidence(advisor, 0.95)
+}
+
+function applyDatabaseFanoutRule(advisor, snapshot) {
+  const diagnostic = diagnosticRoute(snapshot)
+
+  advisor.what_happened =
+    'System Control found a route making many Supabase calls for each observed HTTP request.'
+
+  advisor.likely_cause =
+    'One request may be performing repeated per-item reads, sequential lookups, duplicate permission checks, or stable configuration queries that could be combined or reused.'
+
+  advisor.recommended_fix = [
+    'Inspect the reported top target first and count how many times it is called during one route execution.',
+    'Combine repeated per-item reads with one filtered query, join, RPC, or grouped lookup where safe.',
+    'Cache stable rules or configuration briefly instead of reading them again inside every request.',
+    'Keep wallet, entitlement, and other user-sensitive state fresh while deduplicating only identical safe work.',
+  ]
+
+  advisor.why_it_helps =
+    'Reducing database fan-out lowers Supabase calls per request without requiring fewer users or disabling the feature.'
+
+  advisor.expected_impact =
+    'Lower Supabase call volume, lower backend latency, and clearer scaling behavior as traffic grows.'
+
+  if (diagnostic) {
+    advisor.evidence.route_diagnostic = diagnostic
+  }
+
+  return setConfidence(advisor, 0.94)
+}
+
+function applyRouteBurstRule(advisor, snapshot) {
+  const diagnostic = diagnosticRoute(snapshot)
+
+  advisor.what_happened =
+    'One route jumped sharply above its recent normal rate in the 15-second observation window.'
+
+  advisor.likely_cause =
+    'A short request burst can come from duplicate UI actions, reconnects, clustered polling, retries, or many legitimate users reaching the same route at once.'
+
+  advisor.recommended_fix = [
+    'Use the reported route, method, and top target to verify whether calls are duplicates or legitimate concurrent traffic.',
+    'Deduplicate identical in-flight requests and debounce actions that can fire repeatedly from one client.',
+    'Spread periodic polling with a longer interval or jitter when exact real-time data is not required.',
+    'Keep rate limits as a safety boundary, but fix duplicate call sources before tightening limits.',
+  ]
+
+  advisor.why_it_helps =
+    'Separating short bursts from sustained loops avoids unnecessary feature changes while still exposing repeated traffic early.'
+
+  advisor.expected_impact =
+    'Fewer short request storms and a clearer signal if the route later becomes a sustained loop.'
+
+  if (diagnostic) {
+    advisor.evidence.route_diagnostic = diagnostic
+  }
+
+  return setConfidence(advisor, 0.88)
+}
+
 function applyBackgroundRule(advisor) {
   advisor.what_happened =
     'A background job or worker ran above its recent normal request or data level.'
@@ -314,18 +411,35 @@ export function buildSystemUsageOptimizationAdvisor(
   snapshot = {}
 ) {
   const advisor = baseAdvisor(snapshot)
-  const classification = String(
-    snapshot?.classification || ''
-  ).toLowerCase()
-  const dependency = String(
-    snapshot?.top_driver?.dependency || ''
-  ).toUpperCase()
+  const classification = String(snapshot?.classification || '').toLowerCase()
+  const dependency = String(snapshot?.top_driver?.dependency || '').toUpperCase()
 
   if (
     hasSignal(snapshot, 'error_spike') ||
     classification === 'error_burst'
   ) {
     return applyErrorRule(advisor, snapshot)
+  }
+
+  if (
+    hasSignal(snapshot, 'route_loop_suspected') ||
+    classification === 'route_loop_suspected'
+  ) {
+    return applyLoopRule(advisor, snapshot)
+  }
+
+  if (
+    hasSignal(snapshot, 'database_fanout') ||
+    classification === 'database_fanout'
+  ) {
+    return applyDatabaseFanoutRule(advisor, snapshot)
+  }
+
+  if (
+    hasSignal(snapshot, 'route_burst') ||
+    classification === 'route_burst'
+  ) {
+    return applyRouteBurstRule(advisor, snapshot)
   }
 
   if (
