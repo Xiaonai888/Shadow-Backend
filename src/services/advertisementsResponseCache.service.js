@@ -3,7 +3,7 @@ const advertisementResponseInFlight = new Map()
 let advertisementResponseCacheVersion = 0
 
 const ROTATING_PLACEMENTS = new Set(['opening', 'freeUnlock', 'me'])
-const MAX_CACHE_AGE_MS = 5 * 60 * 1000
+const MAX_CACHE_AGE_MS = 60 * 60 * 1000
 
 function getCacheKey(req) {
   return String(req.query?.placement || '').trim()
