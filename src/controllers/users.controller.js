@@ -2152,16 +2152,65 @@ async function getUserByUsername(username) {
 }
 
 async function enrichFollowUsers(users, currentUserId) {
-  return Promise.all(
-    users.map(async (user) => {
-      const [isFollowing, isFollowedBy] = await Promise.all([
-        isFollowingUser(currentUserId, user.id),
-        isFollowingUser(user.id, currentUserId),
-      ])
+  const userIds = [
+    ...new Set(
+      users
+        .map((user) => String(user?.id || '').trim())
+        .filter(Boolean)
+    ),
+  ]
 
-      return publicFollowUser(user, isFollowing, isFollowedBy)
-    })
+  if (!userIds.length || !currentUserId) {
+    return users.map((user) =>
+      publicFollowUser(user, false, false)
+    )
+  }
+
+  const [
+    followingResult,
+    followedByResult,
+  ] = await Promise.all([
+    supabase
+      .from('user_follows')
+      .select('following_user_id')
+      .eq('follower_user_id', currentUserId)
+      .in('following_user_id', userIds),
+    supabase
+      .from('user_follows')
+      .select('follower_user_id')
+      .eq('following_user_id', currentUserId)
+      .in('follower_user_id', userIds),
+  ])
+
+  if (followingResult.error) {
+    throw followingResult.error
+  }
+
+  if (followedByResult.error) {
+    throw followedByResult.error
+  }
+
+  const followingIds = new Set(
+    (followingResult.data || []).map((item) =>
+      String(item.following_user_id)
+    )
   )
+
+  const followedByIds = new Set(
+    (followedByResult.data || []).map((item) =>
+      String(item.follower_user_id)
+    )
+  )
+
+  return users.map((user) => {
+    const userId = String(user?.id || '')
+
+    return publicFollowUser(
+      user,
+      followingIds.has(userId),
+      followedByIds.has(userId)
+    )
+  })
 }
 
 export async function getUserFollowers(req, res) {
