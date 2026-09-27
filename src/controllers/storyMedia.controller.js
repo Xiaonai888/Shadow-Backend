@@ -23,7 +23,9 @@ const ALLOWED_FOLDERS = {
   episode_cover: 'episode-covers',
   episode_content: 'episode-content',
   payment_proof: 'payment-proofs',
+  author_payment_qr: 'author-payment-methods',
 }
+
 
 const STORY_IMAGE_PROCESSING_OPTIONS = {
   story_cover: {
