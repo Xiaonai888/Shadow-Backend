@@ -942,8 +942,8 @@ export async function createAuthorEarningsFromDiamondUnlock({
     await supabase
       .from('author_pages')
       .select(
-        'id, user_id, total_followers, has_serious_policy_violation'
-      )
+  'id, user_id, total_followers'
+)
       .in('id', authorIds)
 
   if (authorError) throw authorError
