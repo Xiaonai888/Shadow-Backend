@@ -1,12 +1,18 @@
 const advertisementResponseCache = new Map()
 const advertisementResponseInFlight = new Map()
+const adminAdvertisementResponseCache = new Map()
 let advertisementResponseCacheVersion = 0
 
 const ROTATING_PLACEMENTS = new Set(['opening', 'freeUnlock', 'me'])
 const MAX_CACHE_AGE_MS = 60 * 60 * 1000
+const MAX_ADMIN_CACHE_ENTRIES = 100
 
 function getCacheKey(req) {
   return String(req.query?.placement || '').trim()
+}
+
+function getAdminCacheKey(req) {
+  return String(req.originalUrl || req.url || '').trim()
 }
 
 function getExpiresAt(key, body) {
@@ -44,7 +50,54 @@ export function invalidateAdvertisementResponseCache(placement = '') {
     advertisementResponseInFlight.clear()
   }
 
+  adminAdvertisementResponseCache.clear()
   advertisementResponseCacheVersion += 1
+}
+
+export function cacheAdminAdvertisementResponse(req, res, next) {
+  const key = getAdminCacheKey(req)
+
+  if (!key) return next()
+
+  let cached = adminAdvertisementResponseCache.get(key)
+
+  if (cached?.expiresAt && cached.expiresAt <= Date.now()) {
+    adminAdvertisementResponseCache.delete(key)
+    cached = null
+  }
+
+  if (cached) {
+    res.setHeader('X-Shadow-Admin-Advertisement-Cache', 'HIT')
+    return res.status(cached.statusCode || 200).json(cached.body)
+  }
+
+  res.setHeader('X-Shadow-Admin-Advertisement-Cache', 'MISS')
+
+  const requestVersion = advertisementResponseCacheVersion
+  const originalJson = res.json.bind(res)
+
+  res.json = (body) => {
+    if (
+      res.statusCode >= 200 &&
+      res.statusCode < 300 &&
+      body?.ok !== false &&
+      requestVersion === advertisementResponseCacheVersion
+    ) {
+      if (adminAdvertisementResponseCache.size >= MAX_ADMIN_CACHE_ENTRIES) {
+        adminAdvertisementResponseCache.clear()
+      }
+
+      adminAdvertisementResponseCache.set(key, {
+        body,
+        statusCode: res.statusCode,
+        expiresAt: Date.now() + MAX_CACHE_AGE_MS,
+      })
+    }
+
+    return originalJson(body)
+  }
+
+  return next()
 }
 
 export function cacheAdvertisementResponse(req, res, next) {
