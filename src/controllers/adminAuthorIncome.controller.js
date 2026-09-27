@@ -106,11 +106,102 @@ async function runAuthorIncomeReconciliation() {
       (row) => !existingIds.has(row.id)
     )
 
-    const repairedRows = missingTransactions.length
+    let repairTransactions = missingTransactions
+
+    if (missingTransactions.length) {
+      const authorIds = [
+        ...new Set(
+          missingTransactions
+            .map((row) => row.author_id)
+            .filter(Boolean)
+        ),
+      ]
+
+      const { data: eventRows, error: eventError } =
+        await supabase
+          .from('author_49_day_event_progress')
+          .select(
+            'author_id,share_percent,started_at,ends_at,ended_at,status'
+          )
+          .in('author_id', authorIds)
+
+      if (eventError) throw eventError
+
+      repairTransactions = missingTransactions.map(
+        (transaction) => {
+          const transactionTime = new Date(
+            transaction.created_at
+          ).getTime()
+
+          const historicalEvent = (eventRows || []).find(
+            (event) => {
+              if (
+                event.author_id !== transaction.author_id
+              ) {
+                return false
+              }
+
+              const startedAt = new Date(
+                event.started_at
+              ).getTime()
+              const endedAt = new Date(
+                event.ended_at || event.ends_at
+              ).getTime()
+
+              return (
+                Number.isFinite(transactionTime) &&
+                Number.isFinite(startedAt) &&
+                Number.isFinite(endedAt) &&
+                transactionTime >= startedAt &&
+                transactionTime < endedAt
+              )
+            }
+          )
+
+          if (!historicalEvent) return transaction
+
+          const metadata = {
+            ...(transaction.metadata || {}),
+          }
+          const existingEventShare = Number(
+            metadata.event_author_share_percent || 0
+          )
+          const historicalEventShare = Number(
+            historicalEvent.share_percent || 0
+          )
+
+          metadata.event_author_share_percent =
+            Math.max(
+              Number.isFinite(existingEventShare)
+                ? existingEventShare
+                : 0,
+              Number.isFinite(historicalEventShare)
+                ? historicalEventShare
+                : 0
+            )
+
+          return {
+            ...transaction,
+            metadata,
+          }
+        }
+      )
+    }
+
+    const repairedRows = repairTransactions.length
       ? await createAuthorEarningsFromDiamondUnlock({
-          transactions: missingTransactions,
+          transactions: repairTransactions,
         })
       : []
+
+    if (
+      missingTransactions.length &&
+      repairedRows.length !== missingTransactions.length
+    ) {
+      throw new Error(
+        `Author income reconciliation is incomplete (${repairedRows.length}/${missingTransactions.length})`
+      )
+    }
 
     return {
       scanned: rows.length,
