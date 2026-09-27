@@ -4,7 +4,7 @@ import { getAdminAuthorStoreWithdrawalExcel } from '../controllers/adminAuthorSt
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { getAdminDiamondGifts } from '../controllers/adminDiamondGifts.controller.js'
 import { getAdminAuthorLibrary, downloadAdminAuthorLibraryPdf, readAdminAuthorLibraryPdf } from '../controllers/adminAuthorLibrary.controller.js'
-import { getAdminAuthorIncome } from '../controllers/adminAuthorIncome.controller.js'
+import { getAdminAuthorIncome, reconcileAdminAuthorIncome } from '../controllers/adminAuthorIncome.controller.js'
 import { getAdminAuthorIncomeTransactions } from '../controllers/adminAuthorIncomeTransactions.controller.js'
 import { getAdminShadowMallIncome } from '../controllers/adminShadowMallIncome.controller.js'
 import { streamAdminIncomeEvents } from '../services/adminIncomeEvents.service.js'
@@ -28,6 +28,7 @@ router.get('/events', requireAdmin, streamAdminIncomeEvents)
 router.get('/summary', requireAdmin, getAdminIncomeSummary)
 router.get('/episode-sales', requireAdmin, getAdminEpisodeSales)
 router.get('/author-income', requireAdmin, getAdminAuthorIncome)
+router.post('/author-income/reconcile', requireAdmin, reconcileAdminAuthorIncome)
 router.get('/author-income/:authorId/transactions', requireAdmin, getAdminAuthorIncomeTransactions)
 router.get('/diamond-gifts', requireAdmin, getAdminDiamondGifts)
 router.get('/author-page', requireAdmin, getAdminAuthorPageIncome)
