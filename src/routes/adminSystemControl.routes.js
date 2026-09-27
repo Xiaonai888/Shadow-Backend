@@ -3,6 +3,7 @@ import { requireAdminPermission } from '../middleware/adminPermission.middleware
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { getSystemUsageCurrentSnapshot } from '../services/systemUsageMonitor.service.js'
 import { getSystemUsageAnomalySnapshot } from '../services/systemUsageAnomaly.service.js'
+import { getSystemUsageRegressionState } from '../services/systemUsageRegression.service.js'
 import { getRecentRequestEvidence } from '../services/trafficDiagnostic.service.js'
 import {
   listSystemUsageIncidents,
@@ -94,6 +95,7 @@ router.get(
       usage: getSystemUsageCurrentSnapshot(),
       evidence: getRecentRequestEvidence(),
       anomaly: getSystemUsageAnomalySnapshot(),
+      regression: getSystemUsageRegressionState(),
       providers: getSystemUsageProviderState(),
     })
   }
