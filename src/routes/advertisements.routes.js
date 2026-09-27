@@ -1,4 +1,4 @@
-import { cacheAdvertisementResponse } from '../services/advertisementsResponseCache.service.js'
+import { cacheAdminAdvertisementResponse, cacheAdvertisementResponse } from '../services/advertisementsResponseCache.service.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import express from 'express'
 import multer from 'multer'
@@ -121,7 +121,7 @@ router.get('/public', publicAdvertisementRateLimit, getPublicAdvertisementHandle
 router.get('/admin', requireAdmin, getAdminAdvertisements)
 router.get('/admin/logs', requireAdmin, getAdminAdvertisementLogs)
 
-router.get('/admin/opening-rotation', requireAdmin, getAdminOpeningRotation)
+router.get('/admin/opening-rotation', requireAdmin, cacheAdminAdvertisementResponse, getAdminOpeningRotation)
 router.put('/admin/opening-rotation/settings', requireAdmin, updateAdminOpeningRotationSettings)
 router.post(
   '/admin/opening-rotation/items',
@@ -141,7 +141,7 @@ router.delete('/admin/opening-rotation/items/:id', requireAdmin, archiveAdminOpe
 router.post('/admin/opening-rotation/items/:id/restore', requireAdmin, restoreAdminOpeningAdItem)
 router.post('/admin/opening-rotation/reorder', requireAdmin, reorderAdminOpeningAdItems)
 
-router.get('/admin/rotation/:placement', requireAdmin, getAdminRotatingAdvertisement)
+router.get('/admin/rotation/:placement', requireAdmin, cacheAdminAdvertisementResponse, getAdminRotatingAdvertisement)
 router.put('/admin/rotation/:placement/settings', requireAdmin, updateAdminRotatingAdvertisementSettings)
 router.post(
   '/admin/rotation/:placement/items',
