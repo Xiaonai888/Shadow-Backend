@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto'
+import { unlink, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { supabase } from '../config/supabase.js'
 import { getAuthor100PercentEventState } from '../services/author100PercentEvent.service.js'
 import { serveAuthorCachedJson } from '../services/authorRequestCache.service.js'
@@ -272,19 +276,31 @@ async function uploadAuthorPaymentQrToR2(
   extension,
   userId
 ) {
-  const url = await uploadFileToR2(
-    {
-      buffer,
-      originalname: `author-payment-qr.${extension}`,
-      mimetype,
-    },
-    `author-payment-methods/${userId}`
+  const tempPath = path.join(
+    os.tmpdir(),
+    `author-payment-qr-${Date.now()}-${randomUUID()}.${extension}`
   )
 
-  return assertR2MediaReference(url, {
-    field: 'author_payment_methods.qr_image_url',
-    allowEmpty: false,
-  })
+  try {
+    await writeFile(tempPath, buffer)
+
+    const url = await uploadFileToR2(
+      {
+        path: tempPath,
+        size: buffer.length,
+        originalname: `author-payment-qr.${extension}`,
+        mimetype,
+      },
+      `author-payment-methods/${userId}`
+    )
+
+    return assertR2MediaReference(url, {
+      field: 'author_payment_methods.qr_image_url',
+      allowEmpty: false,
+    })
+  } finally {
+    await unlink(tempPath).catch(() => {})
+  }
 }
 
 async function copyLegacyAuthorPaymentQrToR2(
