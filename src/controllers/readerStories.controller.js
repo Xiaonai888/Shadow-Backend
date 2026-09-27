@@ -15,6 +15,12 @@ import {
   invalidateDiscoverStorySharedCache,
 } from '../services/discoverStorySharedCache.service.js'
 import { evaluateHeavyJobAdmission } from '../services/memoryGuard.service.js'
+import {
+  commitStoryVideoUpload,
+  createStoryVideoUpload,
+  deleteStoryVideoObject,
+  verifyStoryVideoUpload,
+} from '../services/storyVideoDirectUpload.service.js'
 
 const IMAGE_MIME_TYPES = new Set([
   'image/jpeg',
@@ -635,6 +641,154 @@ async function cleanupSafely() {
       error.message
     )
   })
+}
+
+
+export async function initMyReaderStoryVideoUpload(req, res) {
+  try {
+    await cleanupSafely()
+
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const reader = await getReader(userId)
+
+    if (!reader) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Reader profile not found',
+      })
+    }
+
+    const upload = await createStoryVideoUpload({
+      userId,
+      mode: 'reader',
+      mimeType: req.body?.mime_type,
+      fileSize: req.body?.file_size,
+    })
+
+    return res.status(201).json({
+      ok: true,
+      ...upload,
+    })
+  } catch (error) {
+    console.error('INIT READER STORY VIDEO UPLOAD ERROR:', error)
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      code: error.code || 'STORY_VIDEO_UPLOAD_INIT_FAILED',
+      message: error.message || 'Failed to prepare video upload',
+    })
+  }
+}
+
+export async function finalizeMyReaderStoryVideoUpload(req, res) {
+  let uploaded = null
+  let createdStory = null
+  let verified = null
+
+  try {
+    await cleanupSafely()
+
+    const userId = req.user?.user_id
+    const caption = String(req.body?.caption || '').trim()
+    const allowMessages = normalizeBoolean(req.body?.allow_messages, true)
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (caption.length > 200) {
+      return res.status(400).json({
+        ok: false,
+        code: 'STORY_CAPTION_TOO_LONG',
+        message: 'Caption must be 200 characters or fewer',
+      })
+    }
+
+    const reader = await getReader(userId)
+
+    if (!reader) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Reader profile not found',
+      })
+    }
+
+    verified = await verifyStoryVideoUpload({
+      uploadToken: req.body?.upload_token,
+      userId,
+      mode: 'reader',
+    })
+
+    uploaded = await commitStoryVideoUpload({
+      verified,
+      mode: 'reader',
+      ownerId: userId,
+    })
+
+    const createdAt = new Date()
+    const expiresAt = new Date(createdAt.getTime() + STORY_DURATION_MS)
+
+    const { data, error } = await supabase
+      .from('reader_stories')
+      .insert({
+        user_id: userId,
+        media_type: 'video',
+        media_url: uploaded.publicUrl,
+        media_path: uploaded.filePath,
+        mime_type: uploaded.mimeType,
+        file_size: uploaded.fileSize,
+        caption,
+        allow_messages: allowMessages,
+        status: 'active',
+        created_at: createdAt.toISOString(),
+        expires_at: expiresAt.toISOString(),
+        updated_at: createdAt.toISOString(),
+      })
+      .select(READER_STORY_PUBLIC_SELECT)
+      .single()
+
+    if (error) throw error
+
+    createdStory = data
+    invalidateDiscoverStorySharedCache()
+
+    return res.status(201).json({
+      ok: true,
+      story: publicStory(createdStory, reader, true),
+    })
+  } catch (error) {
+    if (createdStory?.id) {
+      try {
+        await supabase
+          .from('reader_stories')
+          .delete()
+          .eq('id', createdStory.id)
+      } catch {}
+    }
+
+    if (uploaded?.filePath) {
+      await deleteStoryVideoObject(uploaded.filePath).catch(() => {})
+    } else if (verified?.tempKey) {
+      await deleteStoryVideoObject(verified.tempKey).catch(() => {})
+    }
+
+    console.error('FINALIZE READER STORY VIDEO UPLOAD ERROR:', error)
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      code: error.code || 'STORY_VIDEO_UPLOAD_FINALIZE_FAILED',
+      message: error.message || 'Failed to finalize video story',
+    })
+  }
 }
 
 export async function createMyReaderStory(req, res) {
