@@ -55,6 +55,19 @@ function isLegacyCompatibleMutation(req, path) {
   return false
 }
 
+function mediaPolicyBody(req, path) {
+  const method = String(req.method || '').toUpperCase()
+
+  if (method !== 'POST' || path !== '/api/authors/me/payment-methods') {
+    return req.body
+  }
+
+  const body = { ...(req.body || {}) }
+  delete body.qr_image_url
+  delete body.qrImageUrl
+  return body
+}
+
 function sendPolicyError(res, error) {
   return res.status(error?.statusCode || 400).json({
     ok: false,
@@ -75,11 +88,13 @@ export function globalMediaUploadGuard(req, res, next) {
   }
 
   try {
-    assertNoInlineMediaReferences(req.body, 'request.body')
+    const body = mediaPolicyBody(req, path)
+
+    assertNoInlineMediaReferences(body, 'request.body')
     assertNoInlineMediaReferences(req.query, 'request.query')
 
     if (!isLegacyCompatibleMutation(req, path)) {
-      assertNoNonR2MediaReferences(req.body, 'request.body')
+      assertNoNonR2MediaReferences(body, 'request.body')
       assertNoNonR2MediaReferences(req.query, 'request.query')
     }
 
