@@ -15,6 +15,12 @@ import {
   invalidateDiscoverStorySharedCache,
 } from '../services/discoverStorySharedCache.service.js'
 import { evaluateHeavyJobAdmission } from '../services/memoryGuard.service.js'
+import {
+  commitStoryVideoUpload,
+  createStoryVideoUpload,
+  deleteStoryVideoObject,
+  verifyStoryVideoUpload,
+} from '../services/storyVideoDirectUpload.service.js'
 
 const IMAGE_MIME_TYPES = new Set([
   'image/jpeg',
@@ -604,6 +610,177 @@ async function cleanupSafely() {
   await cleanupExpiredAuthorStories().catch((error) => {
     console.error('AUTHOR STORIES REQUEST CLEANUP ERROR:', error.message)
   })
+}
+
+
+export async function initMyAuthorStoryVideoUpload(req, res) {
+  try {
+    await cleanupSafely()
+
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({
+        ok: false,
+        code: 'AUTHOR_PAGE_REQUIRED',
+        message: 'Please create an author page first',
+      })
+    }
+
+    const upload = await createStoryVideoUpload({
+      userId,
+      mode: 'author',
+      mimeType: req.body?.mime_type,
+      fileSize: req.body?.file_size,
+    })
+
+    await assertAuthorStorageAvailable(authorPage.id, Number(req.body?.file_size || 0))
+
+    return res.status(201).json({
+      ok: true,
+      ...upload,
+    })
+  } catch (error) {
+    console.error('INIT AUTHOR STORY VIDEO UPLOAD ERROR:', error)
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      code: error.code || 'STORY_VIDEO_UPLOAD_INIT_FAILED',
+      message: error.message || 'Failed to prepare video upload',
+      quota: error.quota || null,
+    })
+  }
+}
+
+export async function finalizeMyAuthorStoryVideoUpload(req, res) {
+  let uploaded = null
+  let createdStory = null
+  let verified = null
+
+  try {
+    await cleanupSafely()
+
+    const userId = req.user?.user_id
+    const caption = String(req.body?.caption || '').trim()
+    const allowMessages = normalizeBoolean(req.body?.allow_messages, true)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (caption.length > 200) {
+      return res.status(400).json({
+        ok: false,
+        code: 'STORY_CAPTION_TOO_LONG',
+        message: 'Caption must be 200 characters or fewer',
+      })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+
+    if (!authorPage) {
+      return res.status(403).json({
+        ok: false,
+        code: 'AUTHOR_PAGE_REQUIRED',
+        message: 'Please create an author page first',
+      })
+    }
+
+    verified = await verifyStoryVideoUpload({
+      uploadToken: req.body?.upload_token,
+      userId,
+      mode: 'author',
+    })
+
+    try {
+      await assertAuthorStorageAvailable(authorPage.id, verified.fileSize)
+    } catch (quotaError) {
+      await deleteStoryVideoObject(verified.tempKey).catch(() => {})
+      throw quotaError
+    }
+
+    uploaded = await commitStoryVideoUpload({
+      verified,
+      mode: 'author',
+      ownerId: authorPage.id,
+    })
+
+    const createdAt = new Date()
+    const expiresAt = new Date(createdAt.getTime() + STORY_DURATION_MS)
+
+    const { data, error } = await supabase
+      .from('author_page_stories')
+      .insert({
+        author_page_id: authorPage.id,
+        user_id: userId,
+        media_type: 'video',
+        media_url: uploaded.publicUrl,
+        media_path: uploaded.filePath,
+        mime_type: uploaded.mimeType,
+        file_size: uploaded.fileSize,
+        caption,
+        allow_messages: allowMessages,
+        status: 'active',
+        created_at: createdAt.toISOString(),
+        expires_at: expiresAt.toISOString(),
+        updated_at: createdAt.toISOString(),
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+
+    createdStory = data
+
+    await recordAuthorR2Asset({
+      authorId: authorPage.id,
+      category: 'author_story_video',
+      fileName: uploaded.filePath.split('/').pop(),
+      filePath: uploaded.filePath,
+      publicUrl: uploaded.publicUrl,
+      mimeType: uploaded.mimeType,
+      fileSize: uploaded.fileSize,
+      uploadedBy: userId,
+      sourceTable: 'author_page_stories',
+      sourceId: createdStory.id,
+      ownerLabel: authorPage.page_name || authorPage.page_username || null,
+    })
+
+    invalidateDiscoverStorySharedCache()
+
+    return res.status(201).json({
+      ok: true,
+      story: publicStory(createdStory, authorPage),
+    })
+  } catch (error) {
+    if (createdStory?.id) {
+      try {
+        await supabase
+          .from('author_page_stories')
+          .delete()
+          .eq('id', createdStory.id)
+      } catch {}
+    }
+
+    if (uploaded?.filePath) {
+      await deleteStoryVideoObject(uploaded.filePath).catch(() => {})
+    } else if (verified?.tempKey) {
+      await deleteStoryVideoObject(verified.tempKey).catch(() => {})
+    }
+
+    console.error('FINALIZE AUTHOR STORY VIDEO UPLOAD ERROR:', error)
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      code: error.code || 'STORY_VIDEO_UPLOAD_FINALIZE_FAILED',
+      message: error.message || 'Failed to finalize video story',
+      quota: error.quota || null,
+    })
+  }
 }
 
 export async function createMyAuthorStory(req, res) {
