@@ -5,7 +5,9 @@ import { unlink } from 'node:fs/promises'
 import {
   createMyReaderStory,
   deleteMyReaderStory,
+  finalizeMyReaderStoryVideoUpload,
   getMyReaderStories,
+  initMyReaderStoryVideoUpload,
   recordReaderStoryView,
 } from '../controllers/readerStories.controller.js'
 import { repostReaderStory } from '../controllers/repostReaderStory.controller.js'
@@ -74,6 +76,21 @@ router.get(
   '/me',
   requireUser,
   getMyReaderStories
+)
+
+
+router.post(
+  '/me/video-upload/init',
+  requireUser,
+  enforceReaderStoryDailyLimit,
+  initMyReaderStoryVideoUpload
+)
+
+router.post(
+  '/me/video-upload/finalize',
+  requireUser,
+  enforceReaderStoryDailyLimit,
+  finalizeMyReaderStoryVideoUpload
 )
 
 router.post(
