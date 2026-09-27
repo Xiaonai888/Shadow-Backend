@@ -6,8 +6,10 @@ import { unlink } from 'node:fs/promises'
 import {
   createMyAuthorStory,
   deleteMyAuthorStory,
+  finalizeMyAuthorStoryVideoUpload,
   getMyAuthorStories,
   getPublicAuthorStories,
+  initMyAuthorStoryVideoUpload,
 } from '../controllers/authorStories.controller.js'
 import { getAuthorStoriesFeed } from '../controllers/authorStoriesFeed.controller.js'
 import { recordAuthorStoryView } from '../controllers/authorStoryViews.controller.js'
@@ -87,6 +89,21 @@ function uploadStoryMedia(req, res, next) {
 
 router.get('/feed', optionalUser, getAuthorStoriesFeed)
 router.get('/me', requireUser, getMyAuthorStories)
+
+router.post(
+  '/me/video-upload/init',
+  requireUser,
+  enforceAuthorStoryDailyLimit,
+  initMyAuthorStoryVideoUpload
+)
+
+router.post(
+  '/me/video-upload/finalize',
+  requireUser,
+  enforceAuthorStoryDailyLimit,
+  finalizeMyAuthorStoryVideoUpload
+)
+
 router.post(
   '/me',
   requireUser,
