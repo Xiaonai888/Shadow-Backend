@@ -512,18 +512,6 @@ async function getStory(storyId) {
   return data
 }
 
-async function getEpisode({ storyId, episodeId }) {
-  const { data, error } = await supabase
-    .from('episodes')
-    .select('id, story_id, author_id, user_id, title, episode_number, is_locked, status, published_at, first_published_at, created_at')
-    .eq('id', episodeId)
-    .eq('story_id', storyId)
-    .maybeSingle()
-
-  if (error) throw error
-  return data
-}
-
 async function getWallet(userId) {
   const { data: wallet, error } = await supabase
     .from('user_wallets')
@@ -610,21 +598,20 @@ async function getAvailableLockedEpisodes({
       storyId,
     })
 
-  const { data, error } = await supabase
-    .from('episodes')
-    .select(
-      'id, story_id, author_id, title, episode_number, is_locked, status, published_at, created_at'
+  const sourceEpisodes = Array.isArray(
+    access?.activeEpisodes
+  )
+    ? access.activeEpisodes
+    : []
+
+  return sourceEpisodes
+    .filter(
+      (episode) =>
+        String(episode?.status || '')
+          .trim()
+          .toLowerCase() === 'published' &&
+        Boolean(episode?.is_locked)
     )
-    .eq('story_id', storyId)
-    .eq('status', 'published')
-    .eq('is_locked', true)
-    .is('deleted_at', null)
-    .order('episode_number', { ascending: true })
-    .order('created_at', { ascending: true })
-
-  if (error) throw error
-
-  return (data || [])
     .map((episode) =>
       applyEpisodeAccess(episode, access)
     )
@@ -714,16 +701,21 @@ async function getUnlockStatusPayload({
   const [
     rules,
     story,
-    rawEpisode,
     wallet,
     access,
   ] = await Promise.all([
     getPlatformUnlockRules(),
     getStory(storyId),
-    getEpisode({ storyId, episodeId }),
     getWallet(userId),
     getStoryEpisodeAccess(storyId),
   ])
+
+  const rawEpisode =
+    access?.activeEpisodes?.find(
+      (episode) =>
+        String(episode?.id || '') ===
+        String(episodeId || '')
+    ) || null
 
   if (!story || !rawEpisode) {
     return {
