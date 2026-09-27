@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { createAuthorEarningsFromDiamondUnlock } from '../services/authorRevenue.service.js'
 
 const ALLOWED_STATUSES = new Set([
   'all',
@@ -47,6 +48,104 @@ function parseBoundary(value, endExclusive = false) {
   }
 
   return date.toISOString()
+}
+
+
+const RECONCILE_LIMIT = 100
+
+let reconcilePromise = null
+
+async function runAuthorIncomeReconciliation() {
+  if (reconcilePromise) return reconcilePromise
+
+  reconcilePromise = (async () => {
+    const { data: transactions, error: transactionsError } =
+      await supabase
+        .from('episode_unlock_transactions')
+        .select(
+          'id,user_id,story_id,episode_id,author_id,currency,amount,transaction_type,metadata,created_at'
+        )
+        .eq('currency', 'diamond')
+        .eq('transaction_type', 'unlock')
+        .gt('amount', 0)
+        .not('author_id', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(RECONCILE_LIMIT)
+
+    if (transactionsError) throw transactionsError
+
+    const rows = transactions || []
+
+    if (!rows.length) {
+      return {
+        scanned: 0,
+        missing: 0,
+        repaired: 0,
+      }
+    }
+
+    const transactionIds = rows
+      .map((row) => row.id)
+      .filter(Boolean)
+
+    const { data: earnings, error: earningsError } =
+      await supabase
+        .from('author_earnings')
+        .select('unlock_transaction_id')
+        .in('unlock_transaction_id', transactionIds)
+
+    if (earningsError) throw earningsError
+
+    const existingIds = new Set(
+      (earnings || [])
+        .map((row) => row.unlock_transaction_id)
+        .filter(Boolean)
+    )
+
+    const missingTransactions = rows.filter(
+      (row) => !existingIds.has(row.id)
+    )
+
+    const repairedRows = missingTransactions.length
+      ? await createAuthorEarningsFromDiamondUnlock({
+          transactions: missingTransactions,
+        })
+      : []
+
+    return {
+      scanned: rows.length,
+      missing: missingTransactions.length,
+      repaired: repairedRows.length,
+    }
+  })()
+
+  try {
+    return await reconcilePromise
+  } finally {
+    reconcilePromise = null
+  }
+}
+
+export async function reconcileAdminAuthorIncome(req, res) {
+  try {
+    const result = await runAuthorIncomeReconciliation()
+
+    return res.status(200).json({
+      ok: true,
+      ...result,
+    })
+  } catch (error) {
+    console.error('RECONCILE ADMIN AUTHOR INCOME ERROR:', error)
+
+    return res
+      .status(error.statusCode || 500)
+      .json({
+        ok: false,
+        message:
+          error.message ||
+          'Failed to reconcile author income',
+      })
+  }
 }
 
 export async function getAdminAuthorIncome(req, res) {
