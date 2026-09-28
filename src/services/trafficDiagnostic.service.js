@@ -192,6 +192,48 @@ function buildTargetEvidence(context) {
     )
 }
 
+function cleanDiagnosticMarker(details = {}) {
+  const result = {}
+
+  for (const [rawKey, rawValue] of Object.entries(details)) {
+    const key = String(rawKey || '')
+      .trim()
+      .replace(/[^a-zA-Z0-9_]/g, '')
+      .slice(0, 60)
+
+    if (!key || rawValue === null || rawValue === undefined || rawValue === '') {
+      continue
+    }
+
+    if (typeof rawValue === 'number') {
+      if (Number.isFinite(rawValue)) result[key] = rawValue
+      continue
+    }
+
+    if (typeof rawValue === 'boolean') {
+      result[key] = rawValue
+      continue
+    }
+
+    result[key] = String(rawValue).slice(0, 160)
+  }
+
+  return result
+}
+
+export function markRequestDiagnostic(details = {}) {
+  const context = requestContext.getStore()
+
+  if (!context) return false
+
+  context.diagnostic_marker = {
+    ...(context.diagnostic_marker || {}),
+    ...cleanDiagnosticMarker(details),
+  }
+
+  return true
+}
+
 function logRequestEvidence(req, res, context, elapsedMs) {
   if (!context || context.route.startsWith('GET /api/admin/system-control')) return
 
@@ -225,13 +267,35 @@ function logRequestEvidence(req, res, context, elapsedMs) {
   const supabaseCalls = targets
     .filter((item) => item.target.startsWith('SUPABASE '))
     .reduce((sum, item) => sum + item.count, 0)
-  const diagnosticKind = failed
-    ? 'request_failure'
-    : supabaseCalls >= 8
-      ? 'database_fanout'
-      : elapsedMs >= TRACE_SLOW_MS
-        ? 'slow_request'
-        : 'expensive_request'
+  const diagnosticMarker =
+    context.diagnostic_marker &&
+    typeof context.diagnostic_marker === 'object'
+      ? context.diagnostic_marker
+      : null
+  const reactionDiagnosticKind =
+    diagnosticMarker?.feature === 'story_reaction_toggle'
+      ? failed
+        ? String(
+            diagnosticMarker.error_code ||
+              'reaction_toggle_failed'
+          )
+            .trim()
+            .toLowerCase()
+        : supabaseCalls >= 8
+          ? 'reaction_high_db_fanout'
+          : elapsedMs >= TRACE_SLOW_MS
+            ? 'reaction_slow'
+            : ''
+      : ''
+  const diagnosticKind =
+    reactionDiagnosticKind ||
+    (failed
+      ? 'request_failure'
+      : supabaseCalls >= 8
+        ? 'database_fanout'
+        : elapsedMs >= TRACE_SLOW_MS
+          ? 'slow_request'
+          : 'expensive_request')
 
   const evidence = {
     request_id: context.request_id,
@@ -243,6 +307,7 @@ function logRequestEvidence(req, res, context, elapsedMs) {
     visitor_claim: visitorClaim,
     cache: ['HIT', 'MISS', 'WAIT'].includes(cacheState) ? cacheState : 'NONE',
     diagnostic_kind: diagnosticKind,
+    diagnostic_marker: diagnosticMarker,
     evidence_semantics: 'single_http_request_not_loop_proof',
     observed_external_calls: context.external_calls,
     observed_supabase_calls: supabaseCalls,
@@ -480,6 +545,7 @@ export function trafficDiagnosticMiddleware(req, res, next) {
     external_errors: 0,
     dropped_targets: 0,
     targets: new Map(),
+    diagnostic_marker: null,
   }
 
   let responseBytes = 0
