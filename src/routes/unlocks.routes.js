@@ -2,6 +2,7 @@ import express from 'express'
 import {
   getWriterWednesdayStatus,
   getEpisodeUnlockStatus,
+  getEpisodeReadGate,
   unlockEpisodeWithDiamonds,
   unlockEpisodePackageWithDiamonds,
   unlockEpisodeWithGems,
@@ -27,6 +28,7 @@ router.get('/rules', getPlatformUnlockRules)
 router.get('/events/writer-wednesday', getWriterWednesdayStatus)
 router.get('/admin/rewarded-ad-analytics', requireAdmin, getAdminRewardedAdAnalytics)
 router.get('/stories/:storyId/episodes/:episodeId/status', requireUser, getEpisodeUnlockStatus)
+router.get('/stories/:storyId/episodes/:episodeId/read-gate', requireUser, getEpisodeReadGate)
 router.post('/stories/:storyId/episodes/:episodeId/diamond', requireUser, unlockEpisodeWithDiamonds)
 router.post('/stories/:storyId/episodes/:episodeId/package', requireUser, unlockEpisodePackageWithDiamonds)
 router.post('/stories/:storyId/episodes/:episodeId/gem', requireUser, unlockEpisodeWithGems)
