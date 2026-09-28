@@ -28,10 +28,15 @@ begin
 
   if v_sort not in (
     'author_earned_desc',
+    'author_earned_asc',
     'paid_diamonds_desc',
+    'paid_diamonds_asc',
     'platform_earned_desc',
+    'platform_earned_asc',
     'transactions_desc',
-    'latest_desc'
+    'transactions_asc',
+    'latest_desc',
+    'latest_asc'
   ) then
     v_sort := 'author_earned_desc';
   end if;
@@ -222,12 +227,19 @@ begin
     from grouped
     order by
       case when v_sort = 'author_earned_desc' then author_earned_diamonds end desc nulls last,
+      case when v_sort = 'author_earned_asc' then author_earned_diamonds end asc nulls last,
       case when v_sort = 'paid_diamonds_desc' then paid_diamonds end desc nulls last,
+      case when v_sort = 'paid_diamonds_asc' then paid_diamonds end asc nulls last,
       case when v_sort = 'platform_earned_desc' then platform_earned_diamonds end desc nulls last,
+      case when v_sort = 'platform_earned_asc' then platform_earned_diamonds end asc nulls last,
       case when v_sort = 'transactions_desc' then transaction_count end desc nulls last,
+      case when v_sort = 'transactions_asc' then transaction_count end asc nulls last,
       case when v_sort = 'latest_desc' then latest_income_at end desc nulls last,
-      latest_income_at desc nulls last,
-      coalesce(author_page_id::text, author_user_id::text, '') asc
+      case when v_sort = 'latest_asc' then latest_income_at end asc nulls last,
+      case when v_sort like '%_desc' then latest_income_at end desc nulls last,
+      case when v_sort like '%_asc' then latest_income_at end asc nulls last,
+      case when v_sort like '%_desc' then coalesce(author_page_id::text, author_user_id::text, '') end asc,
+      case when v_sort like '%_asc' then coalesce(author_page_id::text, author_user_id::text, '') end desc
     offset (v_page - 1) * v_limit
     limit v_limit
   ),
