@@ -1409,179 +1409,57 @@ export function getWriterWednesdayStatus(req, res) {
   })
 }
 
-export async function getEpisodeUnlockStatus(req, res) {
+export async function getEpisodeReadGate(req, res) {
   try {
     const userId = req.user?.user_id
     const { storyId, episodeId } = req.params
     const tier = getReaderTier(req)
 
-    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId, tier })
+    const { data, error } = await supabase
+      .from('episode_unlocks')
+      .select('unlock_type, expires_at')
+      .eq('user_id', userId)
+      .eq('story_id', storyId)
+      .eq('episode_id', episodeId)
+      .eq('unlock_status', 'active')
+      .maybeSingle()
 
-    if (payload.notFound) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Episode not found',
-      })
-    }
+    if (error) throw error
 
-    const adUsedToday = await countAdUnlocksToday(userId)
-const adRemainingToday = Math.max(
-  0,
-  AD_DAILY_LIMIT - adUsedToday
-)
+    const unlock =
+      data?.expires_at &&
+      new Date(data.expires_at).getTime() < Date.now()
+        ? null
+        : data
 
-const adPolicy = getEpisodeAdPolicy({
-  tier,
-  unlock: payload.unlock,
-  freeEpisode: payload.freeEpisode,
-})
+    const adPolicy = getEpisodeAdPolicy({
+      tier,
+      unlock,
+      freeEpisode: !unlock,
+    })
 
-const readerAdvertisement = adPolicy.show_read_ad ? await getFreeUnlockAdvertisement() : null
+    const advertisement = adPolicy.show_read_ad
+      ? await getFreeUnlockAdvertisement()
+      : null
 
-const coinCost =
-  calculateCoinCost(payload.rules)
-
-const singleDiamondOption =
-  payload.packageOptions.find(
-    (item) => item.key === 'single'
-  ) || null
+    res.set('Cache-Control', 'no-store')
 
     return res.status(200).json({
       ok: true,
-      locked: !payload.unlocked,
-      unlocked: payload.unlocked,
-      free_episode: payload.freeEpisode,
-      unlock_type: payload.freeEpisode ? 'free' : payload.unlock?.unlock_type || null,
-            price: {
-        currency: 'diamond',
-        amount:
-          singleDiamondOption?.price ||
-          getRuleNumber(
-            payload.rules,
-            'diamond_per_episode'
-          ),
-        original_amount:
-          singleDiamondOption?.original_price ||
-          getRuleNumber(
-            payload.rules,
-            'diamond_per_episode'
-          ),
-        package_discount_percent:
-          singleDiamondOption
-            ?.package_discount_percent || 0,
-        premium_discount_percent:
-          singleDiamondOption
-            ?.premium_discount_percent || 0,
-        total_discount_percent:
-          singleDiamondOption
-            ?.total_discount_percent || 0,
-        total_discount_amount:
-          singleDiamondOption
-            ?.total_discount_amount || 0,
-        applied_discounts:
-          singleDiamondOption?.applied_discounts || [],
-        black_sunday_active: Boolean(
-          singleDiamondOption?.black_sunday_active
-        ),
-        black_sunday_discount_percent:
-          singleDiamondOption
-            ?.black_sunday_discount_percent || 0,
-        black_sunday_discount_amount:
-          singleDiamondOption
-            ?.black_sunday_discount_amount || 0,
-        event:
-          singleDiamondOption?.event || null,
-      },
-          gem_access: {
-  currency: 'gem',
-  display_currency: 'coin',
-  amount: coinCost.total,
-  original_amount: coinCost.original,
-  coin_amount: coinCost.total,
-  original_coin_amount: coinCost.original,
-  black_sunday_active:
-    coinCost.black_sunday_active,
-  black_sunday_discount_percent:
-    coinCost.black_sunday_discount_percent,
-  black_sunday_discount_amount:
-    coinCost.black_sunday_discount_amount,
-  event: coinCost.event,
-  access_days: getRuleNumber(payload.rules, 'gem_access_days'),
-  coin_access_days: getRuleNumber(payload.rules, 'gem_access_days'),
-  available: payload.gemWait.available && payload.gemLimits.daily.allowed && payload.gemLimits.monthly_story.allowed,
-  available_at: payload.gemWait.available_at,
-  wait_seconds: payload.gemWait.wait_seconds,
-  limit_status: payload.gemLimits,
-},
-coin_access: {
-  currency: 'coin',
-  amount: coinCost.total,
-  original_amount: coinCost.original,
-  black_sunday_active:
-    coinCost.black_sunday_active,
-  black_sunday_discount_percent:
-    coinCost.black_sunday_discount_percent,
-  black_sunday_discount_amount:
-    coinCost.black_sunday_discount_amount,
-  event: coinCost.event,
-  access_days: getRuleNumber(payload.rules, 'gem_access_days'),
-  available: payload.gemWait.available && payload.gemLimits.daily.allowed && payload.gemLimits.monthly_story.allowed,
-  available_at: payload.gemWait.available_at,
-  wait_seconds: payload.gemWait.wait_seconds,
-  limit_status: payload.gemLimits,
-},
-voucher_access: {
-  currency: 'voucher',
-  amount: getRuleNumber(payload.rules, 'voucher_cost_per_episode'),
-  access_type: 'permanent',
-  available: payload.gemWait.available,
-  available_at: payload.gemWait.available_at,
-  wait_seconds: payload.gemWait.wait_seconds,
-},
-
-      story_card_access: {
-  currency: 'story_card',
-  amount: getStoryCardCost(payload.rules, 'simple'),
-  simple_amount: getStoryCardCost(payload.rules, 'simple'),
-  special_amount: getStoryCardCost(payload.rules, 'special'),
-  access_type: 'permanent',
-  available: payload.gemWait.available,
-  available_at: payload.gemWait.available_at,
-  wait_seconds: payload.gemWait.wait_seconds,
-},
-
-      ad_access: {
-  currency: 'ad',
-  amount: 1,
-  access_minutes: AD_ACCESS_MINUTES,
-  access_type: 'temporary',
-  daily_limit: AD_DAILY_LIMIT,
-  used_today: adUsedToday,
-  remaining_today: adRemainingToday,
-  available: adUsedToday < AD_DAILY_LIMIT,
-  available_at: null,
-  wait_seconds: 0,
-},
-      
-      package_options: payload.packageOptions,
-      story_unlock_rules: {
-        completed: isStoryCompleted(payload.story),
-        all_released_minimum_episodes: 70,
-      },
-      wallet: publicWallet(payload.wallet),
       ad_policy: adPolicy,
-advertisement: readerAdvertisement,
+      advertisement,
     })
   } catch (error) {
-    console.error('GET EPISODE UNLOCK STATUS ERROR:', error)
+    console.error('GET EPISODE READ GATE ERROR:', error)
 
     return res.status(500).json({
       ok: false,
-      message: 'Failed to check unlock status',
+      message: 'Failed to load reader gate',
       error: error.message,
     })
   }
 }
+
 
 export async function unlockEpisodeWithDiamonds(req, res) {
   try {
