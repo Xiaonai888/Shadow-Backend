@@ -1,9 +1,11 @@
 import { supabase } from '../config/supabase.js'
 import { getSystemUsageHistory } from './systemUsagePersistence.service.js'
+import { getRecentRequestEvidence } from './trafficDiagnostic.service.js'
 
 const REPORT_MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000
 const INCIDENT_PAGE_SIZE = 500
 const REPORT_INCIDENT_LIMIT = 5000
+const ROUTE_TARGET_LIMIT = 5
 
 function safeNumber(value) {
   const number = Number(value)
@@ -132,6 +134,50 @@ function aggregateBy(rows, keySelector) {
   )
 }
 
+function diagnosticLabel(item) {
+  if (
+    item.http_requests > 0 &&
+    item.supabase_calls >= 8 &&
+    item.supabase_per_http >= 8
+  ) {
+    return 'database_fanout'
+  }
+
+  if (item.errors > 0) {
+    return 'errors_observed'
+  }
+
+  if (item.supabase_calls > 0) {
+    return 'database_activity'
+  }
+
+  return 'no_database_fanout'
+}
+
+function diagnosticMeaning(label) {
+  if (label === 'database_fanout') {
+    return 'High DB calls per HTTP observed; this alone does not prove a loop or polling bug.'
+  }
+
+  if (label === 'errors_observed') {
+    return 'Errors were observed; inspect status/error evidence before changing code.'
+  }
+
+  if (label === 'database_activity') {
+    return 'Database activity observed without fanout-level evidence.'
+  }
+
+  return 'No database fanout evidence in the selected range.'
+}
+
+function targetKey(row) {
+  return [
+    String(row.dependency || 'UNKNOWN').toUpperCase(),
+    String(row.operation_method || 'UNKNOWN').toUpperCase(),
+    String(row.target_path || '/'),
+  ].join(' ')
+}
+
 function buildRouteDiagnostics(rows = []) {
   const routes = new Map()
 
@@ -143,8 +189,7 @@ function buildRouteDiagnostics(rows = []) {
       external_calls: 0,
       supabase_calls: 0,
       errors: 0,
-      top_target: '',
-      top_target_calls: 0,
+      target_map: new Map(),
     }
 
     const count = safeNumber(row.count)
@@ -157,30 +202,74 @@ function buildRouteDiagnostics(rows = []) {
     if (row.kind === 'external_request') {
       current.external_calls += count
 
-      if (String(row.dependency || '').toUpperCase() === 'SUPABASE') {
+      const dependency = String(row.dependency || '').toUpperCase()
+      if (dependency === 'SUPABASE') {
         current.supabase_calls += count
       }
 
-      if (count > current.top_target_calls) {
-        current.top_target_calls = count
-        current.top_target = [
-          row.dependency,
-          row.operation_method,
-          row.target_path,
-        ].filter(Boolean).join(' ')
+      const key = targetKey(row)
+      const target = current.target_map.get(key) || {
+        target: key,
+        dependency,
+        method: String(row.operation_method || 'UNKNOWN').toUpperCase(),
+        path: String(row.target_path || '/'),
+        calls: 0,
+        errors: 0,
+        duration_ms: 0,
       }
+
+      target.calls += count
+      target.errors += safeNumber(row.errors)
+      target.duration_ms += safeNumber(row.avg_ms) * count
+      current.target_map.set(key, target)
     }
 
     routes.set(route, current)
   }
 
   return [...routes.values()]
-    .map((item) => ({
-      ...item,
-      supabase_per_http: item.http_requests > 0
+    .map((item) => {
+      const supabasePerHttp = item.http_requests > 0
         ? Number((item.supabase_calls / item.http_requests).toFixed(2))
-        : null,
-    }))
+        : null
+
+      const targets = [...item.target_map.values()]
+        .map((target) => ({
+          target: target.target,
+          dependency: target.dependency,
+          method: target.method,
+          path: target.path,
+          calls: target.calls,
+          errors: target.errors,
+          avg_ms: target.calls > 0
+            ? Number((target.duration_ms / target.calls).toFixed(1))
+            : 0,
+        }))
+        .sort(
+          (a, b) =>
+            b.calls - a.calls ||
+            b.errors - a.errors ||
+            b.avg_ms - a.avg_ms
+        )
+        .slice(0, ROUTE_TARGET_LIMIT)
+
+      const result = {
+        route: item.route,
+        http_requests: item.http_requests,
+        external_calls: item.external_calls,
+        supabase_calls: item.supabase_calls,
+        supabase_per_http: supabasePerHttp,
+        errors: item.errors,
+        targets,
+      }
+
+      result.diagnostic = diagnosticLabel(result)
+      result.interpretation = diagnosticMeaning(result.diagnostic)
+      result.top_target = targets[0]?.target || ''
+      result.top_target_calls = targets[0]?.calls || 0
+
+      return result
+    })
     .sort(
       (a, b) =>
         b.supabase_calls - a.supabase_calls ||
@@ -188,7 +277,46 @@ function buildRouteDiagnostics(rows = []) {
     )
 }
 
-function buildSummaryStats(history, incidents) {
+function buildTargetDiagnostics(routes = []) {
+  const rows = []
+
+  for (const route of routes) {
+    for (const target of route.targets || []) {
+      rows.push({
+        route: route.route,
+        diagnostic: route.diagnostic,
+        http_requests: route.http_requests,
+        supabase_per_http: route.supabase_per_http,
+        ...target,
+      })
+    }
+  }
+
+  return rows.sort(
+    (a, b) =>
+      b.calls - a.calls ||
+      b.errors - a.errors ||
+      b.avg_ms - a.avg_ms
+  )
+}
+
+function filterRecentEvidence(range) {
+  const fromMs = new Date(range.from).getTime()
+  const toMs = new Date(range.to).getTime()
+
+  return getRecentRequestEvidence()
+    .filter((item) => {
+      const time = new Date(item?.time || 0).getTime()
+      return Number.isFinite(time) && time >= fromMs && time <= toMs
+    })
+    .sort(
+      (a, b) =>
+        new Date(b.time || 0).getTime() -
+        new Date(a.time || 0).getTime()
+    )
+}
+
+function buildSummaryStats(history, incidents, requestEvidence = []) {
   const rows = Array.isArray(history?.rows) ? history.rows : []
 
   const byProvider = aggregateBy(
@@ -211,10 +339,16 @@ function buildSummaryStats(history, incidents) {
       String(item.severity || '').toLowerCase() === 'critical'
   ).length
 
+  const routes = buildRouteDiagnostics(rows)
+
   return {
     providers: byProvider.slice(0, 10),
     features: byFeature.slice(0, 10),
-    routes: buildRouteDiagnostics(rows).slice(0, 30),
+    routes: routes.slice(0, 30),
+    route_targets: buildTargetDiagnostics(routes).slice(0, 100),
+    recent_request_evidence: requestEvidence,
+    diagnostics_note:
+      'DB fanout means many database calls per HTTP request. It is not proof of a loop or polling bug unless repeated-window evidence also supports repetition.',
     incidents: {
       total: incidents.length,
       active,
@@ -268,7 +402,16 @@ function summaryMarkdown(range, history, incidents, stats) {
   )
 
   const routeTable = markdownTable(
-    ['Route', 'HTTP', 'Supabase', 'DB/HTTP', 'External', 'Errors', 'Top target'],
+    [
+      'Route',
+      'HTTP',
+      'Supabase',
+      'DB/HTTP',
+      'External',
+      'Errors',
+      'Diagnostic',
+      'Top target',
+    ],
     (stats.routes || []).map((item) => [
       item.route,
       item.http_requests,
@@ -276,7 +419,50 @@ function summaryMarkdown(range, history, incidents, stats) {
       item.supabase_per_http ?? '-',
       item.external_calls,
       item.errors,
+      item.diagnostic,
       item.top_target || '-',
+    ])
+  )
+
+  const targetTable = markdownTable(
+    [
+      'Route',
+      'Target',
+      'Calls',
+      'Errors',
+      'Avg ms',
+      'DB/HTTP',
+    ],
+    (stats.route_targets || []).slice(0, 40).map((item) => [
+      item.route,
+      item.target,
+      item.calls,
+      item.errors,
+      item.avg_ms,
+      item.supabase_per_http ?? '-',
+    ])
+  )
+
+  const requestEvidenceTable = markdownTable(
+    [
+      'Time',
+      'Route',
+      'Kind',
+      'HTTP',
+      'Supabase',
+      'Duration ms',
+      'Top request target',
+    ],
+    (stats.recent_request_evidence || []).slice(0, 40).map((item) => [
+      item.time,
+      item.route,
+      item.diagnostic_kind || '-',
+      item.http_status,
+      item.observed_supabase_calls ?? '-',
+      item.duration_ms,
+      item.targets?.[0]
+        ? `${item.targets[0].target} ×${item.targets[0].count}`
+        : '-',
     ])
   )
 
@@ -304,6 +490,10 @@ function summaryMarkdown(range, history, incidents, stats) {
     `- Resolved: ${stats.incidents.resolved}`,
     `- Critical: ${stats.incidents.critical}`,
     '',
+    '## Diagnostic Meaning',
+    '',
+    stats.diagnostics_note,
+    '',
     '## Top Providers',
     '',
     providerTable,
@@ -315,6 +505,16 @@ function summaryMarkdown(range, history, incidents, stats) {
     '## Route Diagnostics',
     '',
     routeTable,
+    '',
+    '## Route Target Breakdown',
+    '',
+    targetTable,
+    '',
+    '## Recent Per-Request Evidence',
+    '',
+    requestEvidenceTable,
+    '',
+    'Recent per-request evidence is in-memory evidence from the diagnostic window. Historical route target totals remain available through stored usage history.',
     '',
   ].join('\n')
 }
@@ -392,6 +592,14 @@ function evidenceJson(range, history, incidents, stats) {
     {
       generated_at: new Date().toISOString(),
       range,
+      diagnostic_semantics: {
+        database_fanout:
+          'Many database calls were observed per HTTP request.',
+        loop_or_polling:
+          'A loop or polling conclusion requires repeated-window evidence and is not inferred from a single expensive request.',
+        recent_request_evidence:
+          'Per-request evidence is retained in memory for the active diagnostic retention window and may be unavailable after restart or after retention expiry.',
+      },
       summary: stats,
       usage: history,
       incidents,
@@ -676,7 +884,14 @@ async function buildReportBundle(from, to) {
     ),
   ])
 
-  const stats = buildSummaryStats(history, incidents)
+  const requestEvidence =
+    filterRecentEvidence(range)
+
+  const stats = buildSummaryStats(
+    history,
+    incidents,
+    requestEvidence
+  )
   const summaryMd = summaryMarkdown(
     range,
     history,
