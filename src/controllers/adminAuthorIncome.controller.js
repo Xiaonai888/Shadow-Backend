@@ -12,10 +12,15 @@ const ALLOWED_STATUSES = new Set([
 
 const ALLOWED_SORTS = new Set([
   'author_earned_desc',
+  'author_earned_asc',
   'paid_diamonds_desc',
+  'paid_diamonds_asc',
   'platform_earned_desc',
+  'platform_earned_asc',
   'transactions_desc',
+  'transactions_asc',
   'latest_desc',
+  'latest_asc',
 ])
 
 function toPositiveInt(value, fallback, max) {
