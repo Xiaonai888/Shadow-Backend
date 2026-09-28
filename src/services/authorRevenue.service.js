@@ -1166,6 +1166,7 @@ export async function createAuthorEarningsFromDiamondUnlock({
           shareDecision.effective_share_source,
         revenue_rules_version: '2026-08-02',
       },
+      created_at: transactionDate.toISOString(),
       updated_at: nowIso,
     })
   }
