@@ -316,26 +316,49 @@ export async function updateDailyCheckInReminder(req, res) {
       return res.status(401).json({ ok: false, message: 'Unauthorized' })
     }
 
-    const { data, error } = await supabase
-      .from('reader_daily_checkin_reminders')
-      .upsert(
-        {
-          user_id: userId,
-          enabled,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'user_id' }
-      )
-      .select('enabled')
-      .single()
+    const { data, error } = await supabase.rpc(
+      'set_daily_checkin_reminder_with_limit',
+      {
+        p_user_id: userId,
+        p_enabled: enabled,
+        p_limit: 10000,
+      }
+    )
 
     if (error) throw error
+
+    const result = Array.isArray(data) ? data[0] : data
+
+    if (!result) {
+      throw new Error('Reminder limit check returned no result')
+    }
+
+    if (enabled && Boolean(result.just_reached_limit)) {
+      try {
+        const { sendTelegramMessage } = await import('../services/telegram.service.js')
+        await sendTelegramMessage(
+          `<b>⚠️ Daily Check-in Reminder Limit Reached</b>\n\nActive reminder subscribers: <b>${Number(result.enabled_count || 0).toLocaleString()}</b>\nNew reminder sign-ups are now blocked until a slot becomes available.`
+        )
+      } catch (notifyError) {
+        console.error('REMINDER LIMIT ADMIN ALERT ERROR:', notifyError)
+      }
+    }
+
+    if (enabled && !Boolean(result.enabled) && Boolean(result.limit_reached)) {
+      return res.status(409).json({
+        ok: false,
+        code: 'REMINDER_LIMIT_REACHED',
+        enabled: false,
+        message: 'Reminder capacity is currently full. Please try again later.',
+      })
+    }
 
     scheduleMailCleanup(userId)
 
     return res.status(200).json({
       ok: true,
-      enabled: Boolean(data.enabled),
+      enabled: Boolean(result.enabled),
+      limit_reached: Boolean(result.limit_reached),
     })
   } catch (error) {
     console.error('UPDATE DAILY CHECKIN REMINDER ERROR:', error)
@@ -347,6 +370,7 @@ export async function updateDailyCheckInReminder(req, res) {
     })
   }
 }
+
 
 export async function sendDailyCheckInReminderMails() {
   const now = new Date()
