@@ -831,6 +831,11 @@ export async function getAdminEpisodeSales(
     )
       .trim()
       .toLowerCase()
+    const sort = String(
+      req.query.sort || 'latest_desc'
+    )
+      .trim()
+      .toLowerCase()
     const page = Math.max(
       1,
       Math.floor(numberValue(req.query.page) || 1)
@@ -852,11 +857,28 @@ export async function getAdminEpisodeSales(
       'paid',
       'unknown',
     ]
+    const allowedSorts = new Set([
+      'latest_desc',
+      'latest_asc',
+      'paid_diamonds_desc',
+      'paid_diamonds_asc',
+      'author_earnings_desc',
+      'author_earnings_asc',
+      'platform_income_desc',
+      'platform_income_asc',
+    ])
 
     if (!allowedStatuses.includes(status)) {
       return res.status(400).json({
         ok: false,
         message: 'Invalid payout status',
+      })
+    }
+
+    if (!allowedSorts.has(sort)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid episode sales sort',
       })
     }
 
@@ -1549,6 +1571,69 @@ export async function getAdminEpisodeSales(
       )
     }
 
+    const sortAscending =
+      sort.endsWith('_asc')
+    const sortField = sort.replace(
+      /_(asc|desc)$/,
+      ''
+    )
+    const direction =
+      sortAscending ? 1 : -1
+
+    const sortValue = (item) => {
+      if (sortField === 'latest') {
+        const time = new Date(
+          item.created_at || 0
+        ).getTime()
+
+        return Number.isFinite(time)
+          ? time
+          : 0
+      }
+
+      if (sortField === 'paid_diamonds') {
+        return numberValue(
+          item.paid_diamonds
+        )
+      }
+
+      if (sortField === 'author_earnings') {
+        return numberValue(
+          item.author_earnings_usd
+        )
+      }
+
+      return numberValue(
+        item.platform_income_usd
+      )
+    }
+
+    transactions.sort((a, b) => {
+      const first = sortValue(a)
+      const second = sortValue(b)
+
+      if (first !== second) {
+        return (first - second) * direction
+      }
+
+      const firstTime = new Date(
+        a.created_at || 0
+      ).getTime()
+      const secondTime = new Date(
+        b.created_at || 0
+      ).getTime()
+
+      if (firstTime !== secondTime) {
+        return secondTime - firstTime
+      }
+
+      return String(
+        a.purchase_key || ''
+      ).localeCompare(
+        String(b.purchase_key || '')
+      )
+    })
+
     const total = transactions.length
     const totalPages = Math.max(
       1,
@@ -1572,6 +1657,7 @@ export async function getAdminEpisodeSales(
       filters: {
         q: queryText,
         status,
+        sort,
       },
       summary,
       pagination: {
