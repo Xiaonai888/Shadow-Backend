@@ -102,7 +102,10 @@ async function getMonthlyGiftCount(
 }
 
 export async function getAuthorProfileSummary(
-  authorId
+  authorId,
+  {
+    includeMonthUsd = true,
+  } = {}
 ) {
   const {
     todayStartIso,
@@ -119,11 +122,13 @@ export async function getAuthorProfileSummary(
       field: 'author_earned_diamonds',
       from: todayStartIso,
     }),
-    sumDiamondField({
-      authorId,
-      field: 'author_net_payout_usd',
-      from: monthStartIso,
-    }),
+    includeMonthUsd
+      ? sumDiamondField({
+          authorId,
+          field: 'author_net_payout_usd',
+          from: monthStartIso,
+        })
+      : Promise.resolve(0),
     getMonthlyGiftCount(
       authorId,
       monthStartIso
