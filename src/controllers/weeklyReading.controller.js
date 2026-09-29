@@ -150,8 +150,17 @@ async function addRewardHistory(userId, weekStart, milestone, autoClaimed) {
   }
 }
 
-async function grantMilestone(userId, weekStart, milestone, autoClaimed) {
-  const episodeCount = await getEpisodeCount(userId, weekStart)
+async function grantMilestone(
+  userId,
+  weekStart,
+  milestone,
+  autoClaimed,
+  knownEpisodeCount = null
+) {
+  const providedCount = Number(knownEpisodeCount)
+  const episodeCount = Number.isFinite(providedCount)
+    ? Math.min(TARGET_EPISODES, Math.max(0, providedCount))
+    : await getEpisodeCount(userId, weekStart)
 
   if (episodeCount < milestone) {
     return { granted: false, reason: 'not_completed' }
@@ -201,6 +210,12 @@ async function grantMilestone(userId, weekStart, milestone, autoClaimed) {
       granted: true,
       milestone,
       wallet: updatedWallet,
+      claim: {
+        milestone,
+        vouchers: 1,
+        auto_claimed: Boolean(autoClaimed),
+        claimed_at: now,
+      },
     }
   } catch (error) {
     await supabase
@@ -212,36 +227,102 @@ async function grantMilestone(userId, weekStart, milestone, autoClaimed) {
   }
 }
 
-async function autoClaimEligibleMilestones(userId, weekStart, episodeCount) {
-  const claims = await getClaims(userId, weekStart)
-  const claimedSet = new Set(claims.map((item) => Number(item.milestone)))
+async function autoClaimEligibleMilestones(
+  userId,
+  weekStart,
+  episodeCount,
+  prefetchedClaims = null
+) {
+  let claims = Array.isArray(prefetchedClaims)
+    ? [...prefetchedClaims]
+    : await getClaims(userId, weekStart)
+
+  const claimedSet = new Set(
+    claims.map((item) => Number(item.milestone))
+  )
+  let needsRefresh = false
 
   for (const milestone of MILESTONES) {
     if (milestone > episodeCount) break
     if (claimedSet.has(milestone)) continue
 
-    const result = await grantMilestone(userId, weekStart, milestone, true)
+    const result = await grantMilestone(
+      userId,
+      weekStart,
+      milestone,
+      true,
+      episodeCount
+    )
+
     if (result.granted) {
       claimedSet.add(milestone)
+      if (result.claim) claims.push(result.claim)
+    } else if (result.reason === 'already_claimed') {
+      needsRefresh = true
     }
   }
-}
 
-async function buildWeeklyReadingState(userId, isPremium) {
-  const weekStart = getWeekStartKey()
-  let episodeCount = await getEpisodeCount(userId, weekStart)
-
-  if (isPremium && episodeCount > 0) {
-    await autoClaimEligibleMilestones(userId, weekStart, episodeCount)
+  if (needsRefresh) {
+    claims = await getClaims(userId, weekStart)
   }
 
-  episodeCount = await getEpisodeCount(userId, weekStart)
-  const claims = await getClaims(userId, weekStart)
-  const claimMap = new Map(claims.map((item) => [Number(item.milestone), item]))
+  return claims
+}
+
+async function buildWeeklyReadingState(
+  userId,
+  isPremium,
+  {
+    weekStart = getWeekStartKey(),
+    episodeCount = null,
+    claims = null,
+  } = {}
+) {
+  const providedCount = Number(episodeCount)
+  let resolvedCount =
+    Number.isFinite(providedCount)
+      ? Math.min(TARGET_EPISODES, Math.max(0, providedCount))
+      : null
+
+  let resolvedClaims =
+    Array.isArray(claims)
+      ? [...claims]
+      : null
+
+  if (resolvedCount === null && resolvedClaims === null) {
+    ;[resolvedCount, resolvedClaims] = await Promise.all([
+      getEpisodeCount(userId, weekStart),
+      getClaims(userId, weekStart),
+    ])
+  } else {
+    if (resolvedCount === null) {
+      resolvedCount = await getEpisodeCount(userId, weekStart)
+    }
+
+    if (resolvedClaims === null) {
+      resolvedClaims = await getClaims(userId, weekStart)
+    }
+  }
+
+  if (isPremium && resolvedCount > 0) {
+    resolvedClaims = await autoClaimEligibleMilestones(
+      userId,
+      weekStart,
+      resolvedCount,
+      resolvedClaims
+    )
+  }
+
+  const claimMap = new Map(
+    resolvedClaims.map((item) => [
+      Number(item.milestone),
+      item,
+    ])
+  )
 
   const milestones = MILESTONES.map((milestone) => {
     const claim = claimMap.get(milestone)
-    const completed = episodeCount >= milestone
+    const completed = resolvedCount >= milestone
     const claimed = Boolean(claim)
 
     return {
@@ -256,22 +337,23 @@ async function buildWeeklyReadingState(userId, isPremium) {
   })
 
   const nextMilestone =
-    milestones.find((item) => !item.claimed)?.episodes || TARGET_EPISODES
+    milestones.find((item) => !item.claimed)?.episodes ||
+    TARGET_EPISODES
 
   return {
     title: 'Weekly Reading',
     week_start: weekStart,
     week_end: addDays(weekStart, 6),
-    episodes_read: episodeCount,
+    episodes_read: resolvedCount,
     target_episodes: TARGET_EPISODES,
     progress_percent: Math.min(
       100,
-      Math.round((episodeCount / TARGET_EPISODES) * 100)
+      Math.round((resolvedCount / TARGET_EPISODES) * 100)
     ),
     premium_auto_claim: Boolean(isPremium),
     next_milestone: nextMilestone,
     milestones,
-    completed: episodeCount >= TARGET_EPISODES,
+    completed: resolvedCount >= TARGET_EPISODES,
     all_rewards_claimed: milestones.every((item) => item.claimed),
   }
 }
@@ -310,6 +392,124 @@ export async function recordWeeklyReadingEpisode({
   storyId,
   episodeId,
   readingPercent = 0,
+}) {
+  const cleanUserId = String(userId || '').trim()
+  const cleanStoryId = String(storyId || '').trim()
+  const cleanEpisodeId = String(episodeId || '').trim()
+  const rawPercent = Number(readingPercent)
+  const percent = Number.isFinite(rawPercent)
+    ? Math.min(100, Math.max(0, rawPercent))
+    : 0
+
+  if (
+    !isUuid(cleanUserId) ||
+    !isUuid(cleanStoryId) ||
+    !isUuid(cleanEpisodeId) ||
+    percent < READ_THRESHOLD_PERCENT
+  ) {
+    return null
+  }
+
+  const profile = await getUserProfile(cleanUserId)
+  const isPremium = isPremiumRole(profile?.role)
+
+  return withWeeklyReadingLock(cleanUserId, async () => {
+    const weekStart = getWeekStartKey()
+    const currentCount = await getEpisodeCount(
+      cleanUserId,
+      weekStart
+    )
+
+    if (currentCount >= TARGET_EPISODES) {
+      return buildWeeklyReadingState(
+        cleanUserId,
+        isPremium,
+        {
+          weekStart,
+          episodeCount: currentCount,
+        }
+      )
+    }
+
+    const { data: existing, error: existingError } = await supabase
+      .from('reader_weekly_reading_episodes')
+      .select('id')
+      .eq('user_id', cleanUserId)
+      .eq('week_start', weekStart)
+      .eq('episode_id', cleanEpisodeId)
+      .maybeSingle()
+
+    if (existingError) throw existingError
+
+    if (existing) {
+      return buildWeeklyReadingState(
+        cleanUserId,
+        isPremium,
+        {
+          weekStart,
+          episodeCount: currentCount,
+        }
+      )
+    }
+
+    const [
+      { data: story, error: storyError },
+      { data: episode, error: episodeError },
+    ] = await Promise.all([
+      supabase
+        .from('stories')
+        .select('id')
+        .eq('id', cleanStoryId)
+        .eq('status', 'published')
+        .is('deleted_at', null)
+        .maybeSingle(),
+      supabase
+        .from('episodes')
+        .select('id, story_id')
+        .eq('id', cleanEpisodeId)
+        .eq('story_id', cleanStoryId)
+        .eq('status', 'published')
+        .is('deleted_at', null)
+        .maybeSingle(),
+    ])
+
+    if (storyError) throw storyError
+    if (episodeError) throw episodeError
+
+    if (!story || !episode) {
+      return null
+    }
+
+    const { error: insertError } = await supabase
+      .from('reader_weekly_reading_episodes')
+      .insert({
+        user_id: cleanUserId,
+        week_start: weekStart,
+        story_id: cleanStoryId,
+        episode_id: cleanEpisodeId,
+      })
+
+    if (insertError && insertError.code !== '23505') {
+      throw insertError
+    }
+
+    const finalCount =
+      insertError?.code === '23505'
+        ? await getEpisodeCount(cleanUserId, weekStart)
+        : Math.min(
+            TARGET_EPISODES,
+            currentCount + 1
+          )
+
+    return buildWeeklyReadingState(
+      cleanUserId,
+      isPremium,
+      {
+        weekStart,
+        episodeCount: finalCount,
+      }
+    )
+  })
 }) {
   const cleanUserId = String(userId || '').trim()
   const cleanStoryId = String(storyId || '').trim()
@@ -414,33 +614,77 @@ export async function claimWeeklyReadingReward(req, res) {
       const episodeCount = await getEpisodeCount(userId, weekStart)
 
       if (isPremium) {
-        await autoClaimEligibleMilestones(userId, weekStart, episodeCount)
+        const claims = await autoClaimEligibleMilestones(
+          userId,
+          weekStart,
+          episodeCount
+        )
 
         return {
           autoClaimed: true,
-          weeklyReading: await buildWeeklyReadingState(userId, true),
+          weeklyReading: await buildWeeklyReadingState(
+            userId,
+            true,
+            {
+              weekStart,
+              episodeCount,
+              claims,
+            }
+          ),
         }
       }
 
       const claims = await getClaims(userId, weekStart)
-      const claimedSet = new Set(claims.map((item) => Number(item.milestone)))
+      const claimedSet = new Set(
+        claims.map((item) => Number(item.milestone))
+      )
 
       const milestone = MILESTONES.find(
-        (item) => item <= episodeCount && !claimedSet.has(item)
+        (item) =>
+          item <= episodeCount &&
+          !claimedSet.has(item)
       )
 
       if (!milestone) {
         return {
           noReward: true,
-          weeklyReading: await buildWeeklyReadingState(userId, false),
+          weeklyReading: await buildWeeklyReadingState(
+            userId,
+            false,
+            {
+              weekStart,
+              episodeCount,
+              claims,
+            }
+          ),
         }
       }
 
-      const grant = await grantMilestone(userId, weekStart, milestone, false)
+      const grant = await grantMilestone(
+        userId,
+        weekStart,
+        milestone,
+        false,
+        episodeCount
+      )
+
+      const nextClaims = grant.claim
+        ? [...claims, grant.claim]
+        : grant.reason === 'already_claimed'
+          ? await getClaims(userId, weekStart)
+          : claims
 
       return {
         grant,
-        weeklyReading: await buildWeeklyReadingState(userId, false),
+        weeklyReading: await buildWeeklyReadingState(
+          userId,
+          false,
+          {
+            weekStart,
+            episodeCount,
+            claims: nextClaims,
+          }
+        ),
       }
     })
 
