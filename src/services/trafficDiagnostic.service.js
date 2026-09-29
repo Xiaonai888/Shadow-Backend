@@ -21,6 +21,8 @@ const TRACE_MAX_EXPENSIVE_PER_MINUTE = 4
 const RECENT_EVIDENCE_LIMIT = 120
 const RECENT_EVIDENCE_TTL_MS = 60 * 60 * 1000
 const MAX_EVIDENCE_TARGETS = 12
+const MAX_EXTERNAL_FAILURES = 6
+const MAX_EXTERNAL_FAILURE_TEXT = 240
 let traceMinute = 0
 let traceErrors = 0
 let traceExpensive = 0
@@ -156,6 +158,103 @@ function recordDependency(context, target, failed, durationMs = 0) {
   context.targets.set(target, current)
 }
 
+function cleanExternalFailureText(value) {
+  return String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_EXTERNAL_FAILURE_TEXT)
+}
+
+function recordExternalFailure(context, details = {}) {
+  if (!context) return
+
+  if (!Array.isArray(context.external_failures)) {
+    context.external_failures = []
+  }
+
+  if (
+    context.external_failures.length >=
+    MAX_EXTERNAL_FAILURES
+  ) {
+    return
+  }
+
+  const status = Number(details.status || 0)
+  const failure = {
+    provider:
+      cleanExternalFailureText(details.provider) ||
+      'UNKNOWN',
+    target:
+      cleanExternalFailureText(details.target) ||
+      'UNKNOWN',
+    status:
+      Number.isFinite(status) ? status : 0,
+  }
+
+  for (const key of [
+    'status_text',
+    'code',
+    'message',
+    'details',
+    'hint',
+    'error_name',
+  ]) {
+    const value =
+      cleanExternalFailureText(details[key])
+
+    if (value) failure[key] = value
+  }
+
+  context.external_failures.push(failure)
+}
+
+async function captureFetchFailure({
+  context,
+  response,
+  target,
+  provider,
+}) {
+  const failure = {
+    provider,
+    target,
+    status: Number(response?.status || 0),
+    status_text: response?.statusText || '',
+  }
+
+  if (
+    provider === 'SUPABASE' &&
+    response
+  ) {
+    try {
+      const payload =
+        await response.clone().json()
+
+      if (
+        payload &&
+        typeof payload === 'object'
+      ) {
+        failure.code =
+          payload.code || ''
+        failure.message =
+          payload.message || ''
+        failure.details =
+          payload.details || ''
+        failure.hint =
+          payload.hint || ''
+      }
+    } catch {
+      failure.code =
+        failure.code ||
+        'SUPABASE_HTTP_ERROR'
+    }
+  }
+
+  recordExternalFailure(
+    context,
+    failure
+  )
+}
+
 function diagnosticActor(req) {
   const userId = req.user?.user_id || req.user?.admin_id || req.user?.id
   if (userId) return { type: 'authenticated', id: String(userId).slice(0, 120) }
@@ -267,6 +366,17 @@ function logRequestEvidence(req, res, context, elapsedMs) {
   const supabaseCalls = targets
     .filter((item) => item.target.startsWith('SUPABASE '))
     .reduce((sum, item) => sum + item.count, 0)
+  const externalFailures =
+    Array.isArray(context.external_failures)
+      ? context.external_failures
+      : []
+  const firstExternalFailure =
+    externalFailures[0] || null
+  const firstSupabaseFailure =
+    externalFailures.find(
+      (item) =>
+        item.provider === 'SUPABASE'
+    ) || null
   const diagnosticMarker =
     context.diagnostic_marker &&
     typeof context.diagnostic_marker === 'object'
@@ -289,13 +399,17 @@ function logRequestEvidence(req, res, context, elapsedMs) {
       : ''
   const diagnosticKind =
     reactionDiagnosticKind ||
-    (failed
-      ? 'request_failure'
-      : supabaseCalls >= 8
-        ? 'database_fanout'
-        : elapsedMs >= TRACE_SLOW_MS
-          ? 'slow_request'
-          : 'expensive_request')
+    (firstSupabaseFailure
+      ? 'supabase_error'
+      : firstExternalFailure
+        ? 'external_error'
+        : failed
+          ? 'request_failure'
+          : supabaseCalls >= 8
+            ? 'database_fanout'
+            : elapsedMs >= TRACE_SLOW_MS
+              ? 'slow_request'
+              : 'expensive_request')
 
   const evidence = {
     request_id: context.request_id,
@@ -312,6 +426,9 @@ function logRequestEvidence(req, res, context, elapsedMs) {
     observed_external_calls: context.external_calls,
     observed_supabase_calls: supabaseCalls,
     observed_external_errors: context.external_errors,
+    likely_failure_source:
+      firstExternalFailure?.target || null,
+    external_failures: externalFailures,
     dropped_targets: context.dropped_targets,
     targets,
   }
@@ -394,15 +511,29 @@ function installFetchDiagnostic() {
     const method = String(
       init.method || (input instanceof Request ? input.method : 'GET') || 'GET'
     ).toUpperCase()
-    const target = `${destination(url.hostname)} ${method} ${normalizePath(url.pathname)}`
-    const key = `${requestContext.getStore()?.route || 'BACKGROUND'} -> ${target}`
+    const provider =
+      destination(url.hostname)
+    const target = `${provider} ${method} ${normalizePath(url.pathname)}`
+    const context =
+      requestContext.getStore()
+    const key = `${context?.route || 'BACKGROUND'} -> ${target}`
     const requestBytes = fetchRequestBytes(input, init)
 
     try {
       const response = await nativeFetch(input, init)
       const elapsedMs = Date.now() - startedAt
+
+      if (!response.ok) {
+        await captureFetchFailure({
+          context,
+          response,
+          target,
+          provider,
+        })
+      }
+
       recordDependency(
-        requestContext.getStore(),
+        context,
         target,
         !response.ok,
         elapsedMs
@@ -417,8 +548,24 @@ function installFetchDiagnostic() {
       return response
     } catch (error) {
       const elapsedMs = Date.now() - startedAt
+
+      recordExternalFailure(
+        context,
+        {
+          provider,
+          target,
+          status: 0,
+          code: 'FETCH_REJECTED',
+          message:
+            error?.message ||
+            'External fetch failed',
+          error_name:
+            error?.name || 'Error',
+        }
+      )
+
       recordDependency(
-        requestContext.getStore(),
+        context,
         target,
         true,
         elapsedMs
@@ -506,9 +653,45 @@ function installHttpDiagnostic(moduleObject) {
     }
 
     request.once('response', (response) => {
-      record(Number(response.statusCode || 0) >= 400)
+      const status =
+        Number(response.statusCode || 0)
+      const failed = status >= 400
+
+      if (failed) {
+        recordExternalFailure(
+          context,
+          {
+            provider:
+              destination(meta.hostname),
+            target,
+            status,
+            status_text:
+              response.statusMessage || '',
+            code: 'HTTP_ERROR',
+          }
+        )
+      }
+
+      record(failed)
     })
-    request.once('error', () => record(true))
+    request.once('error', (error) => {
+      recordExternalFailure(
+        context,
+        {
+          provider:
+            destination(meta.hostname),
+          target,
+          status: 0,
+          code: 'HTTP_REQUEST_ERROR',
+          message:
+            error?.message ||
+            'HTTP request failed',
+          error_name:
+            error?.name || 'Error',
+        }
+      )
+      record(true)
+    })
     request.once('close', () => record(true))
     return request
   }
@@ -543,6 +726,7 @@ export function trafficDiagnosticMiddleware(req, res, next) {
     request_id: `${process.pid}-${startedAt}-${++traceSequence}`,
     external_calls: 0,
     external_errors: 0,
+    external_failures: [],
     dropped_targets: 0,
     targets: new Map(),
     diagnostic_marker: null,
