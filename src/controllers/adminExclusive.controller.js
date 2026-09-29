@@ -83,71 +83,6 @@ async function getStoryOr404(storyId) {
   return data
 }
 
-async function getExclusiveSummary() {
-  const [
-    totalPublishedResult,
-    approvedResult,
-    pendingResult,
-    rejectedResult,
-    normalResult,
-    premiumResult,
-  ] = await Promise.all([
-    supabase
-      .from('stories')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'published'),
-    supabase
-      .from('stories')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'published')
-      .eq('is_shadow_exclusive', true)
-      .eq('exclusive_status', 'approved'),
-    supabase
-      .from('stories')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'published')
-      .eq('exclusive_status', 'pending'),
-    supabase
-      .from('stories')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'published')
-      .eq('exclusive_status', 'rejected'),
-    supabase
-      .from('stories')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'published')
-      .eq('is_shadow_exclusive', false)
-      .eq('exclusive_status', 'none'),
-    supabase
-      .from('stories')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'published')
-      .eq('access_type', 'premium'),
-  ])
-
-  const results = [
-    totalPublishedResult,
-    approvedResult,
-    pendingResult,
-    rejectedResult,
-    normalResult,
-    premiumResult,
-  ]
-
-  const failedResult = results.find((result) => result.error)
-
-  if (failedResult?.error) throw failedResult.error
-
-  return {
-    total_published: Number(totalPublishedResult.count || 0),
-    exclusive_stories: Number(approvedResult.count || 0),
-    pending_requests: Number(pendingResult.count || 0),
-    rejected_requests: Number(rejectedResult.count || 0),
-    normal_stories: Number(normalResult.count || 0),
-    premium_stories: Number(premiumResult.count || 0),
-  }
-}
-
 export async function listAdminExclusiveStories(req, res) {
   try {
     const requestedStatus = String(req.query.status || 'all').trim().toLowerCase()
@@ -157,45 +92,38 @@ export async function listAdminExclusiveStories(req, res) {
     const search = String(req.query.search || '').trim().slice(0, 200)
     const limit = getListLimit(req.query.limit)
 
-    let query = supabase
-      .from('stories')
-      .select('*', { count: 'exact' })
-      .eq('status', 'published')
-      .order('updated_at', { ascending: false })
-      .range(0, limit - 1)
-
-    if (status === 'pending') {
-      query = query.eq('exclusive_status', 'pending')
-    } else if (status === 'approved') {
-      query = query
-        .eq('is_shadow_exclusive', true)
-        .eq('exclusive_status', 'approved')
-    } else if (status === 'rejected') {
-      query = query.eq('exclusive_status', 'rejected')
-    } else if (status === 'removed') {
-      query = query
-        .eq('exclusive_status', 'none')
-        .eq('is_shadow_exclusive', false)
-    }
-
-    if (search) {
-      query = query.ilike('title', `%${search}%`)
-    }
-
-    const [{ data, error, count }, summary] = await Promise.all([
-      query,
-      getExclusiveSummary(),
-    ])
+    const { data, error } = await supabase.rpc(
+      'get_admin_exclusive_stories_v1',
+      {
+        p_status: status,
+        p_search: search,
+        p_limit: limit,
+      }
+    )
 
     if (error) throw error
 
+    const payload =
+      data && typeof data === 'object'
+        ? data
+        : {}
+
     return res.status(200).json({
       ok: true,
-      stories: (data || []).map(storyListItem),
-      result_count: Number(count || 0),
-      limit,
-      status,
-      summary,
+      stories: Array.isArray(payload.stories)
+        ? payload.stories.map(storyListItem).filter(Boolean)
+        : [],
+      result_count: Number(payload.result_count || 0),
+      limit: Number(payload.limit || limit),
+      status: String(payload.status || status),
+      summary: {
+        total_published: Number(payload.summary?.total_published || 0),
+        exclusive_stories: Number(payload.summary?.exclusive_stories || 0),
+        pending_requests: Number(payload.summary?.pending_requests || 0),
+        rejected_requests: Number(payload.summary?.rejected_requests || 0),
+        normal_stories: Number(payload.summary?.normal_stories || 0),
+        premium_stories: Number(payload.summary?.premium_stories || 0),
+      },
     })
   } catch (error) {
     console.error('LIST ADMIN EXCLUSIVE STORIES ERROR:', error)
