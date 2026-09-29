@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { ensureTaskCenterAutoRotation } from '../services/taskCenterAuto.service.js'
 import { recordWeeklyReadingEpisode } from './weeklyReading.controller.js'
+import { getActiveSessionMissions } from '../services/taskCenterMissionCache.service.js'
 
 
 const DAILY_REWARDS = [
@@ -29,43 +30,6 @@ const MAX_READING_EVENT_SECONDS = 60
 const MAX_MISSION_EVENT_SECONDS = 30
 
 const readingSessionLocks = new Map()
-
-const ACTIVE_SESSION_MISSIONS_TTL_MS = 60 * 1000
-let activeSessionMissionsCache = null
-let activeSessionMissionsPending = null
-
-async function getActiveSessionMissions() {
-  if (activeSessionMissionsCache && Date.now() < activeSessionMissionsCache.expiresAt) {
-    return activeSessionMissionsCache.value
-  }
-
-  if (activeSessionMissionsPending) return activeSessionMissionsPending
-
-  const pending = (async () => {
-    const { data, error } = await supabase
-      .from('task_center_reading_missions')
-      .select('*')
-      .eq('is_active', true)
-      .order('sort_order', { ascending: true })
-      .order('created_at', { ascending: false })
-      .limit(20)
-
-    if (error) throw error
-    const value = data || []
-    activeSessionMissionsCache = {
-      value,
-      expiresAt: Date.now() + ACTIVE_SESSION_MISSIONS_TTL_MS,
-    }
-    return value
-  })()
-
-  activeSessionMissionsPending = pending
-  try {
-    return await pending
-  } finally {
-    if (activeSessionMissionsPending === pending) activeSessionMissionsPending = null
-  }
-}
 
 async function withReadingSessionLock(userId, callback) {
   const previous = readingSessionLocks.get(userId) || Promise.resolve()
