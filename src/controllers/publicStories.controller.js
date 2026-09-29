@@ -2304,18 +2304,120 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
   }
 }
 
-export async function getPublicEpisodeById(req, res) {
+async function getPublicEpisodeReadContext({
+  userId,
+  storyId,
+  episodeId,
+}) {
+  const { data, error } = await supabase.rpc(
+    'get_public_episode_read_context_v1',
+    {
+      p_user_id: userId || null,
+      p_story_id: storyId,
+      p_episode_id: episodeId,
+    }
+  )
+
+  if (error) throw error
+
+  return Array.isArray(data)
+    ? data[0] || null
+    : data || null
+}
+
+function buildEpisodeAccessFromReadContext(
+  context
+) {
+  const episode = context?.episode || null
+  const id = String(episode?.id || '')
+  const currentNumber = Number(
+    context?.current_episode_number
+  )
+  const publishedRank = Number(
+    context?.published_rank
+  )
+  const freePublishedEpisodeIds = new Set(
+    (
+      Array.isArray(
+        context?.free_published_episode_ids
+      )
+        ? context.free_published_episode_ids
+        : []
+    ).map((value) => String(value))
+  )
+  const firstVisibleEpisodeId = String(
+    context?.first_visible_episode_id || ''
+  )
+
+  return {
+    activeEpisodes: [],
+    publishedEpisodes:
+      firstVisibleEpisodeId
+        ? [{ id: firstVisibleEpisodeId }]
+        : [],
+    currentNumberById: new Map(
+      id
+        ? [
+            [
+              id,
+              Number.isFinite(currentNumber) &&
+              currentNumber > 0
+                ? currentNumber
+                : Math.max(
+                    1,
+                    Number(
+                      episode?.episode_number || 1
+                    )
+                  ),
+            ],
+          ]
+        : []
+    ),
+    publishedRankById: new Map(
+      id &&
+      Number.isFinite(publishedRank) &&
+      publishedRank > 0
+        ? [[id, publishedRank]]
+        : []
+    ),
+    freePublishedEpisodeIds,
+  }
+}
+
+export async function getPublicEpisodeById(
+  req,
+  res
+) {
   try {
     const { storyId, episodeId } = req.params
+    const user = getOptionalUser(req)
+    const userId = user?.user_id || ''
 
-    const story = await getPublishedReadableStory(storyId)
+    const context =
+      await getPublicEpisodeReadContext({
+        userId,
+        storyId,
+        episodeId,
+      })
 
-    if (!story) {
+    if (
+      !context ||
+      context.ok === false ||
+      !context.story
+    ) {
+      const episodeMissing =
+        context?.code ===
+        'EPISODE_NOT_FOUND'
+
       return res.status(404).json({
         ok: false,
-        message: 'Story not found',
+        message: episodeMissing
+          ? 'Episode not found'
+          : 'Story not found',
       })
     }
+
+    const story = context.story
 
     if (
       story.is_shadow_exclusive &&
@@ -2327,58 +2429,57 @@ export async function getPublicEpisodeById(req, res) {
       })
     }
 
-    const ageAccess = await getReaderAgeAccess(req)
+    const ageAccess =
+      await getReaderAgeAccess(req)
 
-if (!isStoryVisibleToReader(story, ageAccess)) {
-  return hideAdultStory(res)
-}
+    if (
+      !isStoryVisibleToReader(
+        story,
+        ageAccess
+      )
+    ) {
+      return hideAdultStory(res)
+    }
 
-    const authorPage = await getAuthorPageById(story.author_id)
+    const episode =
+      context.episode || null
 
-const { data: episode, error } = await supabase
-      .from('episodes')
-      .select('*')
-      .eq('id', episodeId)
-      .eq('story_id', storyId)
-      .eq('status', 'published')
-      .is('deleted_at', null)
-      .maybeSingle()
-
-    if (error) throw error
-
-    if (!episode || !isPublicEpisode(episode)) {
+    if (
+      !episode ||
+      !isPublicEpisode(episode)
+    ) {
       return res.status(404).json({
         ok: false,
         message: 'Episode not found',
       })
     }
 
-    const user = getOptionalUser(req)
-    const userId = user?.user_id || ''
-    const now = Date.now()
-    const access = await getStoryEpisodeAccess(
-      storyId,
-      now
-    )
+    const authorPage =
+      context.author_page || null
+    const access =
+      buildEpisodeAccessFromReadContext(
+        context
+      )
     const firstVisibleEpisodeId =
+      context.first_visible_episode_id ||
       access.publishedEpisodes[0]?.id ||
-      (await getFirstVisibleEpisodeIdForStory(
-        storyId
-      ))
-    const freeEpisode = isEpisodeFreeForReader(
-      episode,
-      firstVisibleEpisodeId,
-      access
-    )
-    const activeUnlock =
-      await getActiveEpisodeUnlock({
-        userId,
-        episodeId,
-      })
+      null
+    const freeEpisode =
+      isEpisodeFreeForReader(
+        episode,
+        firstVisibleEpisodeId,
+        access
+      )
+    const activeUnlock = freeEpisode
+      ? null
+      : context.active_unlock || null
     const unlocked =
-      freeEpisode || Boolean(activeUnlock)
+      freeEpisode ||
+      Boolean(activeUnlock)
     const isManga =
-      String(story.story_type || 'novel')
+      String(
+        story.story_type || 'novel'
+      )
         .trim()
         .toLowerCase() === 'manga'
     const episodePages =
@@ -2393,9 +2494,14 @@ const { data: episode, error } = await supabase
       return res.status(423).json({
         ok: false,
         code: 'EPISODE_LOCKED',
-        message: 'This episode is locked',
+        message:
+          'This episode is locked',
         locked: true,
-        story: publicStory(story, [], authorPage),
+        story: publicStory(
+          story,
+          [],
+          authorPage
+        ),
         episode: {
           ...publicEpisodeListItem(
             episode,
@@ -2416,7 +2522,11 @@ const { data: episode, error } = await supabase
       free_published_episode_ids: [
         ...access.freePublishedEpisodeIds,
       ],
-      story: publicStory(story, [], authorPage),
+      story: publicStory(
+        story,
+        [],
+        authorPage
+      ),
       episode: publicEpisode(
         episode,
         story,
@@ -2427,141 +2537,182 @@ const { data: episode, error } = await supabase
       ),
       free_first_episode:
         firstVisibleEpisodeId &&
-        episode.id === firstVisibleEpisodeId
+        episode.id ===
+          firstVisibleEpisodeId
           ? {
               counted: false,
               limit: 'unlimited',
               used: null,
               remaining: 'unlimited',
-              tier: getReaderTier(user),
-              month_key: getMonthKey(),
+              tier:
+                getReaderTier(user),
+              month_key:
+                getMonthKey(),
             }
           : null,
       cache_access: {
-        private_access: Boolean(!freeEpisode && activeUnlock),
+        private_access: Boolean(
+          !freeEpisode &&
+          activeUnlock
+        ),
         access_type: freeEpisode
           ? 'public'
-          : activeUnlock?.access_type || null,
+          : activeUnlock?.access_type ||
+            null,
         expires_at: freeEpisode
           ? null
-          : activeUnlock?.expires_at || null,
+          : activeUnlock?.expires_at ||
+            null,
       },
       view: {
         counted: false,
-        reason: 'qualified_view_required',
+        reason:
+          'qualified_view_required',
       },
     })
   } catch (error) {
-    console.error('GET PUBLIC EPISODE ERROR:', error)
+    console.error(
+      'GET PUBLIC EPISODE ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
-      message: 'Failed to load episode',
+      message:
+        'Failed to load episode',
       error: error.message,
     })
   }
 }
 
-export async function countQualifiedEpisodeView(req, res) {
+export async function countQualifiedEpisodeView(
+  req,
+  res
+) {
   try {
-    const { storyId, episodeId } = req.params
+    const { storyId, episodeId } =
+      req.params
     const user = getOptionalUser(req)
 
     if (!user?.user_id) {
       return res.status(401).json({
         ok: false,
-        message: 'Please login to count view.',
+        message:
+          'Please login to count view.',
       })
     }
 
-    const story = await getPublishedReadableStory(storyId)
+    const context =
+      await getPublicEpisodeReadContext({
+        userId: user.user_id,
+        storyId,
+        episodeId,
+      })
 
-    if (!story) {
+    if (
+      !context ||
+      context.ok === false ||
+      !context.story
+    ) {
+      const episodeMissing =
+        context?.code ===
+        'EPISODE_NOT_FOUND'
+
+      return res.status(404).json({
+        ok: false,
+        message: episodeMissing
+          ? 'Episode not found'
+          : 'Story not found',
+      })
+    }
+
+    const story = context.story
+
+    if (
+      story.is_shadow_exclusive &&
+      story.exclusive_status !== 'approved'
+    ) {
       return res.status(404).json({
         ok: false,
         message: 'Story not found',
       })
     }
 
-    if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
-      return res.status(404).json({
-        ok: false,
-        message: 'Story not found',
-      })
-    }
+    const episode =
+      context.episode || null
 
-    const { data: episode, error } = await supabase
-      .from('episodes')
-      .select('*')
-      .eq('id', episodeId)
-      .eq('story_id', storyId)
-      .eq('status', 'published')
-      .is('deleted_at', null)
-      .maybeSingle()
-
-    if (error) throw error
-
-    if (!episode || !isPublicEpisode(episode)) {
+    if (
+      !episode ||
+      !isPublicEpisode(episode)
+    ) {
       return res.status(404).json({
         ok: false,
         message: 'Episode not found',
       })
     }
 
-    const now = Date.now()
-    const access = await getStoryEpisodeAccess(
-      storyId,
-      now
-    )
+    const access =
+      buildEpisodeAccessFromReadContext(
+        context
+      )
     const firstVisibleEpisodeId =
+      context.first_visible_episode_id ||
       access.publishedEpisodes[0]?.id ||
-      (await getFirstVisibleEpisodeIdForStory(
-        storyId
-      ))
-    const freeEpisode = isEpisodeFreeForReader(
-      episode,
-      firstVisibleEpisodeId,
-      access
-    )
-        const activeUnlock = freeEpisode
-      ? false
-      : await hasActiveEpisodeUnlock({
-          userId: user.user_id,
-          episodeId,
-        })
+      null
+    const freeEpisode =
+      isEpisodeFreeForReader(
+        episode,
+        firstVisibleEpisodeId,
+        access
+      )
+    const activeUnlock = freeEpisode
+      ? null
+      : context.active_unlock || null
 
-    if (!freeEpisode && !activeUnlock) {
+    if (
+      !freeEpisode &&
+      !activeUnlock
+    ) {
       return res.status(423).json({
         ok: false,
         code: 'EPISODE_LOCKED',
-        message: 'This episode is locked',
+        message:
+          'This episode is locked',
       })
     }
 
-    const viewResult = await recordEpisodeView({
-  userId: user.user_id,
-  storyId,
-  episodeId,
-  mode: req.body?.mode,
-})
+    const viewResult =
+      await recordEpisodeView({
+        userId: user.user_id,
+        storyId,
+        episodeId,
+        mode: req.body?.mode,
+      })
 
-if (viewResult.counted && story.author_id) {
-  await incrementAuthorPageAnalytics(
-    story.author_id,
-    'story_reads'
-  )
-}
+    if (
+      viewResult.counted &&
+      story.author_id
+    ) {
+      await incrementAuthorPageAnalytics(
+        story.author_id,
+        'story_reads'
+      )
+    }
 
-return res.status(200).json({
-  ok: true,
-  view: viewResult,
-})
+    return res.status(200).json({
+      ok: true,
+      view: viewResult,
+    })
   } catch (error) {
-    console.error('COUNT QUALIFIED EPISODE VIEW ERROR:', error)
+    console.error(
+      'COUNT QUALIFIED EPISODE VIEW ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
-      message: 'Failed to count view',
+      message:
+        'Failed to count view',
       error: error.message,
     })
   }
