@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { invalidateActiveSessionMissionsCache } from './taskCenterMissionCache.service.js'
 
 const SETTING_KEY = 'main'
 const AUTO_MODE = 'auto'
@@ -435,6 +436,7 @@ export async function rotateTaskCenterAutoStories({ force = false } = {}) {
   }
 
   await applySelectionsToMissions(selections, missions, nowIso)
+  invalidateActiveSessionMissionsCache()
   await updateRotationStamp(dateKey, nowIso)
 
   return {
