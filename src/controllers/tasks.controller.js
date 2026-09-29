@@ -1420,18 +1420,353 @@ export async function claimReadingMissionReward(req, res) {
 }
 
 
+function getWeeklyReadingWeekStartKey(date = new Date()) {
+  const dateKey = getPhnomPenhDateKey(date)
+  const localDate = new Date(`${dateKey}T00:00:00.000Z`)
+  const day = localDate.getUTCDay()
+  const daysFromMonday = (day + 6) % 7
+
+  return addDays(dateKey, -daysFromMonday)
+}
+
+async function trackWeeklyReadingSessionProgress({
+  userId,
+  storyId,
+  episodeId,
+  readingPercent,
+}) {
+  if (
+    !userId ||
+    !storyId ||
+    !episodeId ||
+    Number(readingPercent || 0) < 80
+  ) {
+    return null
+  }
+
+  const { data: readContext, error: readContextError } =
+    await supabase.rpc(
+      'get_public_episode_read_context_v1',
+      {
+        p_user_id: userId,
+        p_story_id: storyId,
+        p_episode_id: episodeId,
+      }
+    )
+
+  if (readContextError) throw readContextError
+
+  const context = Array.isArray(readContext)
+    ? readContext[0] || null
+    : readContext || null
+
+  if (
+    !context ||
+    context.ok === false ||
+    !context.story ||
+    !context.episode
+  ) {
+    return null
+  }
+
+  const weekStart = getWeeklyReadingWeekStartKey()
+
+  const { error: upsertError } = await supabase
+    .from('reader_weekly_reading_episodes')
+    .upsert(
+      {
+        user_id: userId,
+        week_start: weekStart,
+        story_id: storyId,
+        episode_id: episodeId,
+      },
+      {
+        onConflict: 'user_id,week_start,episode_id',
+        ignoreDuplicates: true,
+      }
+    )
+
+  if (upsertError) throw upsertError
+
+  const { count, error: countError } = await supabase
+    .from('reader_weekly_reading_episodes')
+    .select('id', {
+      count: 'exact',
+      head: true,
+    })
+    .eq('user_id', userId)
+    .eq('week_start', weekStart)
+
+  if (countError) throw countError
+
+  const episodesRead = Math.min(
+    100,
+    Math.max(0, Number(count || 0))
+  )
+
+  if (
+    episodesRead > 0 &&
+    episodesRead % 10 === 0
+  ) {
+    const fullState =
+      await recordWeeklyReadingEpisode({
+        userId,
+        storyId,
+        episodeId,
+        readingPercent,
+      })
+
+    if (fullState) return fullState
+  }
+
+  return {
+    title: 'Weekly Reading',
+    week_start: weekStart,
+    week_end: addDays(weekStart, 6),
+    episodes_read: episodesRead,
+    target_episodes: 100,
+    progress_percent: Math.min(
+      100,
+      Math.round((episodesRead / 100) * 100)
+    ),
+    tracked: true,
+  }
+}
+
+function buildMissionProgressRow({
+  userId,
+  storyId,
+  mission,
+  existing,
+  secondsToAdd,
+  now,
+}) {
+  const todayKey = getPhnomPenhDateKey()
+  let base = existing || null
+
+  if (base) {
+    const updatedDate = base.updated_at
+      ? new Date(base.updated_at)
+      : null
+    const progressDate =
+      updatedDate &&
+      !Number.isNaN(updatedDate.getTime())
+        ? getPhnomPenhDateKey(updatedDate)
+        : ''
+
+    if (progressDate !== todayKey) {
+      base = {
+        ...base,
+        story_id: storyId || null,
+        active_seconds: 0,
+        completed_at: null,
+        claimed_at: null,
+        updated_at: now,
+      }
+    }
+  } else {
+    base = {
+      user_id: userId,
+      mission_id: mission.id,
+      story_id: storyId || null,
+      active_seconds: 0,
+      completed_at: null,
+      claimed_at: null,
+      created_at: now,
+      updated_at: now,
+    }
+  }
+
+  const targetSeconds =
+    getMissionTargetSeconds(mission)
+  const currentSeconds = Math.min(
+    targetSeconds,
+    Math.max(
+      0,
+      Number(base.active_seconds || 0)
+    )
+  )
+  const nextSeconds = Math.min(
+    targetSeconds,
+    currentSeconds + secondsToAdd
+  )
+  const actualSecondsAdded = Math.max(
+    0,
+    nextSeconds - currentSeconds
+  )
+  const completedAt =
+    base.completed_at ||
+    (nextSeconds >= targetSeconds
+      ? now
+      : null)
+
+  const shouldWrite =
+    !existing ||
+    (existing &&
+      (
+        String(base.updated_at || '') === now ||
+        (
+          actualSecondsAdded > 0 &&
+          !base.claimed_at
+        )
+      ))
+
+  const row =
+    actualSecondsAdded > 0 &&
+    !base.claimed_at
+      ? {
+          ...base,
+          story_id: storyId || null,
+          active_seconds: nextSeconds,
+          completed_at: completedAt,
+          updated_at: now,
+        }
+      : base
+
+  return {
+    mission,
+    row,
+    shouldWrite,
+  }
+}
+
+async function updateReadingMissionProgressBatch({
+  userId,
+  storyId,
+  missions,
+  progressRows,
+  secondsToAdd,
+  now,
+}) {
+  const progressByMissionId = new Map()
+
+  for (const row of progressRows || []) {
+    const key = String(row.mission_id)
+
+    if (progressByMissionId.has(key)) {
+      throw new Error(
+        'Duplicate reading mission progress'
+      )
+    }
+
+    progressByMissionId.set(key, row)
+  }
+
+  const prepared = (missions || []).map(
+    (mission) =>
+      buildMissionProgressRow({
+        userId,
+        storyId,
+        mission,
+        existing:
+          progressByMissionId.get(
+            String(mission.id)
+          ) || null,
+        secondsToAdd,
+        now,
+      })
+  )
+
+  const existingWrites = prepared
+    .filter(
+      (item) =>
+        item.shouldWrite &&
+        item.row?.id
+    )
+    .map((item) => item.row)
+
+  const newWrites = prepared
+    .filter(
+      (item) =>
+        item.shouldWrite &&
+        !item.row?.id
+    )
+    .map((item) => item.row)
+
+  const [
+    existingResult,
+    newResult,
+  ] = await Promise.all([
+    existingWrites.length
+      ? supabase
+          .from(
+            'reader_reading_mission_progress'
+          )
+          .upsert(
+            existingWrites,
+            {
+              onConflict: 'id',
+            }
+          )
+          .select('*')
+      : Promise.resolve({
+          data: [],
+          error: null,
+        }),
+    newWrites.length
+      ? supabase
+          .from(
+            'reader_reading_mission_progress'
+          )
+          .insert(newWrites)
+          .select('*')
+      : Promise.resolve({
+          data: [],
+          error: null,
+        }),
+  ])
+
+  if (existingResult.error) {
+    throw existingResult.error
+  }
+
+  if (newResult.error) {
+    throw newResult.error
+  }
+
+  const savedByMissionId = new Map(
+    [
+      ...(existingResult.data || []),
+      ...(newResult.data || []),
+    ].map((row) => [
+      String(row.mission_id),
+      row,
+    ])
+  )
+
+  return prepared.map(
+    ({ mission, row }) =>
+      publicReadingMissionProgress(
+        mission,
+        savedByMissionId.get(
+          String(mission.id)
+        ) || row
+      )
+  )
+}
+
 export async function trackReadingSessionProgress(req, res) {
   try {
     const userId = getUserId(req)
     const storyId = cleanUuid(req.body?.story_id)
     const episodeId = cleanUuid(req.body?.episode_id)
-    const rawReadingPercent = Number(req.body?.reading_percent || 0)
-    const readingPercent = Number.isFinite(rawReadingPercent)
-  ? Math.min(100, Math.max(0, rawReadingPercent))
-  : 0
+    const rawReadingPercent = Number(
+      req.body?.reading_percent || 0
+    )
+    const readingPercent =
+      Number.isFinite(rawReadingPercent)
+        ? Math.min(
+            100,
+            Math.max(0, rawReadingPercent)
+          )
+        : 0
 
     const requestedSeconds = Math.floor(
-      Number(req.body?.seconds || req.body?.seconds_added || 0)
+      Number(
+        req.body?.seconds ||
+        req.body?.seconds_added ||
+        0
+      )
     )
     const secondsToAdd = Math.min(
       MAX_MISSION_EVENT_SECONDS,
@@ -1455,189 +1790,233 @@ export async function trackReadingSessionProgress(req, res) {
     if (secondsToAdd <= 0) {
       return res.status(400).json({
         ok: false,
-        message: 'Reading seconds must be greater than zero',
+        message:
+          'Reading seconds must be greater than zero',
       })
     }
 
-    const result = await withReadingSessionLock(userId, async () => {
-      const now = new Date().toISOString()
-      const dailyReward = await getOrCreateReadingReward(userId)
-      const currentDailySeconds = Math.min(
-        MAX_READING_REWARD_SECONDS,
-        Math.max(0, Number(dailyReward.active_seconds || 0))
-      )
-      const nextDailySeconds = Math.min(
-        MAX_READING_REWARD_SECONDS,
-        currentDailySeconds + secondsToAdd
-      )
-      const actualDailySeconds = Math.max(
-        0,
-        nextDailySeconds - currentDailySeconds
-      )
+    const result =
+      await withReadingSessionLock(
+        userId,
+        async () => {
+          const now =
+            new Date().toISOString()
+          const dailyReward =
+            await getOrCreateReadingReward(
+              userId
+            )
+          const currentDailySeconds =
+            Math.min(
+              MAX_READING_REWARD_SECONDS,
+              Math.max(
+                0,
+                Number(
+                  dailyReward.active_seconds ||
+                  0
+                )
+              )
+            )
+          const nextDailySeconds =
+            Math.min(
+              MAX_READING_REWARD_SECONDS,
+              currentDailySeconds +
+                secondsToAdd
+            )
+          const actualDailySeconds =
+            Math.max(
+              0,
+              nextDailySeconds -
+                currentDailySeconds
+            )
 
-      let updatedDailyReward = dailyReward
+          let updatedDailyReward =
+            dailyReward
 
-      if (actualDailySeconds > 0) {
-        const { data, error } = await supabase
-          .from('reader_reading_rewards')
-          .update({
-            active_seconds: nextDailySeconds,
-            updated_at: now,
-          })
-          .eq('id', dailyReward.id)
-          .select('*')
-          .single()
-
-        if (error) throw error
-
-        updatedDailyReward = data
-
-        const { error: eventError } = await supabase
-          .from('reader_reading_reward_events')
-          .insert({
-            user_id: userId,
-            reward_date: dailyReward.reward_date,
-            story_id: storyId,
-            episode_id: episodeId,
-            seconds_added: actualDailySeconds,
-            active_seconds_after: nextDailySeconds,
-            event_type: 'heartbeat',
-          })
-
-        if (eventError) throw eventError
-      }
-
-      const missions = await getActiveSessionMissions()
-
-      const matchingMissions = (missions || []).filter((mission) =>
-        missionMatchesStory(mission, storyId)
-      )
-
-      const { data: progressRows, error: progressRowsError } =
-        matchingMissions.length
-          ? await supabase
-              .from('reader_reading_mission_progress')
+          if (actualDailySeconds > 0) {
+            const {
+              data,
+              error,
+            } = await supabase
+              .from(
+                'reader_reading_rewards'
+              )
+              .update({
+                active_seconds:
+                  nextDailySeconds,
+                updated_at: now,
+              })
+              .eq('id', dailyReward.id)
               .select('*')
-              .eq('user_id', userId)
-              .in('mission_id', matchingMissions.map((mission) => mission.id))
-          : { data: [], error: null }
+              .single()
 
-      if (progressRowsError) throw progressRowsError
+            if (error) throw error
 
-      const progressByMissionId = new Map()
-      for (const row of progressRows || []) {
-        const key = String(row.mission_id)
-        if (progressByMissionId.has(key)) {
-          throw new Error('Duplicate reading mission progress')
-        }
-        progressByMissionId.set(key, row)
-      }
+            updatedDailyReward = data
 
-      const updatedMissions = []
+            const {
+              error: eventError,
+            } = await supabase
+              .from(
+                'reader_reading_reward_events'
+              )
+              .insert({
+                user_id: userId,
+                reward_date:
+                  dailyReward.reward_date,
+                story_id: storyId,
+                episode_id: episodeId,
+                seconds_added:
+                  actualDailySeconds,
+                active_seconds_after:
+                  nextDailySeconds,
+                event_type: 'heartbeat',
+              })
 
-      for (const mission of matchingMissions) {
-        const progress = await getOrCreateReadingMissionProgress(
-          userId,
-          mission,
-          storyId,
-          progressByMissionId.get(String(mission.id)) ?? null
-        )
+            if (eventError) {
+              throw eventError
+            }
+          }
 
-        const targetSeconds = getMissionTargetSeconds(mission)
-        const currentSeconds = Math.min(
-          targetSeconds,
-          Math.max(0, Number(progress.active_seconds || 0))
-        )
-        const nextSeconds = Math.min(
-          targetSeconds,
-          currentSeconds + secondsToAdd
-        )
-        const actualSecondsAdded = Math.max(
-          0,
-          nextSeconds - currentSeconds
-        )
-        const completedAt =
-          progress.completed_at ||
-          (nextSeconds >= targetSeconds ? now : null)
+          const missions =
+            await getActiveSessionMissions()
 
-        let updatedProgress = progress
+          const matchingMissions =
+            (missions || []).filter(
+              (mission) =>
+                missionMatchesStory(
+                  mission,
+                  storyId
+                )
+            )
 
-        if (actualSecondsAdded > 0 && !progress.claimed_at) {
-          const { data, error } = await supabase
-            .from('reader_reading_mission_progress')
-            .update({
-              story_id: storyId,
-              active_seconds: nextSeconds,
-              completed_at: completedAt,
-              updated_at: now,
+          const {
+            data: progressRows,
+            error: progressRowsError,
+          } =
+            matchingMissions.length
+              ? await supabase
+                  .from(
+                    'reader_reading_mission_progress'
+                  )
+                  .select('*')
+                  .eq(
+                    'user_id',
+                    userId
+                  )
+                  .in(
+                    'mission_id',
+                    matchingMissions.map(
+                      (mission) =>
+                        mission.id
+                    )
+                  )
+              : {
+                  data: [],
+                  error: null,
+                }
+
+          if (progressRowsError) {
+            throw progressRowsError
+          }
+
+          const updatedMissions =
+            await updateReadingMissionProgressBatch({
+              userId,
+              storyId,
+              missions:
+                matchingMissions,
+              progressRows:
+                progressRows || [],
+              secondsToAdd,
+              now,
             })
-            .eq('id', progress.id)
-            .select('*')
-            .single()
 
-          if (error) throw error
+          const readingReward =
+            publicReadingReward(
+              updatedDailyReward
+            )
+          const claimableMissions =
+            updatedMissions.filter(
+              (mission) =>
+                mission.claimable &&
+                !mission.claimed
+            )
+          const missionCoins =
+            claimableMissions.reduce(
+              (total, mission) =>
+                total +
+                Number(
+                  mission.reward_coins ||
+                  0
+                ),
+              0
+            )
+          const dailyCoins = Number(
+            readingReward
+              .claimable_coins || 0
+          )
 
-          updatedProgress = data
+          let weeklyReading = null
+
+          if (
+            episodeId &&
+            readingPercent >= 80
+          ) {
+            try {
+              weeklyReading =
+                await trackWeeklyReadingSessionProgress({
+                  userId,
+                  storyId,
+                  episodeId,
+                  readingPercent,
+                })
+            } catch (error) {
+              console.error(
+                'WEEKLY_READING_SESSION_ERROR',
+                error
+              )
+            }
+          }
+
+          return {
+            reading_reward:
+              readingReward,
+            missions:
+              updatedMissions,
+            weekly_reading:
+              weeklyReading,
+            claimable: {
+              daily_coins:
+                dailyCoins,
+              mission_ids:
+                claimableMissions.map(
+                  (mission) =>
+                    mission.id
+                ),
+              mission_coins:
+                missionCoins,
+              total_coins:
+                dailyCoins +
+                missionCoins,
+            },
+          }
         }
-
-        updatedMissions.push(
-          publicReadingMissionProgress(mission, updatedProgress)
-        )
-      }
-
-      const readingReward = publicReadingReward(updatedDailyReward)
-      const claimableMissions = updatedMissions.filter(
-        (mission) => mission.claimable && !mission.claimed
       )
-      const missionCoins = claimableMissions.reduce(
-        (total, mission) =>
-          total + Number(mission.reward_coins || 0),
-        0
-      )
-      const dailyCoins = Number(
-        readingReward.claimable_coins || 0
-      )
-
-      let weeklyReading = null
-
-      if (episodeId && readingPercent >= 80) {
-        try {
-          weeklyReading = await recordWeeklyReadingEpisode({
-            userId,
-            storyId,
-            episodeId,
-            readingPercent,
-          })
-        } catch (error) {
-          console.error('WEEKLY_READING_SESSION_ERROR', error)
-        }
-      }
-
-      return {
-        reading_reward: readingReward,
-        missions: updatedMissions,
-        weekly_reading: weeklyReading,
-        claimable: {
-          daily_coins: dailyCoins,
-          mission_ids: claimableMissions.map(
-            (mission) => mission.id
-          ),
-          mission_coins: missionCoins,
-          total_coins: dailyCoins + missionCoins,
-        },
-      }
-    })
 
     return res.status(200).json({
       ok: true,
       ...result,
     })
   } catch (error) {
-    console.error('TRACK READING SESSION ERROR:', error)
+    console.error(
+      'TRACK READING SESSION ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
-      message: 'Failed to track reading session',
+      message:
+        'Failed to track reading session',
       error: error.message,
     })
   }
