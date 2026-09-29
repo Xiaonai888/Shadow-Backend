@@ -1473,32 +1473,44 @@ export async function updateMyAuthorPage(req, res) {
       return res.status(404).json({ ok: false, message: 'Author page not found' })
     }
 
-    const { data: usernameOwner, error: usernameError } = await supabase
-      .from('author_pages')
-      .select('id')
-      .eq('page_username', pageUsername)
-      .neq('user_id', userId)
-      .maybeSingle()
+    const pageNameChanged = pageName !== String(currentPage.page_name || '').trim()
+    const pageUsernameChanged = pageUsername !== normalizePageUsername(currentPage.page_username)
 
-    if (usernameError) throw usernameError
+    if (pageUsernameChanged) {
+      const { data: usernameOwner, error: usernameError } = await supabase
+        .from('author_pages')
+        .select('id')
+        .eq('page_username', pageUsername)
+        .neq('user_id', userId)
+        .maybeSingle()
 
-    if (usernameOwner) {
-      return res.status(409).json({ ok: false, message: 'Page username already exists' })
+      if (usernameError) throw usernameError
+
+      if (usernameOwner) {
+        return res.status(409).json({ ok: false, message: 'Page username already exists' })
+      }
+    }
+
+    const updates = {
+      updated_at: new Date().toISOString(),
+    }
+
+    if (pageNameChanged) updates.page_name = pageName
+    if (pageUsernameChanged) {
+      updates.page_username = pageUsername
+      updates.page_slug = pageUsername
+    }
+    if (bio !== String(currentPage.bio || '').trim()) updates.bio = bio
+    if (profileDetails) {
+      updates.profile_details = {
+        ...(currentPage.profile_details || {}),
+        ...profileDetails,
+      }
     }
 
     const { data: updatedPage, error: updateError } = await supabase
       .from('author_pages')
-      .update({
-        page_name: pageName,
-        page_username: pageUsername,
-        page_slug: pageUsername,
-        bio,
-        bio,
-...(profileDetails
-  ? { profile_details: { ...(currentPage.profile_details || {}), ...profileDetails } }
-  : {}),
-updated_at: new Date().toISOString(),
-      })
+      .update(updates)
       .eq('user_id', userId)
       .select()
       .single()
