@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 import { rotateTaskCenterAutoStories } from '../services/taskCenterAuto.service.js'
+import { invalidateActiveSessionMissionsCache } from '../services/taskCenterMissionCache.service.js'
 
 const SETTING_KEY = 'main'
 
@@ -377,6 +378,7 @@ if (String(settingsRow?.reading_mission_mode || 'manual') === 'auto') {
 
     if (error) throw error
 
+    invalidateActiveSessionMissionsCache()
     const readingMissions = await getPublicReadingMissions()
 
     return res.status(200).json({
@@ -443,6 +445,7 @@ export async function updateAdminReadingMission(req, res) {
 
     if (error) throw error
 
+    invalidateActiveSessionMissionsCache()
     const readingMissions = await getPublicReadingMissions()
 
     return res.status(200).json({
@@ -492,6 +495,7 @@ if (String(settingsRow?.reading_mission_mode || 'manual') === 'auto') {
 
     if (error) throw error
 
+    invalidateActiveSessionMissionsCache()
     const readingMissions = await getPublicReadingMissions()
 
     return res.status(200).json({
