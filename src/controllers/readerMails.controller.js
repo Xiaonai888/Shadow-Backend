@@ -380,130 +380,55 @@ export async function sendDailyCheckInReminderMails() {
     return { ok: true, skipped: true, reason: 'Not 7 AM Cambodia time' }
   }
 
-  const todayKey = getPhnomPenhDateKey(now)
-  const referenceId = `${DAILY_CHECKIN_REMINDER_PREFIX}${todayKey}`
+  const appId = String(process.env.ONESIGNAL_APP_ID || '').trim()
+  const apiKey = String(process.env.ONESIGNAL_REST_API_KEY || '').trim()
 
-  const { data: settings, error: settingsError } = await supabase
-    .from('reader_daily_checkin_reminders')
-    .select('user_id')
-    .eq('enabled', true)
-    .limit(1000)
-
-  if (settingsError) throw settingsError
-
-  const enabledUserIds = (settings || [])
-    .map((item) => item.user_id)
-    .filter(Boolean)
-
-  if (!enabledUserIds.length) {
-    return {
-      ok: true,
-      date: todayKey,
-      created: 0,
-      notifications_created: 0,
-      skipped_claimed: 0,
-      skipped_duplicate: 0,
-    }
+  if (!appId || !apiKey) {
+    throw new Error('Missing OneSignal backend configuration')
   }
 
-  const [
-    { data: claimedRows, error: claimedError },
-    { data: existingMails, error: existingMailsError },
-    { data: existingNotifications, error: existingNotificationsError },
-  ] = await Promise.all([
-    supabase
-      .from('reader_checkins')
-      .select('user_id')
-      .eq('last_claim_date', todayKey),
-    supabase
-      .from('reader_mails')
-      .select('user_id')
-      .eq('reference_id', referenceId)
-      .is('deleted_at', null),
-    supabase
-      .from('notifications')
-      .select('user_id')
-      .eq('reference_id', referenceId)
-      .is('deleted_at', null),
-  ])
+  const todayKey = getPhnomPenhDateKey(now)
 
-  if (claimedError) throw claimedError
-  if (existingMailsError) throw existingMailsError
-  if (existingNotificationsError) throw existingNotificationsError
+  const response = await fetch('https://api.onesignal.com/notifications', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      Authorization: `Key ${apiKey}`,
+    },
+    body: JSON.stringify({
+      app_id: appId,
+      target_channel: 'push',
+      name: `Daily Check-in Reminder ${todayKey}`,
+      included_segments: ['Daily Check-in Reminder'],
+      headings: {
+        en: "Don't forget today's check-in 🎁",
+      },
+      contents: {
+        en: 'Your daily reward is ready! Open Task Center to claim your Coins and keep your streak going.',
+      },
+      url: 'https://www.shadowerabook.site/tasks',
+    }),
+  })
 
-  const claimedUserIds = new Set((claimedRows || []).map((item) => item.user_id))
-  const existingMailUserIds = new Set(
-    (existingMails || []).map((item) => item.user_id)
-  )
-  const existingNotificationUserIds = new Set(
-    (existingNotifications || []).map((item) => item.user_id)
-  )
+  const data = await response.json().catch(() => ({}))
 
-  const eligibleUserIds = enabledUserIds.filter(
-    (userId) => !claimedUserIds.has(userId)
-  )
+  if (!response.ok || data.errors) {
+    const detail = Array.isArray(data.errors)
+      ? data.errors.join(', ')
+      : String(data.errors || data.message || `HTTP ${response.status}`)
 
-  const mailRows = eligibleUserIds
-    .filter((userId) => !existingMailUserIds.has(userId))
-    .map((userId) => ({
-      user_id: userId,
-      sender_type: 'system',
-      mail_type: 'system',
-      title: 'Daily check-in reminder',
-      message: 'Your daily coin reward is ready.',
-      detail:
-        'Open Task Center and tap today’s reward to keep your check-in streak active.',
-      action_type: '',
-      reward_type: '',
-      reward_amount: 0,
-      link: '/tasks',
-      image_url: '',
-      reference_id: referenceId,
-      is_read: false,
-    }))
-
-  const notificationRows = eligibleUserIds
-    .filter((userId) => !existingNotificationUserIds.has(userId))
-    .map((userId) => ({
-      user_id: userId,
-      type: 'announcements',
-      title: 'Daily check-in reminder',
-      message:
-        'Your daily coin reward is ready. Open Task Center and claim today’s reward.',
-      image_url: '',
-      link: '/tasks',
-      reference_id: referenceId,
-      is_read: false,
-    }))
-
-  const [{ error: mailInsertError }, { error: notificationInsertError }] =
-    await Promise.all([
-      mailRows.length
-        ? supabase.from('reader_mails').insert(mailRows)
-        : Promise.resolve({ error: null }),
-      notificationRows.length
-        ? supabase.from('notifications').insert(notificationRows)
-        : Promise.resolve({ error: null }),
-    ])
-
-  if (mailInsertError) throw mailInsertError
-  if (notificationInsertError) throw notificationInsertError
-
-  const skippedDuplicate = eligibleUserIds.filter(
-    (userId) =>
-      existingMailUserIds.has(userId) &&
-      existingNotificationUserIds.has(userId)
-  ).length
+    throw new Error(`OneSignal push failed: ${detail}`)
+  }
 
   return {
     ok: true,
     date: todayKey,
-    created: mailRows.length,
-    notifications_created: notificationRows.length,
-    skipped_claimed: enabledUserIds.length - eligibleUserIds.length,
-    skipped_duplicate: skippedDuplicate,
+    provider: 'onesignal',
+    notification_id: data.id || null,
+    recipients: Number(data.recipients || 0),
   }
 }
+
 
 export async function runDailyCheckInReminderMails(req, res) {
   try {
