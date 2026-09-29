@@ -924,8 +924,15 @@ async function getOrCreateLifetimeBoost({ authorPage, lastStage }) {
   return data
 }
 
-async function getActiveLifetimeBoost(authorId) {
-  await getAuthor100PercentEventState(authorId)
+async function getActiveLifetimeBoost(
+  authorId,
+  {
+    skipAdminEventRefresh = false,
+  } = {}
+) {
+  if (!skipAdminEventRefresh) {
+    await getAuthor100PercentEventState(authorId)
+  }
 
   const { data, error } = await supabase
     .from('author_lifetime_boosts')
@@ -940,12 +947,20 @@ async function getActiveLifetimeBoost(authorId) {
   if (!data) return null
   if (data.admin_event_pause_cycle_id) return null
 
-  if (data.ended_at && new Date(data.ended_at).getTime() <= Date.now()) {
-    const { data: updatedBoost, error: updateError } = await supabase
+  if (
+    data.ended_at &&
+    new Date(data.ended_at).getTime() <= Date.now()
+  ) {
+    const {
+      data: updatedBoost,
+      error: updateError,
+    } = await supabase
       .from('author_lifetime_boosts')
       .update({
         status: 'expired',
-        used_at: data.used_at || new Date().toISOString(),
+        used_at:
+          data.used_at ||
+          new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
       .eq('id', data.id)
@@ -962,7 +977,10 @@ async function getActiveLifetimeBoost(authorId) {
 
 
 
-async function getAuthor49DayEventState(authorPage) {
+async function getAuthor49DayEventState(
+  authorPage,
+  options = {}
+) {
   const now = new Date()
   const nowIso = now.toISOString()
 
@@ -981,7 +999,17 @@ async function getAuthor49DayEventState(authorPage) {
 
   if (!authorPage) return defaultState
 
-  const adminEvent = await getAuthor100PercentEventState(authorPage.id)
+  const hasAdminEvent =
+    Object.prototype.hasOwnProperty.call(
+      options,
+      'adminEvent'
+    )
+  const adminEvent = hasAdminEvent
+    ? options.adminEvent
+    : await getAuthor100PercentEventState(
+        authorPage.id
+      )
+
   if (adminEvent?.active) {
     return {
       ...defaultState,
@@ -990,15 +1018,28 @@ async function getAuthor49DayEventState(authorPage) {
     }
   }
 
-  const [{ data: progress, error: progressError }, activeBoost] =
-    await Promise.all([
-      supabase
-        .from('author_49_day_event_progress')
-        .select('*')
-        .eq('author_id', authorPage.id)
-        .maybeSingle(),
-      getActiveLifetimeBoost(authorPage.id),
-    ])
+  const hasActiveBoost =
+    Object.prototype.hasOwnProperty.call(
+      options,
+      'activeBoost'
+    )
+
+  const [
+    {
+      data: progress,
+      error: progressError,
+    },
+    activeBoost,
+  ] = await Promise.all([
+    supabase
+      .from('author_49_day_event_progress')
+      .select('*')
+      .eq('author_id', authorPage.id)
+      .maybeSingle(),
+    hasActiveBoost
+      ? Promise.resolve(options.activeBoost)
+      : getActiveLifetimeBoost(authorPage.id),
+  ])
 
   if (progressError) throw progressError
   if (!progress) return defaultState
@@ -1011,15 +1052,22 @@ async function getAuthor49DayEventState(authorPage) {
     if (activeBoost?.status === 'active') {
       endReason = '100_day_creator_boost'
     } else {
-      const endsAt = new Date(progress.ends_at).getTime()
+      const endsAt =
+        new Date(progress.ends_at).getTime()
 
-      if (Number.isFinite(endsAt) && endsAt <= now.getTime()) {
+      if (
+        Number.isFinite(endsAt) &&
+        endsAt <= now.getTime()
+      ) {
         endReason = '49_days_completed'
       }
     }
 
     if (endReason) {
-      const { data: finished, error: finishError } = await supabase
+      const {
+        data: finished,
+        error: finishError,
+      } = await supabase
         .from('author_49_day_event_progress')
         .update({
           status: 'finished',
@@ -1038,18 +1086,26 @@ async function getAuthor49DayEventState(authorPage) {
   }
 
   return {
-    visible: currentProgress.status === 'active',
-    status: currentProgress.status || 'not_started',
+    visible:
+      currentProgress.status === 'active',
+    status:
+      currentProgress.status ||
+      'not_started',
     share_percent: percentValue(
       currentProgress.share_percent || 80
     ),
     duration_days: 49,
-    started_at: currentProgress.started_at || null,
-    ends_at: currentProgress.ends_at || null,
-    ended_at: currentProgress.ended_at || null,
-    end_reason: currentProgress.end_reason || null,
+    started_at:
+      currentProgress.started_at || null,
+    ends_at:
+      currentProgress.ends_at || null,
+    ended_at:
+      currentProgress.ended_at || null,
+    end_reason:
+      currentProgress.end_reason || null,
     activated_episode_id:
-      currentProgress.activated_episode_id || null,
+      currentProgress.activated_episode_id ||
+      null,
     server_now: nowIso,
   }
 }
@@ -1120,7 +1176,10 @@ function getNextCambodiaMidnightIso(date = new Date()) {
   ).toISOString()
 }
 
-async function getAuthorDaily50EventState(authorPage) {
+async function getAuthorDaily50EventState(
+  authorPage,
+  options = {}
+) {
   const now = new Date()
   const nowIso = now.toISOString()
 
@@ -1133,13 +1192,24 @@ async function getAuthorDaily50EventState(authorPage) {
     can_activate_today: false,
     started_at: null,
     ends_at: null,
-    next_day_at: getNextCambodiaMidnightIso(now),
+    next_day_at:
+      getNextCambodiaMidnightIso(now),
     server_now: nowIso,
   }
 
   if (!authorPage) return hiddenState
 
-  const adminEvent = await getAuthor100PercentEventState(authorPage.id)
+  const hasAdminEvent =
+    Object.prototype.hasOwnProperty.call(
+      options,
+      'adminEvent'
+    )
+  const adminEvent = hasAdminEvent
+    ? options.adminEvent
+    : await getAuthor100PercentEventState(
+        authorPage.id
+      )
+
   if (adminEvent?.active) {
     return {
       ...hiddenState,
@@ -1148,8 +1218,14 @@ async function getAuthorDaily50EventState(authorPage) {
   }
 
   const [
-    { data: day49, error: day49Error },
-    { data: dailyBoost, error: dailyBoostError },
+    {
+      data: day49,
+      error: day49Error,
+    },
+    {
+      data: dailyBoost,
+      error: dailyBoostError,
+    },
   ] = await Promise.all([
     supabase
       .from('author_49_day_event_progress')
@@ -1174,13 +1250,18 @@ async function getAuthorDaily50EventState(authorPage) {
     new Date(current49.ends_at).getTime() <=
       now.getTime()
   ) {
-    const { data: finished49, error } = await supabase
+    const {
+      data: finished49,
+      error,
+    } = await supabase
       .from('author_49_day_event_progress')
       .update({
         status: 'finished',
-        ended_at: current49.ended_at || nowIso,
+        ended_at:
+          current49.ended_at || nowIso,
         end_reason:
-          current49.end_reason || '49_days_completed',
+          current49.end_reason ||
+          '49_days_completed',
         updated_at: nowIso,
       })
       .eq('author_id', authorPage.id)
@@ -1211,7 +1292,9 @@ async function getAuthorDaily50EventState(authorPage) {
   )
   const maxActivations = Math.max(
     1,
-    numberValue(currentBoost.max_activations || 365)
+    numberValue(
+      currentBoost.max_activations || 365
+    )
   )
   const endsAt = new Date(
     currentBoost.ends_at || ''
@@ -1219,15 +1302,20 @@ async function getAuthorDaily50EventState(authorPage) {
 
   if (
     currentBoost.status === 'active' &&
-    (!Number.isFinite(endsAt) ||
-      endsAt <= now.getTime())
+    (
+      !Number.isFinite(endsAt) ||
+      endsAt <= now.getTime()
+    )
   ) {
     const nextStatus =
       activationCount >= maxActivations
         ? 'finished'
         : 'available'
 
-    const { data: updated, error } = await supabase
+    const {
+      data: updated,
+      error,
+    } = await supabase
       .from('author_daily_50_boost_progress')
       .update({
         status: nextStatus,
@@ -1247,8 +1335,10 @@ async function getAuthorDaily50EventState(authorPage) {
   )
 
   return {
-    visible: currentBoost.status !== 'finished',
-    status: currentBoost.status || 'available',
+    visible:
+      currentBoost.status !== 'finished',
+    status:
+      currentBoost.status || 'available',
     share_percent: percentValue(
       currentBoost.share_percent || 50
     ),
@@ -1264,18 +1354,25 @@ async function getAuthorDaily50EventState(authorPage) {
     can_activate_today:
       currentBoost.status !== 'finished' &&
       lastActivationDate !== todayKey &&
-      numberValue(currentBoost.activation_count) <
+      numberValue(
+        currentBoost.activation_count
+      ) <
         Math.max(
           1,
           numberValue(
-            currentBoost.max_activations || 365
+            currentBoost.max_activations ||
+              365
           )
         ),
-    started_at: currentBoost.started_at || null,
-    ends_at: currentBoost.ends_at || null,
+    started_at:
+      currentBoost.started_at || null,
+    ends_at:
+      currentBoost.ends_at || null,
     last_activation_date:
-      currentBoost.last_activation_date || null,
-    next_day_at: getNextCambodiaMidnightIso(now),
+      currentBoost.last_activation_date ||
+      null,
+    next_day_at:
+      getNextCambodiaMidnightIso(now),
     server_now: nowIso,
   }
 }
@@ -1691,7 +1788,10 @@ export async function activateMyAuthorLifetimeBoost(
   }
 }
 
-async function getMyAuthorIncomeUncached(req, res) {
+async function getMyAuthorIncomeUncached(
+  req,
+  res
+) {
   try {
     const userId = req.user?.user_id
 
@@ -1702,44 +1802,69 @@ async function getMyAuthorIncomeUncached(req, res) {
       })
     }
 
-    const authorPage = await getMyAuthorPage(userId)
+    const authorPage =
+      await getMyAuthorPage(userId)
 
     if (!authorPage) {
       return res.status(403).json({
         ok: false,
-        message: 'Please create an author page first',
+        message:
+          'Please create an author page first',
       })
     }
 
     const [
       profileSummary,
       incomeRecordData,
+      adminEvent,
     ] = await Promise.all([
-      getAuthorProfileSummary(authorPage.id),
+      getAuthorProfileSummary(
+        authorPage.id,
+        {
+          includeMonthUsd: false,
+        }
+      ),
       getAuthorIncomeRecordData({
         authorId: authorPage.id,
         period: req.query.record_period,
         date: req.query.record_date,
       }),
+      getAuthor100PercentEventState(
+        authorPage.id
+      ),
     ])
 
+    const activeIncomeBoost =
+      await getActiveLifetimeBoost(
+        authorPage.id,
+        {
+          skipAdminEventRefresh: true,
+        }
+      )
+
     const [
-      activeIncomeBoost,
       author49Event,
       daily50Event,
     ] = await Promise.all([
-      getActiveLifetimeBoost(authorPage.id),
-      getAuthor49DayEventState(authorPage),
-      getAuthorDaily50EventState(authorPage),
+      getAuthor49DayEventState(
+        authorPage,
+        {
+          adminEvent,
+          activeBoost: activeIncomeBoost,
+        }
+      ),
+      getAuthorDaily50EventState(
+        authorPage,
+        {
+          adminEvent,
+        }
+      ),
     ])
 
     const [
       settings,
       quest,
       paymentMethod,
-      todayIncome,
-      weekIncome,
-      monthIncome,
       totalIncome,
       recentEarnings,
       topSupporters,
@@ -1751,20 +1876,12 @@ async function getMyAuthorIncomeUncached(req, res) {
         .select('*')
         .eq('author_id', authorPage.id)
         .maybeSingle(),
-      getPrimaryPaymentMethod(authorPage.id),
+      getPrimaryPaymentMethod(
+        authorPage.id
+      ),
       sumAuthorIncome({
         authorId: authorPage.id,
-        from: startOfTodayIso(),
       }),
-      sumAuthorIncome({
-        authorId: authorPage.id,
-        from: startOfWeekIso(),
-      }),
-      sumAuthorIncome({
-        authorId: authorPage.id,
-        from: startOfMonthIso(),
-      }),
-      sumAuthorIncome({ authorId: authorPage.id }),
       getRecentEarnings(authorPage.id),
       getTopSupporters(userId),
       getMonthlyEarnings(userId),
@@ -1776,13 +1893,17 @@ async function getMyAuthorIncomeUncached(req, res) {
       quest.data?.current_share_percent ||
         settings.default_share_percent
     )
-    const adminEvent = await getAuthor100PercentEventState(authorPage.id)
 
     const shareCandidates = [
       {
-        source: 'admin_100_percent_event',
-        percent: adminEvent?.active ? 100 : 0,
-        ends_at: adminEvent?.active ? adminEvent.effective_ends_at : null,
+        source:
+          'admin_100_percent_event',
+        percent:
+          adminEvent?.active ? 100 : 0,
+        ends_at:
+          adminEvent?.active
+            ? adminEvent.effective_ends_at
+            : null,
       },
       {
         source: 'quest_stage',
@@ -1793,7 +1914,9 @@ async function getMyAuthorIncomeUncached(req, res) {
         source: 'daily_50_event',
         percent:
           daily50Event?.status === 'active'
-            ? percentValue(daily50Event.share_percent)
+            ? percentValue(
+                daily50Event.share_percent
+              )
             : 0,
         ends_at:
           daily50Event?.status === 'active'
@@ -1804,7 +1927,9 @@ async function getMyAuthorIncomeUncached(req, res) {
         source: '49_day_event',
         percent:
           author49Event?.status === 'active'
-            ? percentValue(author49Event.share_percent)
+            ? percentValue(
+                author49Event.share_percent
+              )
             : 0,
         ends_at:
           author49Event?.status === 'active'
@@ -1814,11 +1939,15 @@ async function getMyAuthorIncomeUncached(req, res) {
       {
         source: 'lifetime_boost',
         percent:
-          activeIncomeBoost?.status === 'active'
-            ? percentValue(activeIncomeBoost.share_percent)
+          activeIncomeBoost?.status ===
+          'active'
+            ? percentValue(
+                activeIncomeBoost.share_percent
+              )
             : 0,
         ends_at:
-          activeIncomeBoost?.status === 'active'
+          activeIncomeBoost?.status ===
+          'active'
             ? activeIncomeBoost.ended_at
             : null,
       },
@@ -1829,78 +1958,114 @@ async function getMyAuthorIncomeUncached(req, res) {
         (a, b) => b.percent - a.percent
       )[0] || shareCandidates[0]
 
-    const thisMonthKey = getMonthKey()
-    const lastMonthKey = getPreviousMonthKey()
+    const lastMonthKey =
+      getPreviousMonthKey()
 
-    const { data: thisMonthRows, error: thisMonthError } = await supabase
+    const {
+      data: lastMonthRows,
+      error: lastMonthError,
+    } = await supabase
       .from('author_earnings')
       .select('author_net_payout_usd')
       .eq('author_id', authorPage.id)
       .eq('currency', 'diamond')
-      .in('source_type', AUTHOR_INCOME_SOURCE_TYPES)
-      .eq('earning_month', thisMonthKey)
-      .neq('earning_status', 'void')
-    if (thisMonthError) throw thisMonthError
-
-    const { data: lastMonthRows, error: lastMonthError } = await supabase
-      .from('author_earnings')
-      .select('author_net_payout_usd')
-      .eq('author_id', authorPage.id)
-      .eq('currency', 'diamond')
-      .in('source_type', AUTHOR_INCOME_SOURCE_TYPES)
+      .in(
+        'source_type',
+        AUTHOR_INCOME_SOURCE_TYPES
+      )
       .eq('earning_month', lastMonthKey)
       .neq('earning_status', 'void')
 
-    if (lastMonthError) throw lastMonthError
+    if (lastMonthError) {
+      throw lastMonthError
+    }
 
     return res.status(200).json({
       ok: true,
       author_page: {
         id: authorPage.id,
-        page_name: authorPage.page_name,
-        page_username: authorPage.page_username,
-        page_slug: authorPage.page_slug,
+        page_name:
+          authorPage.page_name,
+        page_username:
+          authorPage.page_username,
+        page_slug:
+          authorPage.page_slug,
       },
       income: {
-  today_diamonds: profileSummary.today_diamonds,
-  today_usd: todayIncome,
-  this_week_usd: weekIncome,
-  this_month_usd: profileSummary.this_month_usd,
-        last_month_usd: (lastMonthRows || []).reduce((sum, item) => sum + numberValue(item.author_net_payout_usd), 0),
+        today_diamonds:
+          profileSummary.today_diamonds,
+        today_usd:
+          incomeRecordData.summary
+            .today_usd,
+        this_week_usd:
+          incomeRecordData.summary
+            .this_week_usd,
+        this_month_usd:
+          incomeRecordData.summary
+            .this_month_usd,
+        last_month_usd:
+          (lastMonthRows || []).reduce(
+            (sum, item) =>
+              sum +
+              numberValue(
+                item.author_net_payout_usd
+              ),
+            0
+          ),
         total_usd: totalIncome,
-},
-gifts: {
-  total_received: profileSummary.monthly_gifts,
-},
-      income_summary: incomeRecordData.summary,
-      income_record: incomeRecordData.record,
+      },
+      gifts: {
+        total_received:
+          profileSummary.monthly_gifts,
+      },
+      income_summary:
+        incomeRecordData.summary,
+      income_record:
+        incomeRecordData.record,
       current_share_percent:
         effectiveShare.percent,
       current_share_source:
         effectiveShare.source,
       boost_ends_at:
         effectiveShare.ends_at,
-      admin_100_percent_event: adminEvent,
-      next_payout_date: getNextPayoutDate(settings),
+      admin_100_percent_event:
+        adminEvent,
+      next_payout_date:
+        getNextPayoutDate(settings),
       payment_method: {
         complete: Boolean(paymentMethod),
-        primary: publicPaymentMethod(paymentMethod),
+        primary:
+          publicPaymentMethod(
+            paymentMethod
+          ),
       },
       withholding: {
-        enabled: Boolean(settings.withholding_enabled),
-        percent: percentValue(settings.withholding_percent),
-        label: settings.withholding_label,
+        enabled: Boolean(
+          settings.withholding_enabled
+        ),
+        percent: percentValue(
+          settings.withholding_percent
+        ),
+        label:
+          settings.withholding_label,
       },
-      recent_earnings: recentEarnings,
-      top_supporters: topSupporters,
-      monthly_earnings: monthlyEarnings,
+      recent_earnings:
+        recentEarnings,
+      top_supporters:
+        topSupporters,
+      monthly_earnings:
+        monthlyEarnings,
     })
   } catch (error) {
-    console.error('GET MY AUTHOR INCOME ERROR:', error)
+    console.error(
+      'GET MY AUTHOR INCOME ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
-      message: 'Failed to load author income',
+      message:
+        'Failed to load author income',
       error: error.message,
     })
   }
