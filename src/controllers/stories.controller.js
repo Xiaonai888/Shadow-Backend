@@ -1113,6 +1113,7 @@ const isLocked =
         is_locked: isLocked,
         unlock_methods: unlockMethods,
         status,
+        published_at: null,
         episode_number: episodeNumber,
         character_count: characterCount,
         word_count: wordCount,
