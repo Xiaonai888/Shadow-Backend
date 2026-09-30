@@ -22,20 +22,12 @@ export function getAdminActor(req) {
   )
 }
 
-const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000
-let lastCleanupAt = 0
-
 export async function cleanupOldAdminActivityLogs() {
-  if (Date.now() - lastCleanupAt < CLEANUP_INTERVAL_MS) return
-
   try {
-    const { error } = await supabase
+    await supabase
       .from('admin_activity_logs')
       .delete()
       .lt('created_at', cleanupDateIso())
-
-    if (error) throw error
-    lastCleanupAt = Date.now()
   } catch (error) {
     console.warn('CLEANUP ADMIN ACTIVITY LOGS WARNING:', error.message)
   }
@@ -51,6 +43,8 @@ export async function logAdminActivity({
   details = '',
 }) {
   try {
+    await cleanupOldAdminActivityLogs()
+
     await supabase.from('admin_activity_logs').insert({
       action: String(action || 'UPDATE').toUpperCase(),
       section_key,
