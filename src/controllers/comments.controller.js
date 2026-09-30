@@ -125,13 +125,53 @@ function publicUser(user) {
   }
 }
 
+function publicAuthorUser(
+  user,
+  authorPage
+) {
+  const baseUser =
+    publicUser(user)
+
+  return {
+    ...baseUser,
+    name:
+      authorPage?.page_name
+      || baseUser.name,
+    username:
+      authorPage?.page_username
+      || baseUser.username,
+    avatar_url:
+      authorPage?.avatar_url
+      || baseUser.avatar_url,
+    role: 'author',
+    profile_type: 'author',
+    author_page_id:
+      authorPage?.id || null,
+    author_page_username:
+      authorPage?.page_username || '',
+  }
+}
+
 function publicComment(
   comment,
-  reactionMap = new Map()
+  reactionMap = new Map(),
+  identity = null
 ) {
   const isDeleted = Boolean(
     comment.deleted_at
   )
+  const story =
+    identity?.story || null
+  const authorPage =
+    identity?.authorPage || null
+  const isAuthorComment =
+    !isDeleted &&
+    Boolean(
+      story?.user_id &&
+      comment.user_id &&
+      String(story.user_id) ===
+        String(comment.user_id)
+    )
 
   const reactionType =
     !isDeleted
@@ -181,7 +221,22 @@ function publicComment(
     user:
       isDeleted
         ? publicUser(null)
-        : publicUser(comment.user),
+        : isAuthorComment
+          ? publicAuthorUser(
+              comment.user,
+              authorPage
+            )
+          : publicUser(comment.user),
+    actor_type:
+      isAuthorComment
+        ? 'author'
+        : 'reader',
+    profile_type:
+      isAuthorComment
+        ? 'author'
+        : 'reader',
+    is_author_comment:
+      isAuthorComment,
     likes:
       isDeleted
         ? 0
@@ -208,6 +263,25 @@ async function getStory(storyId) {
   if (error) throw error
 
   return data
+}
+
+async function getAuthorCommentProfile(
+  userId
+) {
+  if (!userId) return null
+
+  const { data, error } =
+    await supabase
+      .from('author_pages')
+      .select(
+        'id, user_id, page_name, page_username, avatar_url'
+      )
+      .eq('user_id', userId)
+      .maybeSingle()
+
+  if (error) throw error
+
+  return data || null
 }
 
 async function getEpisode(episodeId) {
@@ -239,7 +313,8 @@ async function getComment(commentId) {
 
 async function getPublicComment(
   commentId,
-  userId = null
+  userId = null,
+  identity = null
 ) {
   const { data, error } =
     await supabase
@@ -282,7 +357,8 @@ async function getPublicComment(
 
   return publicComment(
     data,
-    reactionMap
+    reactionMap,
+    identity
   )
   }
 
@@ -645,6 +721,7 @@ async function loadReplyPage({
 
 async function loadComments({
   storyId,
+  story = null,
   episodeId = null,
   page,
   limit,
@@ -652,6 +729,18 @@ async function loadComments({
   sort,
   userId,
 }) {
+  const identityStory =
+    story || await getStory(storyId)
+  const authorPage =
+    identityStory?.user_id
+      ? await getAuthorCommentProfile(
+          identityStory.user_id
+        )
+      : null
+  const identity = {
+    story: identityStory,
+    authorPage,
+  }
   const from =
     (page - 1) * limit
   const to =
@@ -862,13 +951,15 @@ async function loadComments({
       return {
         ...publicComment(
           comment,
-          reactionMap
+          reactionMap,
+          identity
         ),
         replies: result.rows.map(
           (reply) =>
             publicComment(
               reply,
-              reactionMap
+              reactionMap,
+              identity
             )
         ),
         reply_total:
@@ -905,6 +996,25 @@ export async function getLatestStoryComment(
       })
     }
 
+    const story =
+      await getStory(storyId)
+
+    if (!story) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Story not found',
+      })
+    }
+
+    const authorPage =
+      await getAuthorCommentProfile(
+        story.user_id
+      )
+    const identity = {
+      story,
+      authorPage,
+    }
+
     const { data, error } =
       await supabase
         .from('comments')
@@ -929,7 +1039,11 @@ export async function getLatestStoryComment(
     return res.status(200).json({
       ok: true,
       comment: data?.[0]
-        ? publicComment(data[0])
+        ? publicComment(
+            data[0],
+            new Map(),
+            identity
+          )
         : null,
     })
   } catch (error) {
@@ -1088,6 +1202,21 @@ export async function getCommentReplies(
       })
     }
 
+    const story =
+      await getStory(
+        parent.story_id
+      )
+    const authorPage =
+      story?.user_id
+        ? await getAuthorCommentProfile(
+            story.user_id
+          )
+        : null
+    const identity = {
+      story,
+      authorPage,
+    }
+
     const result =
       await loadReplyPage({
         parentId: parent.id,
@@ -1112,7 +1241,8 @@ export async function getCommentReplies(
         (reply) =>
           publicComment(
             reply,
-            reactionMap
+            reactionMap,
+            identity
           )
       ),
       page: result.page,
@@ -1200,6 +1330,15 @@ export async function getCommentThread(
       })
     }
 
+    const authorPage =
+      await getAuthorCommentProfile(
+        access.story.user_id
+      )
+    const identity = {
+      story: access.story,
+      authorPage,
+    }
+
     let root = target
 
     if (target.parent_id) {
@@ -1277,14 +1416,16 @@ export async function getCommentThread(
     const rootComment = {
       ...publicComment(
         root,
-        reactionMap
+        reactionMap,
+        identity
       ),
       replies:
         replyRows.map(
           (reply) =>
             publicComment(
               reply,
-              reactionMap
+              reactionMap,
+              identity
             )
         ),
       reply_total: Math.max(
@@ -1309,6 +1450,8 @@ export async function getCommentThread(
           access.story.user_id || null,
         author_id:
           access.story.author_id || null,
+        author_page:
+          authorPage,
         title:
           access.story.title || '',
       },
@@ -1390,6 +1533,7 @@ export async function getStoryComments(
     const result =
       await loadComments({
         storyId,
+        story,
         page,
         limit,
         replyLimit,
@@ -1711,9 +1855,23 @@ async function createComment({
     ])
   }
 
+  const authorPage =
+    isOwner
+      ? await getAuthorCommentProfile(
+          story.user_id
+        )
+      : null
+
   return {
     comment:
-      publicComment(data),
+      publicComment(
+        data,
+        new Map(),
+        {
+          story,
+          authorPage,
+        }
+      ),
   }
 }
 
@@ -2425,16 +2583,32 @@ export async function updateOwnComment(
       })
     }
 
+    const authorPage =
+      String(story.user_id || '') ===
+        String(data.user_id || '')
+        ? await getAuthorCommentProfile(
+            story.user_id
+          )
+        : null
+    const identity = {
+      story,
+      authorPage,
+    }
     const updatedComment =
       await getPublicComment(
         data.id,
-        userId
+        userId,
+        identity
       )
     return res.status(200).json({
       ok: true,
       comment:
         updatedComment
-        || publicComment(data),
+        || publicComment(
+          data,
+          new Map(),
+          identity
+        ),
     })
   } catch (error) {
     console.error(
@@ -2749,17 +2923,37 @@ export async function moderateComment(
       }
     }
 
+    const authorPage =
+      String(
+        permission.story?.user_id || ''
+      ) === String(
+        data.user_id || ''
+      )
+        ? await getAuthorCommentProfile(
+            permission.story.user_id
+          )
+        : null
+    const identity = {
+      story:
+        permission.story || null,
+      authorPage,
+    }
     const updatedComment =
       await getPublicComment(
         data.id,
-        userId
+        userId,
+        identity
       )
 
     return res.status(200).json({
       ok: true,
       comment:
         updatedComment
-        || publicComment(data),
+        || publicComment(
+          data,
+          new Map(),
+          identity
+        ),
     })
   } catch (error) {
     console.error(
@@ -2794,7 +2988,7 @@ async function fetchStoryMap(
     await supabase
       .from('stories')
       .select(
-        'id, title, cover_url'
+        'id, title, cover_url, user_id, author_id'
       )
       .in('id', ids)
 
@@ -2810,9 +3004,48 @@ async function fetchStoryMap(
   )
 }
 
+async function fetchAuthorCommentProfileMap(
+  stories
+) {
+  const userIds = [
+    ...new Set(
+      (stories || [])
+        .map((story) =>
+          story?.user_id
+        )
+        .filter(Boolean)
+        .map(String)
+    ),
+  ]
+
+  if (!userIds.length) {
+    return new Map()
+  }
+
+  const { data, error } =
+    await supabase
+      .from('author_pages')
+      .select(
+        'id, user_id, page_name, page_username, avatar_url'
+      )
+      .in('user_id', userIds)
+
+  if (error) throw error
+
+  return new Map(
+    (data || []).map(
+      (page) => [
+        String(page.user_id),
+        page,
+      ]
+    )
+  )
+}
+
 function publicMyCommentActivity(
   comment,
   storyMap,
+  authorProfileMap,
   type,
   viewerUserId
 ) {
@@ -2826,10 +3059,28 @@ function publicMyCommentActivity(
     ) === String(
       viewerUserId || ''
     )
-  const user =
-    publicUser(
-      comment.user
+  const isAuthorComment =
+    Boolean(
+      story?.user_id &&
+      comment.user_id &&
+      String(story.user_id) ===
+        String(comment.user_id)
     )
+  const authorPage =
+    isAuthorComment
+      ? authorProfileMap.get(
+          String(story.user_id)
+        ) || null
+      : null
+  const user =
+    isAuthorComment
+      ? publicAuthorUser(
+          comment.user,
+          authorPage
+        )
+      : publicUser(
+          comment.user
+        )
 
   return {
     id: comment.id,
@@ -2844,9 +3095,15 @@ function publicMyCommentActivity(
       comment.user_id || null,
     user,
     actor_type:
-      isOwnComment
+      isAuthorComment
         ? 'author'
         : 'reader',
+    profile_type:
+      isAuthorComment
+        ? 'author'
+        : 'reader',
+    is_author_comment:
+      isAuthorComment,
     is_own_comment:
       isOwnComment,
     text: comment.text,
@@ -3237,6 +3494,10 @@ export async function getMyCommentActivities(
             item.story_id
         )
       )
+    const authorProfileMap =
+      await fetchAuthorCommentProfileMap(
+        [...storyMap.values()]
+      )
     const activityType =
       filter === 'mine'
       || filter === 'all'
@@ -3266,6 +3527,7 @@ export async function getMyCommentActivities(
             publicMyCommentActivity(
               item,
               storyMap,
+              authorProfileMap,
               activityType,
               userId
             )
