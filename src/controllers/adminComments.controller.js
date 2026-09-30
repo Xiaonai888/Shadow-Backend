@@ -204,6 +204,124 @@ function publicComment(comment) {
   }
 }
 
+function normalizeRelatedStory(story) {
+  return Array.isArray(story)
+    ? story[0] || null
+    : story || null
+}
+
+async function resolvePublicComments(comments) {
+  const rows =
+    Array.isArray(comments)
+      ? comments
+      : []
+  const ownerUserIds = [
+    ...new Set(
+      rows
+        .map((comment) => {
+          const story =
+            normalizeRelatedStory(
+              comment?.story
+            )
+
+          return (
+            comment?.user_id &&
+            story?.user_id &&
+            String(comment.user_id) ===
+              String(story.user_id)
+          )
+            ? String(story.user_id)
+            : ''
+        })
+        .filter(Boolean)
+    ),
+  ]
+
+  let authorPages = new Map()
+
+  if (ownerUserIds.length) {
+    const { data, error } =
+      await supabase
+        .from('author_pages')
+        .select(
+          'user_id, page_name, page_username, avatar_url'
+        )
+        .in(
+          'user_id',
+          ownerUserIds
+        )
+
+    if (error) throw error
+
+    authorPages = new Map(
+      (data || []).map((page) => [
+        String(page.user_id),
+        page,
+      ])
+    )
+  }
+
+  return rows.map((comment) => {
+    const result =
+      publicComment(comment)
+    const story =
+      normalizeRelatedStory(
+        comment?.story
+      )
+    const isAuthorComment =
+      Boolean(
+        comment?.user_id &&
+        story?.user_id &&
+        String(comment.user_id) ===
+          String(story.user_id)
+      )
+
+    if (!isAuthorComment) {
+      return {
+        ...result,
+        actor_type: 'reader',
+      }
+    }
+
+    const authorPage =
+      authorPages.get(
+        String(story.user_id)
+      ) || null
+
+    return {
+      ...result,
+      actor_type: 'author',
+      user: {
+        ...result.user,
+        name:
+          authorPage?.page_name ||
+          result.user?.name ||
+          'Author',
+        username:
+          authorPage?.page_username ||
+          result.user?.username ||
+          '',
+        avatar_url:
+          authorPage?.avatar_url ||
+          result.user?.avatar_url ||
+          '',
+        role: 'author',
+      },
+    }
+  })
+}
+
+async function resolvePublicComment(comment) {
+  if (!comment) return null
+
+  const [result] =
+    await resolvePublicComments([
+      comment,
+    ])
+
+  return result || null
+}
+
 function publicOwnerReport(record) {
   return {
     id: record.id,
@@ -322,7 +440,7 @@ async function getCommentById(
     await supabase
       .from('comments')
       .select(
-        '*, user:users(id, name, username, avatar_url, role), story:stories(id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)'
+        '*, user:users(id, name, username, avatar_url, role), story:stories(id, user_id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)'
       )
       .eq('id', commentId)
       .is('deleted_at', null)
@@ -525,7 +643,7 @@ export async function getAdminStoryComments(
     let query = supabase
       .from('comments')
       .select(
-        '*, user:users(id, name, username, avatar_url, role), story:stories(id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)'
+        '*, user:users(id, name, username, avatar_url, role), story:stories(id, user_id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)'
       )
       .eq('story_id', storyId)
       .is('deleted_at', null)
@@ -563,8 +681,8 @@ export async function getAdminStoryComments(
       story:
         publicStory(story),
       comments:
-        (data || []).map(
-          publicComment
+        await resolvePublicComments(
+          data || []
         ),
     })
   } catch (error) {
@@ -630,7 +748,7 @@ export async function getAdminComments(
     let query = supabase
       .from('comments')
       .select(
-        '*, user:users(id, name, username, avatar_url, role), story:stories(id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)',
+        '*, user:users(id, name, username, avatar_url, role), story:stories(id, user_id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)',
         {
           count: 'exact',
         }
@@ -677,15 +795,17 @@ export async function getAdminComments(
 
     if (error) throw error
 
+    const resolved =
+      await resolvePublicComments(
+        data || []
+      )
     const filtered =
       filterComments(
-        data || [],
+        resolved,
         search
       )
     const comments =
-      filtered
-        .slice(0, limit)
-        .map(publicComment)
+      filtered.slice(0, limit)
 
     return res.status(200).json({
       ok: true,
@@ -962,7 +1082,7 @@ export async function moderateAdminComment(
           null
         )
         .select(
-          '*, user:users(id, name, username, avatar_url, role), story:stories(id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)'
+          '*, user:users(id, name, username, avatar_url, role), story:stories(id, user_id, title, cover_url, author_id, main_genre, story_language, total_comments, total_views, status, created_at, updated_at)'
         )
         .single()
 
@@ -978,7 +1098,9 @@ export async function moderateAdminComment(
     return res.status(200).json({
       ok: true,
       comment:
-        publicComment(data),
+        await resolvePublicComment(
+          data
+        ),
     })
   } catch (error) {
     console.error(
