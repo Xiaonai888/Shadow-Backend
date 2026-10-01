@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 import {
   getReaderAgeAccess,
   isStoryVisibleToReader,
@@ -158,6 +159,17 @@ export async function saveReadingProgress(req, res) {
     const storyId = String(req.body.story_id || '').trim()
     const episodeId = String(req.body.episode_id || '').trim()
     const readingPercent = clampPercent(req.body.reading_percent)
+    const progressSource = String(
+  req.headers['x-shadow-reading-progress-source'] ||
+  req.body?.progress_source ||
+  'unknown'
+).trim().toLowerCase().slice(0, 40)
+
+markRequestDiagnostic({
+  feature: 'reading_progress_save',
+  progress_source: progressSource,
+  reading_percent: readingPercent,
+})
 
     if (!isUuid(storyId) || !isUuid(episodeId)) {
       return res.status(400).json({
@@ -220,8 +232,20 @@ export async function saveReadingProgress(req, res) {
       episode = episodeResult.data
     }
 
+    markRequestDiagnostic({
+  validation_path: useSeparateQueries
+    ? 'separate_queries'
+    : 'embedded_join',
+  embedded_join_available:
+    embeddedStoryJoinAvailable,
+})
+
     if (!story || !episode) {
-      return res.status(404).json({
+  markRequestDiagnostic({
+    save_result: 'story_or_episode_not_found',
+  })
+
+  return res.status(404).json({
         ok: false,
         message: 'Story or episode was not found',
       })
