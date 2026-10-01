@@ -1,5 +1,6 @@
 import { isIP } from 'node:net'
 import { supabase } from '../config/supabase.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 
 const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -677,60 +678,218 @@ export async function getAdminCommunityAuthors(req, res) {
 
 export async function getAdminCommunityVisitorOverview(req, res) {
   try {
-    const { data: overviewRows, error: overviewError } = await supabase.rpc('get_anonymous_visitor_overview')
-
-    if (overviewError) throw overviewError
-
-    const overview = Array.isArray(overviewRows) ? overviewRows[0] || {} : overviewRows || {}
-
     const [
-      visitorsToday,
-      suspectedBots,
-      normalRisk,
-      lowRisk,
-      suspiciousRisk,
-      likelyBotRisk,
-      highRisk,
-      readerActivity,
-      storyUpdates,
+      overviewResult,
+      metricsResult,
     ] = await Promise.all([
-      getVisitorsTodayCount(),
-      countVisitorRows('is_suspected_bot', true),
-      countVisitorRows('risk_level', 'normal'),
-      countVisitorRows('risk_level', 'low_risk'),
-      countVisitorRows('risk_level', 'suspicious'),
-      countVisitorRows('risk_level', 'likely_bot'),
-      countVisitorRows('risk_level', 'high_risk'),
-      getReaderActivityToday(),
-      getStoryUpdatesToday(),
+      supabase.rpc(
+        'get_anonymous_visitor_overview'
+      ),
+      supabase.rpc(
+        'get_admin_community_visitor_metrics_v1'
+      ),
     ])
+
+    if (overviewResult.error) {
+      throw overviewResult.error
+    }
+
+    const overviewRows =
+      overviewResult.data
+
+    const overview =
+      Array.isArray(overviewRows)
+        ? overviewRows[0] || {}
+        : overviewRows || {}
+
+    let metrics =
+      metricsResult.data &&
+      typeof metricsResult.data === 'object' &&
+      !Array.isArray(metricsResult.data)
+        ? metricsResult.data
+        : {}
+
+    if (metricsResult.error) {
+      markRequestDiagnostic({
+        feature:
+          'admin_community_visitor_overview',
+        metrics_rpc: 'fallback',
+        error_code:
+          metricsResult.error.code ||
+          'unknown',
+      })
+
+      console.error(
+        'ADMIN COMMUNITY VISITOR METRICS RPC ERROR:',
+        {
+          code:
+            metricsResult.error.code || '',
+          message:
+            metricsResult.error.message || '',
+          details:
+            metricsResult.error.details || '',
+          hint:
+            metricsResult.error.hint || '',
+        }
+      )
+
+      const [
+        visitorsToday,
+        suspectedBots,
+        normalRisk,
+        lowRisk,
+        suspiciousRisk,
+        likelyBotRisk,
+        highRisk,
+        readerActivity,
+        storyUpdates,
+      ] = await Promise.all([
+        getVisitorsTodayCount(),
+        countVisitorRows(
+          'is_suspected_bot',
+          true
+        ),
+        countVisitorRows(
+          'risk_level',
+          'normal'
+        ),
+        countVisitorRows(
+          'risk_level',
+          'low_risk'
+        ),
+        countVisitorRows(
+          'risk_level',
+          'suspicious'
+        ),
+        countVisitorRows(
+          'risk_level',
+          'likely_bot'
+        ),
+        countVisitorRows(
+          'risk_level',
+          'high_risk'
+        ),
+        getReaderActivityToday(),
+        getStoryUpdatesToday(),
+      ])
+
+      metrics = {
+        visitors_today: visitorsToday,
+        suspected_bots: suspectedBots,
+        normal_risk: normalRisk,
+        low_risk: lowRisk,
+        suspicious_risk:
+          suspiciousRisk,
+        likely_bot_risk:
+          likelyBotRisk,
+        high_risk: highRisk,
+        readers_today:
+          readerActivity.readers_today,
+        active_readers_last_10_minutes:
+          readerActivity
+            .active_readers_last_10_minutes,
+        stories_updated_today:
+          storyUpdates
+            .stories_updated_today,
+        episodes_published_today:
+          storyUpdates
+            .episodes_published_today,
+      }
+    } else {
+      markRequestDiagnostic({
+        feature:
+          'admin_community_visitor_overview',
+        metrics_rpc: 'v1',
+      })
+    }
 
     return res.status(200).json({
       ok: true,
       summary: {
-        total_unique_visitors: Number(overview.total_unique_visitors || 0),
-        total_sessions: Number(overview.total_sessions || 0),
-        visitors_today: Number(visitorsToday || 0),
-        visitors_this_month: Number(overview.visitors_this_month || 0),
-        active_last_10_minutes: Number(overview.active_last_10_minutes || 0),
-        total_page_views: Number(overview.total_page_views || 0),
-        readers_today: Number(readerActivity.readers_today || 0),
-        active_readers_last_10_minutes: Number(readerActivity.active_readers_last_10_minutes || 0),
-        stories_updated_today: Number(storyUpdates.stories_updated_today || 0),
-        episodes_published_today: Number(storyUpdates.episodes_published_today || 0),
-        suspected_bots: suspectedBots,
-        normal_risk: normalRisk,
-        low_risk: lowRisk,
-        suspicious_risk: suspiciousRisk,
-        likely_bot_risk: likelyBotRisk,
-        high_risk: highRisk,
+        total_unique_visitors:
+          Number(
+            overview.total_unique_visitors ||
+              0
+          ),
+        total_sessions:
+          Number(
+            overview.total_sessions || 0
+          ),
+        visitors_today:
+          Number(
+            metrics.visitors_today || 0
+          ),
+        visitors_this_month:
+          Number(
+            overview.visitors_this_month ||
+              0
+          ),
+        active_last_10_minutes:
+          Number(
+            overview
+              .active_last_10_minutes ||
+              0
+          ),
+        total_page_views:
+          Number(
+            overview.total_page_views || 0
+          ),
+        readers_today:
+          Number(
+            metrics.readers_today || 0
+          ),
+        active_readers_last_10_minutes:
+          Number(
+            metrics
+              .active_readers_last_10_minutes ||
+              0
+          ),
+        stories_updated_today:
+          Number(
+            metrics
+              .stories_updated_today || 0
+          ),
+        episodes_published_today:
+          Number(
+            metrics
+              .episodes_published_today || 0
+          ),
+        suspected_bots:
+          Number(
+            metrics.suspected_bots || 0
+          ),
+        normal_risk:
+          Number(
+            metrics.normal_risk || 0
+          ),
+        low_risk:
+          Number(
+            metrics.low_risk || 0
+          ),
+        suspicious_risk:
+          Number(
+            metrics.suspicious_risk || 0
+          ),
+        likely_bot_risk:
+          Number(
+            metrics.likely_bot_risk || 0
+          ),
+        high_risk:
+          Number(
+            metrics.high_risk || 0
+          ),
       },
     })
   } catch (error) {
-    console.error('ADMIN COMMUNITY VISITOR OVERVIEW ERROR:', error)
+    console.error(
+      'ADMIN COMMUNITY VISITOR OVERVIEW ERROR:',
+      error
+    )
+
     return res.status(500).json({
       ok: false,
-      message: 'Failed to load visitor overview',
+      message:
+        'Failed to load visitor overview',
       error: error.message,
     })
   }
