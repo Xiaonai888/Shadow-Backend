@@ -1,7 +1,7 @@
 import { getReaderAgeAccess } from './storyAgeAccess.service.js'
 import { markRequestDiagnostic } from './trafficDiagnostic.service.js'
 
-const TTL_MS = 45 * 1000
+const TTL_MS = 3 * 60 * 1000
 const MAX_ENTRIES = 128
 const MAX_PENDING = 128
 const MAX_BODY_BYTES = 256 * 1024
