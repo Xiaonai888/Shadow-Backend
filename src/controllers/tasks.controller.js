@@ -146,7 +146,7 @@ function publicCheckIn(row, isPremium = false) {
     claimed_today: claimedToday,
     last_claim_date: lastClaimDate || null,
     next_claim_date: claimedToday ? addDays(todayKey, 1) : todayKey,
-    premium_auto_claim: Boolean(isPremium),
+    premium_auto_claim: false,
     rewards: DAILY_REWARDS,
   }
 }
