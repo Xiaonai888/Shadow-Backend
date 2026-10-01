@@ -629,10 +629,10 @@ export async function getTaskOverview(req, res) {
 
     const isPremium = isPremiumRole(user?.role)
 
-    let wallet =
+    const wallet =
       walletResult.status === 'fulfilled' ? walletResult.value : null
 
-    let checkInRow =
+    const checkInRow =
       checkInResult.status === 'fulfilled' ? checkInResult.value : null
 
     const rewardChest =
@@ -655,21 +655,6 @@ export async function getTaskOverview(req, res) {
       !claimResult.value?.error
         ? claimResult.value?.data || null
         : null
-
-    if (
-      isPremium &&
-      walletResult.status === 'fulfilled' &&
-      checkInResult.status === 'fulfilled' &&
-      !publicCheckIn(checkInRow, isPremium).claimed_today
-    ) {
-      const claimed = await claimCheckInReward(
-        userId,
-        'premium_auto_claim'
-      )
-
-      wallet = claimed.wallet
-      checkInRow = claimed.check_in
-    }
 
     const dailyVoteReward = buildDailyVoteRewardState({
       user,
@@ -702,7 +687,11 @@ export async function getTaskOverview(req, res) {
 }
 
 
-async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
+async function claimCheckInReward(
+  userId,
+  sourceKey = 'daily_bonus',
+  isPremium = false
+) {
   const todayKey = getPhnomPenhDateKey()
   const yesterdayKey = addDays(todayKey, -1)
   const [wallet, existingCheckIn] = await Promise.all([
@@ -729,6 +718,7 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
   const isGiftReward = Boolean(reward.gift || Number(reward.vouchers || 0) > 0)
   const rewardCoins = isGiftReward ? getRandomGiftCoins() : Number(reward.coins || reward.gems || 0)
   const rewardVouchers = isGiftReward ? 1 : Number(reward.vouchers || 0)
+  const rewardDiamonds = isPremium ? 1 : 0
 
   const { data: savedCheckIn, error: checkInError } = await supabase
     .from('reader_checkins')
@@ -752,12 +742,14 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
 
   const nextGemBalance = Number(wallet.gem_balance || 0) + rewardCoins
   const nextVoucherBalance = Number(wallet.voucher_balance || 0) + rewardVouchers
+  const nextDiamondBalance = Number(wallet.diamond_balance || 0) + rewardDiamonds
 
   const { data: updatedWallet, error: walletError } = await supabase
     .from('user_wallets')
     .update({
       gem_balance: nextGemBalance,
       voucher_balance: nextVoucherBalance,
+      diamond_balance: nextDiamondBalance,
       updated_at: now,
     })
     .eq('user_id', userId)
@@ -771,6 +763,7 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
     gems: rewardCoins,
     coins: rewardCoins,
     vouchers: rewardVouchers,
+    diamonds: rewardDiamonds,
     story_cards: 0,
     gift: isGiftReward,
   }
@@ -782,10 +775,9 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
       source_key: sourceKey,
       source_title: isGiftReward
         ? 'Daily Gift'
-        : sourceKey === 'premium_auto_claim'
-          ? 'Premium Auto Claim'
-          : 'Daily Check-in',
+        : 'Daily Check-in',
       amount_gems: rewardCoins,
+      amount_diamonds: rewardDiamonds,
       amount_vouchers: rewardVouchers,
       story_cards: 0,
       metadata: {
@@ -793,6 +785,7 @@ async function claimCheckInReward(userId, sourceKey = 'daily_bonus') {
         streak_count: nextStreak,
         gift: isGiftReward,
         coins: rewardCoins,
+        diamonds: rewardDiamonds,
         vouchers: rewardVouchers,
       },
     })
@@ -820,14 +813,8 @@ export async function getTaskCheckIn(req, res) {
 
     const user = await getUserProfile(userId)
     const isPremium = isPremiumRole(user?.role)
-    let wallet = await getOrCreateWallet(userId)
-    let checkInRow = await getCheckInRow(userId)
-
-    if (isPremium && !publicCheckIn(checkInRow, isPremium).claimed_today) {
-      const claimed = await claimCheckInReward(userId, 'premium_auto_claim')
-      wallet = claimed.wallet
-      checkInRow = claimed.check_in
-    }
+    const wallet = await getOrCreateWallet(userId)
+    const checkInRow = await getCheckInRow(userId)
 
     return res.status(200).json({
       ok: true,
@@ -855,7 +842,11 @@ export async function claimTaskCheckIn(req, res) {
 
     const user = await getUserProfile(userId)
     const isPremium = isPremiumRole(user?.role)
-    const result = await claimCheckInReward(userId, 'daily_bonus')
+    const result = await claimCheckInReward(
+      userId,
+      'daily_bonus',
+      isPremium
+    )
 
     return res.status(200).json({
       ok: true,
