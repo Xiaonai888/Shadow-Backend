@@ -15,11 +15,6 @@ function isUuid(value) {
   )
 }
 
-function isPremiumRole(role) {
-  const value = String(role || '').trim().toLowerCase()
-  return value === 'premium' || value === 'vip'
-}
-
 function getPhnomPenhDateKey(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Phnom_Penh',
@@ -69,17 +64,6 @@ async function withWeeklyReadingLock(userId, callback) {
       weeklyReadingLocks.delete(userId)
     }
   }
-}
-
-async function getUserProfile(userId) {
-  const { data, error } = await supabase
-    .from('users')
-    .select('id, role')
-    .eq('id', userId)
-    .maybeSingle()
-
-  if (error) throw error
-  return data || null
 }
 
 async function getOrCreateWallet(userId) {
@@ -227,51 +211,8 @@ async function grantMilestone(
   }
 }
 
-async function autoClaimEligibleMilestones(
-  userId,
-  weekStart,
-  episodeCount,
-  prefetchedClaims = null
-) {
-  let claims = Array.isArray(prefetchedClaims)
-    ? [...prefetchedClaims]
-    : await getClaims(userId, weekStart)
-
-  const claimedSet = new Set(
-    claims.map((item) => Number(item.milestone))
-  )
-  let needsRefresh = false
-
-  for (const milestone of MILESTONES) {
-    if (milestone > episodeCount) break
-    if (claimedSet.has(milestone)) continue
-
-    const result = await grantMilestone(
-      userId,
-      weekStart,
-      milestone,
-      true,
-      episodeCount
-    )
-
-    if (result.granted) {
-      claimedSet.add(milestone)
-      if (result.claim) claims.push(result.claim)
-    } else if (result.reason === 'already_claimed') {
-      needsRefresh = true
-    }
-  }
-
-  if (needsRefresh) {
-    claims = await getClaims(userId, weekStart)
-  }
-
-  return claims
-}
-
 async function buildWeeklyReadingState(
   userId,
-  isPremium,
   {
     weekStart = getWeekStartKey(),
     episodeCount = null,
@@ -304,15 +245,6 @@ async function buildWeeklyReadingState(
     }
   }
 
-  if (isPremium && resolvedCount > 0) {
-    resolvedClaims = await autoClaimEligibleMilestones(
-      userId,
-      weekStart,
-      resolvedCount,
-      resolvedClaims
-    )
-  }
-
   const claimMap = new Map(
     resolvedClaims.map((item) => [
       Number(item.milestone),
@@ -332,7 +264,7 @@ async function buildWeeklyReadingState(
       claimed,
       auto_claimed: Boolean(claim?.auto_claimed),
       claimed_at: claim?.claimed_at || null,
-      claimable: completed && !claimed && !isPremium,
+      claimable: completed && !claimed,
     }
   })
 
@@ -350,7 +282,7 @@ async function buildWeeklyReadingState(
       100,
       Math.round((resolvedCount / TARGET_EPISODES) * 100)
     ),
-    premium_auto_claim: Boolean(isPremium),
+    premium_auto_claim: false,
     next_milestone: nextMilestone,
     milestones,
     completed: resolvedCount >= TARGET_EPISODES,
@@ -366,11 +298,8 @@ export async function getWeeklyReading(req, res) {
       return res.status(401).json({ ok: false, message: 'User is required' })
     }
 
-    const profile = await getUserProfile(userId)
-    const isPremium = isPremiumRole(profile?.role)
-
     const weeklyReading = await withWeeklyReadingLock(userId, () =>
-      buildWeeklyReadingState(userId, isPremium)
+      buildWeeklyReadingState(userId)
     )
 
     return res.json({
@@ -410,9 +339,6 @@ export async function recordWeeklyReadingEpisode({
     return null
   }
 
-  const profile = await getUserProfile(cleanUserId)
-  const isPremium = isPremiumRole(profile?.role)
-
   return withWeeklyReadingLock(cleanUserId, async () => {
     const weekStart = getWeekStartKey()
     const currentCount = await getEpisodeCount(
@@ -423,7 +349,6 @@ export async function recordWeeklyReadingEpisode({
     if (currentCount >= TARGET_EPISODES) {
       return buildWeeklyReadingState(
         cleanUserId,
-        isPremium,
         {
           weekStart,
           episodeCount: currentCount,
@@ -444,7 +369,6 @@ export async function recordWeeklyReadingEpisode({
     if (existing) {
       return buildWeeklyReadingState(
         cleanUserId,
-        isPremium,
         {
           weekStart,
           episodeCount: currentCount,
@@ -503,7 +427,6 @@ export async function recordWeeklyReadingEpisode({
 
     return buildWeeklyReadingState(
       cleanUserId,
-      isPremium,
       {
         weekStart,
         episodeCount: finalCount,
@@ -511,7 +434,6 @@ export async function recordWeeklyReadingEpisode({
     )
   })
 }
-
 
 export async function claimWeeklyReadingReward(req, res) {
   try {
@@ -521,34 +443,9 @@ export async function claimWeeklyReadingReward(req, res) {
       return res.status(401).json({ ok: false, message: 'User is required' })
     }
 
-    const profile = await getUserProfile(userId)
-    const isPremium = isPremiumRole(profile?.role)
-
     const result = await withWeeklyReadingLock(userId, async () => {
       const weekStart = getWeekStartKey()
       const episodeCount = await getEpisodeCount(userId, weekStart)
-
-      if (isPremium) {
-        const claims = await autoClaimEligibleMilestones(
-          userId,
-          weekStart,
-          episodeCount
-        )
-
-        return {
-          autoClaimed: true,
-          weeklyReading: await buildWeeklyReadingState(
-            userId,
-            true,
-            {
-              weekStart,
-              episodeCount,
-              claims,
-            }
-          ),
-        }
-      }
-
       const claims = await getClaims(userId, weekStart)
       const claimedSet = new Set(
         claims.map((item) => Number(item.milestone))
@@ -565,7 +462,6 @@ export async function claimWeeklyReadingReward(req, res) {
           noReward: true,
           weeklyReading: await buildWeeklyReadingState(
             userId,
-            false,
             {
               weekStart,
               episodeCount,
@@ -593,7 +489,6 @@ export async function claimWeeklyReadingReward(req, res) {
         grant,
         weeklyReading: await buildWeeklyReadingState(
           userId,
-          false,
           {
             weekStart,
             episodeCount,
@@ -613,7 +508,7 @@ export async function claimWeeklyReadingReward(req, res) {
 
     return res.json({
       ok: true,
-      auto_claimed: Boolean(result.autoClaimed),
+      auto_claimed: false,
       claimed_milestone: result.grant?.milestone || null,
       weekly_reading: result.weeklyReading,
     })
