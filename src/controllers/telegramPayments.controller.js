@@ -161,7 +161,7 @@ async function findMatchingOrders(parsed) {
   const { data, error } = await supabase
     .from('payment_transactions')
     .select('*')
-    .eq('payment_method', 'aba_payment_link')
+    .in('payment_method', ['aba_payment_link', 'premium_aba_payment_link'])
     .eq('status', 'waiting_payment')
     .eq('amount_usd', parsed.amount)
     .gte('created_at', start)
@@ -628,7 +628,15 @@ async function updateAuthorStoreOrderFromTelegram(orderId, status) {
 }
 
 async function releaseMatchedOrder(payment, telegramPayment) {
-  const { data, error } = await supabase.rpc('release_payment_from_telegram', {
+  const isPremiumPayment =
+    String(payment?.purchase_type || '').toLowerCase() === 'premium' ||
+    String(payment?.payment_method || '').toLowerCase() === 'premium_aba_payment_link'
+
+  const rpcName = isPremiumPayment
+    ? 'release_premium_payment_from_telegram'
+    : 'release_payment_from_telegram'
+
+  const { data, error } = await supabase.rpc(rpcName, {
     p_payment_id: payment.id,
     p_telegram_payment_id: telegramPayment.id,
     p_trx_id: telegramPayment.trx_id,
@@ -636,10 +644,13 @@ async function releaseMatchedOrder(payment, telegramPayment) {
     p_payer_name: telegramPayment.payer_name || null,
   })
 
- if (error) throw error
-const released = Array.isArray(data) ? data[0] : data
-if (released) publishPaymentStatus(released)
-return released
+  if (error) throw error
+
+  const released = Array.isArray(data) ? data[0] : data
+
+  if (released) publishPaymentStatus(released)
+
+  return released
 }
 
 async function getPaymentForAction(paymentId) {
