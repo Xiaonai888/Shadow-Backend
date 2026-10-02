@@ -35,6 +35,10 @@ function cleanText(value) {
   return String(value || '').trim()
 }
 
+function hasThaiCharacters(...values) {
+  return values.some((value) => /[\u0E00-\u0E7F]/.test(String(value || '')))
+}
+
 function countEpisodeImages(value) {
   return (String(value || '').match(/<img\b[^>]*>/gi) || []).length
 }
@@ -1578,6 +1582,22 @@ export async function updateEpisodeStatus(req, res) {
     }
 
     if (['published', 'scheduled'].includes(status)) {
+      if (
+        hasThaiCharacters(
+          story.title,
+          story.description,
+          episode.title,
+          episode.youtube_title,
+          isManga ? '' : episode.content
+        )
+      ) {
+        return res.status(422).json({
+          ok: false,
+          code: 'THAI_CHARACTERS_FOUND',
+          message: 'មិនអាចបោះផ្សាយបានទេ។ មាតិកានេះមានអក្សរភាសាថៃ។ សូមលុប ឬកែអក្សរថៃចេញសិន។',
+        })
+      }
+
       if (isManga) {
         if (pages.length < MIN_MANGA_PAGES || pages.length > MAX_MANGA_PAGES) {
           return res.status(400).json({
