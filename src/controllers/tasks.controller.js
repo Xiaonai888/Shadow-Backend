@@ -84,10 +84,17 @@ function addDays(dateKey, days) {
   return date.toISOString().slice(0, 10)
 }
 
-function isPremiumRole(role) {
-  const value = String(role || '').trim().toLowerCase()
+function isPremiumUser(user) {
+  const role = String(user?.role || '').trim().toLowerCase()
 
-  return value === 'premium' || value === 'vip'
+  if (role === 'premium' || role === 'vip') return true
+  if (!user?.is_premium) return false
+
+  const expiresAt = user?.premium_expires_at
+    ? new Date(user.premium_expires_at).getTime()
+    : 0
+
+  return Number.isFinite(expiresAt) && expiresAt > Date.now()
 }
 
 function cleanUuid(value) {
@@ -286,7 +293,7 @@ function publicReadingMissionProgress(mission, progressRow = null) {
 async function getUserProfile(userId) {
   const { data, error } = await supabase
     .from('users')
-    .select('id, role')
+    .select('id, role, is_premium, premium_expires_at')
     .eq('id', userId)
     .maybeSingle()
 
@@ -508,7 +515,7 @@ function buildDailyVoteRewardState({
   claimRow,
   rewardDate = getPhnomPenhDateKey(),
 }) {
-  const isPremium = isPremiumRole(user?.role)
+  const isPremium = isPremiumUser(user)
   const checkInCompleted = publicCheckIn(checkInRow, isPremium).claimed_today
   const readingReward = publicReadingReward(readingRewardRow)
   const missionList = Array.isArray(readingMissions) ? readingMissions : []
@@ -627,7 +634,7 @@ export async function getTaskOverview(req, res) {
     const user =
       userResult.status === 'fulfilled' ? userResult.value : null
 
-    const isPremium = isPremiumRole(user?.role)
+    const isPremium = isPremiumUser(user)
 
     const wallet =
       walletResult.status === 'fulfilled' ? walletResult.value : null
@@ -812,7 +819,7 @@ export async function getTaskCheckIn(req, res) {
     }
 
     const user = await getUserProfile(userId)
-    const isPremium = isPremiumRole(user?.role)
+    const isPremium = isPremiumUser(user)
     const wallet = await getOrCreateWallet(userId)
     const checkInRow = await getCheckInRow(userId)
 
@@ -841,7 +848,7 @@ export async function claimTaskCheckIn(req, res) {
     }
 
     const user = await getUserProfile(userId)
-    const isPremium = isPremiumRole(user?.role)
+    const isPremium = isPremiumUser(user)
     const result = await claimCheckInReward(
       userId,
       'daily_bonus',
