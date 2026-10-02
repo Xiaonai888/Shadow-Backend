@@ -10,6 +10,10 @@ function cleanText(value) {
   return String(value || '').trim()
 }
 
+function hasThaiCharacters(...values) {
+  return values.some((value) => /[\u0E00-\u0E7F]/.test(String(value || '')))
+}
+
 function cleanNullableText(value) {
   const text = cleanText(value)
   return text || null
@@ -480,6 +484,21 @@ export async function updateChatStoryEpisodeStatus(req, res) {
       .join('\n')
 
     if (['published', 'scheduled'].includes(status)) {
+      if (
+        hasThaiCharacters(
+          story.title,
+          story.description,
+          episode.title,
+          plainText
+        )
+      ) {
+        return res.status(422).json({
+          ok: false,
+          code: 'THAI_CHARACTERS_FOUND',
+          message: 'មិនអាចបោះផ្សាយបានទេ។ មាតិកានេះមានអក្សរភាសាថៃ។ សូមលុប ឬកែអក្សរថៃចេញសិន។',
+        })
+      }
+
       const blockedMatches = await findBlockedWordsInContent([
         { label: 'Story Title', value: story.title },
         { label: 'Story Description', value: story.description },
