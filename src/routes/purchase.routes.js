@@ -19,6 +19,13 @@ import {
   getManualPaymentStatus,
   submitManualPaymentProof,
 } from '../controllers/manualPayments.controller.js'
+import {
+  cancelPremiumPayment,
+  createPremiumPayment,
+  getPremiumPaymentStatus,
+  getPremiumPlans,
+  getPremiumStatus,
+} from '../controllers/premiumPayments.controller.js'
 import { openPaymentEventStream } from '../services/paymentEvents.service.js'
 
 const router = express.Router()
@@ -38,6 +45,12 @@ router.post('/manual/cancel/:orderId', requireUser, cancelManualPayment)
 router.post('/manual/proof/:orderId', requireUser, upload.single('proof_image'), submitManualPaymentProof)
 router.get('/manual/status/:orderId', requireUser, getManualPaymentStatus)
 router.get('/manual/events/:orderId', requireUser, openPaymentEventStream)
+
+router.get('/premium/plans', getPremiumPlans)
+router.get('/premium/status', requireUser, getPremiumStatus)
+router.post('/premium/create', requireUser, createPremiumPayment)
+router.get('/premium/status/:orderId', requireUser, getPremiumPaymentStatus)
+router.post('/premium/cancel/:orderId', requireUser, cancelPremiumPayment)
 
 router.post('/aba/create', requireUser, createAbaPayment)
 router.get('/aba/status/:orderId', requireUser, getAbaPaymentStatus)
