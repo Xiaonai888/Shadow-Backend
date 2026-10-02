@@ -10,6 +10,13 @@ function normalizeStatus(status) {
   return value || 'waiting_payment'
 }
 
+function isPremiumPayment(payment) {
+  return (
+    String(payment?.purchase_type || '').trim().toLowerCase() === 'premium' ||
+    String(payment?.payment_method || '').trim().toLowerCase() === 'premium_aba_payment_link'
+  )
+}
+
 function publicUser(user) {
   if (!user) return null
   return {
@@ -27,6 +34,10 @@ function publicManualPayment(payment, userMap = {}) {
     id: payment.id,
     user_id: payment.user_id,
     order_id: payment.order_id || '',
+    purchase_type: payment.purchase_type || 'diamonds',
+    premium_plan_months: Number(payment.premium_plan_months || 0),
+    premium_base_diamonds: Number(payment.premium_base_diamonds || 0),
+    premium_bonus_diamonds: Number(payment.premium_bonus_diamonds || 0),
     package_usd: Number(payment.package_usd || payment.amount_usd || 0),
     amount_usd: Number(payment.amount_usd || payment.package_usd || 0),
     payment_amount: Number(payment.payment_amount || payment.amount_usd || payment.package_usd || 0),
@@ -88,6 +99,48 @@ function getAdminId(req) {
   return String(req.admin?.id || req.admin?.admin_id || req.admin?.email || req.admin?.username || 'admin')
 }
 
+async function getPaymentById(paymentId) {
+  const { data, error } = await supabase
+    .from('payment_transactions')
+    .select('*')
+    .eq('id', paymentId)
+    .maybeSingle()
+
+  if (error) throw error
+  return data || null
+}
+
+async function releasePremiumPaymentByAdmin(payment, req, adminNote) {
+  const { data, error } = await supabase.rpc('release_premium_payment_from_telegram', {
+    p_payment_id: payment.id,
+    p_telegram_payment_id: payment.telegram_payment_id || null,
+    p_trx_id: payment.aba_trx_id || '',
+    p_apv: payment.aba_apv || null,
+    p_payer_name: payment.payer_name || null,
+  })
+
+  if (error) throw error
+
+  const released = Array.isArray(data) ? data[0] : data
+  if (!released) return null
+
+  const { data: reviewed, error: reviewError } = await supabase
+    .from('payment_transactions')
+    .update({
+      admin_reviewed_by: getAdminId(req),
+      admin_reviewed_at: new Date().toISOString(),
+      admin_note: adminNote || null,
+      match_reason: adminNote || 'Premium payment approved by admin.',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', released.id)
+    .select('*')
+    .single()
+
+  if (reviewError) throw reviewError
+  return reviewed
+}
+
 export async function getAdminManualPayments(req, res) {
   try {
     const status = String(req.query.status || 'pending_review').trim()
@@ -96,7 +149,7 @@ export async function getAdminManualPayments(req, res) {
     let query = supabase
       .from('payment_transactions')
       .select('*')
-      .eq('payment_method', 'aba_payment_link')
+      .in('payment_method', ['aba_payment_link', 'premium_aba_payment_link'])
       .order('created_at', { ascending: false })
       .limit(limit)
 
@@ -122,17 +175,26 @@ export async function confirmAdminManualPayment(req, res) {
 
     if (!paymentId) return res.status(400).json({ ok: false, message: 'Payment ID is required' })
 
-    const { data, error } = await supabase.rpc('admin_release_manual_payment', {
-      p_payment_id: paymentId,
-      p_admin_id: getAdminId(req),
-      p_admin_note: adminNote || null,
-    })
+    const existing = await getPaymentById(paymentId)
+    if (!existing) return res.status(404).json({ ok: false, message: 'Payment not found' })
 
-    if (error) throw error
+    let payment = null
 
-    const payment = Array.isArray(data) ? data[0] : data
-if (payment) publishPaymentStatus(payment)
-const userMap = await getUsersMap([payment?.user_id])
+    if (isPremiumPayment(existing)) {
+      payment = await releasePremiumPaymentByAdmin(existing, req, adminNote)
+    } else {
+      const { data, error } = await supabase.rpc('admin_release_manual_payment', {
+        p_payment_id: paymentId,
+        p_admin_id: getAdminId(req),
+        p_admin_note: adminNote || null,
+      })
+
+      if (error) throw error
+      payment = Array.isArray(data) ? data[0] : data
+    }
+
+    if (payment) publishPaymentStatus(payment)
+    const userMap = await getUsersMap([payment?.user_id])
 
     return res.status(200).json({ ok: true, payment: publicManualPayment(payment, userMap) })
   } catch (error) {
@@ -167,8 +229,9 @@ export async function rejectAdminManualPayment(req, res) {
 
     if (error) throw error
 
-if (data) publishPaymentStatus(data)
-const userMap = await getUsersMap([data.user_id])
+    if (data) publishPaymentStatus(data)
+    const userMap = await getUsersMap([data.user_id])
+
     return res.status(200).json({ ok: true, payment: publicManualPayment(data, userMap) })
   } catch (error) {
     console.error('REJECT ADMIN MANUAL PAYMENT ERROR:', error)
