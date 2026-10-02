@@ -6,6 +6,9 @@ import {
   getReaderPostsFeedCandidates,
   invalidateReaderPostsFeedCandidateCache,
 } from '../services/readerPostsFeedCandidateCache.service.js'
+import {
+  markRequestDiagnostic,
+} from '../services/trafficDiagnostic.service.js'
 
 const MAX_POST_LENGTH = 10000
 const MAX_POST_IMAGES = 5
@@ -2897,19 +2900,41 @@ export async function getReaderPostsFeed(
   req,
   res
 ) {
+  let feedStage = 'start'
+  const feedStartedAt = Date.now()
+
   try {
     const viewerId = getUserId(req)
     const limit = getLimit(
       req.query.limit
     )
 
+    markRequestDiagnostic({
+      feature: 'reader_posts_feed',
+      feed_stage: 'candidate_load',
+      viewer_authenticated:
+        Boolean(viewerId),
+      requested_limit: limit,
+    })
+
     const snapshotAt =
       new Date().toISOString()
+
+    feedStage = 'candidate_load'
+    const candidateStartedAt =
+      Date.now()
 
     const data =
       await getReaderPostsFeedCandidates(
         snapshotAt
       )
+
+    const candidateMs =
+      Date.now() - candidateStartedAt
+
+    feedStage = 'feed_fanout'
+    const fanoutStartedAt =
+      Date.now()
 
     const [
       readerPosts,
@@ -2929,6 +2954,10 @@ export async function getReaderPostsFeed(
         data.map((post) => post.id)
       ),
     ])
+
+    const fanoutMs =
+      Date.now() - fanoutStartedAt
+
     const standardPosts =
       readerPosts.filter(
         (post) =>
@@ -2938,24 +2967,69 @@ export async function getReaderPostsFeed(
       )
 
     const timelinePosts =
-  mergeRecommendedReaderPosts(
-    [standardPosts, echoPosts],
-    limit,
-    snapshotAt
-  )
+      mergeRecommendedReaderPosts(
+        [standardPosts, echoPosts],
+        limit,
+        snapshotAt
+      )
 
-const posts =
-  await attachProfileInteractionState(
-    timelinePosts,
-    viewerId
-  )
-    
+    feedStage = 'interaction_state'
+    const interactionStartedAt =
+      Date.now()
+
+    const posts =
+      await attachProfileInteractionState(
+        timelinePosts,
+        viewerId
+      )
+
+    const interactionMs =
+      Date.now() - interactionStartedAt
+
+    markRequestDiagnostic({
+      feature: 'reader_posts_feed',
+      feed_stage: 'success',
+      feed_result: 'success',
+      candidate_rows:
+        data.length,
+      visible_reader_rows:
+        readerPosts.length,
+      echo_rows:
+        echoPosts.length,
+      linked_echo_rows:
+        linkedEchoPostIds.size,
+      timeline_rows:
+        timelinePosts.length,
+      final_rows:
+        posts.length,
+      candidate_ms:
+        candidateMs,
+      fanout_ms:
+        fanoutMs,
+      interaction_ms:
+        interactionMs,
+      total_ms:
+        Date.now() - feedStartedAt,
+    })
+
     return res.status(200).json({
       ok: true,
       posts,
       total: posts.length,
     })
   } catch (error) {
+    markRequestDiagnostic({
+      feature: 'reader_posts_feed',
+      feed_stage: feedStage,
+      feed_result: 'error',
+      error_code:
+        error?.code ||
+        error?.name ||
+        'unknown',
+      total_ms:
+        Date.now() - feedStartedAt,
+    })
+
     console.error(
       'GET READER POSTS FEED ERROR:',
       error
