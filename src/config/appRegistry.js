@@ -13,6 +13,14 @@ export const APP_REGISTRY = Object.freeze([
     hidden: true,
     disabled: true,
   }),
+
+    Object.freeze({
+    appKey: 'enhance-local',
+    name: 'Enhance Local',
+    profile: null,
+    hidden: false,
+    disabled: false,
+  }),
 ])
 
 export function getAppDefinition(appKey) {
