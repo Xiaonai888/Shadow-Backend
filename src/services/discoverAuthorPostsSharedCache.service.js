@@ -68,6 +68,15 @@ function pruneSnapshots() {
 async function loadCatalog(snapshotAt) {
   const cutoffAt = getCutoffAt(snapshotAt)
 
+  const { data: controlRows, error: controlError } = await supabase
+  .from('admin_discover_control_authors')
+  .select('author_page_id')
+  .limit(10)
+
+if (controlError) throw controlError
+const discoverControlAuthorPageIds =
+  (controlRows || []).map(row => String(row.author_page_id))
+
   const {
     data: candidatePosts,
     error: postsError,
@@ -148,6 +157,7 @@ async function loadCatalog(snapshotAt) {
 
   return {
     snapshotAt,
+    discoverControlAuthorPageIds,
     candidatePosts: posts,
     pages: pagesResult.data || [],
     postHashtags:
