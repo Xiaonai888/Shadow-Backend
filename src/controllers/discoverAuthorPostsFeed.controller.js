@@ -527,6 +527,7 @@ export async function getDiscoverAuthorPostsFeed(req, res) {
 
       return {
         id: post.id,
+        feed_priority: controlPostIds.has(postId) ? 1 : 0,
         author_page_id: post.author_page_id,
         user_id: post.user_id,
         post_type: post.post_type || 'article',
