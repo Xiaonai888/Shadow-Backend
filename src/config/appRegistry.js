@@ -14,6 +14,14 @@ export const APP_REGISTRY = Object.freeze([
     disabled: true,
   }),
 
+  Object.freeze({
+  appKey: 'shadow-fx',
+  name: 'Shadow FX',
+  profile: null,
+  hidden: false,
+  disabled: false,
+}),
+
     Object.freeze({
     appKey: 'enhance-local',
     name: 'Enhance Local',
