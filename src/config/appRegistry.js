@@ -37,6 +37,15 @@ export const APP_REGISTRY = Object.freeze([
   hidden: false,
   disabled: false,
 }),
+
+  Object.freeze({
+  appKey: 'qr-barcode',
+  name: 'QR & Barcode',
+  profile: null,
+  hidden: false,
+  disabled: false,
+}),
+  
 ])
 
 export function getAppDefinition(appKey) {
