@@ -307,7 +307,7 @@ export async function getDiscoverAuthorPostsFeed(req, res) {
     const pages = catalog.pages || []
     const postHashtags = catalog.postHashtags || []
     const discoverControlAuthorPageIds =
-  catalog.discoverControlAuthorPageIds || []
+      catalog.discoverControlAuthorPageIds || []
 
     const authorPageIds = [
       ...new Set(
@@ -423,33 +423,50 @@ export async function getDiscoverAuthorPostsFeed(req, res) {
         ])
     )
 
-    const controlPageIds = new Set(discoverControlAuthorPageIds.map(String))
-    const controlPostIds = new Set()
-    const seenControlPages = new Set()
+    const controlPageIds = new Set(
+      discoverControlAuthorPageIds.map(String)
+    )
+    const newestControlPostByPage = new Map()
 
-for (const post of candidatePosts) {
-  const pageId = String(post.author_page_id)
-  if (!authorById.has(pageId) || !controlPageIds.has(pageId) || seenControlPages.has(pageId)) continue
-  seenControlPages.add(pageId)
-  controlPostIds.add(String(post.id))
-}
+    for (const post of candidatePosts) {
+      const pageId = String(post.author_page_id)
 
-  const newestVisiblePostId = candidatePosts.find((post) =>
-  authorById.has(String(post.author_page_id)) &&
-  !controlPostIds.has(String(post.id))
-)?.id
+      if (!authorById.has(pageId) || !controlPageIds.has(pageId)) {
+        continue
+      }
+
+      const current = newestControlPostByPage.get(pageId)
+
+      if (!current || compareNewest(post, current) < 0) {
+        newestControlPostByPage.set(pageId, post)
+      }
+    }
+
+    const controlPostIds = new Set(
+      [...newestControlPostByPage.values()].map((post) =>
+        String(post.id)
+      )
+    )
+
+    const newestVisiblePostId = candidatePosts.find((post) =>
+      authorById.has(String(post.author_page_id)) &&
+      !controlPostIds.has(String(post.id))
+    )?.id
 
     const visiblePosts = candidatePosts
       .filter((post) =>
         authorById.has(String(post.author_page_id))
       )
-      const firstControl = controlPostIds.has(String(first.id))
-const secondControl = controlPostIds.has(String(second.id))
-
-if (firstControl && secondControl) return compareNewest(first, second)
-if (firstControl) return -1
-if (secondControl) return 1
       .sort((first, second) => {
+        const firstControl = controlPostIds.has(String(first.id))
+        const secondControl = controlPostIds.has(String(second.id))
+
+        if (firstControl && secondControl) {
+          return compareNewest(first, second)
+        }
+
+        if (firstControl) return -1
+        if (secondControl) return 1
         if (first.id === newestVisiblePostId) return -1
         if (second.id === newestVisiblePostId) return 1
 
