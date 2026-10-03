@@ -4,6 +4,8 @@ const CACHE_TTL_MS = 5 * 60 * 1000
 const CANDIDATE_LIMIT = 300
 const POST_WINDOW_DAYS = 30
 const MAX_SNAPSHOTS = 4
+const CONTROL_LIMIT = 10
+const POST_SELECT = 'id, author_page_id, user_id, post_type, content, image_urls, status, like_count, comment_count, echo_count, created_at, updated_at'
 
 const snapshots = new Map()
 const inflightRequests = new Map()
@@ -26,6 +28,16 @@ function getCutoffAt(snapshotAt) {
     new Date(snapshotAt).getTime() -
       POST_WINDOW_DAYS * 24 * 60 * 60 * 1000
   ).toISOString()
+}
+
+function compareNewest(first, second) {
+  const difference =
+    new Date(second?.created_at || 0).getTime() -
+    new Date(first?.created_at || 0).getTime()
+
+  if (difference !== 0) return difference
+
+  return String(second?.id || '').localeCompare(String(first?.id || ''))
 }
 
 function pruneSnapshots() {
@@ -68,39 +80,90 @@ function pruneSnapshots() {
 async function loadCatalog(snapshotAt) {
   const cutoffAt = getCutoffAt(snapshotAt)
 
-  const { data: controlRows, error: controlError } = await supabase
-  .from('admin_discover_control_authors')
-  .select('author_page_id')
-  .limit(10)
+  const [
+    controlResult,
+    candidateResult,
+  ] = await Promise.all([
+    supabase
+      .from('admin_discover_control_authors')
+      .select('author_page_id')
+      .order('created_at', { ascending: false })
+      .limit(CONTROL_LIMIT),
+    supabase
+      .from('author_page_posts')
+      .select(POST_SELECT)
+      .eq('status', 'active')
+      .lte('created_at', snapshotAt)
+      .gte('created_at', cutoffAt)
+      .order('created_at', {
+        ascending: false,
+      })
+      .order('id', {
+        ascending: false,
+      })
+      .limit(CANDIDATE_LIMIT),
+  ])
 
-if (controlError) throw controlError
-const discoverControlAuthorPageIds =
-  (controlRows || []).map(row => String(row.author_page_id))
-
-  const {
-    data: candidatePosts,
-    error: postsError,
-  } = await supabase
-    .from('author_page_posts')
-    .select(
-      'id, author_page_id, user_id, post_type, content, image_urls, status, like_count, comment_count, echo_count, created_at, updated_at'
-    )
-    .eq('status', 'active')
-    .lte('created_at', snapshotAt)
-    .gte('created_at', cutoffAt)
-    .order('created_at', {
-      ascending: false,
-    })
-    .order('id', {
-      ascending: false,
-    })
-    .limit(CANDIDATE_LIMIT)
-
-  if (postsError) {
-    throw postsError
+  if (controlResult.error) {
+    throw controlResult.error
   }
 
-  const posts = candidatePosts || []
+  if (candidateResult.error) {
+    throw candidateResult.error
+  }
+
+  const discoverControlAuthorPageIds = [
+    ...new Set(
+      (controlResult.data || [])
+        .map((row) => String(row.author_page_id || ''))
+        .filter(Boolean)
+    ),
+  ].slice(0, CONTROL_LIMIT)
+
+  const controlPostResults = discoverControlAuthorPageIds.length
+    ? await Promise.all(
+        discoverControlAuthorPageIds.map((authorPageId) =>
+          supabase
+            .from('author_page_posts')
+            .select(POST_SELECT)
+            .eq('author_page_id', authorPageId)
+            .eq('status', 'active')
+            .lte('created_at', snapshotAt)
+            .order('created_at', {
+              ascending: false,
+            })
+            .order('id', {
+              ascending: false,
+            })
+            .limit(1)
+            .maybeSingle()
+        )
+      )
+    : []
+
+  for (const result of controlPostResults) {
+    if (result.error) {
+      throw result.error
+    }
+  }
+
+  const postById = new Map()
+
+  for (const post of candidateResult.data || []) {
+    if (post?.id) {
+      postById.set(String(post.id), post)
+    }
+  }
+
+  for (const result of controlPostResults) {
+    const post = result.data
+
+    if (post?.id) {
+      postById.set(String(post.id), post)
+    }
+  }
+
+  const posts = [...postById.values()].sort(compareNewest)
 
   const authorPageIds = [
     ...new Set(
