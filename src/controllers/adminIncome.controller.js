@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { verifyAdminPasskeyPin } from '../services/adminPasskeyPin.service.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 
 const PAID_MALL_STATUSES = [
   'under_review',
@@ -552,8 +553,30 @@ export async function getAdminIncomeSummary(
   req,
   res
 ) {
+  const loadSource = String(
+    req.query.load_source || 'unknown'
+  )
+    .trim()
+    .slice(0, 60)
+
+  const clientInstance = String(
+    req.query.client_instance || ''
+  )
+    .trim()
+    .slice(0, 80)
+
   try {
     const range = getDateRange(req.query)
+
+    markRequestDiagnostic({
+      feature: 'admin_income_summary',
+      income_stage: 'loading',
+      load_source: loadSource,
+      client_instance:
+        clientInstance || 'missing',
+      has_from: Boolean(range.from),
+      has_to: Boolean(range.to),
+    })
 
     const [
       episode,
@@ -611,6 +634,16 @@ export async function getAdminIncomeSummary(
         total + numberValue(source.order_count),
       0
     )
+
+    markRequestDiagnostic({
+      feature: 'admin_income_summary',
+      income_stage: 'success',
+      load_source: loadSource,
+      client_instance:
+        clientInstance || 'missing',
+      source_count: sources.length,
+      total_orders: totalOrders,
+    })
 
     return res.status(200).json({
       ok: true,
@@ -676,6 +709,18 @@ export async function getAdminIncomeSummary(
       sources,
     })
   } catch (error) {
+    markRequestDiagnostic({
+      feature: 'admin_income_summary',
+      income_stage: 'error',
+      load_source: loadSource,
+      client_instance:
+        clientInstance || 'missing',
+      error_code:
+        error?.code ||
+        error?.name ||
+        'unknown',
+    })
+
     console.error(
       'GET ADMIN INCOME SUMMARY ERROR:',
       error
