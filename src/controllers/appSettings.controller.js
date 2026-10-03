@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { getSupabaseClient } from '../config/supabase.js'
-import { getAppDefinition } from '../config/appRegistry.js'
+import { APP_REGISTRY, getAppDefinition } from '../config/appRegistry.js'
 import {
   deleteR2ObjectByUrl,
   uploadFileToR2,
@@ -37,6 +37,35 @@ function serializeApp(definition, row = null) {
     disabled: Boolean(source.disabled),
   }
 }
+
+export async function getPublicApps(req, res) {
+  try {
+    const client = requireClient()
+    const keys = APP_REGISTRY.map((app) => app.appKey)
+    const { data, error } = await client
+      .from(APP_TABLE)
+      .select('app_key,name,profile_url,hidden,disabled')
+      .in('app_key', keys)
+
+    if (error) throw error
+
+    const rows = new Map((data || []).map((row) => [row.app_key, row]))
+
+    return res.json({
+      ok: true,
+      apps: APP_REGISTRY.map((definition) =>
+        serializeApp(definition, rows.get(definition.appKey) || null)
+      ),
+    })
+  } catch (error) {
+    console.error('GET PUBLIC APPS ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load apps',
+    })
+  }
+}
+
 
 function serializeBrush(row) {
   return {
