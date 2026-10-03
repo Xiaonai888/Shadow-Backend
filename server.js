@@ -57,6 +57,7 @@ import adminLoginGuardRoutes from './src/routes/adminLoginGuard.routes.js'
 import adminDeviceAccessRoutes from './src/routes/adminDeviceAccess.routes.js'
 import adminTwoFactorRoutes from './src/routes/adminTwoFactor.routes.js'
 import adminPasskeyPinRoutes from './src/routes/adminPasskeyPin.routes.js'
+import adminDiscoverControlRoutes from './src/routes/adminDiscoverControl.routes.js'
 import contentVersionsRoutes from './src/routes/contentVersions.routes.js'
 import giftsRoutes from './src/routes/gifts.routes.js'
 import echoesRoutes from './src/routes/echoes.routes.js'
@@ -777,6 +778,7 @@ app.use('/api/admin/login-guard', adminLoginGuardRoutes)
 app.use('/api/admin/device-access', adminDeviceAccessRoutes)
 app.use('/api/admin/two-factor', adminTwoFactorRoutes)
 app.use('/api/admin/passkey-pin', adminPasskeyPinRoutes)
+app.use('/api/admin/discover-control', adminDiscoverControlRoutes)
 app.use('/api/public', contentVersionsRoutes)
 app.use('/api/public', publicAppSettingsRoutes)
 app.use('/api/gifts', giftSpamGuard, giftsRoutes)
