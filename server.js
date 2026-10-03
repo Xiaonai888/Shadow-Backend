@@ -111,6 +111,8 @@ import { startSystemUsageAnomalyDetector } from './src/services/systemUsageAnoma
 import { startSystemUsageIncidentService } from './src/services/systemUsageIncident.service.js'
 import { startSystemUsageRegressionWatch } from './src/services/systemUsageRegression.service.js'
 import adminAppSettingsRoutes from './src/routes/adminAppSettings.routes.js'
+import publicAppSettingsRoutes from './src/routes/publicAppSettings.routes.js'
+
 
 dotenv.config()
 
@@ -732,6 +734,7 @@ app.use('/api/stories', storyManagementSpamGuard, storiesRoutes)
 app.use('/api/story-media', mediaUploadRouteSpamGuard, storyMediaRoutes)
 app.use('/api/public', publicReadSpamGuard)
 app.use('/api/public', publicStoriesRoutes)
+app.use('/api/public', publicAppSettingsRoutes)
 app.use('/api/admin/exclusive', adminExclusiveRoutes)
 app.use('/api/admin/comments', adminCommentsRoutes)
 app.use('/api/admin/purchases', adminPurchasesRoutes)
