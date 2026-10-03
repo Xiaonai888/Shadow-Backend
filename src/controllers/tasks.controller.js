@@ -2,6 +2,7 @@ import { supabase } from '../config/supabase.js'
 import { ensureTaskCenterAutoRotation } from '../services/taskCenterAuto.service.js'
 import { recordWeeklyReadingEpisode } from './weeklyReading.controller.js'
 import { getActiveSessionMissions } from '../services/taskCenterMissionCache.service.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 
 
 const DAILY_REWARDS = [
@@ -1744,6 +1745,22 @@ async function updateReadingMissionProgressBatch({
 }
 
 export async function trackReadingSessionProgress(req, res) {
+  const startedAt = Date.now()
+  let sessionStage = 'start'
+  const diagnostic = {
+    lock_wait_ms: 0,
+    daily_ms: 0,
+    missions_ms: 0,
+    weekly_ms: 0,
+    matching_missions: 0,
+    claimable_missions: 0,
+    daily_seconds_added: 0,
+    daily_done: false,
+    missions_done: false,
+    weekly_attempted: false,
+    weekly_tracked: false,
+  }
+
   try {
     const userId = getUserId(req)
     const storyId = cleanUuid(req.body?.story_id)
@@ -1771,7 +1788,24 @@ export async function trackReadingSessionProgress(req, res) {
       Math.max(0, requestedSeconds)
     )
 
+    markRequestDiagnostic({
+      feature: 'reading_session_progress',
+      session_stage: 'received',
+      requested_seconds:
+        Number.isFinite(requestedSeconds)
+          ? requestedSeconds
+          : 0,
+      seconds_to_add: secondsToAdd,
+      reading_percent: readingPercent,
+      has_episode: Boolean(episodeId),
+    })
+
     if (!userId) {
+      markRequestDiagnostic({
+        session_stage: 'rejected',
+        session_result: 'missing_user',
+      })
+
       return res.status(401).json({
         ok: false,
         message: 'User is required',
@@ -1779,6 +1813,11 @@ export async function trackReadingSessionProgress(req, res) {
     }
 
     if (!storyId) {
+      markRequestDiagnostic({
+        session_stage: 'rejected',
+        session_result: 'invalid_story',
+      })
+
       return res.status(400).json({
         ok: false,
         message: 'Valid story is required',
@@ -1786,6 +1825,11 @@ export async function trackReadingSessionProgress(req, res) {
     }
 
     if (secondsToAdd <= 0) {
+      markRequestDiagnostic({
+        session_stage: 'rejected',
+        session_result: 'invalid_seconds',
+      })
+
       return res.status(400).json({
         ok: false,
         message:
@@ -1793,10 +1837,18 @@ export async function trackReadingSessionProgress(req, res) {
       })
     }
 
+    sessionStage = 'lock_wait'
+    const lockStartedAt = Date.now()
+
     const result =
       await withReadingSessionLock(
         userId,
         async () => {
+          diagnostic.lock_wait_ms =
+            Date.now() - lockStartedAt
+
+          sessionStage = 'daily_reward'
+          const dailyStartedAt = Date.now()
           const now =
             new Date().toISOString()
           const dailyReward =
@@ -1826,6 +1878,9 @@ export async function trackReadingSessionProgress(req, res) {
               nextDailySeconds -
                 currentDailySeconds
             )
+
+          diagnostic.daily_seconds_added =
+            actualDailySeconds
 
           let updatedDailyReward =
             dailyReward
@@ -1875,6 +1930,13 @@ export async function trackReadingSessionProgress(req, res) {
             }
           }
 
+          diagnostic.daily_ms =
+            Date.now() - dailyStartedAt
+
+          sessionStage = 'missions'
+          const missionsStartedAt =
+            Date.now()
+
           const missions =
             await getActiveSessionMissions()
 
@@ -1886,6 +1948,9 @@ export async function trackReadingSessionProgress(req, res) {
                   storyId
                 )
             )
+
+          diagnostic.matching_missions =
+            matchingMissions.length
 
           const {
             data: progressRows,
@@ -1929,6 +1994,9 @@ export async function trackReadingSessionProgress(req, res) {
               now,
             })
 
+          diagnostic.missions_ms =
+            Date.now() - missionsStartedAt
+
           const readingReward =
             publicReadingReward(
               updatedDailyReward
@@ -1939,6 +2007,19 @@ export async function trackReadingSessionProgress(req, res) {
                 mission.claimable &&
                 !mission.claimed
             )
+
+          diagnostic.claimable_missions =
+            claimableMissions.length
+          diagnostic.daily_done =
+            Boolean(readingReward.done_today)
+          diagnostic.missions_done =
+            updatedMissions.length === 0 ||
+            updatedMissions.every(
+              (mission) =>
+                mission.completed ||
+                mission.claimed
+            )
+
           const missionCoins =
             claimableMissions.reduce(
               (total, mission) =>
@@ -1960,6 +2041,11 @@ export async function trackReadingSessionProgress(req, res) {
             episodeId &&
             readingPercent >= 80
           ) {
+            sessionStage = 'weekly'
+            diagnostic.weekly_attempted = true
+            const weeklyStartedAt =
+              Date.now()
+
             try {
               weeklyReading =
                 await trackWeeklyReadingSessionProgress({
@@ -1968,11 +2054,24 @@ export async function trackReadingSessionProgress(req, res) {
                   episodeId,
                   readingPercent,
                 })
+
+              diagnostic.weekly_tracked =
+                Boolean(
+                  weeklyReading?.tracked
+                )
             } catch (error) {
+              diagnostic.weekly_error =
+                error?.code ||
+                error?.name ||
+                'unknown'
+
               console.error(
                 'WEEKLY_READING_SESSION_ERROR',
                 error
               )
+            } finally {
+              diagnostic.weekly_ms =
+                Date.now() - weeklyStartedAt
             }
           }
 
@@ -2001,11 +2100,33 @@ export async function trackReadingSessionProgress(req, res) {
         }
       )
 
+    markRequestDiagnostic({
+      feature: 'reading_session_progress',
+      session_stage: 'success',
+      session_result: 'success',
+      ...diagnostic,
+      total_ms:
+        Date.now() - startedAt,
+    })
+
     return res.status(200).json({
       ok: true,
       ...result,
     })
   } catch (error) {
+    markRequestDiagnostic({
+      feature: 'reading_session_progress',
+      session_stage: sessionStage,
+      session_result: 'error',
+      error_code:
+        error?.code ||
+        error?.name ||
+        'unknown',
+      ...diagnostic,
+      total_ms:
+        Date.now() - startedAt,
+    })
+
     console.error(
       'TRACK READING SESSION ERROR:',
       error
