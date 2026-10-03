@@ -29,6 +29,14 @@ export const APP_REGISTRY = Object.freeze([
     hidden: false,
     disabled: false,
   }),
+
+  Object.freeze({
+  appKey: 'pic-to-art',
+  name: 'Pic to Art',
+  profile: null,
+  hidden: false,
+  disabled: false,
+}),
 ])
 
 export function getAppDefinition(appKey) {
