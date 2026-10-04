@@ -9,6 +9,8 @@ import {
 const CHECK_INTERVAL_MS = 15000
 const STARTUP_GRACE_MS = 60000
 const SIGNAL_TTL_MS = 5 * 60 * 1000
+const REPORT_HEARTBEAT_MS = 60000
+const MAX_REJECTED_SIGNALS = 100
 
 const expectedGuards = new Set([
   'worker',
@@ -31,19 +33,50 @@ let timer = null
 let unsubscribe = null
 let startedAt = 0
 let lastFingerprint = ''
+let lastReportKey = ''
+let lastReportAt = 0
 let rejectedSignals = []
+let lastCheck = null
 
 function cleanText(value, maxLength = 500) {
   return String(value || '').trim().slice(0, maxLength)
 }
 
 function pruneSignals(now = Date.now()) {
-  rejectedSignals = rejectedSignals.filter(
-    (item) => now - item.created_at <= SIGNAL_TTL_MS
-  )
+  rejectedSignals = rejectedSignals
+    .filter((item) => now - item.created_at <= SIGNAL_TTL_MS)
+    .slice(-MAX_REJECTED_SIGNALS)
 }
 
-function reportSupervisor(state, reason, details = {}, severity = 'info') {
+function reportSupervisor(
+  state,
+  reason,
+  details = {},
+  severity = 'info',
+  force = false
+) {
+  const now = Date.now()
+  const key = JSON.stringify({
+    state,
+    reason,
+    severity,
+    missing: details.missing || [],
+    unhealthy: details.unhealthy || [],
+    unexpected: details.unexpected || [],
+    rejected: details.rejected_guard_reports || [],
+  })
+
+  if (
+    !force
+    && key === lastReportKey
+    && now - lastReportAt < REPORT_HEARTBEAT_MS
+  ) {
+    return
+  }
+
+  lastReportKey = key
+  lastReportAt = now
+
   reportGuardState({
     guard: 'security_supervisor',
     state,
@@ -62,11 +95,7 @@ function anomalyFingerprint(details) {
   })
 }
 
-function evaluateSecurityGuards() {
-  const now = Date.now()
-  pruneSignals(now)
-
-  const snapshot = getSecurityControlSnapshot()
+function buildDetails(snapshot, now) {
   const guards = new Map(
     snapshot.guards.map((item) => [item.guard, item])
   )
@@ -95,7 +124,8 @@ function evaluateSecurityGuards() {
       state: item.state,
     }))
 
-  const details = {
+  return {
+    checked_at: now,
     expected_total: expectedGuards.size + 1,
     detected_total:
       [...expectedGuards].filter((guard) => guards.has(guard)).length + 1,
@@ -108,16 +138,29 @@ function evaluateSecurityGuards() {
       created_at: item.created_at,
     })),
   }
+}
 
+function evaluateSecurityGuards() {
+  const now = Date.now()
+  pruneSignals(now)
+
+  const snapshot = getSecurityControlSnapshot()
+  const details = buildDetails(snapshot, now)
   const startupGrace = now - startedAt < STARTUP_GRACE_MS
   const anomaly =
     !startupGrace
     && (
-      missing.length > 0
-      || unhealthy.length > 0
-      || unexpected.length > 0
-      || rejectedSignals.length > 0
+      details.missing.length > 0
+      || details.unhealthy.length > 0
+      || details.unexpected.length > 0
+      || details.rejected_guard_reports.length > 0
     )
+
+  lastCheck = {
+    ...details,
+    startup_grace: startupGrace,
+    anomaly,
+  }
 
   if (!anomaly) {
     reportSupervisor(
@@ -130,7 +173,7 @@ function evaluateSecurityGuards() {
     )
 
     if (!startupGrace) lastFingerprint = ''
-    return details
+    return lastCheck
   }
 
   const fingerprint = anomalyFingerprint(details)
@@ -139,7 +182,8 @@ function evaluateSecurityGuards() {
     'critical',
     'Security Supervisor detected a guard integrity anomaly',
     details,
-    'critical'
+    'critical',
+    fingerprint !== lastFingerprint
   )
 
   if (snapshot.control.mode !== 'safe_mode') {
@@ -162,13 +206,14 @@ function evaluateSecurityGuards() {
     })
   }
 
-  return details
+  return lastCheck
 }
 
 function handleSecurityEvent(event) {
   if (
-    cleanText(event?.type, 80).toLowerCase()
-    !== 'unregistered_guard_report'
+    cleanText(event?.source, 50).toLowerCase() !== 'control_plane'
+    || cleanText(event?.type, 80).toLowerCase()
+      !== 'unregistered_guard_report'
   ) {
     return
   }
@@ -184,6 +229,7 @@ function handleSecurityEvent(event) {
     created_at: Date.now(),
   })
 
+  rejectedSignals = rejectedSignals.slice(-MAX_REJECTED_SIGNALS)
   evaluateSecurityGuards()
 }
 
@@ -204,7 +250,8 @@ export function startSecuritySupervisor() {
     {
       expected_total: expectedGuards.size + 1,
     },
-    'info'
+    'info',
+    true
   )
 
   evaluateSecurityGuards()
@@ -237,7 +284,8 @@ export function stopSecuritySupervisor() {
     'offline',
     'Security Supervisor stopped',
     {},
-    'high'
+    'high',
+    true
   )
 
   return true
@@ -252,6 +300,15 @@ export function getSecuritySupervisorSnapshot() {
       'security_supervisor',
     ],
     recent_rejected_guard_reports: [...rejectedSignals],
-    last_check: evaluateSecurityGuards(),
+    last_check: lastCheck
+      ? {
+          ...lastCheck,
+          missing: [...lastCheck.missing],
+          unhealthy: lastCheck.unhealthy.map((item) => ({ ...item })),
+          unexpected: lastCheck.unexpected.map((item) => ({ ...item })),
+          rejected_guard_reports:
+            lastCheck.rejected_guard_reports.map((item) => ({ ...item })),
+        }
+      : null,
   }
 }
