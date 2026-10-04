@@ -2,6 +2,7 @@ import express from 'express'
 import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
+import { invalidateReaderSessionValidationCache } from '../services/readerDeviceSessions.service.js'
 
 const router = express.Router()
 const MAX_ACTIVE_SESSIONS = 5
@@ -124,6 +125,16 @@ router.patch('/:deviceId/revoke', deviceRevokeLimit, async (req, res) => {
       .select('id')
 
     if (revokeError) throw revokeError
+
+    const revokedSessionIds = (revoked || [])
+      .map((session) => String(session.id || '').trim())
+      .filter(Boolean)
+
+    invalidateReaderSessionValidationCache({
+      userId,
+      deviceId: device.id,
+      sessionIds: revokedSessionIds,
+    })
 
     return res.status(200).json({
       ok: true,
