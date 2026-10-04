@@ -7,8 +7,12 @@ import {
 
 const EPISODE_COUNT_CACHE_MS = 2 * 60 * 1000
 const EPISODE_COUNT_CACHE_LIMIT = 256
+const PROGRESS_TARGET_CACHE_MS = 2 * 60 * 1000
+const PROGRESS_TARGET_CACHE_LIMIT = 1000
 const episodeCountCache = new Map()
 const episodeCountPending = new Map()
+const progressTargetCache = new Map()
+const progressTargetPending = new Map()
 let embeddedStoryJoinAvailable = true
 
 function isUuid(value) {
@@ -21,6 +25,126 @@ function clampPercent(value) {
   const number = Number(value)
   if (!Number.isFinite(number)) return 0
   return Math.min(100, Math.max(0, Math.round(number)))
+}
+
+function progressTargetKey(storyId, episodeId) {
+  return `${storyId}:${episodeId}`
+}
+
+function writeProgressTargetCache(key, value) {
+  if (progressTargetCache.size >= PROGRESS_TARGET_CACHE_LIMIT) {
+    progressTargetCache.delete(progressTargetCache.keys().next().value)
+  }
+
+  progressTargetCache.set(key, {
+    ...value,
+    expiresAt: Date.now() + PROGRESS_TARGET_CACHE_MS,
+  })
+}
+
+async function loadProgressTarget(storyId, episodeId) {
+  const key = progressTargetKey(storyId, episodeId)
+  const cached = progressTargetCache.get(key)
+
+  if (cached && cached.expiresAt > Date.now()) {
+    return {
+      story: cached.story,
+      episode: cached.episode,
+      validationPath: cached.validationPath,
+      cacheHit: true,
+    }
+  }
+
+  if (cached) {
+    progressTargetCache.delete(key)
+  }
+
+  if (progressTargetPending.has(key)) {
+    return progressTargetPending.get(key)
+  }
+
+  const pending = (async () => {
+    let story = null
+    let episode = null
+    let useSeparateQueries = !embeddedStoryJoinAvailable
+
+    if (!useSeparateQueries) {
+      const { data, error } = await supabase
+        .from('episodes')
+        .select('id, story_id, episode_number, story:stories!inner(id, total_episodes, is_adult, status, deleted_at)')
+        .eq('id', episodeId)
+        .eq('story_id', storyId)
+        .eq('status', 'published')
+        .is('deleted_at', null)
+        .eq('story.status', 'published')
+        .is('story.deleted_at', null)
+        .maybeSingle()
+
+      if (error) {
+        if (error.code !== 'PGRST200' && error.code !== 'PGRST201') {
+          throw error
+        }
+        embeddedStoryJoinAvailable = false
+        useSeparateQueries = true
+      } else if (data) {
+        episode = data
+        story = Array.isArray(data.story) ? data.story[0] : data.story
+        if (!story || story.status !== 'published' || story.deleted_at) {
+          story = null
+        }
+      }
+    }
+
+    if (useSeparateQueries) {
+      const [storyResult, episodeResult] = await Promise.all([
+        supabase
+          .from('stories')
+          .select('id, total_episodes, is_adult')
+          .eq('id', storyId)
+          .eq('status', 'published')
+          .is('deleted_at', null)
+          .maybeSingle(),
+        supabase
+          .from('episodes')
+          .select('id, story_id, episode_number')
+          .eq('id', episodeId)
+          .eq('story_id', storyId)
+          .eq('status', 'published')
+          .is('deleted_at', null)
+          .maybeSingle(),
+      ])
+
+      if (storyResult.error) throw storyResult.error
+      if (episodeResult.error) throw episodeResult.error
+      story = storyResult.data
+      episode = episodeResult.data
+    }
+
+    const result = {
+      story,
+      episode,
+      validationPath: useSeparateQueries
+        ? 'separate_queries'
+        : 'embedded_join',
+      cacheHit: false,
+    }
+
+    if (story && episode) {
+      writeProgressTargetCache(key, result)
+    }
+
+    return result
+  })()
+
+  progressTargetPending.set(key, pending)
+
+  try {
+    return await pending
+  } finally {
+    if (progressTargetPending.get(key) === pending) {
+      progressTargetPending.delete(key)
+    }
+  }
 }
 
 async function publishedEpisodeCount(storyId) {
@@ -68,9 +192,9 @@ export async function getReadingProgress(req, res) {
   try {
     const userId = String(req.user?.user_id || '').trim()
     const parsedLimit = Number(req.query.limit || 12)
-const limit = Number.isFinite(parsedLimit)
-  ? Math.min(30, Math.max(1, Math.floor(parsedLimit)))
-  : 12
+    const limit = Number.isFinite(parsedLimit)
+      ? Math.min(30, Math.max(1, Math.floor(parsedLimit)))
+      : 12
 
     const { data: rows, error } = await supabase
       .from('reading_progress')
@@ -160,16 +284,16 @@ export async function saveReadingProgress(req, res) {
     const episodeId = String(req.body.episode_id || '').trim()
     const readingPercent = clampPercent(req.body.reading_percent)
     const progressSource = String(
-  req.headers['x-shadow-reading-progress-source'] ||
-  req.body?.progress_source ||
-  'unknown'
-).trim().toLowerCase().slice(0, 40)
+      req.headers['x-shadow-reading-progress-source'] ||
+      req.body?.progress_source ||
+      'unknown'
+    ).trim().toLowerCase().slice(0, 40)
 
-markRequestDiagnostic({
-  feature: 'reading_progress_save',
-  progress_source: progressSource,
-  reading_percent: readingPercent,
-})
+    markRequestDiagnostic({
+      feature: 'reading_progress_save',
+      progress_source: progressSource,
+      reading_percent: readingPercent,
+    })
 
     if (!isUuid(storyId) || !isUuid(episodeId)) {
       return res.status(400).json({
@@ -178,80 +302,34 @@ markRequestDiagnostic({
       })
     }
 
-    let story = null
-    let episode = null
-    let useSeparateQueries = !embeddedStoryJoinAvailable
-
-    if (!useSeparateQueries) {
-      const { data, error } = await supabase
-        .from('episodes')
-        .select('id, story_id, episode_number, story:stories!inner(id, total_episodes, is_adult, status, deleted_at)')
-        .eq('id', episodeId)
-        .eq('story_id', storyId)
-        .eq('status', 'published')
-        .is('deleted_at', null)
-        .eq('story.status', 'published')
-        .is('story.deleted_at', null)
-        .maybeSingle()
-
-      if (error) {
-        if (error.code !== 'PGRST200' && error.code !== 'PGRST201') throw error
-        embeddedStoryJoinAvailable = false
-        useSeparateQueries = true
-      } else if (data) {
-        episode = data
-        story = Array.isArray(data.story) ? data.story[0] : data.story
-        if (!story || story.status !== 'published' || story.deleted_at) {
-          story = null
-        }
-      }
-    }
-
-    if (useSeparateQueries) {
-      const [storyResult, episodeResult] = await Promise.all([
-        supabase
-          .from('stories')
-          .select('id, total_episodes, is_adult')
-          .eq('id', storyId)
-          .eq('status', 'published')
-          .is('deleted_at', null)
-          .maybeSingle(),
-        supabase
-          .from('episodes')
-          .select('id, story_id, episode_number')
-          .eq('id', episodeId)
-          .eq('story_id', storyId)
-          .eq('status', 'published')
-          .is('deleted_at', null)
-          .maybeSingle(),
-      ])
-
-      if (storyResult.error) throw storyResult.error
-      if (episodeResult.error) throw episodeResult.error
-      story = storyResult.data
-      episode = episodeResult.data
-    }
+    const target = await loadProgressTarget(storyId, episodeId)
+    const story = target.story
+    const episode = target.episode
 
     markRequestDiagnostic({
-  validation_path: useSeparateQueries
-    ? 'separate_queries'
-    : 'embedded_join',
-  embedded_join_available:
-    embeddedStoryJoinAvailable,
-})
+      validation_path: target.validationPath,
+      validation_cache: target.cacheHit ? 'hit' : 'miss',
+      embedded_join_available: embeddedStoryJoinAvailable,
+    })
 
     if (!story || !episode) {
-  markRequestDiagnostic({
-    save_result: 'story_or_episode_not_found',
-  })
+      markRequestDiagnostic({
+        save_result: 'story_or_episode_not_found',
+      })
 
-  return res.status(404).json({
+      return res.status(404).json({
         ok: false,
         message: 'Story or episode was not found',
       })
     }
 
-    if (story.is_adult && !isStoryVisibleToReader(story, await getReaderAgeAccess(req))) {
+    if (
+      story.is_adult &&
+      !isStoryVisibleToReader(
+        story,
+        await getReaderAgeAccess(req)
+      )
+    ) {
       return res.status(404).json({
         ok: false,
         message: 'Story or episode was not found',
