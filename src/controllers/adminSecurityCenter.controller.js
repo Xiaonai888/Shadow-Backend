@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { getSecurityControlSnapshot } from '../services/securityControlPlane.service.js'
 import { getSecurityResponseAssistantSnapshot } from '../services/securityResponseAssistant.service.js'
+import { getSecuritySupervisorSnapshot } from '../services/securitySupervisor.service.js'
 import { getIpsSnapshot } from '../services/ipsCore.service.js'
 import { getTamperGuardSnapshot } from '../services/tamperGuard.service.js'
 import { getSecurityGateSnapshot } from '../middleware/securityGate.middleware.js'
@@ -63,6 +64,17 @@ function statusForTamper(state, activeCount) {
   return ['Protected', 'success']
 }
 
+function statusForSupervisor(supervisor, state) {
+  if (!supervisor.started || state === 'offline') return ['Offline', 'danger']
+  if (state === 'critical' || supervisor.last_check?.anomaly) {
+    return ['Incident', 'danger']
+  }
+  if (state === 'awake' || supervisor.last_check?.startup_grace) {
+    return ['Starting', 'warning']
+  }
+  return ['Healthy', 'success']
+}
+
 function titleCase(value) {
   return String(value || 'Security event')
     .replace(/_/g, ' ')
@@ -85,6 +97,8 @@ function signalTitle(event) {
     security_response_action_executed: 'Security response executed',
     security_response_action_failed: 'Security response failed',
     security_response_created: 'Security response created',
+    security_supervisor_anomaly: 'Security Supervisor detected anomaly',
+    unregistered_guard_report: 'Unregistered guard report blocked',
     safe_mode_entered: 'Safe Mode activated',
     normal_mode_restored: 'Normal mode restored',
   }
@@ -94,6 +108,21 @@ function signalTitle(event) {
 
 function signalDetail(event) {
   const payload = event.payload || {}
+
+  if (event.type === 'security_supervisor_anomaly') {
+    const missing = Array.isArray(payload.missing) ? payload.missing.length : 0
+    const unhealthy = Array.isArray(payload.unhealthy) ? payload.unhealthy.length : 0
+    const unexpected = Array.isArray(payload.unexpected) ? payload.unexpected.length : 0
+    const rejected = Array.isArray(payload.rejected_guard_reports)
+      ? payload.rejected_guard_reports.length
+      : 0
+
+    return `Missing ${missing} · Unhealthy ${unhealthy} · Unexpected ${unexpected} · Rejected ${rejected}`
+  }
+
+  if (event.type === 'unregistered_guard_report') {
+    return `Rejected guard: ${String(payload.requested_guard || 'unknown').slice(0, 80)}`
+  }
 
   return String(
     payload.path
@@ -130,6 +159,7 @@ async function getActiveWorkIncidentCount() {
 export async function getAdminSecurityCenter(req, res) {
   const control = getSecurityControlSnapshot()
   const assistant = getSecurityResponseAssistantSnapshot()
+  const supervisor = getSecuritySupervisorSnapshot()
   const ips = getIpsSnapshot()
   const tamper = getTamperGuardSnapshot()
   const gate = getSecurityGateSnapshot()
@@ -163,11 +193,15 @@ export async function getAdminSecurityCenter(req, res) {
   const spamControl = findGuard(control, 'spam_guard')
   const gateControl = findGuard(control, 'security_gate')
   const tamperControl = findGuard(control, 'tamper_guard')
+  const supervisorControl = findGuard(control, 'security_supervisor')
 
   const ipsState = ipsControl?.state || ips.state || 'sleeping'
   const spamState = spamControl?.state || 'monitoring'
   const gateState = gateControl?.state || gate.state || 'monitoring'
   const tamperState = tamperControl?.state || tamper.state || 'sleeping'
+  const supervisorState =
+    supervisorControl?.state
+    || (supervisor.started ? 'monitoring' : 'offline')
 
   const [ipsStatus, ipsTone] = statusForIps(ipsState)
   const [spamStatus, spamTone] = statusForSpam(spamState)
@@ -176,6 +210,8 @@ export async function getAdminSecurityCenter(req, res) {
     tamperState,
     tamper.active_count
   )
+  const [supervisorStatus, supervisorTone] =
+    statusForSupervisor(supervisor, supervisorState)
 
   const pendingResponses = countPendingResponses(assistant)
   const pendingApprovals = countPendingApprovals(assistant)
@@ -206,6 +242,19 @@ export async function getAdminSecurityCenter(req, res) {
       : 'success'
 
   const safeMode = control.control.mode === 'safe_mode'
+  const supervisorMissing =
+    supervisor.last_check?.missing?.length || 0
+  const supervisorUnhealthy =
+    supervisor.last_check?.unhealthy?.length || 0
+  const supervisorUnexpected =
+    supervisor.last_check?.unexpected?.length || 0
+  const supervisorRejected =
+    supervisor.last_check?.rejected_guard_reports?.length || 0
+  const supervisorIssueCount =
+    supervisorMissing
+    + supervisorUnhealthy
+    + supervisorUnexpected
+    + supervisorRejected
 
   const guards = [
     {
@@ -251,6 +300,21 @@ export async function getAdminSecurityCenter(req, res) {
       detail: `${tamper.active_count} active incident${tamper.active_count === 1 ? '' : 's'}`,
       active: tamper.active_count > 0 || ACTIVE_STATES.has(tamperState),
       updated_at: tamperControl?.updated_at || null,
+    },
+    {
+      key: 'security_supervisor',
+      name: 'Security Supervisor',
+      state: supervisorState,
+      status: supervisorStatus,
+      tone: supervisorTone,
+      description: 'Verifies all guards and detects missing, unhealthy, or fake guard identities',
+      detail: supervisorIssueCount > 0
+        ? `${supervisorIssueCount} integrity issue${supervisorIssueCount === 1 ? '' : 's'} detected`
+        : `${supervisor.expected_total} expected guards verified`,
+      active:
+        supervisorState === 'critical'
+        || supervisor.last_check?.anomaly === true,
+      updated_at: supervisorControl?.updated_at || null,
     },
     {
       key: 'control_plane',
@@ -303,6 +367,7 @@ export async function getAdminSecurityCenter(req, res) {
   ]
 
   const recentSignals = control.recent_events
+    .filter((event) => event.type !== 'guard_state_changed')
     .slice(0, 8)
     .map((event) => ({
       id: event.event_id,
