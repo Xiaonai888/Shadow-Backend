@@ -16,6 +16,7 @@ const allowedGuards = new Set([
   'security_gate',
   'tamper_guard',
   'security_response_assistant',
+  'security_supervisor',
   'control_plane',
 ])
 
@@ -132,7 +133,12 @@ export function reportGuardState({
   details = {},
   severity = 'info',
 } = {}) {
-  const name = normalizeGuard(guard)
+  const requestedName = cleanText(guard, 50).toLowerCase()
+  if (!allowedGuards.has(requestedName)) {
+    publishSecurityEvent({ source: 'control_plane', target: 'security_supervisor', type: 'unregistered_guard_report', severity: 'critical', payload: { requested_guard: requestedName || null, requested_state: cleanText(state, 40).toLowerCase() || null } })
+    return null
+  }
+  const name = requestedName
   const now = Date.now()
 
   const record = {
