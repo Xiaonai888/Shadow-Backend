@@ -4,6 +4,11 @@ import { supabase } from '../config/supabase.js'
 const SESSION_DAYS = 60
 const TOUCH_INTERVAL_MS = 5 * 60 * 1000
 const SESSION_DURATION_MS = SESSION_DAYS * 24 * 60 * 60 * 1000
+const SESSION_VALIDATION_CACHE_MS = 30 * 1000
+const SESSION_VALIDATION_CACHE_LIMIT = 5000
+
+const sessionValidationCache = new Map()
+const sessionValidationInFlight = new Map()
 
 function getDeviceInfo(req) {
   const agent = String(req.headers['user-agent'] || '').slice(0, 1000)
@@ -16,6 +21,51 @@ function getDeviceInfo(req) {
     last_user_agent: agent,
     last_ip: String(req.ip || req.socket?.remoteAddress || '').slice(0, 100),
   }
+}
+
+function sessionValidationKey(decoded) {
+  return [
+    decoded?.user_id || '',
+    decoded?.session_id || '',
+    decoded?.device_id || '',
+    decoded?.jwt_id || '',
+  ].join(':')
+}
+
+function readSessionValidationCache(decoded) {
+  const key = sessionValidationKey(decoded)
+  const cached = sessionValidationCache.get(key)
+
+  if (!cached) return null
+
+  const now = Date.now()
+  if (cached.expiresAt <= now || cached.sessionExpiresAt <= now) {
+    sessionValidationCache.delete(key)
+    return null
+  }
+
+  return cached.result
+}
+
+function writeSessionValidationCache(decoded, sessionExpiresAt) {
+  const key = sessionValidationKey(decoded)
+  const sessionExpiry = new Date(sessionExpiresAt).getTime()
+
+  if (!Number.isFinite(sessionExpiry) || sessionExpiry <= Date.now()) return
+
+  if (sessionValidationCache.size >= SESSION_VALIDATION_CACHE_LIMIT) {
+    sessionValidationCache.delete(sessionValidationCache.keys().next().value)
+  }
+
+  sessionValidationCache.set(key, {
+    result: {
+      ok: true,
+      sessionId: decoded.session_id,
+      deviceId: decoded.device_id,
+    },
+    expiresAt: Math.min(Date.now() + SESSION_VALIDATION_CACHE_MS, sessionExpiry),
+    sessionExpiresAt: sessionExpiry,
+  })
 }
 
 export async function createReaderDeviceSession({ req, userId, deviceKey }) {
@@ -48,6 +98,16 @@ export async function createReaderDeviceSession({ req, userId, deviceKey }) {
     throw new Error('Reader session registration returned incomplete data')
   }
 
+  writeSessionValidationCache(
+    {
+      user_id: userId,
+      session_id: data.session_id,
+      device_id: data.device_id,
+      jwt_id: jwtId,
+    },
+    data.expires_at
+  )
+
   return {
     deviceKey: key,
     deviceId: data.device_id,
@@ -62,50 +122,83 @@ export async function validateReaderDeviceSession(decoded) {
     return { ok: false, code: 'READER_SESSION_REQUIRED' }
   }
 
-  const { data: session, error } = await supabase
-    .from('reader_sessions')
-    .select('id,last_seen_at,expires_at,revoked_at')
-    .eq('id', decoded.session_id)
-    .eq('user_id', decoded.user_id)
-    .eq('device_id', decoded.device_id)
-    .eq('jwt_id', decoded.jwt_id)
-    .maybeSingle()
+  const cached = readSessionValidationCache(decoded)
+  if (cached) return cached
 
-  if (error) throw error
-  if (!session || session.revoked_at) {
-    return { ok: false, code: 'READER_SESSION_REVOKED' }
-  }
+  const cacheKey = sessionValidationKey(decoded)
+  const pending = sessionValidationInFlight.get(cacheKey)
+  if (pending) return pending
 
-  const nowMs = Date.now()
-  if (new Date(session.expires_at).getTime() <= nowMs) {
-    return { ok: false, code: 'READER_SESSION_EXPIRED' }
-  }
-
-  if (nowMs - new Date(session.last_seen_at).getTime() >= TOUCH_INTERVAL_MS) {
-    const now = new Date(nowMs).toISOString()
-    const { data: touched, error: touchError } = await supabase
+  const validation = (async () => {
+    const { data: session, error } = await supabase
       .from('reader_sessions')
-      .update({
-        last_seen_at: now,
-        expires_at: new Date(nowMs + SESSION_DURATION_MS).toISOString(),
-      })
-      .eq('id', session.id)
-      .is('revoked_at', null)
-      .gt('expires_at', now)
-      .select('id')
+      .select('id,last_seen_at,expires_at,revoked_at')
+      .eq('id', decoded.session_id)
+      .eq('user_id', decoded.user_id)
+      .eq('device_id', decoded.device_id)
+      .eq('jwt_id', decoded.jwt_id)
       .maybeSingle()
 
-    if (touchError) throw touchError
-    if (!touched) return { ok: false, code: 'READER_SESSION_REVOKED' }
+    if (error) throw error
+    if (!session || session.revoked_at) {
+      sessionValidationCache.delete(cacheKey)
+      return { ok: false, code: 'READER_SESSION_REVOKED' }
+    }
 
-    const { error: deviceError } = await supabase
-      .from('reader_devices')
-      .update({ last_seen_at: now })
-      .eq('id', decoded.device_id)
-      .eq('user_id', decoded.user_id)
+    const nowMs = Date.now()
+    if (new Date(session.expires_at).getTime() <= nowMs) {
+      sessionValidationCache.delete(cacheKey)
+      return { ok: false, code: 'READER_SESSION_EXPIRED' }
+    }
 
-    if (deviceError) throw deviceError
+    let sessionExpiresAt = session.expires_at
+
+    if (nowMs - new Date(session.last_seen_at).getTime() >= TOUCH_INTERVAL_MS) {
+      const now = new Date(nowMs).toISOString()
+      sessionExpiresAt = new Date(nowMs + SESSION_DURATION_MS).toISOString()
+      const { data: touched, error: touchError } = await supabase
+        .from('reader_sessions')
+        .update({
+          last_seen_at: now,
+          expires_at: sessionExpiresAt,
+        })
+        .eq('id', session.id)
+        .is('revoked_at', null)
+        .gt('expires_at', now)
+        .select('id')
+        .maybeSingle()
+
+      if (touchError) throw touchError
+      if (!touched) {
+        sessionValidationCache.delete(cacheKey)
+        return { ok: false, code: 'READER_SESSION_REVOKED' }
+      }
+
+      const { error: deviceError } = await supabase
+        .from('reader_devices')
+        .update({ last_seen_at: now })
+        .eq('id', decoded.device_id)
+        .eq('user_id', decoded.user_id)
+
+      if (deviceError) throw deviceError
+    }
+
+    writeSessionValidationCache(decoded, sessionExpiresAt)
+
+    return {
+      ok: true,
+      sessionId: session.id,
+      deviceId: decoded.device_id,
+    }
+  })()
+
+  sessionValidationInFlight.set(cacheKey, validation)
+
+  try {
+    return await validation
+  } finally {
+    if (sessionValidationInFlight.get(cacheKey) === validation) {
+      sessionValidationInFlight.delete(cacheKey)
+    }
   }
-
-  return { ok: true, sessionId: session.id, deviceId: decoded.device_id }
 }
