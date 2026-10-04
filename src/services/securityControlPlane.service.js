@@ -262,12 +262,11 @@ export function getGuardState(guard) {
 }
 
 export function isSecuritySafeMode() {
-  const controlPlaneHeartbeat = setInterval(() => {
-  reportGuardState({
-    guard: 'control_plane',
-    state: isSecuritySafeMode() ? 'safe_mode' : 'monitoring',
-    reason: 'Security Control Plane heartbeat',
-  })
+  return controlState.mode === 'safe_mode'
+}
+
+const controlPlaneHeartbeat = setInterval(() => {
+  reportGuardState({ guard: 'control_plane', state: isSecuritySafeMode() ? 'safe_mode' : 'monitoring', reason: 'Security Control Plane heartbeat' })
 }, 60000)
 controlPlaneHeartbeat.unref?.()
   return controlState.mode === 'safe_mode'
