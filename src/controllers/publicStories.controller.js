@@ -2314,25 +2314,270 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
   }
 }
 
+const EPISODE_READ_CONTEXT_CACHE_MS =
+  15 * 1000
+const EPISODE_READ_CONTEXT_CACHE_LIMIT =
+  5000
+const episodeReadContextCache =
+  new Map()
+const episodeReadContextPending =
+  new Map()
+
+function episodeReadContextKey({
+  userId,
+  storyId,
+  episodeId,
+}) {
+  return [
+    String(userId || ''),
+    String(storyId || ''),
+    String(episodeId || ''),
+  ].join(':')
+}
+
+function getEpisodeReadContextExpiry(
+  context
+) {
+  const unlockExpiresAt =
+    context?.active_unlock?.expires_at
+
+  if (!unlockExpiresAt) {
+    return (
+      Date.now() +
+      EPISODE_READ_CONTEXT_CACHE_MS
+    )
+  }
+
+  const unlockExpiry =
+    new Date(
+      unlockExpiresAt
+    ).getTime()
+
+  if (
+    !Number.isFinite(
+      unlockExpiry
+    ) ||
+    unlockExpiry <= Date.now()
+  ) {
+    return 0
+  }
+
+  return Math.min(
+    Date.now() +
+      EPISODE_READ_CONTEXT_CACHE_MS,
+    unlockExpiry
+  )
+}
+
+function canCacheEpisodeReadContext({
+  userId,
+  context,
+}) {
+  if (
+    !userId ||
+    !context ||
+    context.ok === false ||
+    !context.story ||
+    !context.episode
+  ) {
+    return false
+  }
+
+  const access =
+    buildEpisodeAccessFromReadContext(
+      context
+    )
+  const firstVisibleEpisodeId =
+    context.first_visible_episode_id ||
+    access.publishedEpisodes[0]?.id ||
+    null
+  const freeEpisode =
+    isEpisodeFreeForReader(
+      context.episode,
+      firstVisibleEpisodeId,
+      access
+    )
+
+  if (freeEpisode) {
+    return true
+  }
+
+  const activeUnlock =
+    context.active_unlock || null
+
+  if (!activeUnlock) {
+    return false
+  }
+
+  if (
+    activeUnlock.expires_at &&
+    new Date(
+      activeUnlock.expires_at
+    ).getTime() <= Date.now()
+  ) {
+    return false
+  }
+
+  return true
+}
+
+function readEpisodeReadContextCache(
+  key
+) {
+  const cached =
+    episodeReadContextCache.get(
+      key
+    )
+
+  if (!cached) {
+    return null
+  }
+
+  if (
+    cached.expiresAt <=
+    Date.now()
+  ) {
+    episodeReadContextCache.delete(
+      key
+    )
+    return null
+  }
+
+  return cached.data
+}
+
+function writeEpisodeReadContextCache({
+  key,
+  userId,
+  context,
+}) {
+  if (
+    !canCacheEpisodeReadContext({
+      userId,
+      context,
+    })
+  ) {
+    return
+  }
+
+  const expiresAt =
+    getEpisodeReadContextExpiry(
+      context
+    )
+
+  if (
+    !expiresAt ||
+    expiresAt <= Date.now()
+  ) {
+    return
+  }
+
+  if (
+    episodeReadContextCache.size >=
+    EPISODE_READ_CONTEXT_CACHE_LIMIT
+  ) {
+    episodeReadContextCache.delete(
+      episodeReadContextCache
+        .keys()
+        .next()
+        .value
+    )
+  }
+
+  episodeReadContextCache.set(
+    key,
+    {
+      data: context,
+      expiresAt,
+    }
+  )
+}
+
 async function getPublicEpisodeReadContext({
   userId,
   storyId,
   episodeId,
 }) {
-  const { data, error } = await supabase.rpc(
-    'get_public_episode_read_context_v1',
-    {
-      p_user_id: userId || null,
-      p_story_id: storyId,
-      p_episode_id: episodeId,
+  const key =
+    episodeReadContextKey({
+      userId,
+      storyId,
+      episodeId,
+    })
+
+  if (userId) {
+    const cached =
+      readEpisodeReadContextCache(
+        key
+      )
+
+    if (cached) {
+      return cached
     }
-  )
 
-  if (error) throw error
+    const pending =
+      episodeReadContextPending.get(
+        key
+      )
 
-  return Array.isArray(data)
-    ? data[0] || null
-    : data || null
+    if (pending) {
+      return pending
+    }
+  }
+
+  const request = (async () => {
+    const { data, error } =
+      await supabase.rpc(
+        'get_public_episode_read_context_v1',
+        {
+          p_user_id:
+            userId || null,
+          p_story_id:
+            storyId,
+          p_episode_id:
+            episodeId,
+        }
+      )
+
+    if (error) throw error
+
+    const context =
+      Array.isArray(data)
+        ? data[0] || null
+        : data || null
+
+    if (userId) {
+      writeEpisodeReadContextCache({
+        key,
+        userId,
+        context,
+      })
+    }
+
+    return context
+  })()
+
+  if (userId) {
+    episodeReadContextPending.set(
+      key,
+      request
+    )
+  }
+
+  try {
+    return await request
+  } finally {
+    if (
+      userId &&
+      episodeReadContextPending.get(
+        key
+      ) === request
+    ) {
+      episodeReadContextPending.delete(
+        key
+      )
+    }
+  }
 }
 
 function buildEpisodeAccessFromReadContext(
