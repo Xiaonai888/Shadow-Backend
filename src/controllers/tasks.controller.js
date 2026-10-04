@@ -3,6 +3,7 @@ import { ensureTaskCenterAutoRotation } from '../services/taskCenterAuto.service
 import { recordWeeklyReadingEpisode } from './weeklyReading.controller.js'
 import { getActiveSessionMissions } from '../services/taskCenterMissionCache.service.js'
 import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
+import { queueReadingRewardEvent } from '../services/readingRewardEventQueue.service.js'
 
 
 const DAILY_REWARDS = [
@@ -1056,17 +1057,15 @@ export async function trackReadingRewardProgress(req, res) {
       if (error) throw error
       updatedReward = data
 
-      await supabase
-        .from('reader_reading_reward_events')
-        .insert({
-          user_id: userId,
-          reward_date: reward.reward_date,
-          story_id: cleanUuid(req.body?.story_id),
-          episode_id: cleanUuid(req.body?.episode_id),
-          seconds_added: actualSecondsAdded,
-          active_seconds_after: nextSeconds,
-          event_type: 'heartbeat',
-        })
+      queueReadingRewardEvent({
+        user_id: userId,
+        reward_date: reward.reward_date,
+        story_id: cleanUuid(req.body?.story_id),
+        episode_id: cleanUuid(req.body?.episode_id),
+        seconds_added: actualSecondsAdded,
+        active_seconds_after: nextSeconds,
+        event_type: 'heartbeat',
+      })
     }
 
     return res.status(200).json({
@@ -1906,28 +1905,18 @@ export async function trackReadingSessionProgress(req, res) {
 
             updatedDailyReward = data
 
-            const {
-              error: eventError,
-            } = await supabase
-              .from(
-                'reader_reading_reward_events'
-              )
-              .insert({
-                user_id: userId,
-                reward_date:
-                  dailyReward.reward_date,
-                story_id: storyId,
-                episode_id: episodeId,
-                seconds_added:
-                  actualDailySeconds,
-                active_seconds_after:
-                  nextDailySeconds,
-                event_type: 'heartbeat',
-              })
-
-            if (eventError) {
-              throw eventError
-            }
+            queueReadingRewardEvent({
+              user_id: userId,
+              reward_date:
+                dailyReward.reward_date,
+              story_id: storyId,
+              episode_id: episodeId,
+              seconds_added:
+                actualDailySeconds,
+              active_seconds_after:
+                nextDailySeconds,
+              event_type: 'heartbeat',
+            })
           }
 
           diagnostic.daily_ms =
