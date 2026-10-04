@@ -21,6 +21,22 @@ const CAMBODIA_TIME_OFFSET_MS =
 const AD_ACCESS_MINUTES = 15
 const AD_DAILY_LIMIT = 5
 
+const UNLOCK_RULES_CACHE_MS = 30 * 1000
+const UNLOCK_RULES_ERROR_CACHE_MS = 5 * 1000
+const FREE_UNLOCK_AD_CACHE_MS = 30 * 1000
+const READ_GATE_UNLOCK_CACHE_MS = 15 * 1000
+const READ_GATE_UNLOCK_NEGATIVE_CACHE_MS = 5 * 1000
+const READ_GATE_UNLOCK_CACHE_LIMIT = 5000
+
+let unlockRulesCache = null
+let unlockRulesPending = null
+let freeUnlockAdvertisementCache = null
+let freeUnlockAdvertisementPending = null
+
+const readGateUnlockCache = new Map()
+const readGateUnlockPending = new Map()
+const readGateUnlockGeneration = new Map()
+
 const FALLBACK_RULES = {
   diamond_per_episode: 10,
   gem_per_episode: 1000,
@@ -189,16 +205,46 @@ function publicReaderAdvertisement(item) {
 }
 
 async function getFreeUnlockAdvertisement() {
-  const { data, error } = await supabase
-    .from('shadow_advertisements')
-    .select('placement, enabled, image_url, link_url, duration_seconds, close_after_seconds, frequency, updated_at')
-    .eq('placement', 'freeUnlock')
-    .eq('enabled', true)
-    .maybeSingle()
+  if (
+    freeUnlockAdvertisementCache &&
+    freeUnlockAdvertisementCache.expiresAt > Date.now()
+  ) {
+    return freeUnlockAdvertisementCache.value
+  }
 
-  if (error) throw error
+  if (freeUnlockAdvertisementPending) {
+    return freeUnlockAdvertisementPending
+  }
 
-  return publicReaderAdvertisement(data)
+  const request = (async () => {
+    const { data, error } = await supabase
+      .from('shadow_advertisements')
+      .select('placement, enabled, image_url, link_url, duration_seconds, close_after_seconds, frequency, updated_at')
+      .eq('placement', 'freeUnlock')
+      .eq('enabled', true)
+      .maybeSingle()
+
+    if (error) throw error
+
+    const value = publicReaderAdvertisement(data)
+
+    freeUnlockAdvertisementCache = {
+      value,
+      expiresAt: Date.now() + FREE_UNLOCK_AD_CACHE_MS,
+    }
+
+    return value
+  })()
+
+  freeUnlockAdvertisementPending = request
+
+  try {
+    return await request
+  } finally {
+    if (freeUnlockAdvertisementPending === request) {
+      freeUnlockAdvertisementPending = null
+    }
+  }
 }
 
 function startOfTodayIso(date = new Date()) {
@@ -490,15 +536,264 @@ function publicPackageOption({
   }
 }
 
-async function getPlatformUnlockRules() {
-  const { data, error } = await supabase
-    .from('platform_unlock_rules')
-    .select('*')
-    .eq('id', 1)
-    .maybeSingle()
+function readGateUnlockKey({
+  userId,
+  storyId,
+  episodeId,
+}) {
+  return [
+    String(userId || ''),
+    String(storyId || ''),
+    String(episodeId || ''),
+  ].join(':')
+}
 
-  if (error) return FALLBACK_RULES
-  return data || FALLBACK_RULES
+function readGateUnlockGenerationFor(key) {
+  return Number(readGateUnlockGeneration.get(key) || 0)
+}
+
+function bumpReadGateUnlockGeneration(key) {
+  if (
+    !readGateUnlockGeneration.has(key) &&
+    readGateUnlockGeneration.size >= READ_GATE_UNLOCK_CACHE_LIMIT
+  ) {
+    readGateUnlockGeneration.delete(
+      readGateUnlockGeneration.keys().next().value
+    )
+  }
+
+  readGateUnlockGeneration.set(
+    key,
+    readGateUnlockGenerationFor(key) + 1
+  )
+}
+
+function readCachedReadGateUnlock(key) {
+  const cached = readGateUnlockCache.get(key)
+
+  if (!cached) {
+    return {
+      hit: false,
+      value: null,
+    }
+  }
+
+  if (cached.expiresAt <= Date.now()) {
+    readGateUnlockCache.delete(key)
+
+    return {
+      hit: false,
+      value: null,
+    }
+  }
+
+  return {
+    hit: true,
+    value: cached.value,
+  }
+}
+
+function writeCachedReadGateUnlock(
+  key,
+  unlock
+) {
+  const now = Date.now()
+  let expiresAt =
+    now +
+    (
+      unlock
+        ? READ_GATE_UNLOCK_CACHE_MS
+        : READ_GATE_UNLOCK_NEGATIVE_CACHE_MS
+    )
+
+  if (unlock?.expires_at) {
+    const unlockExpiresAt =
+      new Date(unlock.expires_at).getTime()
+
+    if (Number.isFinite(unlockExpiresAt)) {
+      expiresAt = Math.min(
+        expiresAt,
+        unlockExpiresAt
+      )
+    }
+  }
+
+  if (expiresAt <= now) {
+    readGateUnlockCache.delete(key)
+    return
+  }
+
+  while (
+    readGateUnlockCache.size >=
+    READ_GATE_UNLOCK_CACHE_LIMIT
+  ) {
+    readGateUnlockCache.delete(
+      readGateUnlockCache.keys().next().value
+    )
+  }
+
+  readGateUnlockCache.set(key, {
+    value: unlock || null,
+    expiresAt,
+  })
+}
+
+function invalidateReadGateUnlockCache({
+  userId,
+  storyId,
+  episodeIds = [],
+}) {
+  const ids = [
+    ...new Set(
+      (episodeIds || [])
+        .map((episodeId) =>
+          String(episodeId || '').trim()
+        )
+        .filter(Boolean)
+    ),
+  ]
+
+  for (const episodeId of ids) {
+    const key = readGateUnlockKey({
+      userId,
+      storyId,
+      episodeId,
+    })
+
+    bumpReadGateUnlockGeneration(key)
+    readGateUnlockCache.delete(key)
+    readGateUnlockPending.delete(key)
+  }
+}
+
+async function getCachedReadGateUnlock({
+  userId,
+  storyId,
+  episodeId,
+}) {
+  const key = readGateUnlockKey({
+    userId,
+    storyId,
+    episodeId,
+  })
+  const cached = readCachedReadGateUnlock(key)
+
+  if (cached.hit) {
+    return cached.value
+  }
+
+  const generation =
+    readGateUnlockGenerationFor(key)
+  const pending =
+    readGateUnlockPending.get(key)
+
+  if (
+    pending &&
+    pending.generation === generation
+  ) {
+    return pending.promise
+  }
+
+  const request = (async () => {
+    const { data, error } = await supabase
+      .from('episode_unlocks')
+      .select('unlock_type, expires_at')
+      .eq('user_id', userId)
+      .eq('story_id', storyId)
+      .eq('episode_id', episodeId)
+      .eq('unlock_status', 'active')
+      .maybeSingle()
+
+    if (error) throw error
+
+    const unlock =
+      data?.expires_at &&
+      new Date(data.expires_at).getTime() <= Date.now()
+        ? null
+        : data || null
+
+    if (
+      readGateUnlockGenerationFor(key) !== generation
+    ) {
+      return getCachedReadGateUnlock({
+        userId,
+        storyId,
+        episodeId,
+      })
+    }
+
+    writeCachedReadGateUnlock(
+      key,
+      unlock
+    )
+
+    return unlock
+  })()
+
+  readGateUnlockPending.set(key, {
+    generation,
+    promise: request,
+  })
+
+  try {
+    return await request
+  } finally {
+    const current =
+      readGateUnlockPending.get(key)
+
+    if (current?.promise === request) {
+      readGateUnlockPending.delete(key)
+    }
+  }
+}
+
+async function getPlatformUnlockRules() {
+  if (
+    unlockRulesCache &&
+    unlockRulesCache.expiresAt > Date.now()
+  ) {
+    return unlockRulesCache.value
+  }
+
+  if (unlockRulesPending) {
+    return unlockRulesPending
+  }
+
+  const request = (async () => {
+    const { data, error } = await supabase
+      .from('platform_unlock_rules')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle()
+
+    const value =
+      error || !data
+        ? FALLBACK_RULES
+        : data
+
+    unlockRulesCache = {
+      value,
+      expiresAt:
+        Date.now() +
+        (
+          error
+            ? UNLOCK_RULES_ERROR_CACHE_MS
+            : UNLOCK_RULES_CACHE_MS
+        ),
+    }
+
+    return value
+  })()
+
+  unlockRulesPending = request
+
+  try {
+    return await request
+  } finally {
+    if (unlockRulesPending === request) {
+      unlockRulesPending = null
+    }
+  }
 }
 
 async function getStory(storyId) {
@@ -1288,12 +1583,27 @@ async function commitDiamondUnlockPurchase({
 
   if (error) throw error
 
+  const unlocks = Array.isArray(data?.unlocks)
+    ? data.unlocks
+    : []
+
+  invalidateReadGateUnlockCache({
+    userId,
+    storyId,
+    episodeIds:
+      unlocks.length
+        ? unlocks.map(
+            (unlock) => unlock.episode_id
+          )
+        : episodes.map(
+            (episode) => episode.id
+          ),
+  })
+
   return {
     idempotent: Boolean(data?.idempotent),
     wallet: data?.wallet || null,
-    unlocks: Array.isArray(data?.unlocks)
-      ? data.unlocks
-      : [],
+    unlocks,
     transactions: Array.isArray(data?.transactions)
       ? data.transactions
       : [],
@@ -1343,6 +1653,19 @@ async function createUnlocksAndTransactions({
       .select()
 
   if (unlockError) throw unlockError
+
+  invalidateReadGateUnlockCache({
+    userId,
+    storyId,
+    episodeIds:
+      (unlocks || []).length
+        ? (unlocks || []).map(
+            (unlock) => unlock.episode_id
+          )
+        : episodes.map(
+            (episode) => episode.id
+          ),
+  })
 
   const unlockMap = new Map(
     (unlocks || []).map((unlock) => [
@@ -1588,22 +1911,11 @@ export async function getEpisodeReadGate(req, res) {
     const { storyId, episodeId } = req.params
     const tier = getReaderTier(req)
 
-    const { data, error } = await supabase
-      .from('episode_unlocks')
-      .select('unlock_type, expires_at')
-      .eq('user_id', userId)
-      .eq('story_id', storyId)
-      .eq('episode_id', episodeId)
-      .eq('unlock_status', 'active')
-      .maybeSingle()
-
-    if (error) throw error
-
-    const unlock =
-      data?.expires_at &&
-      new Date(data.expires_at).getTime() < Date.now()
-        ? null
-        : data
+    const unlock = await getCachedReadGateUnlock({
+      userId,
+      storyId,
+      episodeId,
+    })
 
     const adPolicy = getEpisodeAdPolicy({
       tier,
@@ -1724,6 +2036,15 @@ export async function unlockEpisodePackageWithDiamonds(
         unlockScope:
           completedPurchase.request.unlock_scope,
         metadata,
+      })
+
+      invalidateReadGateUnlockCache({
+        userId,
+        storyId,
+        episodeIds:
+          completedPurchase.unlocks.map(
+            (unlock) => unlock.episode_id
+          ),
       })
 
       return res.status(200).json({
