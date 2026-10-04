@@ -9,25 +9,28 @@ export function normalizeGenrePage(value) {
 export function getGenrePageWindow(value) {
   const page = normalizeGenrePage(value)
   const from = (page - 1) * GENRE_PAGE_SIZE
+  const to = from + GENRE_PAGE_SIZE
+
   return {
     page,
     limit: GENRE_PAGE_SIZE,
     from,
-    to: from + GENRE_PAGE_SIZE,
+    to,
+    fetch_limit: to + 1,
   }
 }
 
 export function finalizeGenrePage(rows, value) {
-  const page = normalizeGenrePage(value)
   const items = Array.isArray(rows) ? rows : []
-  const stories = items.slice(0, GENRE_PAGE_SIZE)
-  const hasMore = items.length > GENRE_PAGE_SIZE
+  const { page, limit, from, to } = getGenrePageWindow(value)
+  const stories = items.slice(from, to)
+  const hasMore = items.length > to
 
   return {
     stories,
     pagination: {
       page,
-      limit: GENRE_PAGE_SIZE,
+      limit,
       has_more: hasMore,
       next_page: hasMore ? page + 1 : null,
     },
