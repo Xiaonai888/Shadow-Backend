@@ -9,6 +9,7 @@ const SESSION_VALIDATION_CACHE_LIMIT = 5000
 
 const sessionValidationCache = new Map()
 const sessionValidationInFlight = new Map()
+let sessionValidationRevision = 0
 
 function getDeviceInfo(req) {
   const agent = String(req.headers['user-agent'] || '').slice(0, 1000)
@@ -32,6 +33,15 @@ function sessionValidationKey(decoded) {
   ].join(':')
 }
 
+function sessionValidationIdentity(decoded) {
+  return {
+    userId: String(decoded?.user_id || ''),
+    sessionId: String(decoded?.session_id || ''),
+    deviceId: String(decoded?.device_id || ''),
+    jwtId: String(decoded?.jwt_id || ''),
+  }
+}
+
 function readSessionValidationCache(decoded) {
   const key = sessionValidationKey(decoded)
   const cached = sessionValidationCache.get(key)
@@ -47,7 +57,9 @@ function readSessionValidationCache(decoded) {
   return cached.result
 }
 
-function writeSessionValidationCache(decoded, sessionExpiresAt) {
+function writeSessionValidationCache(decoded, sessionExpiresAt, expectedRevision = sessionValidationRevision) {
+  if (expectedRevision !== sessionValidationRevision) return
+
   const key = sessionValidationKey(decoded)
   const sessionExpiry = new Date(sessionExpiresAt).getTime()
 
@@ -57,7 +69,10 @@ function writeSessionValidationCache(decoded, sessionExpiresAt) {
     sessionValidationCache.delete(sessionValidationCache.keys().next().value)
   }
 
+  const identity = sessionValidationIdentity(decoded)
+
   sessionValidationCache.set(key, {
+    ...identity,
     result: {
       ok: true,
       sessionId: decoded.session_id,
@@ -66,6 +81,48 @@ function writeSessionValidationCache(decoded, sessionExpiresAt) {
     expiresAt: Math.min(Date.now() + SESSION_VALIDATION_CACHE_MS, sessionExpiry),
     sessionExpiresAt: sessionExpiry,
   })
+}
+
+function matchesSessionInvalidation(entry, userId, deviceId, sessionIds) {
+  if (!entry) return false
+  if (userId && entry.userId !== userId) return false
+  if (deviceId && entry.deviceId !== deviceId) return false
+  if (sessionIds.size && !sessionIds.has(entry.sessionId)) return false
+  return true
+}
+
+export function invalidateReaderSessionValidationCache({
+  userId = '',
+  deviceId = '',
+  sessionIds = [],
+} = {}) {
+  const safeUserId = String(userId || '')
+  const safeDeviceId = String(deviceId || '')
+  const safeSessionIds = new Set(
+    (Array.isArray(sessionIds) ? sessionIds : [sessionIds])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  )
+
+  sessionValidationRevision += 1
+
+  if (!safeUserId && !safeDeviceId && safeSessionIds.size === 0) {
+    sessionValidationCache.clear()
+    sessionValidationInFlight.clear()
+    return
+  }
+
+  for (const [key, entry] of sessionValidationCache) {
+    if (matchesSessionInvalidation(entry, safeUserId, safeDeviceId, safeSessionIds)) {
+      sessionValidationCache.delete(key)
+    }
+  }
+
+  for (const [key, entry] of sessionValidationInFlight) {
+    if (matchesSessionInvalidation(entry, safeUserId, safeDeviceId, safeSessionIds)) {
+      sessionValidationInFlight.delete(key)
+    }
+  }
 }
 
 export async function createReaderDeviceSession({ req, userId, deviceKey }) {
@@ -126,8 +183,11 @@ export async function validateReaderDeviceSession(decoded) {
   if (cached) return cached
 
   const cacheKey = sessionValidationKey(decoded)
-  const pending = sessionValidationInFlight.get(cacheKey)
-  if (pending) return pending
+  const pendingEntry = sessionValidationInFlight.get(cacheKey)
+  if (pendingEntry?.promise) return pendingEntry.promise
+
+  const identity = sessionValidationIdentity(decoded)
+  const validationRevision = sessionValidationRevision
 
   const validation = (async () => {
     const { data: session, error } = await supabase
@@ -183,7 +243,7 @@ export async function validateReaderDeviceSession(decoded) {
       if (deviceError) throw deviceError
     }
 
-    writeSessionValidationCache(decoded, sessionExpiresAt)
+    writeSessionValidationCache(decoded, sessionExpiresAt, validationRevision)
 
     return {
       ok: true,
@@ -192,12 +252,17 @@ export async function validateReaderDeviceSession(decoded) {
     }
   })()
 
-  sessionValidationInFlight.set(cacheKey, validation)
+  sessionValidationInFlight.set(cacheKey, {
+    ...identity,
+    revision: validationRevision,
+    promise: validation,
+  })
 
   try {
     return await validation
   } finally {
-    if (sessionValidationInFlight.get(cacheKey) === validation) {
+    const current = sessionValidationInFlight.get(cacheKey)
+    if (current?.promise === validation) {
       sessionValidationInFlight.delete(cacheKey)
     }
   }
