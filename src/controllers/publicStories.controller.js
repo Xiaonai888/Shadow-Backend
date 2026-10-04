@@ -13,6 +13,10 @@ import {
   hideAdultStory,
   isStoryVisibleToReader,
 } from '../services/storyAgeAccess.service.js'
+import {
+  applyGenrePaginationQuery,
+  finalizeGenrePage,
+} from '../services/publicGenrePagination.service.js'
 
 const FALLBACK_UNLOCK_RULES = {
   standard_free_first_episode_monthly_limit: 10,
@@ -1064,6 +1068,14 @@ export async function getPublicStories(req, res) {
 
     const rankingOnly =
       String(req.query.ranking || '') === '1'
+    const genrePagination =
+      String(
+        req.query.genre_pagination || ''
+      ) === '1'
+    const genreCursor =
+      genrePagination
+        ? String(req.query.cursor || '').trim()
+        : ''
 
     const buildStoriesQuery = (
       genreMode = 'main'
@@ -1076,7 +1088,6 @@ export async function getPublicStories(req, res) {
         .or(
           'is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false'
         )
-        .limit(queryLimit)
 
       if (rankingOnly) {
         nextQuery = nextQuery.or(
@@ -1150,10 +1161,18 @@ export async function getPublicStories(req, res) {
         )
       }
 
+      if (genrePagination) {
+        return applyGenrePaginationQuery(
+          nextQuery,
+          genreCursor,
+          sort
+        )
+      }
+
       return applyStorySort(
         nextQuery,
         sort
-      )
+      ).limit(queryLimit)
     }
 
     const queryResults = genre
@@ -1424,16 +1443,63 @@ export async function getPublicStories(req, res) {
           )
         : sortedStories
 
+    const genrePaginationSortColumn =
+      ['updated', 'episode_updated'].includes(
+        normalizedSort
+      )
+        ? 'updated_at'
+        : 'created_at'
+
+    const genrePaginationRows =
+      genrePagination
+        ? [...rankedStories].sort(
+            (first, second) => {
+              const firstTime =
+                new Date(
+                  first?.[
+                    genrePaginationSortColumn
+                  ] || 0
+                ).getTime()
+              const secondTime =
+                new Date(
+                  second?.[
+                    genrePaginationSortColumn
+                  ] || 0
+                ).getTime()
+
+              if (firstTime !== secondTime) {
+                return secondTime - firstTime
+              }
+
+              return String(
+                second?.id || ''
+              ).localeCompare(
+                String(first?.id || '')
+              )
+            }
+          )
+        : rankedStories
+
+    const genrePageResult =
+      genrePagination
+        ? finalizeGenrePage(
+            genrePaginationRows,
+            sort
+          )
+        : null
+
     const stories =
-      isDiscoverMoreSort(sort)
-        ? pickDiscoverMoreStories(
-            rankedStories,
-            limit
-          )
-        : rankedStories.slice(
-            0,
-            limit
-          )
+      genrePageResult
+        ? genrePageResult.stories
+        : isDiscoverMoreSort(sort)
+          ? pickDiscoverMoreStories(
+              rankedStories,
+              limit
+            )
+          : rankedStories.slice(
+              0,
+              limit
+            )
 
     const authorIds = [
       ...new Set(
@@ -1502,6 +1568,12 @@ export async function getPublicStories(req, res) {
             )
           )
       ),
+      ...(genrePageResult
+        ? {
+            pagination:
+              genrePageResult.pagination,
+          }
+        : {}),
     })
   } catch (error) {
     console.error(
