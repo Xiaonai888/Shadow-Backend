@@ -665,66 +665,6 @@ async function getReactionMap(
   )
 }
   
-async function loadReplyPage({
-  parentId,
-  storyId,
-  episodeId = null,
-  page = 1,
-  limit = 5,
-}) {
-  const from =
-    (page - 1) * limit
-  const to =
-    from + limit - 1
-
-  let query = supabase
-    .from('comments')
-    .select(
-      '*, user:users(id, name, username, avatar_url, role)',
-      { count: 'exact' }
-    )
-    .eq('story_id', storyId)
-    .eq('is_hidden', false)
-    .is('deleted_at', null)
-    .eq('parent_id', parentId)
-    .order(
-      'created_at',
-      { ascending: true }
-    )
-    .range(from, to)
-
-  if (episodeId) {
-    query = query.eq(
-      'episode_id',
-      episodeId
-    )
-  } else {
-    query = query.is(
-      'episode_id',
-      null
-    )
-  }
-
-  const {
-    data,
-    error,
-    count,
-  } = await query
-
-  if (error) throw error
-
-  const rows = data || []
-  const total = Number(count || 0)
-
-  return {
-    rows,
-    total,
-    page,
-    limit,
-    hasMore:
-      page * limit < total,
-  }
-}
 
 async function loadComments({
   storyId,
