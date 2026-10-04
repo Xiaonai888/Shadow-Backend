@@ -52,6 +52,7 @@ import { sensitivePathGuard } from './src/middleware/sensitivePathGuard.middlewa
 import { workKillSwitch } from './src/middleware/workKillSwitch.middleware.js'
 import { startWorkKillSwitchService } from './src/services/workKillSwitch.service.js'
 import { startSecurityResponseAssistant } from './src/services/securityResponseAssistant.service.js'
+import { startSecuritySupervisor } from './src/services/securitySupervisor.service.js'
 import adminTaskCenterRoutes from './src/routes/adminTaskCenter.routes.js'
 import adminLoginGuardRoutes from './src/routes/adminLoginGuard.routes.js'
 import adminDeviceAccessRoutes from './src/routes/adminDeviceAccess.routes.js'
@@ -113,6 +114,7 @@ import { startSystemUsageIncidentService } from './src/services/systemUsageIncid
 import { startSystemUsageRegressionWatch } from './src/services/systemUsageRegression.service.js'
 import adminAppSettingsRoutes from './src/routes/adminAppSettings.routes.js'
 import publicAppSettingsRoutes from './src/routes/publicAppSettings.routes.js'
+
 
 
 dotenv.config()
@@ -822,6 +824,7 @@ const PORT = process.env.PORT || 5000
 
 startSecurityResponseAssistant()
 await startWorkKillSwitchService()
+startSecuritySupervisor()
 
 app.listen(PORT, () => {
   console.log(`Shadow Backend running on port ${PORT}`)
