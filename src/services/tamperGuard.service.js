@@ -16,6 +16,7 @@ const protectedTargets = new Set([
   'kill_switch',
   'security_gate',
   'tamper_guard',
+  'security_supervisor',
   'control_plane',
   'security_config',
 ])
