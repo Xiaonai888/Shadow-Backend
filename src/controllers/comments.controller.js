@@ -22,6 +22,13 @@ import {
   getActiveAuthorReaderBlock,
 } from '../utils/authorReaderCommentBlocks.js'
 
+import { loadBatchedReplyPage } from '../services/commentReplyBatch.service.js'
+
+async function loadReplyPage(args) {
+  return loadBatchedReplyPage(args)
+}
+
+
 const COMMENT_BAN_DURATIONS = {
   '1h': 60 * 60 * 1000,
   '6h': 6 * 60 * 60 * 1000,
