@@ -18,6 +18,7 @@ const expectedGuards = new Set([
   'security_gate',
   'tamper_guard',
   'security_response_assistant',
+  'control_plane',
 ])
 
 const failureStates = new Set([
@@ -248,7 +249,7 @@ export function getSecuritySupervisorSnapshot() {
     expected_total: expectedGuards.size + 1,
     expected_guards: [
       ...expectedGuards,
-      'control_plane',
+      'security_supervisor',
     ],
     recent_rejected_guard_reports: [...rejectedSignals],
     last_check: evaluateSecurityGuards(),
