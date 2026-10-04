@@ -1022,6 +1022,12 @@ export async function getPublicStories(req, res) {
       req.query.storyStatus ||
       ''
     ).trim()
+
+    const maxEpisodes = Number(
+  req.query.max_episodes ||
+  req.query.maxEpisodes
+)
+    
     const sort = String(
       req.query.sort || 'latest'
     ).trim()
@@ -1119,6 +1125,10 @@ export async function getPublicStories(req, res) {
           storyStatus
         )
       }
+
+      if (Number.isFinite(maxEpisodes) && maxEpisodes > 0) {
+  nextQuery = nextQuery.lte('total_episodes', Math.floor(maxEpisodes))
+}
 
       if (authorId) {
         nextQuery = nextQuery.eq(
