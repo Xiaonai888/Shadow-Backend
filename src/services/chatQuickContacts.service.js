@@ -3,6 +3,11 @@ import { listMyConversations } from './chat.service.js'
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const CHAT_PRESENCE_WRITE_INTERVAL_MS = 70 * 1000
+const CHAT_PRESENCE_ONLINE_WINDOW_MS = 150 * 1000
+const CHAT_PRESENCE_CACHE_LIMIT = 5000
+const chatPresenceWriteCache = new Map()
+const chatPresenceWriteInFlight = new Map()
 
 export class ChatQuickContactsError extends Error {
   constructor(status, code, message) {
@@ -53,34 +58,110 @@ function databaseFailure(error, message) {
   return wrapped
 }
 
+function readChatPresenceWrite(userId) {
+  const cached = chatPresenceWriteCache.get(userId)
+
+  if (!cached) return null
+
+  if (cached.expiresAt <= Date.now()) {
+    chatPresenceWriteCache.delete(userId)
+    return null
+  }
+
+  return cached
+}
+
+function rememberChatPresenceWrite(userId, lastSeenAt) {
+  if (chatPresenceWriteCache.size >= CHAT_PRESENCE_CACHE_LIMIT) {
+    chatPresenceWriteCache.delete(
+      chatPresenceWriteCache.keys().next().value
+    )
+  }
+
+  chatPresenceWriteCache.set(userId, {
+    lastSeenAt,
+    expiresAt:
+      Date.now() +
+      CHAT_PRESENCE_WRITE_INTERVAL_MS,
+  })
+}
+
 export async function touchChatPresence({
   userId,
 }) {
   const safeUserId = requireUserId(userId)
-  const now = new Date().toISOString()
+  const cached = readChatPresenceWrite(
+    safeUserId
+  )
 
-  const { error } = await supabase
-    .from('chat_presence')
-    .upsert(
-      {
-        user_id: safeUserId,
-        last_seen_at: now,
-        updated_at: now,
-      },
-      {
-        onConflict: 'user_id',
-      }
-    )
-
-  if (error) {
-    throw databaseFailure(
-      error,
-      'Failed to update online status'
-    )
+  if (cached) {
+    return {
+      last_seen_at: cached.lastSeenAt,
+      skipped: true,
+    }
   }
 
-  return {
-    last_seen_at: now,
+  const pending =
+    chatPresenceWriteInFlight.get(
+      safeUserId
+    )
+
+  if (pending) {
+    return pending
+  }
+
+  const request = (async () => {
+    const now =
+      new Date().toISOString()
+
+    const { error } = await supabase
+      .from('chat_presence')
+      .upsert(
+        {
+          user_id: safeUserId,
+          last_seen_at: now,
+          updated_at: now,
+        },
+        {
+          onConflict: 'user_id',
+        }
+      )
+
+    if (error) {
+      throw databaseFailure(
+        error,
+        'Failed to update online status'
+      )
+    }
+
+    rememberChatPresenceWrite(
+      safeUserId,
+      now
+    )
+
+    return {
+      last_seen_at: now,
+      skipped: false,
+    }
+  })()
+
+  chatPresenceWriteInFlight.set(
+    safeUserId,
+    request
+  )
+
+  try {
+    return await request
+  } finally {
+    if (
+      chatPresenceWriteInFlight.get(
+        safeUserId
+      ) === request
+    ) {
+      chatPresenceWriteInFlight.delete(
+        safeUserId
+      )
+    }
   }
 }
 
@@ -392,7 +473,8 @@ export async function listChatQuickContacts({
     ),
   ]
   const onlineCutoff = new Date(
-    Date.now() - 2 * 60 * 1000
+    Date.now() -
+      CHAT_PRESENCE_ONLINE_WINDOW_MS
   ).toISOString()
   const presenceResult =
     presenceUserIds.length
@@ -430,17 +512,17 @@ export async function listChatQuickContacts({
     }))
     .sort((first, second) => {
       if (
-  second.is_online !== first.is_online
-) {
-  return second.is_online ? 1 : -1
-}
+        second.is_online !== first.is_online
+      ) {
+        return second.is_online ? 1 : -1
+      }
 
-if (
-  Boolean(second.conversation_id) !==
-  Boolean(first.conversation_id)
-) {
-  return second.conversation_id ? 1 : -1
-}
+      if (
+        Boolean(second.conversation_id) !==
+        Boolean(first.conversation_id)
+      ) {
+        return second.conversation_id ? 1 : -1
+      }
 
       if (
         second.source_priority !==
