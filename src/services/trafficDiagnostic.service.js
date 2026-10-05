@@ -29,6 +29,14 @@ let traceExpensive = 0
 let traceSequence = 0
 const recentEvidence = []
 
+const ERROR_EVIDENCE_WINDOW_MS =
+  15 * 60 * 1000
+const ERROR_EVIDENCE_TTL_MS =
+  2 * 60 * 60 * 1000
+const ERROR_EVIDENCE_LIMIT = 5000
+const historicalErrorEvidence =
+  new Map()
+
 function bytesOf(value, encoding) {
   if (value === null || value === undefined) return 0
   if (Buffer.isBuffer(value)) return value.length
@@ -333,8 +341,243 @@ export function markRequestDiagnostic(details = {}) {
   return true
 }
 
+function cleanHistoricalErrorText(
+  value,
+  maxLength = 180
+) {
+  return String(value ?? '')
+    .replace(
+      /Bearer\s+\S+/gi,
+      'Bearer [redacted]'
+    )
+    .replace(
+      /\b[A-Za-z0-9_-]{48,}\b/g,
+      '[redacted]'
+    )
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength)
+}
+
+function historicalErrorClass(
+  status,
+  context
+) {
+  if (
+    Number(status) >= 500 ||
+    Number(
+      context?.external_errors || 0
+    ) > 0
+  ) {
+    return 'internal_error'
+  }
+
+  if (Number(status) === 429) {
+    return 'rate_limited'
+  }
+
+  if (Number(status) >= 400) {
+    return 'user_error'
+  }
+
+  return 'external_error'
+}
+
+function pruneHistoricalErrorEvidence(
+  now = Date.now()
+) {
+  const cutoff =
+    now - ERROR_EVIDENCE_TTL_MS
+
+  for (
+    const [key, entry]
+    of historicalErrorEvidence
+  ) {
+    if (
+      Number(
+        entry?.window_end_ms || 0
+      ) <= cutoff
+    ) {
+      historicalErrorEvidence.delete(
+        key
+      )
+    }
+  }
+
+  while (
+    historicalErrorEvidence.size >
+    ERROR_EVIDENCE_LIMIT
+  ) {
+    historicalErrorEvidence.delete(
+      historicalErrorEvidence
+        .keys()
+        .next()
+        .value
+    )
+  }
+}
+
+function recordHistoricalErrorEvidence(
+  req,
+  res,
+  context,
+  elapsedMs
+) {
+  if (
+    !context ||
+    context.route.startsWith(
+      'GET /api/admin/system-control'
+    )
+  ) {
+    return
+  }
+
+  const status =
+    Number(res.statusCode || 0)
+  const externalErrors =
+    Number(
+      context.external_errors || 0
+    )
+
+  if (
+    status < 400 &&
+    externalErrors <= 0
+  ) {
+    return
+  }
+
+  const now = Date.now()
+  const windowStart =
+    Math.floor(
+      now /
+      ERROR_EVIDENCE_WINDOW_MS
+    ) *
+    ERROR_EVIDENCE_WINDOW_MS
+  const windowEnd =
+    windowStart +
+    ERROR_EVIDENCE_WINDOW_MS
+  const failures =
+    Array.isArray(
+      context.external_failures
+    )
+      ? context.external_failures
+      : []
+  const firstFailure =
+    failures[0] || null
+  const provider =
+    cleanHistoricalErrorText(
+      firstFailure?.provider ||
+      (
+        externalErrors > 0
+          ? 'EXTERNAL'
+          : 'APPLICATION'
+      ),
+      80
+    ) || 'APPLICATION'
+  const target =
+    cleanHistoricalErrorText(
+      firstFailure?.target ||
+      context.route,
+      300
+    ) || context.route
+  const marker =
+    context.diagnostic_marker &&
+    typeof context.diagnostic_marker ===
+      'object'
+      ? context.diagnostic_marker
+      : null
+  const sampleError =
+    cleanHistoricalErrorText(
+      firstFailure?.message ||
+      firstFailure?.details ||
+      firstFailure?.code ||
+      firstFailure?.status_text ||
+      marker?.error_code ||
+      (
+        marker?.feed_result === 'error'
+          ? 'feed_result:error'
+          : ''
+      ) ||
+      `HTTP ${status || 0}`
+    )
+  const errorClass =
+    historicalErrorClass(
+      status,
+      context
+    )
+  const key = [
+    windowStart,
+    context.route,
+    status,
+    errorClass,
+    provider,
+    target,
+  ].join('\u001f')
+
+  const current =
+    historicalErrorEvidence.get(
+      key
+    ) || {
+      window_start_ms:
+        windowStart,
+      window_end_ms:
+        windowEnd,
+      route: context.route,
+      http_status: status,
+      error_class:
+        errorClass,
+      provider,
+      target,
+      count: 0,
+      first_seen_at:
+        new Date(now).toISOString(),
+      last_seen_at:
+        new Date(now).toISOString(),
+      sample_request_id:
+        context.request_id || null,
+      sample_error:
+        sampleError || null,
+      sample_duration_ms:
+        Math.max(
+          0,
+          Number(elapsedMs) || 0
+        ),
+      external_error_count: 0,
+    }
+
+  current.count += 1
+  current.last_seen_at =
+    new Date(now).toISOString()
+  current.external_error_count +=
+    externalErrors
+
+  if (
+    !current.sample_error &&
+    sampleError
+  ) {
+    current.sample_error =
+      sampleError
+  }
+
+  historicalErrorEvidence.set(
+    key,
+    current
+  )
+
+  pruneHistoricalErrorEvidence(
+    now
+  )
+}
+
 function logRequestEvidence(req, res, context, elapsedMs) {
   if (!context || context.route.startsWith('GET /api/admin/system-control')) return
+
+  recordHistoricalErrorEvidence(
+    req,
+    res,
+    context,
+    elapsedMs
+  )
 
   const status = Number(res.statusCode || 0)
   const failed = status === 429 || status >= 500 || context.external_errors > 0
@@ -436,6 +679,93 @@ function logRequestEvidence(req, res, context, elapsedMs) {
   recentEvidence.push(evidence)
   if (recentEvidence.length > RECENT_EVIDENCE_LIMIT) recentEvidence.shift()
   console.warn('SYSTEM_REQUEST_EVIDENCE', JSON.stringify(evidence))
+}
+
+export function getHistoricalErrorEvidence({
+  from,
+  to,
+} = {}) {
+  const fromMs =
+    Number.isFinite(Number(from))
+      ? Number(from)
+      : new Date(from || 0).getTime()
+  const toMs =
+    Number.isFinite(Number(to))
+      ? Number(to)
+      : new Date(
+          to || Date.now()
+        ).getTime()
+
+  if (
+    !Number.isFinite(fromMs) ||
+    !Number.isFinite(toMs) ||
+    toMs <= fromMs
+  ) {
+    return []
+  }
+
+  pruneHistoricalErrorEvidence()
+
+  return [
+    ...historicalErrorEvidence.values(),
+  ]
+    .filter(
+      (entry) =>
+        Number(
+          entry.window_end_ms || 0
+        ) > fromMs &&
+        Number(
+          entry.window_start_ms || 0
+        ) < toMs
+    )
+    .map((entry) => ({
+      window_start:
+        new Date(
+          entry.window_start_ms
+        ).toISOString(),
+      window_end:
+        new Date(
+          entry.window_end_ms
+        ).toISOString(),
+      route: entry.route,
+      http_status:
+        entry.http_status,
+      error_class:
+        entry.error_class,
+      provider:
+        entry.provider,
+      target:
+        entry.target,
+      count:
+        Number(entry.count || 0),
+      external_error_count:
+        Number(
+          entry.external_error_count || 0
+        ),
+      first_seen_at:
+        entry.first_seen_at,
+      last_seen_at:
+        entry.last_seen_at,
+      sample_request_id:
+        entry.sample_request_id,
+      sample_error:
+        entry.sample_error,
+      sample_duration_ms:
+        Number(
+          entry.sample_duration_ms || 0
+        ),
+    }))
+    .sort(
+      (a, b) =>
+        Number(b.count || 0) -
+          Number(a.count || 0) ||
+        new Date(
+          b.last_seen_at || 0
+        ).getTime() -
+          new Date(
+            a.last_seen_at || 0
+          ).getTime()
+    )
 }
 
 export function getRecentRequestEvidence() {
