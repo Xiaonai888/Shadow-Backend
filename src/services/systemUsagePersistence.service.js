@@ -1,6 +1,9 @@
 import { supabase } from '../config/supabase.js'
 import { getSystemUsageSnapshot } from './systemUsageMonitor.service.js'
 import {
+  getHistoricalErrorEvidence,
+} from './trafficDiagnostic.service.js'
+import {
   getSystemUsageRetentionPolicy,
   loadArchivedUsageHistory,
   runSystemUsageRetention,
@@ -18,6 +21,7 @@ const RETENTION_RETRY_MS = HOUR_MS
 const HISTORY_MAX_RANGE_MS = 31 * DAY_MS
 const HISTORY_PAGE_SIZE = 1000
 const MAX_DETAIL_ROWS = 100
+const MAX_ERROR_EVIDENCE_ROWS = 250
 
 let startTimer = null
 let intervalTimer = null
@@ -195,6 +199,22 @@ function buildSnapshot(now = Date.now()) {
   )
 
   const totals = summarizeMinutes(minutes)
+  const errorEvidence =
+    getHistoricalErrorEvidence({
+      from: windowStart,
+      to: windowEnd,
+    })
+      .slice(
+        0,
+        MAX_ERROR_EVIDENCE_ROWS
+      )
+  const errorEvidenceTotal =
+    errorEvidence.reduce(
+      (sum, item) =>
+        sum +
+        safeNumber(item.count),
+      0
+    )
 
   return {
     source,
@@ -202,13 +222,20 @@ function buildSnapshot(now = Date.now()) {
     windowEnd,
     totals,
     payload: {
-      version: 2,
+      version: 3,
       interval_minutes: 15,
       available_minutes: minutes.length,
       detail_limit: MAX_DETAIL_ROWS,
+      error_evidence_limit:
+        MAX_ERROR_EVIDENCE_ROWS,
+      error_evidence_total:
+        errorEvidenceTotal,
+      error_evidence:
+        errorEvidence,
       monitor: source.monitor,
       top_rows: aggregateRows(minutes),
-      provider_reconciliation: cloneProviderState(),
+      provider_reconciliation:
+        cloneProviderState(),
     },
   }
 }
