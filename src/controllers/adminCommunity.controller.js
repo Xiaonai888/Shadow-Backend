@@ -419,6 +419,10 @@ export async function getAdminCommunityReadersToday(req, res) {
     const page = toPositiveInt(req.query.page, 1, 100000)
     const limit = toPositiveInt(req.query.limit, 20, 100)
     const q = cleanSearch(req.query.q).toLowerCase()
+    const requestedView = String(req.query.view || 'activity').trim().toLowerCase()
+    const view = ['activity', 'story', 'reader'].includes(requestedView)
+      ? requestedView
+      : 'activity'
     const { startIso, nowIso } = getCambodiaDayRange()
     const activeStartIso = getActiveStartIso()
     const progressRows = []
@@ -575,18 +579,152 @@ export async function getAdminCommunityReadersToday(req, res) {
       ? Math.round((knownAges.reduce((sum, age) => sum + age, 0) / knownAges.length) * 10) / 10
       : null
 
+    if (view === 'story') {
+      const storyGroups = new Map()
+
+      for (const item of allItems) {
+        const storyId = String(item.story.id)
+
+        if (!storyGroups.has(storyId)) {
+          storyGroups.set(storyId, {
+            id: item.story.id,
+            story: item.story,
+            readers: [],
+          })
+        }
+
+        storyGroups.get(storyId).readers.push({
+          reader: item.reader,
+          episode: item.episode,
+          episode_number: item.episode_number,
+          total_episodes: item.total_episodes,
+          reading_percent: item.reading_percent,
+          last_read_at: item.last_read_at,
+          active_last_10_minutes: item.active_last_10_minutes,
+        })
+      }
+
+      items = [...storyGroups.values()]
+        .map((group) => {
+          const readers = group.readers.sort((a, b) =>
+            String(b.last_read_at || '').localeCompare(String(a.last_read_at || ''))
+          )
+          const episodeNumbers = readers
+            .map((item) => Number(item.episode_number || item.episode?.episode_number || 0))
+            .filter((value) => value > 0)
+          const latest = readers[0] || null
+          const averageProgress = readers.length
+            ? Math.round(
+                readers.reduce((sum, item) => sum + Number(item.reading_percent || 0), 0) /
+                  readers.length
+              )
+            : 0
+
+          return {
+            id: group.id,
+            story: group.story,
+            readers_today: readers.length,
+            latest_activity_at: latest?.last_read_at || null,
+            latest_episode_number: Number(
+              latest?.episode_number || latest?.episode?.episode_number || 0
+            ),
+            min_episode_number: episodeNumbers.length ? Math.min(...episodeNumbers) : 0,
+            max_episode_number: episodeNumbers.length ? Math.max(...episodeNumbers) : 0,
+            average_progress: averageProgress,
+            readers,
+          }
+        })
+        .sort((a, b) =>
+          String(b.latest_activity_at || '').localeCompare(String(a.latest_activity_at || ''))
+        )
+    } else if (view === 'reader') {
+      const readerGroups = new Map()
+
+      for (const item of allItems) {
+        const readerId = String(item.reader.id)
+
+        if (!readerGroups.has(readerId)) {
+          readerGroups.set(readerId, {
+            id: item.reader.id,
+            reader: item.reader,
+            stories: [],
+          })
+        }
+
+        readerGroups.get(readerId).stories.push({
+          story: item.story,
+          episode: item.episode,
+          episode_number: item.episode_number,
+          total_episodes: item.total_episodes,
+          reading_percent: item.reading_percent,
+          last_read_at: item.last_read_at,
+          active_last_10_minutes: item.active_last_10_minutes,
+        })
+      }
+
+      items = [...readerGroups.values()]
+        .map((group) => {
+          const stories = group.stories.sort((a, b) =>
+            String(b.last_read_at || '').localeCompare(String(a.last_read_at || ''))
+          )
+          const latest = stories[0] || null
+          const averageProgress = stories.length
+            ? Math.round(
+                stories.reduce((sum, item) => sum + Number(item.reading_percent || 0), 0) /
+                  stories.length
+              )
+            : 0
+
+          return {
+            id: group.id,
+            reader: group.reader,
+            stories_read_today: stories.length,
+            latest_activity_at: latest?.last_read_at || null,
+            latest_story: latest?.story || null,
+            latest_episode: latest?.episode || null,
+            latest_episode_number: Number(
+              latest?.episode_number || latest?.episode?.episode_number || 0
+            ),
+            average_progress: averageProgress,
+            stories,
+          }
+        })
+        .sort((a, b) =>
+          String(b.latest_activity_at || '').localeCompare(String(a.latest_activity_at || ''))
+        )
+    }
+
     if (q) {
       items = items.filter((item) => {
-        const values = [
-          item.reader.name,
-          item.reader.username,
-          item.reader.email,
-          item.reader.id,
-          item.story.title,
-          item.story.id,
-          item.episode?.title,
-          item.episode?.id,
-        ]
+        let values = []
+
+        if (view === 'story') {
+          values = [
+            item.story?.title,
+            item.story?.id,
+            item.story?.main_genre,
+            item.story?.story_language,
+            item.story?.story_type,
+          ]
+        } else if (view === 'reader') {
+          values = [
+            item.reader?.name,
+            item.reader?.username,
+            item.reader?.email,
+            item.reader?.id,
+          ]
+        } else {
+          values = [
+            item.reader?.name,
+            item.reader?.username,
+            item.reader?.email,
+            item.reader?.id,
+            item.story?.title,
+            item.story?.id,
+            item.episode?.title,
+            item.episode?.id,
+          ]
+        }
 
         return values.some((value) =>
           String(value || '').toLowerCase().includes(q)
@@ -601,6 +739,7 @@ export async function getAdminCommunityReadersToday(req, res) {
 
     return res.status(200).json({
       ok: true,
+      view,
       summary: {
         readers_today: readerIds.size,
         active_readers_last_10_minutes: activeReaderIds.size,
@@ -626,6 +765,7 @@ export async function getAdminCommunityReadersToday(req, res) {
     })
   }
 }
+
 
 
 export async function getAdminCommunityAuthors(req, res) {
