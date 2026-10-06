@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { supabase } from '../config/supabase.js'
 import {
   assertR2MediaReference,
@@ -19,6 +20,16 @@ const MAX_LIMIT = 30
 const FEED_SCAN_LIMIT = 120
 const READER_POST_SELECT =
   'id, user_id, content, image_urls, photo_metadata, visibility, comments_permission, story_sharing, publish_at, like_count, comment_count, echo_count, created_at, updated_at, deleted_at'
+
+const readerPostsRequestContext =
+  new AsyncLocalStorage()
+
+function createReaderPostsRequestState() {
+  return {
+    relationshipSnapshots:
+      new Map(),
+  }
+}
 
 const VISIBILITIES = new Set([
   'public',
@@ -432,18 +443,105 @@ async function readUsersByIds(userIds) {
   )
 }
 
+async function loadViewerRelationshipSnapshot(
+  viewerId
+) {
+  const cleanViewerId =
+    String(viewerId || '').trim()
+
+  if (!cleanViewerId) {
+    return []
+  }
+
+  const { data, error } =
+    await supabase
+      .from('user_follows')
+      .select(
+        'follower_user_id, following_user_id'
+      )
+      .or(
+        `follower_user_id.eq.${cleanViewerId},following_user_id.eq.${cleanViewerId}`
+      )
+
+  if (!error) {
+    return Array.isArray(data)
+      ? data
+      : []
+  }
+
+  const [
+    followingResult,
+    followersResult,
+  ] = await Promise.all([
+    supabase
+      .from('user_follows')
+      .select(
+        'follower_user_id, following_user_id'
+      )
+      .eq(
+        'follower_user_id',
+        cleanViewerId
+      ),
+    supabase
+      .from('user_follows')
+      .select(
+        'follower_user_id, following_user_id'
+      )
+      .eq(
+        'following_user_id',
+        cleanViewerId
+      ),
+  ])
+
+  if (followingResult.error) {
+    throw followingResult.error
+  }
+
+  if (followersResult.error) {
+    throw followersResult.error
+  }
+
+  const seen = new Set()
+  const rows = []
+
+  for (const row of [
+    ...(followingResult.data || []),
+    ...(followersResult.data || []),
+  ]) {
+    const key =
+      `${String(
+        row.follower_user_id || ''
+      )}:${String(
+        row.following_user_id || ''
+      )}`
+
+    if (!key || seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+    rows.push(row)
+  }
+
+  return rows
+}
+
 async function getRelationshipMaps(
   viewerId,
   ownerIds
 ) {
+  const viewerKey =
+    String(viewerId || '').trim()
   const ids = [
     ...new Set(
       (ownerIds || [])
-        .map((id) => String(id || ''))
+        .map((id) =>
+          String(id || '').trim()
+        )
         .filter(
           (id) =>
             id &&
-            id !== String(viewerId)
+            id !== viewerKey
         )
     ),
   ]
@@ -453,55 +551,147 @@ async function getRelationshipMaps(
     ownersFollowViewer: new Set(),
   }
 
-  if (!viewerId || !ids.length) {
+  if (!viewerKey || !ids.length) {
     return empty
   }
 
-  const [
-    viewerFollowingResult,
-    viewerFollowersResult,
-  ] = await Promise.all([
-    supabase
-      .from('user_follows')
-      .select('following_user_id')
-      .eq(
-        'follower_user_id',
-        viewerId
-      )
-      .in('following_user_id', ids),
-    supabase
-      .from('user_follows')
-      .select('follower_user_id')
-      .eq(
-        'following_user_id',
-        viewerId
-      )
-      .in('follower_user_id', ids),
-  ])
+  const requestState =
+    readerPostsRequestContext.getStore()
 
-  if (viewerFollowingResult.error) {
-    throw viewerFollowingResult.error
+  if (!requestState) {
+    const [
+      viewerFollowingResult,
+      viewerFollowersResult,
+    ] = await Promise.all([
+      supabase
+        .from('user_follows')
+        .select('following_user_id')
+        .eq(
+          'follower_user_id',
+          viewerKey
+        )
+        .in(
+          'following_user_id',
+          ids
+        ),
+      supabase
+        .from('user_follows')
+        .select('follower_user_id')
+        .eq(
+          'following_user_id',
+          viewerKey
+        )
+        .in(
+          'follower_user_id',
+          ids
+        ),
+    ])
+
+    if (viewerFollowingResult.error) {
+      throw viewerFollowingResult.error
+    }
+
+    if (viewerFollowersResult.error) {
+      throw viewerFollowersResult.error
+    }
+
+    return {
+      viewerFollowsOwners:
+        new Set(
+          (
+            viewerFollowingResult.data ||
+            []
+          ).map((row) =>
+            String(
+              row.following_user_id
+            )
+          )
+        ),
+      ownersFollowViewer:
+        new Set(
+          (
+            viewerFollowersResult.data ||
+            []
+          ).map((row) =>
+            String(
+              row.follower_user_id
+            )
+          )
+        ),
+    }
   }
 
-  if (viewerFollowersResult.error) {
-    throw viewerFollowersResult.error
+  let snapshotPromise =
+    requestState
+      .relationshipSnapshots
+      .get(viewerKey)
+
+  if (!snapshotPromise) {
+    snapshotPromise =
+      loadViewerRelationshipSnapshot(
+        viewerKey
+      )
+
+    requestState
+      .relationshipSnapshots
+      .set(
+        viewerKey,
+        snapshotPromise
+      )
+  }
+
+  let rows
+
+  try {
+    rows =
+      await snapshotPromise
+  } catch (error) {
+    requestState
+      .relationshipSnapshots
+      .delete(viewerKey)
+
+    throw error
+  }
+
+  const wanted =
+    new Set(ids)
+  const viewerFollowsOwners =
+    new Set()
+  const ownersFollowViewer =
+    new Set()
+
+  for (const row of rows) {
+    const followerId =
+      String(
+        row.follower_user_id || ''
+      )
+    const followingId =
+      String(
+        row.following_user_id || ''
+      )
+
+    if (
+      followerId === viewerKey &&
+      wanted.has(followingId)
+    ) {
+      viewerFollowsOwners.add(
+        followingId
+      )
+    }
+
+    if (
+      followingId === viewerKey &&
+      wanted.has(followerId)
+    ) {
+      ownersFollowViewer.add(
+        followerId
+      )
+    }
   }
 
   return {
-    viewerFollowsOwners: new Set(
-      (
-        viewerFollowingResult.data || []
-      ).map((row) =>
-        String(row.following_user_id)
-      )
-    ),
-    ownersFollowViewer: new Set(
-      (
-        viewerFollowersResult.data || []
-      ).map((row) =>
-        String(row.follower_user_id)
-      )
-    ),
+    viewerFollowsOwners,
+    ownersFollowViewer,
   }
 }
 
@@ -1887,6 +2077,15 @@ async function readSocialEchoPosts({
         echo.reader_post_id
       )
     )
+  const combinedReaderPostIds =
+    uniqueStrings([
+      ...readerPostIds,
+      ...linkedReaderPostIds,
+    ])
+  const readerPostIdSet =
+    new Set(readerPostIds)
+  const linkedReaderPostIdSet =
+    new Set(linkedReaderPostIds)
 
   const [
     storyResult,
@@ -1894,7 +2093,6 @@ async function readSocialEchoPosts({
     readerPostResult,
     authorPostResult,
     promotionResult,
-    linkedReaderPostResult,
   ] = await Promise.all([
     storyIds.length
       ? supabase
@@ -1920,13 +2118,14 @@ async function readSocialEchoPosts({
           data: [],
           error: null,
         }),
-    readerPostIds.length
+    combinedReaderPostIds.length
       ? supabase
           .from('reader_posts')
-          .select(
-            'id, user_id, content, image_urls, photo_metadata, visibility, publish_at, created_at, deleted_at'
+          .select(READER_POST_SELECT)
+          .in(
+            'id',
+            combinedReaderPostIds
           )
-          .in('id', readerPostIds)
           .is('deleted_at', null)
       : Promise.resolve({
           data: [],
@@ -1956,21 +2155,6 @@ async function readSocialEchoPosts({
           data: [],
           error: null,
         }),
-    linkedReaderPostIds.length
-      ? supabase
-          .from('reader_posts')
-          .select(
-            'id, user_id, content, image_urls, photo_metadata, visibility, comments_permission, story_sharing, publish_at, like_count, comment_count, echo_count, created_at, updated_at, deleted_at'
-          )
-          .in(
-            'id',
-            linkedReaderPostIds
-          )
-          .is('deleted_at', null)
-      : Promise.resolve({
-          data: [],
-          error: null,
-        }),
   ])
 
   for (const result of [
@@ -1979,7 +2163,6 @@ async function readSocialEchoPosts({
     readerPostResult,
     authorPostResult,
     promotionResult,
-    linkedReaderPostResult,
   ]) {
     if (result.error) throw result.error
   }
@@ -2043,14 +2226,26 @@ async function readSocialEchoPosts({
     authorPages = pages || []
   }
 
-  const readerPosts =
+  const combinedReaderPosts =
     readerPostResult.data || []
+  const readerPosts =
+    combinedReaderPosts.filter(
+      (post) =>
+        readerPostIdSet.has(
+          String(post.id)
+        )
+    )
   const authorPosts =
     authorPostResult.data || []
   const promotions =
     promotionResult.data || []
   const linkedReaderPosts =
-    linkedReaderPostResult.data || []
+    combinedReaderPosts.filter(
+      (post) =>
+        linkedReaderPostIdSet.has(
+          String(post.id)
+        )
+    )
 
   const linkedEchoCounts =
     await readReaderPostEchoCounts(
@@ -2900,6 +3095,19 @@ export async function getReaderPostsFeed(
   req,
   res
 ) {
+  if (
+    !readerPostsRequestContext.getStore()
+  ) {
+    return readerPostsRequestContext.run(
+      createReaderPostsRequestState(),
+      () =>
+        getReaderPostsFeed(
+          req,
+          res
+        )
+    )
+  }
+
   let feedStage = 'start'
   const feedStartedAt = Date.now()
 
@@ -3048,6 +3256,19 @@ export async function getMyReaderPosts(
   req,
   res
 ) {
+  if (
+    !readerPostsRequestContext.getStore()
+  ) {
+    return readerPostsRequestContext.run(
+      createReaderPostsRequestState(),
+      () =>
+        getMyReaderPosts(
+          req,
+          res
+        )
+    )
+  }
+
   try {
     const userId = getUserId(req)
     const limit = getLimit(
@@ -3130,6 +3351,19 @@ export async function getReaderPostsByUsername(
   req,
   res
 ) {
+  if (
+    !readerPostsRequestContext.getStore()
+  ) {
+    return readerPostsRequestContext.run(
+      createReaderPostsRequestState(),
+      () =>
+        getReaderPostsByUsername(
+          req,
+          res
+        )
+    )
+  }
+
   try {
     const viewerId = getUserId(req)
     const username =
