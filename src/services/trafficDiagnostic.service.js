@@ -106,6 +106,72 @@ function getPublicStoriesCacheState(res) {
     : 'NONE'
 }
 
+function isSseResponse(res) {
+  const contentType = String(
+    res?.getHeader?.('Content-Type') ||
+      ''
+  )
+    .trim()
+    .toLowerCase()
+
+  return contentType.includes(
+    'text/event-stream'
+  )
+}
+
+function logSseLifecycleEvidence({
+  context,
+  res,
+  startedAt,
+  elapsedMs,
+  closeReason,
+  responseBytes,
+}) {
+  if (!context) return
+
+  console.log(
+    'SYSTEM_SSE_LIFECYCLE',
+    JSON.stringify({
+      request_id:
+        context.request_id,
+      route:
+        context.route,
+      http_status:
+        Number(
+          res?.statusCode || 0
+        ),
+      connected_at:
+        new Date(
+          startedAt
+        ).toISOString(),
+      disconnected_at:
+        new Date().toISOString(),
+      lifetime_ms:
+        Math.max(
+          0,
+          Number(elapsedMs) || 0
+        ),
+      close_reason:
+        String(
+          closeReason || 'unknown'
+        ).slice(0, 40),
+      response_bytes:
+        Math.max(
+          0,
+          Number(responseBytes) || 0
+        ),
+      observed_external_calls:
+        Number(
+          context.external_calls || 0
+        ),
+      observed_external_errors:
+        Number(
+          context.external_errors || 0
+        ),
+    })
+  )
+}
+
 function destination(hostname) {
   const host = String(hostname || '').toLowerCase()
   if (!host) return 'UNKNOWN'
@@ -580,9 +646,15 @@ function logRequestEvidence(req, res, context, elapsedMs) {
   )
 
   const status = Number(res.statusCode || 0)
+  const sseResponse =
+    isSseResponse(res)
   const failed = status === 429 || status >= 500 || context.external_errors > 0
   const expensive = context.external_calls >= 8 ||
-    (elapsedMs >= TRACE_SLOW_MS && context.external_calls > 0)
+    (
+      !sseResponse &&
+      elapsedMs >= TRACE_SLOW_MS &&
+      context.external_calls > 0
+    )
   if (!failed && !expensive) return
 
   const minute = Math.floor(Date.now() / 60000)
@@ -650,7 +722,10 @@ function logRequestEvidence(req, res, context, elapsedMs) {
           ? 'request_failure'
           : supabaseCalls >= 8
             ? 'database_fanout'
-            : elapsedMs >= TRACE_SLOW_MS
+            : (
+                !sseResponse &&
+                elapsedMs >= TRACE_SLOW_MS
+              )
               ? 'slow_request'
               : 'expensive_request')
 
@@ -1098,7 +1173,9 @@ export function trafficDiagnosticMiddleware(req, res, next) {
     )
   }
 
-  const record = () => {
+  const record = (
+    closeReason = 'finish'
+  ) => {
     if (recorded) return
     recorded = true
 
@@ -1118,19 +1195,54 @@ export function trafficDiagnosticMiddleware(req, res, next) {
           )}`
         : sourceKey
 
-    const elapsedMs = Date.now() - startedAt
+    const elapsedMs =
+      Date.now() - startedAt
+    const sseResponse =
+      isSseResponse(res)
+    const usageDurationMs =
+      sseResponse
+        ? 0
+        : elapsedMs
+
     add(
       inbound,
       key,
       responseBytes,
       res.statusCode >= 400,
+      usageDurationMs
+    )
+
+    if (sseResponse) {
+      logSseLifecycleEvidence({
+        context,
+        res,
+        startedAt,
+        elapsedMs,
+        closeReason,
+        responseBytes,
+      })
+    }
+
+    logRequestEvidence(
+      req,
+      res,
+      context,
       elapsedMs
     )
-    logRequestEvidence(req, res, context, elapsedMs)
   }
 
-  res.once('finish', record)
-  res.once('close', record)
+  res.once(
+    'finish',
+    () => record('finish')
+  )
+  res.once(
+    'close',
+    () => record('close')
+  )
+  req.once(
+    'aborted',
+    () => record('aborted')
+  )
 
   requestContext.run(
     context,
