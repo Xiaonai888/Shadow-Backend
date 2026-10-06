@@ -33,6 +33,11 @@ const MAX_LIMIT = 30
 const ALL_SECTION_LIMIT = 8
 const MAX_SCAN_LIMIT = 80
 const MAX_SEARCH_TERMS = 28
+const DISCOVER_SEARCH_CACHE_MS =
+  15 * 1000
+const DISCOVER_SEARCH_CACHE_LIMIT = 300
+const discoverSearchCache = new Map()
+const discoverSearchPending = new Map()
 
 const SEARCH_SYNONYM_GROUPS = [
   ['ប្រលោមលោក', 'novel'],
@@ -367,6 +372,96 @@ async function resolveQuery(query) {
   return Array.isArray(data) ? data : []
 }
 
+function discoverSearchCacheKey({
+  keyword,
+  type,
+  requestedLimit,
+  ageAccess,
+}) {
+  const ageScope =
+    type === 'all' ||
+    type === 'stories'
+      ? ageAccess
+          ?.can_view_adult_stories
+        ? 'adult'
+        : 'standard'
+      : 'public'
+
+  return [
+    cleanKeyword(keyword)
+      .toLocaleLowerCase(),
+    type,
+    requestedLimit,
+    ageScope,
+  ].join('\u001f')
+}
+
+function pruneDiscoverSearchCache(
+  now = Date.now()
+) {
+  for (
+    const [key, entry]
+    of discoverSearchCache
+  ) {
+    if (
+      Number(entry?.expires_at || 0) <=
+      now
+    ) {
+      discoverSearchCache.delete(key)
+    }
+  }
+
+  while (
+    discoverSearchCache.size >
+    DISCOVER_SEARCH_CACHE_LIMIT
+  ) {
+    discoverSearchCache.delete(
+      discoverSearchCache
+        .keys()
+        .next()
+        .value
+    )
+  }
+}
+
+function readDiscoverSearchCache(key) {
+  const now = Date.now()
+  const entry =
+    discoverSearchCache.get(key)
+
+  if (
+    !entry ||
+    Number(entry.expires_at || 0) <=
+      now
+  ) {
+    if (entry) {
+      discoverSearchCache.delete(key)
+    }
+
+    return null
+  }
+
+  return entry.payload
+}
+
+function writeDiscoverSearchCache(
+  key,
+  payload
+) {
+  discoverSearchCache.delete(key)
+  discoverSearchCache.set(
+    key,
+    {
+      expires_at:
+        Date.now() +
+        DISCOVER_SEARCH_CACHE_MS,
+      payload,
+    }
+  )
+
+  pruneDiscoverSearchCache()
+}
+
 function publicReader(user) {
   return {
     search_type: 'reader',
@@ -588,7 +683,8 @@ async function searchStories(
   limit,
   ageAccess
 ) {
-  const scanLimit = getScanLimit(limit, keyword)
+  const scanLimit =
+    getScanLimit(limit, keyword)
   const select =
     'id, author_id, user_id, title, story_type, story_language, main_genre, story_status, tags, description, is_adult, cover_url, landscape_thumbnail_url, status, access_type, total_episodes, total_views, total_likes, total_comments, created_at, updated_at'
   const filter = makeIlikeFilter(
@@ -611,7 +707,11 @@ async function searchStories(
       .eq('status', 'published')
       .is('deleted_at', null)
 
-    query = applyAdultStoryVisibility(query, ageAccess)
+    query =
+      applyAdultStoryVisibility(
+        query,
+        ageAccess
+      )
 
     return query
   }
@@ -623,98 +723,77 @@ async function searchStories(
       resolveQuery(
         baseQuery()
           .or(filter)
-          .order('total_views', { ascending: false })
+          .order(
+            'total_views',
+            { ascending: false }
+          )
           .limit(scanLimit)
       )
     )
   }
 
-  const pageIds = matchedPages.map((page) => page.id).filter(Boolean)
+  const pageIds =
+    matchedPages
+      .map((page) => page.id)
+      .filter(Boolean)
 
   if (pageIds.length) {
     requests.push(
       resolveQuery(
         baseQuery()
-          .in('author_id', pageIds.slice(0, MAX_SCAN_LIMIT))
-          .order('total_views', { ascending: false })
+          .in(
+            'author_id',
+            pageIds.slice(
+              0,
+              MAX_SCAN_LIMIT
+            )
+          )
+          .order(
+            'total_views',
+            { ascending: false }
+          )
           .limit(scanLimit)
       )
     )
   }
 
-  const tagTerms = getSearchTerms(keyword)
+  const tagTerms =
+    getSearchTerms(keyword)
 
   if (tagTerms.length) {
     requests.push(
       resolveQuery(
         baseQuery()
-          .overlaps('tags', tagTerms)
-          .order('total_views', { ascending: false })
+          .overlaps(
+            'tags',
+            tagTerms
+          )
+          .order(
+            'total_views',
+            { ascending: false }
+          )
           .limit(scanLimit)
       )
     )
   }
 
-  const groups = requests.length
-    ? await Promise.all(requests)
-    : []
-  const stories = uniqueById(groups.flat())
-  const pageMap = new Map(
-    matchedPages.map((page) => [String(page.id), page])
+  const groups =
+    requests.length
+      ? await Promise.all(requests)
+      : []
+
+  return uniqueById(
+    groups.flat()
   )
-  const missingPageIds = [
-    ...new Set(
-      stories
-        .map((story) => String(story.author_id || ''))
-        .filter((id) => id && !pageMap.has(id))
-    ),
-  ]
-
-  if (missingPageIds.length) {
-    const missingPages = await resolveQuery(
-      supabase
-        .from('author_pages')
-        .select(
-          'id, user_id, page_name, page_username, page_slug, bio, avatar_url, cover_url, total_stories, total_followers, status, created_at, updated_at'
-        )
-        .in('id', missingPageIds)
-        .eq('status', 'active')
-    )
-
-    for (const page of missingPages) {
-      pageMap.set(String(page.id), page)
-    }
-  }
-
-  return sortBySearchScore(
-    stories,
-    keyword,
-    (story) => [
-      story.title,
-      story.description,
-      story.story_type,
-      story.story_language,
-      story.main_genre,
-      story.story_status,
-      ...(Array.isArray(story.tags) ? story.tags : []),
-      pageMap.get(String(story.author_id))?.page_name,
-      pageMap.get(String(story.author_id))?.page_username,
-    ],
-    (story) =>
-      Number(story.total_views || 0) +
-      Number(story.total_likes || 0) * 5
-  )
-    .slice(0, limit)
-    .map((story) =>
-      publicStory(
-        story,
-        pageMap.get(String(story.author_id)) || null
-      )
-    )
 }
 
-async function searchPdfs(keyword, matchedPages, limit) {
-  const scanLimit = getScanLimit(limit, keyword)
+async function searchPdfs(
+  keyword,
+  matchedPages,
+  limit
+) {
+  const scanLimit =
+    getScanLimit(limit, keyword)
   const select =
     'id, author_page_id, user_id, product_type, title, author_name, publisher, category, genre, description, cover_url, original_price, sale_price, status, page_count, created_at, updated_at'
   const filter = makeIlikeFilter(
@@ -734,88 +813,73 @@ async function searchPdfs(keyword, matchedPages, limit) {
     requests.push(
       resolveQuery(
         supabase
-          .from('author_store_products')
+          .from(
+            'author_store_products'
+          )
           .select(select)
-          .eq('product_type', 'pdf')
-          .eq('status', 'active')
+          .eq(
+            'product_type',
+            'pdf'
+          )
+          .eq(
+            'status',
+            'active'
+          )
           .or(filter)
-          .order('updated_at', { ascending: false })
+          .order(
+            'updated_at',
+            { ascending: false }
+          )
           .limit(scanLimit)
       )
     )
   }
 
-  const pageIds = matchedPages.map((page) => page.id).filter(Boolean)
+  const pageIds =
+    matchedPages
+      .map((page) => page.id)
+      .filter(Boolean)
 
   if (pageIds.length) {
     requests.push(
       resolveQuery(
         supabase
-          .from('author_store_products')
+          .from(
+            'author_store_products'
+          )
           .select(select)
-          .eq('product_type', 'pdf')
-          .eq('status', 'active')
-          .in('author_page_id', pageIds.slice(0, MAX_SCAN_LIMIT))
-          .order('updated_at', { ascending: false })
+          .eq(
+            'product_type',
+            'pdf'
+          )
+          .eq(
+            'status',
+            'active'
+          )
+          .in(
+            'author_page_id',
+            pageIds.slice(
+              0,
+              MAX_SCAN_LIMIT
+            )
+          )
+          .order(
+            'updated_at',
+            { ascending: false }
+          )
           .limit(scanLimit)
       )
     )
   }
 
-  const groups = requests.length
-    ? await Promise.all(requests)
-    : []
-  const products = uniqueById(groups.flat())
-  const pageMap = new Map(
-    matchedPages.map((page) => [String(page.id), page])
+  const groups =
+    requests.length
+      ? await Promise.all(requests)
+      : []
+
+  return uniqueById(
+    groups.flat()
   )
-  const missingPageIds = [
-    ...new Set(
-      products
-        .map((product) => String(product.author_page_id || ''))
-        .filter((id) => id && !pageMap.has(id))
-    ),
-  ]
-
-  if (missingPageIds.length) {
-    const missingPages = await resolveQuery(
-      supabase
-        .from('author_pages')
-        .select(
-          'id, user_id, page_name, page_username, page_slug, bio, avatar_url, cover_url, total_stories, total_followers, status, created_at, updated_at'
-        )
-        .in('id', missingPageIds)
-        .eq('status', 'active')
-    )
-
-    for (const page of missingPages) {
-      pageMap.set(String(page.id), page)
-    }
-  }
-
-  return sortBySearchScore(
-    products,
-    keyword,
-    (product) => [
-      product.title,
-      product.author_name,
-      product.publisher,
-      product.category,
-      product.genre,
-      product.description,
-      pageMap.get(String(product.author_page_id))?.page_name,
-      pageMap.get(String(product.author_page_id))?.page_username,
-    ],
-    (product) =>
-      Number(product.sale_price || 0) > 0 ? 1 : 0
-  )
-    .slice(0, limit)
-    .map((product) =>
-      publicPdf(
-        product,
-        pageMap.get(String(product.author_page_id)) || null
-      )
-    )
 }
 
 async function searchPosts(
@@ -824,10 +888,18 @@ async function searchPosts(
   matchedPages,
   limit
 ) {
-  const scanLimit = getScanLimit(limit, keyword)
-  const now = new Date().toISOString()
-  const userIds = matchedUsers.map((user) => user.id).filter(Boolean)
-  const pageIds = matchedPages.map((page) => page.id).filter(Boolean)
+  const scanLimit =
+    getScanLimit(limit, keyword)
+  const now =
+    new Date().toISOString()
+  const userIds =
+    matchedUsers
+      .map((user) => user.id)
+      .filter(Boolean)
+  const pageIds =
+    matchedPages
+      .map((page) => page.id)
+      .filter(Boolean)
   const readerRequests = []
   const authorRequests = []
 
@@ -839,11 +911,28 @@ async function searchPosts(
           .select(
             'id, user_id, content, image_urls, visibility, publish_at, like_count, comment_count, echo_count, created_at, updated_at'
           )
-          .eq('visibility', 'public')
-          .is('deleted_at', null)
-          .lte('publish_at', now)
-          .or(makeIlikeFilter(['content'], keyword))
-          .order('publish_at', { ascending: false })
+          .eq(
+            'visibility',
+            'public'
+          )
+          .is(
+            'deleted_at',
+            null
+          )
+          .lte(
+            'publish_at',
+            now
+          )
+          .or(
+            makeIlikeFilter(
+              ['content'],
+              keyword
+            )
+          )
+          .order(
+            'publish_at',
+            { ascending: false }
+          )
           .limit(scanLimit)
       )
     )
@@ -851,13 +940,26 @@ async function searchPosts(
     authorRequests.push(
       resolveQuery(
         supabase
-          .from('author_page_posts')
+          .from(
+            'author_page_posts'
+          )
           .select(
             'id, author_page_id, user_id, post_type, content, image_urls, status, is_pinned, like_count, comment_count, echo_count, created_at, updated_at'
           )
-          .eq('status', 'active')
-          .or(makeIlikeFilter(['content'], keyword))
-          .order('created_at', { ascending: false })
+          .eq(
+            'status',
+            'active'
+          )
+          .or(
+            makeIlikeFilter(
+              ['content'],
+              keyword
+            )
+          )
+          .order(
+            'created_at',
+            { ascending: false }
+          )
           .limit(scanLimit)
       )
     )
@@ -871,11 +973,29 @@ async function searchPosts(
           .select(
             'id, user_id, content, image_urls, visibility, publish_at, like_count, comment_count, echo_count, created_at, updated_at'
           )
-          .eq('visibility', 'public')
-          .is('deleted_at', null)
-          .lte('publish_at', now)
-          .in('user_id', userIds.slice(0, MAX_SCAN_LIMIT))
-          .order('publish_at', { ascending: false })
+          .eq(
+            'visibility',
+            'public'
+          )
+          .is(
+            'deleted_at',
+            null
+          )
+          .lte(
+            'publish_at',
+            now
+          )
+          .in(
+            'user_id',
+            userIds.slice(
+              0,
+              MAX_SCAN_LIMIT
+            )
+          )
+          .order(
+            'publish_at',
+            { ascending: false }
+          )
           .limit(scanLimit)
       )
     )
@@ -885,46 +1005,136 @@ async function searchPosts(
     authorRequests.push(
       resolveQuery(
         supabase
-          .from('author_page_posts')
+          .from(
+            'author_page_posts'
+          )
           .select(
             'id, author_page_id, user_id, post_type, content, image_urls, status, is_pinned, like_count, comment_count, echo_count, created_at, updated_at'
           )
-          .eq('status', 'active')
-          .in('author_page_id', pageIds.slice(0, MAX_SCAN_LIMIT))
-          .order('created_at', { ascending: false })
+          .eq(
+            'status',
+            'active'
+          )
+          .in(
+            'author_page_id',
+            pageIds.slice(
+              0,
+              MAX_SCAN_LIMIT
+            )
+          )
+          .order(
+            'created_at',
+            { ascending: false }
+          )
           .limit(scanLimit)
       )
     )
   }
 
-  const [readerGroups, authorGroups] = await Promise.all([
-    readerRequests.length ? Promise.all(readerRequests) : [],
-    authorRequests.length ? Promise.all(authorRequests) : [],
+  const [
+    readerGroups,
+    authorGroups,
+  ] = await Promise.all([
+    readerRequests.length
+      ? Promise.all(
+          readerRequests
+        )
+      : [],
+    authorRequests.length
+      ? Promise.all(
+          authorRequests
+        )
+      : [],
   ])
-  const readerPosts = uniqueById(readerGroups.flat())
-  const authorPosts = uniqueById(authorGroups.flat())
+
+  return {
+    readerPosts:
+      uniqueById(
+        readerGroups.flat()
+      ),
+    authorPosts:
+      uniqueById(
+        authorGroups.flat()
+      ),
+  }
+}
+
+async function buildSearchEntityMaps({
+  matchedUsers,
+  matchedPages,
+  stories,
+  pdfs,
+  posts,
+}) {
   const userMap = new Map(
-    matchedUsers.map((user) => [String(user.id), user])
+    (matchedUsers || []).map(
+      (user) => [
+        String(user.id),
+        user,
+      ]
+    )
   )
   const pageMap = new Map(
-    matchedPages.map((page) => [String(page.id), page])
+    (matchedPages || []).map(
+      (page) => [
+        String(page.id),
+        page,
+      ]
+    )
   )
+
+  const readerPosts =
+    posts?.readerPosts || []
+  const authorPosts =
+    posts?.authorPosts || []
+
   const missingUserIds = [
     ...new Set(
       readerPosts
-        .map((post) => String(post.user_id || ''))
-        .filter((id) => id && !userMap.has(id))
-    ),
-  ]
-  const missingPageIds = [
-    ...new Set(
-      authorPosts
-        .map((post) => String(post.author_page_id || ''))
-        .filter((id) => id && !pageMap.has(id))
+        .map((post) =>
+          String(
+            post.user_id || ''
+          )
+        )
+        .filter(
+          (id) =>
+            id &&
+            !userMap.has(id)
+        )
     ),
   ]
 
-  const [missingUsers, missingPages] = await Promise.all([
+  const missingPageIds = [
+    ...new Set(
+      [
+        ...(stories || []).map(
+          (story) =>
+            story.author_id
+        ),
+        ...(pdfs || []).map(
+          (product) =>
+            product.author_page_id
+        ),
+        ...authorPosts.map(
+          (post) =>
+            post.author_page_id
+        ),
+      ]
+        .map((id) =>
+          String(id || '')
+        )
+        .filter(
+          (id) =>
+            id &&
+            !pageMap.has(id)
+        )
+    ),
+  ]
+
+  const [
+    missingUsers,
+    missingPages,
+  ] = await Promise.all([
     missingUserIds.length
       ? resolveQuery(
           supabase
@@ -932,42 +1142,189 @@ async function searchPosts(
             .select(
               'id, name, username, avatar_url, bio, work, location, is_author, is_active, created_at, updated_at'
             )
-            .in('id', missingUserIds)
-            .eq('is_active', true)
+            .in(
+              'id',
+              missingUserIds
+            )
+            .eq(
+              'is_active',
+              true
+            )
         )
-      : [],
+      : Promise.resolve([]),
     missingPageIds.length
       ? resolveQuery(
           supabase
-            .from('author_pages')
+            .from(
+              'author_pages'
+            )
             .select(
               'id, user_id, page_name, page_username, page_slug, bio, avatar_url, cover_url, total_stories, total_followers, status, created_at, updated_at'
             )
-            .in('id', missingPageIds)
-            .eq('status', 'active')
+            .in(
+              'id',
+              missingPageIds
+            )
+            .eq(
+              'status',
+              'active'
+            )
         )
-      : [],
+      : Promise.resolve([]),
   ])
 
   for (const user of missingUsers) {
-    userMap.set(String(user.id), user)
+    userMap.set(
+      String(user.id),
+      user
+    )
   }
 
   for (const page of missingPages) {
-    pageMap.set(String(page.id), page)
+    pageMap.set(
+      String(page.id),
+      page
+    )
   }
+
+  return {
+    userMap,
+    pageMap,
+  }
+}
+
+function finalizeStoryResults(
+  stories,
+  keyword,
+  limit,
+  pageMap
+) {
+  return sortBySearchScore(
+    stories,
+    keyword,
+    (story) => [
+      story.title,
+      story.description,
+      story.story_type,
+      story.story_language,
+      story.main_genre,
+      story.story_status,
+      ...(Array.isArray(
+        story.tags
+      )
+        ? story.tags
+        : []),
+      pageMap.get(
+        String(
+          story.author_id
+        )
+      )?.page_name,
+      pageMap.get(
+        String(
+          story.author_id
+        )
+      )?.page_username,
+    ],
+    (story) =>
+      Number(
+        story.total_views || 0
+      ) +
+      Number(
+        story.total_likes || 0
+      ) *
+        5
+  )
+    .slice(0, limit)
+    .map((story) =>
+      publicStory(
+        story,
+        pageMap.get(
+          String(
+            story.author_id
+          )
+        ) || null
+      )
+    )
+}
+
+function finalizePdfResults(
+  products,
+  keyword,
+  limit,
+  pageMap
+) {
+  return sortBySearchScore(
+    products,
+    keyword,
+    (product) => [
+      product.title,
+      product.author_name,
+      product.publisher,
+      product.category,
+      product.genre,
+      product.description,
+      pageMap.get(
+        String(
+          product.author_page_id
+        )
+      )?.page_name,
+      pageMap.get(
+        String(
+          product.author_page_id
+        )
+      )?.page_username,
+    ],
+    (product) =>
+      Number(
+        product.sale_price || 0
+      ) > 0
+        ? 1
+        : 0
+  )
+    .slice(0, limit)
+    .map((product) =>
+      publicPdf(
+        product,
+        pageMap.get(
+          String(
+            product.author_page_id
+          )
+        ) || null
+      )
+    )
+}
+
+function finalizePostResults(
+  posts,
+  keyword,
+  limit,
+  userMap,
+  pageMap
+) {
+  const readerPosts =
+    posts?.readerPosts || []
+  const authorPosts =
+    posts?.authorPosts || []
 
   const normalizedPosts = [
     ...readerPosts.map((post) =>
       publicReaderPost(
         post,
-        userMap.get(String(post.user_id)) || null
+        userMap.get(
+          String(
+            post.user_id
+          )
+        ) || null
       )
     ),
     ...authorPosts.map((post) =>
       publicAuthorPost(
         post,
-        pageMap.get(String(post.author_page_id)) || null
+        pageMap.get(
+          String(
+            post.author_page_id
+          )
+        ) || null
       )
     ),
   ]
@@ -980,12 +1337,21 @@ async function searchPosts(
       post.owner?.name,
       post.owner?.username,
       post.owner?.page_name,
-      post.owner?.page_username,
+      post.owner
+        ?.page_username,
     ],
     (post) =>
-      Number(post.like_count || 0) +
-      Number(post.comment_count || 0) * 2 +
-      Number(post.echo_count || 0) * 3
+      Number(
+        post.like_count || 0
+      ) +
+      Number(
+        post.comment_count || 0
+      ) *
+        2 +
+      Number(
+        post.echo_count || 0
+      ) *
+        3
   ).slice(0, limit)
 }
 
@@ -1013,132 +1379,384 @@ function emptyPayload(keyword, type) {
   }
 }
 
-export async function searchDiscover(req, res) {
-  try {
-    const keyword = cleanKeyword(req.query.q || req.query.search)
-    const type = normalizeType(req.query.type)
-    const requestedLimit = getLimit(req.query.limit)
-    const sectionLimit =
-      type === 'all'
-        ? Math.min(ALL_SECTION_LIMIT, requestedLimit)
-        : requestedLimit
+async function buildDiscoverSearchPayload({
+  req,
+  keyword,
+  type,
+  requestedLimit,
+  sectionLimit,
+  ageAccess,
+}) {
+  const scanLimit =
+    getScanLimit(
+      requestedLimit,
+      keyword
+    )
 
-    if (!keyword || !cleanFilterKeyword(keyword)) {
-      return res.status(200).json(emptyPayload(keyword, type))
-    }
-
-    const scanLimit = getScanLimit(requestedLimit, keyword)
-    const matchedUsers = await searchMatchingUsers(keyword, scanLimit)
-    const matchedUserIds = matchedUsers.map((user) => user.id).filter(Boolean)
-    const matchedPages = await searchMatchingPages(
+  const matchedUsers =
+    await searchMatchingUsers(
       keyword,
-      matchedUserIds,
       scanLimit
     )
-    const ageAccess = await getReaderAgeAccess(req)
-    const sections = {
-      readers: [],
-      pages: [],
-      stories: [],
-      pdfs: [],
-      posts: [],
-    }
 
-    if (type === 'all' || type === 'readers') {
-      sections.readers = matchedUsers
-        .slice(0, sectionLimit)
+  const matchedUserIds =
+    matchedUsers
+      .map((user) => user.id)
+      .filter(Boolean)
+
+  const matchedPages =
+    type === 'readers'
+      ? []
+      : await searchMatchingPages(
+          keyword,
+          matchedUserIds,
+          scanLimit
+        )
+
+  const sections = {
+    readers: [],
+    pages: [],
+    stories: [],
+    pdfs: [],
+    posts: [],
+  }
+
+  if (
+    type === 'all' ||
+    type === 'readers'
+  ) {
+    sections.readers =
+      matchedUsers
+        .slice(
+          0,
+          sectionLimit
+        )
         .map(publicReader)
-    }
+  }
 
-    if (type === 'all' || type === 'pages') {
-      sections.pages = matchedPages
-        .slice(0, sectionLimit)
+  if (
+    type === 'all' ||
+    type === 'pages'
+  ) {
+    sections.pages =
+      matchedPages
+        .slice(
+          0,
+          sectionLimit
+        )
         .map(publicPage)
-    }
+  }
 
-    const requests = []
+  let storyCandidates = []
+  let pdfCandidates = []
+  let postCandidates = {
+    readerPosts: [],
+    authorPosts: [],
+  }
 
-    if (type === 'all' || type === 'stories') {
-      requests.push(
-        searchStories(
+  const requests = []
+
+  if (
+    type === 'all' ||
+    type === 'stories'
+  ) {
+    requests.push(
+      searchStories(
+        keyword,
+        matchedPages,
+        sectionLimit,
+        ageAccess
+      ).then((items) => {
+        storyCandidates =
+          items
+      })
+    )
+  }
+
+  if (
+    type === 'all' ||
+    type === 'pdfs'
+  ) {
+    requests.push(
+      searchPdfs(
+        keyword,
+        matchedPages,
+        sectionLimit
+      ).then((items) => {
+        pdfCandidates =
+          items
+      })
+    )
+  }
+
+  if (
+    type === 'all' ||
+    type === 'posts'
+  ) {
+    requests.push(
+      searchPosts(
+        keyword,
+        matchedUsers,
+        matchedPages,
+        sectionLimit
+      ).then((items) => {
+        postCandidates =
+          items
+      })
+    )
+  }
+
+  await Promise.all(requests)
+
+  if (requests.length) {
+    const {
+      userMap,
+      pageMap,
+    } =
+      await buildSearchEntityMaps({
+        matchedUsers,
+        matchedPages,
+        stories:
+          storyCandidates,
+        pdfs:
+          pdfCandidates,
+        posts:
+          postCandidates,
+      })
+
+    if (
+      type === 'all' ||
+      type === 'stories'
+    ) {
+      sections.stories =
+        finalizeStoryResults(
+          storyCandidates,
           keyword,
-          matchedPages,
           sectionLimit,
-          ageAccess
-        ).then((items) => {
-          sections.stories = items
-        })
-      )
+          pageMap
+        )
     }
 
-    if (type === 'all' || type === 'pdfs') {
-      requests.push(
-        searchPdfs(
+    if (
+      type === 'all' ||
+      type === 'pdfs'
+    ) {
+      sections.pdfs =
+        finalizePdfResults(
+          pdfCandidates,
           keyword,
-          matchedPages,
-          sectionLimit
-        ).then((items) => {
-          sections.pdfs = items
-        })
-      )
+          sectionLimit,
+          pageMap
+        )
     }
 
-    if (type === 'all' || type === 'posts') {
-      requests.push(
-        searchPosts(
+    if (
+      type === 'all' ||
+      type === 'posts'
+    ) {
+      sections.posts =
+        finalizePostResults(
+          postCandidates,
           keyword,
-          matchedUsers,
-          matchedPages,
-          sectionLimit
-        ).then((items) => {
-          sections.posts = items
-        })
-      )
+          sectionLimit,
+          userMap,
+          pageMap
+        )
     }
+  }
 
-    await Promise.all(requests)
+  const results =
+    type === 'all'
+      ? [
+          ...sections.readers,
+          ...sections.pages,
+          ...sections.stories,
+          ...sections.pdfs,
+          ...sections.posts,
+        ]
+      : sections[type]
 
-    const results =
-      type === 'all'
-        ? [
-            ...sections.readers,
-            ...sections.pages,
-            ...sections.stories,
-            ...sections.pdfs,
-            ...sections.posts,
-          ]
-        : sections[type]
+  const shownCounts = {
+    readers:
+      sections.readers.length,
+    pages:
+      sections.pages.length,
+    stories:
+      sections.stories.length,
+    pdfs:
+      sections.pdfs.length,
+    posts:
+      sections.posts.length,
+  }
 
-    const shownCounts = {
-      readers: sections.readers.length,
-      pages: sections.pages.length,
-      stories: sections.stories.length,
-      pdfs: sections.pdfs.length,
-      posts: sections.posts.length,
-    }
-
-    
-
-    return res.status(200).json({
-      ok: true,
-      query: keyword,
-      type,
-      results,
-      sections,
-      shown_counts: {
-        ...shownCounts,
-        all: Object.values(shownCounts).reduce(
-          (sum, value) => sum + Number(value || 0),
+  return {
+    ok: true,
+    query: keyword,
+    type,
+    results,
+    sections,
+    shown_counts: {
+      ...shownCounts,
+      all:
+        Object.values(
+          shownCounts
+        ).reduce(
+          (sum, value) =>
+            sum +
+            Number(value || 0),
           0
         ),
-      },
-    })
+    },
+  }
+}
+
+export async function searchDiscover(
+  req,
+  res
+) {
+  try {
+    const keyword =
+      cleanKeyword(
+        req.query.q ||
+          req.query.search
+      )
+    const type =
+      normalizeType(
+        req.query.type
+      )
+    const requestedLimit =
+      getLimit(
+        req.query.limit
+      )
+    const sectionLimit =
+      type === 'all'
+        ? Math.min(
+            ALL_SECTION_LIMIT,
+            requestedLimit
+          )
+        : requestedLimit
+
+    if (
+      !keyword ||
+      !cleanFilterKeyword(
+        keyword
+      )
+    ) {
+      return res
+        .status(200)
+        .json(
+          emptyPayload(
+            keyword,
+            type
+          )
+        )
+    }
+
+    const ageAccess =
+      type === 'all' ||
+      type === 'stories'
+        ? await getReaderAgeAccess(
+            req
+          )
+        : null
+
+    const cacheKey =
+      discoverSearchCacheKey({
+        keyword,
+        type,
+        requestedLimit,
+        ageAccess,
+      })
+
+    const cached =
+      readDiscoverSearchCache(
+        cacheKey
+      )
+
+    if (cached) {
+      res.set(
+        'X-Shadow-Discover-Search-Cache',
+        'HIT'
+      )
+
+      return res
+        .status(200)
+        .json(cached)
+    }
+
+    const pending =
+      discoverSearchPending.get(
+        cacheKey
+      )
+
+    if (pending) {
+      res.set(
+        'X-Shadow-Discover-Search-Cache',
+        'WAIT'
+      )
+
+      const payload =
+        await pending
+
+      return res
+        .status(200)
+        .json(payload)
+    }
+
+    const request =
+      buildDiscoverSearchPayload({
+        req,
+        keyword,
+        type,
+        requestedLimit,
+        sectionLimit,
+        ageAccess,
+      })
+
+    discoverSearchPending.set(
+      cacheKey,
+      request
+    )
+
+    try {
+      const payload =
+        await request
+
+      writeDiscoverSearchCache(
+        cacheKey,
+        payload
+      )
+
+      res.set(
+        'X-Shadow-Discover-Search-Cache',
+        'MISS'
+      )
+
+      return res
+        .status(200)
+        .json(payload)
+    } finally {
+      if (
+        discoverSearchPending.get(
+          cacheKey
+        ) === request
+      ) {
+        discoverSearchPending.delete(
+          cacheKey
+        )
+      }
+    }
   } catch (error) {
-    console.error('DISCOVER SEARCH ERROR:', error)
+    console.error(
+      'DISCOVER SEARCH ERROR:',
+      error
+    )
 
     return res.status(500).json({
       ok: false,
-      message: error.message || 'Failed to search Shadow',
+      message:
+        error.message ||
+        'Failed to search Shadow',
     })
   }
 }
