@@ -4,6 +4,7 @@ import { recordWeeklyReadingEpisode } from './weeklyReading.controller.js'
 import { getActiveSessionMissions } from '../services/taskCenterMissionCache.service.js'
 import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 import { queueReadingRewardEvent } from '../services/readingRewardEventQueue.service.js'
+import { getTaskCenterDailyStoryAssignment } from '../services/taskCenterDailyStoryAssignment.service.js'
 
 
 const DAILY_REWARDS = [
@@ -618,6 +619,7 @@ export async function getTaskOverview(req, res) {
       readingRewardResult,
       readingMissionsResult,
       claimResult,
+      dailyStoryAssignmentResult,
     ] = await Promise.allSettled([
       getUserProfile(userId),
       getOrCreateWallet(userId),
@@ -631,6 +633,7 @@ export async function getTaskOverview(req, res) {
         .eq('user_id', userId)
         .eq('reward_date', todayKey)
         .maybeSingle(),
+      getTaskCenterDailyStoryAssignment(),
     ])
 
     const user =
@@ -665,6 +668,11 @@ export async function getTaskOverview(req, res) {
         ? claimResult.value?.data || null
         : null
 
+    const dailyStoryAssignment =
+      dailyStoryAssignmentResult.status === 'fulfilled'
+        ? dailyStoryAssignmentResult.value
+        : null
+
     const dailyVoteReward = buildDailyVoteRewardState({
       user,
       wallet,
@@ -683,6 +691,7 @@ export async function getTaskOverview(req, res) {
       reading_reward: publicReadingReward(readingRewardRow),
       missions: readingMissions,
       daily_vote_reward: dailyVoteReward,
+      daily_story_assignment: dailyStoryAssignment,
     })
   } catch (error) {
     console.error('GET TASK OVERVIEW ERROR:', error)
