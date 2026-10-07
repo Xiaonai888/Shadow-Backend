@@ -4,8 +4,7 @@ import { incrementAuthorPageAnalytics } from './authorAnalytics.service.js'
 const MICRO_BATCH_WINDOW_MS = 150
 const MICRO_BATCH_MAX_ITEMS = 500
 
-const pendingByKey = new Map()
-let pendingWaiters = []
+let pendingJobs = []
 let flushTimer = null
 let flushRunning = false
 
@@ -50,15 +49,89 @@ function clearFlushTimer() {
   flushTimer = null
 }
 
-function scheduleFlush(delay = MICRO_BATCH_WINDOW_MS) {
+function scheduleFlush(
+  delay = MICRO_BATCH_WINDOW_MS
+) {
   if (flushRunning) return
 
-  clearFlushTimer()
+  if (delay === 0) {
+    clearFlushTimer()
+  } else if (flushTimer) {
+    return
+  }
 
   flushTimer = setTimeout(() => {
     flushTimer = null
     void flushPending()
   }, Math.max(0, delay))
+}
+
+function takeNextBatch() {
+  const jobs = []
+  let eventCount = 0
+
+  while (pendingJobs.length) {
+    const next =
+      pendingJobs[0]
+
+    const nextCount =
+      next.events.length
+
+    if (
+      jobs.length &&
+      eventCount + nextCount >
+        MICRO_BATCH_MAX_ITEMS
+    ) {
+      break
+    }
+
+    pendingJobs.shift()
+    jobs.push(next)
+    eventCount += nextCount
+
+    if (
+      eventCount >=
+      MICRO_BATCH_MAX_ITEMS
+    ) {
+      break
+    }
+  }
+
+  return jobs
+}
+
+function buildFinalEvents(jobs) {
+  const finalByKey =
+    new Map()
+
+  for (const job of jobs) {
+    for (const event of job.events) {
+      const key =
+        eventKey(
+          event.user_id,
+          event.story_id
+        )
+
+      const current =
+        finalByKey.get(key)
+
+      if (
+        isNewerEvent(
+          event,
+          current
+        )
+      ) {
+        finalByKey.set(
+          key,
+          event
+        )
+      }
+    }
+  }
+
+  return [
+    ...finalByKey.values(),
+  ]
 }
 
 async function recordAnalytics(results) {
@@ -69,8 +142,12 @@ async function recordAnalytics(results) {
       item?.ok !== true ||
       item?.action !== 'added' ||
       !item?.author_id ||
-      String(item?.owner_user_id || '') ===
-        String(item?.user_id || '')
+      String(
+        item?.owner_user_id || ''
+      ) ===
+        String(
+          item?.user_id || ''
+        )
     ) {
       continue
     }
@@ -101,7 +178,7 @@ async function recordAnalytics(results) {
 async function flushPending() {
   if (
     flushRunning ||
-    !pendingByKey.size
+    !pendingJobs.length
   ) {
     return
   }
@@ -109,16 +186,11 @@ async function flushPending() {
   flushRunning = true
   clearFlushTimer()
 
-  const items = [
-    ...pendingByKey.values(),
-  ]
+  const jobs =
+    takeNextBatch()
 
-  pendingByKey.clear()
-
-  const waiters =
-    pendingWaiters
-
-  pendingWaiters = []
+  const items =
+    buildFinalEvents(jobs)
 
   try {
     const {
@@ -131,7 +203,9 @@ async function flushPending() {
       }
     )
 
-    if (error) throw error
+    if (error) {
+      throw error
+    }
 
     const results =
       Array.isArray(data)
@@ -158,19 +232,24 @@ async function flushPending() {
       )
     }
 
-    for (const waiter of waiters) {
-      const waiterResults =
-        waiter.keys.map(
-          (key) =>
-            resultByKey.get(key)
+    for (const job of jobs) {
+      const jobResults =
+        job.events.map(
+          (event) =>
+            resultByKey.get(
+              eventKey(
+                event.user_id,
+                event.story_id
+              )
+            )
         )
 
       if (
-        waiterResults.some(
+        jobResults.some(
           (item) => !item
         )
       ) {
-        waiter.reject(
+        job.reject(
           new Error(
             'Reaction batch result is incomplete'
           )
@@ -178,9 +257,9 @@ async function flushPending() {
         continue
       }
 
-      waiter.resolve({
+      job.resolve({
         results:
-          waiterResults,
+          jobResults,
         processed_at:
           new Date().toISOString(),
       })
@@ -190,15 +269,20 @@ async function flushPending() {
       results
     )
   } catch (error) {
-    for (const waiter of waiters) {
-      waiter.reject(error)
+    for (const job of jobs) {
+      job.reject(error)
     }
   } finally {
     flushRunning = false
 
-    if (pendingByKey.size) {
+    if (pendingJobs.length) {
       scheduleFlush(
-        pendingByKey.size >=
+        pendingJobs.reduce(
+          (total, job) =>
+            total +
+            job.events.length,
+          0
+        ) >=
           MICRO_BATCH_MAX_ITEMS
           ? 0
           : MICRO_BATCH_WINDOW_MS
@@ -219,62 +303,32 @@ export function enqueueStoryReactionBatch({
       ? events
       : []
 
+  const normalizedEvents =
+    safeEvents
+      .map((event) => {
+        const storyId =
+          String(
+            event?.story_id || ''
+          ).trim()
+
+        if (!storyId) {
+          return null
+        }
+
+        return {
+          ...event,
+          user_id:
+            safeUserId,
+          story_id:
+            storyId,
+        }
+      })
+      .filter(Boolean)
+
   if (
     !safeUserId ||
-    !safeEvents.length
+    !normalizedEvents.length
   ) {
-    return Promise.resolve({
-      results: [],
-      processed_at:
-        new Date().toISOString(),
-    })
-  }
-
-  const keys = []
-
-  for (const event of safeEvents) {
-    const storyId =
-      String(
-        event?.story_id || ''
-      ).trim()
-
-    if (!storyId) continue
-
-    const key =
-      eventKey(
-        safeUserId,
-        storyId
-      )
-
-    const next = {
-      ...event,
-      user_id:
-        safeUserId,
-      story_id:
-        storyId,
-    }
-
-    const current =
-      pendingByKey.get(key)
-
-    if (
-      isNewerEvent(
-        next,
-        current
-      )
-    ) {
-      pendingByKey.set(
-        key,
-        next
-      )
-    }
-
-    if (!keys.includes(key)) {
-      keys.push(key)
-    }
-  }
-
-  if (!keys.length) {
     return Promise.resolve({
       results: [],
       processed_at:
@@ -285,16 +339,25 @@ export function enqueueStoryReactionBatch({
   const promise =
     new Promise(
       (resolve, reject) => {
-        pendingWaiters.push({
-          keys,
+        pendingJobs.push({
+          events:
+            normalizedEvents,
           resolve,
           reject,
         })
       }
     )
 
+  const pendingEventCount =
+    pendingJobs.reduce(
+      (total, job) =>
+        total +
+        job.events.length,
+      0
+    )
+
   if (
-    pendingByKey.size >=
+    pendingEventCount >=
     MICRO_BATCH_MAX_ITEMS
   ) {
     scheduleFlush(0)
