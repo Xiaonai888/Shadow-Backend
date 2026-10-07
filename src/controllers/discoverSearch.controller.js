@@ -377,6 +377,7 @@ function discoverSearchCacheKey({
   type,
   requestedLimit,
   ageAccess,
+  storySetting,
 }) {
   const ageScope =
     type === 'all' ||
@@ -388,14 +389,14 @@ function discoverSearchCacheKey({
       : 'public'
 
   return [
-    cleanKeyword(keyword)
-      .toLocaleLowerCase(),
-    type,
-    requestedLimit,
-    ageScope,
-  ].join('\u001f')
-}
-
+  cleanKeyword(keyword)
+    .toLocaleLowerCase(),
+  type,
+  requestedLimit,
+  ageScope,
+  storySetting || '',
+].join('\u001f')
+  
 function pruneDiscoverSearchCache(
   now = Date.now()
 ) {
@@ -681,7 +682,8 @@ async function searchStories(
   keyword,
   matchedPages,
   limit,
-  ageAccess
+  ageAccess,
+  storySetting
 ) {
   const scanLimit =
     getScanLimit(limit, keyword)
@@ -707,13 +709,20 @@ async function searchStories(
       .eq('status', 'published')
       .is('deleted_at', null)
 
-    query =
-      applyAdultStoryVisibility(
-        query,
-        ageAccess
-      )
+   query =
+  applyAdultStoryVisibility(
+    query,
+    ageAccess
+  )
 
-    return query
+if (storySetting) {
+  query = query.contains(
+    'story_settings',
+    [storySetting]
+  )
+}
+
+return query
   }
 
   const requests = []
@@ -1386,6 +1395,7 @@ async function buildDiscoverSearchPayload({
   requestedLimit,
   sectionLimit,
   ageAccess,
+  storySetting,
 }) {
   const scanLimit =
     getScanLimit(
