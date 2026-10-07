@@ -1609,12 +1609,57 @@ export async function getEpisodeComments(
   }
 }
 
+const COMMENT_EVENT_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function normalizeCommentEventId(value) {
+  const eventId =
+    String(value || '').trim()
+
+  if (!eventId) {
+    return {
+      valid: true,
+      value: null,
+    }
+  }
+
+  return {
+    valid:
+      COMMENT_EVENT_ID_PATTERN.test(
+        eventId
+      ),
+    value:
+      COMMENT_EVENT_ID_PATTERN.test(
+        eventId
+      )
+        ? eventId
+        : null,
+  }
+}
+
+function normalizeCommentOccurredAt(value) {
+  const timestamp =
+    Date.parse(
+      String(value || '')
+    )
+
+  if (!Number.isFinite(timestamp)) {
+    return null
+  }
+
+  return new Date(
+    timestamp
+  ).toISOString()
+}
+
 async function createComment({
   story,
   episodeId = null,
   userId,
   text,
   parentId,
+  clientEventId = null,
+  occurredAt = null,
 }) {
   if (parentId) {
     const parent =
@@ -1625,9 +1670,13 @@ async function createComment({
       String(
         parent.story_id
       ) === String(story.id)
-    const sameEpisode = episodeId
-  ? String(parent?.episode_id || '') === String(episodeId)
-  : !parent?.episode_id
+
+    const sameEpisode =
+      episodeId
+        ? String(
+            parent?.episode_id || ''
+          ) === String(episodeId)
+        : !parent?.episode_id
 
     if (
       !sameStory ||
@@ -1647,18 +1696,24 @@ async function createComment({
     Boolean(story.author_id) &&
     String(story.user_id || '') !==
       String(userId)
-  const wordFilters = shouldProtect
-    ? await findAuthorWordFiltersInComment({
-        authorPageId: story.author_id,
-        authorUserId: story.user_id,
-        text,
-      })
-    : {
-        autoHideWords: [],
-        blockedWords: [],
-      }
 
-  if (wordFilters.blockedWords.length) {
+  const wordFilters =
+    shouldProtect
+      ? await findAuthorWordFiltersInComment({
+          authorPageId:
+            story.author_id,
+          authorUserId:
+            story.user_id,
+          text,
+        })
+      : {
+          autoHideWords: [],
+          blockedWords: [],
+        }
+
+  if (
+    wordFilters.blockedWords.length
+  ) {
     return {
       errorResponse: {
         status: 400,
@@ -1671,82 +1726,147 @@ async function createComment({
 
   const matchedWords =
     wordFilters.autoHideWords
+
   const isAutoHidden =
     matchedWords.length > 0
 
-  const insertData = {
-    story_id: story.id,
-    user_id: userId,
-    parent_id: parentId,
-    text,
-    is_hidden: isAutoHidden,
+  const {
+    data: createResult,
+    error: createError,
+  } = await supabase.rpc(
+    'create_story_comment_once',
+    {
+      p_story_id:
+        story.id,
+      p_episode_id:
+        episodeId || null,
+      p_user_id:
+        userId,
+      p_parent_id:
+        parentId || null,
+      p_text:
+        text,
+      p_is_hidden:
+        isAutoHidden,
+      p_client_event_id:
+        clientEventId,
+      p_occurred_at:
+        occurredAt,
+    }
+  )
+
+  if (createError) {
+    throw createError
   }
 
-  if (episodeId) {
-    insertData.episode_id =
-      episodeId
+  const commentId =
+    createResult?.comment_id
+
+  if (!commentId) {
+    throw new Error(
+      'Comment was not created'
+    )
   }
 
-  const { data, error } =
-    await supabase
-      .from('comments')
-      .insert(insertData)
-      .select(
-        '*, user:users(id, name, username, avatar_url, role)'
+  const duplicate =
+    Boolean(
+      createResult?.duplicate
+    )
+
+  const commentCount =
+    Math.max(
+      0,
+      Number(
+        createResult
+          ?.comment_count ??
+        story.total_comments ??
+        0
       )
-      .single()
+    )
+
+  const {
+    data,
+    error,
+  } = await supabase
+    .from('comments')
+    .select(
+      '*, user:users(id, name, username, avatar_url, role)'
+    )
+    .eq('id', commentId)
+    .maybeSingle()
 
   if (error) throw error
 
-  if (isAutoHidden) {
-    try {
-      await saveAuthorHiddenCommentReview({
-        authorPageId: story.author_id,
-        authorUserId: story.user_id,
-        commentId: data.id,
-        storyId: story.id,
-        episodeId,
-        readerUserId: userId,
-        text,
-        matchedWords,
-      })
-    } catch (reviewError) {
-      await supabase
-        .from('comments')
-        .delete()
-        .eq('id', data.id)
+  if (!data) {
+    throw new Error(
+      'Created comment was not found'
+    )
+  }
 
-      throw reviewError
+  if (
+    Boolean(data.is_hidden)
+  ) {
+    if (!duplicate) {
+      try {
+        await saveAuthorHiddenCommentReview({
+          authorPageId:
+            story.author_id,
+          authorUserId:
+            story.user_id,
+          commentId:
+            data.id,
+          storyId:
+            story.id,
+          episodeId:
+            episodeId || null,
+          readerUserId:
+            userId,
+          text,
+          matchedWords,
+        })
+      } catch (reviewError) {
+        await supabase
+          .from('comments')
+          .delete()
+          .eq('id', data.id)
+
+        throw reviewError
+      }
     }
 
     return {
-      hiddenResponse:
-        authorHiddenCommentPayload(
+      duplicate,
+      commentCount,
+      hiddenResponse: {
+        ...authorHiddenCommentPayload(
           matchedWords
         ),
+        comment_id:
+          data.id,
+        comment_count:
+          commentCount,
+        duplicate,
+        occurred_at:
+          data.occurred_at ||
+          data.created_at,
+        processed_at:
+          data.processed_at ||
+          data.updated_at ||
+          data.created_at,
+      },
     }
   }
-
-  await supabase
-    .from('stories')
-    .update({
-      total_comments:
-        Number(
-          story.total_comments || 0
-        ) + 1,
-      updated_at:
-        new Date().toISOString(),
-    })
-    .eq('id', story.id)
 
   const isOwner =
     String(
       story.user_id || ''
     ) === String(userId)
+
   const reader =
     publicUser(data.user)
 
   if (
+    !duplicate &&
     !isOwner &&
     story.author_id
   ) {
@@ -1754,6 +1874,7 @@ async function createComment({
       episodeId
         ? `/story/${story.id}/episode/${episodeId}?comment=${data.id}`
         : `/story/${story.id}?comment=${data.id}`
+
     const sourceKey =
       episodeId
         ? `episode-comment:${data.id}`
@@ -1771,32 +1892,41 @@ async function createComment({
       createAuthorStoryNotificationSafely({
         authorId:
           story.author_id,
-        type: 'comment',
+        type:
+          'comment',
         title:
           `${reader.name} ${
             parentId
               ? 'replied on'
               : 'commented on'
           } ${
-            story.title
-            || 'your story'
+            story.title ||
+            'your story'
           }`,
-        message: text,
+        message:
+          text,
         targetUrl,
         sourceKey,
         metadata: {
-          story_id: story.id,
+          story_id:
+            story.id,
           episode_id:
             episodeId || null,
-          comment_id: data.id,
-          parent_id: parentId,
-          reader_id: userId,
+          comment_id:
+            data.id,
+          parent_id:
+            parentId,
+          reader_id:
+            userId,
           reader_name:
             reader.name,
           reader_username:
             reader.username,
           reader_avatar_url:
             reader.avatar_url,
+          occurred_at:
+            data.occurred_at ||
+            data.created_at,
         },
       }),
     ])
@@ -1810,6 +1940,8 @@ async function createComment({
       : null
 
   return {
+    duplicate,
+    commentCount,
     comment:
       publicComment(
         data,
@@ -1831,21 +1963,47 @@ export async function createStoryComment(
       String(
         req.params.storyId || ''
       ).trim()
+
     const userId =
       req.user?.user_id
+
     const text =
-      normalizeText(req.body.text)
+      normalizeText(
+        req.body.text
+      )
+
     const parentId =
       String(
-        req.body.parent_id
-        || req.body.parentId
-        || ''
+        req.body.parent_id ||
+        req.body.parentId ||
+        ''
       ).trim() || null
+
+    const clientEvent =
+      normalizeCommentEventId(
+        req.body.client_event_id ||
+        req.body.clientEventId
+      )
+
+    const occurredAt =
+      normalizeCommentOccurredAt(
+        req.body.occurred_at ||
+        req.body.occurredAt
+      )
 
     if (!userId) {
       return res.status(401).json({
         ok: false,
-        message: 'Unauthorized',
+        message:
+          'Unauthorized',
+      })
+    }
+
+    if (!clientEvent.valid) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          'Invalid client event id',
       })
     }
 
@@ -1930,6 +2088,9 @@ export async function createStoryComment(
         userId,
         text,
         parentId,
+        clientEventId:
+          clientEvent.value,
+        occurredAt,
       })
 
     if (result.errorResponse) {
@@ -1952,11 +2113,23 @@ export async function createStoryComment(
       )
     }
 
-    return res.status(201).json({
-      ok: true,
-      comment:
-        result.comment,
-    })
+    return res
+      .status(
+        result.duplicate
+          ? 200
+          : 201
+      )
+      .json({
+        ok: true,
+        duplicate:
+          Boolean(
+            result.duplicate
+          ),
+        comment:
+          result.comment,
+        comment_count:
+          result.commentCount,
+      })
   } catch (error) {
     console.error(
       'CREATE STORY COMMENT ERROR:',
@@ -1967,7 +2140,8 @@ export async function createStoryComment(
       ok: false,
       message:
         'Failed to create comment',
-      error: error.message,
+      error:
+        error.message,
     })
   }
 }
@@ -1981,21 +2155,47 @@ export async function createEpisodeComment(
       String(
         req.params.episodeId || ''
       ).trim()
+
     const userId =
       req.user?.user_id
+
     const text =
-      normalizeText(req.body.text)
+      normalizeText(
+        req.body.text
+      )
+
     const parentId =
       String(
-        req.body.parent_id
-        || req.body.parentId
-        || ''
+        req.body.parent_id ||
+        req.body.parentId ||
+        ''
       ).trim() || null
+
+    const clientEvent =
+      normalizeCommentEventId(
+        req.body.client_event_id ||
+        req.body.clientEventId
+      )
+
+    const occurredAt =
+      normalizeCommentOccurredAt(
+        req.body.occurred_at ||
+        req.body.occurredAt
+      )
 
     if (!userId) {
       return res.status(401).json({
         ok: false,
-        message: 'Unauthorized',
+        message:
+          'Unauthorized',
+      })
+    }
+
+    if (!clientEvent.valid) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          'Invalid client event id',
       })
     }
 
@@ -2023,7 +2223,9 @@ export async function createEpisodeComment(
     }
 
     const episode =
-      await getEpisode(episodeId)
+      await getEpisode(
+        episodeId
+      )
 
     if (!episode) {
       return res.status(404).json({
@@ -2094,6 +2296,9 @@ export async function createEpisodeComment(
         userId,
         text,
         parentId,
+        clientEventId:
+          clientEvent.value,
+        occurredAt,
       })
 
     if (result.errorResponse) {
@@ -2116,11 +2321,23 @@ export async function createEpisodeComment(
       )
     }
 
-    return res.status(201).json({
-      ok: true,
-      comment:
-        result.comment,
-    })
+    return res
+      .status(
+        result.duplicate
+          ? 200
+          : 201
+      )
+      .json({
+        ok: true,
+        duplicate:
+          Boolean(
+            result.duplicate
+          ),
+        comment:
+          result.comment,
+        comment_count:
+          result.commentCount,
+      })
   } catch (error) {
     console.error(
       'CREATE EPISODE COMMENT ERROR:',
@@ -2131,10 +2348,12 @@ export async function createEpisodeComment(
       ok: false,
       message:
         'Failed to create episode comment',
-      error: error.message,
+      error:
+        error.message,
     })
   }
 }
+
 
 export async function toggleCommentLike(
   req,
