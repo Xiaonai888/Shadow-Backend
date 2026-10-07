@@ -1002,6 +1002,8 @@ async function processAbaMessage(parsed, message) {
   if (diamondMatches.length === 1 && mallMatches.length === 0 && authorStoreMatches.length === 0) {
     const released = await releaseMatchedOrder(diamondMatches[0], telegramPayment)
     const user = await getUser(released.user_id)
+    const reportText = releasedMessage(released, user, '✅ AUTO RELEASED')
+    const reportAttemptAt = new Date().toISOString()
 
     await updateTelegramPayment(telegramPayment.id, {
       matched_payment_id: released.id,
@@ -1009,9 +1011,40 @@ async function processAbaMessage(parsed, message) {
       match_status: 'auto_released',
       status: 'auto_released',
       match_reason: 'Unique diamond order matched by amount and time.',
+      report_title: 'AUTO RELEASED',
+      report_text: reportText,
+      report_status: 'pending',
+      report_attempts: Number(telegramPayment.report_attempts || 0) + 1,
+      report_last_error: null,
+      report_last_attempt_at: reportAttemptAt,
     })
 
-    await replyTelegram(chatId, messageId, releasedMessage(released, user, '✅ AUTO RELEASED'))
+    try {
+      const response = await replyTelegram(chatId, messageId, reportText)
+
+      if (!response?.ok || response?.skipped) {
+        throw new Error(response?.description || 'Telegram report was not sent.')
+      }
+
+      await updateTelegramPayment(telegramPayment.id, {
+        report_status: 'sent',
+        report_last_error: null,
+        report_sent_at: new Date().toISOString(),
+        report_message_id: response?.result?.message_id
+          ? String(response.result.message_id)
+          : null,
+      })
+    } catch (error) {
+      await updateTelegramPayment(telegramPayment.id, {
+        report_status: 'failed',
+        report_last_error: String(
+          error?.message || error || 'Telegram send failed'
+        ).slice(0, 1000),
+      })
+
+      console.error('AUTO RELEASE TELEGRAM REPORT ERROR:', error)
+    }
+
     return
   }
 
