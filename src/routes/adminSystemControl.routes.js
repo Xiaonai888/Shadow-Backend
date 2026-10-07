@@ -1,3 +1,4 @@
+import { getRuntimeMemoryInspector } from '../services/runtimeMemoryInspector.service.js'
 import express from 'express'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
@@ -97,6 +98,7 @@ router.get(
       anomaly: getSystemUsageAnomalySnapshot(),
       regression: getSystemUsageRegressionState(),
       providers: getSystemUsageProviderState(),
+      runtime: getRuntimeMemoryInspector(),
     })
   }
 )
