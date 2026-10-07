@@ -19,6 +19,7 @@ import {
   invalidatePublicStoriesCache,
 } from '../services/publicStoriesResponseCache.service.js'
 import { cachePublicStoryRecommendations } from '../services/publicStoryRecommendationsCache.service.js'
+import { cachePublicStoryDataResponse } from '../services/publicStoryDataCache.service.js'
 import { APP_REGISTRY } from '../config/appRegistry.js'
 import { getSupabaseClient } from '../config/supabase.js'
 
@@ -108,8 +109,18 @@ router.get(
   getPublicStoryRecommendations
 )
 
-router.get('/stories/:storyId', getPublicStoryById)
-router.get('/stories/:storyId/episodes', getPublicStoryEpisodes)
+router.get(
+  '/stories/:storyId',
+  cachePublicStoryDataResponse('detail'),
+  getPublicStoryById
+)
+
+router.get(
+  '/stories/:storyId/episodes',
+  cachePublicStoryDataResponse('episodes'),
+  getPublicStoryEpisodes
+)
+
 router.get('/stories/:storyId/episodes/:episodeId', getPublicEpisodeById)
 router.post(
   '/stories/:storyId/episodes/:episodeId/view',
