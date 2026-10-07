@@ -25,6 +25,12 @@ export async function getPublicWeeklyUpdates(req, res) {
   try {
     const limit = normalizeLimit(req.query.limit)
     const language = String(req.query.language || '').trim() || null
+    const storySetting =
+      String(
+        req.query.story_setting ||
+          req.query.storySetting ||
+          ''
+      ).trim() || null
     const storyType = normalizeStoryType(
       req.query.story_type || req.query.storyType
     )
@@ -39,6 +45,7 @@ export async function getPublicWeeklyUpdates(req, res) {
           ageAccess?.can_view_adult_stories
         ),
         p_limit: limit,
+        p_story_setting: storySetting,
       }
     )
 
