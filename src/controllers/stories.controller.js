@@ -775,7 +775,7 @@ export async function createStory(req, res) {
       mainGenre,
       storySettings,
       description,
-      requireStorySettings: false,
+      requireStorySettings: true,
     })
 
     if (payloadError) {
