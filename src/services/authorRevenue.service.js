@@ -664,6 +664,73 @@ async function upsertQuestProgress({
   return data
 }
 
+async function getActiveDaily80Boost(authorId) {
+  const { data, error } = await supabase
+    .from('author_daily_80_boost_progress')
+    .select('*')
+    .eq('author_id', authorId)
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) return null
+
+  const endsAt = new Date(data.ends_at).getTime()
+  const isActive =
+    data.status === 'active' &&
+    Number.isFinite(endsAt) &&
+    endsAt > Date.now()
+
+  if (isActive) {
+    return data
+  }
+
+  const activationCount = numberValue(
+    data.activation_count
+  )
+  const maxActivations = Math.max(
+    1,
+    numberValue(data.max_activations || 180)
+  )
+
+  if (data.status === 'finished') {
+    const { error: resumeError } = await supabase.rpc(
+      'resume_author_daily_50_after_80',
+      { p_author_id: authorId }
+    )
+
+    if (resumeError) throw resumeError
+    return null
+  }
+
+  if (data.status === 'active') {
+    const nextStatus =
+      activationCount >= maxActivations
+        ? 'finished'
+        : 'available'
+
+    const { error: updateError } = await supabase
+      .from('author_daily_80_boost_progress')
+      .update({
+        status: nextStatus,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('author_id', authorId)
+
+    if (updateError) throw updateError
+
+    if (nextStatus === 'finished') {
+      const { error: resumeError } = await supabase.rpc(
+        'resume_author_daily_50_after_80',
+        { p_author_id: authorId }
+      )
+
+      if (resumeError) throw resumeError
+    }
+  }
+
+  return null
+}
+
 async function getActiveDaily50Boost(authorId) {
   const { data, error } = await supabase
     .from('author_daily_50_boost_progress')
@@ -673,6 +740,13 @@ async function getActiveDaily50Boost(authorId) {
 
   if (error) throw error
   if (!data) return null
+
+  if (
+    data.status === 'paused_by_80_event' ||
+    data.event_80_paused_at
+  ) {
+    return null
+  }
 
   const endsAt = new Date(data.ends_at).getTime()
   const isActive =
@@ -717,6 +791,9 @@ async function getAuthorShareContext(
 ) {
   await getAuthor100PercentEventState(authorPage.id)
 
+  const activeDaily80Boost =
+    await getActiveDaily80Boost(authorPage.id)
+
   const [
     active49DayEvent,
     activeDaily50Boost,
@@ -728,6 +805,7 @@ async function getAuthorShareContext(
     getQuestStages(),
     getAuthorTotals(authorPage),
   ])
+
   const bestStage = getBestStage(stages, totals)
   const progress = await upsertQuestProgress({
     authorPage,
@@ -741,7 +819,8 @@ async function getAuthorShareContext(
       lastStage,
     })
   const activeBoost =
-    lifetimeBoost?.status === 'active' && !lifetimeBoost.admin_event_pause_cycle_id
+    lifetimeBoost?.status === 'active' &&
+    !lifetimeBoost.admin_event_pause_cycle_id
       ? lifetimeBoost
       : await getActiveLifetimeBoost(
           authorPage.id
@@ -774,6 +853,11 @@ async function getAuthorShareContext(
     current49DayEvent?.status === 'active'
       ? percentValue(
           current49DayEvent.share_percent
+        )
+      : 0,
+    activeDaily80Boost?.status === 'active'
+      ? percentValue(
+          activeDaily80Boost.share_percent
         )
       : 0,
     activeDaily50Boost?.status === 'active'
