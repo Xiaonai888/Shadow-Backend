@@ -396,7 +396,8 @@ function discoverSearchCacheKey({
   ageScope,
   storySetting || '',
 ].join('\u001f')
-  
+}
+
 function pruneDiscoverSearchCache(
   now = Date.now()
 ) {
