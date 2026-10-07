@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
@@ -450,43 +451,44 @@ export async function toggleStoryReaction(
     return handleStoryReactionBatch(req, res)
   }
 
-  let diagnosticStage = 'start'
-  let diagnosticAction = 'unknown'
-  let diagnosticStoryId = ''
-
   try {
     const storyId = String(
       req.params.storyId || ''
     ).trim()
-    const userId = req.user?.user_id
+
+    const userId = String(
+      req.user?.user_id || ''
+    ).trim()
+
     const reactionType =
       normalizeReactionType(
         req.body?.reaction_type
       )
 
-    diagnosticStoryId = storyId
-
-    markStoryReactionDiagnostic({
-      stage: diagnosticStage,
-      action: diagnosticAction,
-      story_id: storyId,
-      reaction_type: reactionType,
-      status: 'running',
-    })
-
-    if (!userId) {
+    if (
+      !STORY_REACTION_UUID_PATTERN.test(
+        userId
+      )
+    ) {
       return res.status(401).json({
         ok: false,
         message: 'Login is required',
       })
     }
 
-    diagnosticStage = 'story_lookup'
-    markStoryReactionDiagnostic({
-      stage: diagnosticStage,
-    })
+    if (
+      !STORY_REACTION_UUID_PATTERN.test(
+        storyId
+      )
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid story ID',
+      })
+    }
 
-    const story = await getStory(storyId)
+    const story =
+      await getStory(storyId)
 
     if (!story) {
       return res.status(404).json({
@@ -494,11 +496,6 @@ export async function toggleStoryReaction(
         message: 'Story not found',
       })
     }
-
-    diagnosticStage = 'reaction_lookup'
-    markStoryReactionDiagnostic({
-      stage: diagnosticStage,
-    })
 
     const {
       data: existing,
@@ -511,166 +508,102 @@ export async function toggleStoryReaction(
       .is('episode_id', null)
       .maybeSingle()
 
-    if (existingError) throw existingError
+    if (existingError) {
+      throw existingError
+    }
 
-    if (existing) {
-      if (
-        normalizeReactionType(
-          existing.reaction_type
-        ) !== reactionType
-      ) {
-        diagnosticAction = 'update'
-        diagnosticStage = 'update'
-        markStoryReactionDiagnostic({
-          action: diagnosticAction,
-          stage: diagnosticStage,
-        })
-
-        const { error: updateError } =
-          await supabase
-            .from('story_reactions')
-            .update({
-              reaction_type: reactionType,
-            })
-            .eq('id', existing.id)
-
-        if (updateError) throw updateError
-
-        diagnosticStage = 'total_sync'
-        markStoryReactionDiagnostic({
-          stage: diagnosticStage,
-        })
-
-        const totalLikes =
-          await syncStoryTotalLikes(
-            storyId
+    const existingType =
+      existing
+        ? normalizeReactionType(
+            existing.reaction_type
           )
+        : null
 
-        diagnosticStage = 'complete'
-        markStoryReactionDiagnostic({
-          stage: diagnosticStage,
-          action: diagnosticAction,
-          status: 'ok',
-        })
+    const liked =
+      !existing ||
+      existingType !==
+        reactionType
 
-        return res.status(200).json({
-          ok: true,
-          action: 'updated',
-          liked: true,
-          reaction_type: reactionType,
-          total_likes: totalLikes,
-        })
-      }
-
-      diagnosticAction = 'remove'
-      diagnosticStage = 'delete'
-      markStoryReactionDiagnostic({
-        action: diagnosticAction,
-        stage: diagnosticStage,
+    const data =
+      await enqueueStoryReactionBatch({
+        userId,
+        events: [
+          {
+            story_id:
+              storyId,
+            event_id:
+              randomUUID(),
+            liked,
+            reaction_type:
+              reactionType,
+            occurred_at:
+              new Date().toISOString(),
+          },
+        ],
       })
 
-      const { error: deleteError } =
-        await supabase
-          .from('story_reactions')
-          .delete()
-          .eq('id', existing.id)
-
-      if (deleteError) throw deleteError
-
-      diagnosticStage = 'total_sync'
-      markStoryReactionDiagnostic({
-        stage: diagnosticStage,
-      })
-
-      const totalLikes =
-        await syncStoryTotalLikes(storyId)
-
-      diagnosticStage = 'complete'
-      markStoryReactionDiagnostic({
-        stage: diagnosticStage,
-        action: diagnosticAction,
-        status: 'ok',
-      })
-
-      return res.status(200).json({
-        ok: true,
-        action: 'removed',
-        liked: false,
-        reaction_type: null,
-        total_likes: totalLikes,
-      })
-    }
-
-    diagnosticAction = 'add'
-    diagnosticStage = 'insert'
-    markStoryReactionDiagnostic({
-      action: diagnosticAction,
-      stage: diagnosticStage,
-    })
-
-    const { error: insertError } =
-      await supabase
-        .from('story_reactions')
-        .insert({
-          user_id: userId,
-          story_id: storyId,
-          episode_id: null,
-          reaction_type: reactionType,
-        })
-
-    if (insertError) throw insertError
-
-    diagnosticStage = 'total_sync'
-    markStoryReactionDiagnostic({
-      stage: diagnosticStage,
-    })
-
-    const totalLikes =
-      await syncStoryTotalLikes(storyId)
-
-    const isOwner =
-      String(story.user_id || '') ===
-      String(userId)
-
-    if (!isOwner && story.author_id) {
-      diagnosticStage = 'analytics'
-      markStoryReactionDiagnostic({
-        stage: diagnosticStage,
-      })
-
-      await incrementAuthorPageAnalytics(
-        story.author_id,
-        'interactions'
+    const result =
+      Array.isArray(
+        data?.results
       )
-    }
+        ? data.results[0]
+        : null
 
-    diagnosticStage = 'complete'
-    markStoryReactionDiagnostic({
-      stage: diagnosticStage,
-      action: diagnosticAction,
-      status: 'ok',
-    })
+    if (
+      !result ||
+      result.ok === false
+    ) {
+      return res.status(500).json({
+        ok: false,
+        message:
+          result?.message ||
+          'Failed to update reaction',
+      })
+    }
 
     return res.status(200).json({
       ok: true,
-      action: 'added',
-      liked: true,
-      reaction_type: reactionType,
-      total_likes: totalLikes,
+      action:
+        result.action ||
+        (
+          liked
+            ? existing
+              ? 'updated'
+              : 'added'
+            : 'removed'
+        ),
+      liked:
+        Boolean(result.liked),
+      reaction_type:
+        result.liked
+          ? (
+              result.reaction_type ||
+              reactionType
+            )
+          : null,
+      total_likes:
+        Math.max(
+          0,
+          Number(
+            result.total_likes ||
+            0
+          )
+        ),
+      processed_at:
+        result.processed_at ||
+        data?.processed_at ||
+        new Date().toISOString(),
     })
   } catch (error) {
-    const errorCode =
-      REACTION_DIAGNOSTIC_CODES[
-        diagnosticStage
-      ] || 'REACTION_TOGGLE_FAILED'
-
-    markStoryReactionDiagnostic({
-      story_id: diagnosticStoryId,
-      action: diagnosticAction,
-      stage: diagnosticStage,
-      status: 'error',
-      error_code: errorCode,
-      provider_code: error?.code || '',
+    markRequestDiagnostic({
+      feature:
+        'story_reaction_toggle',
+      stage:
+        'failed',
+      status:
+        'error',
+      provider_code:
+        error?.code || '',
     })
 
     return res.status(500).json({
