@@ -1,5 +1,4 @@
 import { getRuntimeMemoryInspector } from '../services/runtimeMemoryInspector.service.js'
-runtime: getRuntimeMemoryInspector(),
 import express from 'express'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
