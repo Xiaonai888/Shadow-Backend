@@ -1,21 +1,3 @@
-update public.stories as stories
-set
-  total_likes = counts.total_likes,
-  updated_at = now()
-from (
-  select
-    story.id as story_id,
-    count(reactions.id)::bigint as total_likes
-  from public.stories as story
-  left join public.story_reactions as reactions
-    on reactions.story_id = story.id
-    and reactions.episode_id is null
-  group by story.id
-) as counts
-where stories.id = counts.story_id
-  and coalesce(stories.total_likes, 0)
-    is distinct from counts.total_likes;
-
 create or replace function public.apply_story_reaction_states_multi_batch(
   p_items jsonb
 )
