@@ -362,7 +362,7 @@ async function handleStoryReactionBatch(req, res) {
     })
 
     const { data, error } = await supabase.rpc(
-      'apply_story_reaction_batch',
+      'apply_story_reaction_states_batch',
       {
         p_user_id: userId,
         p_events: events,
