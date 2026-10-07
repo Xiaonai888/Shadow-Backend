@@ -446,7 +446,7 @@ $$;
 
 create or replace function public.apply_story_reaction_states_batch(
   p_user_id uuid,
-  p_events jsonb
+  p_items jsonb
 )
 returns jsonb
 language plpgsql
@@ -460,8 +460,8 @@ begin
     raise exception 'User is required';
   end if;
 
-  if p_events is null or jsonb_typeof(p_events) <> 'array' then
-    raise exception 'Events must be an array';
+  if p_items is null or jsonb_typeof(p_items) <> 'array' then
+    raise exception 'Items must be an array';
   end if;
 
   select coalesce(
@@ -475,7 +475,7 @@ begin
     '[]'::jsonb
   )
   into v_items
-  from jsonb_array_elements(p_events) event(value);
+  from jsonb_array_elements(p_items) event(value);
 
   return public.apply_story_reaction_states_multi_batch(
     v_items
