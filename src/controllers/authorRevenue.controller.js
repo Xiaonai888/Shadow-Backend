@@ -1560,15 +1560,6 @@ async function getAuthorDaily50EventState(
       now
     )
 
-  if (current80?.status !== 'finished') {
-    return {
-      ...hiddenState,
-      status: current80
-        ? 'paused_by_80_event'
-        : 'waiting_80_event',
-    }
-  }
-
   const {
     data: dailyBoost,
     error: dailyBoostError,
@@ -1580,7 +1571,24 @@ async function getAuthorDaily50EventState(
 
   if (dailyBoostError) throw dailyBoostError
 
+  if (
+    current80 &&
+    current80.status !== 'finished'
+  ) {
+    return {
+      ...hiddenState,
+      status: 'paused_by_80_event',
+    }
+  }
+
   if (!dailyBoost) {
+    if (!current80) {
+      return {
+        ...hiddenState,
+        status: 'waiting_80_event',
+      }
+    }
+
     return {
       ...hiddenState,
       visible: true,
@@ -1833,21 +1841,48 @@ export async function getMyAuthorQuest(req, res) {
       authorPage,
       lastStage,
     })
+    const adminEvent =
+      await getAuthor100PercentEventState(
+        authorPage.id
+      )
+
+    const activeBoost =
+      await getActiveLifetimeBoost(
+        authorPage.id,
+        {
+          skipAdminEventRefresh: true,
+        }
+      )
+
     const [
-      activeBoost,
       author49Event,
       daily80Event,
-      daily50Event,
     ] = await Promise.all([
-      getActiveLifetimeBoost(authorPage.id),
-      getAuthor49DayEventState(authorPage),
-      getAuthorDaily80EventState(authorPage),
-      getAuthorDaily50EventState(authorPage),
+      getAuthor49DayEventState(
+        authorPage,
+        {
+          adminEvent,
+          activeBoost,
+        }
+      ),
+      getAuthorDaily80EventState(
+        authorPage,
+        {
+          adminEvent,
+        }
+      ),
     ])
+
+    const daily50Event =
+      await getAuthorDaily50EventState(
+        authorPage,
+        {
+          adminEvent,
+        }
+      )
 
     const currentLifetimeBoost =
       activeBoost || lifetimeBoost
-    const adminEvent = await getAuthor100PercentEventState(authorPage.id)
 
     const questShareCandidates = [
       {
@@ -2162,6 +2197,7 @@ async function getMyAuthorIncomeUncached(
 
     const [
       author49Event,
+      daily80Event,
       daily50Event,
     ] = await Promise.all([
       getAuthor49DayEventState(
@@ -2169,6 +2205,12 @@ async function getMyAuthorIncomeUncached(
         {
           adminEvent,
           activeBoost: activeIncomeBoost,
+        }
+      ),
+      getAuthorDaily80EventState(
+        authorPage,
+        {
+          adminEvent,
         }
       ),
       getAuthorDaily50EventState(
@@ -2227,6 +2269,19 @@ async function getMyAuthorIncomeUncached(
         source: 'quest_stage',
         percent: stageSharePercent,
         ends_at: null,
+      },
+      {
+        source: 'daily_80_event',
+        percent:
+          daily80Event?.status === 'active'
+            ? percentValue(
+                daily80Event.share_percent
+              )
+            : 0,
+        ends_at:
+          daily80Event?.status === 'active'
+            ? daily80Event.ends_at
+            : null,
       },
       {
         source: 'daily_50_event',
