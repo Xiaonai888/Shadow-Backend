@@ -1,3 +1,5 @@
+import { registerRuntimeInspectable } from './runtimeMemoryInspector.service.js'
+
 const MAX_CACHE_ENTRIES = 100
 
 const slidesResponseCache = new Map()
@@ -185,3 +187,19 @@ export function cacheSlidesResponse(
 
   return next()
 }
+
+registerRuntimeInspectable({
+  name: 'Slides Response Cache',
+  mode: 'memory_cache',
+  reader: () => ({
+    state: slidesResponseInFlight.size > 0
+      ? 'busy'
+      : slidesResponseCache.size > 0
+        ? 'cached'
+        : 'empty',
+    entries: slidesResponseCache.size,
+    in_flight: slidesResponseInFlight.size,
+    max_entries: MAX_CACHE_ENTRIES,
+    cache_version: slidesResponseCacheVersion,
+  }),
+})
