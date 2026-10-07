@@ -775,7 +775,7 @@ export async function createStory(req, res) {
       mainGenre,
       storySettings,
       description,
-      requireStorySettings: true,
+      requireStorySettings: false,
     })
 
     if (payloadError) {
@@ -861,8 +861,8 @@ export async function updateStory(req, res) {
         'New'
     )
     const mainGenre = cleanText(
-      req.body.main_genre || req.body.mainGenre
-    )
+  req.body.main_genre || req.body.mainGenre
+) || 'Other'
 
     const hasStorySettingsPayload =
       Object.prototype.hasOwnProperty.call(
