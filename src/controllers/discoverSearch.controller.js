@@ -389,13 +389,13 @@ function discoverSearchCacheKey({
       : 'public'
 
   return [
-  cleanKeyword(keyword)
-    .toLocaleLowerCase(),
-  type,
-  requestedLimit,
-  ageScope,
-  storySetting || '',
-].join('\u001f')
+    cleanKeyword(keyword)
+      .toLocaleLowerCase(),
+    type,
+    requestedLimit,
+    ageScope,
+    storySetting || '',
+  ].join('\u001f')
 }
 
 function pruneDiscoverSearchCache(
@@ -1476,7 +1476,8 @@ async function buildDiscoverSearchPayload({
         keyword,
         matchedPages,
         sectionLimit,
-        ageAccess
+        ageAccess,
+        storySetting
       ).then((items) => {
         storyCandidates =
           items
@@ -1647,6 +1648,16 @@ export async function searchDiscover(
           )
         : requestedLimit
 
+    const storySetting =
+      type === 'all' ||
+      type === 'stories'
+        ? String(
+            req.query.story_setting ||
+              req.query.storySetting ||
+              ''
+          ).trim()
+        : ''
+
     if (
       !keyword ||
       !cleanFilterKeyword(
@@ -1677,6 +1688,7 @@ export async function searchDiscover(
         type,
         requestedLimit,
         ageAccess,
+        storySetting,
       })
 
     const cached =
@@ -1722,6 +1734,7 @@ export async function searchDiscover(
         requestedLimit,
         sectionLimit,
         ageAccess,
+        storySetting,
       })
 
     discoverSearchPending.set(
