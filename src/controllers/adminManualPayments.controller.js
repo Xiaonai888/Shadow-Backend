@@ -28,8 +28,27 @@ function publicUser(user) {
   }
 }
 
-function publicManualPayment(payment, userMap = {}) {
+function publicTelegramReport(report) {
+  if (!report) return null
+  return {
+    id: report.id,
+    trx_id: report.trx_id || '',
+    title: report.report_title || '',
+    text: report.report_text || '',
+    status: report.report_status || '',
+    attempts: Number(report.report_attempts || 0),
+    last_error: report.report_last_error || '',
+    last_attempt_at: report.report_last_attempt_at || null,
+    sent_at: report.report_sent_at || null,
+    message_id: report.report_message_id || '',
+    admin_seen_at: report.admin_seen_at || null,
+    updated_at: report.updated_at || null,
+  }
+}
+
+function publicManualPayment(payment, userMap = {}, reportMap = {}) {
   const user = userMap[payment.user_id] || null
+  const telegramReport = reportMap[payment.id] || null
   return {
     id: payment.id,
     user_id: payment.user_id,
@@ -67,6 +86,7 @@ function publicManualPayment(payment, userMap = {}) {
     released_at: payment.released_at,
     updated_at: payment.updated_at,
     user: publicUser(user),
+    telegram_report: publicTelegramReport(telegramReport),
   }
 }
 
@@ -81,6 +101,24 @@ async function getUsersMap(userIds) {
 
   if (error) throw error
   return Object.fromEntries((data || []).map((user) => [user.id, user]))
+}
+
+async function getTelegramReportsMap(paymentIds) {
+  const ids = [...new Set((paymentIds || []).filter(Boolean))]
+  if (!ids.length) return {}
+
+  const { data, error } = await supabase
+    .from('telegram_payments')
+    .select('id, matched_payment_id, trx_id, report_title, report_text, report_status, report_attempts, report_last_error, report_last_attempt_at, report_sent_at, report_message_id, admin_seen_at, updated_at')
+    .in('matched_payment_id', ids)
+
+  if (error) throw error
+
+  return Object.fromEntries(
+    (data || [])
+      .filter((item) => item.matched_payment_id)
+      .map((item) => [item.matched_payment_id, item])
+  )
 }
 
 function applyStatusFilter(query, status) {
@@ -158,8 +196,12 @@ export async function getAdminManualPayments(req, res) {
     const { data, error } = await query
     if (error) throw error
 
-    const userMap = await getUsersMap((data || []).map((item) => item.user_id))
-    const payments = (data || []).map((item) => publicManualPayment(item, userMap))
+    const rows = data || []
+    const [userMap, reportMap] = await Promise.all([
+      getUsersMap(rows.map((item) => item.user_id)),
+      getTelegramReportsMap(rows.map((item) => item.id)),
+    ])
+    const payments = rows.map((item) => publicManualPayment(item, userMap, reportMap))
 
     return res.status(200).json({ ok: true, payments, purchases: payments })
   } catch (error) {
@@ -194,9 +236,16 @@ export async function confirmAdminManualPayment(req, res) {
     }
 
     if (payment) publishPaymentStatus(payment)
-    const userMap = await getUsersMap([payment?.user_id])
 
-    return res.status(200).json({ ok: true, payment: publicManualPayment(payment, userMap) })
+    const [userMap, reportMap] = await Promise.all([
+      getUsersMap([payment?.user_id]),
+      getTelegramReportsMap([payment?.id]),
+    ])
+
+    return res.status(200).json({
+      ok: true,
+      payment: publicManualPayment(payment, userMap, reportMap),
+    })
   } catch (error) {
     console.error('CONFIRM ADMIN MANUAL PAYMENT ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to confirm manual payment', error: error.message })
@@ -230,9 +279,16 @@ export async function rejectAdminManualPayment(req, res) {
     if (error) throw error
 
     if (data) publishPaymentStatus(data)
-    const userMap = await getUsersMap([data.user_id])
 
-    return res.status(200).json({ ok: true, payment: publicManualPayment(data, userMap) })
+    const [userMap, reportMap] = await Promise.all([
+      getUsersMap([data.user_id]),
+      getTelegramReportsMap([data.id]),
+    ])
+
+    return res.status(200).json({
+      ok: true,
+      payment: publicManualPayment(data, userMap, reportMap),
+    })
   } catch (error) {
     console.error('REJECT ADMIN MANUAL PAYMENT ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to reject manual payment', error: error.message })
