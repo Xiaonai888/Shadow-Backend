@@ -4,12 +4,21 @@ WHERE deleted_at IS NULL
   AND published_at IS NOT NULL
   AND (status IS NULL OR lower(status) = 'published');
 
+DROP FUNCTION IF EXISTS public.get_public_story_updates(
+  text,
+  text,
+  boolean,
+  integer,
+  integer
+);
+
 CREATE OR REPLACE FUNCTION public.get_public_story_updates(
   p_language text DEFAULT NULL,
   p_story_type text DEFAULT NULL,
   p_include_adult boolean DEFAULT false,
   p_days integer DEFAULT 7,
-  p_limit_per_day integer DEFAULT 100
+  p_limit_per_day integer DEFAULT 100,
+  p_story_setting text DEFAULT NULL
 )
 RETURNS TABLE (
   id text,
@@ -103,6 +112,11 @@ AS $$
       lower(COALESCE(s.story_type, 'novel')) =
         lower(trim(p_story_type))
     )
+    AND (
+      NULLIF(trim(p_story_setting), '') IS NULL OR
+      COALESCE(s.story_settings, '{}'::text[]) @>
+        ARRAY[trim(p_story_setting)]::text[]
+    )
   ORDER BY
     u.update_date DESC,
     u.last_episode_published_at DESC,
@@ -114,7 +128,8 @@ REVOKE ALL ON FUNCTION public.get_public_story_updates(
   text,
   boolean,
   integer,
-  integer
+  integer,
+  text
 ) FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION public.get_public_story_updates(
@@ -122,5 +137,6 @@ GRANT EXECUTE ON FUNCTION public.get_public_story_updates(
   text,
   boolean,
   integer,
-  integer
+  integer,
+  text
 ) TO service_role;
