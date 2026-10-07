@@ -478,6 +478,14 @@ export async function updateChatStoryEpisodeStatus(req, res) {
       return res.status(400).json({ ok: false, message: 'Invalid publish status' })
     }
 
+    const storySettings = Array.isArray(story.story_settings)
+  ? story.story_settings.filter((item) => String(item || '').trim())
+  : []
+
+if (['published', 'scheduled'].includes(status) && storySettings.length < 1) {
+  return res.status(400).json({ ok: false, message: 'Choose at least 1 Story Setting' })
+}
+
     const plainText = chatContent.messages
       .map((message) => cleanText(message.text))
       .filter(Boolean)
