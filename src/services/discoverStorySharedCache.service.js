@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { registerRuntimeInspectable } from './runtimeMemoryInspector.service.js'
 
 const CACHE_TTL_MS =
   5 * 60 * 1000
@@ -236,3 +237,44 @@ export async function getDiscoverStorySharedCatalog(
     }
   }
 }
+
+registerRuntimeInspectable({
+  name: 'Discover Story Shared Cache',
+  mode: 'ttl_cache',
+  reader: () => {
+    const now = Date.now()
+    const authorStories = Array.isArray(sharedCache?.authorStories)
+      ? sharedCache.authorStories.length
+      : 0
+    const readerStories = Array.isArray(sharedCache?.readerStories)
+      ? sharedCache.readerStories.length
+      : 0
+    const authorPages = Array.isArray(sharedCache?.authorPages)
+      ? sharedCache.authorPages.length
+      : 0
+    const readers = Array.isArray(sharedCache?.readers)
+      ? sharedCache.readers.length
+      : 0
+
+    return {
+      state: sharedCacheRequest
+        ? 'loading'
+        : sharedCache
+          ? now < sharedCacheExpiresAt
+            ? 'cached'
+            : 'expired'
+          : 'empty',
+      entries: authorStories + readerStories + authorPages + readers,
+      author_stories: authorStories,
+      reader_stories: readerStories,
+      author_pages: authorPages,
+      readers,
+      request_in_flight: Boolean(sharedCacheRequest),
+      ttl_seconds: CACHE_TTL_MS / 1000,
+      expires_in_seconds: sharedCache
+        ? Math.max(0, Math.ceil((sharedCacheExpiresAt - now) / 1000))
+        : 0,
+      generation: sharedCacheGeneration,
+    }
+  },
+})
