@@ -111,6 +111,7 @@ declare
   v_49_status text;
   v_49_ends_at timestamptz;
   v_80 public.author_daily_80_boost_progress%rowtype;
+  v_activated_author_id uuid;
 begin
   if new.status is distinct from 'published' then
     return new;
@@ -231,8 +232,6 @@ begin
     end if;
   end if;
 
-  perform public.pause_author_daily_50_for_80(v_author_id);
-
   insert into public.author_daily_80_boost_progress (
     author_id,
     user_id,
@@ -288,7 +287,12 @@ begin
       or public.author_daily_80_boost_progress.last_activation_date <> v_today
     )
     and public.author_daily_80_boost_progress.activation_count
-      < public.author_daily_80_boost_progress.max_activations;
+      < public.author_daily_80_boost_progress.max_activations
+  returning author_id into v_activated_author_id;
+
+  if v_activated_author_id is not null then
+    perform public.pause_author_daily_50_for_80(v_author_id);
+  end if;
 
   return new;
 end;
@@ -458,24 +462,74 @@ begin
 end;
 $$;
 
+with wrongly_paused as (
+  select
+    d.author_id,
+    greatest(
+      0,
+      coalesce(d.event_80_remaining_seconds, 0) -
+      greatest(
+        0,
+        floor(
+          extract(
+            epoch from (
+              clock_timestamp() - d.event_80_paused_at
+            )
+          )
+        )::bigint
+      )
+    ) as remaining_seconds
+  from public.author_daily_50_boost_progress d
+  where d.status = 'paused_by_80_event'
+    and d.event_80_paused_at is not null
+    and not exists (
+      select 1
+      from public.author_daily_80_boost_progress p
+      where p.author_id = d.author_id
+    )
+)
 update public.author_daily_50_boost_progress d
 set
-  event_80_paused_at = coalesce(d.event_80_paused_at, clock_timestamp()),
-  event_80_remaining_seconds = case
-    when d.event_80_paused_at is not null then d.event_80_remaining_seconds
-    when d.status = 'active' and d.ends_at is not null and d.ends_at > clock_timestamp()
-      then greatest(0, ceil(extract(epoch from (d.ends_at - clock_timestamp())))::bigint)
-    else 0
+  status = case
+    when w.remaining_seconds > 0 then 'active'
+    when d.activation_count >= d.max_activations then 'finished'
+    else 'available'
   end,
-  status = 'paused_by_80_event',
+  ends_at = case
+    when w.remaining_seconds > 0
+      then clock_timestamp() + w.remaining_seconds * interval '1 second'
+    else null
+  end,
+  event_80_paused_at = null,
+  event_80_remaining_seconds = null,
   updated_at = clock_timestamp()
-where d.status <> 'finished'
-  and exists (
-    select 1
-    from public.author_49_day_event_progress p
-    where p.author_id = d.author_id
-      and p.status = 'finished'
-  );
+from wrongly_paused w
+where d.author_id = w.author_id;
+
+update public.author_daily_50_boost_progress d
+set
+  event_80_remaining_seconds = greatest(
+    0,
+    coalesce(d.event_80_remaining_seconds, 0) -
+    greatest(
+      0,
+      floor(
+        extract(
+          epoch from (
+            p.started_at - d.event_80_paused_at
+          )
+        )
+      )::bigint
+    )
+  ),
+  event_80_paused_at = p.started_at,
+  updated_at = clock_timestamp()
+from public.author_daily_80_boost_progress p
+where p.author_id = d.author_id
+  and d.status = 'paused_by_80_event'
+  and d.event_80_paused_at is not null
+  and p.started_at is not null
+  and d.event_80_paused_at < p.started_at;
 
 revoke all on function public.pause_author_daily_50_for_80(uuid)
   from public, anon, authenticated;
