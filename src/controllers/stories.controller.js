@@ -1859,13 +1859,6 @@ export async function moveEpisodeToTrash(req, res) {
       return res.status(404).json({ ok: false, message: 'Episode not found' })
     }
 
-    if (episode.status === 'published') {
-      return res.status(400).json({
-        ok: false,
-        message: 'Published episodes must be moved to draft before delete',
-      })
-    }
-
     const now = new Date().toISOString()
     const deleteExpiresAt = addDays(new Date(), AUTHOR_TRASH_DAYS).toISOString()
 
