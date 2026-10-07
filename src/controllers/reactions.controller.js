@@ -276,10 +276,180 @@ export async function getStoryReactions(
   }
 }
 
+
+const STORY_REACTION_BATCH_LIMIT = 200
+const STORY_REACTION_MAX_PAST_MS = 7 * 24 * 60 * 60 * 1000
+const STORY_REACTION_MAX_FUTURE_MS = 5 * 60 * 1000
+
+function normalizeBatchOccurredAt(value) {
+  const parsed = Date.parse(String(value || ''))
+  const now = Date.now()
+
+  if (!Number.isFinite(parsed)) {
+    return new Date(now).toISOString()
+  }
+
+  if (
+    parsed < now - STORY_REACTION_MAX_PAST_MS ||
+    parsed > now + STORY_REACTION_MAX_FUTURE_MS
+  ) {
+    return new Date(now).toISOString()
+  }
+
+  return new Date(parsed).toISOString()
+}
+
+async function handleStoryReactionBatch(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const inputEvents = Array.isArray(req.body?.events)
+      ? req.body.events
+      : []
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Login is required',
+      })
+    }
+
+    if (!inputEvents.length) {
+      return res.status(200).json({
+        ok: true,
+        batch: true,
+        results: [],
+        processed_at: new Date().toISOString(),
+      })
+    }
+
+    if (inputEvents.length > STORY_REACTION_BATCH_LIMIT) {
+      return res.status(400).json({
+        ok: false,
+        message: `A maximum of ${STORY_REACTION_BATCH_LIMIT} reaction events is allowed per batch`,
+      })
+    }
+
+    const finalByStory = new Map()
+
+    for (const item of inputEvents) {
+      const storyId = String(item?.story_id || '').trim()
+
+      if (!storyId) continue
+
+      finalByStory.set(storyId, {
+        story_id: storyId,
+        liked: item?.liked === true,
+        reaction_type: normalizeReactionType(item?.reaction_type),
+        occurred_at: normalizeBatchOccurredAt(item?.occurred_at),
+      })
+    }
+
+    const events = [...finalByStory.values()]
+
+    if (!events.length) {
+      return res.status(400).json({
+        ok: false,
+        message: 'No valid reaction events were provided',
+      })
+    }
+
+    markRequestDiagnostic({
+      feature: 'story_reaction_batch',
+      stage: 'rpc',
+      event_count: inputEvents.length,
+      final_event_count: events.length,
+      status: 'running',
+    })
+
+    const { data, error } = await supabase.rpc(
+      'apply_story_reaction_batch',
+      {
+        p_user_id: userId,
+        p_events: events,
+      }
+    )
+
+    if (error) throw error
+
+    const results = Array.isArray(data?.items)
+      ? data.items
+      : []
+
+    const analyticsByAuthor = new Map()
+
+    for (const item of results) {
+      const authorId = item?.author_id
+
+      if (
+        item?.action === 'added' &&
+        authorId &&
+        String(item?.owner_user_id || '') !== String(userId)
+      ) {
+        analyticsByAuthor.set(
+          authorId,
+          Number(analyticsByAuthor.get(authorId) || 0) + 1
+        )
+      }
+    }
+
+    await Promise.all(
+      [...analyticsByAuthor.entries()].map(
+        ([authorId, amount]) =>
+          incrementAuthorPageAnalytics(
+            authorId,
+            'interactions',
+            amount
+          )
+      )
+    )
+
+    markRequestDiagnostic({
+      feature: 'story_reaction_batch',
+      stage: 'complete',
+      event_count: inputEvents.length,
+      final_event_count: events.length,
+      status: 'ok',
+    })
+
+    return res.status(200).json({
+      ok: true,
+      batch: true,
+      results: results.map(
+        ({ author_id, owner_user_id, ...item }) => item
+      ),
+      processed_at:
+        data?.processed_at ||
+        new Date().toISOString(),
+    })
+  } catch (error) {
+    markRequestDiagnostic({
+      feature: 'story_reaction_batch',
+      stage: 'failed',
+      status: 'error',
+      provider_code: error?.code || '',
+    })
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        error.message ||
+        'Failed to update reaction batch',
+    })
+  }
+}
+
 export async function toggleStoryReaction(
   req,
   res
 ) {
+  if (
+    String(req.params.storyId || '')
+      .trim()
+      .toLowerCase() === 'batch'
+  ) {
+    return handleStoryReactionBatch(req, res)
+  }
+
   let diagnosticStage = 'start'
   let diagnosticAction = 'unknown'
   let diagnosticStoryId = ''
