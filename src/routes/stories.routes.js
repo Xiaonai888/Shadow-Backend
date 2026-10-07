@@ -32,6 +32,7 @@ import {
   getStoryPublishAgreement,
 } from '../controllers/storyPublishAgreement.controller.js'
 import { enforcePaidContentRequirement } from '../middleware/paidContentRequirement.middleware.js'
+import { enforceFirstPublishAgreement } from '../middleware/enforceFirstPublishAgreement.middleware.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { invalidateMyStoriesCache } from '../services/myStoriesCache.service.js'
 import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
@@ -70,6 +71,7 @@ router.patch(
   '/:storyId/chat/episodes/:episodeId/status',
   requireUser,
   invalidateMyStoriesAfterMutation,
+  enforceFirstPublishAgreement,
   enforcePaidContentRequirement,
   updateChatStoryEpisodeStatus
 )
@@ -90,6 +92,7 @@ router.patch(
   '/:storyId/episodes/:episodeId/status',
   requireUser,
   invalidateMyStoriesAfterMutation,
+  enforceFirstPublishAgreement,
   enforcePaidContentRequirement,
   updateEpisodeStatusByStoryType
 )
