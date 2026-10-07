@@ -36,11 +36,15 @@ import { enforceFirstPublishAgreement } from '../middleware/enforceFirstPublishA
 import { requireUser } from '../middleware/user.middleware.js'
 import { invalidateMyStoriesCache } from '../services/myStoriesCache.service.js'
 import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
+import { invalidatePublicStoryDataCache } from '../services/publicStoryDataCache.service.js'
 
 const router = express.Router()
 
 function invalidateMyStoriesAfterMutation(req, res, next) {
   const userId = req.user?.user_id
+  const storyId = String(
+    req.params?.storyId || ''
+  ).trim()
 
   res.once('finish', () => {
     if (
@@ -52,6 +56,12 @@ function invalidateMyStoriesAfterMutation(req, res, next) {
       }
 
       invalidatePublicStoriesCache()
+
+      if (storyId) {
+        invalidatePublicStoryDataCache(
+          storyId
+        )
+      }
     }
   })
 
