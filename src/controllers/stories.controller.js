@@ -770,13 +770,13 @@ export async function createStory(req, res) {
     const slides = cleanStorySlides(req.body.slides)
 
     const payloadError = validateStoryPayload({
-      title,
-      storyLanguage,
-      mainGenre,
-      storySettings,
-      description,
-      requireStorySettings: false,
-    })
+  title,
+  storyLanguage,
+  mainGenre,
+  storySettings,
+  description,
+  requireStorySettings: false,
+})
 
     if (payloadError) {
       return res.status(400).json({
@@ -1686,6 +1686,17 @@ export async function updateEpisodeStatus(req, res) {
         message: 'Invalid publish status',
       })
     }
+
+    if (
+  ['published', 'scheduled'].includes(status) &&
+  Number(episode.episode_number || 0) === 1 &&
+  cleanStorySettings(story.story_settings).length < 1
+) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Choose at least 1 Story Setting',
+  })
+}
 
     if (['published', 'scheduled'].includes(status)) {
       if (
