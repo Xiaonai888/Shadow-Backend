@@ -11,6 +11,7 @@ import {
   getMemoryGuardSnapshot,
 } from './memoryGuard.service.js'
 import { recordSystemUsage } from './systemUsageMonitor.service.js'
+import { registerRuntimeInspectable } from './runtimeMemoryInspector.service.js'
 
 const ACTIVE_DRAIN_DELAY_MS = 250
 const IDLE_SAFETY_CHECK_MS = 10 * 60 * 1000
@@ -453,3 +454,35 @@ export function startHeavyMediaWorkerCoordinator() {
   scheduleNext(1000)
   return true
 }
+
+registerRuntimeInspectable({
+  name: 'Heavy Media Worker',
+  mode: 'on_demand_sleep',
+  reader: () => ({
+    state: !enabled()
+      ? 'disabled'
+      : activeWorker
+        ? 'working'
+        : cycleRunning
+          ? 'checking'
+          : pollTimer
+            ? 'sleeping'
+            : coordinatorStarted
+              ? 'idle'
+              : 'not_started',
+    entries: activeWorker ? 1 : 0,
+    enabled: enabled(),
+    coordinator_started: coordinatorStarted,
+    cycle_running: cycleRunning,
+    timer_armed: Boolean(pollTimer),
+    active_job_id: activeWorker?.jobId || null,
+    active_for_ms: activeWorker
+      ? Math.max(0, Date.now() - activeWorker.startedAt)
+      : 0,
+    telemetry_events: activeWorker?.telemetryEvents || 0,
+    telemetry_bytes: activeWorker?.telemetryBytes || 0,
+    telemetry_errors: activeWorker?.telemetryErrors || 0,
+    idle_check_seconds: IDLE_SAFETY_CHECK_MS / 1000,
+    retry_check_seconds: RETRY_CHECK_MS / 1000,
+  }),
+})
