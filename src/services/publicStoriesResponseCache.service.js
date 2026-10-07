@@ -1,4 +1,5 @@
 import { getReaderAgeAccess } from './storyAgeAccess.service.js'
+import { registerRuntimeInspectable } from './runtimeMemoryInspector.service.js'
 
 const MAX_CACHE_ENTRIES = 300
 const CACHE_TTL_MS = 60 * 1000
@@ -262,3 +263,21 @@ export async function cachePublicStoriesResponse(
 
   return next()
 }
+
+registerRuntimeInspectable({
+  name: 'Public Stories Cache',
+  mode: 'memory_cache',
+  reader: () => ({
+    state: publicStoriesInFlight.size > 0
+      ? 'busy'
+      : publicStoriesCache.size > 0
+        ? 'cached'
+        : 'empty',
+    entries: publicStoriesCache.size,
+    in_flight: publicStoriesInFlight.size,
+    max_entries: MAX_CACHE_ENTRIES,
+    ttl_seconds: CACHE_TTL_MS / 1000,
+    cache_version: publicStoriesCacheVersion,
+    view_sensitive_version: publicStoriesViewSensitiveVersion,
+  }),
+})
