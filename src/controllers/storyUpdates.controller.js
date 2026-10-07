@@ -36,6 +36,12 @@ export async function getPublicStoryUpdates(req, res) {
       100
     )
     const language = String(req.query.language || '').trim() || null
+    const storySetting =
+      String(
+        req.query.story_setting ||
+          req.query.storySetting ||
+          ''
+      ).trim() || null
     const storyType = normalizeStoryType(
       req.query.story_type || req.query.storyType
     )
@@ -51,6 +57,7 @@ export async function getPublicStoryUpdates(req, res) {
         ),
         p_days: days,
         p_limit_per_day: limitPerDay,
+        p_story_setting: storySetting,
       }
     )
 
