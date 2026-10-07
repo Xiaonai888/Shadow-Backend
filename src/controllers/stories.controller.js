@@ -919,8 +919,7 @@ export async function updateStory(req, res) {
       mainGenre,
       storySettings,
       description,
-      requireStorySettings:
-        hasStorySettingsPayload || oldStorySettings.length > 0,
+      requireStorySettings: oldStorySettings.length > 0,
     })
 
     if (payloadError) {
