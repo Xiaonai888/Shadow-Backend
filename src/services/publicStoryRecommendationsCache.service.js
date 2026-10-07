@@ -52,10 +52,16 @@ export async function cachePublicStoryRecommendations(req, res, next) {
 
   const authorId = String(req.query.authorId || req.query.author_id || '').trim()
   const genre = String(req.query.genre || '').trim()
+  const storySetting = String(
+    req.query.story_setting ||
+    req.query.storySetting ||
+    ''
+  ).trim()
   const key = JSON.stringify([
     storyId,
     authorId,
     genre,
+    storySetting,
     access.can_view_adult_stories ? 'adult' : 'restricted',
   ])
   const now = Date.now()
