@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { publishPaymentStatus } from '../services/paymentEvents.service.js'
+import { replyTelegram } from '../services/telegram.service.js'
 
 function normalizeStatus(status) {
   const value = String(status || '').trim().toLowerCase()
@@ -142,6 +143,17 @@ async function getPaymentById(paymentId) {
     .from('payment_transactions')
     .select('*')
     .eq('id', paymentId)
+    .maybeSingle()
+
+  if (error) throw error
+  return data || null
+}
+
+async function getTelegramReportByPaymentId(paymentId) {
+  const { data, error } = await supabase
+    .from('telegram_payments')
+    .select('*')
+    .eq('matched_payment_id', paymentId)
     .maybeSingle()
 
   if (error) throw error
@@ -292,5 +304,108 @@ export async function rejectAdminManualPayment(req, res) {
   } catch (error) {
     console.error('REJECT ADMIN MANUAL PAYMENT ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to reject manual payment', error: error.message })
+  }
+}
+
+
+export async function retryAdminTelegramReport(req, res) {
+  try {
+    const paymentId = String(req.params.paymentId || '').trim()
+    if (!paymentId) return res.status(400).json({ ok: false, message: 'Payment ID is required' })
+
+    const payment = await getPaymentById(paymentId)
+    if (!payment) return res.status(404).json({ ok: false, message: 'Payment not found' })
+
+    const report = await getTelegramReportByPaymentId(paymentId)
+    if (!report || !report.report_text) {
+      return res.status(404).json({ ok: false, message: 'Telegram report not found' })
+    }
+
+    if (report.report_status === 'sent') {
+      return res.status(409).json({ ok: false, message: 'Telegram report was already sent' })
+    }
+
+    if (report.report_status === 'pending') {
+      return res.status(409).json({ ok: false, message: 'Telegram report is already pending' })
+    }
+
+    if (!report.telegram_chat_id || !report.telegram_message_id) {
+      return res.status(400).json({ ok: false, message: 'Telegram reply target is missing' })
+    }
+
+    const now = new Date().toISOString()
+    const { data: locked, error: lockError } = await supabase
+      .from('telegram_payments')
+      .update({
+        report_status: 'pending',
+        report_attempts: Number(report.report_attempts || 0) + 1,
+        report_last_error: null,
+        report_last_attempt_at: now,
+        updated_at: now,
+      })
+      .eq('id', report.id)
+      .eq('report_status', 'failed')
+      .select('*')
+      .maybeSingle()
+
+    if (lockError) throw lockError
+    if (!locked) {
+      return res.status(409).json({ ok: false, message: 'Telegram report retry is already in progress' })
+    }
+
+    try {
+      const response = await replyTelegram(
+        locked.telegram_chat_id,
+        locked.telegram_message_id,
+        locked.report_text
+      )
+
+      if (!response?.ok || response?.skipped) {
+        throw new Error(response?.description || 'Telegram report was not sent.')
+      }
+
+      const sentAt = new Date().toISOString()
+      const { data: sent, error: sentError } = await supabase
+        .from('telegram_payments')
+        .update({
+          report_status: 'sent',
+          report_last_error: null,
+          report_sent_at: sentAt,
+          report_message_id: response?.result?.message_id
+            ? String(response.result.message_id)
+            : null,
+          updated_at: sentAt,
+        })
+        .eq('id', locked.id)
+        .select('*')
+        .single()
+
+      if (sentError) throw sentError
+
+      return res.status(200).json({ ok: true, telegram_report: publicTelegramReport(sent) })
+    } catch (error) {
+      const failedAt = new Date().toISOString()
+      const { data: failed, error: failedError } = await supabase
+        .from('telegram_payments')
+        .update({
+          report_status: 'failed',
+          report_last_error: String(error?.message || error || 'Telegram send failed').slice(0, 1000),
+          updated_at: failedAt,
+        })
+        .eq('id', locked.id)
+        .select('*')
+        .single()
+
+      if (failedError) throw failedError
+
+      return res.status(502).json({
+        ok: false,
+        message: failed.report_last_error || 'Telegram report retry failed',
+        telegram_report: publicTelegramReport(failed),
+      })
+    }
+  } catch (error) {
+    console.error('RETRY ADMIN TELEGRAM REPORT ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to retry Telegram report', error: error.message })
   }
 }
