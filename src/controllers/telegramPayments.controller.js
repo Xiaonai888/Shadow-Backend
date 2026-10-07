@@ -697,7 +697,12 @@ function releasedMessage(payment, user, title = '✅ APPROVED') {
     `💎 Released: <b>${html(Number(payment.diamonds || 0).toLocaleString())} Diamonds</b>`,
     `👤 User: <b>${html(user?.username ? '@' + user.username : user?.name || payment.user_id)}</b>`,
     `💵 Amount: <b>${html(money(payment.amount_usd))}</b>`,
-    `📦 Order ID: <code>${html(payment.order_id)}</code>`,
+    `🛒 Purchase Type: <b>${html(
+  String(payment.purchase_type || '').toLowerCase() === 'premium'
+    ? `Premium — ${Number(payment.premium_plan_months || 0)} Month${Number(payment.premium_plan_months || 0) === 1 ? '' : 's'}`
+    : 'Diamond Store'
+)}</b>`,
+`📦 Order ID: <code>${html(payment.order_id)}</code>`,
     payment.aba_trx_id ? `🧾 Trx ID: <code>${html(payment.aba_trx_id)}</code>` : '',
     '',
     'No extra Diamonds were added if this was already approved.',
