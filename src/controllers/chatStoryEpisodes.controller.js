@@ -369,7 +369,7 @@ const content = JSON.stringify({
       title,
       content,
       status: 'ready',
-      published_at: null,
+      published_at: existingEpisode?.published_at || null,
       is_locked:
         typeof req.body.is_locked === 'boolean'
           ? req.body.is_locked
