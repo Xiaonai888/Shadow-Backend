@@ -23,6 +23,7 @@ import {
 } from '../utils/authorReaderCommentBlocks.js'
 
 import { loadBatchedReplyPage } from '../services/commentReplyBatch.service.js'
+import { enqueueCommentCreate } from '../services/commentCreateMicroBatcher.service.js'
 
 async function loadReplyPage(args) {
   return loadBatchedReplyPage(args)
@@ -1730,34 +1731,21 @@ async function createComment({
   const isAutoHidden =
     matchedWords.length > 0
 
-  const {
-    data: createResult,
-    error: createError,
-  } = await supabase.rpc(
-    'create_story_comment_once',
-    {
-      p_story_id:
+  const createResult =
+    await enqueueCommentCreate({
+      storyId:
         story.id,
-      p_episode_id:
+      episodeId:
         episodeId || null,
-      p_user_id:
-        userId,
-      p_parent_id:
+      userId,
+      parentId:
         parentId || null,
-      p_text:
-        text,
-      p_is_hidden:
+      text,
+      isHidden:
         isAutoHidden,
-      p_client_event_id:
-        clientEventId,
-      p_occurred_at:
-        occurredAt,
-    }
-  )
-
-  if (createError) {
-    throw createError
-  }
+      clientEventId,
+      occurredAt,
+    })
 
   const commentId =
     createResult?.comment_id
@@ -1784,20 +1772,10 @@ async function createComment({
       )
     )
 
-  const {
-    data,
-    error,
-  } = await supabase
-    .from('comments')
-    .select(
-      '*, user:users(id, name, username, avatar_url, role)'
-    )
-    .eq('id', commentId)
-    .maybeSingle()
+  const data =
+    createResult?.comment
 
-  if (error) throw error
-
-  if (!data) {
+  if (!data?.id) {
     throw new Error(
       'Created comment was not found'
     )
