@@ -2,6 +2,7 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const MAX_CACHE_ENTRIES = 200
 
 const publicStoryDataCache = new Map()
+const publicStoryDataInFlight = new Map()
 const publicStoryDataVersions = new Map()
 
 let publicStoryDataGlobalVersion = 0
@@ -154,6 +155,32 @@ export function cachePublicStoryDataResponse(
         .json(freshCached.body)
     }
 
+    const existingInFlight =
+      publicStoryDataInFlight.get(key)
+
+    if (existingInFlight) {
+      res.setHeader(
+        'X-Shadow-Public-Story-Cache',
+        'WAIT'
+      )
+
+      existingInFlight.then((entry) => {
+        if (res.headersSent) return
+
+        if (entry) {
+          return res
+            .status(
+              entry.statusCode || 200
+            )
+            .json(entry.body)
+        }
+
+        return next()
+      })
+
+      return
+    }
+
     res.setHeader(
       'X-Shadow-Public-Story-Cache',
       'MISS'
@@ -165,10 +192,52 @@ export function cachePublicStoryDataResponse(
     const requestStoryVersion =
       getStoryVersion(storyId)
 
+    let resolveInFlight
+
+    const inFlightPromise =
+      new Promise((resolve) => {
+        resolveInFlight = resolve
+      })
+
+    publicStoryDataInFlight.set(
+      key,
+      inFlightPromise
+    )
+
+    let settled = false
+
+    const settleInFlight = (
+      entry = null
+    ) => {
+      if (settled) return
+      settled = true
+
+      if (
+        publicStoryDataInFlight.get(key) ===
+        inFlightPromise
+      ) {
+        publicStoryDataInFlight.delete(key)
+      }
+
+      resolveInFlight(entry)
+    }
+
+    res.once(
+      'finish',
+      () => settleInFlight(null)
+    )
+
+    res.once(
+      'close',
+      () => settleInFlight(null)
+    )
+
     const originalJson =
       res.json.bind(res)
 
     res.json = (body) => {
+      let entry = null
+
       const versionMatches =
         publicStoryDataGlobalVersion ===
           requestGlobalVersion &&
@@ -184,15 +253,19 @@ export function cachePublicStoryDataResponse(
           body
         )
       ) {
+        entry = {
+          body,
+          statusCode: res.statusCode,
+          cachedAt: Date.now(),
+        }
+
         setCacheEntry(
           key,
-          {
-            body,
-            statusCode: res.statusCode,
-            cachedAt: Date.now(),
-          }
+          entry
         )
       }
+
+      settleInFlight(entry)
 
       return originalJson(body)
     }
