@@ -1176,6 +1176,282 @@ function getNextCambodiaMidnightIso(date = new Date()) {
   ).toISOString()
 }
 
+async function normalizeAuthorDaily80Boost(
+  authorId,
+  dailyBoost,
+  now
+) {
+  if (!dailyBoost) return null
+
+  let currentBoost = dailyBoost
+  const activationCount = numberValue(
+    currentBoost.activation_count
+  )
+  const maxActivations = Math.max(
+    1,
+    numberValue(
+      currentBoost.max_activations || 180
+    )
+  )
+  const endsAt = new Date(
+    currentBoost.ends_at || ''
+  ).getTime()
+
+  const shouldFinish =
+    activationCount >= maxActivations &&
+    (
+      currentBoost.status !== 'active' ||
+      !Number.isFinite(endsAt) ||
+      endsAt <= now.getTime()
+    )
+
+  if (shouldFinish) {
+    const {
+      data: finished,
+      error,
+    } = await supabase
+      .from('author_daily_80_boost_progress')
+      .update({
+        status: 'finished',
+        updated_at: now.toISOString(),
+      })
+      .eq('author_id', authorId)
+      .select()
+      .maybeSingle()
+
+    if (error) throw error
+    if (finished) currentBoost = finished
+  } else if (
+    currentBoost.status === 'active' &&
+    (
+      !Number.isFinite(endsAt) ||
+      endsAt <= now.getTime()
+    )
+  ) {
+    const {
+      data: available,
+      error,
+    } = await supabase
+      .from('author_daily_80_boost_progress')
+      .update({
+        status: 'available',
+        updated_at: now.toISOString(),
+      })
+      .eq('author_id', authorId)
+      .select()
+      .maybeSingle()
+
+    if (error) throw error
+    if (available) currentBoost = available
+  }
+
+  if (currentBoost.status === 'finished') {
+    const { error } = await supabase.rpc(
+      'resume_author_daily_50_after_80',
+      { p_author_id: authorId }
+    )
+
+    if (error) throw error
+  }
+
+  return currentBoost
+}
+
+async function getAuthorDaily80EventState(
+  authorPage,
+  options = {}
+) {
+  const now = new Date()
+  const nowIso = now.toISOString()
+
+  const hiddenState = {
+    visible: false,
+    status: 'locked',
+    share_percent: 80,
+    activation_count: 0,
+    max_activations: 180,
+    can_activate_today: false,
+    started_at: null,
+    ends_at: null,
+    next_day_at:
+      getNextCambodiaMidnightIso(now),
+    server_now: nowIso,
+  }
+
+  if (!authorPage) return hiddenState
+
+  const hasAdminEvent =
+    Object.prototype.hasOwnProperty.call(
+      options,
+      'adminEvent'
+    )
+  const adminEvent = hasAdminEvent
+    ? options.adminEvent
+    : await getAuthor100PercentEventState(
+        authorPage.id
+      )
+
+  if (adminEvent?.active) {
+    return {
+      ...hiddenState,
+      status: 'paused_by_admin_event',
+    }
+  }
+
+  const [
+    {
+      data: day49,
+      error: day49Error,
+    },
+    {
+      data: dailyBoost,
+      error: dailyBoostError,
+    },
+  ] = await Promise.all([
+    supabase
+      .from('author_49_day_event_progress')
+      .select('*')
+      .eq('author_id', authorPage.id)
+      .maybeSingle(),
+    supabase
+      .from('author_daily_80_boost_progress')
+      .select('*')
+      .eq('author_id', authorPage.id)
+      .maybeSingle(),
+  ])
+
+  if (day49Error) throw day49Error
+  if (dailyBoostError) throw dailyBoostError
+
+  let current49 = day49
+
+  if (
+    current49?.status === 'active' &&
+    current49?.ends_at &&
+    new Date(current49.ends_at).getTime() <=
+      now.getTime()
+  ) {
+    const {
+      data: finished49,
+      error,
+    } = await supabase
+      .from('author_49_day_event_progress')
+      .update({
+        status: 'finished',
+        ended_at:
+          current49.ended_at || nowIso,
+        end_reason:
+          current49.end_reason ||
+          '49_days_completed',
+        updated_at: nowIso,
+      })
+      .eq('author_id', authorPage.id)
+      .eq('status', 'active')
+      .select()
+      .maybeSingle()
+
+    if (error) throw error
+    if (finished49) current49 = finished49
+  }
+
+  if (current49?.status !== 'finished') {
+    return hiddenState
+  }
+
+  const currentBoost =
+    await normalizeAuthorDaily80Boost(
+      authorPage.id,
+      dailyBoost,
+      now
+    )
+
+  if (!currentBoost) {
+    return {
+      ...hiddenState,
+      visible: true,
+      status: 'available',
+      can_activate_today: true,
+    }
+  }
+
+  const todayKey = getCambodiaDayKey(now)
+  const activationCount = numberValue(
+    currentBoost.activation_count
+  )
+  const maxActivations = Math.max(
+    1,
+    numberValue(
+      currentBoost.max_activations || 180
+    )
+  )
+  const lastActivationDate = String(
+    currentBoost.last_activation_date || ''
+  )
+
+  return {
+    visible:
+      currentBoost.status !== 'finished',
+    status:
+      currentBoost.status || 'available',
+    share_percent: percentValue(
+      currentBoost.share_percent || 80
+    ),
+    activation_count: activationCount,
+    max_activations: maxActivations,
+    can_activate_today:
+      currentBoost.status !== 'finished' &&
+      lastActivationDate !== todayKey &&
+      activationCount < maxActivations,
+    started_at:
+      currentBoost.started_at || null,
+    ends_at:
+      currentBoost.ends_at || null,
+    last_activation_date:
+      currentBoost.last_activation_date ||
+      null,
+    next_day_at:
+      getNextCambodiaMidnightIso(now),
+    server_now: nowIso,
+  }
+}
+
+export async function getMyAuthorDaily80Event(
+  req,
+  res
+) {
+  try {
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    const authorPage = await getMyAuthorPage(userId)
+    const event =
+      await getAuthorDaily80EventState(authorPage)
+
+    return res.status(200).json({
+      ok: true,
+      has_author_page: Boolean(authorPage),
+      event,
+    })
+  } catch (error) {
+    console.error(
+      'GET MY DAILY 80 AUTHOR EVENT ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load Daily 80 Author Event',
+      error: error.message,
+    })
+  }
+}
+
 async function getAuthorDaily50EventState(
   authorPage,
   options = {}
@@ -1223,8 +1499,8 @@ async function getAuthorDaily50EventState(
       error: day49Error,
     },
     {
-      data: dailyBoost,
-      error: dailyBoostError,
+      data: daily80,
+      error: daily80Error,
     },
   ] = await Promise.all([
     supabase
@@ -1233,14 +1509,14 @@ async function getAuthorDaily50EventState(
       .eq('author_id', authorPage.id)
       .maybeSingle(),
     supabase
-      .from('author_daily_50_boost_progress')
+      .from('author_daily_80_boost_progress')
       .select('*')
       .eq('author_id', authorPage.id)
       .maybeSingle(),
   ])
 
   if (day49Error) throw day49Error
-  if (dailyBoostError) throw dailyBoostError
+  if (daily80Error) throw daily80Error
 
   let current49 = day49
 
@@ -1276,6 +1552,33 @@ async function getAuthorDaily50EventState(
   if (current49?.status !== 'finished') {
     return hiddenState
   }
+
+  const current80 =
+    await normalizeAuthorDaily80Boost(
+      authorPage.id,
+      daily80,
+      now
+    )
+
+  if (current80?.status !== 'finished') {
+    return {
+      ...hiddenState,
+      status: current80
+        ? 'paused_by_80_event'
+        : 'waiting_80_event',
+    }
+  }
+
+  const {
+    data: dailyBoost,
+    error: dailyBoostError,
+  } = await supabase
+    .from('author_daily_50_boost_progress')
+    .select('*')
+    .eq('author_id', authorPage.id)
+    .maybeSingle()
+
+  if (dailyBoostError) throw dailyBoostError
 
   if (!dailyBoost) {
     return {
@@ -1533,10 +1836,12 @@ export async function getMyAuthorQuest(req, res) {
     const [
       activeBoost,
       author49Event,
+      daily80Event,
       daily50Event,
     ] = await Promise.all([
       getActiveLifetimeBoost(authorPage.id),
       getAuthor49DayEventState(authorPage),
+      getAuthorDaily80EventState(authorPage),
       getAuthorDaily50EventState(authorPage),
     ])
 
@@ -1556,6 +1861,19 @@ export async function getMyAuthorQuest(req, res) {
           progress.current_share_percent
         ),
         ends_at: null,
+      },
+      {
+        source: 'daily_80_event',
+        percent:
+          daily80Event?.status === 'active'
+            ? percentValue(
+                daily80Event.share_percent
+              )
+            : 0,
+        ends_at:
+          daily80Event?.status === 'active'
+            ? daily80Event.ends_at
+            : null,
       },
       {
         source: 'daily_50_event',
