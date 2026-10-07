@@ -9,6 +9,7 @@ import {
   confirmAdminManualPayment,
   getAdminManualPayments,
   rejectAdminManualPayment,
+  retryAdminTelegramReport,
 } from '../controllers/adminManualPayments.controller.js'
 
 const router = express.Router()
@@ -18,6 +19,7 @@ router.get('/manual', requireAdmin, getAdminManualPayments)
 router.get('/manual/stream', requireAdmin, streamAdminPaymentEvents)
 router.post('/manual/:paymentId/confirm', requireAdmin, confirmAdminManualPayment)
 router.post('/manual/:paymentId/reject', requireAdmin, rejectAdminManualPayment)
+router.post('/manual/:paymentId/retry-telegram-report', requireAdmin, retryAdminTelegramReport)
 router.get('/:paymentId', requireAdmin, getAdminPayment)
 
 export default router
