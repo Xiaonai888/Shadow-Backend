@@ -194,10 +194,17 @@ function cleanTags(value) {
 
 function cleanStorySettings(value) {
   if (!Array.isArray(value)) return []
-  return value.map((item) => cleanText(item)).filter(Boolean)
-    .filter((item, index, array) =>
-      array.findIndex((value) => value.toLowerCase() === item.toLowerCase()) === index
-    ).slice(0, 6)
+
+  return value
+    .map((item) => cleanText(item))
+    .filter(Boolean)
+    .filter(
+      (item, index, array) =>
+        array.findIndex(
+          (value) => value.toLowerCase() === item.toLowerCase()
+        ) === index
+    )
+    .slice(0, 6)
 }
 
 function cleanUpdateDays(value) {
@@ -334,13 +341,14 @@ function publicStory(story, slides = []) {
     story_type: story.story_type || 'novel',
     story_language: story.story_language,
     main_genre: story.main_genre,
+    story_settings: story.story_settings || [],
     story_status: story.story_status || 'New',
     tags: story.tags || [],
     description: story.description,
     is_adult: story.is_adult,
     cover_url: story.cover_url,
-landscape_thumbnail_url: story.landscape_thumbnail_url || null,
-status: story.status,
+    landscape_thumbnail_url: story.landscape_thumbnail_url || null,
+    status: story.status,
     update_days: story.update_days || [],
     total_episodes: story.total_episodes,
     total_views: story.total_views,
@@ -352,7 +360,13 @@ status: story.status,
     admin_archive_expires_at: story.admin_archive_expires_at || null,
     deleted_by_user_id: story.deleted_by_user_id || null,
     days_left: story.delete_expires_at
-      ? Math.max(0, Math.ceil((new Date(story.delete_expires_at).getTime() - Date.now()) / 86400000))
+      ? Math.max(
+          0,
+          Math.ceil(
+            (new Date(story.delete_expires_at).getTime() - Date.now()) /
+              86400000
+          )
+        )
       : null,
     created_at: story.created_at,
     updated_at: story.updated_at,
@@ -660,7 +674,14 @@ async function replaceStorySlides(storyId, slides) {
   return data || []
 }
 
-function validateStoryPayload({ title, storyLanguage, mainGenre, description }) {
+function validateStoryPayload({
+  title,
+  storyLanguage,
+  mainGenre,
+  storySettings,
+  description,
+  requireStorySettings = false,
+}) {
   if (!title) {
     return 'Story title is required'
   }
@@ -675,6 +696,17 @@ function validateStoryPayload({ title, storyLanguage, mainGenre, description }) 
 
   if (!mainGenre) {
     return 'Main genre is required'
+  }
+
+  if (
+    requireStorySettings &&
+    (!Array.isArray(storySettings) || storySettings.length < 1)
+  ) {
+    return 'Choose at least 1 Story Setting'
+  }
+
+  if (Array.isArray(storySettings) && storySettings.length > 6) {
+    return 'Story Setting allows up to 6 selections'
   }
 
   if (description && description.length > 5000) {
@@ -705,10 +737,21 @@ export async function createStory(req, res) {
     }
 
     const title = cleanText(req.body.title)
-    const storyType = cleanStoryType(req.body.story_type || req.body.storyType)
-    const storyLanguage = cleanText(req.body.story_language || req.body.storyLanguage || 'Khmer')
-    const mainGenre = cleanText(req.body.main_genre || req.body.mainGenre)
-    const storyStatus = cleanStoryStatus(req.body.story_status || req.body.storyStatus || 'New')
+    const storyType = cleanStoryType(
+      req.body.story_type || req.body.storyType
+    )
+    const storyLanguage = cleanText(
+      req.body.story_language || req.body.storyLanguage || 'Khmer'
+    )
+    const mainGenre = cleanText(
+      req.body.main_genre || req.body.mainGenre
+    )
+    const storySettings = cleanStorySettings(
+      req.body.story_settings || req.body.storySettings
+    )
+    const storyStatus = cleanStoryStatus(
+      req.body.story_status || req.body.storyStatus || 'New'
+    )
     const tags = cleanTags(req.body.tags)
     const description = cleanNullableText(req.body.description)
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
@@ -716,14 +759,24 @@ export async function createStory(req, res) {
       req.body.cover_url || req.body.coverUrl,
       { field: 'stories.cover_url' }
     )
-const landscapeThumbnailUrl = cleanMediaReference(
-  req.body.landscape_thumbnail_url || req.body.landscapeThumbnailUrl,
-  { field: 'stories.landscape_thumbnail_url' }
-)
-const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
-const slides = cleanStorySlides(req.body.slides)
+    const landscapeThumbnailUrl = cleanMediaReference(
+      req.body.landscape_thumbnail_url ||
+        req.body.landscapeThumbnailUrl,
+      { field: 'stories.landscape_thumbnail_url' }
+    )
+    const updateDays = cleanUpdateDays(
+      req.body.update_days || req.body.updateDays
+    )
+    const slides = cleanStorySlides(req.body.slides)
 
-    const payloadError = validateStoryPayload({ title, storyLanguage, mainGenre, description })
+    const payloadError = validateStoryPayload({
+      title,
+      storyLanguage,
+      mainGenre,
+      storySettings,
+      description,
+      requireStorySettings: true,
+    })
 
     if (payloadError) {
       return res.status(400).json({
@@ -741,6 +794,7 @@ const slides = cleanStorySlides(req.body.slides)
         title,
         story_language: storyLanguage,
         main_genre: mainGenre,
+        story_settings: storySettings,
         story_status: storyStatus,
         tags,
         description,
@@ -796,17 +850,39 @@ export async function updateStory(req, res) {
     )
     const storyLanguage = cleanText(
       req.body.story_language ||
-      req.body.storyLanguage ||
-      oldStory.story_language ||
-      'Khmer'
+        req.body.storyLanguage ||
+        oldStory.story_language ||
+        'Khmer'
     )
     const storyStatus = cleanStoryStatus(
       req.body.story_status ||
-      req.body.storyStatus ||
-      oldStory.story_status ||
-      'New'
+        req.body.storyStatus ||
+        oldStory.story_status ||
+        'New'
     )
-    const mainGenre = cleanText(req.body.main_genre || req.body.mainGenre)
+    const mainGenre = cleanText(
+      req.body.main_genre || req.body.mainGenre
+    )
+
+    const hasStorySettingsPayload =
+      Object.prototype.hasOwnProperty.call(
+        req.body,
+        'story_settings'
+      ) ||
+      Object.prototype.hasOwnProperty.call(
+        req.body,
+        'storySettings'
+      )
+
+    const oldStorySettings = cleanStorySettings(
+      oldStory.story_settings
+    )
+    const storySettings = hasStorySettingsPayload
+      ? cleanStorySettings(
+          req.body.story_settings ?? req.body.storySettings
+        )
+      : oldStorySettings
+
     const tags = cleanTags(req.body.tags)
     const description = cleanNullableText(req.body.description)
     const isAdult = Boolean(req.body.is_adult ?? req.body.isAdult)
@@ -817,21 +893,35 @@ export async function updateStory(req, res) {
         currentValue: oldStory.cover_url,
       }
     )
-const landscapeThumbnailUrl = cleanMediaReference(
-  req.body.landscape_thumbnail_url || req.body.landscapeThumbnailUrl,
-  {
-    field: 'stories.landscape_thumbnail_url',
-    currentValue: oldStory.landscape_thumbnail_url,
-  }
-)
-const updateDays = cleanUpdateDays(req.body.update_days || req.body.updateDays)
-const existingSlides = await getStorySlides(storyId)
-const legacySlideUrls = existingSlides
-  .map((slide) => slide.image_url)
-  .filter(Boolean)
-const slides = cleanStorySlides(req.body.slides, legacySlideUrls)
+    const landscapeThumbnailUrl = cleanMediaReference(
+      req.body.landscape_thumbnail_url ||
+        req.body.landscapeThumbnailUrl,
+      {
+        field: 'stories.landscape_thumbnail_url',
+        currentValue: oldStory.landscape_thumbnail_url,
+      }
+    )
+    const updateDays = cleanUpdateDays(
+      req.body.update_days || req.body.updateDays
+    )
+    const existingSlides = await getStorySlides(storyId)
+    const legacySlideUrls = existingSlides
+      .map((slide) => slide.image_url)
+      .filter(Boolean)
+    const slides = cleanStorySlides(
+      req.body.slides,
+      legacySlideUrls
+    )
 
-    const payloadError = validateStoryPayload({ title, storyLanguage, mainGenre, description })
+    const payloadError = validateStoryPayload({
+      title,
+      storyLanguage,
+      mainGenre,
+      storySettings,
+      description,
+      requireStorySettings:
+        hasStorySettingsPayload || oldStorySettings.length > 0,
+    })
 
     if (payloadError) {
       return res.status(400).json({
@@ -840,22 +930,31 @@ const slides = cleanStorySlides(req.body.slides, legacySlideUrls)
       })
     }
 
+    const updatePayload = {
+      title,
+      story_type: storyType,
+      story_language: storyLanguage,
+      main_genre: mainGenre,
+      story_status: storyStatus,
+      tags,
+      description,
+      is_adult: isAdult,
+      cover_url: coverUrl,
+      landscape_thumbnail_url: landscapeThumbnailUrl,
+      update_days: updateDays,
+      updated_at: new Date().toISOString(),
+    }
+
+    if (
+      hasStorySettingsPayload ||
+      oldStorySettings.length > 0
+    ) {
+      updatePayload.story_settings = storySettings
+    }
+
     const { data: story, error: storyError } = await supabase
       .from('stories')
-      .update({
-        title,
-        story_type: storyType,
-        story_language: storyLanguage,
-        main_genre: mainGenre,
-        story_status: storyStatus,
-        tags,
-        description,
-        is_adult: isAdult,
-        cover_url: coverUrl,
-        landscape_thumbnail_url: landscapeThumbnailUrl,
-        update_days: updateDays,
-        updated_at: new Date().toISOString(),
-      })
+      .update(updatePayload)
       .eq('id', storyId)
       .eq('user_id', userId)
       .select()
