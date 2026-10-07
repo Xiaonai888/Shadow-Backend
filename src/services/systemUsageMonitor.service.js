@@ -1,3 +1,5 @@
+import { registerRuntimeInspectable } from './runtimeMemoryInspector.service.js'
+
 const LIVE_WINDOW_MS = 15 * 1000
 const MINUTE_WINDOW_MS = 60 * 1000
 const MAX_LIVE_WINDOWS = 16
@@ -358,3 +360,40 @@ const rotateTimer = setInterval(
 )
 
 rotateTimer.unref?.()
+
+registerRuntimeInspectable({
+  name: 'System Usage Monitor',
+  mode: 'always_awake',
+  reader: () => {
+    const liveHistoryEntries = liveHistory.reduce(
+      (sum, item) => sum + (Array.isArray(item?.rows) ? item.rows.length : 0),
+      0
+    )
+    const minuteHistoryEntries = minuteHistory.reduce(
+      (sum, item) => sum + (Array.isArray(item?.rows) ? item.rows.length : 0),
+      0
+    )
+    const entries =
+      liveWindow.rows.size +
+      minuteWindow.rows.size +
+      liveHistoryEntries +
+      minuteHistoryEntries
+
+    return {
+      state: 'active',
+      entries,
+      live_keys: liveWindow.rows.size,
+      minute_keys: minuteWindow.rows.size,
+      live_history_windows: liveHistory.length,
+      minute_history_windows: minuteHistory.length,
+      live_history_entries: liveHistoryEntries,
+      minute_history_entries: minuteHistoryEntries,
+      max_live_windows: MAX_LIVE_WINDOWS,
+      max_minute_windows: MAX_MINUTE_WINDOWS,
+      max_keys_per_window: MAX_KEYS_PER_WINDOW,
+      events_recorded: monitorStats.events_recorded,
+      dropped_keys: monitorStats.dropped_keys,
+      timer_seconds: 5,
+    }
+  },
+})
