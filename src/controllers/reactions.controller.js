@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
+import { enqueueStoryReactionBatch } from '../services/storyReactionMicroBatcher.service.js'
 
 const STORY_REACTION_TYPES = new Set([
   'love',
@@ -280,9 +281,13 @@ export async function getStoryReactions(
 const STORY_REACTION_BATCH_LIMIT = 200
 const STORY_REACTION_MAX_PAST_MS = 7 * 24 * 60 * 60 * 1000
 const STORY_REACTION_MAX_FUTURE_MS = 5 * 60 * 1000
+const STORY_REACTION_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 function normalizeBatchOccurredAt(value) {
-  const parsed = Date.parse(String(value || ''))
+  const parsed = Date.parse(
+    String(value || '')
+  )
   const now = Date.now()
 
   if (!Number.isFinite(parsed)) {
@@ -299,14 +304,26 @@ function normalizeBatchOccurredAt(value) {
   return new Date(parsed).toISOString()
 }
 
+function normalizeBatchEventId(value) {
+  const eventId = String(value || '').trim()
+
+  return STORY_REACTION_UUID_PATTERN.test(eventId)
+    ? eventId
+    : null
+}
+
 async function handleStoryReactionBatch(req, res) {
   try {
-    const userId = req.user?.user_id
-    const inputEvents = Array.isArray(req.body?.events)
+    const userId = String(
+      req.user?.user_id || ''
+    ).trim()
+    const inputEvents = Array.isArray(
+      req.body?.events
+    )
       ? req.body.events
       : []
 
-    if (!userId) {
+    if (!STORY_REACTION_UUID_PATTERN.test(userId)) {
       return res.status(401).json({
         ok: false,
         message: 'Login is required',
@@ -332,15 +349,26 @@ async function handleStoryReactionBatch(req, res) {
     const finalByStory = new Map()
 
     for (const item of inputEvents) {
-      const storyId = String(item?.story_id || '').trim()
+      const storyId = String(
+        item?.story_id || ''
+      ).trim()
 
-      if (!storyId) continue
+      if (!STORY_REACTION_UUID_PATTERN.test(storyId)) {
+        continue
+      }
 
       finalByStory.set(storyId, {
         story_id: storyId,
+        event_id: normalizeBatchEventId(
+          item?.event_id
+        ),
         liked: item?.liked === true,
-        reaction_type: normalizeReactionType(item?.reaction_type),
-        occurred_at: normalizeBatchOccurredAt(item?.occurred_at),
+        reaction_type: normalizeReactionType(
+          item?.reaction_type
+        ),
+        occurred_at: normalizeBatchOccurredAt(
+          item?.occurred_at
+        ),
       })
     }
 
@@ -354,68 +382,40 @@ async function handleStoryReactionBatch(req, res) {
     }
 
     markRequestDiagnostic({
-      feature: 'story_reaction_batch',
-      stage: 'rpc',
+      feature: 'story_reaction_micro_batch',
+      stage: 'queued',
       event_count: inputEvents.length,
       final_event_count: events.length,
       status: 'running',
     })
 
-    const { data, error } = await supabase.rpc(
-      'apply_story_reaction_states_batch',
-      {
-        p_user_id: userId,
-        p_events: events,
-      }
-    )
-
-    if (error) throw error
-
-    const results = Array.isArray(data?.items)
-      ? data.items
-      : []
-
-    const analyticsByAuthor = new Map()
-
-    for (const item of results) {
-      const authorId = item?.author_id
-
-      if (
-        item?.action === 'added' &&
-        authorId &&
-        String(item?.owner_user_id || '') !== String(userId)
-      ) {
-        analyticsByAuthor.set(
-          authorId,
-          Number(analyticsByAuthor.get(authorId) || 0) + 1
-        )
-      }
-    }
-
-    await Promise.all(
-      [...analyticsByAuthor.entries()].map(
-        ([authorId, amount]) =>
-          incrementAuthorPageAnalytics(
-            authorId,
-            'interactions',
-            amount
-          )
-      )
-    )
+    const data = await enqueueStoryReactionBatch({
+      userId,
+      events,
+    })
 
     markRequestDiagnostic({
-      feature: 'story_reaction_batch',
+      feature: 'story_reaction_micro_batch',
       stage: 'complete',
       event_count: inputEvents.length,
       final_event_count: events.length,
       status: 'ok',
     })
 
+    const results = Array.isArray(data?.results)
+      ? data.results
+      : []
+
     return res.status(200).json({
       ok: true,
       batch: true,
       results: results.map(
-        ({ author_id, owner_user_id, ...item }) => item
+        ({
+          author_id,
+          owner_user_id,
+          user_id,
+          ...item
+        }) => item
       ),
       processed_at:
         data?.processed_at ||
@@ -423,7 +423,7 @@ async function handleStoryReactionBatch(req, res) {
     })
   } catch (error) {
     markRequestDiagnostic({
-      feature: 'story_reaction_batch',
+      feature: 'story_reaction_micro_batch',
       stage: 'failed',
       status: 'error',
       provider_code: error?.code || '',
