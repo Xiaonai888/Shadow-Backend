@@ -35,6 +35,7 @@ const PUBLIC_STORY_LIST_SELECT = [
   'story_type',
   'story_language',
   'main_genre',
+  'story_settings',
   'story_status',
   'tags',
   'description',
@@ -114,6 +115,7 @@ title: story.title,
 story_type: story.story_type || 'novel',
 story_language: story.story_language,
     main_genre: story.main_genre,
+    story_settings: story.story_settings || [],
     story_status: story.story_status || 'New',
     tags: story.tags || [],
     description: story.description,
@@ -372,6 +374,7 @@ title: story.title,
 story_type: story.story_type || 'novel',
 story_language: story.story_language,
     main_genre: story.main_genre,
+    story_settings: story.story_settings || [],
     story_status: story.story_status || 'New',
     tags: story.tags || [],
     description: story.description,
@@ -1014,6 +1017,11 @@ export async function getPublicStories(req, res) {
     const limit = normalizeLimit(req.query.limit, 10, 100)
     const genre = String(req.query.genre || '').trim()
     const language = String(req.query.language || '').trim()
+    const storySetting = String(
+      req.query.story_setting ||
+      req.query.storySetting ||
+      ''
+    ).trim()
     const storyType = String(
       req.query.story_type ||
       req.query.storyType ||
@@ -1099,6 +1107,13 @@ export async function getPublicStories(req, res) {
         nextQuery,
         ageAccess
       )
+
+      if (storySetting) {
+        nextQuery = nextQuery.contains(
+          'story_settings',
+          [storySetting]
+        )
+      }
 
       if (genre) {
         nextQuery =
@@ -1609,6 +1624,12 @@ export async function getPublicStoryRecommendations(
       req.query.genre || ''
     ).trim()
 
+    const storySetting = String(
+      req.query.story_setting ||
+      req.query.storySetting ||
+      ''
+    ).trim()
+
     if (!storyId) {
       return res.status(400).json({
         ok: false,
@@ -1631,10 +1652,19 @@ export async function getPublicStoryRecommendations(
         .neq('id', storyId)
         .limit(limit)
 
-      return applyAdultStoryVisibility(
+      query = applyAdultStoryVisibility(
         query,
         ageAccess
       )
+
+      if (storySetting) {
+        query = query.contains(
+          'story_settings',
+          [storySetting]
+        )
+      }
+
+      return query
     }
 
     const [
@@ -1909,6 +1939,12 @@ export async function getPublicShadowExclusiveStories(
       req.query.language || ''
     ).trim()
 
+    const storySetting = String(
+      req.query.story_setting ||
+      req.query.storySetting ||
+      ''
+    ).trim()
+
     const storyType = String(
       req.query.story_type ||
       req.query.storyType ||
@@ -1977,6 +2013,13 @@ export async function getPublicShadowExclusiveStories(
         query,
         ageAccess
       )
+
+    if (storySetting) {
+      query = query.contains(
+        'story_settings',
+        [storySetting]
+      )
+    }
 
     if (rankingOnly) {
       query = query.or(
