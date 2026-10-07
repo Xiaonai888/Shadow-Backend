@@ -192,6 +192,14 @@ function cleanTags(value) {
     .slice(0, 6)
 }
 
+function cleanStorySettings(value) {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => cleanText(item)).filter(Boolean)
+    .filter((item, index, array) =>
+      array.findIndex((value) => value.toLowerCase() === item.toLowerCase()) === index
+    ).slice(0, 6)
+}
+
 function cleanUpdateDays(value) {
   if (!Array.isArray(value)) return []
 
