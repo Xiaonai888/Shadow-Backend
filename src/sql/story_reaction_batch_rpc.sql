@@ -1,74 +1,20 @@
-alter table public.story_reactions
-add column if not exists occurred_at timestamptz;
-
-alter table public.story_reactions
-add column if not exists processed_at timestamptz;
-
-update public.story_reactions
-set occurred_at = coalesce(occurred_at, created_at, now())
-where occurred_at is null;
-
-update public.story_reactions
-set processed_at = coalesce(processed_at, now())
-where processed_at is null;
-
-delete from public.story_reactions
-where id in (
-  select id
-  from (
-    select
-      id,
-      row_number() over (
-        partition by story_id, user_id
-        order by created_at desc nulls last, id::text desc
-      ) as row_number
-    from public.story_reactions
-    where episode_id is null
-  ) duplicates
-  where duplicates.row_number > 1
-);
-
-create unique index if not exists story_reactions_story_user_unique
-on public.story_reactions (story_id, user_id)
-where episode_id is null;
-
-create table if not exists public.story_reaction_state_versions (
-  user_id uuid not null,
-  story_id uuid not null,
-  last_event_id uuid not null,
-  last_occurred_at timestamptz not null,
-  last_liked boolean not null default false,
-  last_reaction_type text,
-  updated_at timestamptz not null default now(),
-  primary key (user_id, story_id)
-);
-
-insert into public.story_reaction_state_versions (
-  user_id,
-  story_id,
-  last_event_id,
-  last_occurred_at,
-  last_liked,
-  last_reaction_type,
-  updated_at
-)
-select
-  reactions.user_id,
-  reactions.story_id,
-  md5(
-    reactions.user_id::text ||
-    ':' ||
-    reactions.story_id::text ||
-    ':' ||
-    coalesce(reactions.occurred_at, reactions.created_at, now())::text
-  )::uuid,
-  coalesce(reactions.occurred_at, reactions.created_at, now()),
-  true,
-  lower(coalesce(reactions.reaction_type, 'love')),
-  now()
-from public.story_reactions reactions
-where reactions.episode_id is null
-on conflict (user_id, story_id) do nothing;
+update public.stories as stories
+set
+  total_likes = counts.total_likes,
+  updated_at = now()
+from (
+  select
+    story.id as story_id,
+    count(reactions.id)::bigint as total_likes
+  from public.stories as story
+  left join public.story_reactions as reactions
+    on reactions.story_id = story.id
+    and reactions.episode_id is null
+  group by story.id
+) as counts
+where stories.id = counts.story_id
+  and coalesce(stories.total_likes, 0)
+    is distinct from counts.total_likes;
 
 create or replace function public.apply_story_reaction_states_multi_batch(
   p_items jsonb
@@ -102,7 +48,7 @@ begin
     raise exception 'Items must be an array';
   end if;
 
-  if jsonb_array_length(p_items) > 1000 then
+  if jsonb_array_length(p_items) > 500 then
     raise exception 'Batch limit exceeded';
   end if;
 
@@ -144,7 +90,14 @@ begin
     end if;
 
     v_liked := coalesce((v_item->>'liked')::boolean, false);
-    v_reaction_type := lower(trim(coalesce(v_item->>'reaction_type', 'love')));
+    v_reaction_type := lower(
+      trim(
+        coalesce(
+          v_item->>'reaction_type',
+          'love'
+        )
+      )
+    );
 
     if v_reaction_type not in (
       'love',
@@ -159,7 +112,11 @@ begin
     end if;
 
     begin
-      v_occurred_at := nullif(v_item->>'occurred_at', '')::timestamptz;
+      v_occurred_at :=
+        nullif(
+          v_item->>'occurred_at',
+          ''
+        )::timestamptz;
     exception
       when others then
         v_occurred_at := null;
@@ -167,14 +124,20 @@ begin
 
     if
       v_occurred_at is null
-      or v_occurred_at > now() + interval '5 minutes'
-      or v_occurred_at < now() - interval '7 days'
+      or v_occurred_at >
+        now() + interval '5 minutes'
+      or v_occurred_at <
+        now() - interval '7 days'
     then
       v_occurred_at := now();
     end if;
 
     begin
-      v_event_id := nullif(v_item->>'event_id', '')::uuid;
+      v_event_id :=
+        nullif(
+          v_item->>'event_id',
+          ''
+        )::uuid;
     exception
       when others then
         v_event_id := null;
@@ -201,24 +164,29 @@ begin
       v_author_id,
       v_owner_user_id
     from public.stories stories
-    where stories.id = v_story_id;
+    where stories.id =
+      v_story_id;
 
     if not found then
-      v_results := v_results || jsonb_build_array(
-        jsonb_build_object(
-          'ok', false,
-          'user_id', v_user_id,
-          'story_id', v_story_id,
-          'event_id', v_event_id,
-          'message', 'Story not found'
-        )
-      );
+      v_results :=
+        v_results ||
+        jsonb_build_array(
+          jsonb_build_object(
+            'ok', false,
+            'user_id', v_user_id,
+            'story_id', v_story_id,
+            'event_id', v_event_id,
+            'message', 'Story not found'
+          )
+        );
       continue;
     end if;
 
     perform pg_advisory_xact_lock(
       hashtextextended(
-        v_story_id::text || ':' || v_user_id::text,
+        v_story_id::text ||
+        ':' ||
+        v_user_id::text,
         0
       )
     );
@@ -233,17 +201,22 @@ begin
       v_last_event_id,
       v_last_occurred_at
     from public.story_reaction_state_versions versions
-    where versions.user_id = v_user_id
-      and versions.story_id = v_story_id
+    where versions.user_id =
+      v_user_id
+      and versions.story_id =
+        v_story_id
     for update;
 
     if
       v_last_occurred_at is not null
       and (
-        v_occurred_at < v_last_occurred_at
+        v_occurred_at <
+          v_last_occurred_at
         or (
-          v_occurred_at = v_last_occurred_at
-          and v_event_id::text <= v_last_event_id::text
+          v_occurred_at =
+            v_last_occurred_at
+          and v_event_id::text <=
+            v_last_event_id::text
         )
       )
     then
@@ -254,31 +227,46 @@ begin
         v_existing_id,
         v_existing_type
       from public.story_reactions reactions
-      where reactions.story_id = v_story_id
-        and reactions.user_id = v_user_id
-        and reactions.episode_id is null
+      where reactions.story_id =
+        v_story_id
+        and reactions.user_id =
+          v_user_id
+        and reactions.episode_id
+          is null
       limit 1;
 
-      v_results := v_results || jsonb_build_array(
-        jsonb_build_object(
-          'ok', true,
-          'user_id', v_user_id,
-          'story_id', v_story_id,
-          'event_id', v_event_id,
-          'action', 'stale_ignored',
-          'liked', v_existing_id is not null,
-          'reaction_type',
-            case
-              when v_existing_id is not null
-                then lower(coalesce(v_existing_type, 'love'))
-              else null
-            end,
-          'occurred_at', v_occurred_at,
-          'author_id', v_author_id,
-          'owner_user_id', v_owner_user_id,
-          'delta', 0
-        )
-      );
+      v_results :=
+        v_results ||
+        jsonb_build_array(
+          jsonb_build_object(
+            'ok', true,
+            'user_id', v_user_id,
+            'story_id', v_story_id,
+            'event_id', v_event_id,
+            'action', 'stale_ignored',
+            'liked',
+              v_existing_id is not null,
+            'reaction_type',
+              case
+                when v_existing_id
+                  is not null
+                then lower(
+                  coalesce(
+                    v_existing_type,
+                    'love'
+                  )
+                )
+                else null
+              end,
+            'occurred_at',
+              v_occurred_at,
+            'author_id',
+              v_author_id,
+            'owner_user_id',
+              v_owner_user_id,
+            'delta', 0
+          )
+        );
 
       continue;
     end if;
@@ -294,9 +282,12 @@ begin
       v_existing_id,
       v_existing_type
     from public.story_reactions reactions
-    where reactions.story_id = v_story_id
-      and reactions.user_id = v_user_id
-      and reactions.episode_id is null
+    where reactions.story_id =
+      v_story_id
+      and reactions.user_id =
+        v_user_id
+      and reactions.episode_id
+        is null
     limit 1
     for update;
 
@@ -323,28 +314,43 @@ begin
 
         v_action := 'added';
         v_delta := 1;
-      elsif lower(coalesce(v_existing_type, 'love')) <> v_reaction_type then
+      elsif
+        lower(
+          coalesce(
+            v_existing_type,
+            'love'
+          )
+        ) <> v_reaction_type
+      then
         update public.story_reactions
         set
-          reaction_type = v_reaction_type,
-          occurred_at = v_occurred_at,
-          processed_at = now()
-        where id = v_existing_id;
+          reaction_type =
+            v_reaction_type,
+          occurred_at =
+            v_occurred_at,
+          processed_at =
+            now()
+        where id =
+          v_existing_id;
 
         v_action := 'updated';
       else
         update public.story_reactions
         set
-          occurred_at = v_occurred_at,
-          processed_at = now()
-        where id = v_existing_id;
+          occurred_at =
+            v_occurred_at,
+          processed_at =
+            now()
+        where id =
+          v_existing_id;
 
         v_action := 'unchanged';
       end if;
     else
       if v_existing_id is not null then
         delete from public.story_reactions
-        where id = v_existing_id;
+        where id =
+          v_existing_id;
 
         v_action := 'removed';
         v_delta := -1;
@@ -368,75 +374,139 @@ begin
       v_event_id,
       v_occurred_at,
       v_liked,
-      case when v_liked then v_reaction_type else null end,
+      case
+        when v_liked
+          then v_reaction_type
+        else null
+      end,
       now()
     )
-    on conflict (user_id, story_id)
+    on conflict (
+      user_id,
+      story_id
+    )
     do update set
-      last_event_id = excluded.last_event_id,
-      last_occurred_at = excluded.last_occurred_at,
-      last_liked = excluded.last_liked,
-      last_reaction_type = excluded.last_reaction_type,
-      updated_at = excluded.updated_at;
+      last_event_id =
+        excluded.last_event_id,
+      last_occurred_at =
+        excluded.last_occurred_at,
+      last_liked =
+        excluded.last_liked,
+      last_reaction_type =
+        excluded.last_reaction_type,
+      updated_at =
+        excluded.updated_at;
 
-    v_results := v_results || jsonb_build_array(
-      jsonb_build_object(
-        'ok', true,
-        'user_id', v_user_id,
-        'story_id', v_story_id,
-        'event_id', v_event_id,
-        'action', v_action,
-        'liked', v_liked,
-        'reaction_type', case when v_liked then v_reaction_type else null end,
-        'occurred_at', v_occurred_at,
-        'author_id', v_author_id,
-        'owner_user_id', v_owner_user_id,
-        'delta', v_delta
-      )
-    );
+    v_results :=
+      v_results ||
+      jsonb_build_array(
+        jsonb_build_object(
+          'ok', true,
+          'user_id', v_user_id,
+          'story_id', v_story_id,
+          'event_id', v_event_id,
+          'action', v_action,
+          'liked', v_liked,
+          'reaction_type',
+            case
+              when v_liked
+                then v_reaction_type
+              else null
+            end,
+          'occurred_at',
+            v_occurred_at,
+          'author_id',
+            v_author_id,
+          'owner_user_id',
+            v_owner_user_id,
+          'delta', v_delta
+        )
+      );
   end loop;
 
   with deltas as (
     select
-      (item->>'story_id')::uuid as story_id,
-      sum(coalesce((item->>'delta')::integer, 0)) as delta
-    from jsonb_array_elements(v_results) item
+      (item->>'story_id')::uuid
+        as story_id,
+      sum(
+        coalesce(
+          (item->>'delta')::integer,
+          0
+        )
+      ) as delta
+    from jsonb_array_elements(
+      v_results
+    ) item
     where
-      coalesce((item->>'ok')::boolean, false)
-      and coalesce((item->>'delta')::integer, 0) <> 0
-    group by (item->>'story_id')::uuid
+      coalesce(
+        (item->>'ok')::boolean,
+        false
+      )
+      and coalesce(
+        (item->>'delta')::integer,
+        0
+      ) <> 0
+    group by
+      (item->>'story_id')::uuid
   )
   update public.stories stories
   set
-    total_likes = greatest(
-      0,
-      coalesce(stories.total_likes, 0) + deltas.delta
-    ),
-    updated_at = now()
+    total_likes =
+      greatest(
+        0,
+        coalesce(
+          stories.total_likes,
+          0
+        ) +
+        deltas.delta
+      ),
+    updated_at =
+      now()
   from deltas
-  where stories.id = deltas.story_id;
+  where stories.id =
+    deltas.story_id;
 
   for v_item in
     select value
-    from jsonb_array_elements(v_results)
+    from jsonb_array_elements(
+      v_results
+    )
   loop
-    if coalesce((v_item->>'ok')::boolean, false) then
-      select coalesce(stories.total_likes, 0)
-      into v_total_likes
-      from public.stories stories
-      where stories.id = (v_item->>'story_id')::uuid;
-
-      v_output := v_output || jsonb_build_array(
-        (v_item - 'delta') ||
-        jsonb_build_object(
-          'total_likes', coalesce(v_total_likes, 0),
-          'processed_at', now()
+    if coalesce(
+      (v_item->>'ok')::boolean,
+      false
+    ) then
+      select
+        coalesce(
+          stories.total_likes,
+          0
         )
-      );
+      into
+        v_total_likes
+      from public.stories stories
+      where stories.id =
+        (v_item->>'story_id')::uuid;
+
+      v_output :=
+        v_output ||
+        jsonb_build_array(
+          (v_item - 'delta') ||
+          jsonb_build_object(
+            'total_likes',
+              coalesce(
+                v_total_likes,
+                0
+              ),
+            'processed_at',
+              now()
+          )
+        );
     else
-      v_output := v_output || jsonb_build_array(
-        v_item - 'delta'
-      );
+      v_output :=
+        v_output ||
+        jsonb_build_array(
+          v_item - 'delta'
+        );
     end if;
   end loop;
 
@@ -444,57 +514,10 @@ begin
 end;
 $$;
 
-create or replace function public.apply_story_reaction_states_batch(
-  p_user_id uuid,
-  p_items jsonb
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_items jsonb;
-begin
-  if p_user_id is null then
-    raise exception 'User is required';
-  end if;
-
-  if p_items is null or jsonb_typeof(p_items) <> 'array' then
-    raise exception 'Items must be an array';
-  end if;
-
-  select coalesce(
-    jsonb_agg(
-      event.value ||
-      jsonb_build_object(
-        'user_id',
-        p_user_id
-      )
-    ),
-    '[]'::jsonb
-  )
-  into v_items
-  from jsonb_array_elements(p_items) event(value);
-
-  return public.apply_story_reaction_states_multi_batch(
-    v_items
-  );
-end;
-$$;
-
 revoke all
 on function public.apply_story_reaction_states_multi_batch(jsonb)
 from public, anon, authenticated;
 
 grant execute
 on function public.apply_story_reaction_states_multi_batch(jsonb)
-to service_role;
-
-revoke all
-on function public.apply_story_reaction_states_batch(uuid, jsonb)
-from public, anon, authenticated;
-
-grant execute
-on function public.apply_story_reaction_states_batch(uuid, jsonb)
 to service_role;
