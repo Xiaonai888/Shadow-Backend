@@ -46,6 +46,10 @@ begin
     return new;
   end if;
 
+if old.published_at is not null then
+  return new;
+end if;
+
   select s.author_id
   into v_author_id
   from public.stories s
