@@ -1687,9 +1687,8 @@ export async function updateEpisodeStatus(req, res) {
       })
     }
 
-    if (
+   if (
   ['published', 'scheduled'].includes(status) &&
-  Number(episode.episode_number || 0) === 1 &&
   cleanStorySettings(story.story_settings).length < 1
 ) {
   return res.status(400).json({
