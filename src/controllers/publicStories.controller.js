@@ -3,6 +3,8 @@ import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { attachEpisodePageParts } from '../services/episodePageParts.service.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
+import { invalidatePublicStoryDataCache } from '../services/publicStoryDataCache.service.js'
+import { invalidateMyStoriesCache } from '../services/myStoriesCache.service.js'
 import {
   applyEpisodeAccess,
   buildEpisodeAccess,
@@ -3064,6 +3066,13 @@ export async function countQualifiedEpisodeView(
       }),
     ])
 
+
+    if (viewResult.counted === true) {
+      invalidatePublicStoryDataCache(storyId)
+      if (story.user_id) {
+        invalidateMyStoriesCache(story.user_id)
+      }
+    }
 
     if (
       viewResult.counted &&
