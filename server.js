@@ -121,6 +121,17 @@ dotenv.config()
 
 const app = express()
 app.use(trafficDiagnosticMiddleware)
+app.use((req, res, next) => {
+  const started = Date.now()
+  res.on('finish', () => {
+    if (res.statusCode < 500) return
+    console.error('[API_5XX]', JSON.stringify({
+      time: new Date().toISOString(), method: req.method,
+      path: req.path, status: res.statusCode, durationMs: Date.now() - started
+    }))
+  })
+  next()
+})
 app.use(memoryIncidentTracer)
 app.use(sensitivePathGuard)
 
