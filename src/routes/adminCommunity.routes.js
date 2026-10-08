@@ -15,6 +15,7 @@ import {
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { getAdminReaderGrowthDaily } from '../controllers/adminReaderGrowth.controller.js'
+import { getAdminVisitorGrowthDaily } from '../controllers/adminVisitorGrowth.controller.js'
 import { getAdminDailyReaders } from '../controllers/adminDailyReaders.controller.js'
 
 const router = express.Router()
@@ -26,6 +27,7 @@ router.get('/readers/daily', requireAdminPermission('readers.view'), getAdminDai
 router.get('/reader-presence', requireAdmin, getAdminReaderPresence)
 router.get('/reader-countries', requireAdminPermission('community.view'), getAdminReaderCountryAnalytics)
 router.get('/reader-growth/daily', requireAdminPermission('community.view'), getAdminReaderGrowthDaily)
+router.get('/visitor-growth/daily', requireAdminPermission('community.view'), getAdminVisitorGrowthDaily)
 router.get('/reader-countries/:countryCode/readers', requireAdminPermission('community.view'), getAdminReaderCountryReaders)
 router.get('/authors', requireAdminPermission('community.view'), getAdminCommunityAuthors)
 router.get('/visitors/overview', requireAdminPermission('community.view'), getAdminCommunityVisitorOverview)
