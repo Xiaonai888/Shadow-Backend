@@ -753,7 +753,14 @@ function logRequestEvidence(req, res, context, elapsedMs) {
 
   recentEvidence.push(evidence)
   if (recentEvidence.length > RECENT_EVIDENCE_LIMIT) recentEvidence.shift()
-  console.warn('SYSTEM_REQUEST_EVIDENCE', JSON.stringify(evidence))
+  const groupKey = `${context.route}:${status}:${diagnosticKind}:${firstExternalFailure?.code || ''}`
+if (logRequestEvidence.groupMinute !== minute) {
+  logRequestEvidence.groupMinute = minute
+  logRequestEvidence.groups = new Set()
+}
+if (logRequestEvidence.groups.has(groupKey)) return
+logRequestEvidence.groups.add(groupKey)
+console.warn('SYSTEM_REQUEST_EVIDENCE', JSON.stringify(evidence))
 }
 
 export function getHistoricalErrorEvidence({
