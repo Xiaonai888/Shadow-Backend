@@ -71,6 +71,17 @@ async function getOverviewData() {
   }
 }
 
+async function getReadersTodayCount() {
+  const cambodiaDay = new Date(Date.now() + CAMBODIA_OFFSET_MS).toISOString().slice(0, 10)
+  const { count, error } = await supabase
+    .from('reader_daily_activity')
+    .select('user_id', { count: 'exact', head: true })
+    .eq('activity_date', cambodiaDay)
+
+  if (error) throw error
+  return Number(count || 0)
+}
+
 async function getReaderActivityToday() {
   const { startIso, nowIso } = getCambodiaDayRange()
   const activeStartIso = getActiveStartIso()
@@ -110,7 +121,7 @@ async function getReaderActivityToday() {
   }
 
   return {
-    readers_today: readersToday.size,
+    readers_today: await getReadersTodayCount(),
     active_readers_last_10_minutes: activeReaders.size,
   }
 }
@@ -425,6 +436,8 @@ export async function getAdminCommunityReadersToday(req, res) {
       : 'activity'
     const { startIso, nowIso } = getCambodiaDayRange()
     const activeStartIso = getActiveStartIso()
+    const dailyReadersCount = await getReadersTodayCount()
+
     const progressRows = []
     let from = 0
 
@@ -441,7 +454,25 @@ export async function getAdminCommunityReadersToday(req, res) {
 
       const rows = Array.isArray(data) ? data : []
       progressRows.push(...rows)
+      if (rows.length < PAGE_SIZE) break
+      from += PAGE_SIZE
+    }
 
+    const viewRows = []
+    from = 0
+
+    while (true) {
+      const { data, error } = await supabase
+        .from('episode_view_logs')
+        .select('id, user_id, story_id, episode_id, created_at, last_counted_at, last_fast_counted_at')
+        .or(`created_at.gte.${startIso},last_counted_at.gte.${startIso},last_fast_counted_at.gte.${startIso}`)
+        .order('id', { ascending: true })
+        .range(from, from + PAGE_SIZE - 1)
+
+      if (error) throw error
+
+      const rows = Array.isArray(data) ? data : []
+      viewRows.push(...rows)
       if (rows.length < PAGE_SIZE) break
       from += PAGE_SIZE
     }
@@ -454,9 +485,43 @@ export async function getAdminCommunityReadersToday(req, res) {
       if (!userId || !storyId) continue
 
       const key = `${userId}:${storyId}`
-      if (!latestActivityMap.has(key)) {
+      const existing = latestActivityMap.get(key)
+      if (!existing || String(row.last_read_at || '') > String(existing.last_read_at || '')) {
         latestActivityMap.set(key, row)
       }
+    }
+
+    const startTime = Date.parse(startIso)
+    const endTime = Date.parse(nowIso)
+
+    for (const row of viewRows) {
+      const userId = String(row.user_id || '').trim()
+      const storyId = String(row.story_id || '').trim()
+      if (!userId || !storyId) continue
+
+      const timestamp = [row.created_at, row.last_counted_at, row.last_fast_counted_at]
+        .map((value) => Date.parse(value || ''))
+        .filter((value) => Number.isFinite(value) && value >= startTime && value <= endTime)
+        .sort((a, b) => b - a)[0]
+
+      if (!timestamp) continue
+
+      const key = `${userId}:${storyId}`
+      const existing = latestActivityMap.get(key)
+      const latestTime = new Date(timestamp).toISOString()
+
+      if (existing && Date.parse(existing.last_read_at || '') >= timestamp) continue
+
+      latestActivityMap.set(key, {
+        id: row.id,
+        user_id: userId,
+        story_id: storyId,
+        episode_id: row.episode_id,
+        episode_number: existing?.episode_id === row.episode_id ? existing.episode_number : 0,
+        total_episodes: existing?.total_episodes || 0,
+        reading_percent: existing?.episode_id === row.episode_id ? existing.reading_percent : 0,
+        last_read_at: latestTime,
+      })
     }
 
     const activities = [...latestActivityMap.values()]
@@ -741,7 +806,7 @@ export async function getAdminCommunityReadersToday(req, res) {
       ok: true,
       view,
       summary: {
-        readers_today: readerIds.size,
+        readers_today: dailyReadersCount,
         active_readers_last_10_minutes: activeReaderIds.size,
         stories_read_today: storiesReadToday.size,
         reading_records_today: activities.length,
