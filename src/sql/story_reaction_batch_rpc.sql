@@ -406,48 +406,6 @@ begin
       );
   end loop;
 
-  with deltas as (
-    select
-      (item->>'story_id')::uuid
-        as story_id,
-      sum(
-        coalesce(
-          (item->>'delta')::integer,
-          0
-        )
-      ) as delta
-    from jsonb_array_elements(
-      v_results
-    ) item
-    where
-      coalesce(
-        (item->>'ok')::boolean,
-        false
-      )
-      and coalesce(
-        (item->>'delta')::integer,
-        0
-      ) <> 0
-    group by
-      (item->>'story_id')::uuid
-  )
-  update public.stories stories
-  set
-    total_likes =
-      greatest(
-        0,
-        coalesce(
-          stories.total_likes,
-          0
-        ) +
-        deltas.delta
-      ),
-    updated_at =
-      now()
-  from deltas
-  where stories.id =
-    deltas.story_id;
-
   for v_item in
     select value
     from jsonb_array_elements(
