@@ -2,6 +2,17 @@ import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 import { updateAuthorRequestCache } from '../services/authorRequestCache.service.js'
+import { invalidatePublicStoryDataCache } from '../services/publicStoryDataCache.service.js'
+import { invalidateMyStoriesCache } from '../services/myStoriesCache.service.js'
+
+function invalidateEpisodeStoryCounters(episode) {
+  if (episode?.story_id) {
+    invalidatePublicStoryDataCache(episode.story_id)
+  }
+  if (episode?.user_id) {
+    invalidateMyStoriesCache(episode.user_id)
+  }
+}
 
 function updateDashboardStoryUnreadCache(userId, updater) {
   updateAuthorRequestCache({
@@ -349,6 +360,8 @@ export async function toggleEpisodeReaction(req, res) {
 
         if (updateError) throw updateError
 
+        invalidateEpisodeStoryCounters(episode)
+
         const [totalLikes] = await Promise.all([
           syncEpisodeTotalLikes(episodeId),
           updateEpisodeLikeNotificationReactionSafely(
@@ -373,6 +386,8 @@ export async function toggleEpisodeReaction(req, res) {
         .eq('id', existing.id)
 
       if (deleteError) throw deleteError
+
+      invalidateEpisodeStoryCounters(episode)
 
       const [totalLikes] = await Promise.all([
         syncEpisodeTotalLikes(episodeId),
@@ -403,6 +418,8 @@ export async function toggleEpisodeReaction(req, res) {
       .single()
 
     if (insertError) throw insertError
+
+    invalidateEpisodeStoryCounters(episode)
 
     const totalLikes = await syncEpisodeTotalLikes(episodeId)
     const isOwner = String(episode.user_id || '') === String(userId)
