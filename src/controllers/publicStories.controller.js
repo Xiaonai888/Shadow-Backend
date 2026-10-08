@@ -1,3 +1,4 @@
+import { recordReaderDailyActivity } from '../services/readerDailyActivity.service.js'
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { attachEpisodePageParts } from '../services/episodePageParts.service.js'
@@ -3051,13 +3052,18 @@ export async function countQualifiedEpisodeView(
       })
     }
 
-    const viewResult =
-      await recordEpisodeView({
+      const [viewResult] = await Promise.all([
+      recordEpisodeView({
         userId: user.user_id,
         storyId,
         episodeId,
         mode: req.body?.mode,
-      })
+      }),
+      recordReaderDailyActivity(user.user_id).catch((error) => {
+        console.error('READER DAILY ACTIVITY ERROR:', error)
+      }),
+    ])
+
 
     if (
       viewResult.counted &&
