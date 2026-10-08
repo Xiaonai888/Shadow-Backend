@@ -886,6 +886,7 @@ export async function getAdminCommunityVisitorOverview(req, res) {
     const [
       overviewResult,
       metricsResult,
+      readersTodayCount,
     ] = await Promise.all([
       supabase.rpc(
         'get_anonymous_visitor_overview'
@@ -893,6 +894,10 @@ export async function getAdminCommunityVisitorOverview(req, res) {
       supabase.rpc(
         'get_admin_community_visitor_metrics_v1'
       ),
+      getReadersTodayCount().catch((error) => {
+        console.error('ADMIN READERS TODAY COUNT ERROR:', error)
+        return null
+      }),
     ])
 
     if (overviewResult.error) {
@@ -1041,7 +1046,7 @@ export async function getAdminCommunityVisitorOverview(req, res) {
           ),
         readers_today:
           Number(
-            metrics.readers_today || 0
+            readersTodayCount ?? metrics.readers_today ?? 0
           ),
         active_readers_last_10_minutes:
           Number(
