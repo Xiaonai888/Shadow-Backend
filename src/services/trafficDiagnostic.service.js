@@ -935,7 +935,20 @@ function installFetchDiagnostic() {
       const response = await nativeFetch(input, init)
       const elapsedMs = Date.now() - startedAt
 
-      if (!response.ok) {
+if (provider === 'SUPABASE' && elapsedMs >= 2500) {
+  const minute = Math.floor(Date.now() / 60000)
+  if (installFetchDiagnostic.slowMinute !== minute) {
+    installFetchDiagnostic.slowMinute = minute
+    installFetchDiagnostic.slowCount = 0
+  }
+  if (installFetchDiagnostic.slowCount++ < 4) {
+    console.warn('SUPABASE_SLOW_REQUEST', JSON.stringify({
+      target, duration_ms: elapsedMs, status: response.status
+    }))
+  }
+}
+
+if (!response.ok) {
         await captureFetchFailure({
           context,
           response,
