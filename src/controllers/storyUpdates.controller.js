@@ -47,6 +47,7 @@ export async function getPublicStoryUpdates(req, res) {
     )
     const ageAccess = await getReaderAgeAccess(req)
 
+    const rpcStartedAt = Date.now()
     const { data, error } = await supabase.rpc(
       'get_public_story_updates',
       {
@@ -60,8 +61,21 @@ export async function getPublicStoryUpdates(req, res) {
         p_story_setting: storySetting,
       }
     )
+    const rpcDurationMs = Date.now() - rpcStartedAt
 
     if (error) throw error
+
+    if (rpcDurationMs >= 2000) {
+      console.warn('[SUPABASE_SLOW_RPC]', JSON.stringify({
+        time: new Date().toISOString(),
+        endpoint: '/api/public/story-updates',
+        rpc: 'get_public_story_updates',
+        duration_ms: rpcDurationMs,
+        days,
+        limit_per_day: limitPerDay,
+        result_count: Array.isArray(data) ? data.length : 0,
+      }))
+    }
 
     res.set('Cache-Control', 'private, no-store')
 
@@ -89,14 +103,14 @@ export async function getPublicStoryUpdates(req, res) {
     })
   } catch (error) {
     console.error('[SUPABASE_RPC_ERROR]', JSON.stringify({
-  time: new Date().toISOString(),
-  endpoint: '/api/public/story-updates',
-  rpc: 'get_public_story_updates',
-  code: error?.code || null,
-  message: error?.message || 'Unknown error',
-  details: error?.details || null,
-  hint: error?.hint || null
-}))
+      time: new Date().toISOString(),
+      endpoint: '/api/public/story-updates',
+      rpc: 'get_public_story_updates',
+      code: error?.code || null,
+      message: error?.message || 'Unknown error',
+      details: error?.details || null,
+      hint: error?.hint || null,
+    }))
 
     return res.status(500).json({
       ok: false,
