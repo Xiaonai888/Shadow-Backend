@@ -88,7 +88,15 @@ export async function getPublicStoryUpdates(req, res) {
       })),
     })
   } catch (error) {
-    console.error('GET PUBLIC STORY UPDATES ERROR:', error)
+    console.error('[SUPABASE_RPC_ERROR]', JSON.stringify({
+  time: new Date().toISOString(),
+  endpoint: '/api/public/story-updates',
+  rpc: 'get_public_story_updates',
+  code: error?.code || null,
+  message: error?.message || 'Unknown error',
+  details: error?.details || null,
+  hint: error?.hint || null
+}))
 
     return res.status(500).json({
       ok: false,
