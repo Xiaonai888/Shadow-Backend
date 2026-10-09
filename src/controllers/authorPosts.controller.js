@@ -1,164 +1,161 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
+import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { bumpContentVersions } from '../services/contentVersion.service.js'
+import { invalidateDiscoverAuthorPostsSharedCache } from '../services/discoverAuthorPostsSharedCache.service.js'
+import { hydrateAuthorEchoPosts } from '../services/authorPageEchoSources.service.js'
+import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
+import { recordPostHashtagInterestSignalSafely } from '../services/userHashtagInterest.service.js'
 import {
-  assertR2MediaReference,
-} from '../services/mediaStoragePolicy.service.js'
+  createAuthorPageNotificationSafely,
+  deleteAuthorPageNotificationBySourceKeySafely,
+} from '../services/authorPageNotifications.service.js'
 import {
-  getReaderPostsFeedCandidates,
-  invalidateReaderPostsFeedCandidateCache,
-} from '../services/readerPostsFeedCandidateCache.service.js'
+  deleteAuthorPageCommentToTrash,
+  getCommentTrashMessage,
+  getCommentTrashStatus,
+} from '../services/commentTrash.service.js'
 import {
-  markRequestDiagnostic,
-} from '../services/trafficDiagnostic.service.js'
+  authorReaderBlockedPayload,
+  getActiveAuthorReaderBlock,
+} from '../utils/authorReaderCommentBlocks.js'
 
-const MAX_POST_LENGTH = 10000
-const MAX_POST_IMAGES = 5
-const MAX_PHOTO_CAPTION_LENGTH = 2000
-const MAX_PHOTO_ALT_TEXT_LENGTH = 500
-const DEFAULT_LIMIT = 20
-const MAX_LIMIT = 30
-const FEED_SCAN_LIMIT = 120
-const READER_POST_SELECT =
-  'id, user_id, content, image_urls, photo_metadata, visibility, comments_permission, story_sharing, publish_at, like_count, comment_count, echo_count, created_at, updated_at, deleted_at'
+function getRequestUserId(req) {
+  try {
+    const authHeader =
+      req.headers.authorization || ''
+    const token = authHeader.startsWith(
+      'Bearer '
+    )
+      ? authHeader.slice(7)
+      : ''
 
-const readerPostsRequestContext =
-  new AsyncLocalStorage()
+    if (!token) return null
 
-function createReaderPostsRequestState() {
-  return {
-    relationshipSnapshots:
-      new Map(),
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    )
+
+    return decoded.type === 'reader'
+      ? decoded.user_id || null
+      : null
+  } catch {
+    return null
   }
 }
 
-const VISIBILITIES = new Set([
-  'public',
-  'friends',
-  'followers',
-  'friends_and_followers',
-  'only_me',
-  'private',
+const AUTHOR_POST_COMMENT_REACTION_TYPES = new Set([
+  'love',
+  'haha',
+  'wow',
+  'sad',
+  'angry',
+  'support',
+  'touched',
 ])
 
-const COMMENT_PERMISSIONS = new Set([
-  'everyone',
-  'friends',
-  'followers',
-  'no_one',
-])
+function normalizeAuthorPostCommentReactionType(value) {
+  const reactionType = String(
+    value || 'love'
+  )
+    .trim()
+    .toLowerCase()
 
-function getUserId(req) {
-  return String(
-    req.user?.user_id ||
-      req.user?.id ||
-      ''
-  ).trim()
+  return AUTHOR_POST_COMMENT_REACTION_TYPES.has(
+    reactionType
+  )
+    ? reactionType
+    : 'love'
 }
 
-function normalizeUsername(value) {
-  return String(value || '')
+async function getAuthorPostCommentReactionMap(
+  userId,
+  commentIds
+) {
+  if (!userId || !commentIds.length) {
+    return new Map()
+  }
+
+  const { data, error } = await supabase
+    .from('author_page_post_comment_likes')
+    .select('comment_id, reaction_type')
+    .eq('user_id', userId)
+    .in('comment_id', commentIds)
+
+  if (error) throw error
+
+  return new Map(
+    (data || []).map((item) => [
+      String(item.comment_id),
+      normalizeAuthorPostCommentReactionType(
+        item.reaction_type
+      ),
+    ])
+  )
+}
+
+function normalizePageUsername(username) {
+  return String(username || '')
     .trim()
     .replace(/^@+/, '')
+    .toLowerCase()
 }
 
-function escapeLikePattern(value) {
-  return String(value || '').replace(/[\\%_]/g, '\\$&')
+function normalizeImageUrls(value) {
+  if (!Array.isArray(value)) return []
+
+  return value
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .slice(0, 5)
 }
 
-function getLimit(value) {
-  const parsed = Number.parseInt(value, 10)
+function publicAuthorPost(post) {
+  if (!post) return null
 
-  if (!Number.isFinite(parsed)) {
-    return DEFAULT_LIMIT
+  return {
+    id: post.id,
+    author_page_id: post.author_page_id,
+    user_id: post.user_id,
+    post_type: post.post_type || 'article',
+    content: post.content || '',
+    image_urls: normalizeImageUrls(post.image_urls),
+photo_metadata: normalizePhotoMetadata(
+  post.photo_metadata,
+  normalizeImageUrls(post.image_urls)
+),
+status: post.status || 'active',
+scheduled_at: post.scheduled_at || null,
+published_at: post.published_at || null,
+is_pinned: Boolean(post.is_pinned),
+    pinned_at: post.pinned_at || null,
+    like_count: Number(post.like_count || 0),
+    comment_count: Number(post.comment_count || 0),
+    view_count: Number(post.view_count || 0),
+    echo_count: Number(post.echo_count || 0),
+    echo_state_loaded: Boolean(post.echo_state_loaded),
+    reaction_summary: Array.isArray(post.reaction_summary) ? post.reaction_summary.slice(0, 3) : [],
+    echo_source_type: post.echo_source_type || null,
+    echo_source_id: post.echo_source_id || null,
+    echo_text: post.echo_text || '',
+    echo_source: post.echo_source || null,
+    echo_unavailable: Boolean(post.echo_unavailable),
+    created_at: post.created_at,
+    updated_at: post.updated_at,
   }
-
-  return Math.min(
-    MAX_LIMIT,
-    Math.max(1, parsed)
-  )
 }
 
-function normalizeContent(value) {
-  return String(value || '')
-    .replace(/\r\n/g, '\n')
-    .trim()
-}
-
-function normalizeImageUrls(
-  value,
-  existingValues = []
-) {
-  if (
-    value === undefined ||
-    value === null
-  ) {
-    return []
-  }
-
-  if (!Array.isArray(value)) {
-    const error = new Error(
-      'Post images must be an array'
-    )
-    error.statusCode = 400
-    throw error
-  }
-
-  const imageUrls = [
-    ...new Set(
-      value
-        .filter(
-          (item) =>
-            typeof item === 'string'
-        )
-        .map((item) => item.trim())
-        .filter(Boolean)
-    ),
-  ]
-
-  if (
-    imageUrls.length >
-    MAX_POST_IMAGES
-  ) {
-    const error = new Error(
-      `You can add up to ${MAX_POST_IMAGES} images per post`
-    )
-    error.statusCode = 400
-    throw error
-  }
-
-  const existing = new Set(
-    (Array.isArray(existingValues)
-      ? existingValues
-      : []
-    )
-      .map((item) => String(item || '').trim())
-      .filter(Boolean)
-  )
-
-  imageUrls.forEach((url, index) => {
-    if (existing.has(url)) return
-
-    assertR2MediaReference(url, {
-      field: `reader_posts.image_urls[${index}]`,
-      allowEmpty: false,
-    })
-  })
-
-  return imageUrls
-}
+const AUTHOR_POSTS_DAILY_LIMIT = 5
+const AUTHOR_POST_IMAGES_LIMIT = 5
+const AUTHOR_POST_CONTENT_LIMIT = 10000
+const AUTHOR_PHOTO_CAPTION_LIMIT = 2000
+const AUTHOR_PHOTO_ALT_TEXT_LIMIT = 500
 
 function normalizePhotoMetadata(
   value,
   imageUrls = [],
   fallback = []
 ) {
-  const images = Array.isArray(
-    imageUrls
-  )
-    ? imageUrls
-    : []
-
   const source =
     value === undefined
       ? fallback
@@ -199,2746 +196,377 @@ function normalizePhotoMetadata(
     }
   }
 
-  return images.map(
-    (url, index) => {
-      const indexedItem =
-        items[index] &&
-        typeof items[index] ===
-          'object' &&
-        !Array.isArray(items[index])
-          ? items[index]
-          : {}
+  return imageUrls.map((url, index) => {
+    const indexedItem =
+      items[index] &&
+      typeof items[index] === 'object' &&
+      !Array.isArray(items[index])
+        ? items[index]
+        : {}
 
-      const item =
-        byUrl.get(url) ||
-        indexedItem
+    const item =
+      byUrl.get(url) ||
+      indexedItem
 
-      const caption = String(
-        item.caption || ''
-      )
-        .replace(/\r\n/g, '\n')
-        .trim()
-
-      const altText = String(
-        item.alt_text ??
-          item.alt ??
-          ''
-      )
-        .replace(/\r\n/g, '\n')
-        .trim()
-
-      if (
-        caption.length >
-        MAX_PHOTO_CAPTION_LENGTH
-      ) {
-        const error = new Error(
-          `Photo caption must be ${MAX_PHOTO_CAPTION_LENGTH} characters or fewer`
-        )
-        error.statusCode = 400
-        throw error
-      }
-
-      if (
-        altText.length >
-        MAX_PHOTO_ALT_TEXT_LENGTH
-      ) {
-        const error = new Error(
-          `Photo alt text must be ${MAX_PHOTO_ALT_TEXT_LENGTH} characters or fewer`
-        )
-        error.statusCode = 400
-        throw error
-      }
-
-      return {
-        url,
-        caption,
-        alt_text: altText,
-      }
-    }
-  )
-}
-
-function validateContent(
-  value,
-  imageUrls = [],
-  allowEmpty = false
-) {
-  const content = normalizeContent(value)
-
-  if (
-    !allowEmpty &&
-    !content &&
-    !imageUrls.length
-  ) {
-    const error = new Error(
-      'Post text or image is required'
+    const caption = String(
+      item.caption || ''
     )
-    error.statusCode = 400
-    throw error
-  }
+      .replace(/\r\n/g, '\n')
+      .trim()
 
-  if (content.length > MAX_POST_LENGTH) {
-    const error = new Error(
-      `Post text must be ${MAX_POST_LENGTH} characters or fewer`
+    const altText = String(
+      item.alt_text ??
+        item.alt ??
+        ''
     )
-    error.statusCode = 400
-    throw error
-  }
+      .replace(/\r\n/g, '\n')
+      .trim()
 
-  return content
-}
-
-function normalizeVisibility(
-  value,
-  fallback = 'public'
-) {
-  const normalized = String(
-    value || fallback
-  )
-    .trim()
-    .toLowerCase()
-
-  return VISIBILITIES.has(normalized)
-    ? normalized
-    : fallback
-}
-
-function normalizeCommentsPermission(
-  value,
-  fallback = 'everyone'
-) {
-  const normalized = String(
-    value || fallback
-  )
-    .trim()
-    .toLowerCase()
-
-  return COMMENT_PERMISSIONS.has(
-    normalized
-  )
-    ? normalized
-    : fallback
-}
-
-function normalizePublishAt(value) {
-  const date = value
-    ? new Date(value)
-    : new Date()
-
-  if (Number.isNaN(date.getTime())) {
-    return new Date().toISOString()
-  }
-
-  return date.toISOString()
-}
-
-function normalizeUser(user) {
-  if (!user) return null
-
-  return {
-    id: user.id,
-    name: user.name || 'Reader',
-    username: user.username || '',
-    avatar_url: user.avatar_url || null,
-    is_following: Boolean(user.is_following),
-  }
-}
-
-function normalizePost(
-  post,
-  user,
-  viewerId
-) {
-  const imageUrls = Array.isArray(
-    post.image_urls
-  )
-    ? post.image_urls
-        .filter(
-          (url) =>
-            typeof url === 'string' &&
-            url.trim()
-        )
-        .slice(0, MAX_POST_IMAGES)
-    : []
-
-  return {
-    id: post.id,
-    user_id: post.user_id,
-    content: post.content || '',
-    image_urls: imageUrls,
-    photo_metadata:
-      normalizePhotoMetadata(
-        post.photo_metadata,
-        imageUrls
-      ),
-    visibility:
-      post.visibility || 'public',
-    comments_permission:
-      post.comments_permission ||
-      'everyone',
-    story_sharing: Boolean(
-      post.story_sharing
-    ),
-    publish_at:
-      post.publish_at ||
-      post.created_at,
-    like_count: Number(
-      post.like_count || 0
-    ),
-    comment_count: Number(
-      post.comment_count || 0
-    ),
-    echo_count: Number(
-      post.echo_count || 0
-    ),
-    created_at: post.created_at,
-    updated_at: post.updated_at,
-    is_edited:
-      Boolean(post.updated_at) &&
-      Boolean(post.created_at) &&
-      new Date(
-        post.updated_at
-      ).getTime() >
-        new Date(
-          post.created_at
-        ).getTime() +
-          1000,
-    is_owner:
-      Boolean(viewerId) &&
-      String(post.user_id) ===
-        String(viewerId),
-    user: normalizeUser(user),
-  }
-}
-
-async function readUsersByIds(userIds) {
-  const ids = [
-    ...new Set(
-      (userIds || [])
-        .map((id) => String(id || ''))
-        .filter(Boolean)
-    ),
-  ]
-
-  if (!ids.length) return new Map()
-
-  const { data, error } = await supabase
-    .from('users')
-    .select(
-      'id, name, username, avatar_url, is_active'
-    )
-    .in('id', ids)
-
-  if (error) throw error
-
-  return new Map(
-    (data || [])
-      .filter(
-        (user) =>
-          user.is_active !== false
+    if (
+      caption.length >
+      AUTHOR_PHOTO_CAPTION_LIMIT
+    ) {
+      const error = new Error(
+        `Photo caption must be ${AUTHOR_PHOTO_CAPTION_LIMIT} characters or fewer`
       )
-      .map((user) => [
-        String(user.id),
-        user,
-      ])
-  )
-}
-
-async function loadViewerRelationshipSnapshot(
-  viewerId
-) {
-  const cleanViewerId =
-    String(viewerId || '').trim()
-
-  if (!cleanViewerId) {
-    return []
-  }
-
-  const { data, error } =
-    await supabase
-      .from('user_follows')
-      .select(
-        'follower_user_id, following_user_id'
-      )
-      .or(
-        `follower_user_id.eq.${cleanViewerId},following_user_id.eq.${cleanViewerId}`
-      )
-
-  if (!error) {
-    return Array.isArray(data)
-      ? data
-      : []
-  }
-
-  const [
-    followingResult,
-    followersResult,
-  ] = await Promise.all([
-    supabase
-      .from('user_follows')
-      .select(
-        'follower_user_id, following_user_id'
-      )
-      .eq(
-        'follower_user_id',
-        cleanViewerId
-      ),
-    supabase
-      .from('user_follows')
-      .select(
-        'follower_user_id, following_user_id'
-      )
-      .eq(
-        'following_user_id',
-        cleanViewerId
-      ),
-  ])
-
-  if (followingResult.error) {
-    throw followingResult.error
-  }
-
-  if (followersResult.error) {
-    throw followersResult.error
-  }
-
-  const seen = new Set()
-  const rows = []
-
-  for (const row of [
-    ...(followingResult.data || []),
-    ...(followersResult.data || []),
-  ]) {
-    const key =
-      `${String(
-        row.follower_user_id || ''
-      )}:${String(
-        row.following_user_id || ''
-      )}`
-
-    if (!key || seen.has(key)) {
-      continue
+      error.statusCode = 400
+      throw error
     }
 
-    seen.add(key)
-    rows.push(row)
-  }
-
-  return rows
-}
-
-async function getRelationshipMaps(
-  viewerId,
-  ownerIds
-) {
-  const viewerKey =
-    String(viewerId || '').trim()
-  const ids = [
-    ...new Set(
-      (ownerIds || [])
-        .map((id) =>
-          String(id || '').trim()
-        )
-        .filter(
-          (id) =>
-            id &&
-            id !== viewerKey
-        )
-    ),
-  ]
-
-  const empty = {
-    viewerFollowsOwners: new Set(),
-    ownersFollowViewer: new Set(),
-  }
-
-  if (!viewerKey || !ids.length) {
-    return empty
-  }
-
-  const requestState =
-    readerPostsRequestContext.getStore()
-
-  if (!requestState) {
-    const [
-      viewerFollowingResult,
-      viewerFollowersResult,
-    ] = await Promise.all([
-      supabase
-        .from('user_follows')
-        .select('following_user_id')
-        .eq(
-          'follower_user_id',
-          viewerKey
-        )
-        .in(
-          'following_user_id',
-          ids
-        ),
-      supabase
-        .from('user_follows')
-        .select('follower_user_id')
-        .eq(
-          'following_user_id',
-          viewerKey
-        )
-        .in(
-          'follower_user_id',
-          ids
-        ),
-    ])
-
-    if (viewerFollowingResult.error) {
-      throw viewerFollowingResult.error
-    }
-
-    if (viewerFollowersResult.error) {
-      throw viewerFollowersResult.error
+    if (
+      altText.length >
+      AUTHOR_PHOTO_ALT_TEXT_LIMIT
+    ) {
+      const error = new Error(
+        `Photo alt text must be ${AUTHOR_PHOTO_ALT_TEXT_LIMIT} characters or fewer`
+      )
+      error.statusCode = 400
+      throw error
     }
 
     return {
-      viewerFollowsOwners:
-        new Set(
-          (
-            viewerFollowingResult.data ||
-            []
-          ).map((row) =>
-            String(
-              row.following_user_id
-            )
-          )
-        ),
-      ownersFollowViewer:
-        new Set(
-          (
-            viewerFollowersResult.data ||
-            []
-          ).map((row) =>
-            String(
-              row.follower_user_id
-            )
-          )
-        ),
+      url,
+      caption,
+      alt_text: altText,
     }
-  }
+  })
+}
 
-  let snapshotPromise =
-    requestState
-      .relationshipSnapshots
-      .get(viewerKey)
-
-  if (!snapshotPromise) {
-    snapshotPromise =
-      loadViewerRelationshipSnapshot(
-        viewerKey
-      )
-
-    requestState
-      .relationshipSnapshots
-      .set(
-        viewerKey,
-        snapshotPromise
-      )
-  }
-
-  let rows
-
-  try {
-    rows =
-      await snapshotPromise
-  } catch (error) {
-    requestState
-      .relationshipSnapshots
-      .delete(viewerKey)
-
-    throw error
-  }
-
-  const wanted =
-    new Set(ids)
-  const viewerFollowsOwners =
-    new Set()
-  const ownersFollowViewer =
-    new Set()
-
-  for (const row of rows) {
-    const followerId =
-      String(
-        row.follower_user_id || ''
-      )
-    const followingId =
-      String(
-        row.following_user_id || ''
-      )
-
-    if (
-      followerId === viewerKey &&
-      wanted.has(followingId)
-    ) {
-      viewerFollowsOwners.add(
-        followingId
-      )
-    }
-
-    if (
-      followingId === viewerKey &&
-      wanted.has(followerId)
-    ) {
-      ownersFollowViewer.add(
-        followerId
-      )
-    }
-  }
+function getUtcDayRange(date = new Date()) {
+  const start = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0))
+  const end = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1, 0, 0, 0, 0))
 
   return {
-    viewerFollowsOwners,
-    ownersFollowViewer,
+    start: start.toISOString(),
+    end: end.toISOString(),
   }
 }
 
-function canViewerSeePost(
-  post,
-  viewerId,
-  relationships
-) {
-  const ownerId = String(
-    post.user_id || ''
-  )
-  const currentViewerId = String(
-    viewerId || ''
-  )
+function buildReactionSummaryMap(reactions = []) {
+  const reactionOrder = ['love', 'haha', 'wow', 'sad', 'angry', 'support', 'touched']
+  const reactionRank = new Map(reactionOrder.map((type, index) => [type, index]))
+  const countsByPost = new Map()
 
-  if (
-    currentViewerId &&
-    ownerId === currentViewerId
-  ) {
-    return true
+  for (const item of reactions || []) {
+    const postId = item?.post_id
+    const reactionType = String(item?.reaction_type || '').trim().toLowerCase()
+
+    if (!postId || !reactionType) continue
+
+    if (!countsByPost.has(postId)) {
+      countsByPost.set(postId, new Map())
+    }
+
+    const postCounts = countsByPost.get(postId)
+    postCounts.set(reactionType, Number(postCounts.get(reactionType) || 0) + 1)
   }
 
-  const visibility =
-    normalizeVisibility(
-      post.visibility,
-      'public'
-    )
+  const summaryByPost = new Map()
 
-  if (visibility === 'public') {
-    return true
+  for (const [postId, counts] of countsByPost.entries()) {
+    const summary = [...counts.entries()]
+      .map(([type, count]) => ({ type, count }))
+      .sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count
+        return Number(reactionRank.get(a.type) ?? 99) - Number(reactionRank.get(b.type) ?? 99)
+      })
+      .slice(0, 3)
+
+    summaryByPost.set(postId, summary)
   }
 
-  if (
-    visibility === 'only_me' ||
-    visibility === 'private'
-  ) {
-    return false
-  }
-
-  const viewerFollowsOwner =
-    relationships.viewerFollowsOwners.has(
-      ownerId
-    )
-
-  const ownerFollowsViewer =
-    relationships.ownersFollowViewer.has(
-      ownerId
-    )
-
-  if (visibility === 'followers') {
-    return viewerFollowsOwner
-  }
-
-  if (visibility === 'friends') {
-    return (
-      viewerFollowsOwner &&
-      ownerFollowsViewer
-    )
-  }
-
-  if (
-    visibility ===
-    'friends_and_followers'
-  ) {
-    return (
-      viewerFollowsOwner ||
-      ownerFollowsViewer
-    )
-  }
-
-  return false
+  return summaryByPost
 }
 
-function uniqueStrings(values) {
-  return [
-    ...new Set(
-      (values || [])
-        .map((value) =>
-          String(value || '').trim()
-        )
-        .filter(Boolean)
-    ),
-  ]
-}
+export async function getAuthorPagePosts(req, res) {
+  try {
+    const pageUsername = normalizePageUsername(req.params.pageUsername)
+    const viewerUserId = getRequestUserId(req)
+    const requestedLimit = Math.max(1, Number(req.query.limit || 20))
 
-async function readReaderPostEchoCounts(
-  postIds
-) {
-  const ids = uniqueStrings(postIds)
+    if (!pageUsername) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Page username is required',
+      })
+    }
 
-  if (!ids.length) return new Map()
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('id, user_id')
+      .eq('page_username', pageUsername)
+      .eq('status', 'active')
+      .maybeSingle()
 
-  const [v2Result, legacyResult] =
-    await Promise.all([
-      supabase
-        .from('social_echoes_v2')
-        .select(
-          'user_id, source_id, share_count'
-        )
-        .eq(
-          'source_type',
-          'reader_post'
-        )
-        .in('source_id', ids),
-      supabase
-        .from('social_echoes')
-        .select(
-          'user_id, source_id, share_count'
-        )
-        .eq(
-          'source_type',
-          'reader_post'
-        )
-        .in('source_id', ids),
-    ])
+    if (pageError) throw pageError
 
-  if (v2Result.error) {
-    throw v2Result.error
-  }
+    if (!authorPage) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Author page not found',
+      })
+    }
 
-  if (legacyResult.error) {
-    throw legacyResult.error
-  }
+    const isOwner = Boolean(
+      viewerUserId &&
+        authorPage.user_id &&
+        String(viewerUserId) === String(authorPage.user_id)
+    )
 
-  const preferred = new Map()
+    const contentLibrary =
+      isOwner &&
+      String(req.query.content_library || '').trim() === '1'
 
-  for (const row of legacyResult.data || []) {
-    const key = `${String(
-      row.user_id || ''
-    )}:${String(row.source_id || '')}`
-
-    preferred.set(key, row)
-  }
-
-  for (const row of v2Result.data || []) {
-    const key = `${String(
-      row.user_id || ''
-    )}:${String(row.source_id || '')}`
-
-    preferred.set(key, row)
-  }
-
-  const counts = new Map()
-
-  for (const row of preferred.values()) {
-    const id = String(row.source_id || '')
-    const next =
-      Number(counts.get(id) || 0) +
-      Math.max(
-        1,
-        Number(row.share_count || 1)
-      )
-
-    counts.set(id, next)
-  }
-
-  return counts
-}
-
-async function readLinkedEchoPostIds(
-  postIds
-) {
-  const ids = uniqueStrings(postIds)
-
-  if (!ids.length) return new Set()
-
-  const [v2Result, legacyResult] =
-    await Promise.all([
-      supabase
-        .from(
-          'social_echo_reader_posts_v2'
-        )
-        .select('reader_post_id')
-        .in('reader_post_id', ids),
-      supabase
-        .from('social_echoes')
-        .select('reader_post_id')
-        .in('reader_post_id', ids),
-    ])
-
-  if (v2Result.error) {
-    throw v2Result.error
-  }
-
-  if (legacyResult.error) {
-    throw legacyResult.error
-  }
-
-  return new Set(
-    [
-      ...(v2Result.data || []),
-      ...(legacyResult.data || []),
-    ]
-      .map((row) =>
-        String(row.reader_post_id || '')
-      )
-      .filter(Boolean)
-  )
-}
-
-async function readLinkedEchoByPostId(
-  postId,
-  userId
-) {
-  if (!postId || !userId) return null
-
-  const { data: v2Link, error: linkError } =
-    await supabase
-      .from(
-        'social_echo_reader_posts_v2'
-      )
-      .select(
-  'echo_id, reader_post_id, updated_at'
+    const limit = Math.min(
+  contentLibrary ? 50 : 30,
+  requestedLimit
 )
-      .eq('reader_post_id', postId)
-      .eq('user_id', userId)
-      .maybeSingle()
 
-  if (linkError) throw linkError
+const requestedStatus = String(
+  req.query.status || ''
+)
+  .trim()
+  .toLowerCase()
 
-  if (v2Link?.echo_id) {
-    const { data, error } = await supabase
-      .from('social_echoes_v2')
-      .select(
-        'id, user_id, source_type, source_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
-      )
-      .eq('id', v2Link.echo_id)
-      .eq('user_id', userId)
-      .maybeSingle()
+let postsQuery = supabase
+  .from('author_page_posts')
+  .select('*')
+  .eq('author_page_id', authorPage.id)
 
-    if (error) throw error
+if (contentLibrary) {
+  postsQuery = ['active', 'scheduled', 'uploaded'].includes(
+    requestedStatus
+  )
+    ? postsQuery.eq('status', requestedStatus)
+    : postsQuery.in('status', ['active', 'scheduled', 'uploaded'])
+} else {
+  postsQuery = postsQuery.eq('status', 'active')
+}
 
-    if (data) {
-      return {
-        ...data,
-        reader_post_id:
-          v2Link.reader_post_id,
-        echo_version: 'v2',
+const after = String(req.query.after || '').trim()
+
+if (after) {
+  const afterDate = new Date(after)
+
+  if (!Number.isNaN(afterDate.getTime())) {
+    postsQuery = postsQuery.gte(
+      'created_at',
+      afterDate.toISOString()
+    )
+  }
+}
+
+const before = String(req.query.before || '').trim()
+
+    if (before) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(before)) {
+        const beforeDate = new Date(`${before}T23:59:59.999Z`)
+
+        if (!Number.isNaN(beforeDate.getTime())) {
+          postsQuery = postsQuery.lte(
+            'created_at',
+            beforeDate.toISOString()
+          )
+        }
+      } else {
+        const beforeDate = new Date(before)
+
+        if (!Number.isNaN(beforeDate.getTime())) {
+          postsQuery = postsQuery.lt(
+            'created_at',
+            beforeDate.toISOString()
+          )
+        }
       }
     }
-  }
 
-  const { data, error } = await supabase
-    .from('social_echoes')
-    .select(
-      'id, user_id, source_type, source_id, reader_post_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
-    )
-    .eq('reader_post_id', postId)
-    .eq('user_id', userId)
-    .maybeSingle()
+    let orderedQuery = postsQuery
 
-  if (error) throw error
+    if (contentLibrary) {
+      orderedQuery = orderedQuery.order(
+        'created_at',
+        { ascending: false }
+      )
+    } else {
+      orderedQuery = orderedQuery
+        .order('is_pinned', { ascending: false })
+        .order('pinned_at', {
+          ascending: false,
+          nullsFirst: false,
+        })
+        .order('created_at', { ascending: false })
+    }
 
-  return data
-    ? {
-        ...data,
-        echo_version: 'legacy',
-      }
+    const { data: postRows, error: postsError } =
+  await orderedQuery.limit(limit + 1)
+
+if (postsError) throw postsError
+
+const pagePosts = await hydrateAuthorEchoPosts(
+  (postRows || []).slice(0, limit),
+  supabase
+)
+const hasMore = (postRows || []).length > limit
+const nextBefore =
+  hasMore && pagePosts.length
+    ? pagePosts[pagePosts.length - 1].created_at
     : null
-}
 
-async function attachVisibleUsers(
-  posts,
-  viewerId
-) {
-  const rows = Array.isArray(posts)
-    ? posts
-    : []
+const postIds = pagePosts
+  .map((post) => post.id)
+  .filter(Boolean)
 
-  const ownerIds = rows
-    .map((post) => post?.user_id)
-    .filter(Boolean)
-  const postIds = rows
-    .map((post) => post?.id)
-    .filter(Boolean)
+const viewCountByPost = new Map()
+let reactionSummaryByPost = new Map()
+const myReactionByPost = new Map()
+const echoCountByPost = new Map()
 
-  const sharedStateReady =
-    rows.length > 0 &&
-    rows.every(
-      (post) =>
-        post?.__feed_shared_state_loaded === true
-    )
-
-  const sharedUserMap = new Map(
-    rows
-      .filter((post) => post?.__feed_user)
-      .map((post) => [
-        String(post.user_id),
-        post.__feed_user,
-      ])
-  )
-
-  const sharedEchoCounts = new Map(
-    rows.map((post) => [
-      String(post.id),
-      Number(post.__feed_echo_count || 0),
-    ])
-  )
-
-  const [
-    userMap,
-    relationships,
-    echoCounts,
-  ] = await Promise.all([
-    sharedStateReady
-      ? sharedUserMap
-      : readUsersByIds(ownerIds),
-    getRelationshipMaps(
-      viewerId,
-      ownerIds
-    ),
-    sharedStateReady
-      ? sharedEchoCounts
-      : readReaderPostEchoCounts(postIds),
-  ])
-
-  return rows
-    .filter((post) =>
-      canViewerSeePost(
-        post,
-        viewerId,
-        relationships
-      )
-    )
-    .map((post) => {
-      const user = userMap.get(
-        String(post.user_id)
-      )
-      const storedCount = Number(
-        post.echo_count || 0
-      )
-      const universalCount = Number(
-        echoCounts.get(String(post.id)) ||
-          0
-      )
-
-      return user
-        ? normalizePost(
-            {
-              ...post,
-              echo_count: Math.max(
-                storedCount,
-                universalCount
-              ),
-            },
-                        {
-              ...user,
-              is_following:
-                relationships.viewerFollowsOwners.has(String(post.user_id)),
-            },
-            viewerId
-          )
-        : null
+if (postIds.length && contentLibrary) {
+  const { data: viewCountRows, error: viewCountError } =
+    await supabase.rpc('get_author_post_view_counts', {
+      p_post_ids: postIds.map((postId) => String(postId)),
     })
-    .filter(Boolean)
-}
-function isUuid(value) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    String(value || '').trim()
-  )
-}
 
-function getInteractionEchoSource(post) {
-  const isEcho = Boolean(post?.is_echo)
+  if (viewCountError) throw viewCountError
 
-  const type = String(
-    isEcho
-      ? post?.source_type ||
-          post?.echo_type ||
-          ''
-      : 'reader_post'
-  )
-    .trim()
-    .toLowerCase()
-    .replaceAll('-', '_')
-
-  const id = String(
-    isEcho
-      ? post?.source_id || ''
-      : post?.id || ''
-  ).trim()
-
-  return { type, id }
-}
-
-async function attachProfileInteractionState(
-  posts,
-  viewerId
-) {
-  const rows = Array.isArray(posts)
-    ? posts
-    : []
-
-  if (!rows.length || !viewerId) {
-    return rows
+  for (const row of viewCountRows || []) {
+    viewCountByPost.set(
+      String(row.post_id),
+      Number(row.view_count || 0)
+    )
   }
+}
 
-  const postIds = uniqueStrings(
-    rows.map((post) => post?.id)
-  )
-
-  const reactionPostIds =
-    postIds.filter(isUuid)
-
-  const reactionPostIdSet =
-    new Set(reactionPostIds)
-
-  const echoSources = rows
-    .map(getInteractionEchoSource)
-    .filter(
-      (source) =>
-        source.type && source.id
-    )
-
-  const echoSourceTypes =
-    uniqueStrings(
-      echoSources.map(
-        (source) => source.type
-      )
-    )
-
-  const echoSourceIds =
-    uniqueStrings(
-      echoSources.map(
-        (source) => source.id
-      )
-    )
-
-  const wantedEchoKeys = new Set(
-    echoSources.map(
-      (source) =>
-        `${source.type}:${source.id}`
-    )
-  )
-
+if (postIds.length && !contentLibrary) {
   const [
     reactionResult,
-    savedResult,
     echoResult,
   ] = await Promise.all([
-    reactionPostIds.length
-      ? supabase
-          .from(
-            'reader_post_reactions'
-          )
-          .select(
-            'post_id, reaction_type'
-          )
-          .eq('user_id', viewerId)
-          .in(
-            'post_id',
-            reactionPostIds
-          )
-      : Promise.resolve({
-          data: [],
-          error: null,
-        }),
+    supabase
+      .from('author_page_post_reactions')
+      .select('post_id, user_id, reaction_type')
+      .in('post_id', postIds),
 
-    postIds.length
-      ? supabase
-          .from('saved_posts')
-          .select('source_id')
-          .eq('user_id', viewerId)
-          .eq(
-            'source_type',
-            'reader_post'
-          )
-          .in('source_id', postIds)
-      : Promise.resolve({
-          data: [],
-          error: null,
-        }),
-
-    echoSourceIds.length &&
-    echoSourceTypes.length
-      ? supabase
-          .from('social_echoes_v2')
-          .select(
-            'source_type, source_id, share_count'
-          )
-          .in(
-            'source_type',
-            echoSourceTypes
-          )
-          .in(
-            'source_id',
-            echoSourceIds
-          )
-      : Promise.resolve({
-          data: [],
-          error: null,
-        }),
+    supabase
+      .from('social_echoes_v2')
+      .select('source_id, share_count')
+      .eq('source_type', 'author_post')
+      .in('source_id', postIds),
   ])
 
   if (reactionResult.error) {
     throw reactionResult.error
   }
 
-  if (savedResult.error) {
-    throw savedResult.error
-  }
-
   if (echoResult.error) {
     throw echoResult.error
   }
 
-  const myReactions = new Map(
-    (reactionResult.data || [])
-      .map((row) => [
-        String(row.post_id || ''),
-        row.reaction_type || null,
-      ])
-      .filter(([postId]) => Boolean(postId))
-  )
+  reactionSummaryByPost =
+    buildReactionSummaryMap(
+      reactionResult.data || []
+    )
 
-  const savedIds = new Set(
-    (savedResult.data || [])
-      .map((row) =>
-        String(row.source_id || '')
+  for (const row of reactionResult.data || []) {
+    if (
+      viewerUserId &&
+      String(row.user_id) === String(viewerUserId)
+    ) {
+      myReactionByPost.set(
+        String(row.post_id),
+        String(row.reaction_type || '')
+          .trim()
+          .toLowerCase()
       )
-      .filter(Boolean)
-  )
-
-  const echoCounts = new Map()
-
-  for (
-    const row of echoResult.data || []
-  ) {
-    const key =
-      `${String(
-        row.source_type || ''
-      )}:${String(
-        row.source_id || ''
-      )}`
-
-    if (!wantedEchoKeys.has(key)) {
-      continue
     }
+  }
 
-    echoCounts.set(
-      key,
+  for (const row of echoResult.data || []) {
+    const postId = String(row.source_id || '')
+
+    echoCountByPost.set(
+      postId,
       Number(
-        echoCounts.get(key) || 0
+        echoCountByPost.get(postId) || 0
       ) +
         Math.max(
           1,
-          Number(
-            row.share_count || 1
-          )
+          Number(row.share_count || 1)
         )
     )
   }
+}
 
-  return rows.map((post) => {
-    const postId = String(
-      post?.id || ''
-    )
-
-    const source =
-      getInteractionEchoSource(post)
-
-    const echoKey =
-      `${source.type}:${source.id}`
-
-    const hasReactionState =
-      reactionPostIdSet.has(postId)
-
-    const hasEchoState =
-      Boolean(
-        source.type &&
-          source.id
-      )
+return res.status(200).json({
+  ok: true,
+  posts: pagePosts.map((post) => {
+    if (contentLibrary) {
+      return publicAuthorPost({
+        ...post,
+        view_count: Number(
+          viewCountByPost.get(String(post.id)) || 0
+        ),
+      })
+    }
 
     return {
-      ...post,
-
-      like_count: Number(
-        post?.like_count || 0
-      ),
-
+      ...publicAuthorPost({
+        ...post,
+        echo_count: Number(
+          echoCountByPost.get(String(post.id)) || 0
+        ),
+        echo_state_loaded: true,
+        reaction_summary:
+          reactionSummaryByPost.get(post.id) || [],
+      }),
       my_reaction:
-        hasReactionState
-          ? myReactions.get(postId) ||
-            null
-          : post?.my_reaction ||
-            null,
-
-      reaction_state_loaded:
-        hasReactionState,
-
-      is_saved:
-        savedIds.has(postId),
-
-      saved_state_loaded: true,
-
-      echo_count: hasEchoState
-        ? Number(
-            echoCounts.get(
-              echoKey
-            ) || 0
-          )
-        : Number(
-            post?.echo_count || 0
-          ),
-
-      echo_state_loaded:
-        hasEchoState,
+        myReactionByPost.get(String(post.id)) || null,
     }
-  })
-}
+  }),
+  has_more: hasMore,
+  next_before: nextBefore,
+})
 
-function echoAudienceToVisibility(
-  audience
-) {
-  if (audience === 'only-me') {
-    return 'only_me'
-  }
-
-  if (audience === 'followers') {
-    return 'followers'
-  }
-
-  if (audience === 'close-readers') {
-    return 'friends'
-  }
-
-  return 'public'
-}
-
-function canViewerSeeEcho(
-  echo,
-  viewerId,
-  relationships
-) {
-  const ownerId = String(
-    echo.user_id || ''
-  )
-  const currentViewerId = String(
-    viewerId || ''
-  )
-
-  if (
-    currentViewerId &&
-    currentViewerId === ownerId
-  ) {
-    return true
-  }
-
-  const selectedReaderIds =
-    Array.isArray(
-      echo.selected_reader_ids
+  } catch (error) {
+    console.error(
+      'GET AUTHOR PAGE POSTS ERROR:',
+      error
     )
-      ? echo.selected_reader_ids.map(
-          (id) => String(id)
-        )
-      : []
 
-  if (
-    echo.destination === 'reader' ||
-    echo.destination === 'circle'
-  ) {
-    return (
-      Boolean(currentViewerId) &&
-      selectedReaderIds.includes(
-        currentViewerId
-      )
-    )
-  }
-
-  if (echo.audience === 'public') {
-    return true
-  }
-
-  if (echo.audience === 'only-me') {
-    return false
-  }
-
-  if (echo.audience === 'followers') {
-    return relationships.viewerFollowsOwners.has(
-      ownerId
-    )
-  }
-
-  if (
-    echo.audience === 'close-readers'
-  ) {
-    return selectedReaderIds.includes(
-      currentViewerId
-    )
-  }
-
-  return false
-}
-
-function mergeTimelinePosts(
-  groups,
-  limit
-) {
-  const seen = new Set()
-
-  return groups
-    .flat()
-    .filter(Boolean)
-    .sort((left, right) => {
-      const rightTime = new Date(
-        right.publish_at ||
-          right.updated_at ||
-          right.created_at ||
-          0
-      ).getTime()
-      const leftTime = new Date(
-        left.publish_at ||
-          left.updated_at ||
-          left.created_at ||
-          0
-      ).getTime()
-
-      if (rightTime !== leftTime) {
-        return rightTime - leftTime
-      }
-
-      return String(
-        right.id || ''
-      ).localeCompare(
-        String(left.id || '')
-      )
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load author posts',
+      error: error.message,
     })
-    .filter((post) => {
-      const id = String(post.id || '')
-
-      if (!id || seen.has(id)) {
-        return false
-      }
-
-      seen.add(id)
-      return true
-    })
-    .slice(0, limit)
+  }
 }
 
-function getReaderRecommendationScore(
-  post,
-  snapshotAt
-) {
-  const snapshotTime =
-    new Date(snapshotAt).getTime()
 
-  const postTime =
-    new Date(
-      post?.publish_at ||
-        post?.updated_at ||
-        post?.created_at ||
-        0
-    ).getTime()
 
-  const ageMs =
-    Number.isFinite(snapshotTime) &&
-    Number.isFinite(postTime)
-      ? Math.max(
-          0,
-          snapshotTime - postTime
-        )
-      : 0
-
-  const ageDays =
-    ageMs /
-    (24 * 60 * 60 * 1000)
-
-  const likes = Math.max(
-    0,
-    Number(post?.like_count || 0)
-  )
-
-  const comments = Math.max(
-    0,
-    Number(
-      post?.comment_count || 0
-    )
-  )
-
-  const echoes = Math.max(
-    0,
-    Number(post?.echo_count || 0)
-  )
-
-  const engagement =
-    likes +
-    comments * 2 +
-    echoes * 3
-
-  const engagementScore =
-    Math.log1p(engagement) * 12
-
-  const recencyScore =
-    Math.max(
-      0,
-      18 - ageDays * 0.6
-    )
-
-  const discoveryBoost =
-    post?.user?.is_following
-      ? 0
-      : 2
-
-  const ownerBoost =
-    post?.is_owner
-      ? 1
-      : 0
-
-  return (
-    engagementScore +
-    recencyScore +
-    discoveryBoost +
-    ownerBoost
-  )
-}
-
-function mergeRecommendedReaderPosts(
-  groups,
-  limit,
-  snapshotAt
-) {
-  const seen = new Set()
-const candidates = groups.flat().filter(Boolean)
-
-const newestPostId = [...candidates]
-  .sort((a, b) => new Date(b.publish_at || b.updated_at || b.created_at || 0) - new Date(a.publish_at || a.updated_at || a.created_at || 0))[0]?.id
-
-return candidates
-  .sort((first, second) => {
-    if (first.id === newestPostId) return -1
-    if (second.id === newestPostId) return 1
-      const firstScore =
-        getReaderRecommendationScore(
-          first,
-          snapshotAt
-        )
-
-      const secondScore =
-        getReaderRecommendationScore(
-          second,
-          snapshotAt
-        )
-
-      const scoreDifference =
-        secondScore - firstScore
-
-      if (
-        Math.abs(scoreDifference) >
-        0.000001
-      ) {
-        return scoreDifference
-      }
-
-      const secondTime =
-        new Date(
-          second.publish_at ||
-            second.updated_at ||
-            second.created_at ||
-            0
-        ).getTime()
-
-      const firstTime =
-        new Date(
-          first.publish_at ||
-            first.updated_at ||
-            first.created_at ||
-            0
-        ).getTime()
-
-      if (
-        secondTime !== firstTime
-      ) {
-        return (
-          secondTime - firstTime
-        )
-      }
-
-      return String(
-        second.id || ''
-      ).localeCompare(
-        String(first.id || '')
-      )
-    })
-    .filter((post) => {
-      const id = String(
-        post.id || ''
-      )
-
-      if (
-        !id ||
-        seen.has(id)
-      ) {
-        return false
-      }
-
-      seen.add(id)
-      return true
-    })
-    .slice(0, limit)
-}
-
-async function createV2EchoReaderPost(
-  echo
-) {
-  const userId = String(
-    echo?.user_id || ''
-  )
-  const echoId = String(
-    echo?.id || ''
-  )
-
-  if (!userId || !echoId) {
-    return null
-  }
-
-  const {
-    data: existingLink,
-    error: existingLinkError,
-  } = await supabase
-    .from(
-      'social_echo_reader_posts_v2'
-    )
-    .select('echo_id, reader_post_id, updated_at')
-.eq('echo_id', echoId)
-.maybeSingle()
-
-  if (existingLinkError) {
-    throw existingLinkError
-  }
-
-  if (existingLink?.reader_post_id) {
-  await syncV2EchoReaderPost(
-    echo,
-    existingLink
-  )
-
-  return existingLink
-}
-
-  const timestamp =
-    echo.updated_at ||
-    echo.created_at ||
-    new Date().toISOString()
-
-  const { data: post, error: postError } =
-    await supabase
-      .from('reader_posts')
-      .insert({
-        user_id: userId,
-        content: String(
-          echo.echo_text || ''
-        ).trim(),
-        image_urls: [],
-        visibility:
-          echoAudienceToVisibility(
-            echo.audience
-          ),
-        comments_permission: 'everyone',
-        story_sharing: true,
-        publish_at: timestamp,
-        like_count: 0,
-        comment_count: 0,
-        echo_count: 0,
-        created_at: timestamp,
-        updated_at: timestamp,
-      })
-      .select('id')
-      .single()
-
-  if (postError) throw postError
-
-  const { data: link, error: linkError } =
-    await supabase
-      .from(
-        'social_echo_reader_posts_v2'
-      )
-      .insert({
-        echo_id: echoId,
-        reader_post_id: post.id,
-        user_id: userId,
-        created_at: timestamp,
-        updated_at: timestamp,
-      })
-      .select(
-        'echo_id, reader_post_id'
-      )
-      .single()
-
-  if (!linkError) {
-    return link
-  }
-
-  await supabase
-    .from('reader_posts')
-    .update({
-      deleted_at:
-        new Date().toISOString(),
-      updated_at:
-        new Date().toISOString(),
-    })
-    .eq('id', post.id)
-    .eq('user_id', userId)
-    .is('deleted_at', null)
-
-  const {
-    data: concurrentLink,
-    error: concurrentError,
-  } = await supabase
-    .from(
-      'social_echo_reader_posts_v2'
-    )
-    .select('echo_id, reader_post_id')
-    .eq('echo_id', echoId)
-    .maybeSingle()
-
-  if (concurrentError) {
-    throw concurrentError
-  }
-
-  if (concurrentLink) {
-    return concurrentLink
-  }
-
-  throw linkError
-}
-
-async function syncV2EchoReaderPost(
-  echo,
-  link
-) {
-  if (!echo?.id || !link?.reader_post_id) {
-    return
-  }
-
-  const updatedAt =
-    echo.updated_at ||
-    echo.created_at ||
-    new Date().toISOString()
-
-  const echoTime =
-    new Date(updatedAt).getTime()
-  const linkTime =
-    new Date(
-      link.updated_at || 0
-    ).getTime()
-
-  if (
-    Number.isFinite(linkTime) &&
-    linkTime >= echoTime
-  ) {
-    return
-  }
-
-  const { error: postError } =
-    await supabase
-      .from('reader_posts')
-      .update({
-        content: String(
-          echo.echo_text || ''
-        ).trim(),
-        visibility:
-          echoAudienceToVisibility(
-            echo.audience
-          ),
-        publish_at: updatedAt,
-        updated_at: updatedAt,
-      })
-      .eq(
-        'id',
-        link.reader_post_id
-      )
-      .eq('user_id', echo.user_id)
-      .is('deleted_at', null)
-
-  if (postError) throw postError
-
-  const { error: linkError } =
-    await supabase
-      .from(
-        'social_echo_reader_posts_v2'
-      )
-      .update({
-        updated_at: updatedAt,
-      })
-      .eq('echo_id', echo.id)
-      .eq(
-        'reader_post_id',
-        link.reader_post_id
-      )
-
-  if (linkError) throw linkError
-}
-
-async function ensureV2EchoLinks(
-  echoes
-) {
-  const rows = Array.isArray(echoes)
-    ? echoes
-    : []
-
-  if (!rows.length) return new Map()
-
-  const echoIds = uniqueStrings(
-    rows.map((echo) => echo.id)
-  )
-
-  const { data, error } = await supabase
-    .from(
-      'social_echo_reader_posts_v2'
-    )
-    .select(
-  'echo_id, reader_post_id, updated_at'
-)
-    .in('echo_id', echoIds)
-
-  if (error) throw error
-
-  const linkMap = new Map(
-    (data || []).map((link) => [
-      String(link.echo_id),
-      link,
-    ])
-  )
-
-  await Promise.all(
-  rows.map((echo) => {
-    const link = linkMap.get(
-      String(echo.id)
-    )
-
-    return link
-      ? syncV2EchoReaderPost(
-          echo,
-          link
-        )
-      : null
-  })
-)
-
-  const missing = rows.filter(
-    (echo) =>
-      !linkMap.has(String(echo.id))
-  )
-
-  if (missing.length) {
-    const created = await Promise.all(
-      missing.map((echo) =>
-        createV2EchoReaderPost(echo)
-      )
-    )
-
-    for (const link of created) {
-      if (link?.echo_id) {
-        linkMap.set(
-          String(link.echo_id),
-          link
-        )
-      }
-    }
-  }
-
-  return linkMap
-}
-
-async function readCombinedEchoRows({
-  ownerId = '',
-  echoId = '',
-  echoVersion = '',
-  feedOnly = false,
-  limit = FEED_SCAN_LIMIT,
-}) {
-  let v2Query = supabase
-    .from('social_echoes_v2')
-    .select(
-      'id, user_id, source_type, source_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
-    )
-    .order('updated_at', {
-      ascending: false,
-    })
-    .limit(limit)
-
-  let legacyQuery = supabase
-    .from('social_echoes')
-    .select(
-      'id, user_id, source_type, source_id, reader_post_id, echo_text, destination, audience, selected_reader_ids, share_count, created_at, updated_at'
-    )
-    .order('updated_at', {
-      ascending: false,
-    })
-    .limit(limit)
-
-  if (feedOnly) {
-    v2Query = v2Query.eq(
-      'destination',
-      'feed'
-    )
-    legacyQuery = legacyQuery.eq(
-      'destination',
-      'feed'
-    )
-  } else {
-    v2Query = v2Query.in(
-      'destination',
-      ['feed', 'shadow']
-    )
-    legacyQuery = legacyQuery.in(
-      'destination',
-      ['feed', 'shadow']
-    )
-  }
-
-  if (ownerId) {
-    v2Query = v2Query.eq(
-      'user_id',
-      ownerId
-    )
-    legacyQuery = legacyQuery.eq(
-      'user_id',
-      ownerId
-    )
-  }
-
-  if (echoId && echoVersion !== 'legacy') {
-    v2Query = v2Query.eq('id', echoId)
-  }
-
-  if (echoId && echoVersion !== 'v2') {
-    legacyQuery = legacyQuery.eq('id', echoId)
-  }
-
-  const [v2Result, legacyResult] =
-    await Promise.all([
-      echoVersion === 'legacy'
-        ? Promise.resolve({
-            data: [],
-            error: null,
-          })
-        : v2Query,
-      echoVersion === 'v2'
-        ? Promise.resolve({
-            data: [],
-            error: null,
-          })
-        : legacyQuery,
-    ])
-
-  if (v2Result.error) {
-    throw v2Result.error
-  }
-
-  if (legacyResult.error) {
-    throw legacyResult.error
-  }
-
-  const v2Rows = Array.isArray(
-    v2Result.data
-  )
-    ? v2Result.data
-    : []
-  const legacyRows = Array.isArray(
-    legacyResult.data
-  )
-    ? legacyResult.data
-    : []
-
-  const v2Links =
-    await ensureV2EchoLinks(v2Rows)
-
-  const normalizedV2 = v2Rows.map(
-    (echo) => ({
-      ...echo,
-      reader_post_id:
-        v2Links.get(String(echo.id))
-          ?.reader_post_id || null,
-      echo_version: 'v2',
-    })
-  )
-
-  const v2Keys = new Set(
-    normalizedV2.map(
-      (echo) =>
-        `${String(
-          echo.user_id || ''
-        )}:${String(
-          echo.source_type || ''
-        )}:${String(
-          echo.source_id || ''
-        )}`
-    )
-  )
-
-  const legacyFallback = legacyRows
-    .filter((echo) => {
-      const key = `${String(
-        echo.user_id || ''
-      )}:${String(
-        echo.source_type || ''
-      )}:${String(
-        echo.source_id || ''
-      )}`
-
-      return !v2Keys.has(key)
-    })
-    .map((echo) => ({
-      ...echo,
-      echo_version: 'legacy',
-    }))
-
-  return [
-    ...normalizedV2,
-    ...legacyFallback,
-  ]
-    .sort(
-      (left, right) =>
-        new Date(
-          right.updated_at ||
-            right.created_at ||
-            0
-        ).getTime() -
-        new Date(
-          left.updated_at ||
-            left.created_at ||
-            0
-        ).getTime()
-    )
-    .slice(0, limit)
-}
-
-async function readSocialEchoPosts({
-  viewerId,
-  ownerId = '',
-  echoId = '',
-  echoVersion = '',
-  feedOnly = false,
-  limit = FEED_SCAN_LIMIT,
-}) {
-  const echoes =
-    await readCombinedEchoRows({
-      ownerId,
-      echoId,
-      echoVersion,
-      feedOnly,
-      limit,
-    })
-
-  if (!echoes.length) return []
-
-  const sourceIds = {
-    story: [],
-    episode: [],
-    reader_post: [],
-    author_post: [],
-    shadow_mall_promotion: [],
-  }
-
-  for (const echo of echoes) {
-    if (sourceIds[echo.source_type]) {
-      sourceIds[echo.source_type].push(
-        String(echo.source_id || '')
-      )
-    }
-  }
-
-  const storyIds = uniqueStrings(
-    sourceIds.story
-  )
-  const episodeIds = uniqueStrings(
-    sourceIds.episode
-  )
-  const readerPostIds = uniqueStrings(
-    sourceIds.reader_post
-  )
-  const authorPostIds = uniqueStrings(
-    sourceIds.author_post
-  )
-  const promotionIds = uniqueStrings(
-    sourceIds.shadow_mall_promotion
-  )
-  const linkedReaderPostIds =
-    uniqueStrings(
-      echoes.map((echo) =>
-        echo.reader_post_id
-      )
-    )
-  const combinedReaderPostIds =
-    uniqueStrings([
-      ...readerPostIds,
-      ...linkedReaderPostIds,
-    ])
-  const readerPostIdSet =
-    new Set(readerPostIds)
-  const linkedReaderPostIdSet =
-    new Set(linkedReaderPostIds)
-
-  const [
-    storyResult,
-    episodeResult,
-    readerPostResult,
-    authorPostResult,
-    promotionResult,
-  ] = await Promise.all([
-    storyIds.length
-      ? supabase
-          .from('stories')
-          .select(
-            'id, author_id, user_id, title, cover_url, landscape_thumbnail_url, main_genre, status, deleted_at'
-          )
-          .in('id', storyIds)
-          .is('deleted_at', null)
-      : Promise.resolve({
-          data: [],
-          error: null,
-        }),
-    episodeIds.length
-      ? supabase
-          .from('episodes')
-          .select(
-            'id, story_id, title, episode_number, cover_url, published_at, status, deleted_at'
-          )
-          .in('id', episodeIds)
-          .is('deleted_at', null)
-      : Promise.resolve({
-          data: [],
-          error: null,
-        }),
-    combinedReaderPostIds.length
-      ? supabase
-          .from('reader_posts')
-          .select(READER_POST_SELECT)
-          .in(
-            'id',
-            combinedReaderPostIds
-          )
-          .is('deleted_at', null)
-      : Promise.resolve({
-          data: [],
-          error: null,
-        }),
-    authorPostIds.length
-      ? supabase
-          .from('author_page_posts')
-          .select(
-            'id, author_page_id, user_id, content, image_urls, status, created_at, author_page:author_pages(id, user_id, page_name, page_username, avatar_url)'
-          )
-          .in('id', authorPostIds)
-          .eq('status', 'active')
-      : Promise.resolve({
-          data: [],
-          error: null,
-        }),
-    promotionIds.length
-      ? supabase
-          .from('shadow_mall_ads')
-          .select(
-            'id, sponsor, title, description, button_text, link_url, promotion_type, story_id, profile_image_url, image_url, is_active, created_at, updated_at'
-          )
-          .in('id', promotionIds)
-          .eq('is_active', true)
-      : Promise.resolve({
-          data: [],
-          error: null,
-        }),
-  ])
-
-  for (const result of [
-    storyResult,
-    episodeResult,
-    readerPostResult,
-    authorPostResult,
-    promotionResult,
-  ]) {
-    if (result.error) throw result.error
-  }
-
-  const episodes =
-    episodeResult.data || []
-  const episodeStoryIds = uniqueStrings(
-    episodes.map((episode) =>
-      episode.story_id
-    )
-  )
-  let stories =
-    storyResult.data || []
-  const loadedStoryIds = new Set(
-    stories.map((story) =>
-      String(story.id)
-    )
-  )
-  const missingStoryIds =
-    episodeStoryIds.filter(
-      (id) => !loadedStoryIds.has(id)
-    )
-
-  if (missingStoryIds.length) {
-    const {
-      data: extraStories,
-      error,
-    } = await supabase
-      .from('stories')
-      .select(
-        'id, author_id, user_id, title, cover_url, landscape_thumbnail_url, main_genre, status, deleted_at'
-      )
-      .in('id', missingStoryIds)
-      .is('deleted_at', null)
-
-    if (error) throw error
-
-    stories = [
-      ...stories,
-      ...(extraStories || []),
-    ]
-  }
-
-  const authorPageIds = uniqueStrings(
-    stories.map((story) =>
-      story.author_id
-    )
-  )
-  let authorPages = []
-
-  if (authorPageIds.length) {
-    const { data: pages, error } =
-      await supabase
-        .from('author_pages')
-        .select(
-          'id, user_id, page_name, page_username, avatar_url'
-        )
-        .in('id', authorPageIds)
-
-    if (error) throw error
-    authorPages = pages || []
-  }
-
-  const combinedReaderPosts =
-    readerPostResult.data || []
-  const readerPosts =
-    combinedReaderPosts.filter(
-      (post) =>
-        readerPostIdSet.has(
-          String(post.id)
-        )
-    )
-  const authorPosts =
-    authorPostResult.data || []
-  const promotions =
-    promotionResult.data || []
-  const linkedReaderPosts =
-    combinedReaderPosts.filter(
-      (post) =>
-        linkedReaderPostIdSet.has(
-          String(post.id)
-        )
-    )
-
-  const linkedEchoCounts =
-    await readReaderPostEchoCounts(
-      linkedReaderPostIds
-    )
-
-  const sourceReaderUserIds =
-    readerPosts.map((post) =>
-      post.user_id
-    )
-  const echoOwnerIds = echoes.map(
-    (echo) => echo.user_id
-  )
-  const relationshipOwnerIds = [
-    ...echoOwnerIds,
-    ...sourceReaderUserIds,
-  ]
-  const [userMap, relationships] =
-    await Promise.all([
-      readUsersByIds(
-        relationshipOwnerIds
-      ),
-      getRelationshipMaps(
-        viewerId,
-        relationshipOwnerIds
-      ),
-    ])
-
-  const storyMap = new Map(
-    stories.map((story) => [
-      String(story.id),
-      story,
-    ])
-  )
-  const episodeMap = new Map(
-    episodes.map((episode) => [
-      String(episode.id),
-      episode,
-    ])
-  )
-  const readerPostMap = new Map(
-    readerPosts.map((post) => [
-      String(post.id),
-      post,
-    ])
-  )
-  const authorPostMap = new Map(
-    authorPosts.map((post) => [
-      String(post.id),
-      post,
-    ])
-  )
-  const promotionMap = new Map(
-    promotions.map((promotion) => [
-      String(promotion.id),
-      promotion,
-    ])
-  )
-  const authorPageMap = new Map(
-    authorPages.map((page) => [
-      String(page.id),
-      page,
-    ])
-  )
-  const linkedReaderPostMap =
-    new Map(
-      linkedReaderPosts.map((post) => [
-        String(post.id),
-        post,
-      ])
-    )
-
-  return echoes
-    .filter((echo) =>
-      canViewerSeeEcho(
-        echo,
-        viewerId,
-        relationships
-      )
-    )
-    .map((echo) => {
-      const user = userMap.get(
-        String(echo.user_id)
-      )
-
-      if (!user) return null
-
-      let source = null
-      let sourceStory = null
-      let sourceEpisode = null
-      let sourceReaderPost = null
-      let sourceAuthorPost = null
-      let sourcePromotion = null
-
-      if (echo.source_type === 'story') {
-        const story = storyMap.get(
-          String(echo.source_id)
-        )
-
-        if (
-          !story ||
-          String(story.status || '')
-            .toLowerCase() !==
-            'published'
-        ) {
-          return null
-        }
-
-        const authorPage =
-          authorPageMap.get(
-            String(story.author_id || '')
-          ) || null
-        const imageUrl =
-          story.landscape_thumbnail_url ||
-          story.cover_url ||
-          ''
-
-        sourceStory = {
-          id: story.id,
-          title: story.title || 'Story',
-          cover_url:
-            story.cover_url || '',
-          landscape_thumbnail_url:
-            story.landscape_thumbnail_url ||
-            '',
-          main_genre:
-            story.main_genre || '',
-          author_page: authorPage,
-        }
-        source = {
-          type: 'story',
-          id: story.id,
-          name:
-            story.title || 'Story',
-          content: '',
-          image_url: imageUrl,
-          image_urls: imageUrl
-            ? [imageUrl]
-            : [],
-          url: `/story/${story.id}`,
-          label: 'story',
-          owner: authorPage,
-        }
-      }
-
-      if (echo.source_type === 'episode') {
-        const episode = episodeMap.get(
-          String(echo.source_id)
-        )
-        const story = episode
-          ? storyMap.get(
-              String(episode.story_id)
-            )
-          : null
-
-        if (
-          !episode ||
-          !story ||
-          String(episode.status || '')
-            .toLowerCase() !==
-            'published' ||
-          String(story.status || '')
-            .toLowerCase() !==
-            'published'
-        ) {
-          return null
-        }
-
-        const authorPage =
-          authorPageMap.get(
-            String(story.author_id || '')
-          ) || null
-        const imageUrl =
-          story.landscape_thumbnail_url ||
-          story.cover_url ||
-          episode.cover_url ||
-          ''
-        const episodeTitle =
-          episode.title ||
-          `Episode ${Number(
-            episode.episode_number || 0
-          )}`
-
-        sourceStory = {
-          id: story.id,
-          title:
-            story.title || 'Story',
-          cover_url:
-            story.cover_url || '',
-          landscape_thumbnail_url:
-            story.landscape_thumbnail_url ||
-            '',
-          main_genre:
-            story.main_genre || '',
-          author_page: authorPage,
-        }
-        sourceEpisode = {
-          id: episode.id,
-          story_id: episode.story_id,
-          title: episodeTitle,
-          episode_number: Number(
-            episode.episode_number || 0
-          ),
-          cover_url:
-            episode.cover_url || '',
-        }
-        source = {
-          type: 'episode',
-          id: episode.id,
-          name:
-            story.title || 'Story',
-          content: episodeTitle,
-          image_url: imageUrl,
-          image_urls: imageUrl
-            ? [imageUrl]
-            : [],
-          url:
-            `/story/${story.id}/episode/${episode.id}`,
-          label: 'episode',
-          owner: authorPage,
-        }
-      }
-
-      if (
-        echo.source_type ===
-        'reader_post'
-      ) {
-        const post = readerPostMap.get(
-          String(echo.source_id)
-        )
-
-        const sourceIsFuture =
-          Boolean(post?.publish_at) &&
-          new Date(
-            post.publish_at
-          ).getTime() > Date.now()
-        const viewerOwnsSource =
-          String(post?.user_id || '') ===
-          String(viewerId || '')
-
-        if (
-          !post ||
-          (sourceIsFuture &&
-            !viewerOwnsSource) ||
-          !canViewerSeePost(
-            post,
-            viewerId,
-            relationships
-          )
-        ) {
-          return null
-        }
-
-        const sourceUser = userMap.get(
-          String(post.user_id)
-        )
-
-        if (!sourceUser) return null
-
-        const images = Array.isArray(
-          post.image_urls
-        )
-          ? post.image_urls.filter(Boolean)
-          : []
-        const sourceOwner =
-          normalizeUser(sourceUser)
-
-        sourceReaderPost = {
-          id: post.id,
-          user_id: post.user_id,
-          content: post.content || '',
-          image_urls: images,
-          photo_metadata:
-          post.photo_metadata || [],
-          visibility:
-            post.visibility || 'public',
-          publish_at:
-            post.publish_at || null,
-          created_at:
-            post.created_at || null,
-          user: sourceOwner,
-        }
-        source = {
-          type: 'reader_post',
-          id: post.id,
-          name:
-            sourceUser.name ||
-            sourceUser.username ||
-            'Reader Post',
-          content: post.content || '',
-          image_url: images[0] || '',
-image_urls: images,
-photo_metadata:
-  post.photo_metadata || [],
-url:
-            sourceUser.username
-              ? `/profile?username=${encodeURIComponent(
-                  sourceUser.username
-                )}#reader-post-${post.id}`
-              : `/profile#reader-post-${post.id}`,
-          label: 'reader post',
-          created_at:
-            post.created_at ||
-            post.publish_at ||
-            null,
-          owner: sourceOwner,
-        }
-      }
-
-      if (
-        echo.source_type ===
-        'author_post'
-      ) {
-        const post = authorPostMap.get(
-          String(echo.source_id)
-        )
-
-        if (!post) return null
-
-        const authorPage = Array.isArray(
-          post.author_page
-        )
-          ? post.author_page[0]
-          : post.author_page
-        const images = Array.isArray(
-          post.image_urls
-        )
-          ? post.image_urls.filter(Boolean)
-          : []
-
-        sourceAuthorPost = {
-          id: post.id,
-          author_page_id:
-            post.author_page_id,
-          user_id: post.user_id,
-          content: post.content || '',
-          image_urls: images,
-          created_at:
-            post.created_at || null,
-          author_page:
-            authorPage || null,
-        }
-        source = {
-          type: 'author_post',
-          id: post.id,
-          name:
-            authorPage?.page_name ||
-            'Author Post',
-          content: post.content || '',
-          image_url: images[0] || '',
-          image_urls: images,
-          url:
-            authorPage?.page_username
-              ? `/author/page/${encodeURIComponent(
-                  authorPage.page_username
-                )}?post=${encodeURIComponent(
-                  post.id
-                )}`
-              : '/',
-          label: 'author post',
-          created_at:
-            post.created_at || null,
-          owner: authorPage || null,
-        }
-      }
-
-      if (
-        echo.source_type ===
-        'shadow_mall_promotion'
-      ) {
-        const promotion =
-          promotionMap.get(
-            String(echo.source_id)
-          )
-
-        if (!promotion) return null
-
-        const imageUrl =
-          promotion.image_url ||
-          promotion.profile_image_url ||
-          ''
-
-        sourcePromotion = {
-          id: promotion.id,
-          sponsor:
-            promotion.sponsor ||
-            'Shadow Mall',
-          title:
-            promotion.title || '',
-          description:
-            promotion.description || '',
-          button_text:
-            promotion.button_text ||
-            'Shop now',
-          link_url:
-            promotion.link_url || '',
-          promotion_type:
-            promotion.promotion_type ||
-            'link',
-          story_id:
-            promotion.story_id || null,
-          profile_image_url:
-            promotion.profile_image_url ||
-            '',
-          image_url:
-            promotion.image_url || '',
-        }
-
-        source = {
-          type:
-            'shadow_mall_promotion',
-          id: String(promotion.id),
-          name:
-            promotion.sponsor ||
-            'Shadow Mall',
-          content:
-            promotion.description ||
-            promotion.title ||
-            '',
-          image_url: imageUrl,
-          image_urls: imageUrl
-            ? [imageUrl]
-            : [],
-          url:
-            promotion.link_url ||
-            (promotion.story_id
-              ? `/story/${promotion.story_id}`
-              : '/shop'),
-          label:
-            'Shadow Mall promotion',
-          created_at:
-            promotion.created_at || null,
-          owner: {
-            id: null,
-            name:
-              promotion.sponsor ||
-              'Shadow Mall',
-            username: '',
-            avatar_url:
-              promotion.profile_image_url ||
-              '',
-          },
-          promotion: sourcePromotion,
-        }
-      }
-
-      if (!source) return null
-
-      const linkedPost =
-        linkedReaderPostMap.get(
-          String(
-            echo.reader_post_id || ''
-          )
-        ) || null
-
-      if (
-        echo.reader_post_id &&
-        !linkedPost
-      ) {
-        return null
-      }
-
-      const echoTime =
-        echo.updated_at ||
-        echo.created_at
-      const echoText = String(
-        echo.echo_text || ''
-      ).trim()
-      const createdAt =
-        linkedPost?.created_at ||
-        echo.created_at ||
-        echoTime
-      const updatedAt =
-        linkedPost?.updated_at ||
-        echoTime
-      const isEdited =
-        Boolean(linkedPost?.updated_at) &&
-        Boolean(linkedPost?.created_at) &&
-        new Date(
-          linkedPost.updated_at
-        ).getTime() >
-          new Date(
-            linkedPost.created_at
-          ).getTime() +
-            1000
-      const storedEchoCount = Number(
-        linkedPost?.echo_count || 0
-      )
-      const universalEchoCount = Number(
-        linkedEchoCounts.get(
-          String(linkedPost?.id || '')
-        ) || 0
-      )
-
-      return {
-        id:
-          linkedPost?.id ||
-          `${
-            echo.echo_version === 'v2'
-              ? 'echo-v2'
-              : 'social-echo'
-          }:${echo.id}`,
-        user_id: echo.user_id,
-        content:
-          linkedPost?.content ??
-          echoText,
-        image_urls:
-  Array.isArray(
-    linkedPost?.image_urls
-  )
-    ? linkedPost.image_urls
-    : [],
-photo_metadata:
-  linkedPost?.photo_metadata || [],
-visibility:
-          linkedPost?.visibility ||
-          echoAudienceToVisibility(
-            echo.audience
-          ),
-        comments_permission:
-          linkedPost?.comments_permission ||
-          'no_one',
-        story_sharing: true,
-        publish_at:
-          linkedPost?.publish_at ||
-          echoTime,
-        like_count: Number(
-          linkedPost?.like_count || 0
-        ),
-        comment_count: Number(
-          linkedPost?.comment_count || 0
-        ),
-        echo_count: Math.max(
-          storedEchoCount,
-          universalEchoCount
-        ),
-        created_at: createdAt,
-        updated_at: updatedAt,
-        is_edited: isEdited,
-        is_owner:
-          Boolean(viewerId) &&
-          String(echo.user_id) ===
-            String(viewerId),
-        is_echo: true,
-        echo_id: echo.id,
-        echo_version:
-          echo.echo_version ||
-          'legacy',
-        reader_post_id:
-          linkedPost?.id ||
-          echo.reader_post_id ||
-          null,
-        echo_type: echo.source_type,
-        echo_destination:
-          echo.destination || 'feed',
-        echo_audience:
-          echo.audience || 'public',
-        selected_reader_ids:
-          Array.isArray(
-            echo.selected_reader_ids
-          )
-            ? echo.selected_reader_ids
-            : [],
-        share_count: Number(
-          echo.share_count || 1
-        ),
-        source_type: echo.source_type,
-        source_id: echo.source_id,
-        source_url: source.url,
-        source,
-        source_story: sourceStory,
-        source_episode: sourceEpisode,
-        source_reader_post:
-          sourceReaderPost,
-        source_author_post:
-          sourceAuthorPost,
-        source_promotion:
-          sourcePromotion,
-                user: normalizeUser({
-          ...user,
-          is_following:
-            relationships.viewerFollowsOwners.has(String(echo.user_id)),
-        }),
-      }
-    })
-    .filter(Boolean)
-}
-
-async function updateLinkedEchoFromPost(
-  linkedEcho,
-  userId,
-  postId,
-  content,
-  updatedAt
-) {
-  if (!linkedEcho) return
-
-  if (linkedEcho.echo_version === 'v2') {
-    const { error } = await supabase
-      .from('social_echoes_v2')
-      .update({
-        echo_text: content,
-        updated_at: updatedAt,
-      })
-      .eq('id', linkedEcho.id)
-      .eq('user_id', userId)
-
-    if (error) throw error
-
-    const { error: linkError } =
-      await supabase
-        .from(
-          'social_echo_reader_posts_v2'
-        )
-        .update({
-          updated_at: updatedAt,
-        })
-        .eq('echo_id', linkedEcho.id)
-        .eq('reader_post_id', postId)
-        .eq('user_id', userId)
-
-    if (linkError) throw linkError
-    return
-  }
-
-  const { error } = await supabase
-    .from('social_echoes')
-    .update({
-      echo_text: content,
-      updated_at: updatedAt,
-    })
-    .eq('id', linkedEcho.id)
-    .eq('user_id', userId)
-    .eq('reader_post_id', postId)
-
-  if (error) throw error
-}
-
-async function deleteLinkedEchoFromPost(
-  linkedEcho,
-  userId,
-  postId
-) {
-  if (!linkedEcho) return
-
-  if (linkedEcho.echo_version === 'v2') {
-    const { error } = await supabase
-      .from('social_echoes_v2')
-      .delete()
-      .eq('id', linkedEcho.id)
-      .eq('user_id', userId)
-
-    if (error) throw error
-    return
-  }
-
-  const { error } = await supabase
-    .from('social_echoes')
-    .delete()
-    .eq('id', linkedEcho.id)
-    .eq('user_id', userId)
-    .eq('reader_post_id', postId)
-
-  if (error) throw error
-}
-
-async function readOwnedPost(
-  postId,
-  userId
-) {
-  const { data, error } = await supabase
-    .from('reader_posts')
-    .select(READER_POST_SELECT)
-    .eq('id', postId)
-    .eq('user_id', userId)
-    .is('deleted_at', null)
-    .maybeSingle()
-
-  if (error) throw error
-
-  return data
-}
-
-export async function getReaderPostById(
-  req,
-  res
-) {
+export async function getAuthorPostById(req, res) {
   try {
-    const viewerId = getUserId(req)
-    const postId = String(
-      req.params.postId || ''
-    ).trim()
+    const postId = req.params.postId
+    const viewerUserId = getRequestUserId(req)
 
     if (!postId) {
       return res.status(400).json({
@@ -2947,124 +575,16 @@ export async function getReaderPostById(
       })
     }
 
-    const syntheticMatch = postId.match(
-      /^(echo-v2|social-echo):(.+)$/
-    )
-
-    if (syntheticMatch) {
-      const echoVersion =
-        syntheticMatch[1] === 'echo-v2'
-          ? 'v2'
-          : 'legacy'
-      const echoId =
-        syntheticMatch[2]
-
-      const posts =
-        await readSocialEchoPosts({
-          viewerId,
-          echoId,
-          echoVersion,
-          limit: 1,
-        })
-
-      const post = posts.find(
-        (item) =>
-          String(item?.echo_id || '') ===
-          String(echoId)
+    const { data: post, error } = await supabase
+      .from('author_page_posts')
+      .select(
+        '*, author_page:author_pages(id, user_id, page_name, page_username, avatar_url, total_followers)'
       )
-
-      if (!post) {
-        return res.status(404).json({
-          ok: false,
-          message: 'Post not found',
-        })
-      }
-
-      return res.status(200).json({
-        ok: true,
-        post,
-      })
-    }
-
-    const { data, error } = await supabase
-      .from('reader_posts')
-      .select(READER_POST_SELECT)
       .eq('id', postId)
-      .is('deleted_at', null)
+      .eq('status', 'active')
       .maybeSingle()
 
     if (error) throw error
-
-    if (!data) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Post not found',
-      })
-    }
-
-    const isOwner =
-      Boolean(viewerId) &&
-      String(data.user_id) ===
-        String(viewerId)
-    const publishTime = new Date(
-      data.publish_at ||
-        data.created_at ||
-        0
-    ).getTime()
-
-    if (
-      !isOwner &&
-      publishTime &&
-      publishTime > Date.now()
-    ) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Post not found',
-      })
-    }
-
-    const linkedEcho =
-      await readLinkedEchoByPostId(
-        data.id,
-        data.user_id
-      )
-
-    if (linkedEcho?.id) {
-      const posts =
-        await readSocialEchoPosts({
-          viewerId,
-          echoId: String(linkedEcho.id),
-          echoVersion:
-            linkedEcho.echo_version ||
-            'legacy',
-          limit: 1,
-        })
-
-      const post = posts.find(
-        (item) =>
-          String(item?.echo_id || '') ===
-          String(linkedEcho.id)
-      )
-
-      if (!post) {
-        return res.status(404).json({
-          ok: false,
-          message: 'Post not found',
-        })
-      }
-
-      return res.status(200).json({
-        ok: true,
-        post,
-      })
-    }
-
-    const posts =
-      await attachVisibleUsers(
-        [data],
-        viewerId
-      )
-    const post = posts[0] || null
 
     if (!post) {
       return res.status(404).json({
@@ -3073,745 +593,2614 @@ export async function getReaderPostById(
       })
     }
 
+    const hydratedPost = (await hydrateAuthorEchoPosts([post], supabase))[0]
+
+    const authorPage = Array.isArray(post.author_page)
+      ? post.author_page[0] || null
+      : post.author_page || null
+
+    const {
+      data: reactionRows,
+      error: reactionsError,
+    } = await supabase
+      .from('author_page_post_reactions')
+      .select('post_id, user_id, reaction_type')
+      .eq('post_id', postId)
+
+    if (reactionsError) throw reactionsError
+
+    const reactionSummary =
+      buildReactionSummaryMap(
+        reactionRows || []
+      ).get(postId) || []
+
+    const myReaction = viewerUserId
+      ? (
+          reactionRows || []
+        ).find(
+          (item) =>
+            String(item.user_id) ===
+            String(viewerUserId)
+        )?.reaction_type || null
+      : null
+
+    let isFollowing = false
+
+    if (viewerUserId && authorPage?.id) {
+      const {
+        data: followRow,
+        error: followError,
+      } = await supabase
+        .from('author_page_follows')
+        .select('id')
+        .eq('author_page_id', authorPage.id)
+        .eq('follower_user_id', viewerUserId)
+        .maybeSingle()
+
+      if (followError) throw followError
+
+      isFollowing = Boolean(followRow)
+    }
+
+    const isOwner = Boolean(
+      viewerUserId &&
+      authorPage?.user_id &&
+      String(authorPage.user_id) ===
+        String(viewerUserId)
+    )
+
+    const normalizedAuthorPage = authorPage
+      ? {
+          ...authorPage,
+          is_following: isFollowing,
+          is_owner: isOwner,
+        }
+      : null
+
     return res.status(200).json({
       ok: true,
-      post,
+      post: {
+        ...publicAuthorPost({
+          ...hydratedPost,
+          like_count: Number(
+            (reactionRows || []).length
+          ),
+          reaction_summary:
+            reactionSummary,
+        }),
+        my_reaction: myReaction,
+        is_following: isFollowing,
+        is_owner: isOwner,
+        author_page:
+          normalizedAuthorPage,
+      },
     })
   } catch (error) {
     console.error(
-      'GET READER POST BY ID ERROR:',
+      'GET AUTHOR POST BY ID ERROR:',
       error
     )
 
     return res.status(500).json({
       ok: false,
       message:
-        error.message ||
-        'Failed to load reader post',
+        'Failed to load author post',
+      error: error.message,
     })
   }
 }
 
-export async function getReaderPostsFeed(
-  req,
-  res
-) {
-  if (
-    !readerPostsRequestContext.getStore()
-  ) {
-    return readerPostsRequestContext.run(
-      createReaderPostsRequestState(),
-      () =>
-        getReaderPostsFeed(
-          req,
-          res
-        )
-    )
-  }
-
-  let feedStage = 'start'
-  const feedStartedAt = Date.now()
-
+export async function createMyAuthorPost(req, res) {
   try {
-    const viewerId = getUserId(req)
-    const limit = getLimit(
-      req.query.limit
+    const userId = req.user?.user_id
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    const content = String(req.body.content || '').trim()
+    const postType = String(
+      req.body.post_type || req.body.postType || 'article'
     )
-
-    markRequestDiagnostic({
-      feature: 'reader_posts_feed',
-      feed_stage: 'candidate_load',
-      viewer_authenticated:
-        Boolean(viewerId),
-      requested_limit: limit,
-    })
-
-    const snapshotAt =
-      new Date().toISOString()
-
-    feedStage = 'candidate_load'
-    const candidateStartedAt =
-      Date.now()
-
-    const data =
-      await getReaderPostsFeedCandidates(
-        snapshotAt
-      )
-
-    const candidateMs =
-      Date.now() - candidateStartedAt
-
-    feedStage = 'feed_fanout'
-    const fanoutStartedAt =
-      Date.now()
-
-    const [
-      readerPosts,
-      echoPosts,
-      linkedEchoPostIds,
-    ] = await Promise.all([
-      attachVisibleUsers(
-        data,
-        viewerId
-      ),
-      readSocialEchoPosts({
-        viewerId,
-        feedOnly: true,
-        limit: FEED_SCAN_LIMIT,
-      }),
-      readLinkedEchoPostIds(
-        data.map((post) => post.id)
-      ),
+      .trim()
+      .toLowerCase()
+    const imageUrlsRaw = Array.isArray(req.body.image_urls)
+      ? req.body.image_urls
+      : Array.isArray(req.body.imageUrls)
+        ? req.body.imageUrls
+        : []
+    const imageUrls = normalizeImageUrls(imageUrlsRaw)
+    const photoMetadata = normalizePhotoMetadata(
+      req.body.photo_metadata,
+      imageUrls
+    )
+    const allowedTypes = new Set([
+      'article',
+      'announcement',
+      'update',
     ])
 
-    const fanoutMs =
-      Date.now() - fanoutStartedAt
-
-    const standardPosts =
-      readerPosts.filter(
-        (post) =>
-          !linkedEchoPostIds.has(
-            String(post.id)
-          )
-      )
-
-    const timelinePosts =
-      mergeRecommendedReaderPosts(
-        [standardPosts, echoPosts],
-        limit,
-        snapshotAt
-      )
-
-    feedStage = 'interaction_state'
-    const interactionStartedAt =
-      Date.now()
-
-    const posts =
-      await attachProfileInteractionState(
-        timelinePosts,
-        viewerId
-      )
-
-    const interactionMs =
-      Date.now() - interactionStartedAt
-
-    markRequestDiagnostic({
-      feature: 'reader_posts_feed',
-      feed_stage: 'success',
-      feed_result: 'success',
-      candidate_rows:
-        data.length,
-      visible_reader_rows:
-        readerPosts.length,
-      echo_rows:
-        echoPosts.length,
-      linked_echo_rows:
-        linkedEchoPostIds.size,
-      timeline_rows:
-        timelinePosts.length,
-      final_rows:
-        posts.length,
-      candidate_ms:
-        candidateMs,
-      fanout_ms:
-        fanoutMs,
-      interaction_ms:
-        interactionMs,
-      total_ms:
-        Date.now() - feedStartedAt,
-    })
-
-    return res.status(200).json({
-      ok: true,
-      posts,
-      total: posts.length,
-    })
-  } catch (error) {
-    markRequestDiagnostic({
-      feature: 'reader_posts_feed',
-      feed_stage: feedStage,
-      feed_result: 'error',
-      error_code:
-        error?.code ||
-        error?.name ||
-        'unknown',
-      total_ms:
-        Date.now() - feedStartedAt,
-    })
-
-    console.error(
-      'GET READER POSTS FEED ERROR:',
-      error
+    const requestedStatus = String(
+      req.body.status ||
+        req.body.publish_status ||
+        req.body.publishStatus ||
+        'active'
     )
+      .trim()
+      .toLowerCase()
 
-    return res.status(500).json({
-      ok: false,
-      message:
-        error.message ||
-        'Failed to load reader posts',
-    })
-  }
-}
+    const scheduleRequested =
+      requestedStatus === 'scheduled'
 
-export async function getMyReaderPosts(
-  req,
-  res
-) {
-  if (
-    !readerPostsRequestContext.getStore()
-  ) {
-    return readerPostsRequestContext.run(
-      createReaderPostsRequestState(),
-      () =>
-        getMyReaderPosts(
-          req,
-          res
-        )
-    )
-  }
+    const scheduledAtInput = String(
+      req.body.scheduled_at ||
+        req.body.scheduledAt ||
+        ''
+    ).trim()
 
-  try {
-    const userId = getUserId(req)
-    const limit = getLimit(
-      req.query.limit
-    )
+    let scheduledAt = null
 
-        const { data, error } = await supabase
-      .from('reader_posts')
-      .select(READER_POST_SELECT)
-      .eq('user_id', userId)
-      .is('deleted_at', null)
-      .order('publish_at', {
-        ascending: false,
-      })
-      .order('created_at', {
-        ascending: false,
-      })
-      .limit(FEED_SCAN_LIMIT)
+    if (scheduleRequested) {
+      if (!scheduledAtInput) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Schedule date and time are required',
+        })
+      }
 
-    if (error) throw error
+      const scheduleDate = new Date(scheduledAtInput)
 
-    const [
-      readerPosts,
-      echoPosts,
-      linkedEchoPostIds,
-    ] = await Promise.all([
-      attachVisibleUsers(
-        data,
-        userId
-      ),
-      readSocialEchoPosts({
-        viewerId: userId,
-        ownerId: userId,
-        limit: FEED_SCAN_LIMIT,
-      }),
-      readLinkedEchoPostIds(
-        data.map((post) => post.id)
-      ),
-    ])
-    const standardPosts =
-      readerPosts.filter(
-        (post) =>
-          !linkedEchoPostIds.has(
-            String(post.id)
-          )
-      )
+      if (
+        Number.isNaN(scheduleDate.getTime()) ||
+        scheduleDate.getTime() <= Date.now()
+      ) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Choose a future schedule date and time',
+        })
+      }
 
-    const timelinePosts = mergeTimelinePosts(
-  [standardPosts, echoPosts],
-  limit
-)
+      scheduledAt = scheduleDate.toISOString()
+    }
 
-const posts =
-  await attachProfileInteractionState(
-    timelinePosts,
-    userId
-  )
-
-    return res.status(200).json({
-      ok: true,
-      posts,
-      total: posts.length,
-    })
-  } catch (error) {
-    console.error(
-      'GET MY READER POSTS ERROR:',
-      error
-    )
-
-    return res.status(500).json({
-      ok: false,
-      message:
-        error.message ||
-        'Failed to load your posts',
-    })
-  }
-}
-
-export async function getReaderPostsByUsername(
-  req,
-  res
-) {
-  if (
-    !readerPostsRequestContext.getStore()
-  ) {
-    return readerPostsRequestContext.run(
-      createReaderPostsRequestState(),
-      () =>
-        getReaderPostsByUsername(
-          req,
-          res
-        )
-    )
-  }
-
-  try {
-    const viewerId = getUserId(req)
-    const username =
-      normalizeUsername(
-        req.params.username
-      )
-    const limit = getLimit(
-      req.query.limit
-    )
-
-    if (!username) {
+    if (
+      requestedStatus !== 'active' &&
+      requestedStatus !== 'scheduled'
+    ) {
       return res.status(400).json({
         ok: false,
+        message: 'Invalid post publish status',
+      })
+    }
+
+    if (!content && !imageUrls.length) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Post content or photo is required',
+      })
+    }
+
+    if (content.length > AUTHOR_POST_CONTENT_LIMIT) {
+      return res.status(400).json({
+        ok: false,
+        message: `Post content must be ${AUTHOR_POST_CONTENT_LIMIT.toLocaleString()} characters or fewer`,
+      })
+    }
+
+    if (imageUrlsRaw.length > AUTHOR_POST_IMAGES_LIMIT) {
+      return res.status(400).json({
+        ok: false,
+        message: 'You can add up to 5 photos per post.',
+        image_limit: AUTHOR_POST_IMAGES_LIMIT,
+      })
+    }
+
+    if (imageUrls.length !== imageUrlsRaw.length) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid post photo URL',
+      })
+    }
+
+    const { data: authorPage, error: pageError } =
+      await supabase
+        .from('author_pages')
+        .select('id, user_id')
+        .eq('user_id', userId)
+        .eq('status', 'active')
+        .maybeSingle()
+
+    if (pageError) throw pageError
+
+    if (!authorPage) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Author page not found',
+      })
+    }
+
+    const todayRange = getUtcDayRange()
+
+    const {
+      count: todayPostCount,
+      error: countError,
+    } = await supabase
+      .from('author_page_posts')
+      .select('id', {
+        count: 'exact',
+        head: true,
+      })
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .is('echo_source_type', null)
+      .gte('created_at', todayRange.start)
+      .lt('created_at', todayRange.end)
+
+    if (countError) throw countError
+
+    if (
+      Number(todayPostCount || 0) >=
+      AUTHOR_POSTS_DAILY_LIMIT
+    ) {
+      return res.status(429).json({
+        ok: false,
         message:
-          'Username is required',
+          'You reached today’s posting limit. You can publish up to 5 posts per day.',
+        daily_post_limit:
+          AUTHOR_POSTS_DAILY_LIMIT,
+        daily_post_count: Number(
+          todayPostCount || 0
+        ),
+      })
+    }
+
+    const now = new Date().toISOString()
+
+    const {
+      data: createdPost,
+      error: createError,
+    } = await supabase
+      .from('author_page_posts')
+      .insert({
+        author_page_id: authorPage.id,
+        user_id: userId,
+        post_type: allowedTypes.has(postType)
+          ? postType
+          : 'article',
+        content,
+        image_urls: imageUrls,
+        photo_metadata: photoMetadata,
+        status: scheduleRequested
+          ? 'scheduled'
+          : 'active',
+        scheduled_at: scheduledAt,
+        published_at: scheduleRequested
+          ? null
+          : now,
+        is_pinned: false,
+        updated_at: now,
+      })
+      .select()
+      .single()
+
+    if (createError) throw createError
+
+    if (!scheduleRequested) {
+      invalidateDiscoverAuthorPostsSharedCache()
+      await bumpContentVersions(['discover'])
+    }
+
+    return res.status(201).json({
+      ok: true,
+      message: scheduleRequested
+        ? 'Post scheduled'
+        : 'Post created',
+      post: publicAuthorPost(createdPost),
+      daily_post_limit:
+        AUTHOR_POSTS_DAILY_LIMIT,
+      daily_post_count:
+        Number(todayPostCount || 0) + 1,
+    })
+  } catch (error) {
+    console.error(
+      'CREATE MY AUTHOR POST ERROR:',
+      error
+    )
+
+    return res
+      .status(error.statusCode || 500)
+      .json({
+        ok: false,
+        message:
+          error.message ||
+          'Failed to create author post',
+      })
+  }
+}
+
+
+export async function updateMyAuthorPost(req, res) {
+  try {
+    const userId = req.user?.user_id || req.user?.id
+    const postId = String(req.params.postId || '').trim()
+    const body = req.body || {}
+    const hasContent = Object.prototype.hasOwnProperty.call(body, 'content')
+const hasImageUrls =
+  Object.prototype.hasOwnProperty.call(body, 'image_urls') ||
+  Object.prototype.hasOwnProperty.call(body, 'imageUrls')
+const hasPhotoMetadata =
+  Object.prototype.hasOwnProperty.call(body, 'photo_metadata')
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!postId) {
+      return res.status(400).json({ ok: false, message: 'Post ID is required' })
+    }
+
+    if (!hasContent && !hasImageUrls && !hasPhotoMetadata) {
+      return res.status(400).json({ ok: false, message: 'Nothing to update' })
+    }
+
+    const nextContent = hasContent
+      ? String(body.content || '').trim()
+      : null
+
+    if (hasContent && nextContent.length > AUTHOR_POST_CONTENT_LIMIT) {
+      return res.status(400).json({
+        ok: false,
+        message: `Post content must be ${AUTHOR_POST_CONTENT_LIMIT.toLocaleString()} characters or fewer`,
+      })
+    }
+
+    let imageUrlsRaw = null
+    let imageUrls = null
+
+    if (hasImageUrls) {
+      imageUrlsRaw = Object.prototype.hasOwnProperty.call(body, 'image_urls')
+        ? body.image_urls
+        : body.imageUrls
+
+      if (!Array.isArray(imageUrlsRaw)) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Post photos must be an array',
+        })
+      }
+
+      if (imageUrlsRaw.length > AUTHOR_POST_IMAGES_LIMIT) {
+        return res.status(400).json({
+          ok: false,
+          message: 'You can add up to 5 photos per post.',
+          image_limit: AUTHOR_POST_IMAGES_LIMIT,
+        })
+      }
+
+      imageUrls = normalizeImageUrls(imageUrlsRaw)
+
+      if (imageUrls.length !== imageUrlsRaw.length) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Invalid post photo URL',
+        })
+      }
+    }
+
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('id, user_id')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (pageError) throw pageError
+
+    if (!authorPage) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Author page not found',
+      })
+    }
+
+    const { data: existingPost, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('*')
+      .eq('id', postId)
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!existingPost) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
+    }
+
+    const finalContent = hasContent
+      ? nextContent
+      : String(existingPost.content || '').trim()
+
+    const finalImageUrls = hasImageUrls
+  ? imageUrls
+  : normalizeImageUrls(existingPost.image_urls)
+
+const finalPhotoMetadata =
+  normalizePhotoMetadata(
+    hasPhotoMetadata
+      ? body.photo_metadata
+      : undefined,
+    finalImageUrls,
+    existingPost.photo_metadata
+  )
+
+if (!finalContent && !finalImageUrls.length) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Post content or photo is required',
+      })
+    }
+
+    const updates = {
+      updated_at: new Date().toISOString(),
+    }
+
+    if (hasContent) updates.content = finalContent
+if (hasImageUrls) updates.image_urls = finalImageUrls
+if (hasImageUrls || hasPhotoMetadata) {
+  updates.photo_metadata =
+    finalPhotoMetadata
+}
+
+    const { data: updatedPost, error: updateError } = await supabase
+      .from('author_page_posts')
+      .update(updates)
+      .eq('id', postId)
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .select()
+      .single()
+
+    if (updateError) throw updateError
+
+    invalidateDiscoverAuthorPostsSharedCache()
+    await bumpContentVersions(['discover'])
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Post updated',
+      post: publicAuthorPost(updatedPost),
+    })
+  } catch (error) {
+    console.error('UPDATE MY AUTHOR POST ERROR:', error)
+
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      message: 'Failed to update author post',
+      error: error.message,
+    })
+  }
+}
+
+export async function setMyAuthorPostPinned(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const postId = req.params.postId
+    const isPinned = Boolean(req.body?.is_pinned ?? req.body?.pinned)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+
+    if (!postId) {
+      return res.status(400).json({ ok: false, message: 'Post ID is required' })
+    }
+
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('id, user_id')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (pageError) throw pageError
+
+    if (!authorPage) {
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
+    }
+
+    const { data: existingPost, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('id, author_page_id, status, is_pinned, pinned_at')
+      .eq('id', postId)
+      .eq('author_page_id', authorPage.id)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!existingPost) {
+      return res.status(404).json({ ok: false, message: 'Post not found' })
+    }
+
+    const now = new Date().toISOString()
+
+    if (isPinned) {
+      const { data: pinnedPosts, error: pinnedError } = await supabase
+        .from('author_page_posts')
+        .select('id, pinned_at, updated_at, created_at')
+        .eq('author_page_id', authorPage.id)
+        .eq('status', 'active')
+        .eq('is_pinned', true)
+        .neq('id', postId)
+
+      if (pinnedError) throw pinnedError
+
+      const sortedPinnedPosts = [...(pinnedPosts || [])].sort((a, b) => {
+        const aTime = new Date(a.pinned_at || a.updated_at || a.created_at || 0).getTime()
+        const bTime = new Date(b.pinned_at || b.updated_at || b.created_at || 0).getTime()
+        return aTime - bTime
+      })
+
+      const unpinCount = Math.max(0, sortedPinnedPosts.length - 2)
+      const oldestPinnedIds = sortedPinnedPosts.slice(0, unpinCount).map((item) => item.id)
+
+      if (oldestPinnedIds.length) {
+        const { error: unpinError } = await supabase
+          .from('author_page_posts')
+          .update({
+            is_pinned: false,
+            pinned_at: null,
+            updated_at: now,
+          })
+          .in('id', oldestPinnedIds)
+
+        if (unpinError) throw unpinError
+      }
+    }
+
+    const { data: updatedPost, error: updateError } = await supabase
+      .from('author_page_posts')
+      .update({
+        is_pinned: isPinned,
+        pinned_at: isPinned ? now : null,
+        updated_at: now,
+      })
+      .eq('id', postId)
+      .eq('author_page_id', authorPage.id)
+      .select()
+      .single()
+
+    if (updateError) throw updateError
+
+    return res.status(200).json({
+      ok: true,
+      message: isPinned ? 'Post pinned' : 'Post unpinned',
+      post: publicAuthorPost(updatedPost),
+    })
+  } catch (error) {
+    console.error('SET MY AUTHOR POST PINNED ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to update pinned post', error: error.message })
+  }
+}
+
+
+export async function setMyAuthorPostReaction(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const postId = req.params.postId
+    const body = req.body || {}
+    const hasDesiredReaction =
+      Object.prototype.hasOwnProperty.call(
+        body,
+        'desired_reaction_type'
+      ) ||
+      Object.prototype.hasOwnProperty.call(
+        body,
+        'desiredReactionType'
+      )
+
+    const rawReaction = hasDesiredReaction
+      ? (
+          Object.prototype.hasOwnProperty.call(
+            body,
+            'desired_reaction_type'
+          )
+            ? body.desired_reaction_type
+            : body.desiredReactionType
+        )
+      : (
+          body.reaction_type ||
+          body.reactionType ||
+          'love'
+        )
+
+    const reactionType =
+      rawReaction === null ||
+      rawReaction === undefined ||
+      String(rawReaction).trim() === ''
+        ? null
+        : String(rawReaction)
+            .trim()
+            .toLowerCase()
+
+    const allowedReactions = new Set([
+      'love',
+      'haha',
+      'wow',
+      'sad',
+      'angry',
+      'support',
+      'touched',
+    ])
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!postId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Post ID is required',
+      })
+    }
+
+    if (
+      reactionType &&
+      !allowedReactions.has(reactionType)
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid reaction type',
+      })
+    }
+
+    if (!hasDesiredReaction && !reactionType) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid reaction type',
+      })
+    }
+
+    const { data: post, error: postError } =
+      await supabase
+        .from('author_page_posts')
+        .select('*')
+        .eq('id', postId)
+        .eq('status', 'active')
+        .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
       })
     }
 
     const {
-      data: user,
-      error: userError,
+      data: existingReaction,
+      error: existingError,
     } = await supabase
-      .from('users')
-      .select(
-        'id, name, username, avatar_url, is_active'
-      )
-      .ilike(
-        'username',
-        escapeLikePattern(username)
-      )
-      .eq('is_active', true)
+      .from('author_page_post_reactions')
+      .select('id, reaction_type')
+      .eq('post_id', postId)
+      .eq('user_id', userId)
       .maybeSingle()
 
-    if (userError) throw userError
+    if (existingError) throw existingError
 
-    if (!user) {
-      return res.status(404).json({
-        ok: false,
-        message:
-          'Reader not found',
+    let reacted = Boolean(reactionType)
+    let nextReactionType = reactionType
+    let interactionCreated = false
+    let reactionChanged = false
+
+    if (hasDesiredReaction) {
+      if (!reactionType) {
+        reacted = false
+        nextReactionType = null
+
+        if (existingReaction?.id) {
+          const { error: deleteError } =
+            await supabase
+              .from('author_page_post_reactions')
+              .delete()
+              .eq('id', existingReaction.id)
+
+          if (deleteError) throw deleteError
+
+          reactionChanged = true
+        }
+      } else if (
+        existingReaction?.reaction_type ===
+        reactionType
+      ) {
+        reacted = true
+        nextReactionType = reactionType
+      } else if (existingReaction?.id) {
+        const { error: updateReactionError } =
+          await supabase
+            .from('author_page_post_reactions')
+            .update({
+              reaction_type: reactionType,
+              updated_at:
+                new Date().toISOString(),
+            })
+            .eq('id', existingReaction.id)
+
+        if (updateReactionError) {
+          throw updateReactionError
+        }
+
+        reactionChanged = true
+      } else {
+        const { error: insertReactionError } =
+          await supabase
+            .from('author_page_post_reactions')
+            .insert({
+              post_id: postId,
+              user_id: userId,
+              reaction_type: reactionType,
+            })
+
+        if (insertReactionError) {
+          throw insertReactionError
+        }
+
+        interactionCreated = true
+        reactionChanged = true
+      }
+    } else if (
+      existingReaction?.reaction_type ===
+      reactionType
+    ) {
+      const { error: deleteError } =
+        await supabase
+          .from('author_page_post_reactions')
+          .delete()
+          .eq('id', existingReaction.id)
+
+      if (deleteError) throw deleteError
+
+      reacted = false
+      nextReactionType = null
+      reactionChanged = true
+    } else if (existingReaction?.id) {
+      const { error: updateReactionError } =
+        await supabase
+          .from('author_page_post_reactions')
+          .update({
+            reaction_type: reactionType,
+            updated_at:
+              new Date().toISOString(),
+          })
+          .eq('id', existingReaction.id)
+
+      if (updateReactionError) {
+        throw updateReactionError
+      }
+
+      reactionChanged = true
+    } else {
+      const { error: insertReactionError } =
+        await supabase
+          .from('author_page_post_reactions')
+          .insert({
+            post_id: postId,
+            user_id: userId,
+            reaction_type: reactionType,
+          })
+
+      if (insertReactionError) {
+        throw insertReactionError
+      }
+
+      interactionCreated = true
+      reactionChanged = true
+    }
+
+    const {
+      data: reactionRows,
+      error: reactionSummaryError,
+    } = await supabase
+      .from('author_page_post_reactions')
+      .select('post_id, reaction_type')
+      .eq('post_id', postId)
+
+    if (reactionSummaryError) {
+      throw reactionSummaryError
+    }
+
+    const reactionSummary =
+      buildReactionSummaryMap(
+        reactionRows || []
+      ).get(postId) || []
+
+    const nextLikeCount = Number(
+      (reactionRows || []).length
+    )
+
+    let updatedPost = post
+
+    if (
+      Number(post.like_count || 0) !==
+      nextLikeCount
+    ) {
+      const {
+        data: nextPost,
+        error: updatePostError,
+      } = await supabase
+        .from('author_page_posts')
+        .update({
+          like_count: nextLikeCount,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', postId)
+        .select()
+        .single()
+
+      if (updatePostError) {
+        throw updatePostError
+      }
+
+      updatedPost = nextPost
+    }
+
+    const isOwner =
+      String(post.user_id || '') ===
+      String(userId)
+
+    if (
+      interactionCreated &&
+      !isOwner
+    ) {
+      await recordPostHashtagInterestSignalSafely({
+        userId,
+        postId,
+        signal: 'reaction',
       })
     }
 
-    const { data, error } =
+    if (
+      reactionChanged &&
+      !isOwner &&
+      post.author_page_id
+    ) {
+      const sourceKey =
+        `author-post-reaction:${postId}:${userId}`
+
+      if (!reacted) {
+        await deleteAuthorPageNotificationBySourceKeySafely({
+          authorPageId:
+            post.author_page_id,
+          type: 'reaction',
+          sourceKey,
+        })
+      } else {
+        const {
+          data: reader,
+          error: readerError,
+        } = await supabase
+          .from('users')
+          .select(
+            'id, name, username, avatar_url'
+          )
+          .eq('id', userId)
+          .maybeSingle()
+
+        if (readerError) throw readerError
+
+        const readerName =
+          reader?.name ||
+          reader?.username ||
+          'A reader'
+
+        await deleteAuthorPageNotificationBySourceKeySafely({
+          authorPageId:
+            post.author_page_id,
+          type: 'reaction',
+          sourceKey,
+        })
+
+        await Promise.all([
+          interactionCreated
+            ? incrementAuthorPageAnalytics(
+                post.author_page_id,
+                'interactions'
+              )
+            : Promise.resolve(),
+          createAuthorPageNotificationSafely({
+            authorPageId:
+              post.author_page_id,
+            authorUserId: post.user_id,
+            type: 'reaction',
+            title:
+              `${readerName} reacted ${reactionType} to your post`,
+            targetUrl:
+              `/author/page?post=${postId}`,
+            sourceKey,
+            metadata: {
+              post_id: postId,
+              reaction_type:
+                reactionType,
+              reader_id: userId,
+              reader_name:
+                readerName,
+              reader_username:
+                reader?.username || '',
+              reader_avatar_url:
+                reader?.avatar_url || '',
+            },
+          }),
+        ])
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      reacted,
+      reaction_type: nextReactionType,
+      like_count: nextLikeCount,
+      reaction_summary: reactionSummary,
+      post: publicAuthorPost({
+        ...updatedPost,
+        reaction_summary: reactionSummary,
+      }),
+    })
+  } catch (error) {
+    console.error(
+      'SET MY AUTHOR POST REACTION ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to update post reaction',
+      error: error.message,
+    })
+  }
+}
+
+export async function getAuthorPostReactions(req, res) {
+  try {
+    const postId = String(req.params.postId || '').trim()
+    const page = Math.max(1, Number(req.query.page || 1))
+    const limit = Math.min(
+      100,
+      Math.max(1, Number(req.query.limit || 50))
+    )
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    if (!postId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Post ID is required',
+      })
+    }
+
+    const { data: post, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('id, content, status')
+      .eq('id', postId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
+    }
+
+    const { data: countRows, error: countError } =
       await supabase
-        .from('reader_posts')
-        .select(READER_POST_SELECT)
-        .eq('user_id', user.id)
-        .is('deleted_at', null)
-        .lte(
-          'publish_at',
-          new Date().toISOString()
+        .from('author_page_post_reactions')
+        .select('reaction_type')
+        .eq('post_id', postId)
+
+    if (countError) throw countError
+
+    const counts = (countRows || []).reduce(
+      (result, item) => {
+        const type = String(
+          item.reaction_type || 'love'
         )
-        .order('publish_at', {
-          ascending: false,
-        })
-        .order('created_at', {
-          ascending: false,
-        })
-        .limit(FEED_SCAN_LIMIT)
+          .trim()
+          .toLowerCase()
+
+        result[type] =
+          Number(result[type] || 0) + 1
+        return result
+      },
+      {}
+    )
+
+    const {
+      data: reactionRows,
+      error: reactionsError,
+      count,
+    } = await supabase
+      .from('author_page_post_reactions')
+      .select(
+        'id, user_id, reaction_type, created_at',
+        { count: 'exact' }
+      )
+      .eq('post_id', postId)
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (reactionsError) throw reactionsError
+
+    const userIds = [
+      ...new Set(
+        (reactionRows || [])
+          .map((item) => item.user_id)
+          .filter(Boolean)
+      ),
+    ]
+
+    let usersById = new Map()
+
+    if (userIds.length) {
+      const { data: users, error: usersError } =
+        await supabase
+          .from('users')
+          .select(
+            'id, name, username, avatar_url'
+          )
+          .in('id', userIds)
+
+      if (usersError) throw usersError
+
+      usersById = new Map(
+        (users || []).map((user) => [
+          String(user.id),
+          user,
+        ])
+      )
+    }
+
+    const reactions = (reactionRows || []).map(
+      (item) => {
+        const user =
+          usersById.get(String(item.user_id)) ||
+          {}
+
+        return {
+          id: item.id,
+          reaction_type:
+            item.reaction_type || 'love',
+          created_at: item.created_at,
+          user: {
+            id: user.id || item.user_id,
+            name:
+              user.name ||
+              user.username ||
+              'Reader',
+            username: user.username || '',
+            avatar_url: user.avatar_url || '',
+          },
+        }
+      }
+    )
+
+    const total = Number(count || 0)
+
+    return res.status(200).json({
+      ok: true,
+      post: {
+        id: post.id,
+        content: String(
+          post.content || ''
+        ).slice(0, 120),
+      },
+      total,
+      counts,
+      page,
+      limit,
+      has_more: to + 1 < total,
+      reactions,
+    })
+  } catch (error) {
+    console.error(
+      'GET AUTHOR POST REACTIONS ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load post reactions',
+      error: error.message,
+    })
+  }
+}
+
+
+function publicAuthorPostComment(
+  comment,
+  reactionMap = new Map()
+) {
+  const isDeleted = Boolean(comment.deleted_at)
+  const relatedUser = Array.isArray(comment.user)
+    ? comment.user[0]
+    : comment.user
+  const reactionType = !isDeleted
+    ? reactionMap.get(String(comment.id)) || null
+    : null
+
+  return {
+    id: comment.id,
+    post_id: comment.post_id,
+    user_id: isDeleted ? null : comment.user_id,
+    parent_id: comment.parent_id,
+    text: isDeleted
+      ? 'Comment deleted'
+      : comment.text || '',
+    is_deleted: isDeleted,
+    is_hidden: isDeleted
+      ? false
+      : Boolean(comment.is_hidden),
+    is_pinned: isDeleted
+      ? false
+      : Boolean(comment.is_pinned),
+    likes: isDeleted
+      ? 0
+      : Number(comment.likes || 0),
+    liked: Boolean(reactionType),
+    reaction_type: reactionType,
+    created_at: comment.created_at,
+    updated_at: comment.updated_at,
+    user: isDeleted
+      ? {
+          id: null,
+          name: 'Reader',
+          username: '',
+          avatar_url: '',
+          role: 'reader',
+        }
+      : relatedUser
+        ? {
+            id: relatedUser.id,
+            name:
+              relatedUser.name ||
+              relatedUser.username ||
+              'Reader',
+            username:
+              relatedUser.username || '',
+            avatar_url:
+              relatedUser.avatar_url || '',
+            role:
+              relatedUser.role || 'reader',
+          }
+        : {
+            id: null,
+            name: 'Reader',
+            username: '',
+            avatar_url: '',
+            role: 'reader',
+          },
+    replies: Array.isArray(comment.replies)
+      ? comment.replies.map((reply) =>
+          publicAuthorPostComment(
+            reply,
+            reactionMap
+          )
+        )
+      : [],
+  }
+}
+
+async function getVisibleAuthorPostCommentCount(postId) {
+  const {
+    data: visibleParents,
+    error: parentError,
+  } = await supabase
+    .from('author_page_post_comments')
+    .select('id, deleted_at')
+    .eq('post_id', postId)
+    .eq('is_hidden', false)
+    .is('parent_id', null)
+
+  if (parentError) throw parentError
+
+  const parents = visibleParents || []
+
+  const activeParentCount =
+    parents.filter(
+      (item) => !item.deleted_at
+    ).length
+
+  const parentIds = parents
+    .map((item) => item.id)
+    .filter(Boolean)
+
+  let replyCount = 0
+
+  if (parentIds.length) {
+    const { count, error } = await supabase
+      .from('author_page_post_comments')
+      .select('id', {
+        count: 'exact',
+        head: true,
+      })
+      .eq('post_id', postId)
+      .eq('is_hidden', false)
+      .is('deleted_at', null)
+      .in('parent_id', parentIds)
 
     if (error) throw error
 
-    const [
-      readerPosts,
-      echoPosts,
-      linkedEchoPostIds,
-    ] = await Promise.all([
-      attachVisibleUsers(
-        data,
-        viewerId
-      ),
-      readSocialEchoPosts({
-        viewerId,
-        ownerId: user.id,
-        limit: FEED_SCAN_LIMIT,
-      }),
-      readLinkedEchoPostIds(
-        data.map((post) => post.id)
-      ),
-    ])
-    const standardPosts =
-      readerPosts.filter(
-        (post) =>
-          !linkedEchoPostIds.has(
-            String(post.id)
-          )
+    replyCount = Number(count || 0)
+  }
+
+  return activeParentCount + replyCount
+}
+
+export async function getAuthorPostCommentById(req, res) {
+  try {
+    const userId = getRequestUserId(req)
+    const postId = String(req.params.postId || '').trim()
+    const commentId = String(req.params.commentId || '').trim()
+
+    if (!postId || !commentId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Post ID and comment ID are required',
+      })
+    }
+
+    const { data: post, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('id, user_id, status')
+      .eq('id', postId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
+    }
+
+    const isAuthorPageOwner = Boolean(
+      userId &&
+        post.user_id &&
+        String(userId) === String(post.user_id)
+    )
+
+    let commentQuery = supabase
+      .from('author_page_post_comments')
+      .select('*, user:users(id, name, username, avatar_url, role)')
+      .eq('id', commentId)
+      .eq('post_id', postId)
+      .is('deleted_at', null)
+
+    if (!isAuthorPageOwner) {
+      commentQuery = commentQuery.eq('is_hidden', false)
+    }
+
+    const { data: comment, error: commentError } =
+      await commentQuery.maybeSingle()
+
+    if (commentError) throw commentError
+
+    if (!comment) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
+
+    let parentComment = null
+let parentReplyTotal = 0
+
+if (comment.parent_id) {
+  let parentQuery = supabase
+    .from('author_page_post_comments')
+    .select('*, user:users(id, name, username, avatar_url, role)')
+    .eq('id', comment.parent_id)
+    .eq('post_id', postId)
+
+  if (!isAuthorPageOwner) {
+    parentQuery = parentQuery.eq(
+      'is_hidden',
+      false
+    )
+  }
+
+  const { data, error } =
+    await parentQuery.maybeSingle()
+
+  if (error) throw error
+
+  if (!data && !isAuthorPageOwner) {
+    return res.status(404).json({
+      ok: false,
+      message: 'Comment not found',
+    })
+  }
+
+  parentComment = data || null
+
+  if (parentComment) {
+    let replyCountQuery = supabase
+      .from('author_page_post_comments')
+      .select('id', {
+        count: 'exact',
+        head: true,
+      })
+      .eq('post_id', postId)
+      .eq(
+        'parent_id',
+        parentComment.id
       )
+      .is('deleted_at', null)
 
-    const timelinePosts = mergeTimelinePosts(
-  [standardPosts, echoPosts],
-  limit
-)
+    if (!isAuthorPageOwner) {
+      replyCountQuery =
+        replyCountQuery.eq(
+          'is_hidden',
+          false
+        )
+    }
 
-const posts =
-  await attachProfileInteractionState(
-    timelinePosts,
-    viewerId
-  )
+    const {
+      count,
+      error: replyCountError,
+    } = await replyCountQuery
+
+    if (replyCountError) {
+      throw replyCountError
+    }
+
+    parentReplyTotal =
+      Number(count || 0)
+  }
+}
+
+    const reactionMap =
+      await getAuthorPostCommentReactionMap(
+        userId,
+        [comment.id, parentComment?.id].filter(Boolean)
+      )
 
     return res.status(200).json({
       ok: true,
-      posts,
-      total: posts.length,
-      user: normalizeUser(user),
+      comment: publicAuthorPostComment(
+        comment,
+        reactionMap
+      ),
+      parent_comment: parentComment
+  ? {
+      ...publicAuthorPostComment(
+        parentComment,
+        reactionMap
+      ),
+      reply_total: parentReplyTotal,
+      reply_page: 0,
+      reply_has_more:
+        parentReplyTotal > 1,
+    }
+  : null,
+    })
+  } catch (error) {
+    console.error('GET AUTHOR POST COMMENT BY ID ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load post comment',
+      error: error.message,
+    })
+  }
+}
+
+export async function getAuthorPostComments(req, res) {
+  try {
+    const userId = getRequestUserId(req)
+    const postId = String(req.params.postId || '').trim()
+    const page = Math.max(1, Number(req.query.page || 1))
+    const limit = Math.min(
+      30,
+      Math.max(1, Number(req.query.limit || 10))
+    )
+    const replyLimit = Math.min(
+      30,
+      Math.max(1, Number(req.query.reply_limit || 10))
+    )
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    if (!postId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Post ID is required',
+      })
+    }
+
+    const { data: post, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('id, user_id, status')
+      .eq('id', postId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
+    }
+
+    const isAuthorPageOwner = Boolean(
+  userId &&
+    post.user_id &&
+    String(userId) === String(post.user_id)
+)
+
+let replyParentQuery = supabase
+  .from('author_page_post_comments')
+  .select('parent_id')
+  .eq('post_id', postId)
+  .not('parent_id', 'is', null)
+  .is('deleted_at', null)
+
+if (!isAuthorPageOwner) {
+  replyParentQuery =
+    replyParentQuery.eq(
+      'is_hidden',
+      false
+    )
+}
+
+const {
+  data: replyParentRows,
+  error: replyParentError,
+} = await replyParentQuery
+
+if (replyParentError) {
+  throw replyParentError
+}
+
+const replyParentIds = [
+  ...new Set(
+    (replyParentRows || [])
+      .map((item) =>
+        String(
+          item.parent_id || ''
+        ).trim()
+      )
+      .filter(Boolean)
+  ),
+]
+
+let parentQuery = supabase
+  .from('author_page_post_comments')
+  .select(
+    '*, user:users(id, name, username, avatar_url, role)',
+    { count: 'exact' }
+  )
+  .eq('post_id', postId)
+  .is('parent_id', null)
+
+if (replyParentIds.length) {
+  parentQuery = parentQuery.or(
+    `deleted_at.is.null,id.in.(${replyParentIds.join(
+      ','
+    )})`
+  )
+} else {
+  parentQuery =
+    parentQuery.is(
+      'deleted_at',
+      null
+    )
+}
+
+if (!isAuthorPageOwner) {
+  parentQuery = parentQuery.eq(
+    'is_hidden',
+    false
+  )
+}
+
+    const {
+      data: parentComments,
+      error: commentsError,
+      count: parentCount,
+    } = await parentQuery
+      .order('is_pinned', { ascending: false })
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (commentsError) throw commentsError
+
+    const parents = parentComments || []
+
+    const replyGroups = await Promise.all(
+      parents.map(async (parent) => {
+        let replyQuery = supabase
+          .from('author_page_post_comments')
+          .select(
+            '*, user:users(id, name, username, avatar_url, role)',
+            { count: 'exact' }
+          )
+          .eq('post_id', postId)
+          .eq('parent_id', parent.id)
+          .is('deleted_at', null)
+
+        if (!isAuthorPageOwner) {
+          replyQuery = replyQuery.eq('is_hidden', false)
+        }
+
+        const {
+          data: replyRows,
+          error: repliesError,
+          count: replyCount,
+        } = await replyQuery
+          .order('created_at', { ascending: true })
+          .range(0, replyLimit - 1)
+
+        if (repliesError) throw repliesError
+
+        return {
+          parentId: String(parent.id),
+          replies: replyRows || [],
+          total: Number(replyCount || 0),
+        }
+      })
+    )
+
+    const repliesByParent = new Map(
+      replyGroups.map((group) => [
+        group.parentId,
+        group,
+      ])
+    )
+
+    const comments = parents.map((parent) => {
+      const group =
+        repliesByParent.get(String(parent.id)) || {
+          replies: [],
+          total: 0,
+        }
+
+      return {
+        ...parent,
+        replies: group.replies,
+        reply_total: group.total,
+        reply_page: 1,
+        reply_has_more:
+          group.replies.length < group.total,
+      }
+    })
+
+    const commentIds = comments
+      .flatMap((comment) => [
+        comment.id,
+        ...(comment.replies || []).map(
+          (reply) => reply.id
+        ),
+      ])
+      .filter(Boolean)
+
+    const reactionMap =
+      await getAuthorPostCommentReactionMap(
+        userId,
+        commentIds
+      )
+
+    const visibleTotal =
+      await getVisibleAuthorPostCommentCount(
+        postId
+      )
+
+    const totalParents = Number(parentCount || 0)
+
+    return res.status(200).json({
+      ok: true,
+      comments: comments.map((comment) => ({
+        ...publicAuthorPostComment(
+          comment,
+          reactionMap
+        ),
+        reply_total: Number(
+          comment.reply_total || 0
+        ),
+        reply_page: Number(
+          comment.reply_page || 1
+        ),
+        reply_has_more: Boolean(
+          comment.reply_has_more
+        ),
+      })),
+      total: visibleTotal,
+      parent_total: totalParents,
+      page,
+      limit,
+      reply_limit: replyLimit,
+      has_more: to + 1 < totalParents,
     })
   } catch (error) {
     console.error(
-      'GET READER PROFILE POSTS ERROR:',
+      'GET AUTHOR POST COMMENTS ERROR:',
       error
     )
 
     return res.status(500).json({
       ok: false,
-      message:
-        error.message ||
-        'Failed to load reader posts',
+      message: 'Failed to load post comments',
+      error: error.message,
     })
   }
 }
 
-export async function createMyReaderPost(
+export async function getAuthorPostCommentReplies(
   req,
   res
 ) {
   try {
-    const userId = getUserId(req)
-    const imageUrls =
-  normalizeImageUrls(
-    req.body.image_urls
-  )
-
-const photoMetadata =
-  normalizePhotoMetadata(
-    req.body.photo_metadata,
-    imageUrls
-  )
-
-const content = validateContent(
-      req.body.content,
-      imageUrls
+    const userId = getRequestUserId(req)
+    const postId = String(
+      req.params.postId || ''
+    ).trim()
+    const commentId = String(
+      req.params.commentId || ''
+    ).trim()
+    const page = Math.max(
+      1,
+      Number(req.query.page || 1)
     )
-    const visibility =
-      normalizeVisibility(
-        req.body.visibility,
-        'public'
-      )
-    const commentsPermission =
-      normalizeCommentsPermission(
-        req.body.comments_permission,
-        'everyone'
-      )
-    const storySharing = Boolean(
-      req.body.story_sharing
+    const limit = Math.min(
+      30,
+      Math.max(1, Number(req.query.limit || 10))
     )
-    const publishAt =
-      normalizePublishAt(
-        req.body.publish_at
-      )
+    const from = (page - 1) * limit
+    const to = from + limit - 1
 
-    const { data, error } =
+    if (!postId || !commentId) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          'Post ID and comment ID are required',
+      })
+    }
+
+    const { data: post, error: postError } =
       await supabase
-        .from('reader_posts')
-        .insert({
-          user_id: userId,
-          content,
-          image_urls: imageUrls,
-          photo_metadata:
-            photoMetadata,
-          visibility,
-          comments_permission:
-            commentsPermission,
-          story_sharing:
-            storySharing,
-          publish_at: publishAt,
-          updated_at:
-            new Date().toISOString(),
-        })
-        .select(READER_POST_SELECT)
-        .single()
+        .from('author_page_posts')
+        .select('id, user_id, status')
+        .eq('id', postId)
+        .eq('status', 'active')
+        .maybeSingle()
 
-        if (error) throw error
+    if (postError) throw postError
 
-    invalidateReaderPostsFeedCandidateCache()
-    await bumpContentVersions(['discover'])
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
+    }
 
-    const userMap =
-      await readUsersByIds([userId])
-    const user = userMap.get(
-      String(userId)
+    const isAuthorPageOwner = Boolean(
+      userId &&
+        post.user_id &&
+        String(userId) === String(post.user_id)
     )
+
+    let parentQuery = supabase
+      .from('author_page_post_comments')
+      .select('id, post_id, parent_id, is_hidden')
+      .eq('id', commentId)
+      .eq('post_id', postId)
+      .is('parent_id', null)
+
+    if (!isAuthorPageOwner) {
+      parentQuery = parentQuery.eq('is_hidden', false)
+    }
+
+    const {
+      data: parentComment,
+      error: parentError,
+    } = await parentQuery.maybeSingle()
+
+    if (parentError) throw parentError
+
+    if (!parentComment) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Parent comment not found',
+      })
+    }
+
+    let repliesQuery = supabase
+      .from('author_page_post_comments')
+      .select(
+        '*, user:users(id, name, username, avatar_url, role)',
+        { count: 'exact' }
+      )
+      .eq('post_id', postId)
+      .eq('parent_id', commentId)
+      .is('deleted_at', null)
+
+    if (!isAuthorPageOwner) {
+      repliesQuery = repliesQuery.eq('is_hidden', false)
+    }
+
+    const {
+      data: replies,
+      error: repliesError,
+      count,
+    } = await repliesQuery
+      .order('created_at', { ascending: true })
+      .range(from, to)
+
+    if (repliesError) throw repliesError
+
+    const replyRows = replies || []
+    const reactionMap =
+      await getAuthorPostCommentReactionMap(
+        userId,
+        replyRows
+          .map((reply) => reply.id)
+          .filter(Boolean)
+      )
+    const total = Number(count || 0)
+
+    return res.status(200).json({
+      ok: true,
+      replies: replyRows.map((reply) =>
+        publicAuthorPostComment(
+          reply,
+          reactionMap
+        )
+      ),
+      total,
+      page,
+      limit,
+      has_more: to + 1 < total,
+    })
+  } catch (error) {
+    console.error(
+      'GET AUTHOR POST COMMENT REPLIES ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load comment replies',
+      error: error.message,
+    })
+  }
+}
+
+export async function createAuthorPostComment(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const postId = String(req.params.postId || '').trim()
+    const text = String(req.body.text || '').trim()
+    const parentId =
+      String(req.body.parent_id || req.body.parentId || '').trim() || null
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!postId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Post ID is required',
+      })
+    }
+
+    if (!text) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment text is required',
+      })
+    }
+
+    if (text.length > 1000) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment is too long',
+      })
+    }
+
+    const { data: post, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('id, author_page_id, user_id, status, comment_count')
+      .eq('id', postId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
+    }
+
+    const authorReaderBlock =
+      await getActiveAuthorReaderBlock({
+        authorPageId:
+          post.author_page_id,
+        authorUserId:
+          post.user_id,
+        storyId: null,
+        readerUserId:
+          userId,
+      })
+
+    if (authorReaderBlock) {
+      res.setHeader(
+        'Retry-After',
+        String(
+          authorReaderBlock
+            .retry_after_seconds
+        )
+      )
+
+      return res.status(403).json(
+        authorReaderBlockedPayload(
+          authorReaderBlock
+        )
+      )
+    }
+
+    if (parentId) {
+      const { data: parentComment, error: parentError } = await supabase
+        .from('author_page_post_comments')
+        .select('id, post_id, parent_id, is_hidden')
+        .eq('id', parentId)
+        .eq('post_id', postId)
+        .eq('is_hidden', false)
+        .is('deleted_at', null)
+        .maybeSingle()
+
+      if (parentError) throw parentError
+
+      if (!parentComment || parentComment.parent_id) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Reply target is not valid',
+        })
+      }
+    }
+
+    const { data: createdComment, error: createError } = await supabase
+      .from('author_page_post_comments')
+      .insert({
+        post_id: postId,
+        user_id: userId,
+        parent_id: parentId,
+        text,
+      })
+      .select('*, user:users(id, name, username, avatar_url, role)')
+      .single()
+
+    if (createError) throw createError
+
+    const nextCommentCount =
+      await getVisibleAuthorPostCommentCount(
+        postId
+      )
+
+    const { error: updatePostError } = await supabase
+      .from('author_page_posts')
+      .update({
+        comment_count: nextCommentCount,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', postId)
+
+    if (updatePostError) throw updatePostError
+
+    const reader = Array.isArray(createdComment.user)
+      ? createdComment.user[0]
+      : createdComment.user
+    const readerName =
+      reader?.name || reader?.username || 'A reader'
+
+    const notificationPayload = {
+      authorPageId: post.author_page_id,
+      authorUserId: post.user_id,
+      type: 'comment',
+      title: `${readerName} ${parentId ? 'replied to' : 'commented on'} your post`,
+      message: text,
+      targetUrl: `/author/page?post=${postId}`,
+      sourceKey: `author-post-comment:${createdComment.id}`,
+      metadata: {
+        post_id: postId,
+        comment_id: createdComment.id,
+        parent_id: parentId,
+        reader_id: userId,
+        reader_name: readerName,
+        reader_username: reader?.username || '',
+        reader_avatar_url: reader?.avatar_url || '',
+      },
+    }
+
+    const isOwner = String(post.user_id || '') === String(userId)
+
+    if (!isOwner && post.author_page_id) {
+      await Promise.all([
+  recordPostHashtagInterestSignalSafely({
+    userId, postId, signal: 'comment',
+  }),
+  incrementAuthorPageAnalytics(post.author_page_id, 'comments'),
+        incrementAuthorPageAnalytics(post.author_page_id, 'interactions'),
+        createAuthorPageNotificationSafely(notificationPayload),
+      ])
+    }
 
     return res.status(201).json({
       ok: true,
-      post: user
-        ? normalizePost(
-            data,
-            user,
-            userId
-          )
-        : null,
+      comment: publicAuthorPostComment(createdComment),
+      comment_count: nextCommentCount,
     })
   } catch (error) {
-    console.error(
-      'CREATE READER POST ERROR:',
-      error
-    )
+    console.error('CREATE AUTHOR POST COMMENT ERROR:', error)
 
-    return res
-      .status(
-        error.statusCode || 500
-      )
-      .json({
-        ok: false,
-        message:
-          error.message ||
-          'Failed to create post',
-      })
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to create post comment',
+      error: error.message,
+    })
   }
 }
 
-export async function updateMyReaderPost(
+export async function setAuthorPostCommentHidden(
   req,
   res
 ) {
   try {
-    const userId = getUserId(req)
-    const postId = String(
-      req.params.postId || ''
+    const userId = req.user?.user_id
+    const commentId = String(
+      req.params.commentId || ''
     ).trim()
 
-    const current =
-      await readOwnedPost(
-        postId,
-        userId
-      )
-
-    if (!current) {
-      return res.status(404).json({
+    if (!userId) {
+      return res.status(401).json({
         ok: false,
-        message: 'Post not found',
+        message: 'Unauthorized',
       })
     }
 
-    const linkedEcho =
-      await readLinkedEchoByPostId(
-        postId,
-        userId
-      )
-
-    const imageUrls =
-      req.body.image_urls === undefined
-        ? Array.isArray(
-            current.image_urls
-          )
-          ? current.image_urls
-          : []
-        : normalizeImageUrls(
-            req.body.image_urls,
-            current.image_urls
-          )
-
-    const photoMetadata =
-  normalizePhotoMetadata(
-    req.body.photo_metadata,
-    imageUrls,
-    current.photo_metadata
-  )
-
-    const content = validateContent(
-      req.body.content === undefined
-        ? current.content
-        : req.body.content,
-      imageUrls,
-      Boolean(linkedEcho)
-    )
-
-    const visibility =
-      req.body.visibility === undefined
-        ? current.visibility
-        : normalizeVisibility(
-            req.body.visibility,
-            current.visibility
-          )
-
-    const commentsPermission =
-      req.body
-        .comments_permission ===
-      undefined
-        ? current.comments_permission
-        : normalizeCommentsPermission(
-            req.body
-              .comments_permission,
-            current.comments_permission
-          )
-
-    const storySharing =
-      req.body.story_sharing ===
-      undefined
-        ? Boolean(
-            current.story_sharing
-          )
-        : Boolean(
-            req.body.story_sharing
-          )
-
-    const updatedAt =
-      new Date().toISOString()
-    const { data, error } =
-      await supabase
-        .from('reader_posts')
-        .update({
-          content,
-          image_urls: imageUrls,
-          photo_metadata:
-            photoMetadata,
-          visibility,
-          comments_permission:
-            commentsPermission,
-          story_sharing:
-            storySharing,
-          updated_at: updatedAt,
-        })
-        .eq('id', postId)
-        .eq('user_id', userId)
-        .is('deleted_at', null)
-        .select(READER_POST_SELECT)
-        .single()
-
-        if (error) throw error
-
-    invalidateReaderPostsFeedCandidateCache()
-    await bumpContentVersions(['discover'])
-
-    await updateLinkedEchoFromPost(
-      linkedEcho,
-      userId,
-      postId,
-      content,
-      updatedAt
-    )
-
-    const userMap =
-      await readUsersByIds([userId])
-    const user = userMap.get(
-      String(userId)
-    )
-
-    return res.status(200).json({
-      ok: true,
-      post: user
-        ? normalizePost(
-            data,
-            user,
-            userId
-          )
-        : null,
-    })
-  } catch (error) {
-    console.error(
-      'UPDATE READER POST ERROR:',
-      error
-    )
-
-    return res
-      .status(
-        error.statusCode || 500
-      )
-      .json({
+    if (!commentId) {
+      return res.status(400).json({
         ok: false,
-        message:
-          error.message ||
-          'Failed to update post',
-      })
-  }
-}
-
-export async function deleteMyReaderPost(
-  req,
-  res
-) {
-  try {
-    const userId = getUserId(req)
-    const postId = String(
-      req.params.postId || ''
-    ).trim()
-
-    const current =
-      await readOwnedPost(
-        postId,
-        userId
-      )
-
-    if (!current) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Post not found',
+        message: 'Comment ID is required',
       })
     }
 
-    const linkedEcho =
-      await readLinkedEchoByPostId(
-        postId,
-        userId
-      )
-
-    const deletedAt =
-      new Date().toISOString()
-
-    const { error } = await supabase
-      .from('reader_posts')
-      .update({
-        deleted_at: deletedAt,
-        updated_at: deletedAt,
+    if (
+      typeof req.body?.is_hidden !==
+      'boolean'
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: 'is_hidden must be boolean',
       })
-      .eq('id', postId)
-      .eq('user_id', userId)
+    }
+
+    const isHidden = req.body.is_hidden
+
+    const {
+      data: existingComment,
+      error: commentError,
+    } = await supabase
+      .from('author_page_post_comments')
+      .select(
+        'id, post_id, user_id, parent_id, is_hidden'
+      )
+      .eq('id', commentId)
       .is('deleted_at', null)
+      .maybeSingle()
 
-        if (error) throw error
+    if (commentError) throw commentError
 
-    invalidateReaderPostsFeedCandidateCache()
-    await bumpContentVersions(['discover'])
+    if (!existingComment) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
 
-    await deleteLinkedEchoFromPost(
-      linkedEcho,
-      userId,
-      postId
-    )
+    const { data: post, error: postError } =
+      await supabase
+        .from('author_page_posts')
+        .select(
+          'id, author_page_id, user_id, status'
+        )
+        .eq('id', existingComment.post_id)
+        .eq('status', 'active')
+        .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Author Page post not found',
+      })
+    }
+
+    const ownsAuthorPage =
+      String(post.user_id || '') ===
+      String(userId)
+
+    if (!ownsAuthorPage) {
+      return res.status(403).json({
+        ok: false,
+        message:
+          'Only this Page can hide or unhide comments',
+      })
+    }
+
+    const {
+      data: updatedComment,
+      error: updateError,
+    } = await supabase
+      .from('author_page_post_comments')
+      .update({
+        is_hidden: isHidden,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', commentId)
+      .is('deleted_at', null)
+      .select(
+        '*, user:users(id, name, username, avatar_url, role)'
+      )
+      .single()
+
+    if (updateError) throw updateError
+
+    const nextCommentCount =
+      await getVisibleAuthorPostCommentCount(
+        post.id
+      )
+
+    const { error: updatePostError } =
+      await supabase
+        .from('author_page_posts')
+        .update({
+          comment_count: nextCommentCount,
+          updated_at:
+            new Date().toISOString(),
+        })
+        .eq('id', post.id)
+
+    if (updatePostError) {
+      throw updatePostError
+    }
+
+    const reactionMap =
+      await getAuthorPostCommentReactionMap(
+        userId,
+        [commentId]
+      )
 
     return res.status(200).json({
       ok: true,
-      deleted_id: postId,
-      deleted_echo_id:
-        linkedEcho?.id || null,
+      message: isHidden
+        ? 'Comment hidden by this Page'
+        : 'Comment unhidden by this Page',
+      comment:
+        publicAuthorPostComment(
+          updatedComment,
+          reactionMap
+        ),
+      comment_count: nextCommentCount,
     })
   } catch (error) {
     console.error(
-      'DELETE READER POST ERROR:',
+      'SET AUTHOR POST COMMENT HIDDEN ERROR:',
       error
     )
 
     return res.status(500).json({
       ok: false,
       message:
-        error.message ||
-        'Failed to delete post',
+        'Failed to update comment visibility',
+      error: error.message,
     })
   }
 }
+
+export async function updateOwnAuthorPostComment(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const commentId = String(req.params.commentId || '').trim()
+    const text = String(req.body.text || '').trim()
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!commentId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment ID is required',
+      })
+    }
+
+    if (!text) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment text is required',
+      })
+    }
+
+    if (text.length > 1000) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment is too long',
+      })
+    }
+
+    const { data: existingComment, error: findError } = await supabase
+      .from('author_page_post_comments')
+      .select('id, user_id')
+      .eq('id', commentId)
+      .is('deleted_at', null)
+      .maybeSingle()
+
+    if (findError) throw findError
+
+    if (!existingComment) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
+
+    if (String(existingComment.user_id) !== String(userId)) {
+      return res.status(403).json({
+        ok: false,
+        message: 'You can only edit your own comment',
+      })
+    }
+
+    const { data: updatedComment, error: updateError } = await supabase
+      .from('author_page_post_comments')
+      .update({
+        text,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', commentId)
+      .eq('user_id', userId)
+      .is('deleted_at', null)
+      .select('*, user:users(id, name, username, avatar_url, role)')
+      .single()
+
+    if (updateError) throw updateError
+
+    const reactionMap =
+      await getAuthorPostCommentReactionMap(
+        userId,
+        [commentId]
+      )
+
+    return res.status(200).json({
+      ok: true,
+      comment: publicAuthorPostComment(
+        updatedComment,
+        reactionMap
+      ),
+    })
+  } catch (error) {
+    console.error('UPDATE OWN AUTHOR POST COMMENT ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to update comment',
+      error: error.message,
+    })
+  }
+}
+
+export async function toggleAuthorPostCommentLike(
+  req,
+  res
+) {
+  try {
+    const userId = req.user?.user_id
+    const commentId = String(
+      req.params.commentId || ''
+    ).trim()
+    const reactionType =
+      normalizeAuthorPostCommentReactionType(
+        req.body?.reaction_type ??
+          req.body?.reactionType
+      )
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!commentId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment ID is required',
+      })
+    }
+
+    const { data: comment, error: commentError } =
+      await supabase
+        .from('author_page_post_comments')
+        .select(
+          'id, post_id, user_id, text, deleted_at'
+        )
+        .eq('id', commentId)
+        .is('deleted_at', null)
+        .maybeSingle()
+
+    if (commentError) throw commentError
+
+    if (!comment) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
+
+    const { data: post, error: postError } =
+      await supabase
+        .from('author_page_posts')
+        .select(
+          'id, author_page_id, user_id, status'
+        )
+        .eq('id', comment.post_id)
+        .eq('status', 'active')
+        .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Author Page post not found',
+      })
+    }
+
+    const {
+      data: existingLike,
+      error: lookupError,
+    } = await supabase
+      .from('author_page_post_comment_likes')
+      .select('id, reaction_type')
+      .eq('comment_id', commentId)
+      .eq('user_id', userId)
+      .maybeSingle()
+
+    if (lookupError) throw lookupError
+
+    let liked = false
+    let activeReactionType = null
+
+    if (existingLike?.id) {
+      const existingReactionType =
+        normalizeAuthorPostCommentReactionType(
+          existingLike.reaction_type
+        )
+
+      if (existingReactionType !== reactionType) {
+        const { error: updateReactionError } =
+          await supabase
+            .from(
+              'author_page_post_comment_likes'
+            )
+            .update({
+              reaction_type: reactionType,
+            })
+            .eq('id', existingLike.id)
+
+        if (updateReactionError) {
+          throw updateReactionError
+        }
+
+        liked = true
+        activeReactionType = reactionType
+      } else {
+        const { error: deleteError } =
+          await supabase
+            .from(
+              'author_page_post_comment_likes'
+            )
+            .delete()
+            .eq('id', existingLike.id)
+
+        if (deleteError) throw deleteError
+      }
+    } else {
+      const { error: insertError } =
+        await supabase
+          .from(
+            'author_page_post_comment_likes'
+          )
+          .insert({
+            comment_id: commentId,
+            user_id: userId,
+            reaction_type: reactionType,
+          })
+
+      if (insertError) throw insertError
+
+      liked = true
+      activeReactionType = reactionType
+    }
+
+    const { count, error: countError } =
+      await supabase
+        .from(
+          'author_page_post_comment_likes'
+        )
+        .select('id', {
+          count: 'exact',
+          head: true,
+        })
+        .eq('comment_id', commentId)
+
+    if (countError) throw countError
+
+    const likes = Number(count || 0)
+
+    const { error: updateCommentError } =
+      await supabase
+        .from('author_page_post_comments')
+        .update({
+          likes,
+          updated_at:
+            new Date().toISOString(),
+        })
+        .eq('id', commentId)
+
+    if (updateCommentError) {
+      throw updateCommentError
+    }
+
+    const commentBelongsToAuthor =
+      String(comment.user_id || '') ===
+      String(post.user_id || '')
+    const isSelfReaction =
+      String(comment.user_id || '') ===
+      String(userId)
+    const sourceKey =
+      `author-post-comment-like:${commentId}:${userId}`
+
+    if (
+      commentBelongsToAuthor &&
+      !isSelfReaction &&
+      post.author_page_id
+    ) {
+      if (!liked) {
+        await deleteAuthorPageNotificationBySourceKeySafely({
+          authorPageId:
+            post.author_page_id,
+          type: 'reaction',
+          sourceKey,
+        })
+      } else {
+        const {
+          data: reader,
+          error: readerError,
+        } = await supabase
+          .from('users')
+          .select(
+            'id, name, username, avatar_url'
+          )
+          .eq('id', userId)
+          .maybeSingle()
+
+        if (readerError) throw readerError
+
+        const readerName =
+          reader?.name ||
+          reader?.username ||
+          'A reader'
+
+        await deleteAuthorPageNotificationBySourceKeySafely({
+          authorPageId:
+            post.author_page_id,
+          type: 'reaction',
+          sourceKey,
+        })
+
+        await createAuthorPageNotificationSafely({
+          authorPageId:
+            post.author_page_id,
+          authorUserId: post.user_id,
+          type: 'reaction',
+          title:
+            `${readerName} reacted ${reactionType} to your comment`,
+          message: String(
+            comment.text || ''
+          ).slice(0, 160),
+          targetUrl:
+            `/author/page?post=${post.id}`,
+          sourceKey,
+          metadata: {
+            post_id: post.id,
+            comment_id: commentId,
+            reaction_type: reactionType,
+            reader_id: userId,
+            reader_name: readerName,
+            reader_username:
+              reader?.username || '',
+            reader_avatar_url:
+              reader?.avatar_url || '',
+          },
+        })
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      comment_id: commentId,
+      liked,
+      reaction_type: activeReactionType,
+      likes,
+    })
+  } catch (error) {
+    console.error(
+      'TOGGLE AUTHOR POST COMMENT REACTION ERROR:',
+      error
+    )
+
+    return res.status(500).json({
+      ok: false,
+      message:
+        'Failed to update comment reaction',
+      error: error.message,
+    })
+  }
+}
+
+export async function deleteOwnAuthorPostComment(req, res) {
+  try {
+    const userId = req.user?.user_id
+    const commentId = String(req.params.commentId || '').trim()
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: 'Unauthorized',
+      })
+    }
+
+    if (!commentId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Comment ID is required',
+      })
+    }
+
+    const { data: comment, error: commentError } = await supabase
+      .from('author_page_post_comments')
+      .select('id, post_id, user_id')
+      .eq('id', commentId)
+      .is('deleted_at', null)
+      .maybeSingle()
+
+    if (commentError) throw commentError
+
+    if (!comment) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Comment not found',
+      })
+    }
+
+    const { data: post, error: postError } = await supabase
+      .from('author_page_posts')
+      .select('id, author_page_id, user_id')
+      .eq('id', comment.post_id)
+      .maybeSingle()
+
+    if (postError) throw postError
+
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Author Page post not found',
+      })
+    }
+
+    const ownsComment =
+      String(comment.user_id || '') === String(userId)
+    const ownsAuthorPage =
+      String(post.user_id || '') === String(userId)
+
+    if (!ownsComment && !ownsAuthorPage) {
+      return res.status(403).json({
+        ok: false,
+        message: 'You cannot delete this comment',
+      })
+    }
+
+    const result = await deleteAuthorPageCommentToTrash({
+      commentId,
+      actorType: ownsComment ? 'reader' : 'author',
+      actorId: String(userId),
+      reason: String(req.body?.reason || '').trim(),
+    })
+
+    if (!result.ok) {
+      const status = getCommentTrashStatus(result)
+
+      if (result.retry_after_seconds) {
+        res.setHeader(
+          'Retry-After',
+          String(result.retry_after_seconds)
+        )
+      }
+
+      return res.status(status).json({
+        ok: false,
+        code: result.code,
+        message: getCommentTrashMessage(result),
+        limit: result.limit ?? null,
+        used: result.used ?? null,
+        remaining: result.remaining ?? null,
+        retry_after_seconds:
+          result.retry_after_seconds ?? 0,
+      })
+    }
+
+    await deleteAuthorPageNotificationBySourceKeySafely({
+      authorPageId: post.author_page_id,
+      type: 'comment',
+      sourceKey: `author-post-comment:${commentId}`,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      message: 'Comment moved to trash',
+      comment_id: result.comment_id,
+      deleted_at: result.deleted_at,
+      delete_expires_at: result.delete_expires_at,
+      limit: result.limit ?? null,
+      used: result.used ?? null,
+      remaining: result.remaining ?? null,
+    })
+  } catch (error) {
+    console.error('DELETE AUTHOR POST COMMENT ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to delete comment',
+      error: error.message,
+    })
+  }
+}
+
