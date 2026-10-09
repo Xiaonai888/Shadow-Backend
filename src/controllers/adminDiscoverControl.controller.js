@@ -1,12 +1,13 @@
 import { supabase } from '../config/supabase.js'
 import { verifyAdminPasskeyPin } from '../services/adminPasskeyPin.service.js'
 import { invalidateDiscoverAuthorPostsSharedCache } from '../services/discoverAuthorPostsSharedCache.service.js'
+import { bumpContentVersions } from '../services/contentVersion.service.js'
 
 const MAX_SELECTED = 10
 const SEARCH_LIMIT = 20
 
 function isUuid(value) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''))
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || ''))
 }
 
 function cleanSearch(value) {
@@ -295,6 +296,7 @@ export async function addDiscoverControlAuthor(req, res) {
     }
 
     invalidateDiscoverAuthorPostsSharedCache()
+    await bumpContentVersions(['discover'])
 
     return res.status(200).json({
       ok: true,
@@ -343,6 +345,7 @@ export async function removeDiscoverControlAuthor(req, res) {
     }
 
     invalidateDiscoverAuthorPostsSharedCache()
+    await bumpContentVersions(['discover'])
 
     return res.status(200).json({
       ok: true,
