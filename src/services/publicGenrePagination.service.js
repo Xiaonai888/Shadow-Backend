@@ -1,4 +1,4 @@
-export const GENRE_PAGE_SIZE = 20
+export const GENRE_PAGE_SIZE = 9
 
 function normalizeGenreSort(value) {
   const sort = String(value || 'latest').trim().toLowerCase()
