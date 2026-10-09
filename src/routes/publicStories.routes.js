@@ -14,6 +14,7 @@ import { getPublicWeeklyUpdates } from '../controllers/weeklyUpdates.controller.
 import { getPublicStoryUpdates } from '../controllers/storyUpdates.controller.js'
 import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
+import { limitGenreReadBudget } from '../middleware/genreReadBudget.middleware.js'
 import {
   cachePublicStoriesResponse,
   invalidatePublicStoriesCache,
@@ -95,6 +96,7 @@ router.get(
   '/stories',
   publicStoriesListCacheHitLimit,
   cachePublicStoriesResponse,
+  limitGenreReadBudget,
   publicStoriesListReadSpamGuard,
   getPublicStories
 )
