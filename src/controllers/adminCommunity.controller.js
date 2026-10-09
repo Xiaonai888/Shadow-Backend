@@ -797,6 +797,20 @@ export async function getAdminCommunityReadersToday(req, res) {
       })
     }
 
+    if (view === 'story' || view === 'reader') {
+      const order = String(req.query.order || 'desc').trim().toLowerCase() === 'asc' ? 1 : -1
+      const countKey = view === 'story' ? 'readers_today' : 'stories_read_today'
+      items.sort((a, b) => {
+        const countDiff = Number(a[countKey] || 0) - Number(b[countKey] || 0)
+        if (countDiff) return countDiff * order
+        const progressDiff = Number(b.average_progress || 0) - Number(a.average_progress || 0)
+        if (progressDiff) return progressDiff
+        const timeDiff = (Date.parse(b.latest_activity_at || '') || 0) - (Date.parse(a.latest_activity_at || '') || 0)
+        if (timeDiff) return timeDiff
+        return String(a.id || '').localeCompare(String(b.id || ''))
+      })
+    }
+
     const total = items.length
     const totalPages = Math.max(1, Math.ceil(total / limit))
     const start = (page - 1) * limit
