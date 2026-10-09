@@ -21,6 +21,16 @@ import {
   applyGenrePaginationQuery,
   finalizeGenrePage,
 } from '../services/publicGenrePagination.service.js'
+import { isRelationshipGroup, normalizeRelationshipTag } from '../utils/storyRelationshipGroups.js'
+
+function resolveRelationshipGroup(value) {
+  if (!isRelationshipGroup(value)) return ''
+
+  const normalized = normalizeRelationshipTag(value)
+  return ['lgbtq', 'lgbtq plus'].includes(normalized)
+    ? 'LGBTQ+'
+    : normalized.toUpperCase()
+}
 
 const FALLBACK_UNLOCK_RULES = {
   standard_free_first_episode_monthly_limit: 10,
@@ -39,6 +49,7 @@ const PUBLIC_STORY_LIST_SELECT = [
   'story_type',
   'story_language',
   'main_genre',
+  'relationship_groups',
   'story_settings',
   'story_status',
   'tags',
@@ -119,6 +130,7 @@ title: story.title,
 story_type: story.story_type || 'novel',
 story_language: story.story_language,
     main_genre: story.main_genre,
+    relationship_groups: story.relationship_groups || [],
     story_settings: story.story_settings || [],
     story_status: story.story_status || 'New',
     tags: story.tags || [],
@@ -378,6 +390,7 @@ title: story.title,
 story_type: story.story_type || 'novel',
 story_language: story.story_language,
     main_genre: story.main_genre,
+    relationship_groups: story.relationship_groups || [],
     story_settings: story.story_settings || [],
     story_status: story.story_status || 'New',
     tags: story.tags || [],
@@ -1020,6 +1033,7 @@ export async function getPublicStories(req, res) {
   try {
     const limit = normalizeLimit(req.query.limit, 10, 100)
     const genre = String(req.query.genre || '').trim()
+    const relationshipGroup = resolveRelationshipGroup(genre)
     const language = String(req.query.language || '').trim()
     const storySetting = String(
       req.query.story_setting ||
@@ -1120,16 +1134,11 @@ export async function getPublicStories(req, res) {
       }
 
       if (genre) {
-        nextQuery =
-          genreMode === 'tag'
-            ? nextQuery.contains(
-                'tags',
-                [genre]
-              )
-            : nextQuery.ilike(
-                'main_genre',
-                genre
-              )
+        nextQuery = relationshipGroup
+          ? nextQuery.contains('relationship_groups', [relationshipGroup])
+          : genreMode === 'tag'
+            ? nextQuery.contains('tags', [genre])
+            : nextQuery.ilike('main_genre', genre)
       }
 
       if (language) {
@@ -1194,7 +1203,7 @@ export async function getPublicStories(req, res) {
       ).limit(queryLimit)
     }
 
-    const queryResults = genre
+    const queryResults = genre && !relationshipGroup
       ? await Promise.all([
           buildStoriesQuery('main'),
           buildStoriesQuery('tag'),
@@ -1627,6 +1636,7 @@ export async function getPublicStoryRecommendations(
     const genre = String(
       req.query.genre || ''
     ).trim()
+    const relationshipGroup = resolveRelationshipGroup(genre)
 
     const storySetting = String(
       req.query.story_setting ||
@@ -1692,10 +1702,9 @@ export async function getPublicStoryRecommendations(
 
       genre
         ? applyStorySort(
-            buildBaseQuery(6).ilike(
-              'main_genre',
-              genre
-            ),
+            relationshipGroup
+              ? buildBaseQuery(6).contains('relationship_groups', [relationshipGroup])
+              : buildBaseQuery(6).ilike('main_genre', genre),
             'popular'
           )
         : Promise.resolve({
@@ -1703,7 +1712,7 @@ export async function getPublicStoryRecommendations(
             error: null,
           }),
 
-      genre
+      genre && !relationshipGroup
         ? applyStorySort(
             buildBaseQuery(6).contains(
               'tags',
@@ -1938,6 +1947,7 @@ export async function getPublicShadowExclusiveStories(
     const genre = String(
       req.query.genre || ''
     ).trim()
+    const relationshipGroup = resolveRelationshipGroup(genre)
 
     const language = String(
       req.query.language || ''
@@ -2032,10 +2042,9 @@ export async function getPublicShadowExclusiveStories(
     }
 
     if (genre) {
-      query = query.ilike(
-        'main_genre',
-        genre
-      )
+      query = relationshipGroup
+        ? query.contains('relationship_groups', [relationshipGroup])
+        : query.ilike('main_genre', genre)
     }
 
     if (language) {
