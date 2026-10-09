@@ -4,6 +4,7 @@ import { createAuthorStoryNotificationSafely } from '../services/authorStoryNoti
 import { updateAuthorRequestCache } from '../services/authorRequestCache.service.js'
 import { invalidatePublicStoryDataCache } from '../services/publicStoryDataCache.service.js'
 import { invalidateMyStoriesCache } from '../services/myStoriesCache.service.js'
+import { publishAuthorStoryStatsChanged } from '../services/authorPageNotificationSse.service.js'
 
 function invalidateEpisodeStoryCounters(episode) {
   if (episode?.story_id) {
@@ -397,6 +398,13 @@ export async function toggleEpisodeReaction(req, res) {
         ),
       ])
 
+      publishAuthorStoryStatsChanged({
+        userId: episode.user_id,
+        storyId: episode.story_id,
+        stat: 'likes',
+        delta: -1,
+      })
+
       return res.status(200).json({
         ok: true,
         action: 'removed',
@@ -422,6 +430,12 @@ export async function toggleEpisodeReaction(req, res) {
     invalidateEpisodeStoryCounters(episode)
 
     const totalLikes = await syncEpisodeTotalLikes(episodeId)
+    publishAuthorStoryStatsChanged({
+      userId: episode.user_id,
+      storyId: episode.story_id,
+      stat: 'likes',
+      delta: 1,
+    })
     const isOwner = String(episode.user_id || '') === String(userId)
 
     if (!isOwner && episode.author_id) {
