@@ -131,3 +131,43 @@ export function publishAuthorPageNotificationCreated({
 
   return delivered
 }
+
+export function publishAuthorStoryStatsChanged({
+  userId,
+  storyId,
+  stat,
+  delta,
+}) {
+  const cleanId = cleanUserId(userId)
+  const cleanStoryId = String(storyId || '').trim()
+  const cleanStat = String(stat || '').trim()
+  const cleanDelta = Number(delta)
+
+  if (
+    !cleanId ||
+    !cleanStoryId ||
+    !['views', 'likes'].includes(cleanStat) ||
+    ![1, -1].includes(cleanDelta)
+  ) {
+    return 0
+  }
+
+  const clients = clientsByUserId.get(cleanId)
+  if (!clients?.size) return 0
+
+  let delivered = 0
+
+  for (const res of [...clients]) {
+    if (writeEvent(res, 'author-story-stats', {
+      story_id: cleanStoryId,
+      stat: cleanStat,
+      delta: cleanDelta,
+    })) {
+      delivered += 1
+    } else {
+      removeDeadClient(cleanId, res)
+    }
+  }
+
+  return delivered
+}
