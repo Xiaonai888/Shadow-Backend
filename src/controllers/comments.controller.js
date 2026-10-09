@@ -677,18 +677,6 @@ async function loadComments({
   sort,
   userId,
 }) {
-  const identityStory =
-    story || await getStory(storyId)
-  const authorPage =
-    identityStory?.user_id
-      ? await getAuthorCommentProfile(
-          identityStory.user_id
-        )
-      : null
-  const identity = {
-    story: identityStory,
-    authorPage,
-  }
   const from =
     (page - 1) * limit
   const to =
@@ -821,8 +809,8 @@ async function loadComments({
     ...deletedParents,
   ]
 
-  const replyResults =
-    await Promise.all(
+  const [replyResults, identityStory] = await Promise.all([
+    Promise.all(
       candidateParents.map(
         async (parent) => ({
           parentId: String(parent.id),
@@ -835,7 +823,11 @@ async function loadComments({
           }),
         })
       )
-    )
+    ),
+    candidateParents.length
+      ? Promise.resolve(story || getStory(storyId))
+      : Promise.resolve(null),
+  ])
 
   const replyResultMap = new Map(
     replyResults.map(
@@ -878,11 +870,25 @@ async function loadComments({
     ),
   ]
 
-  const reactionMap =
-    await getReactionMap(
-      allIds,
-      userId
+  const needsAuthorPage =
+    Boolean(identityStory?.user_id) &&
+    [...parentRows, ...replyRows].some(
+      (comment) =>
+        !comment.deleted_at &&
+        String(comment.user_id || '') === String(identityStory.user_id)
     )
+
+  const [reactionMap, authorPage] = await Promise.all([
+    getReactionMap(allIds, userId),
+    needsAuthorPage
+      ? getAuthorCommentProfile(identityStory.user_id)
+      : Promise.resolve(null),
+  ])
+
+  const identity = {
+    story: identityStory,
+    authorPage,
+  }
 
   const publicParents =
     parentRows.map((comment) => {
