@@ -5,6 +5,7 @@ import { attachEpisodePageParts } from '../services/episodePageParts.service.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import { invalidatePublicStoryDataCache } from '../services/publicStoryDataCache.service.js'
 import { invalidateMyStoriesCache } from '../services/myStoriesCache.service.js'
+import { publishAuthorStoryStatsChanged } from '../services/authorPageNotificationSse.service.js'
 import {
   applyEpisodeAccess,
   buildEpisodeAccess,
@@ -3071,6 +3072,12 @@ export async function countQualifiedEpisodeView(
       invalidatePublicStoryDataCache(storyId)
       if (story.user_id) {
         invalidateMyStoriesCache(story.user_id)
+        publishAuthorStoryStatsChanged({
+          userId: story.user_id,
+          storyId,
+          stat: 'views',
+          delta: 1,
+        })
       }
     }
 
