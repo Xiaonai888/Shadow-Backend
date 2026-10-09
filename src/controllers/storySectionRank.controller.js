@@ -9,6 +9,7 @@ const SECTION_KEYS = new Set([
   'new_arrivals',
   'ranking',
   'you_might_like',
+  'short_completed',
 ])
 
 const ACTIONS = new Set(['view', 'read'])
