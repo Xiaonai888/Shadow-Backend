@@ -8,6 +8,7 @@ const SECTIONS = [
   { key: 'new_arrivals', name: 'New Arrivals' },
   { key: 'ranking', name: 'Ranking' },
   { key: 'you_might_like', name: 'You Might Like' },
+  { key: 'short_completed', name: 'Short & Completed' },
 ]
 
 const PAGE_SIZE = 1000
