@@ -277,12 +277,30 @@ function publicSelection(selection) {
   }
 }
 
+let taskCenterRotationCheck = null
+
 export async function ensureTaskCenterAutoRotation() {
-  const settings = await getAutoSettings()
-  const dateKey = getPhnomPenhDateKey()
-  if (settings.reading_mission_mode !== 'auto') return
-  if (String(settings.auto_last_rotation_date || '') === dateKey) return
-  return rotateTaskCenterAutoStories()
+  if (taskCenterRotationCheck) return taskCenterRotationCheck
+
+  const check = (async () => {
+    const settings = await getAutoSettings()
+    const dateKey = getPhnomPenhDateKey()
+
+    if (settings.reading_mission_mode !== 'auto') return
+    if (String(settings.auto_last_rotation_date || '') === dateKey) return
+
+    return rotateTaskCenterAutoStories()
+  })()
+
+  taskCenterRotationCheck = check
+
+  try {
+    return await check
+  } finally {
+    if (taskCenterRotationCheck === check) {
+      taskCenterRotationCheck = null
+    }
+  }
 }
 
 export async function rotateTaskCenterAutoStories({ force = false } = {}) {
