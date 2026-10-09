@@ -494,14 +494,37 @@ async function getOrCreateReadingMissionProgress(
 
 async function getReaderReadingMissions(userId) {
   const missions = await getActiveSessionMissions()
-
   const missionList = missions || []
+
+  if (missionList.length === 0) return []
+
+  const { data: progressRows, error } = await supabase
+    .from('reader_reading_mission_progress')
+    .select('*')
+    .eq('user_id', userId)
+    .in('mission_id', missionList.map((mission) => mission.id))
+
+  if (error) throw error
+
+  const progressByMission = new Map()
+
+  for (const row of progressRows || []) {
+    const missionId = String(row.mission_id)
+
+    if (progressByMission.has(missionId)) {
+      throw new Error('Duplicate reading mission progress')
+    }
+
+    progressByMission.set(missionId, row)
+  }
 
   return Promise.all(
     missionList.map(async (mission) => {
       const progress = await getOrCreateReadingMissionProgress(
         userId,
-        mission
+        mission,
+        null,
+        progressByMission.get(String(mission.id)) || null
       )
 
       return publicReadingMissionProgress(mission, progress)
