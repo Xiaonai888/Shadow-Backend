@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { supabase } from '../config/supabase.js'
+import { bumpContentVersions } from '../services/contentVersion.service.js'
 import {
   assertR2MediaReference,
 } from '../services/mediaStoragePolicy.service.js'
@@ -3548,6 +3549,7 @@ const content = validateContent(
         if (error) throw error
 
     invalidateReaderPostsFeedCandidateCache()
+    await bumpContentVersions(['discover'])
 
     const userMap =
       await readUsersByIds([userId])
@@ -3695,6 +3697,7 @@ export async function updateMyReaderPost(
         if (error) throw error
 
     invalidateReaderPostsFeedCandidateCache()
+    await bumpContentVersions(['discover'])
 
     await updateLinkedEchoFromPost(
       linkedEcho,
@@ -3784,6 +3787,7 @@ export async function deleteMyReaderPost(
         if (error) throw error
 
     invalidateReaderPostsFeedCandidateCache()
+    await bumpContentVersions(['discover'])
 
     await deleteLinkedEchoFromPost(
       linkedEcho,
