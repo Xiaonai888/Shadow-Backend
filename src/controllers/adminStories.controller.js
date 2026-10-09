@@ -283,7 +283,7 @@ export async function getAdminStoriesOverview(req, res) {
   try {
     const { data: stories, error: storiesError } = await supabase
       .from('stories')
-      .select('id, deleted_at, admin_visibility_status, policy_warning_count')
+      .select('id, deleted_at, admin_visibility_status, policy_warning_count, story_status, total_episodes')
 
     if (storiesError) throw storiesError
 
@@ -301,6 +301,10 @@ export async function getAdminStoriesOverview(req, res) {
     const disabledStories = storyRows.filter((story) => story.admin_visibility_status === 'disabled').length
     const warnedStories = storyRows.filter((story) => Number(story.policy_warning_count || 0) > 0).length
     const disabledAuthors = authorRows.filter((author) => author.admin_status === 'disabled').length
+    const availableStories = storyRows.filter((story) => !story.deleted_at)
+    const totalNew = availableStories.filter((story) => Number(story.total_episodes || 0) === 1 && String(story.story_status || '').toLowerCase() !== 'completed').length
+    const totalOngoing = availableStories.filter((story) => Number(story.total_episodes || 0) >= 2 && String(story.story_status || '').toLowerCase() !== 'completed').length
+    const totalCompleted = availableStories.filter((story) => String(story.story_status || '').toLowerCase() === 'completed').length
 
     return res.status(200).json({
       ok: true,
@@ -312,6 +316,9 @@ export async function getAdminStoriesOverview(req, res) {
         disabled_stories: disabledStories,
         warned_stories: warnedStories,
         disabled_authors: disabledAuthors,
+        new_stories: totalNew,
+        ongoing_stories: totalOngoing,
+        completed_stories: totalCompleted,
       },
     })
   } catch (error) {
