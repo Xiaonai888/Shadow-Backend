@@ -37,6 +37,117 @@ const ERROR_EVIDENCE_LIMIT = 5000
 const historicalErrorEvidence =
   new Map()
 
+const GUEST_TRAFFIC_WINDOW_MS = 60 * 1000
+const GUEST_TRAFFIC_MAX_WINDOWS = 60
+const GUEST_TRAFFIC_MAX_ROUTES = 160
+const guestTrafficWindows = new Map()
+
+function trackGuestRequest(req, res, context, durationMs, responseBytes) {
+  if (req.user || req.admin || req.headers.authorization || req.method === 'OPTIONS') return
+
+  const windowKey = Math.floor(Date.now() / GUEST_TRAFFIC_WINDOW_MS) * GUEST_TRAFFIC_WINDOW_MS
+  let window = guestTrafficWindows.get(windowKey)
+
+  if (!window) {
+    window = new Map()
+    guestTrafficWindows.set(windowKey, window)
+    while (guestTrafficWindows.size > GUEST_TRAFFIC_MAX_WINDOWS) {
+      guestTrafficWindows.delete(guestTrafficWindows.keys().next().value)
+    }
+  }
+
+  const originalRoute = String(context?.route || `${req.method} ${normalizePath(req.path)}`)
+  const route = window.has(originalRoute) || window.size < GUEST_TRAFFIC_MAX_ROUTES - 1
+    ? originalRoute
+    : 'OTHER ROUTES'
+  const item = window.get(route) || {
+    route,
+    requests: 0,
+    supabase_calls: 0,
+    external_calls: 0,
+    denied: 0,
+    allowed: 0,
+    errors_4xx: 0,
+    errors_5xx: 0,
+    response_bytes: 0,
+    duration_total_ms: 0,
+    duration_max_ms: 0,
+  }
+  const status = Number(res.statusCode || 0)
+  const supabaseCalls = Number(context?.supabase_calls || 0)
+
+  item.requests += 1
+  item.supabase_calls += supabaseCalls
+  item.external_calls += Number(context?.external_calls || 0)
+  item.denied += [401, 403, 429].includes(status) ? 1 : 0
+  item.allowed += status >= 200 && status < 400 ? 1 : 0
+  item.errors_4xx += status >= 400 && status < 500 ? 1 : 0
+  item.errors_5xx += status >= 500 ? 1 : 0
+  item.response_bytes += Math.max(0, Number(responseBytes) || 0)
+  item.duration_total_ms += Math.max(0, Number(durationMs) || 0)
+  item.duration_max_ms = Math.max(item.duration_max_ms, Number(durationMs) || 0)
+  window.set(route, item)
+}
+
+export function getGuestRequestSnapshot(minutes = 60) {
+  const windowMinutes = Math.min(GUEST_TRAFFIC_MAX_WINDOWS, Math.max(1, Math.floor(Number(minutes) || 60)))
+  const now = Date.now()
+  const from = Math.floor(now / GUEST_TRAFFIC_WINDOW_MS) * GUEST_TRAFFIC_WINDOW_MS - (windowMinutes - 1) * GUEST_TRAFFIC_WINDOW_MS
+  const grouped = new Map()
+  const totals = {
+    requests: 0,
+    supabase_calls: 0,
+    external_calls: 0,
+    denied: 0,
+    allowed: 0,
+    errors_4xx: 0,
+    errors_5xx: 0,
+    response_bytes: 0,
+  }
+
+  for (const [windowKey, window] of guestTrafficWindows) {
+    if (windowKey < from || windowKey > now) continue
+    for (const item of window.values()) {
+      const row = grouped.get(item.route) || {
+        ...item,
+        requests: 0,
+        supabase_calls: 0,
+        external_calls: 0,
+        denied: 0,
+        allowed: 0,
+        errors_4xx: 0,
+        errors_5xx: 0,
+        response_bytes: 0,
+        duration_total_ms: 0,
+        duration_max_ms: 0,
+      }
+      for (const key of Object.keys(totals)) {
+        row[key] += item[key]
+        totals[key] += item[key]
+      }
+      row.duration_total_ms += item.duration_total_ms
+      row.duration_max_ms = Math.max(row.duration_max_ms, item.duration_max_ms)
+      grouped.set(item.route, row)
+    }
+  }
+
+  return {
+    measurement: 'requests_without_authorization_header',
+    persistence: 'in_memory_since_backend_restart',
+    window_minutes: windowMinutes,
+    from: new Date(from).toISOString(),
+    to: new Date(now).toISOString(),
+    totals,
+    routes: [...grouped.values()]
+      .map(({ duration_total_ms, ...row }) => ({
+        ...row,
+        average_duration_ms: row.requests ? Math.round(duration_total_ms / row.requests) : 0,
+      }))
+      .sort((a, b) => b.supabase_calls - a.supabase_calls || b.requests - a.requests)
+      .slice(0, 60),
+  }
+}
+
 function bytesOf(value, encoding) {
   if (value === null || value === undefined) return 0
   if (Buffer.isBuffer(value)) return value.length
@@ -213,6 +324,7 @@ function recordDependency(context, target, failed, durationMs = 0) {
   if (!context) return
 
   context.external_calls += 1
+  if (target.startsWith('SUPABASE ')) context.supabase_calls += 1
   if (failed) context.external_errors += 1
 
   if (!context.targets.has(target) && context.targets.size >= MAX_EVIDENCE_TARGETS) {
@@ -1150,6 +1262,7 @@ export function trafficDiagnosticMiddleware(req, res, next) {
     route: sourceKey,
     request_id: `${process.pid}-${startedAt}-${++traceSequence}`,
     external_calls: 0,
+    supabase_calls: 0,
     external_errors: 0,
     external_failures: [],
     dropped_targets: 0,
@@ -1242,6 +1355,8 @@ export function trafficDiagnosticMiddleware(req, res, next) {
         responseBytes,
       })
     }
+
+    trackGuestRequest(req, res, context, elapsedMs, responseBytes)
 
     logRequestEvidence(
       req,
