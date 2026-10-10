@@ -1,148 +1,190 @@
 import { supabase } from '../config/supabase.js'
-import { getStoryEpisodeAccess } from '../services/episodeAccess.service.js'
 
-const CACHE_MS = 5 * 60 * 1000
+const ROTATION_MS = 6 * 60 * 60 * 1000
+const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
 const MIN_LOCKED_EPISODES = 5
-const CANDIDATE_LIMIT = 36
-const PRIORITY_GROUP_SIZE = 12
-const DEFAULT_DIAMONDS_PER_EPISODE = 10
+const MAX_PROMOTIONS = 3
+const ROTATION_FUNCTION = 'get_or_rotate_discover_special_promotions_v2'
 
-let cache = { promotion: null, expiresAt: 0 }
-let pending = null
+let cachedRotation = null
+let inflightRotation = null
 
-function shuffle(items) {
-  const result = [...items]
+function getRotationWindow(now = Date.now()) {
+  const slotStart = Math.floor((now + CAMBODIA_OFFSET_MS) / ROTATION_MS) * ROTATION_MS - CAMBODIA_OFFSET_MS
 
-  for (let index = result.length - 1; index > 0; index -= 1) {
-    const next = Math.floor(Math.random() * (index + 1))
-    ;[result[index], result[next]] = [result[next], result[index]]
+  return {
+    slotStart,
+    expiresAt: slotStart + ROTATION_MS,
+    rotationKey: String(Math.floor(slotStart / 1000)),
   }
-
-  return result
 }
 
-async function selectPromotion() {
-  const { data: stories, error: storiesError } = await supabase
-    .from('stories')
-    .select('id, author_id, title, description, cover_url, total_episodes')
-    .eq('status', 'published')
-    .is('deleted_at', null)
-    .gte('total_episodes', MIN_LOCKED_EPISODES + 5)
-    .or('admin_visibility_status.is.null,admin_visibility_status.eq.active')
-    .or('is_adult.is.null,is_adult.eq.false')
-    .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false')
-    .order('total_episodes', { ascending: false })
-    .limit(CANDIDATE_LIMIT)
+function parseTimestamp(value) {
+  if (!value) return NaN
+  return new Date(value).getTime()
+}
 
-  if (storiesError) throw storiesError
+function validInteger(value, minimum = 0) {
+  const number = Number(value)
+  return Number.isSafeInteger(number) && number >= minimum
+}
 
-  const candidates = (stories || []).filter(
-    (story) => story.id && story.author_id && story.title && story.cover_url
-  )
-
-  if (!candidates.length) return null
-
-  const authorIds = [...new Set(candidates.map((story) => story.author_id))]
-  const [authorsResult, rulesResult] = await Promise.all([
-    supabase
-      .from('author_pages')
-      .select('id, avatar_url')
-      .in('id', authorIds)
-      .eq('status', 'active')
-      .or('admin_status.is.null,admin_status.eq.active'),
-    supabase
-      .from('platform_unlock_rules')
-      .select('diamond_per_episode')
-      .eq('id', 1)
-      .maybeSingle(),
-  ])
-
-  if (authorsResult.error) throw authorsResult.error
-
-  const authors = new Map(
-    (authorsResult.data || []).map((author) => [String(author.id), author])
-  )
-  const basePrice = Number(rulesResult.data?.diamond_per_episode)
-  const diamondsPerEpisode = Number.isSafeInteger(basePrice) && basePrice >= 2
-    ? basePrice
-    : rulesResult.data
-      ? 0
-      : DEFAULT_DIAMONDS_PER_EPISODE
-
-  if (!Number.isSafeInteger(diamondsPerEpisode) || diamondsPerEpisode < 2) {
-    return null
+function normalizePromotion(item, rotationEnd) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    throw new Error('Invalid special promotion story data')
   }
 
-  const eligibleStories = candidates.filter(
-    (story) => authors.has(String(story.author_id))
-  )
+  const storyId = String(item.story_id || '').trim()
+  const coverUrl = String(item.cover_url || '').trim()
+  const title = String(item.story_title || '').trim()
+  const count = Number(item.locked_episode_count)
+  const original = Number(item.original_price_diamonds)
+  const discounted = Number(item.discounted_price_diamonds)
+  const expiresAt = parseTimestamp(item.expires_at)
 
-  for (let start = 0; start < eligibleStories.length; start += PRIORITY_GROUP_SIZE) {
-    const group = shuffle(eligibleStories.slice(start, start + PRIORITY_GROUP_SIZE))
-
-    for (const story of group) {
-      const access = await getStoryEpisodeAccess(story.id)
-      const lockedEpisodes = access.publishedEpisodes.filter(
-        (episode) => episode.is_locked &&
-          !access.freePublishedEpisodeIds.has(String(episode.id))
-      )
-
-      if (lockedEpisodes.length < MIN_LOCKED_EPISODES) continue
-
-      const originalPrice = lockedEpisodes.length * diamondsPerEpisode
-      const discountedPrice = Math.ceil(originalPrice / 2)
-
-      if (!Number.isSafeInteger(originalPrice) || discountedPrice < lockedEpisodes.length) {
-        continue
-      }
-      const author = authors.get(String(story.author_id))
-
-      return {
-        id: `special-${story.id}`,
-        story_id: story.id,
-        story_title: story.title,
-        description: story.description || '',
-        cover_url: story.cover_url,
-        profile_image_url: author.avatar_url || story.cover_url,
-        locked_episode_count: lockedEpisodes.length,
-        total_episodes: access.publishedEpisodes.length,
-        original_price_diamonds: originalPrice,
-        discounted_price_diamonds: discountedPrice,
-        discount_percent: 50,
-      }
-    }
+  if (
+    !storyId ||
+    !title ||
+    !coverUrl ||
+    !validInteger(count, MIN_LOCKED_EPISODES) ||
+    !validInteger(original, count * 2) ||
+    !validInteger(discounted, count) ||
+    discounted !== Math.ceil(original / 2) ||
+    expiresAt !== rotationEnd ||
+    Number(item.discount_percent) !== 50
+  ) {
+    throw new Error('Invalid special promotion price, episodes, or expiry')
   }
 
-  return null
+  return {
+    ...item,
+    id: String(item.id || `special-${storyId}`),
+    story_id: storyId,
+    story_title: title,
+    cover_url: coverUrl,
+    profile_image_url: coverUrl,
+    locked_episode_count: count,
+    original_price_diamonds: original,
+    discounted_price_diamonds: discounted,
+    discount_percent: 50,
+    expires_at: new Date(rotationEnd).toISOString(),
+  }
+}
+
+function normalizeRotation(data, window) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('Special promotion rotation response is invalid')
+  }
+
+  const slotStart = parseTimestamp(data.slot_start_at)
+  const expiresAt = parseTimestamp(data.expires_at)
+
+  if (slotStart !== window.slotStart || expiresAt !== window.expiresAt) {
+    throw new Error('Special promotion rotation is out of date')
+  }
+
+  if (
+    !Array.isArray(data.promotions) ||
+    data.promotions.length > MAX_PROMOTIONS
+  ) {
+    throw new Error('Invalid special promotion carousel data')
+  }
+
+  const promotions = data.promotions.map((item) => normalizePromotion(item, expiresAt))
+  const ids = promotions.map((item) => item.story_id)
+
+  if (new Set(ids).size !== ids.length) {
+    throw new Error('Duplicate stories in special promotion rotation')
+  }
+
+  return {
+    promotions,
+    promotion: promotions[0] || null,
+    slot_start_at: new Date(slotStart).toISOString(),
+    expires_at: new Date(expiresAt).toISOString(),
+    rotation_key: window.rotationKey,
+    expiresAt,
+    slotStart,
+  }
+}
+
+async function loadRotation(window) {
+  const { data, error } = await supabase.rpc(ROTATION_FUNCTION)
+
+  if (error) throw error
+
+  return normalizeRotation(data, window)
+}
+
+export async function getCurrentDiscoverSpecialPromotions() {
+  const window = getRotationWindow()
+  const now = Date.now()
+
+  if (
+    cachedRotation &&
+    cachedRotation.slotStart === window.slotStart &&
+    cachedRotation.expiresAt > now
+  ) {
+    return cachedRotation
+  }
+
+  if (inflightRotation?.slotStart === window.slotStart) {
+    return inflightRotation.promise
+  }
+
+  const request = loadRotation(window)
+    .then((rotation) => {
+      if (
+        getRotationWindow().slotStart === rotation.slotStart &&
+        Date.now() < rotation.expiresAt
+      ) {
+        cachedRotation = rotation
+      }
+
+      return rotation
+    })
+    .finally(() => {
+      if (inflightRotation?.promise === request) {
+        inflightRotation = null
+      }
+    })
+
+  inflightRotation = { slotStart: window.slotStart, promise: request }
+  return request
 }
 
 export async function getCurrentDiscoverSpecialPromotion() {
-  if (Date.now() < cache.expiresAt) {
-    return cache.promotion
-  }
-
-  if (!pending) {
-    pending = selectPromotion()
-      .then((promotion) => {
-        cache = { promotion, expiresAt: Date.now() + CACHE_MS }
-        return promotion
-      })
-      .finally(() => {
-        pending = null
-      })
-  }
-
-  return pending
+  const rotation = await getCurrentDiscoverSpecialPromotions()
+  return rotation.promotion
 }
 
 export async function getActiveDiscoverSpecialPromotion(req, res) {
   try {
-    const promotion = await getCurrentDiscoverSpecialPromotion()
+    let rotation = await getCurrentDiscoverSpecialPromotions()
 
-    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=60')
-    return res.status(200).json({ ok: true, promotion })
+    if (Date.now() >= rotation.expiresAt) {
+      rotation = await getCurrentDiscoverSpecialPromotions()
+    }
+
+    if (Date.now() >= rotation.expiresAt) {
+      throw new Error('Special promotion rotation has expired')
+    }
+
+    const secondsRemaining = Math.max(0, Math.floor((rotation.expiresAt - Date.now()) / 1000))
+    res.set('Cache-Control', `public, max-age=${Math.min(30, secondsRemaining)}, must-revalidate`)
+
+    return res.status(200).json({
+      ok: true,
+      promotion: rotation.promotion,
+      promotions: rotation.promotions,
+      expires_at: rotation.expires_at,
+      slot_start_at: rotation.slot_start_at,
+      rotation_key: rotation.rotation_key,
+    })
   } catch (error) {
     console.error('GET DISCOVER SPECIAL PROMOTION ERROR:', error)
+    res.set('Cache-Control', 'no-store')
+
     return res.status(503).json({
       ok: false,
       message: 'Special promotion is temporarily unavailable',
