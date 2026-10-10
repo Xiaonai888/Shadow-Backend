@@ -63,9 +63,15 @@ async function selectPromotion() {
     (authorsResult.data || []).map((author) => [String(author.id), author])
   )
   const basePrice = Number(rulesResult.data?.diamond_per_episode)
-  const diamondsPerEpisode = Number.isFinite(basePrice) && basePrice > 0
+  const diamondsPerEpisode = Number.isSafeInteger(basePrice) && basePrice >= 2
     ? basePrice
-    : DEFAULT_DIAMONDS_PER_EPISODE
+    : rulesResult.data
+      ? 0
+      : DEFAULT_DIAMONDS_PER_EPISODE
+
+  if (!Number.isSafeInteger(diamondsPerEpisode) || diamondsPerEpisode < 2) {
+    return null
+  }
 
   const eligibleStories = candidates.filter(
     (story) => authors.has(String(story.author_id))
@@ -84,7 +90,11 @@ async function selectPromotion() {
       if (lockedEpisodes.length < MIN_LOCKED_EPISODES) continue
 
       const originalPrice = lockedEpisodes.length * diamondsPerEpisode
-      const discountedPrice = Number((originalPrice * 0.5).toFixed(2))
+      const discountedPrice = Math.ceil(originalPrice / 2)
+
+      if (!Number.isSafeInteger(originalPrice) || discountedPrice < lockedEpisodes.length) {
+        continue
+      }
       const author = authors.get(String(story.author_id))
 
       return {
@@ -106,25 +116,31 @@ async function selectPromotion() {
   return null
 }
 
+export async function getCurrentDiscoverSpecialPromotion() {
+  if (Date.now() < cache.expiresAt) {
+    return cache.promotion
+  }
+
+  if (!pending) {
+    pending = selectPromotion()
+      .then((promotion) => {
+        cache = { promotion, expiresAt: Date.now() + CACHE_MS }
+        return promotion
+      })
+      .finally(() => {
+        pending = null
+      })
+  }
+
+  return pending
+}
+
 export async function getActiveDiscoverSpecialPromotion(req, res) {
   try {
-    if (Date.now() >= cache.expiresAt) {
-      if (!pending) {
-        pending = selectPromotion()
-          .then((promotion) => {
-            cache = { promotion, expiresAt: Date.now() + CACHE_MS }
-            return promotion
-          })
-          .finally(() => {
-            pending = null
-          })
-      }
-
-      await pending
-    }
+    const promotion = await getCurrentDiscoverSpecialPromotion()
 
     res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=60')
-    return res.status(200).json({ ok: true, promotion: cache.promotion })
+    return res.status(200).json({ ok: true, promotion })
   } catch (error) {
     console.error('GET DISCOVER SPECIAL PROMOTION ERROR:', error)
     return res.status(503).json({
