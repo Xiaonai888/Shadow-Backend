@@ -5,6 +5,7 @@ import {
   getEpisodeReadGate,
   unlockEpisodeWithDiamonds,
   unlockEpisodePackageWithDiamonds,
+  unlockDiscoverSpecialPromotionWithDiamonds,
   unlockEpisodeWithGems,
   unlockEpisodeWithVoucher,
   unlockEpisodeWithStoryCard,
@@ -31,6 +32,7 @@ router.get('/stories/:storyId/episodes/:episodeId/status', requireUser, getEpiso
 router.get('/stories/:storyId/episodes/:episodeId/read-gate', requireUser, getEpisodeReadGate)
 router.post('/stories/:storyId/episodes/:episodeId/diamond', requireUser, unlockEpisodeWithDiamonds)
 router.post('/stories/:storyId/episodes/:episodeId/package', requireUser, unlockEpisodePackageWithDiamonds)
+router.post('/stories/:storyId/special-promotion', requireUser, unlockDiscoverSpecialPromotionWithDiamonds)
 router.post('/stories/:storyId/episodes/:episodeId/gem', requireUser, unlockEpisodeWithGems)
 router.post('/stories/:storyId/episodes/:episodeId/voucher', requireUser, unlockEpisodeWithVoucher)
 router.post('/stories/:storyId/episodes/:episodeId/story-card', requireUser, unlockEpisodeWithStoryCard)
