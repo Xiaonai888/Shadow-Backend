@@ -139,6 +139,7 @@ export async function getAdminGenreRanking(req, res) {
     const now = Date.now()
     const settings = await getRankingSettings()
     const settingsKey = rankingSettingsKey(settings)
+    const forceRefresh = String(req.query.refresh || '') === '1'
 
     if (!settings.genre_rank_enabled) {
       return res.status(200).json({
@@ -157,6 +158,7 @@ export async function getAdminGenreRanking(req, res) {
     }
 
     if (
+      !forceRefresh &&
       genreRankCache.payload &&
       genreRankCache.expiresAt > now &&
       genreRankCache.settingsKey === settingsKey
@@ -167,36 +169,60 @@ export async function getAdminGenreRanking(req, res) {
       })
     }
 
-    const [genresResult, storiesResult] = await Promise.all([
+    const loadRankedStoryRows = async () => {
+      const rows = []
+      const pageSize = 1000
+
+      for (let offset = 0; ; offset += pageSize) {
+        const { data, error } = await supabase
+          .from('stories')
+          .select('id, main_genre, relationship_groups, total_views, total_likes, total_comments')
+          .is('deleted_at', null)
+          .eq('status', 'published')
+          .eq('admin_visibility_status', 'active')
+          .eq('ranking_visibility_status', 'visible')
+          .order('id', { ascending: true })
+          .range(offset, offset + pageSize - 1)
+
+        if (error) throw error
+        const batch = data || []
+        rows.push(...batch)
+        if (batch.length < pageSize) break
+      }
+
+      return rows
+    }
+
+    const [genresResult, storyRows] = await Promise.all([
       supabase
         .from('genres')
         .select('id, name, slug, sort_order, is_active')
         .eq('is_active', true)
         .order('sort_order', { ascending: true })
         .order('name', { ascending: true }),
-      supabase
-        .from('stories')
-        .select('id, main_genre, total_views, total_likes, total_comments')
-        .is('deleted_at', null)
-        .eq('status', 'published')
-        .eq('admin_visibility_status', 'active')
-        .eq('ranking_visibility_status', 'visible'),
+      loadRankedStoryRows(),
     ])
 
     if (genresResult.error) throw genresResult.error
-    if (storiesResult.error) throw storiesResult.error
 
+    const relationshipGroupNames = ['BG', 'BL', 'GL', 'LGBTQ+']
+    const relationshipGroupKeys = new Set(
+      relationshipGroupNames.map((name) => name.toLowerCase())
+    )
     const grouped = new Map()
 
     for (const genreRow of genresResult.data || []) {
       const genreName = cleanText(genreRow.name)
       if (!genreName) continue
 
-      grouped.set(genreName.toLowerCase(), {
+      const key = genreName.toLowerCase()
+
+      grouped.set(key, {
         genre_id: genreRow.id,
         genre: genreName,
         slug: cleanText(genreRow.slug),
         sort_order: Number(genreRow.sort_order || 0),
+        category_type: relationshipGroupKeys.has(key) ? 'relationship' : 'main',
         story_count: 0,
         total_views: 0,
         total_likes: 0,
@@ -204,23 +230,72 @@ export async function getAdminGenreRanking(req, res) {
       })
     }
 
-    for (const story of storiesResult.data || []) {
-      const key = cleanText(story.main_genre).toLowerCase()
-      if (!key) continue
+    relationshipGroupNames.forEach((name, index) => {
+      const key = name.toLowerCase()
+      if (grouped.has(key)) return
 
-      const current = grouped.get(key)
-      if (!current) continue
+      grouped.set(key, {
+        genre_id: null,
+        genre: name,
+        slug: name === 'LGBTQ+' ? 'lgbtq' : key,
+        sort_order: 1000 + index,
+        category_type: 'relationship',
+        story_count: 0,
+        total_views: 0,
+        total_likes: 0,
+        total_comments: 0,
+      })
+    })
 
-      current.story_count += 1
-      current.total_views += Number(story.total_views || 0)
-      current.total_likes += Number(story.total_likes || 0)
-      current.total_comments += Number(story.total_comments || 0)
+    let totalViews = 0
+
+    for (const story of storyRows) {
+      const views = Number(story.total_views || 0)
+      const likes = Number(story.total_likes || 0)
+      const comments = Number(story.total_comments || 0)
+      totalViews += views
+
+      const targets = new Set()
+      const mainGenreKey = cleanText(story.main_genre).toLowerCase()
+
+      if (mainGenreKey && grouped.has(mainGenreKey) && !relationshipGroupKeys.has(mainGenreKey)) {
+        targets.add(mainGenreKey)
+      }
+
+      const relationshipTargets = new Set(
+        (Array.isArray(story.relationship_groups) ? story.relationship_groups : [])
+          .map((group) => cleanText(group).toLowerCase())
+          .filter((group) => relationshipGroupKeys.has(group))
+      )
+
+      if (relationshipGroupKeys.has(mainGenreKey)) {
+        relationshipTargets.add(mainGenreKey)
+      }
+
+      if (relationshipTargets.has('bl') || relationshipTargets.has('gl')) {
+        relationshipTargets.add('lgbtq+')
+      }
+
+      if (relationshipTargets.size === 0) {
+        relationshipTargets.add('bg')
+      } else if (relationshipTargets.size > 1) {
+        relationshipTargets.delete('bg')
+      }
+
+      for (const group of relationshipTargets) {
+        targets.add(group)
+      }
+
+      for (const key of targets) {
+        const current = grouped.get(key)
+        if (!current) continue
+
+        current.story_count += 1
+        current.total_views += views
+        current.total_likes += likes
+        current.total_comments += comments
+      }
     }
-
-    const totalViews = [...grouped.values()].reduce(
-      (sum, row) => sum + row.total_views,
-      0
-    )
 
     const genres = [...grouped.values()]
       .map((row) => ({
