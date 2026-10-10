@@ -2796,10 +2796,11 @@ export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
   }
 
   try {
-    const { getCurrentDiscoverSpecialPromotion } = await import('./discoverSpecialPromotion.controller.js')
-    const offer = await getCurrentDiscoverSpecialPromotion()
+    const { getCurrentDiscoverSpecialPromotions } = await import('./discoverSpecialPromotion.controller.js')
+    const rotation = await getCurrentDiscoverSpecialPromotions()
+    const offer = rotation.promotions.find((item) => String(item.story_id) === storyId)
 
-    if (!offer || String(offer.story_id) !== storyId) {
+    if (!offer || Date.now() >= new Date(offer.expires_at).getTime()) {
       return res.status(409).json({
         ok: false,
         code: 'PROMOTION_EXPIRED',
@@ -3014,6 +3015,14 @@ export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
       event_author_share_percent: 0,
       writer_wednesday_active: false,
       writer_wednesday_author_share_percent: 0,
+    }
+
+    if (Date.now() >= new Date(offer.expires_at).getTime()) {
+      return res.status(409).json({
+        ok: false,
+        code: 'PROMOTION_EXPIRED',
+        message: 'This promotion is no longer available',
+      })
     }
 
     const purchase = await commitDiamondUnlockPurchase({
