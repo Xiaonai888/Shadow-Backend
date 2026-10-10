@@ -2786,3 +2786,319 @@ export async function unlockEpisodeWithAd(req, res) {
     })
   }
 }
+
+export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
+  const userId = req.user?.user_id
+  const storyId = String(req.params?.storyId || '').trim()
+
+  if (!userId || !storyId) {
+    return res.status(401).json({ ok: false, message: 'Login required' })
+  }
+
+  try {
+    const { getCurrentDiscoverSpecialPromotion } = await import('./discoverSpecialPromotion.controller.js')
+    const offer = await getCurrentDiscoverSpecialPromotion()
+
+    if (!offer || String(offer.story_id) !== storyId) {
+      return res.status(409).json({
+        ok: false,
+        code: 'PROMOTION_EXPIRED',
+        message: 'This promotion is no longer available',
+      })
+    }
+
+    const story = await getStory(storyId)
+
+    if (
+      !story ||
+      story.status !== 'published' ||
+      story.deleted_at ||
+      (story.admin_visibility_status && story.admin_visibility_status !== 'active') ||
+      story.is_shadow_exclusive ||
+      story.is_adult
+    ) {
+      return res.status(409).json({
+        ok: false,
+        code: 'STORY_UNAVAILABLE',
+        message: 'This story is no longer eligible for the promotion',
+      })
+    }
+
+    if (String(story.user_id) === String(userId)) {
+      return res.status(403).json({
+        ok: false,
+        code: 'OWN_STORY',
+        message: 'You cannot purchase your own story',
+      })
+    }
+
+    const { data: author, error: authorError } = await supabase
+      .from('author_pages')
+      .select('id, status, admin_status')
+      .eq('id', story.author_id)
+      .maybeSingle()
+
+    if (authorError) throw authorError
+
+    if (!author || author.status !== 'active' || (author.admin_status && author.admin_status !== 'active')) {
+      return res.status(409).json({
+        ok: false,
+        code: 'AUTHOR_UNAVAILABLE',
+        message: 'The author is currently unavailable',
+      })
+    }
+
+    const [access, rules] = await Promise.all([
+      getStoryEpisodeAccess(storyId),
+      getPlatformUnlockRules(),
+    ])
+
+    const eligibleEpisodes = access.publishedEpisodes.filter(
+      (episode) => episode.is_locked && !access.freePublishedEpisodeIds.has(String(episode.id))
+    )
+
+    if (eligibleEpisodes.length < 5 || eligibleEpisodes.length !== Number(offer.locked_episode_count)) {
+      return res.status(409).json({
+        ok: false,
+        code: 'PROMOTION_CHANGED',
+        message: 'The promotion episodes have changed. Refresh and try again.',
+      })
+    }
+
+    const diamondPerEpisode = Number(rules?.diamond_per_episode ?? 10)
+    const originalOfferPrice = eligibleEpisodes.length * diamondPerEpisode
+    const offerPrice = Math.ceil(originalOfferPrice / 2)
+
+    if (
+      !Number.isSafeInteger(diamondPerEpisode) ||
+      diamondPerEpisode < 2 ||
+      !Number.isSafeInteger(originalOfferPrice) ||
+      !Number.isSafeInteger(offerPrice) ||
+      offerPrice < eligibleEpisodes.length ||
+      originalOfferPrice !== Number(offer.original_price_diamonds) ||
+      offerPrice !== Number(offer.discounted_price_diamonds)
+    ) {
+      return res.status(409).json({
+        ok: false,
+        code: 'PROMOTION_PRICE_CHANGED',
+        message: 'Promotion price has changed. Refresh and try again.',
+      })
+    }
+
+    const purchaseKey = createHash('sha256')
+      .update(
+        ['discover-special-promotion-v1', userId, storyId, ...eligibleEpisodes.map((episode) => String(episode.id)).sort()].join(':')
+      )
+      .digest('hex')
+
+    const previousPurchase = await getCompletedDiamondPurchase({ userId, purchaseKey })
+
+    if (previousPurchase) {
+      await recordDiamondUnlockAccountingWithRetry({
+        purchaseKey,
+        userId,
+        storyId,
+        episodes: previousPurchase.transactions.map((transaction) => ({
+          id: transaction.episode_id,
+          author_id: transaction.author_id,
+        })),
+        transactions: previousPurchase.transactions,
+        transactionAmount: Number(previousPurchase.request.amount),
+        unlockScope: previousPurchase.request.unlock_scope,
+        metadata: previousPurchase.transactions[0]?.metadata || {},
+      })
+
+      invalidateReadGateUnlockCache({
+        userId,
+        storyId,
+        episodeIds: previousPurchase.unlocks.map((unlock) => unlock.episode_id),
+      })
+
+      return res.status(200).json({
+        ok: true,
+        idempotent: true,
+        unlocked_count: previousPurchase.unlocks.length,
+        unlocked_episode_ids: previousPurchase.unlocks.map((unlock) => unlock.episode_id),
+        wallet: publicWallet(previousPurchase.wallet),
+      })
+    }
+
+    const { data: existingUnlocks, error: existingError } = await supabase
+      .from('episode_unlocks')
+      .select('episode_id, access_type, expires_at, unlock_type')
+      .eq('user_id', userId)
+      .eq('story_id', storyId)
+      .eq('unlock_status', 'active')
+
+    if (existingError) throw existingError
+
+    const permanentIds = new Set(
+      (existingUnlocks || [])
+        .filter((unlock) =>
+          (unlock.access_type === 'permanent' ||
+            ['diamond', 'voucher', 'story_card'].includes(unlock.unlock_type)) &&
+          (!unlock.expires_at || new Date(unlock.expires_at).getTime() > Date.now())
+        )
+        .map((unlock) => String(unlock.episode_id))
+    )
+
+    const episodesToUnlock = eligibleEpisodes
+      .filter((episode) => !permanentIds.has(String(episode.id)))
+      .map((episode) => applyEpisodeAccess(episode, access))
+
+    if (!episodesToUnlock.length) {
+      return res.status(200).json({
+        ok: true,
+        already_owned: true,
+        unlocked_count: 0,
+        unlocked_episode_ids: [],
+      })
+    }
+
+    const originalPrice = episodesToUnlock.length * diamondPerEpisode
+    const price = Math.ceil(originalPrice / 2)
+    const confirmedPrice = req.body?.expected_price_diamonds == null
+      ? NaN
+      : Number(req.body.expected_price_diamonds)
+
+    if (!Number.isSafeInteger(price) || price < episodesToUnlock.length) {
+      return res.status(409).json({
+        ok: false,
+        code: 'INVALID_PRICE',
+        message: 'Promotion price is temporarily unavailable',
+      })
+    }
+
+    if (confirmedPrice !== price) {
+      return res.status(409).json({
+        ok: false,
+        code: 'PRICE_CONFIRMATION_REQUIRED',
+        message: 'Please confirm the current price before purchasing',
+        locked_episode_count: episodesToUnlock.length,
+        original_price_diamonds: originalPrice,
+        discounted_price_diamonds: price,
+      })
+    }
+
+    const wallet = await getWallet(userId)
+
+    if (Number(wallet.diamond_balance || 0) < price) {
+      return res.status(402).json({
+        ok: false,
+        code: 'INSUFFICIENT_DIAMONDS',
+        message: 'Not enough Diamonds',
+        need: price - Number(wallet.diamond_balance || 0),
+        price,
+        wallet: publicWallet(wallet),
+      })
+    }
+
+    const metadata = {
+      purchase_key: purchaseKey,
+      package_key: 'discover_special_promotion',
+      package_label: 'Special Promotion -50%',
+      episode_count: episodesToUnlock.length,
+      discount_percent: 50,
+      package_discount_percent: 50,
+      premium_discount_percent: 0,
+      total_discount_percent: 50,
+      total_discount_amount: originalPrice - price,
+      applied_discounts: [{ key: 'special_promotion', label: 'Special Promotion', percent: 50 }],
+      original_price: originalPrice,
+      package_price: price,
+      final_price: price,
+      black_sunday_active: false,
+      black_sunday_discount_percent: 0,
+      black_sunday_discount_amount: 0,
+      event_key: '',
+      event_author_share_percent: 0,
+      writer_wednesday_active: false,
+      writer_wednesday_author_share_percent: 0,
+    }
+
+    const purchase = await commitDiamondUnlockPurchase({
+      userId,
+      purchaseKey,
+      storyId,
+      episodes: episodesToUnlock,
+      unlockScope: 'all_released',
+      transactionAmount: price,
+      metadata,
+    })
+
+    await recordDiamondUnlockAccountingWithRetry({
+      purchaseKey,
+      userId,
+      storyId,
+      episodes: episodesToUnlock,
+      transactions: purchase.transactions,
+      transactionAmount: price,
+      unlockScope: 'all_released',
+      metadata,
+    })
+
+    if (purchase.unlocks.length && !purchase.idempotent) {
+      const reader = await getReaderProfileSafely(userId)
+      const firstEpisode = episodesToUnlock[0]
+
+      try {
+        await createAuthorStoryNotificationSafely({
+        authorId: story.author_id,
+        type: 'unlock',
+        title: `${reader?.name || reader?.username || 'A reader'} unlocked ${purchase.unlocks.length} episodes`,
+        message: `${price} Diamonds spent on ${story.title || 'your story'} through Special Promotion`,
+        targetUrl: `/story/${storyId}/episode/${firstEpisode.id}`,
+        sourceKey: `diamond-unlock:${purchaseKey}`,
+        metadata: {
+          story_id: storyId,
+          episode_id: firstEpisode.id,
+          purchase_key: purchaseKey,
+          package_key: 'discover_special_promotion',
+          episode_count: purchase.unlocks.length,
+          diamond_amount: price,
+          reader_id: userId,
+        },
+        })
+      } catch (notificationError) {
+        console.error('DISCOVER SPECIAL PROMOTION NOTIFICATION ERROR:', notificationError)
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      unlocked: true,
+      idempotent: purchase.idempotent,
+      unlocked_count: purchase.unlocks.length,
+      unlocked_episode_ids: purchase.unlocks.map((unlock) => unlock.episode_id),
+      spent_diamonds: price,
+      wallet: publicWallet(purchase.wallet),
+    })
+  } catch (error) {
+    console.error('UNLOCK DISCOVER SPECIAL PROMOTION ERROR:', error)
+    const message = String(error?.message || '')
+
+    if (message.includes('INSUFFICIENT_DIAMONDS')) {
+      const wallet = await getWallet(userId).catch(() => null)
+
+      return res.status(402).json({
+        ok: false,
+        code: 'INSUFFICIENT_DIAMONDS',
+        message: 'Not enough Diamonds',
+        wallet: wallet ? publicWallet(wallet) : null,
+      })
+    }
+
+    if (message.includes('PURCHASE_IN_PROGRESS') || message.includes('PURCHASE_KEY_REUSED')) {
+      return res.status(409).json({
+        ok: false,
+        code: 'PURCHASE_CONFLICT',
+        message: 'This purchase is already being processed. Please try again.',
+      })
+    }
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Could not complete special promotion purchase',
+    })
+  }
+}
