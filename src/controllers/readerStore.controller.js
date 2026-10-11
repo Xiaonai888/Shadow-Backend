@@ -25,7 +25,7 @@ function productStockStatus(product) {
 
 function currentPrice(product) {
   const sale = Number(product.sale_price)
-  if (Number.isFinite(sale) && sale >= 0) return sale
+  if (Number.isFinite(sale) && sale > 0) return sale
   return Math.max(Number(product.original_price) || 0, 0)
 }
 
