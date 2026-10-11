@@ -14,7 +14,8 @@ const BLOCK_EVENT_THROTTLE_MS = 60 * 1000
 const activeRestrictions = new Map()
 const lastBlockEventAt = new Map()
 
-const READER_CACHE_TTL_MS = 2000
+const READER_CACHE_TTL_MS = 5000
+const BLOCK_RECHECK_TTL_MS = 3000
 const READER_CACHE_MAX_SKIPS = 30
 const READER_CACHE_MAX_BURST = 4
 const READER_CACHE_MAX_KEYS = 2048
@@ -360,6 +361,58 @@ function restrictionKey(scope, guardKey) {
   return `${scope}|${guardKey}`
 }
 
+function readCachedRestriction(scope, identity) {
+  const keys = [restrictionKey(scope, identity.guardKey)]
+
+  if (canUseIpFallback(scope, identity)) {
+    keys.push(
+      restrictionKey(`${scope}_ip_fallback`, `ip:${identity.ipAddress}`)
+    )
+  }
+
+  const now = Date.now()
+
+  for (const key of keys) {
+    const item = activeRestrictions.get(key)
+
+    if (!item || !item.resolved || !item.result) continue
+    if (item.cachedUntil <= now || item.until <= now) continue
+
+    return {
+      ...item,
+      retryAfter: Math.max(1, Math.ceil((item.until - now) / 1000)),
+    }
+  }
+
+  return null
+}
+
+function sendRestrictionResponse(res, scope, result, resolved) {
+  res.setHeader('Retry-After', String(resolved.retryAfter))
+  res.setHeader('X-Spam-Guard', resolved.header)
+  res.setHeader('X-Spam-Guard-Scope', scope)
+
+  return res.status(429).json({
+    ok: false,
+    code: resolved.code,
+    message: resolved.message,
+    scope,
+    retry_after_seconds: resolved.retryAfter,
+    cooldown_until: result.cooldown_until || null,
+    quarantine_until: result.quarantine_until || null,
+    restriction_until:
+      result.quarantine_until
+      || result.cooldown_until
+      || null,
+    block_status: resolved.status,
+    offense_count: Number(result.offense_count || 0),
+    spam_score: Number(result.spam_score || 0),
+    reason:
+      result.reason
+      || 'Request limit exceeded',
+  })
+}
+
 function evictOldestRestriction() {
   let oldestKey = ''
   let oldestUntil = Infinity
@@ -463,8 +516,16 @@ function recordRestriction({
     evictOldestRestriction()
   }
 
+  const until = now + resolved.retryAfter * 1000
+
   activeRestrictions.set(key, {
-    until: now + resolved.retryAfter * 1000,
+    until,
+    cachedUntil: Math.min(until, now + BLOCK_RECHECK_TTL_MS),
+    result: { ...result },
+    resolved: { ...resolved },
+    identityType,
+    resolvedScope: scope,
+    guardKey,
   })
 
   const lastEventAt = lastBlockEventAt.get(key) || 0
@@ -601,6 +662,26 @@ export function createSpamGuard({
 
     if (!identity.guardKey) return next()
 
+    const cachedRestriction = readCachedRestriction(safeScope, identity)
+
+    if (cachedRestriction) {
+      const { result, resolved, retryAfter } = cachedRestriction
+      const effectiveScope = cachedRestriction.resolvedScope || safeScope
+      const effectiveGuardKey = cachedRestriction.guardKey || identity.guardKey
+
+      req.spamGuard = buildGuardSnapshot({
+        result,
+        scope: effectiveScope,
+        guardKey: effectiveGuardKey,
+        identityType: cachedRestriction.identityType || identity.identityType,
+      })
+
+      return sendRestrictionResponse(res, effectiveScope, result, {
+        ...resolved,
+        retryAfter,
+      })
+    }
+
     if (canUseReaderCache(safeScope, req, identity)) return next()
 
     try {
@@ -675,35 +756,12 @@ export function createSpamGuard({
         resolved,
       })
 
-      res.setHeader(
-        'Retry-After',
-        String(resolved.retryAfter)
+      return sendRestrictionResponse(
+        res,
+        effectiveScope,
+        result,
+        resolved
       )
-      res.setHeader('X-Spam-Guard', resolved.header)
-      res.setHeader(
-        'X-Spam-Guard-Scope',
-        effectiveScope
-      )
-
-      return res.status(429).json({
-        ok: false,
-        code: resolved.code,
-        message: resolved.message,
-        scope: effectiveScope,
-        retry_after_seconds: resolved.retryAfter,
-        cooldown_until: result.cooldown_until || null,
-        quarantine_until: result.quarantine_until || null,
-        restriction_until:
-          result.quarantine_until
-          || result.cooldown_until
-          || null,
-        block_status: resolved.status,
-        offense_count: Number(result.offense_count || 0),
-        spam_score: Number(result.spam_score || 0),
-        reason:
-          result.reason
-          || 'Request limit exceeded',
-      })
     } catch (error) {
       markDegraded(error, safeScope, requestPath)
 
