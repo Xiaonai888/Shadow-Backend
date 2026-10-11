@@ -3,6 +3,8 @@ import { supabase } from '../config/supabase.js'
 
 const requestBuckets = new Map()
 const MAX_REQUEST_BUCKETS = 10000
+const VISITOR_RPC_UNAVAILABLE_MS = 5 * 60 * 1000
+let visitorRpcUnavailableUntil = 0
 
 function cleanText(value, maxLength) {
   return String(value || '').trim().slice(0, maxLength)
@@ -290,6 +292,44 @@ export async function trackAnonymousVisitor(req, res) {
       browserSignals,
       behaviorSignals,
     })
+
+    if (Date.now() >= visitorRpcUnavailableUntil) {
+      const { data: recordedVisitor, error: rpcError } = await supabase.rpc(
+        'record_anonymous_visitor_v1',
+        {
+          p_visitor_id: visitorId,
+          p_session_id: sessionId,
+          p_event: {
+            path,
+            referrer,
+            user_agent: userAgent,
+            ip_address: ipAddress || null,
+            device_type: device.deviceType,
+            browser: device.browser,
+            operating_system: device.operatingSystem,
+            country_code: countryCode,
+            cf_ray: cfRay,
+            bot_score: currentRisk.score,
+            bot_signals: currentRisk.signals,
+            webdriver_detected: currentRisk.webdriverDetected,
+            rapid_repeat_count: currentRisk.rapidRepeatCount,
+          },
+        }
+      )
+
+      if (!rpcError) {
+        return res.status(200).json({
+          ok: true,
+          visitor_id: visitorId,
+          session_id: sessionId,
+          bot_score: Number(recordedVisitor?.bot_score || 0),
+          risk_level: recordedVisitor?.risk_level || 'normal',
+        })
+      }
+
+      if (rpcError.code !== 'PGRST202') throw rpcError
+      visitorRpcUnavailableUntil = Date.now() + VISITOR_RPC_UNAVAILABLE_MS
+    }
 
     const { data: existing, error: findError } = await supabase
       .from('anonymous_visitor_sessions')
