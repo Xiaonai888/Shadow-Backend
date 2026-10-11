@@ -16,6 +16,7 @@ import {
   updateOwnComment,
 } from '../controllers/comments.controller.js'
 import { getMyAuthorUnreadCommentCount } from '../controllers/authorCommentUnread.controller.js'
+import { getEpisodeHotCommentSummary } from '../controllers/episodeHotCommentSummary.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
 
@@ -62,6 +63,7 @@ function invalidateCommentModerationIfCountChanged(req, res, next) {
 
 router.get('/episode-totals', getEpisodeCommentTotals)
 router.get('/episode/:episodeId', getEpisodeComments)
+router.get('/episode/:episodeId/hot-summary', getEpisodeHotCommentSummary)
 router.post(
   '/episode/:episodeId',
   requireUser,
