@@ -43,7 +43,7 @@ function getCambodiaDayRange(now = new Date()) {
 }
 
 function cleanSearch(value) {
-  return String(value || '').trim().replace(/[%_,()]/g, ' ')
+  return String(value || '').trim().replace(/[%,()]/g, ' ')
 }
 
 async function getOverviewData() {
