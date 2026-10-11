@@ -198,7 +198,7 @@ async function buildStoreSnapshot() {
     .filter((product) => product.discount_percent > 0)
     .sort((a, b) => b.discount_percent - a.discount_percent || newestFirst(a, b))
   const soldOut = byUpdated
-    .filter((product) => product.product_type === 'book' && product.stock_status === 'sold_out')
+    .filter((product) => product.product_type === 'book' && product.stock_status === 'sold_out' && product.sold_quantity > 0)
   const productCountByAuthor = new Map()
   const latestByAuthor = new Map()
   for (const product of products) {
