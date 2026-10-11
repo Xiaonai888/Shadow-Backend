@@ -32,7 +32,12 @@ router.get('/recovery/history', requireAdmin, recoveryReadGuard, getAdminPayment
 router.post('/recovery/topup', requireAdmin, recoveryWriteGuard, confirmAdminManualTopUp)
 router.post('/recovery/:paymentId/confirm', requireAdmin, recoveryWriteGuard, confirmAdminPaymentRecovery)
 router.get('/manual/stream', requireAdmin, streamAdminPaymentEvents)
-router.post('/manual/:paymentId/confirm', requireAdmin, confirmAdminManualPayment)
+router.post('/manual/:paymentId/confirm', requireAdmin, (_req, res) => {
+  return res.status(410).json({
+    ok: false,
+    message: 'Use Payment Recovery & Top-Up with Admin Passkey.'
+  })
+})
 router.post('/manual/:paymentId/reject', requireAdmin, rejectAdminManualPayment)
 router.post('/manual/:paymentId/retry-telegram-report', requireAdmin, retryAdminTelegramReport)
 router.get('/:paymentId', requireAdmin, getAdminPayment)
