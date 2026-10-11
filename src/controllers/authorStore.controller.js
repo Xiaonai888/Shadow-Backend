@@ -3272,7 +3272,13 @@ export async function createAuthorStoreOrderPayment(req, res) {
 
     if (currentOrderError) throw currentOrderError
 
-    if (currentOrder && Number(currentOrder.total_usd) === total && Number(currentOrder.delivery_fee_usd || 0) === deliveryFee) {
+   if (
+  currentOrder &&
+  Date.parse(currentOrder.expires_at || '') > Date.now() + 10000 &&
+  currentOrder.payment_status === 'pending' &&
+  Number(currentOrder.total_usd) === total &&
+  Number(currentOrder.delivery_fee_usd || 0) === deliveryFee
+) {
       return res.status(200).json({
         ok: true,
         reused: true,
