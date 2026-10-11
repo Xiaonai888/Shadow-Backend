@@ -522,7 +522,7 @@ async function getUnreadCount(
   return Number(count || 0)
 }
 
-async function buildConversationSummary(
+export async function buildConversationSummary(
   conversation,
   viewerParticipant
 ) {
