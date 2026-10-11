@@ -2,6 +2,7 @@ import chatConversationManagementRoutes from './chatConversationManagement.route
 import chatMessageActionsRoutes from './chatMessageActions.routes.js'
 import chatArchivedPageRoutes from './chatArchivedPage.routes.js'
 import express from 'express'
+import { supabase } from '../config/supabase.js'
 import {
   createReaderAuthorRequestController,
   createReaderReaderRequestController,
@@ -62,6 +63,45 @@ router.use(requireUser)
 router.use(chatArchivedPageRoutes)
 router.use(chatConversationManagementRoutes)
 router.use(chatMessageActionsRoutes)
+
+const inboxSummaryLimit = createRateLimit({
+  key: 'chat-inbox-lightweight',
+  windowMs: 60000,
+  max: 30,
+  identity: (req) => req.user?.user_id,
+})
+
+router.get('/conversations/lightweight-page', inboxSummaryLimit, async (req, res) => {
+  const role = String(req.query?.role || 'reader').trim().toLowerCase()
+  const status = String(req.query?.status || 'all').trim().toLowerCase()
+  const page = Number(req.query?.page || 1)
+  if (!['reader', 'author'].includes(role) ||
+      !['all', 'pending', 'accepted', 'declined', 'blocked'].includes(status) ||
+      !Number.isInteger(page) || page < 1 || page > 1000) {
+    return res.status(400).json({ ok: false, message: 'Invalid inbox query' })
+  }
+  try {
+    const { data, error } = await supabase.rpc('get_chat_inbox_lightweight_v1', {
+      p_user_id: req.user?.user_id,
+      p_role: role,
+      p_page: page,
+      p_limit: 10,
+      p_status: status,
+    })
+    if (error) throw error
+    if (!data || !Array.isArray(data.conversations)) {
+      throw new Error('Invalid inbox response')
+    }
+    return res.status(200).json({ ok: true, ...data })
+  } catch (error) {
+    console.error('CHAT_INBOX_LIGHTWEIGHT_ERROR', error?.message || error)
+    return res.status(503).json({
+      ok: false,
+      code: 'CHAT_INBOX_UNAVAILABLE',
+      message: 'Chat inbox is temporarily unavailable',
+    })
+  }
+})
 
 router.post(
   '/reader-author/requests',
