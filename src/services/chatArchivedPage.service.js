@@ -3,7 +3,7 @@ import { ChatServiceError, buildConversationSummary } from './chat.service.js'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
-export async function listArchivedChatPage({ userId, role, page = 1, limit = 20 }) {
+export async function listArchivedChatPage({ userId, role, page = 1, limit = 10 }) {
   const safeUserId = String(userId || '').trim()
   const safeRole = String(role || '').trim().toLowerCase()
   const parsedPage = Number(page)
@@ -18,8 +18,8 @@ export async function listArchivedChatPage({ userId, role, page = 1, limit = 20 
   if (!Number.isInteger(parsedPage) || parsedPage < 1 || parsedPage > 1000) {
     throw new ChatServiceError(400, 'INVALID_PAGE', 'Page is not valid')
   }
-  if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 20) {
-    throw new ChatServiceError(400, 'INVALID_LIMIT', 'Limit must be between 1 and 20')
+  if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 10) {
+    throw new ChatServiceError(400, 'INVALID_LIMIT', 'Limit must be between 1 and 10')
   }
 
   const offset = (parsedPage - 1) * parsedLimit
