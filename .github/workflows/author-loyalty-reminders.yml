@@ -1,0 +1,24 @@
+name: Author Loyalty Reminders
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: author-loyalty-reminders
+  cancel-in-progress: false
+
+jobs:
+  send-reminders:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send author loyalty reminders
+        run: |
+          curl --fail-with-body --retry 3 --retry-all-errors --max-time 120 \
+            -X POST \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            "https://shadow-backend-kucw.onrender.com/api/mails/author-loyalty-reminders/run"
