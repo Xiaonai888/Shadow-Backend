@@ -19,6 +19,7 @@ import { getAdminVisitorGrowthDaily } from '../controllers/adminVisitorGrowth.co
 import { getAdminDailyReaders } from '../controllers/adminDailyReaders.controller.js'
 import { getAdminReaderRanking } from '../controllers/adminReaderRanking.controller.js'
 import { getAdminReaderPeriod } from '../controllers/adminReaderPeriod.controller.js'
+import { getAdminReaderPeriodDetail } from '../controllers/adminReaderPeriodDetail.controller.js'
 
 const router = express.Router()
 
@@ -28,6 +29,7 @@ router.get('/readers/today', requireAdminPermission('readers.view'), getAdminCom
 router.get('/readers/daily', requireAdminPermission('readers.view'), getAdminDailyReaders)
 router.get('/readers/ranking', requireAdminPermission('readers.view'), getAdminReaderRanking)
 router.get('/readers/period', requireAdminPermission('readers.view'), getAdminReaderPeriod)
+router.get('/readers/period/detail', requireAdminPermission('readers.view'), getAdminReaderPeriodDetail)
 router.get('/reader-presence', requireAdmin, getAdminReaderPresence)
 router.get('/reader-countries', requireAdminPermission('community.view'), getAdminReaderCountryAnalytics)
 router.get('/reader-growth/daily', requireAdminPermission('community.view'), getAdminReaderGrowthDaily)
