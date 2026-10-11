@@ -551,7 +551,7 @@ async function getAuthorTotals(authorPage) {
     } = await supabase
       .from('episodes')
       .select(
-        'id, story_id, character_count, word_count, total_likes, status'
+        'id, story_id, character_count, word_count, total_likes, status, published_at'
       )
       .in('story_id', storyIds)
 
@@ -563,6 +563,12 @@ async function getAuthorTotals(authorPage) {
   const publishedEpisodes = episodes.filter(
     (episode) => episode.status === 'published'
   )
+  const loyaltyPublishedEpisodeTimes = publishedEpisodes
+    .map((episode) => Date.parse(episode.published_at))
+    .filter((timestamp) => Number.isFinite(timestamp))
+    .sort((a, b) => a - b)
+  const loyaltyUndatedPublishedEpisodes =
+    publishedEpisodes.length - loyaltyPublishedEpisodeTimes.length
 
   const [
     totalPaidFans,
@@ -575,6 +581,10 @@ async function getAuthorTotals(authorPage) {
   return {
     total_published_episodes:
       publishedEpisodes.length,
+    loyalty_published_episode_times:
+      loyaltyPublishedEpisodeTimes,
+    loyalty_undated_published_episodes:
+      loyaltyUndatedPublishedEpisodes,
     total_words: publishedEpisodes.reduce(
       (sum, episode) =>
         sum +
@@ -785,9 +795,57 @@ async function getActiveDaily50Boost(authorId) {
   return null
 }
 
+function resolveAuthorLoyaltyRewardAt(shareContext, transactionDate) {
+  const reward = shareContext?.loyalty_reward
+  const transactionTime = new Date(transactionDate).getTime()
+  const startsAt = reward ? Date.parse(reward.started_at) : NaN
+  const endsAt = reward ? Date.parse(reward.ends_at) : NaN
+  const inactive = {
+    eligible: false,
+    share_percent: 0,
+  }
+
+  if (
+    !reward ||
+    !Number.isFinite(transactionTime) ||
+    !Number.isFinite(startsAt) ||
+    !Number.isFinite(endsAt) ||
+    transactionTime < startsAt ||
+    transactionTime >= endsAt
+  ) {
+    return inactive
+  }
+
+  const times = shareContext.loyalty_published_episode_times || []
+  let low = 0
+  let high = times.length
+
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    if (times[middle] <= transactionTime) low = middle + 1
+    else high = middle
+  }
+
+  const publishedCount = low + numberValue(
+    shareContext.loyalty_undated_published_episodes
+  )
+  const lastPublishedTime = low > 0 ? times[low - 1] : NaN
+  const requiredEpisodes = Math.max(20, numberValue(reward.required_episodes))
+  const eligible =
+    publishedCount >= requiredEpisodes &&
+    Number.isFinite(lastPublishedTime) &&
+    lastPublishedTime >= transactionTime - 365 * DAY_MS
+
+  return {
+    eligible,
+    share_percent: eligible ? percentValue(reward.share_percent) : 0,
+  }
+}
+
 async function getAuthorShareContext(
   authorPage,
-  settings
+  settings,
+  loyaltyReward = null
 ) {
   await getAuthor100PercentEventState(authorPage.id)
 
@@ -871,6 +929,11 @@ async function getAuthorShareContext(
     quest_share_percent: questSharePercent,
     event_share_percent: eventSharePercent,
     boost_share_percent: boostSharePercent,
+    loyalty_reward: loyaltyReward,
+    loyalty_published_episode_times:
+      totals.loyalty_published_episode_times,
+    loyalty_undated_published_episodes:
+      totals.loyalty_undated_published_episodes,
     quest_stage_number: numberValue(
       progress.current_stage_number || 1
     ),
@@ -1038,6 +1101,16 @@ export async function createAuthorEarningsFromDiamondUnlock({
       author,
     ])
   )
+  const { data: loyaltyRows, error: loyaltyError } = await supabase
+    .from('author_loyalty_reward_progress')
+    .select('author_id, started_at, ends_at, share_percent, required_episodes')
+    .in('author_id', authorIds)
+
+  if (loyaltyError) throw loyaltyError
+
+  const loyaltyRewardMap = new Map(
+    (loyaltyRows || []).map((reward) => [reward.author_id, reward])
+  )
   const settings = await getRevenueSettings()
   const shareContextMap = new Map()
   const rows = []
@@ -1087,7 +1160,14 @@ export async function createAuthorEarningsFromDiamondUnlock({
     const adminWindow = matchingWindows[0] || null
 
     if (!adminWindow && !shareContextMap.has(authorPage.id)) {
-      shareContextMap.set(authorPage.id, await getAuthorShareContext(authorPage, settings))
+      shareContextMap.set(
+        authorPage.id,
+        await getAuthorShareContext(
+          authorPage,
+          settings,
+          loyaltyRewardMap.get(authorPage.id) || null
+        )
+      )
     }
 
     const shareContext = adminWindow
@@ -1108,7 +1188,11 @@ export async function createAuthorEarningsFromDiamondUnlock({
         transaction,
         metadata
       )
-    const eventSharePercent = Math.max(
+    const loyaltyReward = resolveAuthorLoyaltyRewardAt(
+      shareContext,
+      transactionDate
+    )
+    const normalEventSharePercent = Math.max(
       percentValue(
         metadata.event_author_share_percent
       ),
@@ -1122,6 +1206,17 @@ export async function createAuthorEarningsFromDiamondUnlock({
         shareContext.event_share_percent
       )
     )
+    const eventSharePercent = Math.max(
+      normalEventSharePercent,
+      loyaltyReward.share_percent
+    )
+    const loyaltyRewardApplied =
+      loyaltyReward.eligible &&
+      loyaltyReward.share_percent > Math.max(
+        normalEventSharePercent,
+        percentValue(shareContext.quest_share_percent),
+        percentValue(shareContext.boost_share_percent)
+      )
     const shareDecision =
       resolveEffectiveAuthorShare({
         questSharePercent:
@@ -1234,6 +1329,11 @@ export async function createAuthorEarningsFromDiamondUnlock({
       metadata: {
         ...metadata,
         admin_100_percent_event_cycle_id: adminWindow?.cycle_id || null,
+        author_loyalty_reward_eligible: loyaltyReward.eligible,
+        author_loyalty_reward_applied: loyaltyRewardApplied,
+        author_loyalty_reward_share_percent: loyaltyReward.share_percent,
+        author_loyalty_reward_ends_at:
+          loyaltyReward.eligible ? shareContext.loyalty_reward?.ends_at : null,
         direct_cost_diamonds:
           directCostDiamonds,
         distributable_net_revenue_diamonds:
@@ -1248,7 +1348,7 @@ export async function createAuthorEarningsFromDiamondUnlock({
           authorSharePercent,
         effective_share_source:
           shareDecision.effective_share_source,
-        revenue_rules_version: '2026-08-02',
+        revenue_rules_version: '2026-10-11',
       },
       created_at: transactionDate.toISOString(),
       updated_at: nowIso,
