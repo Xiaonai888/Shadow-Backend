@@ -3075,6 +3075,20 @@ export async function countQualifiedEpisodeView(
         console.error('READER DAILY ACTIVITY ERROR:', error)
       }),
     ])
+    try {
+      const { error: dailyEpisodeError } = await supabase.rpc(
+        'record_reader_story_episode_daily',
+        {
+          p_user_id: String(user.user_id),
+          p_story_id: String(storyId),
+          p_episode_id: String(episodeId),
+          p_counted: viewResult.counted === true,
+        }
+      )
+      if (dailyEpisodeError) throw dailyEpisodeError
+    } catch (dailyEpisodeError) {
+      console.error('READER STORY EPISODE DAILY ERROR:', dailyEpisodeError)
+    }
 
 
     if (viewResult.counted === true) {
