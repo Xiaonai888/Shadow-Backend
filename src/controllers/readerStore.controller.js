@@ -194,6 +194,7 @@ async function buildStoreSnapshot() {
   const bestSellers = available
     .filter((product) => product.sold_quantity > 0)
     .sort(bestSellingFirst)
+    .map((product, index) => ({ ...product, best_seller_rank: index + 1 }))
   const discounts = available
     .filter((product) => product.discount_percent > 0)
     .sort((a, b) => b.discount_percent - a.discount_percent || newestFirst(a, b))
@@ -263,10 +264,13 @@ export async function getReaderStoreHome(req, res) {
       if (!['all', 'book', 'pdf', 'under3'].includes(filter)) {
         return res.status(400).json({ ok: false, message: 'Invalid store filter' })
       }
+      const search = cleanText(req.query.search).slice(0, 100).toLocaleLowerCase()
       const list = source.filter((product) =>
         (filter !== 'book' || product.product_type === 'book') &&
         (filter !== 'pdf' || product.product_type === 'pdf') &&
-        (filter !== 'under3' || currentPrice(product) < 3)
+        (filter !== 'under3' || currentPrice(product) < 3) &&
+        (!search || [product.title, product.author_name, product.page_name, product.category, product.genre, product.publisher]
+          .some((value) => cleanText(value).toLocaleLowerCase().includes(search)))
       )
       const limit = cleanLimit(req.query.limit, 9, 30)
       const page = cleanLimit(req.query.page, 1, 100000)
@@ -289,6 +293,7 @@ export async function getReaderStoreHome(req, res) {
       products: snapshot.products.slice(0, limit),
       featured_authors: snapshot.featuredAuthors,
       editors_picks: sections.editors_picks,
+      sections_has_more: { you_might_like: sections.you_might_like.length > 9 },
       sections: {
         from_author_stores: sections.from_author_stores.slice(0, 6),
         editors_picks: sections.editors_picks,
