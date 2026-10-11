@@ -1,7 +1,6 @@
 import express from 'express'
 import { requireUser } from '../middleware/user.middleware.js'
 import {
-  getStoryDetailReaderStatus,
   addStoryToLibrary,
   addStoryToSubscriptions,
   getReaderLibrary,
@@ -10,6 +9,7 @@ import {
   removeStoryFromLibrary,
   removeStoryFromSubscriptions,
 } from '../controllers/library.controller.js'
+import { getStoryDetailReaderStatusOptimized } from '../controllers/storyDetailReaderStatus.controller.js'
 import { getReaderLibraryTrash, restoreReaderLibraryTrash } from '../controllers/readerLibraryTrash.controller.js'
 
 const router = express.Router()
@@ -17,7 +17,7 @@ const router = express.Router()
 router.get(
   '/story-detail-status/:storyId',
   requireUser,
-  getStoryDetailReaderStatus
+  getStoryDetailReaderStatusOptimized
 )
 
 router.get('/library/trash', requireUser, getReaderLibraryTrash)
