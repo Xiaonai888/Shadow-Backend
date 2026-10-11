@@ -1,6 +1,7 @@
 import express from 'express'
 import { getLatestPublicEpisodes } from '../controllers/latestEpisodes.controller.js'
 import { getActiveDiscoverSpecialPromotion } from '../controllers/discoverSpecialPromotion.controller.js'
+import { getActiveDiscoverAuthorStorePromotions } from '../controllers/discoverAuthorStorePromotion.controller.js'
 import {
   getPublicStoryRecommendations,
   countQualifiedEpisodeView,
@@ -27,6 +28,7 @@ import { getSupabaseClient } from '../config/supabase.js'
 
 const router = express.Router()
 router.get('/discover-special-promotion/active', getActiveDiscoverSpecialPromotion)
+router.get('/discover-author-store-promotion/active', getActiveDiscoverAuthorStorePromotions)
 
 const publicStoriesListCacheHitLimit = createRateLimit({
   key: 'public-stories-list-cache-hit',
