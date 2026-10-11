@@ -924,6 +924,76 @@ async function getViewCooldownHours() {
 }
 
 
+const READER_EPISODE_DAILY_CACHE_LIMIT = 3000
+const READER_EPISODE_DAILY_ERROR_INTERVAL_MS = 60 * 1000
+const readerEpisodeDailyRecorded = new Map()
+const readerEpisodeDailyPending = new Map()
+let readerEpisodeDailyCacheDay = ''
+let readerEpisodeDailySuccessDay = ''
+let readerEpisodeDailyLastErrorAt = 0
+
+console.info('READER STORY EPISODE DAILY HANDLER V3 READY')
+
+async function recordReaderStoryEpisodeDaily({ userId, storyId, episodeId, counted }) {
+  const day = new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  if (readerEpisodeDailyCacheDay !== day) {
+    readerEpisodeDailyCacheDay = day
+    readerEpisodeDailyRecorded.clear()
+    readerEpisodeDailyPending.clear()
+  }
+
+  const key = JSON.stringify([userId, storyId, episodeId])
+  if (!counted && readerEpisodeDailyRecorded.has(key)) return
+  if (!counted && readerEpisodeDailyPending.has(key)) {
+    await readerEpisodeDailyPending.get(key)
+    return
+  }
+
+  const request = (async () => {
+    try {
+      const { error } = await supabase.rpc('record_reader_story_episode_daily', {
+        p_user_id: String(userId),
+        p_story_id: String(storyId),
+        p_episode_id: String(episodeId),
+        p_counted: counted === true,
+      })
+      if (error) throw error
+
+      if (readerEpisodeDailyCacheDay === day) {
+        readerEpisodeDailyRecorded.delete(key)
+        readerEpisodeDailyRecorded.set(key, true)
+        if (readerEpisodeDailyRecorded.size > READER_EPISODE_DAILY_CACHE_LIMIT) {
+          readerEpisodeDailyRecorded.delete(readerEpisodeDailyRecorded.keys().next().value)
+        }
+      }
+      if (readerEpisodeDailySuccessDay !== day) {
+        readerEpisodeDailySuccessDay = day
+        console.info('READER STORY EPISODE DAILY RPC V3 SUCCESS')
+      }
+    } catch (error) {
+      const now = Date.now()
+      if (now - readerEpisodeDailyLastErrorAt >= READER_EPISODE_DAILY_ERROR_INTERVAL_MS) {
+        readerEpisodeDailyLastErrorAt = now
+        console.error('READER STORY EPISODE DAILY ERROR:', {
+          code: error?.code || null,
+          message: error?.message || String(error),
+          details: error?.details || null,
+          hint: error?.hint || null,
+        })
+      }
+    }
+  })()
+
+  if (!counted) readerEpisodeDailyPending.set(key, request)
+  try {
+    await request
+  } finally {
+    if (!counted && readerEpisodeDailyPending.get(key) === request) {
+      readerEpisodeDailyPending.delete(key)
+    }
+  }
+}
+
 async function recordEpisodeView({
   userId,
   storyId,
@@ -3075,20 +3145,12 @@ export async function countQualifiedEpisodeView(
         console.error('READER DAILY ACTIVITY ERROR:', error)
       }),
     ])
-    try {
-      const { error: dailyEpisodeError } = await supabase.rpc(
-        'record_reader_story_episode_daily',
-        {
-          p_user_id: String(user.user_id),
-          p_story_id: String(storyId),
-          p_episode_id: String(episodeId),
-          p_counted: viewResult.counted === true,
-        }
-      )
-      if (dailyEpisodeError) throw dailyEpisodeError
-    } catch (dailyEpisodeError) {
-      console.error('READER STORY EPISODE DAILY ERROR:', dailyEpisodeError)
-    }
+    await recordReaderStoryEpisodeDaily({
+      userId: user.user_id,
+      storyId,
+      episodeId,
+      counted: viewResult.counted === true,
+    })
 
 
     if (viewResult.counted === true) {
