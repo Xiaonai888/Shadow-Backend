@@ -6,6 +6,7 @@ import {
   getEpisodeComments,
   getCommentReplies,
   getCommentThread,
+  getStoryCommentEpisodeOptions,
   createStoryComment,
   getMyCommentActivities,
   getStoryComments,
@@ -78,6 +79,7 @@ router.get(
   getLatestStoryComment
 )
 router.get('/story/:storyId', getStoryComments)
+router.get('/story/:storyId/episode-options', requireUser, getStoryCommentEpisodeOptions)
 router.post(
   '/story/:storyId',
   requireUser,
