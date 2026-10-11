@@ -1394,6 +1394,20 @@ export async function getCommentThread(
         Boolean(result.hasMore),
     }
 
+    let episode = null
+
+    if (root.episode_id) {
+      const { data, error: episodeError } = await supabase
+        .from('episodes')
+        .select('id, story_id, title, episode_number')
+        .eq('id', root.episode_id)
+        .eq('story_id', root.story_id)
+        .maybeSingle()
+
+      if (episodeError) throw episodeError
+      episode = data || null
+    }
+
     return res.status(200).json({
       ok: true,
       target_comment_id:
@@ -1411,6 +1425,7 @@ export async function getCommentThread(
       },
       episode_id:
         root.episode_id || null,
+      episode,
       root_comment:
         rootComment,
     })
@@ -1426,6 +1441,38 @@ export async function getCommentThread(
         'Failed to load comment thread',
       error: error.message,
     })
+  }
+}
+
+export async function getStoryCommentEpisodeOptions(req, res) {
+  try {
+    const storyId = String(req.params.storyId || '').trim()
+    const userId = getRequestUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+    if (!storyId) {
+      return res.status(400).json({ ok: false, message: 'Story id is required' })
+    }
+
+    const access = await canModerateStory(storyId, userId)
+    if (!access.ok || (!access.isAuthor && !access.isAdmin)) {
+      return res.status(403).json({ ok: false, message: 'Author access is required' })
+    }
+
+    const { data, error } = await supabase
+      .from('episodes')
+      .select('id,story_id,title,episode_number')
+      .eq('story_id', storyId)
+      .is('deleted_at', null)
+      .order('episode_number', { ascending: true })
+
+    if (error) throw error
+    return res.status(200).json({ ok: true, episodes: data || [] })
+  } catch (error) {
+    console.error('GET STORY COMMENT EPISODES ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load episode list' })
   }
 }
 
