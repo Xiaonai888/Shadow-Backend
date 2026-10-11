@@ -257,8 +257,17 @@ export async function getReaderStoreHome(req, res) {
     const snapshot = await getStoreSnapshot()
     if (String(req.query.browse || '') === '1') {
       const section = cleanText(req.query.section || 'you_might_like')
-      const list = snapshot.sections[section]
-      if (!list) return res.status(400).json({ ok: false, message: 'Invalid store section' })
+      const source = snapshot.sections[section]
+      if (!source) return res.status(400).json({ ok: false, message: 'Invalid store section' })
+      const filter = cleanText(req.query.filter || 'all').toLowerCase()
+      if (!['all', 'book', 'pdf', 'under3'].includes(filter)) {
+        return res.status(400).json({ ok: false, message: 'Invalid store filter' })
+      }
+      const list = source.filter((product) =>
+        (filter !== 'book' || product.product_type === 'book') &&
+        (filter !== 'pdf' || product.product_type === 'pdf') &&
+        (filter !== 'under3' || currentPrice(product) < 3)
+      )
       const limit = cleanLimit(req.query.limit, 9, 30)
       const page = cleanLimit(req.query.page, 1, 100000)
       const from = (page - 1) * limit
