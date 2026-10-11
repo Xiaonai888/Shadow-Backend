@@ -17,7 +17,7 @@ router.get('/conversations/archived-page', archivedReadLimit, async (req, res) =
       userId: req.user?.user_id,
       role: req.query?.role,
       page: req.query?.page || 1,
-      limit: req.query?.limit || 20,
+      limit: req.query?.limit || 10,
     })
     return res.status(200).json({ ok: true, ...result })
   } catch (error) {
