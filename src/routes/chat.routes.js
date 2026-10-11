@@ -1,5 +1,6 @@
 import chatConversationManagementRoutes from './chatConversationManagement.routes.js'
 import chatMessageActionsRoutes from './chatMessageActions.routes.js'
+import chatArchivedPageRoutes from './chatArchivedPage.routes.js'
 import express from 'express'
 import {
   createReaderAuthorRequestController,
@@ -58,6 +59,7 @@ const chatPresenceRateLimit =
   })
 
 router.use(requireUser)
+router.use(chatArchivedPageRoutes)
 router.use(chatConversationManagementRoutes)
 router.use(chatMessageActionsRoutes)
 
