@@ -14,6 +14,7 @@ import {
 const PRODUCT_TYPES = new Set(['book', 'pdf'])
 const PRODUCT_STATUSES = new Set(['draft', 'active', 'hidden'])
 import { handleCallbackQuery } from './telegramPayments.controller.js'
+import { applyDiscoverAuthorStoreCheckoutPrices } from '../services/discoverAuthorStoreCheckoutPricing.service.js'
 
 function normalizePageUsername(username) {
   return String(username || '')
@@ -3238,7 +3239,7 @@ export async function createAuthorStoreOrderPayment(req, res) {
 
     const builtOrder = await buildAuthorStoreOrderItems(req.body.items)
     const authorPageId = builtOrder.authorPageId
-    let orderItems = builtOrder.orderItems
+    let orderItems = await applyDiscoverAuthorStoreCheckoutPrices(req.body.items, builtOrder.orderItems)
     const needsDelivery = orderItems.some((item) => String(item.product_type || '').toLowerCase() === 'book')
 
     if (needsDelivery && (!buyerProfile?.phone_number || !buyerProfile?.delivery_address)) {
@@ -3385,7 +3386,7 @@ export async function createAuthorStoreOrderPayment(req, res) {
     })
   } catch (error) {
     console.error('CREATE AUTHOR STORE ORDER PAYMENT ERROR:', error)
-    return res.status(500).json({
+    return res.status(error.statusCode === 409 ? 409 : 500).json({
       ok: false,
       message: error.message || 'Failed to create Author Store payment',
     })
