@@ -2141,6 +2141,58 @@ export async function activateMyAuthorLifetimeBoost(
   }
 }
 
+async function getAuthorLoyaltyIncomeState(authorId) {
+  try {
+    const { data, error } = await supabase.rpc(
+      'get_author_loyalty_reward_state',
+      { p_author_id: authorId }
+    )
+
+    if (error) throw error
+
+    const reward = Array.isArray(data) ? data[0] || null : data
+
+    if (!reward) {
+      return {
+        status: 'waiting',
+        is_active: false,
+        minimum_share_percent: 0,
+        required_episodes: 20,
+        started_at: null,
+        ends_at: null,
+      }
+    }
+
+    const expired =
+      Number.isFinite(Date.parse(reward.ends_at)) &&
+      Date.parse(reward.ends_at) <= Date.now()
+    const isActive = Boolean(reward.is_active) && !expired
+
+    return {
+      status: expired ? 'ended' : isActive ? 'active' : 'paused',
+      is_active: isActive,
+      minimum_share_percent: isActive
+        ? percentValue(reward.minimum_share_percent)
+        : 0,
+      required_episodes: 20,
+      total_published_episodes: numberValue(reward.total_published_episodes),
+      last_published_at: reward.last_published_at || null,
+      started_at: reward.started_at || null,
+      ends_at: reward.ends_at || null,
+    }
+  } catch (error) {
+    console.error('GET AUTHOR LOYALTY INCOME STATE ERROR:', error)
+    return {
+      status: 'unavailable',
+      is_active: false,
+      minimum_share_percent: 0,
+      required_episodes: 20,
+      started_at: null,
+      ends_at: null,
+    }
+  }
+}
+
 async function getMyAuthorIncomeUncached(
   req,
   res
@@ -2229,6 +2281,7 @@ async function getMyAuthorIncomeUncached(
       recentEarnings,
       topSupporters,
       monthlyEarnings,
+      loyaltyReward,
     ] = await Promise.all([
       getRevenueSettings(),
       supabase
@@ -2245,6 +2298,7 @@ async function getMyAuthorIncomeUncached(
       getRecentEarnings(authorPage.id),
       getTopSupporters(userId),
       getMonthlyEarnings(userId),
+      getAuthorLoyaltyIncomeState(authorPage.id),
     ])
 
     if (quest.error) throw quest.error
@@ -2326,6 +2380,14 @@ async function getMyAuthorIncomeUncached(
       },
     ]
 
+    if (loyaltyReward.is_active) {
+      shareCandidates.push({
+        source: 'author_loyalty_reward',
+        percent: loyaltyReward.minimum_share_percent,
+        ends_at: loyaltyReward.ends_at,
+      })
+    }
+
     const effectiveShare =
       shareCandidates.sort(
         (a, b) => b.percent - a.percent
@@ -2403,6 +2465,7 @@ async function getMyAuthorIncomeUncached(
         effectiveShare.ends_at,
       admin_100_percent_event:
         adminEvent,
+      loyalty_reward: loyaltyReward,
       next_payout_date:
         getNextPayoutDate(settings),
       payment_method: {
