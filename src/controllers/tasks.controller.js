@@ -5,6 +5,7 @@ import { getActiveSessionMissions } from '../services/taskCenterMissionCache.ser
 import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 import { queueReadingRewardEvent } from '../services/readingRewardEventQueue.service.js'
 import { getTaskCenterDailyStoryAssignment } from '../services/taskCenterDailyStoryAssignment.service.js'
+import { recordReadingRewardSession } from '../services/readingRewardSessionAtomic.service.js'
 
 
 const DAILY_REWARDS = [
@@ -1882,71 +1883,30 @@ export async function trackReadingSessionProgress(req, res) {
           const dailyStartedAt = Date.now()
           const now =
             new Date().toISOString()
-          const dailyReward =
-            await getOrCreateReadingReward(
-              userId
-            )
-          const currentDailySeconds =
-            Math.min(
-              MAX_READING_REWARD_SECONDS,
-              Math.max(
-                0,
-                Number(
-                  dailyReward.active_seconds ||
-                  0
-                )
-              )
-            )
-          const nextDailySeconds =
-            Math.min(
-              MAX_READING_REWARD_SECONDS,
-              currentDailySeconds +
-                secondsToAdd
-            )
+          const dailyResult =
+            await recordReadingRewardSession({
+              userId,
+              rewardDate: getPhnomPenhDateKey(),
+              seconds: secondsToAdd,
+              getOrCreateReadingReward,
+            })
+
+          const updatedDailyReward =
+            dailyResult.reward
           const actualDailySeconds =
-            Math.max(
-              0,
-              nextDailySeconds -
-                currentDailySeconds
-            )
+            dailyResult.secondsAdded
 
           diagnostic.daily_seconds_added =
             actualDailySeconds
 
-          let updatedDailyReward =
-            dailyReward
-
           if (actualDailySeconds > 0) {
-            const {
-              data,
-              error,
-            } = await supabase
-              .from(
-                'reader_reading_rewards'
-              )
-              .update({
-                active_seconds:
-                  nextDailySeconds,
-                updated_at: now,
-              })
-              .eq('id', dailyReward.id)
-              .select('*')
-              .single()
-
-            if (error) throw error
-
-            updatedDailyReward = data
-
             queueReadingRewardEvent({
               user_id: userId,
-              reward_date:
-                dailyReward.reward_date,
+              reward_date: updatedDailyReward.reward_date,
               story_id: storyId,
               episode_id: episodeId,
-              seconds_added:
-                actualDailySeconds,
-              active_seconds_after:
-                nextDailySeconds,
+              seconds_added: actualDailySeconds,
+              active_seconds_after: updatedDailyReward.active_seconds,
               event_type: 'heartbeat',
             })
           }
