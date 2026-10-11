@@ -1405,11 +1405,12 @@ export async function getConversationMessages({
   }
 
   const isIncremental = Boolean(after)
+  const isInitialPage = !before && !after
   const safeLimit = Math.min(
-    isIncremental ? 50 : 100,
+    isIncremental ? 50 : isInitialPage ? 10 : 100,
     Math.max(
       1,
-      Number(limit) || (isIncremental ? 20 : 50)
+      Number(limit) || (isIncremental ? 20 : isInitialPage ? 10 : 50)
     )
   )
   const visibilityCutoff =
