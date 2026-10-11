@@ -1,7 +1,5 @@
 import { supabase } from '../config/supabase.js'
 
-const EARNINGS_PAGE_SIZE = 1000
-
 function numberValue(value) {
   const number = Number(value || 0)
   return Number.isFinite(number) ? number : 0
@@ -31,72 +29,39 @@ function publicManagerEpisode(episode, commentCounts, earningTotals) {
   }
 }
 
-async function getEpisodeCommentCounts(storyId, episodeIds) {
-  const counts = new Map()
+async function getEpisodeMetrics(storyId, userId, episodeIds) {
+  const commentCounts = new Map()
+  const earningTotals = new Map()
 
-  if (!episodeIds.length) return counts
+  if (!episodeIds.length) return { commentCounts, earningTotals }
 
-  const { data, error } = await supabase
-    .from('comments')
-    .select('episode_id')
-    .eq('story_id', storyId)
-    .in('episode_id', episodeIds)
-    .eq('is_hidden', false)
-    .is('deleted_at', null)
+  const { data, error } = await supabase.rpc('story_manager_episode_metrics_v1', {
+    p_story_id: storyId,
+    p_author_user_id: String(userId),
+    p_episode_ids: episodeIds,
+  })
 
-  if (error) {
-    console.error('GET STORY MANAGER COMMENT COUNTS ERROR:', error)
-    return counts
-  }
+  if (error) throw error
+  if (!Array.isArray(data)) throw new Error('Invalid Story Manager metrics response')
 
-  for (const comment of data || []) {
-    const key = String(comment.episode_id || '')
-    if (!key) continue
-    counts.set(key, Number(counts.get(key) || 0) + 1)
-  }
+  const returnedIds = new Set()
 
-  return counts
-}
-
-async function getEpisodeEarningTotals(userId, storyId, episodeIds) {
-  const totals = new Map()
-
-  if (!episodeIds.length) return totals
-
-  let from = 0
-
-  while (true) {
-    const { data, error } = await supabase
-      .from('author_earnings')
-      .select('episode_id, author_net_payout_usd')
-      .eq('author_user_id', userId)
-      .eq('story_id', storyId)
-      .eq('source_type', 'diamond_unlock')
-      .eq('currency', 'diamond')
-      .neq('earning_status', 'void')
-      .in('episode_id', episodeIds)
-      .range(from, from + EARNINGS_PAGE_SIZE - 1)
-
-    if (error) {
-      console.error('GET STORY MANAGER EARNINGS ERROR:', error)
-      return totals
+  for (const row of data) {
+    const episodeId = String(row?.episode_id || '')
+    if (!episodeId || returnedIds.has(episodeId)) {
+      throw new Error('Invalid Story Manager episode metrics')
     }
 
-    for (const earning of data || []) {
-      const key = String(earning.episode_id || '')
-      if (!key) continue
-      totals.set(
-        key,
-        numberValue(totals.get(key)) +
-          numberValue(earning.author_net_payout_usd)
-      )
-    }
-
-    if (!data || data.length < EARNINGS_PAGE_SIZE) break
-    from += EARNINGS_PAGE_SIZE
+    returnedIds.add(episodeId)
+    commentCounts.set(episodeId, Number(row.total_comments || 0))
+    earningTotals.set(episodeId, numberValue(row.total_earnings_usd))
   }
 
-  return totals
+  if (episodeIds.some((episodeId) => !returnedIds.has(String(episodeId)))) {
+    throw new Error('Incomplete Story Manager episode metrics')
+  }
+
+  return { commentCounts, earningTotals }
 }
 
 export async function getStoryManagerEpisodes(req, res) {
@@ -139,11 +104,7 @@ export async function getStoryManagerEpisodes(req, res) {
     if (episodeError) throw episodeError
 
     const episodeIds = (episodes || []).map((episode) => episode.id).filter(Boolean)
-
-    const [commentCounts, earningTotals] = await Promise.all([
-      getEpisodeCommentCounts(storyId, episodeIds),
-      getEpisodeEarningTotals(userId, storyId, episodeIds),
-    ])
+    const { commentCounts, earningTotals } = await getEpisodeMetrics(storyId, userId, episodeIds)
 
     return res.status(200).json({
       ok: true,
