@@ -21,6 +21,7 @@ import {
   getAdminIncomeSummary,
 } from '../controllers/adminIncome.controller.js'
 import { getAdminStoryPayoutQueue } from '../controllers/adminStoryPayoutQueue.controller.js'
+import { getAdminAuthorPageAuthors, getAdminAuthorPageAuthorTransactions } from '../controllers/adminAuthorPageAuthorSummary.controller.js'
 
 const router = express.Router()
 
@@ -32,6 +33,8 @@ router.post('/author-income/reconcile', requireAdmin, reconcileAdminAuthorIncome
 router.get('/author-income/:authorId/transactions', requireAdmin, getAdminAuthorIncomeTransactions)
 router.get('/diamond-gifts', requireAdmin, getAdminDiamondGifts)
 router.get('/author-page', requireAdmin, getAdminAuthorPageIncome)
+router.get('/author-page/authors', requireAdmin, getAdminAuthorPageAuthors)
+router.get('/author-page/authors/:authorId/transactions', requireAdmin, getAdminAuthorPageAuthorTransactions)
 router.get('/author-library', requireAdmin, getAdminAuthorLibrary)
 router.post('/author-library/:productId/download', requireAdmin, downloadAdminAuthorLibraryPdf)
 router.post('/author-library/:productId/read', requireAdmin, readAdminAuthorLibraryPdf)
