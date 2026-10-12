@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import { isIP } from 'node:net'
 import { supabase } from '../config/supabase.js'
 import { createAdminSecurityAlert, getAdminRequestCountry } from './adminSecurityAlerts.service.js'
+import { shouldSendRepeatedBlockedAlert, alertNewAdminBrowserLogin } from './adminCriticalAttackAlerts.service.js'
 
 const ADMIN_DEVICE_COOKIE = 'shadow_admin_device'
 const TRUSTED_DEVICE_DAYS = 90
@@ -305,6 +306,7 @@ async function updateState(id, payload) {
 }
 
 async function alertBlockedAttempt(req, ctx, state, payload = {}) {
+  if (!shouldSendRepeatedBlockedAlert(ctx, payload)) return
   await createAdminSecurityAlert({
     req,
     email: ctx.attemptedEmail,
@@ -347,6 +349,7 @@ export async function checkAdminLoginAllowed({ req, email }) {
         message: state.permanent_block_reason || 'A permanently blocked identity tried to access admin login.',
         block_status: 'permanent_block',
       })
+      await alertNewAdminBrowserLogin({ req, admin, ctx, deviceId })
 
       return {
         allowed: false,
@@ -446,7 +449,7 @@ export async function recordAdminLoginFailure({ req, email, reason = 'Invalid ad
       },
     })
 
-    await createAdminSecurityAlert({
+    if (block && block.level >= 2) await createAdminSecurityAlert({
       req,
       email: ctx.attemptedEmail,
       deviceId: ctx.deviceId || null,
