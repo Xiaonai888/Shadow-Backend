@@ -405,7 +405,6 @@ async function loadReplyPage({
   }
 }
 
-
 export async function getReaderPostComments(
   req,
   res
@@ -422,6 +421,7 @@ export async function getReaderPostComments(
     )
       .trim()
       .toLowerCase()
+    const focusCommentId = String(req.query.focus_comment_id || '').trim()
     const { page, limit, from, to } =
       getPagination(req)
     const replyLimit = Math.min(
@@ -487,6 +487,47 @@ export async function getReaderPostComments(
     if (parentError) throw parentError
 
     const parents = parentComments || []
+    let focusedComment = null
+    let focusedParent = null
+    let focusedParentReplyTotal = 0
+
+    if (focusCommentId && isUuid(focusCommentId)) {
+      const { data: selected, error: focusError } = await supabase
+        .from('reader_post_comments')
+        .select(COMMENT_SELECT)
+        .eq('post_id', postId)
+        .eq('id', focusCommentId)
+        .eq('is_hidden', false)
+        .maybeSingle()
+
+      if (focusError) throw focusError
+      focusedComment = selected || null
+
+      if (focusedComment?.parent_id) {
+        const { data: parent, error: parentError } = await supabase
+          .from('reader_post_comments')
+          .select(COMMENT_SELECT)
+          .eq('post_id', postId)
+          .eq('id', focusedComment.parent_id)
+          .eq('is_hidden', false)
+          .maybeSingle()
+
+        if (parentError) throw parentError
+        focusedParent = parent || null
+
+        if (focusedParent) {
+          const { count, error: countError } = await supabase
+            .from('reader_post_comments')
+            .select('id', { count: 'exact', head: true })
+            .eq('post_id', postId)
+            .eq('parent_id', focusedParent.id)
+            .eq('is_hidden', false)
+
+          if (countError) throw countError
+          focusedParentReplyTotal = Number(count || 0)
+        }
+      }
+    }
 
     const [
       replyResults,
@@ -531,6 +572,8 @@ export async function getReaderPostComments(
       ...replyRows.map(
         (reply) => reply.id
       ),
+      ...(focusedComment ? [focusedComment.id] : []),
+      ...(focusedParent ? [focusedParent.id] : []),
     ]
 
     const reactionMap =
@@ -583,6 +626,19 @@ export async function getReaderPostComments(
       has_more:
         page * limit <
         Number(parentCount || 0),
+      ...(focusCommentId ? {
+        focus_comment: focusedComment
+          ? publicComment(focusedComment, reactionMap)
+          : null,
+        focus_parent_comment: focusedParent
+          ? {
+              ...publicComment(focusedParent, reactionMap),
+              reply_total: focusedParentReplyTotal,
+              reply_page: 0,
+              reply_has_more: focusedParentReplyTotal > 1,
+            }
+          : null,
+      } : {}),
     })
   } catch (error) {
     console.error(
@@ -1244,3 +1300,4 @@ export async function toggleReaderPostCommentLike(
     })
   }
 }
+
