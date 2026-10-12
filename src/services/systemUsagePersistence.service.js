@@ -603,6 +603,180 @@ function parseSupabaseUsageCounts(data) {
   }
 }
 
+function renderMetricLabel(series, field) {
+  const labels = series?.labels
+  const target = String(field).toLowerCase()
+
+  if (Array.isArray(labels)) {
+    const match = labels.find(
+      (item) => String(item?.field || '').toLowerCase() === target
+    )
+    return String(match?.value || '').trim()
+  }
+
+  if (labels && typeof labels === 'object') {
+    const key = Object.keys(labels).find(
+      (item) => item.toLowerCase() === target
+    )
+    return key ? String(labels[key] || '').trim() : ''
+  }
+
+  return ''
+}
+
+function renderMetricService(series, serviceIds) {
+  const serviceId =
+    renderMetricLabel(series, 'service') ||
+    renderMetricLabel(series, 'resource') ||
+    renderMetricLabel(series, 'serviceId') ||
+    String(series?.serviceId || '').trim()
+
+  if (serviceIds.includes(serviceId)) return serviceId
+  return serviceIds.length === 1 && !serviceId ? serviceIds[0] : ''
+}
+
+function renderMetricHour(point, now) {
+  const raw = point?.timestamp
+  const numeric = Number(raw)
+  const timestamp =
+    raw !== null && raw !== undefined && String(raw).trim() !== '' &&
+    Number.isFinite(numeric)
+      ? numeric < 1e11 ? numeric * 1000 : numeric
+      : Date.parse(String(raw || ''))
+
+  if (!Number.isFinite(timestamp) || timestamp > now + HOUR_MS) {
+    return null
+  }
+
+  const hourStart = Math.floor(timestamp / HOUR_MS) * HOUR_MS - HOUR_MS
+  return hourStart >= now - 7 * DAY_MS && hourStart >= 0 &&
+    hourStart + HOUR_MS <= now
+    ? hourStart
+    : null
+}
+
+function collectRenderHourly(data, sourcesData, serviceIds, now) {
+  const rows = new Map()
+  const sourceRows = Array.isArray(sourcesData?.data)
+    ? sourcesData.data
+    : []
+  const sourceTotals = new Map()
+
+  for (const series of Array.isArray(data) ? data : []) {
+    const serviceId = renderMetricService(series, serviceIds)
+    const multiplier = bytesMultiplier(series?.unit)
+    if (!serviceId || !multiplier || !Array.isArray(series?.values)) continue
+
+    for (const point of series.values) {
+      const hourStart = renderMetricHour(point, now)
+      const value = Number(point?.value)
+      if (hourStart === null || !Number.isFinite(value) || value < 0) continue
+
+      const key = `${serviceId}:${hourStart}`
+      const row = rows.get(key) || {
+        service_id: serviceId,
+        hour_start: new Date(hourStart).toISOString(),
+        total_bytes: 0,
+        http_response_bytes: null,
+        websocket_response_bytes: null,
+        service_initiated_bytes: null,
+        private_link_bytes: null,
+        breakdown_available: false,
+      }
+
+      row.total_bytes += value * multiplier
+      rows.set(key, row)
+    }
+  }
+
+  const categories = ['http', 'websocket', 'nat', 'privatelink']
+
+  for (const series of sourceRows) {
+    const serviceId = renderMetricService(series, serviceIds)
+    const category = (
+      renderMetricLabel(series, 'trafficSource') ||
+      String(series?.trafficSource || '')
+    ).toLowerCase()
+    if (!serviceId || !categories.includes(category)) continue
+
+    const multiplier = bytesMultiplier(series?.unit) || 1
+    for (const point of Array.isArray(series?.values) ? series.values : []) {
+      const hourStart = renderMetricHour(point, now)
+      const value = Number(point?.value)
+      if (hourStart === null || !Number.isFinite(value) || value < 0) continue
+
+      const key = `${serviceId}:${hourStart}`
+      if (!rows.has(key)) continue
+      const current = sourceTotals.get(key) || {
+        http: 0,
+        websocket: 0,
+        nat: 0,
+        privatelink: 0,
+      }
+      current[category] += value * multiplier
+      sourceTotals.set(key, current)
+    }
+  }
+
+  for (const [key, row] of rows) {
+    row.total_bytes = Math.round(row.total_bytes)
+    const totals = sourceTotals.get(key)
+    const sum = totals
+      ? categories.reduce((total, category) => total + totals[category], 0)
+      : 0
+    if (!(sum > 0)) continue
+
+    const amounts = categories.map(
+      (category) => Math.floor(row.total_bytes * totals[category] / sum)
+    )
+    const remainder = row.total_bytes - amounts.reduce((a, b) => a + b, 0)
+    const largestIndex = categories.reduce(
+      (best, category, index) =>
+        totals[category] > totals[categories[best]] ? index : best,
+      0
+    )
+    amounts[largestIndex] += remainder
+
+    row.http_response_bytes = amounts[0]
+    row.websocket_response_bytes = amounts[1]
+    row.service_initiated_bytes = amounts[2]
+    row.private_link_bytes = amounts[3]
+    row.breakdown_available = true
+  }
+
+  return [...rows.values()].sort(
+    (a, b) => a.hour_start.localeCompare(b.hour_start)
+  )
+}
+
+async function saveRenderHourly(rows) {
+  if (!rows.length) return { saved: 0, status: 'no_data' }
+
+  const complete = rows.filter((row) => row.breakdown_available)
+  const incomplete = rows.filter((row) => !row.breakdown_available)
+
+  for (let index = 0; index < complete.length; index += 100) {
+    const { error } = await supabase
+      .from('render_bandwidth_hourly')
+      .upsert(complete.slice(index, index + 100), {
+        onConflict: 'service_id,hour_start',
+      })
+    if (error) throw error
+  }
+
+  for (let index = 0; index < incomplete.length; index += 100) {
+    const { error } = await supabase
+      .from('render_bandwidth_hourly')
+      .upsert(incomplete.slice(index, index + 100), {
+        onConflict: 'service_id,hour_start',
+        ignoreDuplicates: true,
+      })
+    if (error) throw error
+  }
+
+  return { saved: rows.length, status: 'ok' }
+}
+
 async function syncRenderProvider(now) {
   const apiKey = String(
     process.env.RENDER_API_KEY ||
@@ -610,80 +784,111 @@ async function syncRenderProvider(now) {
       ''
   ).trim()
 
-  const serviceId = String(
+  const primaryServiceId = String(
     process.env.RENDER_SERVICE_ID ||
       process.env.SYSTEM_RENDER_SERVICE_ID ||
       ''
   ).trim()
 
-  if (!apiKey || !serviceId) {
+  const configuredIds = String(process.env.RENDER_SERVICE_IDS || '')
+    .split(/[\s,;]+/)
+    .map((value) => value.trim())
+    .filter((value) => /^srv-[a-z0-9-]+$/i.test(value))
+
+  const serviceIds = [...new Set([
+    primaryServiceId,
+    ...configuredIds,
+  ].filter((value) => /^srv-[a-z0-9-]+$/i.test(value)))].slice(0, 20)
+
+  if (!apiKey || !serviceIds.length) {
     providerState.render = {
       status: 'not_configured',
       checked_at: new Date(now).toISOString(),
       missing: [
         !apiKey ? 'RENDER_API_KEY' : null,
-        !serviceId ? 'RENDER_SERVICE_ID' : null,
+        !serviceIds.length ? 'RENDER_SERVICE_ID' : null,
       ].filter(Boolean),
     }
     return
   }
 
-  const start = new Date(
-    now - PROVIDER_WINDOW_MS
-  ).toISOString()
-
+  const backfillWindow = providerState.render?.hourly_history?.status === 'ok'
+    ? 6 * HOUR_MS
+    : 7 * DAY_MS
+  const start = new Date(now - backfillWindow).toISOString()
   const end = new Date(now).toISOString()
-
-  const query = new URLSearchParams({
-    startTime: start,
-    endTime: end,
-    resource: serviceId,
-  })
+  const query = new URLSearchParams({ startTime: start, endTime: end })
+  for (const serviceId of serviceIds) query.append('resource', serviceId)
 
   try {
-    const [
-      bandwidthData,
-      bandwidthSourcesData,
-    ] = await Promise.all([
-      fetchJson(
-        `https://api.render.com/v1/metrics/bandwidth?${query}`,
-        apiKey
-      ),
-      fetchJson(
-        `https://api.render.com/v1/metrics/bandwidth-sources?${query}`,
-        apiKey
-      ).catch(() => null),
+    const [bandwidthData, bandwidthSourcesData] = await Promise.all([
+      fetchJson(`https://api.render.com/v1/metrics/bandwidth?${query}`, apiKey),
+      fetchJson(`https://api.render.com/v1/metrics/bandwidth-sources?${query}`, apiKey)
+        .catch(() => null),
     ])
 
-    const parsed =
-      parseRenderBandwidth(bandwidthData)
+    const hourlyRows = collectRenderHourly(
+      bandwidthData,
+      bandwidthSourcesData,
+      serviceIds,
+      now
+    )
 
-    const sources =
-      parseRenderBandwidthSources(
-        bandwidthSourcesData
-      )
+    const displayServiceId = serviceIds[0]
+    const displayRow = hourlyRows
+      .filter((row) => row.service_id === displayServiceId)
+      .at(-1) || null
 
-    const billingBreakdown =
-      renderBillingBreakdown(
-        parsed.provider_bytes,
-        sources
-      )
+    const sources = displayRow?.breakdown_available
+      ? {
+          available: true,
+          series_count: Array.isArray(bandwidthSourcesData?.data)
+            ? bandwidthSourcesData.data.length
+            : 0,
+          category_raw_total: displayRow.total_bytes,
+          raw: {
+            http: displayRow.http_response_bytes,
+            websocket: displayRow.websocket_response_bytes,
+            nat: displayRow.service_initiated_bytes,
+            privatelink: displayRow.private_link_bytes,
+          },
+        }
+      : null
+
+    const parsed = parseRenderBandwidth(bandwidthData)
+    const displayStart = displayRow?.hour_start || start
+    const displayEnd = displayRow
+      ? new Date(Date.parse(displayStart) + HOUR_MS).toISOString()
+      : end
 
     providerState.render = {
-      status: parsed.comparable
-        ? 'ok'
-        : 'unsupported_unit',
+      status: displayRow ? 'ok' : parsed.comparable ? 'no_recent_data' : 'unsupported_unit',
       checked_at: new Date(now).toISOString(),
-      window_start: start,
-      window_end: end,
-      service_id: serviceId,
+      window_start: displayStart,
+      window_end: displayEnd,
+      service_id: displayServiceId,
+      service_ids: serviceIds,
       ...parsed,
-      traffic_sources_available:
-        Boolean(sources.available),
-      traffic_source_series_count:
-        sources.series_count,
-      billing_breakdown:
-        billingBreakdown,
+      provider_bytes: displayRow?.total_bytes ?? null,
+      comparable: Boolean(displayRow),
+      traffic_sources_available: Boolean(sources),
+      traffic_source_series_count: sources?.series_count || 0,
+      billing_breakdown: renderBillingBreakdown(
+        displayRow?.total_bytes ?? null,
+        sources
+      ),
+      history_window_start: start,
+      history_window_end: end,
+    }
+
+    try {
+      providerState.render.hourly_history = await saveRenderHourly(hourlyRows)
+    } catch (error) {
+      providerState.render.hourly_history = {
+        saved: 0,
+        status: 'error',
+      }
+      console.error('RENDER_BANDWIDTH_HOURLY_SAVE_ERROR:', error?.message || error)
     }
   } catch (error) {
     providerState.render = {
@@ -691,11 +896,8 @@ async function syncRenderProvider(now) {
       checked_at: new Date(now).toISOString(),
       window_start: start,
       window_end: end,
-      service_id: serviceId,
-      error: String(
-        error?.message ||
-          'Render provider sync failed.'
-      ).slice(0, 300),
+      service_ids: serviceIds,
+      error: String(error?.message || 'Render provider sync failed.').slice(0, 300),
     }
   }
 }
