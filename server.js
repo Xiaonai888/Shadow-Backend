@@ -114,7 +114,7 @@ import { startSystemUsageIncidentService } from './src/services/systemUsageIncid
 import { startSystemUsageRegressionWatch } from './src/services/systemUsageRegression.service.js'
 import adminAppSettingsRoutes from './src/routes/adminAppSettings.routes.js'
 import publicAppSettingsRoutes from './src/routes/publicAppSettings.routes.js'
-
+import { backendOriginAudit } from './src/middleware/backendOriginAudit.middleware.js'
 
 
 dotenv.config()
@@ -822,6 +822,7 @@ app.use('/api/admin/games', adminGameSettingsRoutes)
 app.use('/api/admin/apps', adminAppSettingsRoutes)
 app.use('/api/admin/work', adminWorkRoutes)
 app.use('/api/admin/system-control', adminSystemControlRoutes)
+app.use(backendOriginAudit)
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
 })
