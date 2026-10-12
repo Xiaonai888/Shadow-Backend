@@ -120,6 +120,7 @@ import { backendOriginAudit } from './src/middleware/backendOriginAudit.middlewa
 dotenv.config()
 
 const app = express()
+app.use(backendOriginAudit)
 app.use(trafficDiagnosticMiddleware)
 app.use((req, res, next) => {
   const started = Date.now()
@@ -822,7 +823,6 @@ app.use('/api/admin/games', adminGameSettingsRoutes)
 app.use('/api/admin/apps', adminAppSettingsRoutes)
 app.use('/api/admin/work', adminWorkRoutes)
 app.use('/api/admin/system-control', adminSystemControlRoutes)
-app.use(backendOriginAudit)
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
 })
