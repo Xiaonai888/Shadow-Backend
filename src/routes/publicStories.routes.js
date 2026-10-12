@@ -207,9 +207,95 @@ router.get(
 
 router.get(
   '/stories/:storyId/episodes',
+  personalizeStoryEpisodeList,
   cachePublicStoryDataResponse('episodes'),
   getPublicStoryEpisodes
 )
+
+function personalizeStoryEpisodeList(req, res, next) {
+  const authorization = String(req.headers.authorization || '')
+  const token = authorization.startsWith('Bearer ')
+    ? authorization.slice(7)
+    : ''
+  if (!token || !process.env.JWT_SECRET) return next()
+
+  let viewer
+  try {
+    viewer = jwt.verify(token, process.env.JWT_SECRET)
+  } catch {
+    return next()
+  }
+  if (viewer?.type !== 'reader' || !viewer.user_id) return next()
+
+  res.setHeader('Cache-Control', 'private, no-store')
+  const originalJson = res.json.bind(res)
+  res.json = async (body) => {
+    if (
+      res.statusCode !== 200 ||
+      body?.ok === false ||
+      !Array.isArray(body?.episodes) ||
+      !body.episodes.some((episode) => episode.is_locked)
+    ) {
+      return originalJson(body)
+    }
+
+    try {
+      const activeUnlocks = new Map()
+      const batchSize = 1000
+      const now = Date.now()
+
+      for (let offset = 0; ; offset += batchSize) {
+        const { data, error } = await getSupabaseClient()
+          .from('episode_unlocks')
+          .select('episode_id, unlock_type, access_type, expires_at')
+          .eq('user_id', viewer.user_id)
+          .eq('story_id', req.params.storyId)
+          .eq('unlock_status', 'active')
+          .order('episode_id', { ascending: true })
+          .range(offset, offset + batchSize - 1)
+
+        if (error) throw error
+
+        for (const grant of data || []) {
+          const unlockType = String(grant.unlock_type || '').toLowerCase()
+          const accessType = String(grant.access_type || '').toLowerCase()
+          const permanent = accessType === 'permanent' ||
+            ['diamond', 'voucher', 'story_card', 'free_item'].includes(unlockType)
+          const expiresAt = grant.expires_at ? Date.parse(grant.expires_at) : null
+          const active = grant.expires_at
+            ? Number.isFinite(expiresAt) && expiresAt > now
+            : permanent
+
+          if (active) activeUnlocks.set(String(grant.episode_id), grant)
+        }
+
+        if ((data || []).length < batchSize) break
+      }
+
+      return originalJson({
+        ...body,
+        episodes: body.episodes.map((episode) => {
+          const grant = activeUnlocks.get(String(episode.id))
+          return {
+            ...episode,
+            is_locked: Boolean(episode.is_locked && !grant),
+            is_unlocked: Boolean(!episode.is_locked || grant),
+            unlock_type: grant?.unlock_type || null,
+            unlock_expires_at: grant?.expires_at || null,
+          }
+        }),
+      })
+    } catch (error) {
+      console.error('PERSONALIZE EPISODE UNLOCK LIST ERROR:', error)
+      return res.status(503).json({
+        ok: false,
+        message: 'Failed to check episode unlock access',
+      })
+    }
+  }
+  return next()
+}
+
 
 router.get('/stories/:storyId/episodes/:episodeId', getPublicEpisodeById)
 router.post(
