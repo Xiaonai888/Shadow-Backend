@@ -115,7 +115,8 @@ import { startSystemUsageRegressionWatch } from './src/services/systemUsageRegre
 import adminAppSettingsRoutes from './src/routes/adminAppSettings.routes.js'
 import publicAppSettingsRoutes from './src/routes/publicAppSettings.routes.js'
 import { backendOriginAudit } from './src/middleware/backendOriginAudit.middleware.js'
-
+import adminDeviceOfflineRoutes from './src/routes/adminDeviceOffline.routes.js'
+import readerOfflineControlRoutes from './src/routes/readerOfflineControl.routes.js'
 
 dotenv.config()
 
@@ -790,6 +791,8 @@ app.use('/api/visitors', visitorTrackingSpamGuard, visitorAnalyticsRoutes)
 app.use('/api/task-center', adminTaskCenterRoutes)
 app.use('/api/admin/login-guard', adminLoginGuardRoutes)
 app.use('/api/admin/device-access', adminDeviceAccessRoutes)
+app.use('/api/admin/device-offline', adminDeviceOfflineRoutes)
+app.use('/api/reader/offline-control', readerOfflineControlRoutes)
 app.use('/api/admin/two-factor', adminTwoFactorRoutes)
 app.use('/api/admin/passkey-pin', adminPasskeyPinRoutes)
 app.use('/api/admin/discover-control', adminDiscoverControlRoutes)
