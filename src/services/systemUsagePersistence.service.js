@@ -29,6 +29,8 @@ let writing = false
 let providerSyncing = false
 let retentionRunning = false
 let lastRetentionAt = 0
+let lastRenderFullBackfillAt = 0
+let lastRenderBackfillServiceKey = ''
 
 const providerState = {
   last_sync_at: null,
@@ -670,7 +672,13 @@ function collectRenderHourly(data, sourcesData, serviceIds, now) {
     for (const point of series.values) {
       const hourStart = renderMetricHour(point, now)
       const value = Number(point?.value)
-      if (hourStart === null || !Number.isFinite(value) || value < 0) continue
+      if (
+        hourStart === null ||
+        point?.value === null ||
+        point?.value === undefined ||
+        !Number.isFinite(value) ||
+        value < 0
+      ) continue
 
       const key = `${serviceId}:${hourStart}`
       const row = rows.get(key) || {
@@ -696,14 +704,20 @@ function collectRenderHourly(data, sourcesData, serviceIds, now) {
     const category = (
       renderMetricLabel(series, 'trafficSource') ||
       String(series?.trafficSource || '')
-    ).toLowerCase()
+    ).trim().toLowerCase()
     if (!serviceId || !categories.includes(category)) continue
 
     const multiplier = bytesMultiplier(series?.unit) || 1
     for (const point of Array.isArray(series?.values) ? series.values : []) {
       const hourStart = renderMetricHour(point, now)
       const value = Number(point?.value)
-      if (hourStart === null || !Number.isFinite(value) || value < 0) continue
+      if (
+        hourStart === null ||
+        point?.value === null ||
+        point?.value === undefined ||
+        !Number.isFinite(value) ||
+        value < 0
+      ) continue
 
       const key = `${serviceId}:${hourStart}`
       if (!rows.has(key)) continue
@@ -721,10 +735,22 @@ function collectRenderHourly(data, sourcesData, serviceIds, now) {
   for (const [key, row] of rows) {
     row.total_bytes = Math.round(row.total_bytes)
     const totals = sourceTotals.get(key)
-    const sum = totals
-      ? categories.reduce((total, category) => total + totals[category], 0)
-      : 0
-    if (!(sum > 0)) continue
+    if (!totals) continue
+
+    const sum = categories.reduce(
+      (total, category) => total + totals[category],
+      0
+    )
+    if (row.total_bytes > 0 && !(sum > 0)) continue
+
+    if (row.total_bytes === 0) {
+      row.http_response_bytes = 0
+      row.websocket_response_bytes = 0
+      row.service_initiated_bytes = 0
+      row.private_link_bytes = 0
+      row.breakdown_available = true
+      continue
+    }
 
     const amounts = categories.map(
       (category) => Math.floor(row.total_bytes * totals[category] / sum)
@@ -784,21 +810,17 @@ async function syncRenderProvider(now) {
       ''
   ).trim()
 
-  const primaryServiceId = String(
-    process.env.RENDER_SERVICE_ID ||
-      process.env.SYSTEM_RENDER_SERVICE_ID ||
-      ''
-  ).trim()
-
   const configuredIds = String(process.env.RENDER_SERVICE_IDS || '')
     .split(/[\s,;]+/)
     .map((value) => value.trim())
     .filter((value) => /^srv-[a-z0-9-]+$/i.test(value))
 
   const serviceIds = [...new Set([
-    primaryServiceId,
+    process.env.RENDER_SERVICE_ID,
+    process.env.SYSTEM_RENDER_SERVICE_ID,
     ...configuredIds,
-  ].filter((value) => /^srv-[a-z0-9-]+$/i.test(value)))].slice(0, 20)
+  ].map((value) => String(value || '').trim())
+    .filter((value) => /^srv-[a-z0-9-]+$/i.test(value)))].slice(0, 20)
 
   if (!apiKey || !serviceIds.length) {
     providerState.render = {
@@ -806,15 +828,18 @@ async function syncRenderProvider(now) {
       checked_at: new Date(now).toISOString(),
       missing: [
         !apiKey ? 'RENDER_API_KEY' : null,
-        !serviceIds.length ? 'RENDER_SERVICE_ID' : null,
+        !serviceIds.length ? 'RENDER_SERVICE_ID_OR_RENDER_SERVICE_IDS' : null,
       ].filter(Boolean),
     }
     return
   }
 
-  const backfillWindow = providerState.render?.hourly_history?.status === 'ok'
-    ? 6 * HOUR_MS
-    : 7 * DAY_MS
+  const serviceKey = serviceIds.join(',')
+  const fullBackfill = serviceKey !== lastRenderBackfillServiceKey ||
+    now - lastRenderFullBackfillAt >= DAY_MS
+  const backfillWindow = fullBackfill
+    ? 7 * DAY_MS - 5 * MINUTE_MS
+    : 6 * HOUR_MS
   const start = new Date(now - backfillWindow).toISOString()
   const end = new Date(now).toISOString()
   const query = new URLSearchParams({ startTime: start, endTime: end })
@@ -826,6 +851,10 @@ async function syncRenderProvider(now) {
       fetchJson(`https://api.render.com/v1/metrics/bandwidth-sources?${query}`, apiKey)
         .catch(() => null),
     ])
+
+    if (!Array.isArray(bandwidthData)) {
+      throw new Error('Render returned an invalid bandwidth response.')
+    }
 
     const hourlyRows = collectRenderHourly(
       bandwidthData,
@@ -845,7 +874,7 @@ async function syncRenderProvider(now) {
           series_count: Array.isArray(bandwidthSourcesData?.data)
             ? bandwidthSourcesData.data.length
             : 0,
-          category_raw_total: displayRow.total_bytes,
+          category_raw_total: displayRow.total_bytes || 1,
           raw: {
             http: displayRow.http_response_bytes,
             websocket: displayRow.websocket_response_bytes,
@@ -860,9 +889,15 @@ async function syncRenderProvider(now) {
     const displayEnd = displayRow
       ? new Date(Date.parse(displayStart) + HOUR_MS).toISOString()
       : end
+    const stale = Boolean(displayRow) &&
+      Date.parse(displayEnd) < now - 4 * HOUR_MS
 
     providerState.render = {
-      status: displayRow ? 'ok' : parsed.comparable ? 'no_recent_data' : 'unsupported_unit',
+      status: displayRow
+        ? stale ? 'stale' : 'ok'
+        : bandwidthData.length === 0 || parsed.comparable
+          ? 'no_recent_data'
+          : 'unsupported_unit',
       checked_at: new Date(now).toISOString(),
       window_start: displayStart,
       window_end: displayEnd,
@@ -870,7 +905,7 @@ async function syncRenderProvider(now) {
       service_ids: serviceIds,
       ...parsed,
       provider_bytes: displayRow?.total_bytes ?? null,
-      comparable: Boolean(displayRow),
+      comparable: Boolean(displayRow) && !stale,
       traffic_sources_available: Boolean(sources),
       traffic_source_series_count: sources?.series_count || 0,
       billing_breakdown: renderBillingBreakdown(
@@ -882,11 +917,22 @@ async function syncRenderProvider(now) {
     }
 
     try {
-      providerState.render.hourly_history = await saveRenderHourly(hourlyRows)
+      const saved = await saveRenderHourly(hourlyRows)
+      providerState.render.hourly_history = {
+        ...saved,
+        full_backfill: fullBackfill,
+        row_count: hourlyRows.length,
+        source_breakdown_available: Array.isArray(bandwidthSourcesData?.data),
+      }
+      if (fullBackfill) {
+        lastRenderFullBackfillAt = now
+        lastRenderBackfillServiceKey = serviceKey
+      }
     } catch (error) {
       providerState.render.hourly_history = {
         saved: 0,
         status: 'error',
+        error: String(error?.message || error).slice(0, 200),
       }
       console.error('RENDER_BANDWIDTH_HOURLY_SAVE_ERROR:', error?.message || error)
     }
@@ -1525,11 +1571,25 @@ function updateReconciliation(source, now) {
   )
 
   const renderProviderBytes =
-    Number.isFinite(
-      providerState.render?.provider_bytes
-    )
+    Number.isFinite(providerState.render?.provider_bytes)
       ? providerState.render.provider_bytes
       : null
+  const providerStart = Date.parse(providerState.render?.window_start || '')
+  const providerEnd = Date.parse(providerState.render?.window_end || '')
+  const providerMinutes = Number.isFinite(providerStart) &&
+    Number.isFinite(providerEnd) && providerEnd > providerStart
+    ? (source.recent_minutes || []).filter(
+        (minute) => safeNumber(minute.started_at) >= providerStart &&
+          safeNumber(minute.started_at) < providerEnd
+      )
+    : []
+  const matchingAppBytes = summarizeMinutes(providerMinutes).bytes
+  const renderComparable = renderProviderBytes !== null &&
+    Number.isFinite(providerStart) &&
+    Number.isFinite(providerEnd) &&
+    providerEnd - providerStart === HOUR_MS &&
+    providerMinutes.length >= 55 &&
+    providerEnd <= now
 
   providerState.reconciliation = {
     window_minutes: 60,
@@ -1541,28 +1601,25 @@ function updateReconciliation(source, now) {
       errors: app.errors,
     },
     render: {
-      comparable: renderProviderBytes !== null,
+      comparable: renderComparable,
+      comparable_period: renderComparable,
+      provider_window_start: Number.isFinite(providerStart)
+        ? new Date(providerStart).toISOString()
+        : null,
+      provider_window_end: Number.isFinite(providerEnd)
+        ? new Date(providerEnd).toISOString()
+        : null,
+      app_minutes_in_provider_window: providerMinutes.length,
       provider_bytes: renderProviderBytes,
-      provider_mb:
-        renderProviderBytes !== null
-          ? toMb(renderProviderBytes)
-          : null,
-      unattributed_bytes_estimate:
-        renderProviderBytes !== null
-          ? Math.max(
-              0,
-              renderProviderBytes - app.bytes
-            )
-          : null,
-      unattributed_mb_estimate:
-        renderProviderBytes !== null
-          ? toMb(
-              Math.max(
-                0,
-                renderProviderBytes - app.bytes
-              )
-            )
-          : null,
+      provider_mb: renderProviderBytes !== null
+        ? toMb(renderProviderBytes)
+        : null,
+      unattributed_bytes_estimate: renderComparable
+        ? Math.max(0, renderProviderBytes - matchingAppBytes)
+        : null,
+      unattributed_mb_estimate: renderComparable
+        ? toMb(Math.max(0, renderProviderBytes - matchingAppBytes))
+        : null,
     },
     supabase: {
       app_attributed_calls: appSupabase.count,
@@ -1674,16 +1731,20 @@ export async function persistSystemUsageSnapshot() {
   try {
     const now = Date.now()
     const initial = buildSnapshot(now)
-    if (
-  initial.totals.count === 0 &&
-  initial.totals.bytes === 0 &&
-  initial.totals.errors === 0
-) return
 
     await syncProvidersIfDue(
       initial.source,
       now
     )
+
+    if (
+      initial.totals.count === 0 &&
+      initial.totals.bytes === 0 &&
+      initial.totals.errors === 0
+    ) {
+      await runRetentionIfDue(now)
+      return
+    }
 
     const snapshot = buildSnapshot(now)
 
