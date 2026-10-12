@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 
 const ROTATION_MS = 6 * 60 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
 const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
 const MAX_PROMOTIONS = 3
 const ERROR_RETRY_MS = 20 * 1000
@@ -9,9 +10,12 @@ const ROTATION_FUNCTION = 'get_or_rotate_discover_author_store_promotions_v1'
 let cachedRotation = null
 let pendingRotation = null
 let retryAfter = 0
+let retryWindowStart = 0
 
 function currentRotationWindow(now = Date.now()) {
-  const slotStart = Math.floor((now + CAMBODIA_OFFSET_MS) / ROTATION_MS) * ROTATION_MS - CAMBODIA_OFFSET_MS
+  const cambodiaTime = now + CAMBODIA_OFFSET_MS
+  const dayStart = Math.floor(cambodiaTime / DAY_MS) * DAY_MS
+  const slotStart = dayStart + Math.floor((cambodiaTime - dayStart) / ROTATION_MS) * ROTATION_MS - CAMBODIA_OFFSET_MS
   return { slotStart, expiresAt: slotStart + ROTATION_MS }
 }
 
@@ -160,7 +164,7 @@ export async function getCurrentDiscoverAuthorStorePromotions() {
     return pendingRotation.promise
   }
 
-  if (now < retryAfter) {
+  if (now < retryAfter && retryWindowStart === window.slotStart) {
     throw new Error('Author store promotion temporarily unavailable')
   }
 
@@ -170,10 +174,12 @@ export async function getCurrentDiscoverAuthorStorePromotions() {
         cachedRotation = rotation
       }
       retryAfter = 0
+      retryWindowStart = 0
       return rotation
     })
     .catch((error) => {
       retryAfter = Date.now() + ERROR_RETRY_MS
+      retryWindowStart = window.slotStart
       throw error
     })
     .finally(() => {
