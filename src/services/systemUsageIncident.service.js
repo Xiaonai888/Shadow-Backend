@@ -1457,9 +1457,24 @@ export async function listSystemUsageIncidents(
     )
   }
 
+  const nowMs = Date.now()
+  const effectiveToMs = Number.isFinite(toMs)
+    ? Math.min(toMs, nowMs)
+    : null
+
   if (
-    Number.isFinite(toMs) &&
-    toMs > Date.now()
+    Number.isFinite(fromMs) &&
+    fromMs >= nowMs
+  ) {
+    throw new Error(
+      'Incident date range must include past or current time.'
+    )
+  }
+
+  if (
+    Number.isFinite(fromMs) &&
+    Number.isFinite(effectiveToMs) &&
+    effectiveToMs <= fromMs
   ) {
     throw new Error(
       'Incident date range must include past or current time.'
@@ -1489,10 +1504,10 @@ export async function listSystemUsageIncidents(
     )
   }
 
-  if (Number.isFinite(toMs)) {
+  if (Number.isFinite(effectiveToMs)) {
     query = query.lte(
       'last_seen_at',
-      new Date(toMs).toISOString()
+      new Date(effectiveToMs).toISOString()
     )
   }
 
@@ -1518,6 +1533,7 @@ export async function listSystemUsageIncidents(
 
   return data || []
 }
+
 
 export function getSystemUsageIncidentRuntime() {
   return {
