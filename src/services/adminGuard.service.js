@@ -349,7 +349,6 @@ export async function checkAdminLoginAllowed({ req, email }) {
         message: state.permanent_block_reason || 'A permanently blocked identity tried to access admin login.',
         block_status: 'permanent_block',
       })
-      await alertNewAdminBrowserLogin({ req, admin, ctx, deviceId })
 
       return {
         allowed: false,
@@ -395,7 +394,16 @@ export async function checkAdminLoginAllowed({ req, email }) {
     return { allowed: true, ctx, state }
   } catch (error) {
     console.error('ADMIN GUARD CHECK ERROR:', error)
-    return { allowed: true, ctx: null, state: null, guard_error: true }
+    return {
+      allowed: false,
+      ctx: null,
+      state: null,
+      guard_error: true,
+      code: 'ADMIN_GUARD_UNAVAILABLE',
+      status: 'temporary_block',
+      message: 'Admin security verification is temporarily unavailable. Please try again shortly.',
+      retry_after_seconds: 60,
+    }
   }
 }
 
@@ -449,7 +457,10 @@ export async function recordAdminLoginFailure({ req, email, reason = 'Invalid ad
       },
     })
 
-    if (block && block.level >= 2) await createAdminSecurityAlert({
+    if (block && block.level >= 2 && shouldSendRepeatedBlockedAlert(ctx, {
+      alertType: 'admin_login_auto_blocked',
+      block_status: status,
+    })) await createAdminSecurityAlert({
       req,
       email: ctx.attemptedEmail,
       deviceId: ctx.deviceId || null,
@@ -575,6 +586,8 @@ export async function recordAdminLoginSuccess({ req, res, email, admin }) {
         country_name: ctx.countryName,
       },
     })
+
+    await alertNewAdminBrowserLogin({ req, admin, ctx, deviceId })
 
     return {
       trusted_device: true,
