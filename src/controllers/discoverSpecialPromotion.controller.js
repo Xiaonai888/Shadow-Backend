@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 
 const ROTATION_MS = 6 * 60 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
 const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
 const MIN_LOCKED_EPISODES = 5
 const MAX_PROMOTIONS = 3
@@ -10,7 +11,9 @@ let cachedRotation = null
 let inflightRotation = null
 
 function getRotationWindow(now = Date.now()) {
-  const slotStart = Math.floor((now + CAMBODIA_OFFSET_MS) / ROTATION_MS) * ROTATION_MS - CAMBODIA_OFFSET_MS
+  const cambodiaTime = now + CAMBODIA_OFFSET_MS
+  const dayStart = Math.floor(cambodiaTime / DAY_MS) * DAY_MS
+  const slotStart = dayStart + Math.floor((cambodiaTime - dayStart) / ROTATION_MS) * ROTATION_MS - CAMBODIA_OFFSET_MS
 
   return {
     slotStart,
