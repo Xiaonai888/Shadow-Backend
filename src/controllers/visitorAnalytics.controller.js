@@ -327,8 +327,8 @@ export async function trackAnonymousVisitor(req, res) {
         })
       }
 
-      if (rpcError.code !== 'PGRST202') throw rpcError
-      visitorRpcUnavailableUntil = Date.now() + VISITOR_RPC_UNAVAILABLE_MS
+      if (!['PGRST202', '42804'].includes(String(rpcError.code || ''))) throw rpcError
+visitorRpcUnavailableUntil = Date.now() + VISITOR_RPC_UNAVAILABLE_MS
     }
 
     const { data: existing, error: findError } = await supabase
