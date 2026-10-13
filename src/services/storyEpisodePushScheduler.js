@@ -1,3 +1,4 @@
+import { supabase } from '../config/supabase.js'
 import { processStoryEpisodePushOnce } from './storyEpisodePushWorker.js'
 
 const IDLE_CHECK_MS = 10 * 60 * 1000
@@ -34,6 +35,20 @@ function schedule(delayMs) {
   timer.unref?.()
 }
 
+async function getNextQueueDelay() {
+  const { data, error } = await supabase.rpc('get_story_episode_push_next_due_at')
+  if (error) throw error
+  if (!data) return IDLE_CHECK_MS
+
+  const nextDueAt = Date.parse(data)
+  if (!Number.isFinite(nextDueAt)) return IDLE_CHECK_MS
+
+  return Math.max(
+    ACTIVE_CHECK_MS,
+    Math.min(IDLE_CHECK_MS, nextDueAt - Date.now() + 1000)
+  )
+}
+
 async function processQueue() {
   if (!started || !enabled()) return
   if (running) {
@@ -43,18 +58,26 @@ async function processQueue() {
 
   running = true
   let delayMs = IDLE_CHECK_MS
+  let checkNextDueAt = false
 
   try {
     for (let i = 0; i < 8; i += 1) {
       const result = await processStoryEpisodePushOnce()
-      if (result?.idle || result?.skipped) break
+      if (result?.idle || result?.skipped) {
+        checkNextDueAt = Boolean(result?.idle)
+        break
+      }
 
       if (result?.retry) {
-        delayMs = ERROR_CHECK_MS
+        checkNextDueAt = true
         break
       }
 
       delayMs = ACTIVE_CHECK_MS
+    }
+
+    if (checkNextDueAt) {
+      delayMs = await getNextQueueDelay()
     }
 
     consecutiveFailures = 0
