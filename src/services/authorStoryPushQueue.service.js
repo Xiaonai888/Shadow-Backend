@@ -112,3 +112,9 @@ export function startAuthorStoryPushQueue() {
   started = true
   schedule(1000)
 }
+
+  console.info('AUTHOR_PUSH_STARTUP', {
+    enabled: enabled(),
+    appId: Boolean(process.env.ONESIGNAL_APP_ID?.trim()),
+    apiKey: Boolean(process.env.ONESIGNAL_REST_API_KEY?.trim()),
+  })
