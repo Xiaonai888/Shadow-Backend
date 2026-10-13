@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto'
 
 const API_ROOT = 'https://api.onesignal.com'
+const SITE_ROOT = 'https://www.shadowerabook.site'
 const AUTHOR_TAG = 'author_story_push'
 const ALLOWED_TYPES = new Set(['comment', 'unlock', 'gift'])
+const REQUEST_TIMEOUT_MS = 12000
 
 function getSettings() {
   return {
@@ -25,9 +27,14 @@ function getIdempotencyKey(notificationId) {
 function getTargetUrl(value) {
   const path = String(value || '').trim()
   if (!path.startsWith('/') || path.startsWith('//') || path.includes('\\')) {
-    return 'https://www.shadowerabook.site/author/notifications'
+    return `${SITE_ROOT}/author/notifications`
   }
-  return `https://www.shadowerabook.site${path}`
+  try {
+    const url = new URL(path, SITE_ROOT)
+    return url.origin === SITE_ROOT ? url.href : `${SITE_ROOT}/author/notifications`
+  } catch {
+    return `${SITE_ROOT}/author/notifications`
+  }
 }
 
 function shouldSend(notification) {
@@ -43,24 +50,37 @@ async function readAuthorPreference({ appId, apiKey, authorUserId }) {
     `${API_ROOT}/apps/${encodeURIComponent(appId)}/users/by/external_id/${encodeURIComponent(authorUserId)}`,
     {
       headers: { Authorization: `Key ${apiKey}` },
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     }
   )
   if (response.status === 404) return false
   if (!response.ok) throw new Error(`OneSignal user lookup failed (${response.status})`)
   const user = await response.json()
-  return String(user?.identity?.external_id || '') === authorUserId &&
-    String(user?.properties?.tags?.[AUTHOR_TAG] || '') === 'true'
+  if (String(user?.identity?.external_id || '') !== authorUserId) {
+    throw new Error('OneSignal user identity mismatch')
+  }
+  return String(user?.properties?.tags?.[AUTHOR_TAG] || '').toLowerCase() === 'true'
 }
 
-export async function sendAuthorStoryPushSafely(notification) {
+function isNoRecipients(result) {
+  if (result?.id) return false
+  const errors = result?.errors
+  const entries = Array.isArray(errors) ? errors : typeof errors === 'string' ? [errors] : []
+  return entries.some((entry) =>
+    /all included players are not subscribed|no subscribed recipients|no recipients/i.test(String(entry))
+  )
+}
+
+export async function sendAuthorStoryPushSafely(notification, { throwOnFailure = false } = {}) {
   if (!notification?.id || !shouldSend(notification)) return false
 
-  const { appId, apiKey } = getSettings()
   const authorUserId = String(notification.author_user_id || '').trim()
-  if (!appId || !apiKey || !authorUserId) return false
+  if (!authorUserId) return false
 
   try {
+    const { appId, apiKey } = getSettings()
+    if (!appId || !apiKey) throw new Error('OneSignal credentials missing')
+
     const enabled = await readAuthorPreference({ appId, apiKey, authorUserId })
     if (!enabled) return false
 
@@ -78,16 +98,18 @@ export async function sendAuthorStoryPushSafely(notification) {
         headings: { en: String(notification.title || 'Shadow notification').slice(0, 100) },
         contents: { en: String(notification.message || notification.title || 'You have a new notification.').slice(0, 180) },
         url: getTargetUrl(notification.target_url),
-        data: { notification_id: notification.id, notification_type: notification.type },
+        data: { notification_id: String(notification.id), notification_type: String(notification.type) },
       }),
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
 
     if (!response.ok) throw new Error(`OneSignal push request failed (${response.status})`)
     const result = await response.json()
-    if (!result?.id) throw new Error('OneSignal did not accept the push request')
-    return true
+    if (result?.id) return true
+    if (isNoRecipients(result)) return false
+    throw new Error('OneSignal did not accept the push request')
   } catch (error) {
+    if (throwOnFailure) throw error
     console.error('AUTHOR STORY PUSH ERROR:', error?.message || error)
     return false
   }
