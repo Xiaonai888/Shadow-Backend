@@ -3,7 +3,12 @@ import { createHash } from 'node:crypto'
 const API_ROOT = 'https://api.onesignal.com'
 const SITE_ROOT = 'https://www.shadowerabook.site'
 const AUTHOR_TAG = 'author_story_push'
-const ALLOWED_TYPES = new Set(['comment', 'unlock', 'gift'])
+const AUTHOR_TYPE_TAGS = {
+  unlock: 'author_story_push_unlock',
+  gift: 'author_story_push_gift',
+  comment: 'author_story_push_comment',
+}
+const ALLOWED_TYPES = new Set(Object.keys(AUTHOR_TYPE_TAGS))
 const REQUEST_TIMEOUT_MS = 12000
 
 function getSettings() {
@@ -45,7 +50,7 @@ function shouldSend(notification) {
   return currency === 'diamond' || currency === 'diamonds'
 }
 
-async function readAuthorPreference({ appId, apiKey, authorUserId }) {
+async function readAuthorPreference({ appId, apiKey, authorUserId, type }) {
   const response = await fetch(
     `${API_ROOT}/apps/${encodeURIComponent(appId)}/users/by/external_id/${encodeURIComponent(authorUserId)}`,
     {
@@ -53,13 +58,19 @@ async function readAuthorPreference({ appId, apiKey, authorUserId }) {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     }
   )
+
   if (response.status === 404) return false
   if (!response.ok) throw new Error(`OneSignal user lookup failed (${response.status})`)
+
   const user = await response.json()
   if (String(user?.identity?.external_id || '') !== authorUserId) {
     throw new Error('OneSignal user identity mismatch')
   }
-  return String(user?.properties?.tags?.[AUTHOR_TAG] || '').toLowerCase() === 'true'
+
+  const tags = user?.properties?.tags || {}
+  const masterEnabled = String(tags[AUTHOR_TAG] || '').trim().toLowerCase() === 'true'
+  const typeEnabled = String(tags[AUTHOR_TYPE_TAGS[type]] || '').trim().toLowerCase() !== 'false'
+  return masterEnabled && typeEnabled
 }
 
 function isNoRecipients(result) {
@@ -81,7 +92,8 @@ export async function sendAuthorStoryPushSafely(notification, { throwOnFailure =
     const { appId, apiKey } = getSettings()
     if (!appId || !apiKey) throw new Error('OneSignal credentials missing')
 
-    const enabled = await readAuthorPreference({ appId, apiKey, authorUserId })
+    const type = String(notification.type || '').trim().toLowerCase()
+    const enabled = await readAuthorPreference({ appId, apiKey, authorUserId, type })
     if (!enabled) return false
 
     const response = await fetch(`${API_ROOT}/notifications`, {
@@ -98,7 +110,7 @@ export async function sendAuthorStoryPushSafely(notification, { throwOnFailure =
         headings: { en: String(notification.title || 'Shadow notification').slice(0, 100) },
         contents: { en: String(notification.message || notification.title || 'You have a new notification.').slice(0, 180) },
         url: getTargetUrl(notification.target_url),
-        data: { notification_id: String(notification.id), notification_type: String(notification.type) },
+        data: { notification_id: String(notification.id), notification_type: type },
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
