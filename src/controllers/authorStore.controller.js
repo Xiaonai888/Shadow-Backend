@@ -2355,6 +2355,44 @@ async function callPayWayGenerateQr(payload) {
   }
 }
 
+async function verifyAuthorStorePayWayPayment(order) {
+  const merchantId = String(process.env.ABA_PAYWAY_MERCHANT_ID || '').trim()
+  const apiKey = String(process.env.ABA_PAYWAY_API_KEY || '').trim()
+  const transactionId = String(order?.order_id || '').trim()
+  if (!merchantId || !apiKey || !transactionId) throw new Error('ABA PayWay verification is not configured')
+
+  const reqTime = getUtcReqTime()
+  const hash = crypto.createHmac('sha512', apiKey)
+    .update(`${reqTime}${merchantId}${transactionId}`)
+    .digest('base64')
+  const qrUrl = getPayWayQrUrl()
+  const checkUrl = process.env.ABA_PAYWAY_CHECK_TRANSACTION_URL || qrUrl.replace(/\/generate-qr(?:\?.*)?$/, '/check-transaction-2')
+  if (!/^https:\/\//i.test(checkUrl) || checkUrl === qrUrl) throw new Error('ABA PayWay verification endpoint is invalid')
+
+  const response = await fetch(checkUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ req_time: reqTime, merchant_id: merchantId, tran_id: transactionId, hash }),
+    signal: AbortSignal.timeout(8000),
+  })
+  if (!response.ok) throw new Error(`ABA PayWay verification failed: ${response.status}`)
+  const result = await response.json()
+  const details = result?.data
+  const apiStatus = String(result?.status?.code ?? '').trim()
+  if (!['0', '00'].includes(apiStatus) || !details || Array.isArray(details)) return false
+
+  const confirmedTransactionId = String(result.status.tran_id || details.tran_id || details.transaction_id || '').trim()
+  if (confirmedTransactionId && confirmedTransactionId !== transactionId) return false
+  if (String(details.payment_status || '').toUpperCase() !== 'APPROVED') return false
+  if (Number(details.payment_status_code) !== 0) return false
+
+  const originalAmount = details.original_amount ?? details.total_amount ?? details.payment_amount
+  const originalCurrency = details.original_currency || details.payment_currency || ''
+  if (originalAmount === null || originalAmount === undefined || originalAmount === '') return false
+  if (String(originalCurrency).toUpperCase() !== String(order.currency || 'USD').toUpperCase()) return false
+  return Number.isFinite(Number(originalAmount)) && Number(originalAmount).toFixed(2) === Number(order.total_usd).toFixed(2)
+}
+
 function createAuthorCartSignature(orderItems, deliveryCompany, authorPageId) {
   const items = [...orderItems]
     .map((item) => ({
@@ -3770,21 +3808,12 @@ export async function handleAuthorStoreAbaCallback(req, res) {
       return res.status(200).json({ ok: true })
     }
 
-    if (!callbackAmountMatches(order, req.body)) {
-      await supabase
-        .from('author_store_orders')
-        .update({
-          status: 'amount_mismatch',
-          order_status: 'amount_mismatch',
-          callback_payload: req.body,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', order.id)
-
-      return res.status(200).json({ ok: true })
-    }
-
     if (order.status !== 'waiting_payment') return res.status(200).json({ ok: true })
+
+    const paymentVerified = await verifyAuthorStorePayWayPayment(order)
+    if (!paymentVerified) {
+      return res.status(503).json({ ok: false, message: 'ABA PayWay payment is not verified yet' })
+    }
 
     const { data: updatedOrder, error: updateError } = await supabase
       .from('author_store_orders')
