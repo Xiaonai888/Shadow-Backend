@@ -98,6 +98,7 @@ import adminSearchInsightsRoutes from './src/routes/adminSearchInsights.routes.j
 import musicRoutes from './src/routes/music.routes.js'
 import { startMangaR2DeleteRetryWorker } from './src/services/mangaR2DeleteRetry.service.js'
 import { startHeavyMediaWorkerCoordinator } from './src/services/heavyMediaWorkerCoordinator.service.js'
+import { startAuthorStoryPushQueue } from './src/services/authorStoryPushQueue.service.js'
 import {
   memoryIncidentTracer,
   startMemoryIncidentMonitor,
@@ -853,6 +854,7 @@ app.listen(PORT, () => {
   startStorageMigrationCleanupScheduler()
   void startMangaR2DeleteRetryWorker()
   startHeavyMediaWorkerCoordinator()
+  startAuthorStoryPushQueue()
   startMemoryIncidentMonitor()
   startWorkDetectorMonitor()
   startSystemUsagePersistence()
