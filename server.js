@@ -99,6 +99,7 @@ import musicRoutes from './src/routes/music.routes.js'
 import { startMangaR2DeleteRetryWorker } from './src/services/mangaR2DeleteRetry.service.js'
 import { startHeavyMediaWorkerCoordinator } from './src/services/heavyMediaWorkerCoordinator.service.js'
 import { startAuthorStoryPushQueue } from './src/services/authorStoryPushQueue.service.js'
+import { startStoryEpisodePushScheduler } from './src/services/storyEpisodePushScheduler.js'
 import {
   memoryIncidentTracer,
   startMemoryIncidentMonitor,
@@ -855,6 +856,7 @@ app.listen(PORT, () => {
   void startMangaR2DeleteRetryWorker()
   startHeavyMediaWorkerCoordinator()
   startAuthorStoryPushQueue()
+  startStoryEpisodePushScheduler()
   startMemoryIncidentMonitor()
   startWorkDetectorMonitor()
   startSystemUsagePersistence()
