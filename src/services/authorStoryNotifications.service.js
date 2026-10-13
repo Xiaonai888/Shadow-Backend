@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { sendAuthorStoryPushSafely } from './authorStoryPush.service.js'
 import {
   deleteR2ObjectByUrl,
   uploadFileToR2,
@@ -816,7 +817,9 @@ export async function createAuthorStoryNotification({
       return null
     }
 
-    uploadedUrls.clear()
+        uploadedUrls.clear()
+
+    void sendAuthorStoryPushSafely(data)
 
     return data
   } catch (error) {
