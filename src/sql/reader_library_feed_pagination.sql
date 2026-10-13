@@ -26,109 +26,138 @@ returns table (
 language plpgsql
 stable
 security definer
-set search_path = public
+set search_path = ''
 as $$
 begin
-  if p_user_id is null or p_tab not in ('recents', 'subscribed') or p_type not in ('all', 'novel', 'manga', 'chat_story') then
+  if p_user_id is null
+    or p_tab is null
+    or p_tab not in ('recents', 'subscribed')
+    or p_type is null
+    or p_type not in ('all', 'novel', 'manga', 'chat_story')
+  then
     raise exception 'Invalid library feed parameters' using errcode = '22023';
   end if;
 
-  if p_cursor_id is not null and (p_cursor_score is null or p_cursor_at is null) then
+  if (p_cursor_score is null) <> (p_cursor_at is null)
+    or (p_cursor_at is null) <> (p_cursor_id is null)
+  then
     raise exception 'Invalid library feed cursor' using errcode = '22023';
   end if;
 
   if p_tab = 'recents' then
     return query
-    with ranked as (
+    with eligible as (
       select
         rl.id as collection_id,
         rl.story_id,
         rl.created_at as saved_at,
         rp.last_read_at,
-        0::integer as unread_count,
-        null::timestamptz as last_episode_at,
-        case when rp.last_read_at is not null then 1 else 0 end::integer as sort_score,
+        case when rp.last_read_at is null then 0 else 1 end::integer as sort_score,
         coalesce(rp.last_read_at, rl.created_at) as sort_at,
-        s.title::text as title,
+        s.title::text,
         coalesce(s.cover_url, '')::text as cover_url,
-        coalesce(s.story_type, 'novel')::text as story_type,
+        s.story_type::text,
         coalesce(s.main_genre, '')::text as main_genre,
-        coalesce(s.story_status, 'New')::text as story_status,
+        s.story_status::text,
         coalesce(s.total_episodes, 0)::integer as total_episodes
       from public.reader_library rl
       join public.stories s on s.id = rl.story_id
-      left join public.reading_progress rp on rp.user_id = rl.user_id and rp.story_id = rl.story_id
+      left join public.reading_progress rp
+        on rp.user_id = rl.user_id
+       and rp.story_id = rl.story_id
       where rl.user_id = p_user_id
         and s.status = 'published'
         and s.deleted_at is null
-        and (p_include_adult or coalesce(s.is_adult, false) = false)
-        and (p_type = 'all' or coalesce(s.story_type, 'novel') = p_type)
+        and (p_include_adult or not s.is_adult)
+        and (p_type = 'all' or s.story_type = p_type)
     )
     select
-      r.collection_id, r.story_id, r.saved_at, r.last_read_at,
-      r.unread_count, r.last_episode_at, r.sort_score, r.sort_at,
-      r.title, r.cover_url, r.story_type, r.main_genre,
-      r.story_status, r.total_episodes
-    from ranked r
+      e.collection_id,
+      e.story_id,
+      e.saved_at,
+      e.last_read_at,
+      0::integer,
+      null::timestamptz,
+      e.sort_score,
+      e.sort_at,
+      e.title,
+      e.cover_url,
+      e.story_type,
+      e.main_genre,
+      e.story_status,
+      e.total_episodes
+    from eligible e
     where p_cursor_id is null
-      or (r.sort_score, r.sort_at, r.story_id) < (p_cursor_score, p_cursor_at, p_cursor_id)
-    order by r.sort_score desc, r.sort_at desc, r.story_id desc
+       or (e.sort_score, e.sort_at, e.story_id)
+          < (p_cursor_score, p_cursor_at, p_cursor_id)
+    order by e.sort_score desc, e.sort_at desc, e.story_id desc
     limit 10;
     return;
   end if;
 
   return query
-  with ranked as (
+  with eligible as materialized (
     select
       rs.id as collection_id,
       rs.story_id,
       rs.created_at as saved_at,
       rp.last_read_at,
-      coalesce(updates.unread_count, 0)::integer as unread_count,
-      updates.last_episode_at,
-      coalesce(updates.unread_count, 0)::integer as sort_score,
-      coalesce(updates.last_episode_at, rs.created_at) as sort_at,
+      rp.episode_number as last_read_episode_number,
       s.title::text as title,
       coalesce(s.cover_url, '')::text as cover_url,
-      coalesce(s.story_type, 'novel')::text as story_type,
+      s.story_type::text as story_type,
       coalesce(s.main_genre, '')::text as main_genre,
-      coalesce(s.story_status, 'New')::text as story_status,
+      s.story_status::text as story_status,
       coalesce(s.total_episodes, 0)::integer as total_episodes
     from public.reader_subscriptions rs
     join public.stories s on s.id = rs.story_id
-    left join public.reading_progress rp on rp.user_id = rs.user_id and rp.story_id = rs.story_id
-    left join lateral (
-      select
-        count(*)::integer as unread_count,
-        max(coalesce(e.published_at, e.created_at)) as last_episode_at
-      from public.episodes e
-      where e.story_id = rs.story_id
-        and e.status = 'published'
-        and e.deleted_at is null
-        and coalesce(e.published_at, e.created_at) <= now()
-        and (
-          (rp.episode_number is not null and e.episode_number > rp.episode_number)
-          or (rp.episode_number is null and coalesce(e.published_at, e.created_at) > rs.created_at)
-        )
-    ) updates on true
+    left join public.reading_progress rp
+      on rp.user_id = rs.user_id
+     and rp.story_id = rs.story_id
     where rs.user_id = p_user_id
       and s.status = 'published'
       and s.deleted_at is null
-      and (p_include_adult or coalesce(s.is_adult, false) = false)
-      and (p_type = 'all' or coalesce(s.story_type, 'novel') = p_type)
+      and (p_include_adult or not s.is_adult)
+      and (p_type = 'all' or s.story_type = p_type)
   )
   select
-    r.collection_id, r.story_id, r.saved_at, r.last_read_at,
-    r.unread_count, r.last_episode_at, r.sort_score, r.sort_at,
-    r.title, r.cover_url, r.story_type, r.main_genre,
-    r.story_status, r.total_episodes
-  from ranked r
-  where r.unread_count > 0
-    and (
-      p_cursor_id is null
-      or (r.sort_score, r.sort_at, r.story_id) < (p_cursor_score, p_cursor_at, p_cursor_id)
-    )
-  order by r.sort_score desc, r.sort_at desc, r.story_id desc
+    a.collection_id,
+    a.story_id,
+    a.saved_at,
+    a.last_read_at,
+    u.unread_count,
+    u.last_episode_at,
+    u.unread_count,
+    coalesce(u.last_episode_at, a.saved_at),
+    a.title,
+    a.cover_url,
+    a.story_type,
+    a.main_genre,
+    a.story_status,
+    a.total_episodes
+  from eligible a
+  cross join lateral (
+    select
+      count(*)::integer as unread_count,
+      max(coalesce(e.first_published_at, e.published_at, e.created_at)) as last_episode_at
+    from public.episodes e
+    where e.story_id = a.story_id
+      and e.episode_number > coalesce(a.last_read_episode_number, 0)
+      and e.status = 'published'
+      and e.deleted_at is null
+      and coalesce(e.published_at, e.created_at) <= now()
+      and (
+        a.last_read_episode_number is not null
+        or coalesce(e.first_published_at, e.published_at, e.created_at) > a.saved_at
+      )
+    having count(*) > 0
+  ) u
+  where p_cursor_id is null
+     or (u.unread_count, coalesce(u.last_episode_at, a.saved_at), a.story_id)
+        < (p_cursor_score, p_cursor_at, p_cursor_id)
+  order by u.unread_count desc,
+           coalesce(u.last_episode_at, a.saved_at) desc,
+           a.story_id desc
   limit 10;
 end;
 $$;
@@ -141,33 +170,38 @@ returns table (story_type text, story_count bigint)
 language sql
 stable
 security definer
-set search_path = public
+set search_path = ''
 as $$
-  with unread as (
-    select coalesce(s.story_type, 'novel')::text as kind
+  with unread as materialized (
+    select s.story_type::text as kind
     from public.reader_subscriptions rs
     join public.stories s on s.id = rs.story_id
-    left join public.reading_progress rp on rp.user_id = rs.user_id and rp.story_id = rs.story_id
+    left join public.reading_progress rp
+      on rp.user_id = rs.user_id
+     and rp.story_id = rs.story_id
     where rs.user_id = p_user_id
       and s.status = 'published'
       and s.deleted_at is null
-      and (p_include_adult or coalesce(s.is_adult, false) = false)
+      and (p_include_adult or not s.is_adult)
       and exists (
         select 1
         from public.episodes e
         where e.story_id = rs.story_id
+          and e.episode_number > coalesce(rp.episode_number, 0)
           and e.status = 'published'
           and e.deleted_at is null
           and coalesce(e.published_at, e.created_at) <= now()
           and (
-            (rp.episode_number is not null and e.episode_number > rp.episode_number)
-            or (rp.episode_number is null and coalesce(e.published_at, e.created_at) > rs.created_at)
+            rp.episode_number is not null
+            or coalesce(e.first_published_at, e.published_at, e.created_at) > rs.created_at
           )
       )
   )
-  select 'all'::text, count(*)::bigint from unread
-  union all
-  select u.kind, count(*)::bigint from unread u group by u.kind;
+  select
+    case when grouping(u.kind) = 1 then 'all'::text else u.kind end,
+    count(*)::bigint
+  from unread u
+  group by grouping sets ((), (u.kind));
 $$;
 
 revoke all on function public.reader_library_feed_page(uuid, text, text, integer, timestamptz, uuid, boolean) from public, anon, authenticated;
