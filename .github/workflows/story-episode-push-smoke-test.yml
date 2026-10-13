@@ -1,0 +1,40 @@
+name: Story Episode Push Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Send a test notification to the configured test reader
+        required: true
+        type: choice
+        default: "NO"
+        options:
+          - "NO"
+          - SEND_TO_ONE_TEST_READER
+
+permissions:
+  contents: read
+
+concurrency:
+  group: story-episode-push-smoke-test
+  cancel-in-progress: false
+
+jobs:
+  send-test-push:
+    if: ${{ inputs.confirm == 'SEND_TO_ONE_TEST_READER' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ONESIGNAL_APP_ID: ${{ secrets.ONESIGNAL_APP_ID }}
+      ONESIGNAL_REST_API_KEY: ${{ secrets.ONESIGNAL_REST_API_KEY }}
+      STORY_EPISODE_PUSH_TEST_READER_ID: ${{ secrets.STORY_EPISODE_PUSH_TEST_READER_ID }}
+      STORY_EPISODE_PUSH_TEST_CONFIRM: SEND_TO_ONE_TEST_READER
+    steps:
+      - name: Checkout backend repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Send push to test reader only
+        run: node scripts/storyEpisodePushSmokeTest.js
