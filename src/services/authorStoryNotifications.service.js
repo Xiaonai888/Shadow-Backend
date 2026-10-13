@@ -1,5 +1,5 @@
 import { supabase } from '../config/supabase.js'
-import { sendAuthorStoryPushSafely } from './authorStoryPush.service.js'
+import { wakeAuthorStoryPushQueue } from './authorStoryPushQueue.service.js'
 import {
   deleteR2ObjectByUrl,
   uploadFileToR2,
@@ -819,7 +819,7 @@ export async function createAuthorStoryNotification({
 
         uploadedUrls.clear()
 
-    void sendAuthorStoryPushSafely(data)
+    wakeAuthorStoryPushQueue()
 
     return data
   } catch (error) {
