@@ -67,6 +67,25 @@ async function failBatch(batch, error, retryable = true, retryAfter = null) {
   return { ok: false, retry, batch_id: batch.id }
 }
 
+function isNoPushRecipientsResponse(data) {
+  const details = data?.errors ?? data?.message ?? ''
+  const text = typeof details === 'string' ? details : JSON.stringify(details)
+  return /all included players are not subscribed|no subscribed recipients|no recipients|no subscriptions found/i.test(text)
+}
+
+async function markBatchSent(batch, jobId, notificationId = null, acceptedCount = 0) {
+  await updateBatch(batch, {
+    status: 'sent',
+    lease_expires_at: null,
+    sent_at: new Date().toISOString(),
+    onesignal_notification_id: notificationId,
+    accepted_count: acceptedCount,
+    last_error: null,
+  })
+  await finishJob(jobId)
+  return { ok: true, batch_id: batch.id, sent: acceptedCount }
+}
+
 async function getEpisode(job) {
   const result = await supabase
     .from('episodes')
@@ -107,15 +126,7 @@ async function sendBatch(batch, appId, apiKey) {
   const recipients = Array.isArray(eligibleResult.data) ? eligibleResult.data : []
 
   if (!recipients.length) {
-    await updateBatch(batch, {
-      status: 'sent',
-      lease_expires_at: null,
-      accepted_count: 0,
-      sent_at: new Date().toISOString(),
-      last_error: null,
-    })
-    await finishJob(job.id)
-    return { ok: true, sent: 0, batch_id: batch.id }
+    return markBatchSent(batch, job.id)
   }
 
   const { story, episode } = current
@@ -153,26 +164,23 @@ async function sendBatch(batch, appId, apiKey) {
   }
 
   const data = await response.json().catch(() => ({}))
+  if (!data?.id && isNoPushRecipientsResponse(data)) {
+    return markBatchSent(batch, job.id)
+  }
+
   if (!response.ok) {
-    const error = new Error(JSON.stringify(data.errors || data.message || `HTTP ${response.status}`).slice(0, 500))
+    const error = new Error(JSON.stringify(data?.errors || data?.message || `HTTP ${response.status}`).slice(0, 500))
     const retryable = response.status === 429 || response.status >= 500
     return failBatch(batch, error, retryable, retryAfterSeconds(response, batch.attempts))
   }
 
-  if (!data.id && Number(data.recipients || 0) !== 0) {
+  if (!data?.id) {
     return failBatch(batch, new Error('OneSignal did not return a notification ID'))
   }
 
-  await updateBatch(batch, {
-    status: 'sent',
-    lease_expires_at: null,
-    sent_at: new Date().toISOString(),
-    onesignal_notification_id: data.id || null,
-    accepted_count: Number(data.recipients || 0),
-    last_error: null,
-  })
-  await finishJob(job.id)
-  return { ok: true, batch_id: batch.id, sent: Number(data.recipients || 0) }
+  const count = Number(data.recipients)
+  const acceptedCount = Number.isInteger(count) && count >= 0 ? count : 0
+  return markBatchSent(batch, job.id, data.id, acceptedCount)
 }
 
 export async function processStoryEpisodePushOnce() {
