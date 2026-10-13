@@ -119,6 +119,7 @@ import publicAppSettingsRoutes from './src/routes/publicAppSettings.routes.js'
 import { backendOriginAudit } from './src/middleware/backendOriginAudit.middleware.js'
 import adminDeviceOfflineRoutes from './src/routes/adminDeviceOffline.routes.js'
 import readerOfflineControlRoutes from './src/routes/readerOfflineControl.routes.js'
+import storyEpisodePushWakeRoutes from './src/routes/storyEpisodePushWake.routes.js'
 
 dotenv.config()
 
@@ -828,6 +829,7 @@ app.use('/api/admin/games', adminGameSettingsRoutes)
 app.use('/api/admin/apps', adminAppSettingsRoutes)
 app.use('/api/admin/work', adminWorkRoutes)
 app.use('/api/admin/system-control', adminSystemControlRoutes)
+app.use('/api/story-episode-push', storyEpisodePushWakeRoutes)
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
 })
