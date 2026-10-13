@@ -63,6 +63,14 @@ function invalidateMyStoriesAfterMutation(req, res, next) {
           storyId
         )
       }
+
+      if (
+        req.method === 'PATCH' &&
+        req.path.endsWith('/status') &&
+        req.body?.status === 'published'
+      ) {
+        wakeStoryEpisodePushScheduler()
+      }
     }
   })
 
