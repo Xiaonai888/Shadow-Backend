@@ -14,6 +14,10 @@ import { getReaderLibraryTrash, restoreReaderLibraryTrash } from '../controllers
 import { getTodayUnreadSubscribedStoryCount } from '../controllers/libraryUnreadBadge.controller.js'
 import { getReaderLibraryFeedPage } from '../controllers/readerLibraryFeed.controller.js'
 import { clearReaderLibrary } from '../controllers/readerLibraryBulkClear.controller.js'
+import {
+  getReaderLibraryNotificationSettings,
+  saveReaderLibraryNotificationSettings,
+} from '../controllers/readerLibraryNotificationSettings.controller.js'
 
 const router = express.Router()
 
@@ -26,6 +30,8 @@ router.get(
 router.get('/library/trash', requireUser, getReaderLibraryTrash)
 router.post('/library/trash/:storyId/restore', requireUser, restoreReaderLibraryTrash)
 router.get('/library/feed', requireUser, getReaderLibraryFeedPage)
+router.get('/library/notification-settings', requireUser, getReaderLibraryNotificationSettings)
+router.put('/library/notification-settings', requireUser, saveReaderLibraryNotificationSettings)
 router.get('/library', requireUser, getReaderLibrary)
 router.post('/library/:storyId', requireUser, addStoryToLibrary)
 router.delete('/library/clear', requireUser, clearReaderLibrary)
