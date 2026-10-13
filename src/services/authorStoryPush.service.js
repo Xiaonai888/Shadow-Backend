@@ -1,0 +1,94 @@
+import { createHash } from 'node:crypto'
+
+const API_ROOT = 'https://api.onesignal.com'
+const AUTHOR_TAG = 'author_story_push'
+const ALLOWED_TYPES = new Set(['comment', 'unlock', 'gift'])
+
+function getSettings() {
+  return {
+    appId: String(process.env.ONESIGNAL_APP_ID || '').trim(),
+    apiKey: String(process.env.ONESIGNAL_REST_API_KEY || '').trim(),
+  }
+}
+
+function getIdempotencyKey(notificationId) {
+  const bytes = createHash('sha256')
+    .update(`shadow-author-story-push:${notificationId}`)
+    .digest()
+    .subarray(0, 16)
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = bytes.toString('hex')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+}
+
+function getTargetUrl(value) {
+  const path = String(value || '').trim()
+  if (!path.startsWith('/') || path.startsWith('//') || path.includes('\\')) {
+    return 'https://www.shadowerabook.site/author/notifications'
+  }
+  return `https://www.shadowerabook.site${path}`
+}
+
+function shouldSend(notification) {
+  const type = String(notification?.type || '').trim().toLowerCase()
+  if (!ALLOWED_TYPES.has(type)) return false
+  if (type !== 'gift') return true
+  const currency = String(notification?.metadata?.currency || '').trim().toLowerCase()
+  return currency === 'diamond' || currency === 'diamonds'
+}
+
+async function readAuthorPreference({ appId, apiKey, authorUserId }) {
+  const response = await fetch(
+    `${API_ROOT}/apps/${encodeURIComponent(appId)}/users/by/external_id/${encodeURIComponent(authorUserId)}`,
+    {
+      headers: { Authorization: `Key ${apiKey}` },
+      signal: AbortSignal.timeout(12000),
+    }
+  )
+  if (response.status === 404) return false
+  if (!response.ok) throw new Error(`OneSignal user lookup failed (${response.status})`)
+  const user = await response.json()
+  return String(user?.identity?.external_id || '') === authorUserId &&
+    String(user?.properties?.tags?.[AUTHOR_TAG] || '') === 'true'
+}
+
+export async function sendAuthorStoryPushSafely(notification) {
+  if (!notification?.id || !shouldSend(notification)) return false
+
+  const { appId, apiKey } = getSettings()
+  const authorUserId = String(notification.author_user_id || '').trim()
+  if (!appId || !apiKey || !authorUserId) return false
+
+  try {
+    const enabled = await readAuthorPreference({ appId, apiKey, authorUserId })
+    if (!enabled) return false
+
+    const response = await fetch(`${API_ROOT}/notifications`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Key ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        app_id: appId,
+        target_channel: 'push',
+        include_aliases: { external_id: [authorUserId] },
+        idempotency_key: getIdempotencyKey(notification.id),
+        headings: { en: String(notification.title || 'Shadow notification').slice(0, 100) },
+        contents: { en: String(notification.message || notification.title || 'You have a new notification.').slice(0, 180) },
+        url: getTargetUrl(notification.target_url),
+        data: { notification_id: notification.id, notification_type: notification.type },
+      }),
+      signal: AbortSignal.timeout(12000),
+    })
+
+    if (!response.ok) throw new Error(`OneSignal push request failed (${response.status})`)
+    const result = await response.json()
+    if (!result?.id) throw new Error('OneSignal did not accept the push request')
+    return true
+  } catch (error) {
+    console.error('AUTHOR STORY PUSH ERROR:', error?.message || error)
+    return false
+  }
+}
