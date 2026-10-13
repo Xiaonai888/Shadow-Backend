@@ -3805,35 +3805,59 @@ export async function handleAuthorStoreAbaCallback(req, res) {
     if (updateError) throw updateError
 
     const callbackItems = Array.isArray(updatedOrder.items) ? updatedOrder.items : []
-    const pdfOnly = callbackItems.length > 0 && callbackItems.every((item) => String(item.product_type || '').toLowerCase() === 'pdf')
-    if (pdfOnly) {
-      const expected = new Set(callbackItems.map((item) => String(item.product_id)).filter(Boolean)).size
+    const pdfItems = callbackItems.filter((item) => String(item.product_type || '').toLowerCase() === 'pdf')
+    const pdfOnly = pdfItems.length > 0 && pdfItems.length === callbackItems.length
+    let processedOrder = updatedOrder
+
+    if (pdfItems.length) {
+      const expected = new Set(pdfItems.map((item) => String(item.product_id)).filter(Boolean)).size
       try {
         const grants = await unlockAuthorStorePdfDownloads(updatedOrder)
         if (!expected || new Set(grants.map((grant) => String(grant.product_id))).size !== expected) {
           throw new Error('Some PDF purchase grants could not be created')
         }
+
         const now = new Date().toISOString()
-        const { data: confirmedOrder, error: confirmError } = await supabase
+        const unlockUpdate = {
+          pdf_unlock_status: 'unlocked',
+          pdf_unlocked_at: now,
+          pdf_unlock_count: grants.length,
+          updated_at: now,
+        }
+
+        if (pdfOnly) {
+          unlockUpdate.status = 'confirmed'
+          unlockUpdate.order_status = 'confirmed'
+          unlockUpdate.confirmed_at = now
+        }
+
+        const { data: unlockedOrder, error: unlockError } = await supabase
           .from('author_store_orders')
-          .update({ status: 'confirmed', order_status: 'confirmed', confirmed_at: now, pdf_unlock_status: 'unlocked', pdf_unlocked_at: now, pdf_unlock_count: grants.length, updated_at: now })
+          .update(unlockUpdate)
           .eq('id', updatedOrder.id)
           .eq('status', 'under_review')
           .select('*, items:author_store_order_items(*)')
           .single()
-        if (confirmError) throw confirmError
-        await createAuthorStorePaidNotificationsSafely(confirmedOrder)
-        return res.status(200).json({ ok: true })
+
+        if (unlockError) throw unlockError
+        processedOrder = unlockedOrder
       } catch (pdfError) {
         console.error('AUTHOR STORE PDF CALLBACK UNLOCK ERROR:', pdfError)
-        await supabase.from('author_store_orders').update({ pdf_unlock_status: 'failed', updated_at: new Date().toISOString() }).eq('id', updatedOrder.id).eq('status', 'under_review')
-        return res.status(200).json({ ok: true, pdf_unlock_status: 'failed' })
+        await supabase
+          .from('author_store_orders')
+          .update({ pdf_unlock_status: 'failed', updated_at: new Date().toISOString() })
+          .eq('id', updatedOrder.id)
+          .eq('status', 'under_review')
+
+        if (pdfOnly) return res.status(200).json({ ok: true, pdf_unlock_status: 'failed' })
       }
     }
 
-    await createAuthorStorePaidNotificationsSafely(updatedOrder)
+    await createAuthorStorePaidNotificationsSafely(processedOrder)
 
-    await deductAuthorStoreOrderStock(updatedOrder)
+    if (pdfOnly) return res.status(200).json({ ok: true })
+
+    await deductAuthorStoreOrderStock(processedOrder)
 
 try {
   await sendAuthorStoreAdminOrderReviewAlert(updatedOrder)
