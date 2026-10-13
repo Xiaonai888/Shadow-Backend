@@ -12,6 +12,7 @@ import {
 import { getStoryDetailReaderStatusOptimized } from '../controllers/storyDetailReaderStatus.controller.js'
 import { getReaderLibraryTrash, restoreReaderLibraryTrash } from '../controllers/readerLibraryTrash.controller.js'
 import { getTodayUnreadSubscribedStoryCount } from '../controllers/libraryUnreadBadge.controller.js'
+import { getReaderLibraryFeedPage } from '../controllers/readerLibraryFeed.controller.js'
 
 const router = express.Router()
 
@@ -23,6 +24,7 @@ router.get(
 
 router.get('/library/trash', requireUser, getReaderLibraryTrash)
 router.post('/library/trash/:storyId/restore', requireUser, restoreReaderLibraryTrash)
+router.get('/library/feed', requireUser, getReaderLibraryFeedPage)
 router.get('/library', requireUser, getReaderLibrary)
 router.post('/library/:storyId', requireUser, addStoryToLibrary)
 router.delete('/library/:storyId', requireUser, removeStoryFromLibrary)
