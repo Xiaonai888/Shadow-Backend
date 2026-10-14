@@ -1253,11 +1253,33 @@ export async function getPublicStories(req, res) {
         )
       }
 
-      if (search) {
+            if (search) {
+        const tagKeyword = search
+          .replace(/\\([%_])/g, '$1')
+          .replace(/[\\",{}()]/g, '')
+          .replace(/^#+/, '')
+          .trim()
+
+        const tagVariants = [
+          tagKeyword,
+          tagKeyword.toLocaleLowerCase(),
+          tagKeyword.toLocaleUpperCase(),
+          tagKeyword.replace(/\b[a-z]+/gi, (word) =>
+            word[0].toUpperCase() + word.slice(1).toLowerCase()
+          ),
+        ]
+
+        const tagValues = [...new Set(tagVariants)]
+          .filter(Boolean)
+          .map((tag) => `"${tag}"`)
+          .join(',')
+        const tagFilter = tagValues ? `,tags.ov.{${tagValues}}` : ''
+
         nextQuery = nextQuery.or(
-          `title.ilike.%${search}%,description.ilike.%${search}%,main_genre.ilike.%${search}%`
+          `title.ilike.%${search}%,description.ilike.%${search}%,main_genre.ilike.%${search}%${tagFilter}`
         )
       }
+
 
       if (genrePagination) {
         return applyGenrePaginationQuery(
