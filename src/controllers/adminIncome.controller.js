@@ -864,6 +864,231 @@ export async function getAdminEpisodeSales(
   res
 ) {
   try {
+
+        if (req.query.event_purchase_key !== undefined) {
+      res.set('Cache-Control', 'private, no-store')
+      const purchaseKey = String(req.query.event_purchase_key || '').trim()
+      if (!/^diamond-unlock:[a-zA-Z0-9_:-]{16,192}$/.test(purchaseKey)) {
+        return res.status(400).json({ ok: false, message: 'Invalid purchase key' })
+      }
+
+      const { data: purchase, error: purchaseError } = await supabase
+        .from('story_reading_income_transactions')
+        .select('purchase_key,author_id,created_at,author_share_percent,platform_share_percent,paid_diamonds,diamond_to_usd_rate,metadata')
+        .eq('purchase_key', purchaseKey)
+        .eq('currency', 'diamond')
+        .neq('income_status', 'void')
+        .maybeSingle()
+
+      if (purchaseError) throw purchaseError
+      if (!purchase || !purchase.author_id) {
+        return res.status(404).json({ ok: false, message: 'Purchase not found' })
+      }
+
+      const at = new Date(purchase.created_at)
+      if (!Number.isFinite(at.getTime())) {
+        return res.status(422).json({ ok: false, message: 'Invalid purchase timestamp' })
+      }
+
+      const authorId = purchase.author_id
+      const rawKey = episodeSalesRawPurchaseKey(purchase)
+      const [earningsResult, windowsResult, day49Result, day80Result, day50Result, loyaltyResult, lifetimeResult] = await Promise.all([
+        supabase.from('author_earnings')
+          .select('id,created_at,author_share_percent,share_source,quest_stage_number,author_earned_diamonds,platform_earned_diamonds,diamond_to_usd_rate,metadata')
+          .eq('author_id', authorId)
+          .eq('source_type', 'diamond_unlock')
+          .neq('earning_status', 'void')
+          .contains('metadata', { purchase_key: rawKey })
+          .limit(100),
+        supabase.from('author_100_percent_event_windows')
+          .select('cycle_id,started_at,ends_at')
+          .eq('author_id', authorId)
+          .lte('started_at', at.toISOString())
+          .gt('ends_at', at.toISOString())
+          .limit(20),
+        supabase.from('author_49_day_event_progress')
+          .select('status,share_percent,started_at,ends_at,ended_at')
+          .eq('author_id', authorId).maybeSingle(),
+        supabase.from('author_daily_80_boost_progress')
+          .select('status,share_percent,started_at,ends_at,last_episode_id,last_activation_date')
+          .eq('author_id', authorId).maybeSingle(),
+        supabase.from('author_daily_50_boost_progress')
+          .select('status,share_percent,started_at,ends_at,last_episode_id,event_80_paused_at')
+          .eq('author_id', authorId).maybeSingle(),
+        supabase.from('author_loyalty_reward_progress')
+          .select('started_at,ends_at,share_percent,required_episodes')
+          .eq('author_id', authorId).maybeSingle(),
+        supabase.from('author_lifetime_boosts')
+          .select('status,started_at,ended_at,share_percent,admin_event_pause_cycle_id')
+          .eq('author_id', authorId)
+          .eq('boost_type', '100_percent_100_days')
+          .maybeSingle(),
+      ])
+
+      for (const result of [earningsResult, windowsResult, day49Result, day80Result, day50Result, loyaltyResult, lifetimeResult]) {
+        if (result.error) throw result.error
+      }
+
+      const earnings = earningsResult.data || []
+      const snapshot = metadataObject(earnings[0]?.metadata)
+      const purchaseMetadata = metadataObject(purchase.metadata)
+      const events = []
+      const unverifiedEvents = []
+      const purchaseTime = at.getTime()
+      const nowTime = Date.now()
+      const validTime = (value) => {
+        const parsed = Date.parse(value || '')
+        return Number.isFinite(parsed) ? parsed : null
+      }
+      const inWindow = (start, end) => {
+        const first = validTime(start)
+        const last = validTime(end)
+        return first !== null && last !== null && purchaseTime >= first && purchaseTime < last
+      }
+      const addEvent = (key, name, percent, start, end, verification = 'verified') => {
+        const endTime = validTime(end)
+        const startTime = validTime(start)
+        const detail = {
+          key,
+          name,
+          author_share_percent: numberValue(percent),
+          platform_share_percent: 100 - numberValue(percent),
+          started_at: start || null,
+          ends_at: end || null,
+          remaining_seconds_now: endTime === null ? null : Math.max(0, Math.ceil((endTime - nowTime) / 1000)),
+          remaining_seconds_at_purchase: endTime === null ? null : Math.max(0, Math.ceil((endTime - purchaseTime) / 1000)),
+          active_now: startTime !== null && endTime !== null && nowTime >= startTime && nowTime < endTime,
+          verification,
+        }
+        if (verification === 'verified') events.push(detail)
+        else unverifiedEvents.push(detail)
+      }
+
+      for (const window of windowsResult.data || []) {
+        if (inWindow(window.started_at, window.ends_at)) {
+          addEvent('admin_100_percent_event', 'Admin 100% Event', 100, window.started_at, window.ends_at)
+        }
+      }
+
+      const day49 = day49Result.data
+      if (day49) {
+        const scheduledEnd = validTime(day49.ends_at)
+        const actualEnd = validTime(day49.ended_at)
+        const end = actualEnd !== null && scheduledEnd !== null && actualEnd < scheduledEnd
+          ? day49.ended_at : day49.ends_at
+        if (inWindow(day49.started_at, end)) {
+          addEvent('49_day_event', '80% for 49 Days', day49.share_percent || 80, day49.started_at, end)
+        }
+      }
+
+      const localParts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Phnom_Penh', weekday: 'short', year: 'numeric',
+        month: '2-digit', day: '2-digit',
+      }).formatToParts(at)
+      const localValue = (type) => localParts.find((part) => part.type === type)?.value || ''
+      if (localValue('weekday') === 'Wed') {
+        const localDay = `${localValue('year')}-${localValue('month')}-${localValue('day')}`
+        const startTime = new Date(`${localDay}T00:00:00+07:00`).getTime()
+        addEvent('writer_wednesday', 'Writer Wednesday', 70,
+          new Date(startTime).toISOString(), new Date(startTime + 86400000).toISOString())
+      }
+
+      const loyalty = loyaltyResult.data
+      if (loyalty && inWindow(loyalty.started_at, loyalty.ends_at)) {
+        const { data: authorStories, error: storiesError } = await supabase
+          .from('stories').select('id').eq('author_id', authorId).limit(2000)
+        if (storiesError) throw storiesError
+        const ids = (authorStories || []).map((story) => story.id)
+        let eligible = false
+        let validated = ids.length < 2000
+        if (ids.length && validated) {
+          const [countResult, lastResult] = await Promise.all([
+            supabase.from('episodes').select('id', { count: 'exact', head: true })
+              .in('story_id', ids).eq('status', 'published')
+              .lte('published_at', at.toISOString()),
+            supabase.from('episodes').select('published_at')
+              .in('story_id', ids).eq('status', 'published')
+              .lte('published_at', at.toISOString())
+              .order('published_at', { ascending: false }).limit(1),
+          ])
+          if (countResult.error) throw countResult.error
+          if (lastResult.error) throw lastResult.error
+          const lastPublished = validTime(lastResult.data?.[0]?.published_at)
+          eligible = numberValue(countResult.count) >= Math.max(20, numberValue(loyalty.required_episodes)) &&
+            lastPublished !== null && lastPublished >= purchaseTime - 365 * 86400000
+        }
+        if (snapshot.author_loyalty_reward_eligible === true) eligible = true
+        addEvent('author_loyalty_reward', '50% for 3 Years', loyalty.share_percent || 50,
+          loyalty.started_at, loyalty.ends_at,
+          eligible ? 'verified' : validated ? 'eligibility_unconfirmed' : 'history_unavailable')
+      }
+
+      const boost80 = day80Result.data
+      const boost50 = day50Result.data
+      const episodeIds = [boost80?.last_episode_id, boost50?.last_episode_id].filter(Boolean)
+      const episodeTimes = new Map()
+      if (episodeIds.length) {
+        const { data: latestEpisodes, error: latestError } = await supabase
+          .from('episodes').select('id,published_at').in('id', [...new Set(episodeIds)])
+        if (latestError) throw latestError
+        for (const episode of latestEpisodes || []) {
+          episodeTimes.set(episode.id, episode.published_at)
+        }
+      }
+
+      for (const [boost, key, name, percent] of [
+        [boost80, 'daily_80_event', '80% for 180 Days', 80],
+        [boost50, 'daily_50_event', 'Daily 50% Boost', 50],
+      ]) {
+        if (!boost || !inWindow(boost.started_at, boost.ends_at)) continue
+        const lastPublished = episodeTimes.get(boost.last_episode_id)
+        const knownActive = lastPublished && inWindow(lastPublished, boost.ends_at) &&
+          boost.status !== 'paused_by_80_event' && !boost.event_80_paused_at
+        addEvent(key, name, boost.share_percent || percent, knownActive ? lastPublished : boost.started_at,
+          boost.ends_at, knownActive ? 'verified' : 'activation_history_unavailable')
+      }
+
+      const lifetime = lifetimeResult.data
+      if (lifetime && inWindow(lifetime.started_at, lifetime.ended_at)) {
+        const verified = snapshot.boost_share_percent === 100 ||
+          (earnings[0]?.share_source === 'creator_boost' && numberValue(earnings[0]?.author_share_percent) === 100)
+        addEvent('creator_boost', '100-Day Creator Boost', lifetime.share_percent || 100,
+          lifetime.started_at, lifetime.ended_at,
+          verified ? 'verified' : 'pause_history_unavailable')
+      }
+
+      const promotion = numberValue(snapshot.promotion_author_share_percent || purchaseMetadata.promotion_author_share_percent)
+      if (promotion > 0) {
+        addEvent('special_promotion_share', 'Special Promotion Share', promotion, null, null)
+      }
+
+      events.sort((a, b) => b.author_share_percent - a.author_share_percent)
+      const stagePercent = snapshot.quest_share_percent === undefined
+        ? null : numberValue(snapshot.quest_share_percent)
+      const recordedPercent = numberValue(purchase.author_share_percent ?? earnings[0]?.author_share_percent)
+      const bestEvent = events[0] || null
+      const expectedFloor = Math.max(stagePercent || 0, bestEvent?.author_share_percent || 0)
+      return res.status(200).json({
+        ok: true,
+        purchase_key: purchase.purchase_key,
+        author_id: authorId,
+        purchased_at: purchase.created_at,
+        server_now: new Date(nowTime).toISOString(),
+        recorded_author_share_percent: recordedPercent,
+        recorded_platform_share_percent: numberValue(purchase.platform_share_percent),
+        recorded_share_source: earnings[0]?.share_source || purchaseMetadata.effective_share_source || '',
+        stage: {
+          share_percent: stagePercent,
+          stage_number: earnings[0]?.quest_stage_number ?? null,
+        },
+        events,
+        unverified_events: unverifiedEvents,
+        best_verified_share_percent: expectedFloor,
+        matches_verified_floor: recordedPercent >= expectedFloor,
+        history_complete: unverifiedEvents.length === 0,
+      })
+    }
+
     const range =
       getAdminEpisodeSalesRange(req.query)
     const queryText = String(
