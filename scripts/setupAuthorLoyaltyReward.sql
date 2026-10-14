@@ -1,3 +1,5 @@
+begin;
+
 create table if not exists public.author_loyalty_reward_progress (
   author_id uuid primary key references public.author_pages(id) on delete cascade,
   user_id uuid not null,
@@ -40,14 +42,32 @@ begin
     return;
   end if;
 
-  select b.user_id, b.started_at
+  select
+    ap.user_id,
+    coalesce(
+      (
+        select p.ends_at
+        from public.author_49_day_event_progress p
+        where p.author_id = ap.id
+          and p.status = 'finished'
+          and p.ends_at is not null
+          and p.ends_at <= now()
+          and p.ends_at + interval '3 years' > now()
+        limit 1
+      ),
+      (
+        select b.started_at
+        from public.author_daily_80_boost_progress b
+        where b.author_id = ap.id
+          and b.started_at is not null
+        limit 1
+      )
+    )
   into v_user_id, v_started_at
-  from public.author_daily_80_boost_progress b
-  where b.author_id = p_author_id
-    and b.started_at is not null
-  limit 1;
+  from public.author_pages ap
+  where ap.id = p_author_id;
 
-  if v_started_at is null then
+  if v_user_id is null or v_started_at is null then
     return;
   end if;
 
@@ -99,6 +119,23 @@ begin
 end;
 $$;
 
+create or replace function public.author_loyalty_reward_on_49_finished()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.status = 'finished'
+     and new.ends_at is not null
+     and new.ends_at <= now() then
+    perform public.sync_author_loyalty_reward(new.author_id);
+  end if;
+
+  return new;
+end;
+$$;
+
 create or replace function public.author_loyalty_reward_on_episode_publish()
 returns trigger
 language plpgsql
@@ -134,6 +171,16 @@ create trigger trg_author_loyalty_reward_80_start
 after insert or update of started_at on public.author_daily_80_boost_progress
 for each row
 execute function public.author_loyalty_reward_on_80_start();
+
+drop trigger if exists trg_author_loyalty_reward_49_finished
+  on public.author_49_day_event_progress;
+
+create trigger trg_author_loyalty_reward_49_finished
+after insert or update of status, ends_at
+on public.author_49_day_event_progress
+for each row
+when (new.status = 'finished')
+execute function public.author_loyalty_reward_on_49_finished();
 
 drop trigger if exists trg_zz_author_loyalty_reward_episode_publish
   on public.episodes;
@@ -204,6 +251,37 @@ insert into public.author_loyalty_reward_progress (
   ends_at
 )
 select
+  p.author_id,
+  ap.user_id,
+  50,
+  20,
+  p.ends_at,
+  p.ends_at + interval '3 years'
+from public.author_49_day_event_progress p
+join public.author_pages ap on ap.id = p.author_id
+where p.status = 'finished'
+  and p.ends_at is not null
+  and p.ends_at <= now()
+  and p.ends_at + interval '3 years' > now()
+  and exists (
+    select 1
+    from public.stories s
+    join public.episodes e on e.story_id = s.id
+    where s.author_id = p.author_id
+      and e.status = 'published'
+    offset 19 limit 1
+  )
+on conflict (author_id) do nothing;
+
+insert into public.author_loyalty_reward_progress (
+  author_id,
+  user_id,
+  share_percent,
+  required_episodes,
+  started_at,
+  ends_at
+)
+select
   b.author_id,
   b.user_id,
   50,
@@ -228,6 +306,9 @@ revoke all on function public.sync_author_loyalty_reward(uuid)
 revoke all on function public.author_loyalty_reward_on_80_start()
   from public, anon, authenticated;
 
+revoke all on function public.author_loyalty_reward_on_49_finished()
+  from public, anon, authenticated;
+
 revoke all on function public.author_loyalty_reward_on_episode_publish()
   from public, anon, authenticated;
 
@@ -239,3 +320,5 @@ grant execute on function public.sync_author_loyalty_reward(uuid)
 
 grant execute on function public.get_author_loyalty_reward_state(uuid, timestamptz)
   to service_role;
+
+commit;
