@@ -575,7 +575,7 @@ function publicEpisode(
     character_count:
       visibleEpisode.character_count,
     published_at:
-      visibleEpisode.published_at,
+      visibleEpisode.first_published_at || visibleEpisode.published_at,
     created_at: visibleEpisode.created_at,
     updated_at: visibleEpisode.updated_at,
   }
