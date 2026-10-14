@@ -1203,13 +1203,22 @@ export async function getPublicStories(req, res) {
         )
       }
 
-      if (genre) {
+            if (genre) {
+        const tag = genre.replace(/^#+/, '').trim()
+        const spellings = [
+          tag,
+          tag.toLocaleLowerCase(),
+          tag.toLocaleUpperCase(),
+          tag.replace(/\b[a-z]/gi, (letter) => letter.toLocaleUpperCase()),
+        ]
+        const variants = [...new Set(spellings.flatMap((value) => [value, `#${value}`]))]
         nextQuery = relationshipGroup
           ? nextQuery.contains('relationship_groups', [relationshipGroup])
           : genreMode === 'tag'
-            ? nextQuery.contains('tags', [genre])
+            ? nextQuery.overlaps('tags', variants)
             : nextQuery.ilike('main_genre', genre)
       }
+
 
       if (language) {
         nextQuery = nextQuery.eq(
