@@ -64,8 +64,8 @@ const SEARCH_SYNONYM_GROUPS = [
   ['តួប្រុសត្រជាក់', 'Cold Male Lead', 'cold male lead'],
   ['ស្នេហាយឺតៗ', 'Slow Burn', 'slow burn'],
   ['សត្រូវក្លាយជាគូស្នេហ៍', 'Enemies to Lovers', 'enemies to lovers'],
-  ['ប្រុសស្រឡាញ់ប្រុស', 'BL', 'boys love'],
-  ['ស្រីស្រឡាញ់ស្រី', 'GL', 'girls love'],
+  ['ប្រុសស្រឡាញ់ប្រុស', 'BL', 'boys love', "Boys' Love", 'Yaoi', 'Danmei', 'Shounen Ai'],
+  ['ស្រីស្រឡាញ់ស្រី', 'GL', 'girls love', "Girls' Love", 'Yuri', 'Baihe', 'Shoujo Ai'],
   ['ចប់', 'Completed', 'completed', 'complete'],
   ['កំពុងបន្ត', 'Ongoing', 'ongoing', 'updating'],
   ['ភាសាខ្មែរ', 'Khmer', 'khmer'],
@@ -123,7 +123,7 @@ function getSearchTerms(value) {
 
   if (!keyword) return []
 
-  const normalizedQuery = keyword.toLocaleLowerCase()
+  const normalizedQuery = keyword.toLocaleLowerCase().replace(/^#+/, '')
   const compactQuery = normalizedQuery.replace(/[\s._-]+/g, '')
   const tokens = keyword.split(/\s+/).filter(Boolean)
   const candidates = [
