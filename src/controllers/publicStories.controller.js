@@ -471,7 +471,7 @@ function publicEpisodeListItem(
       visibleEpisode.character_count,
     total_comments: Number(visibleEpisode.total_comments || 0),
     published_at:
-      visibleEpisode.published_at,
+      visibleEpisode.first_published_at || visibleEpisode.published_at,
     created_at: visibleEpisode.created_at,
     updated_at: visibleEpisode.updated_at,
   }
