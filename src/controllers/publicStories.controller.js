@@ -1278,7 +1278,7 @@ export async function getPublicStories(req, res) {
           ),
         ]
 
-        const tagValues = [...new Set(tagVariants)]
+        const tagValues = [...new Set(tagVariants.flatMap((tag) => [tag, `#${tag}`]))]
           .filter(Boolean)
           .map((tag) => `"${tag}"`)
           .join(',')
