@@ -532,8 +532,9 @@ if (['published', 'scheduled'].includes(status) && storySettings.length < 1) {
 
     if (status === 'published') {
   updatePayload.published_at =
-    episode.published_at || now
-  updatePayload.scheduled_at = null
+  episode.published_at || now
+updatePayload.first_published_at = episode.first_published_at || updatePayload.published_at
+updatePayload.scheduled_at = null
 }
 
     if (status === 'scheduled') {
