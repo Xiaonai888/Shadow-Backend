@@ -2,7 +2,7 @@ import { supabase } from '../config/supabase.js'
 import { getReaderAgeAccess } from '../services/storyAgeAccess.service.js'
 
 const PAGE_SIZE = 9
-const VALID_TYPES = new Set(['all', 'novel', 'manga', 'chat_story'])
+const VALID_TYPES = new Set(['all', 'novel', 'manga', 'chat_story', 'completed'])
 const VALID_TABS = new Set(['recents', 'subscribed'])
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -47,20 +47,22 @@ function normalizeType(value) {
   return VALID_TYPES.has(raw) ? raw : null
 }
 
-function toLibraryItem(row) {
+function toLibraryItem(row, tab) {
   const status = String(row.story_status || 'New')
   return {
     id: row.collection_id,
     story_id: row.story_id,
     created_at: row.saved_at,
     last_read_at: row.last_read_at || null,
-    unread_episode_count: Math.max(0, Number(row.unread_count || 0)),
+    last_read_episode_number: tab === 'recents' ? Math.max(0, Number(row.unread_count || 0)) : null,
+    unread_episode_count: tab === 'recents' ? 0 : Math.max(0, Number(row.unread_count || 0)),
     last_episode_at: row.last_episode_at || null,
     story: {
       id: row.story_id,
       title: row.title || '',
       cover_url: row.cover_url || '',
       story_type: row.story_type || 'novel',
+      last_read_episode_number: tab === 'recents' ? Math.max(0, Number(row.unread_count || 0)) : null,
       main_genre: row.main_genre || '',
       story_status: status,
       status: status.toLowerCase() === 'completed' ? 'completed' : 'ongoing',
@@ -111,7 +113,7 @@ export async function getReaderLibraryFeedPage(req, res) {
     const lastRow = pageRows[pageRows.length - 1]
     const result = {
       ok: true,
-      items: pageRows.map(toLibraryItem),
+      items: pageRows.map((row) => toLibraryItem(row, tab)),
       pagination: {
         limit: PAGE_SIZE,
         has_more: hasMore,
@@ -126,12 +128,17 @@ export async function getReaderLibraryFeedPage(req, res) {
       )
       if (countError) throw countError
       const counts = { all: 0, novel: 0, manga: 0, chat_story: 0 }
+      let ongoingCount = 0
       for (const row of countRows || []) {
+        if (row.story_type === 'ongoing_total') {
+          ongoingCount = Math.max(0, Number(row.story_count || 0))
+        }
         if (Object.prototype.hasOwnProperty.call(counts, row.story_type)) {
           counts[row.story_type] = Math.max(0, Number(row.story_count || 0))
         }
       }
       result.unread_story_counts = counts
+      result.ongoing_subscription_count = ongoingCount
     }
 
     const durationMs = Date.now() - startedAt
