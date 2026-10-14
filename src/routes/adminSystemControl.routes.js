@@ -5,7 +5,7 @@ import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { getSystemUsageCurrentSnapshot } from '../services/systemUsageMonitor.service.js'
 import { getSystemUsageAnomalySnapshot } from '../services/systemUsageAnomaly.service.js'
 import { getSystemUsageRegressionState } from '../services/systemUsageRegression.service.js'
-import { getRecentRequestEvidence, getGuestRequestSnapshot } from '../services/trafficDiagnostic.service.js'
+import { getRecentRequestEvidence, getGuestRequestSnapshot, getHistoricalErrorEvidence } from '../services/trafficDiagnostic.service.js'
 import {
   listSystemUsageIncidents,
   getSystemUsageIncident,
@@ -288,6 +288,67 @@ router.get('/reports/download', viewSystemControl, async (req, res) => {
       message,
     })
   }
+})
+
+router.get('/diagnostics/recent-errors', viewSystemControl, (req, res) => {
+  const now = Date.now()
+  const requested = Number(req.query?.minutes)
+  const minutes = Number.isFinite(requested) && requested >= 5
+    ? Math.min(120, Math.floor(requested))
+    : 60
+  const bucketMs = 15 * 60 * 1000
+  const from = Math.floor((now - minutes * 60000) / bucketMs) * bucketMs
+  const samples = getHistoricalErrorEvidence({ from, to: now })
+  const groups = new Map()
+
+  for (const entry of samples) {
+    const key = JSON.stringify([
+      entry.route, entry.http_status, entry.error_class,
+      entry.provider, entry.target,
+    ])
+    const group = groups.get(key) || {
+      route: entry.route,
+      http_status: entry.http_status,
+      error_class: entry.error_class,
+      provider: entry.provider,
+      target: entry.target,
+      count: 0,
+      external_error_count: 0,
+      first_seen_at: entry.first_seen_at,
+      last_seen_at: entry.last_seen_at,
+      sample_request_id: entry.sample_request_id,
+      sample_error: entry.sample_error,
+    }
+    group.count += Math.max(0, Number(entry.count) || 0)
+    group.external_error_count += Math.max(0, Number(entry.external_error_count) || 0)
+    if (Date.parse(entry.first_seen_at || '') < Date.parse(group.first_seen_at || '')) {
+      group.first_seen_at = entry.first_seen_at
+    }
+    if (Date.parse(entry.last_seen_at || '') >= Date.parse(group.last_seen_at || '')) {
+      group.last_seen_at = entry.last_seen_at
+      group.sample_request_id = entry.sample_request_id
+      group.sample_error = entry.sample_error
+    }
+    groups.set(key, group)
+  }
+
+  const ordered = [...groups.values()].sort(
+    (a, b) => b.count - a.count ||
+      Date.parse(b.last_seen_at || '') - Date.parse(a.last_seen_at || '')
+  )
+  res.status(200).json({
+    ok: true,
+    source: 'process_memory',
+    history_complete: false,
+    bucket_minutes: 15,
+    window_start: new Date(from).toISOString(),
+    window_end: new Date(now).toISOString(),
+    total_observed: ordered.reduce((sum, item) => sum + item.count, 0),
+    affected_routes: new Set(ordered.map((item) => item.route)).size,
+    returned_groups: Math.min(50, ordered.length),
+    has_more: ordered.length > 50,
+    errors: ordered.slice(0, 50),
+  })
 })
 
 router.get('/incidents', viewSystemControl, async (req, res) => {
