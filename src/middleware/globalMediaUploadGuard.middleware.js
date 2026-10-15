@@ -69,10 +69,37 @@ function mediaPolicyBody(req, path) {
 }
 
 function sendPolicyError(res, error) {
+  const detail = String(error?.message || '')
+  const issue = /inline|base64/i.test(detail)
+    ? {
+        reason_code: 'MEDIA_UPLOAD_REQUIRED',
+        message: 'This file has not been uploaded correctly. Please upload it before continuing.',
+      }
+    : /RAM-backed|disk-backed/i.test(detail)
+      ? {
+          reason_code: 'MEDIA_PROCESSING_FAILED',
+          message: 'This file could not be processed. Please select it again and retry.',
+        }
+      : /storage|Cloudflare|Supabase|media|file|url|key/i.test(detail)
+        ? {
+            reason_code: 'MEDIA_REFERENCE_INVALID',
+            message: 'The uploaded file link could not be verified. Please upload the file again.',
+          }
+        : {
+            reason_code: 'MEDIA_VALIDATION_FAILED',
+            message: 'The selected file could not be verified. Please check it and try again.',
+          }
+
+  console.warn('MEDIA_POLICY_REJECTED', {
+    code: error?.code || 'INVALID_MEDIA_STORAGE',
+    detail,
+  })
+
   return res.status(error?.statusCode || 400).json({
     ok: false,
     code: error?.code || 'INVALID_MEDIA_STORAGE',
-    message: error?.message || 'Invalid media storage',
+    reason_code: issue.reason_code,
+    message: issue.message,
   })
 }
 
