@@ -2463,7 +2463,7 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
     const { data, error } = await supabase
       .from('episodes')
       .select(
-        'id, story_id, title, cover_url, is_adult, is_locked, is_free_published, unlock_methods, status, episode_number, page_count, character_count, published_at, first_published_at, created_at, updated_at, deleted_at'
+        'id, story_id, title, cover_url, is_adult, is_locked, is_free_published, unlock_methods, status, scheduled_at, episode_number, page_count, character_count, published_at, first_published_at, created_at, updated_at, deleted_at'
       )
       .eq('story_id', storyId)
       .is('deleted_at', null)
@@ -2474,6 +2474,13 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
 
     const now = Date.now()
     const allEpisodes = data || []
+    const pendingPublishTimes = allEpisodes
+      .filter((episode) => String(episode.status || '').toLowerCase() === 'scheduled')
+      .map((episode) => Date.parse(episode.scheduled_at || ''))
+      .filter(Number.isFinite)
+    res.locals.publicStoryEpisodeNextScheduledAt = pendingPublishTimes.length
+      ? Math.min(...pendingPublishTimes)
+      : null
     const visibleEpisodes = allEpisodes.filter((episode) =>
       isPublicEpisode(episode, now)
     )
