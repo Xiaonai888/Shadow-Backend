@@ -7,7 +7,6 @@ const VIEW_SENSITIVE_INVALIDATION_MS = 20 * 1000
 
 const VIEW_SENSITIVE_SORTS = new Set([
   'views',
-  'popular',
   'weekly_top',
   'weekly',
   'trending',
