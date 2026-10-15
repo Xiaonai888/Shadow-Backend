@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { randomUUID } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
 import { bumpContentVersions } from '../services/contentVersion.service.js'
 import {
@@ -1595,74 +1596,94 @@ return candidates
     .slice(0, limit)
 }
 
-async function createV2EchoReaderPost(echo) {
-  const userId = String(echo?.user_id || '')
-  const echoId = String(echo?.id || '')
+async function createV2EchoReaderPosts(echoes) {
+  const rows = (Array.isArray(echoes) ? echoes : []).filter(
+    (echo) => echo?.id && echo?.user_id
+  )
+  if (!rows.length) return new Map()
 
-  if (!userId || !echoId) return null
+  const now = new Date().toISOString()
+  const entries = rows.map((echo) => {
+    const timestamp = echo.updated_at || echo.created_at || now
+    const postId = randomUUID()
+    return {
+      echoId: String(echo.id),
+      postId,
+      post: {
+        id: postId,
+        user_id: String(echo.user_id),
+        content: String(echo.echo_text || '').trim(),
+        image_urls: [],
+        visibility: echoAudienceToVisibility(echo.audience),
+        comments_permission: 'everyone',
+        story_sharing: true,
+        publish_at: timestamp,
+        like_count: 0,
+        comment_count: 0,
+        echo_count: 0,
+        created_at: timestamp,
+        updated_at: timestamp,
+      },
+      link: {
+        echo_id: String(echo.id),
+        reader_post_id: postId,
+        user_id: String(echo.user_id),
+        created_at: timestamp,
+        updated_at: timestamp,
+      },
+    }
+  })
 
-  const timestamp =
-    echo.updated_at ||
-    echo.created_at ||
-    new Date().toISOString()
-
-  const { data: post, error: postError } = await supabase
+  const { error: postError } = await supabase
     .from('reader_posts')
-    .insert({
-      user_id: userId,
-      content: String(echo.echo_text || '').trim(),
-      image_urls: [],
-      visibility: echoAudienceToVisibility(echo.audience),
-      comments_permission: 'everyone',
-      story_sharing: true,
-      publish_at: timestamp,
-      like_count: 0,
-      comment_count: 0,
-      echo_count: 0,
-      created_at: timestamp,
-      updated_at: timestamp,
-    })
-    .select('id')
-    .single()
+    .insert(entries.map((entry) => entry.post))
 
   if (postError) throw postError
 
-  const { data: link, error: linkError } = await supabase
+  const cleanPosts = async (postIds) => {
+    if (!postIds.length) return
+    const timestamp = new Date().toISOString()
+    const { error } = await supabase
+      .from('reader_posts')
+      .update({ deleted_at: timestamp, updated_at: timestamp })
+      .in('id', postIds)
+      .is('deleted_at', null)
+    if (error) throw error
+  }
+
+  const { error: linkError } = await supabase
     .from('social_echo_reader_posts_v2')
-    .insert({
-      echo_id: echoId,
-      reader_post_id: post.id,
-      user_id: userId,
-      created_at: timestamp,
-      updated_at: timestamp,
+    .upsert(entries.map((entry) => entry.link), {
+      onConflict: 'echo_id',
+      ignoreDuplicates: true,
     })
-    .select('echo_id, reader_post_id, updated_at')
-    .single()
 
-  if (!linkError) return link
+  if (linkError) {
+    try {
+      await cleanPosts(entries.map((entry) => entry.postId))
+    } catch (cleanupError) {
+      console.error('ECHO READER POST CLEANUP ERROR:', cleanupError)
+    }
+    throw linkError
+  }
 
-  await supabase
-    .from('reader_posts')
-    .update({
-      deleted_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', post.id)
-    .eq('user_id', userId)
-    .is('deleted_at', null)
-
-  const { data: concurrentLink, error: concurrentError } = await supabase
+  const { data: savedLinks, error: readError } = await supabase
     .from('social_echo_reader_posts_v2')
     .select('echo_id, reader_post_id, updated_at')
-    .eq('echo_id', echoId)
-    .maybeSingle()
+    .in('echo_id', entries.map((entry) => entry.echoId))
 
-  if (concurrentError) throw concurrentError
-  if (concurrentLink) return concurrentLink
+  if (readError) throw readError
 
-  throw linkError
+  const links = new Map(
+    (savedLinks || []).map((link) => [String(link.echo_id), link])
+  )
+  const orphanIds = entries
+    .filter((entry) => String(links.get(entry.echoId)?.reader_post_id || '') !== entry.postId)
+    .map((entry) => entry.postId)
+
+  await cleanPosts(orphanIds)
+  return links
 }
-
 
 async function syncV2EchoReaderPost(
   echo,
@@ -1802,18 +1823,20 @@ async function ensureV2EchoLinks(echoes) {
         (data || []).map((link) => [String(link.echo_id), link])
       )
 
-      await Promise.all(toLoad.map(async (echo) => {
-        const id = String(echo.id)
-        let link = links.get(id)
+      const existingEchoes = toLoad.filter((echo) => links.has(String(echo.id)))
+      for (let offset = 0; offset < existingEchoes.length; offset += 6) {
+        await Promise.all(
+          existingEchoes.slice(offset, offset + 6).map((echo) =>
+            syncV2EchoReaderPost(echo, links.get(String(echo.id)))
+          )
+        )
+      }
 
-        if (link) {
-          await syncV2EchoReaderPost(echo, link)
-        } else {
-          link = await createV2EchoReaderPost(echo)
-        }
-
-        if (link?.reader_post_id) links.set(id, link)
-      }))
+      const missingEchoes = toLoad.filter((echo) => !links.has(String(echo.id)))
+      if (missingEchoes.length) {
+        const created = await createV2EchoReaderPosts(missingEchoes)
+        for (const [id, link] of created) links.set(id, link)
+      }
 
       return links
     })()
@@ -1841,6 +1864,9 @@ async function ensureV2EchoLinks(echoes) {
   return linkMap
 }
 
+
+const ECHO_FEED_INFLIGHT_LIMIT = 32
+const echoFeedRowsInFlight = new Map()
 
 async function readCombinedEchoRows({
   ownerId = '',
@@ -1908,21 +1934,40 @@ async function readCombinedEchoRows({
     legacyQuery = legacyQuery.eq('id', echoId)
   }
 
-  const [v2Result, legacyResult] =
-    await Promise.all([
+  const feedKey = feedOnly && !ownerId && !echoId && !echoVersion
+    ? String(limit)
+    : ''
+  let resultsPromise = feedKey
+    ? echoFeedRowsInFlight.get(feedKey)
+    : null
+  const shouldRemove = !resultsPromise
+
+  if (!resultsPromise) {
+    resultsPromise = Promise.all([
       echoVersion === 'legacy'
-        ? Promise.resolve({
-            data: [],
-            error: null,
-          })
+        ? Promise.resolve({ data: [], error: null })
         : v2Query,
       echoVersion === 'v2'
-        ? Promise.resolve({
-            data: [],
-            error: null,
-          })
+        ? Promise.resolve({ data: [], error: null })
         : legacyQuery,
     ])
+
+    if (feedKey && echoFeedRowsInFlight.size < ECHO_FEED_INFLIGHT_LIMIT) {
+      echoFeedRowsInFlight.set(feedKey, resultsPromise)
+    }
+  }
+
+  let v2Result
+  let legacyResult
+  try {
+    const loaded = await resultsPromise
+    v2Result = loaded[0]
+    legacyResult = loaded[1]
+  } finally {
+    if (shouldRemove && echoFeedRowsInFlight.get(feedKey) === resultsPromise) {
+      echoFeedRowsInFlight.delete(feedKey)
+    }
+  }
 
   if (v2Result.error) {
     throw v2Result.error
