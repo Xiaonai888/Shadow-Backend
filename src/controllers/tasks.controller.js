@@ -1451,6 +1451,40 @@ export async function claimReadingMissionReward(req, res) {
 }
 
 
+const WEEKLY_SESSION_CACHE_MS = 60 * 1000
+const WEEKLY_SESSION_CACHE_MAX = 1000
+const weeklySessionCache = new Map()
+
+function getWeeklySessionCache(userId, weekStart, episodeId) {
+  const key = JSON.stringify([String(userId), weekStart, String(episodeId)])
+  const cached = weeklySessionCache.get(key)
+  if (!cached) return null
+  if (cached.expiresAt <= Date.now()) {
+    weeklySessionCache.delete(key)
+    return null
+  }
+  return cached.value
+}
+
+function rememberWeeklySession(userId, weekStart, episodeId, value) {
+  const userKey = String(userId)
+  for (const [key, entry] of weeklySessionCache) {
+    if (entry.userId === userKey && entry.weekStart === weekStart) {
+      weeklySessionCache.delete(key)
+    }
+  }
+  const key = JSON.stringify([userKey, weekStart, String(episodeId)])
+  weeklySessionCache.set(key, {
+    userId: userKey,
+    weekStart,
+    value,
+    expiresAt: Date.now() + WEEKLY_SESSION_CACHE_MS,
+  })
+  while (weeklySessionCache.size > WEEKLY_SESSION_CACHE_MAX) {
+    weeklySessionCache.delete(weeklySessionCache.keys().next().value)
+  }
+}
+
 function getWeeklyReadingWeekStartKey(date = new Date()) {
   const dateKey = getPhnomPenhDateKey(date)
   const localDate = new Date(`${dateKey}T00:00:00.000Z`)
@@ -1474,6 +1508,10 @@ async function trackWeeklyReadingSessionProgress({
   ) {
     return null
   }
+
+  const weekStart = getWeeklyReadingWeekStartKey()
+  const cachedWeekly = getWeeklySessionCache(userId, weekStart, episodeId)
+  if (cachedWeekly) return cachedWeekly
 
   const { data: readContext, error: readContextError } =
     await supabase.rpc(
@@ -1499,8 +1537,6 @@ async function trackWeeklyReadingSessionProgress({
   ) {
     return null
   }
-
-  const weekStart = getWeeklyReadingWeekStartKey()
 
   const { error: upsertError } = await supabase
     .from('reader_weekly_reading_episodes')
@@ -1550,7 +1586,7 @@ async function trackWeeklyReadingSessionProgress({
     if (fullState) return fullState
   }
 
-  return {
+  const weeklyResult = {
     title: 'Weekly Reading',
     week_start: weekStart,
     week_end: addDays(weekStart, 6),
@@ -1562,6 +1598,9 @@ async function trackWeeklyReadingSessionProgress({
     ),
     tracked: true,
   }
+
+  rememberWeeklySession(userId, weekStart, episodeId, weeklyResult)
+  return weeklyResult
 }
 
 function buildMissionProgressRow({
