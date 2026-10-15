@@ -45,6 +45,64 @@ const publicStoriesListReadSpamGuard = createSpamGuard({
   windowSeconds: 60,
 })
 
+const episodeReadRequests = new Map()
+const EPISODE_READ_INFLIGHT_MAX = 250
+
+function coalesceEpisodeRead(req, res, next) {
+  const authorization = String(req.headers.authorization || '')
+  const token = authorization.startsWith('Bearer ')
+    ? authorization.slice(7)
+    : ''
+  if (!token || !process.env.JWT_SECRET) return next()
+
+  try {
+    const viewer = jwt.verify(token, process.env.JWT_SECRET)
+    if (viewer?.type !== 'reader' || !viewer?.user_id) return next()
+  } catch {
+    return next()
+  }
+
+  const key = createHash('sha256')
+    .update(`${token}\u001f${req.originalUrl}`)
+    .digest('hex')
+  const existing = episodeReadRequests.get(key)
+
+  if (existing) {
+    existing.promise.then((result) => {
+      if (res.headersSent || res.writableEnded || res.destroyed) return
+      if (!result) return next()
+      res.set('Cache-Control', 'private, no-store')
+      return res.status(result.status).json(result.body)
+    })
+    return
+  }
+
+  if (episodeReadRequests.size >= EPISODE_READ_INFLIGHT_MAX) return next()
+
+  let resolvePending
+  const entry = {
+    promise: new Promise((resolve) => { resolvePending = resolve }),
+  }
+  episodeReadRequests.set(key, entry)
+  const originalJson = res.json.bind(res)
+  let completed = false
+
+  const finish = (result) => {
+    if (completed) return
+    completed = true
+    if (episodeReadRequests.get(key) === entry) episodeReadRequests.delete(key)
+    resolvePending(result)
+  }
+
+  res.json = (body) => {
+    finish({ status: res.statusCode || 200, body })
+    return originalJson(body)
+  }
+
+  res.once('close', () => finish(null))
+  next()
+}
+
 const episodeViewRequests = new Map()
 const EPISODE_VIEW_DEDUPE_MS = 20 * 1000
 const EPISODE_VIEW_DEDUPE_MAX = 1500
@@ -296,8 +354,7 @@ function personalizeStoryEpisodeList(req, res, next) {
   return next()
 }
 
-
-router.get('/stories/:storyId/episodes/:episodeId', getPublicEpisodeById)
+router.get('/stories/:storyId/episodes/:episodeId', coalesceEpisodeRead, getPublicEpisodeById)
 router.post(
   '/stories/:storyId/episodes/:episodeId/view',
   coalesceEpisodeView,
