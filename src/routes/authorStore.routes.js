@@ -59,6 +59,7 @@ import {
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { getAdminAuthorStoreWithdrawalNotifications } from '../controllers/adminAuthorStoreWithdrawalNotifications.controller.js'
+import { validateAuthorStorePdf, deleteMyAuthorStoreTemporaryPdf } from '../controllers/authorStorePdfGuard.controller.js'
 
 const router = express.Router()
 
@@ -69,13 +70,9 @@ const privatePdfUpload = multer({
     files: 1,
   },
   fileFilter: (req, file, callback) => {
-    const mimeType = String(file?.mimetype || '').toLowerCase()
     const originalName = String(file?.originalname || '').toLowerCase()
 
-    if (
-      mimeType !== 'application/pdf' ||
-      !originalName.endsWith('.pdf')
-    ) {
+    if (!originalName.endsWith('.pdf')) {
       const error = new Error('Only PDF files are allowed')
       error.statusCode = 400
       callback(error)
@@ -92,7 +89,11 @@ const handlePrivatePdfUpload = (req, res, next) => {
     const tooLarge = error.code === 'LIMIT_FILE_SIZE'
     const invalid = error instanceof multer.MulterError || error.statusCode === 400
     console.error('AUTHOR STORE PDF UPLOAD REJECTED:', error)
-    return res.status(tooLarge ? 413 : invalid ? 400 : 500).json({ ok: false, code: error.code || 'PDF_UPLOAD_REJECTED', message: tooLarge ? 'PDF exceeds 50 MB' : invalid ? error.message : 'PDF could not be processed by server' })
+    return res.status(tooLarge ? 413 : invalid ? 400 : 500).json({
+      ok: false,
+      code: error.code || 'PDF_UPLOAD_REJECTED',
+      message: tooLarge ? 'PDF exceeds 50 MB' : invalid ? error.message : 'PDF could not be processed by server',
+    })
   })
 }
 
@@ -137,10 +138,12 @@ router.post('/me/products', requireUser, createMyAuthorStoreProduct)
 router.post(
   '/me/pdfs/upload-private',
   requireUser,
-  handlePrivatePdfUpload
+  handlePrivatePdfUpload,
   cleanupPrivatePdfTemp,
+  validateAuthorStorePdf,
   uploadMyAuthorStorePrivatePdf
 )
+router.delete('/me/pdfs/temporary', requireUser, deleteMyAuthorStoreTemporaryPdf)
 router.patch(
   '/me/products/:productId/private-pdf',
   requireUser,
