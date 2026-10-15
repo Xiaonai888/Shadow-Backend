@@ -678,19 +678,12 @@ async function getCachedReadGateUnlock({
   })
   const cached = readCachedReadGateUnlock(key)
 
-  if (cached.hit) {
-    return cached.value
-  }
+  if (cached.hit) return cached.value
 
-  const generation =
-    readGateUnlockGenerationFor(key)
-  const pending =
-    readGateUnlockPending.get(key)
+  const generation = readGateUnlockGenerationFor(key)
+  const pending = readGateUnlockPending.get(key)
 
-  if (
-    pending &&
-    pending.generation === generation
-  ) {
+  if (pending && pending.generation === generation) {
     return pending.promise
   }
 
@@ -702,31 +695,41 @@ async function getCachedReadGateUnlock({
       .eq('story_id', storyId)
       .eq('episode_id', episodeId)
       .eq('unlock_status', 'active')
-      .maybeSingle()
+      .order('expires_at', { ascending: false, nullsFirst: true })
+      .limit(100)
 
     if (error) throw error
 
-    const unlock =
-      data?.expires_at &&
-      new Date(data.expires_at).getTime() <= Date.now()
-        ? null
-        : data || null
+    const now = Date.now()
+    const activeUnlocks = (data || []).filter((item) => {
+      if (!item.expires_at) return true
+      const expiresAt = Date.parse(item.expires_at)
+      return Number.isFinite(expiresAt) && expiresAt > now
+    })
 
-    if (
-      readGateUnlockGenerationFor(key) !== generation
-    ) {
-      return getCachedReadGateUnlock({
-        userId,
-        storyId,
-        episodeId,
-      })
+    const priority = (item) => {
+      const type = String(item.unlock_type || '').toLowerCase()
+      if (type === 'diamond') return 4
+      if (type === 'ad') return 3
+      if (type === 'voucher' || type === 'story_card' || type === 'free_item') return 2
+      return 1
     }
 
-    writeCachedReadGateUnlock(
-      key,
-      unlock
-    )
+    activeUnlocks.sort((left, right) => {
+      const rank = priority(right) - priority(left)
+      if (rank) return rank
+      if (!left.expires_at && right.expires_at) return -1
+      if (left.expires_at && !right.expires_at) return 1
+      return Date.parse(right.expires_at || 0) - Date.parse(left.expires_at || 0)
+    })
 
+    const unlock = activeUnlocks[0] || null
+
+    if (readGateUnlockGenerationFor(key) !== generation) {
+      return getCachedReadGateUnlock({ userId, storyId, episodeId })
+    }
+
+    writeCachedReadGateUnlock(key, unlock)
     return unlock
   })()
 
@@ -738,14 +741,13 @@ async function getCachedReadGateUnlock({
   try {
     return await request
   } finally {
-    const current =
-      readGateUnlockPending.get(key)
-
+    const current = readGateUnlockPending.get(key)
     if (current?.promise === request) {
       readGateUnlockPending.delete(key)
     }
   }
 }
+
 
 async function getPlatformUnlockRules() {
   if (
