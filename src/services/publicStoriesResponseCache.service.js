@@ -3,6 +3,7 @@ import { registerRuntimeInspectable } from './runtimeMemoryInspector.service.js'
 
 const MAX_CACHE_ENTRIES = 300
 const CACHE_TTL_MS = 60 * 1000
+const VIEW_SENSITIVE_INVALIDATION_MS = 20 * 1000
 
 const VIEW_SENSITIVE_SORTS = new Set([
   'views',
@@ -17,6 +18,8 @@ const publicStoriesInFlight = new Map()
 
 let publicStoriesCacheVersion = 0
 let publicStoriesViewSensitiveVersion = 0
+let lastViewSensitiveInvalidationAt = 0
+let viewSensitiveInvalidationTimer = null
 
 function getRequestSort(req) {
   return String(req?.query?.sort || 'latest')
@@ -78,15 +81,7 @@ function setCacheEntry(key, entry) {
   }
 }
 
-export function invalidatePublicStoriesCache({
-  viewSensitiveOnly = false,
-} = {}) {
-  if (!viewSensitiveOnly) {
-    publicStoriesCache.clear()
-    publicStoriesCacheVersion += 1
-    return
-  }
-
+function invalidateViewSensitiveEntries() {
   for (const key of publicStoriesCache.keys()) {
     try {
       const parsed = JSON.parse(key)
@@ -107,6 +102,43 @@ export function invalidatePublicStoriesCache({
   }
 
   publicStoriesViewSensitiveVersion += 1
+  lastViewSensitiveInvalidationAt = Date.now()
+}
+
+function clearViewSensitiveInvalidationTimer() {
+  if (viewSensitiveInvalidationTimer !== null) {
+    clearTimeout(viewSensitiveInvalidationTimer)
+    viewSensitiveInvalidationTimer = null
+  }
+}
+
+export function invalidatePublicStoriesCache({
+  viewSensitiveOnly = false,
+} = {}) {
+  if (!viewSensitiveOnly) {
+    clearViewSensitiveInvalidationTimer()
+    publicStoriesCache.clear()
+    publicStoriesCacheVersion += 1
+    lastViewSensitiveInvalidationAt = Date.now()
+    return
+  }
+
+  const now = Date.now()
+  const elapsed = now - lastViewSensitiveInvalidationAt
+
+  if (elapsed >= VIEW_SENSITIVE_INVALIDATION_MS || elapsed < 0) {
+    clearViewSensitiveInvalidationTimer()
+    invalidateViewSensitiveEntries()
+    return
+  }
+
+  if (viewSensitiveInvalidationTimer !== null) return
+
+  viewSensitiveInvalidationTimer = setTimeout(() => {
+    viewSensitiveInvalidationTimer = null
+    invalidateViewSensitiveEntries()
+  }, VIEW_SENSITIVE_INVALIDATION_MS - elapsed)
+  viewSensitiveInvalidationTimer.unref?.()
 }
 
 export async function cachePublicStoriesResponse(
