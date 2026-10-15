@@ -1,4 +1,5 @@
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
+const PENDING_SCHEDULE_CACHE_TTL_MS = 2 * 1000
 const MAX_CACHE_ENTRIES = 200
 
 const publicStoryDataCache = new Map()
@@ -126,9 +127,9 @@ export function cachePublicStoryDataResponse(
 
     if (
       cached &&
-      Date.now() -
-        Number(cached.cachedAt || 0) >
-        CACHE_TTL_MS
+      Date.now() >= Number(
+        cached.expiresAt ?? Number(cached.cachedAt || 0) + CACHE_TTL_MS
+      )
     ) {
       publicStoryDataCache.delete(key)
     }
@@ -253,10 +254,26 @@ export function cachePublicStoryDataResponse(
           body
         )
       ) {
+        const cachedAt = Date.now()
+        const nextScheduledAt = resource === 'episodes'
+          ? Number(res.locals?.publicStoryEpisodeNextScheduledAt || 0)
+          : 0
+        let expiresAt = cachedAt + CACHE_TTL_MS
+
+        if (Number.isFinite(nextScheduledAt) && nextScheduledAt > 0) {
+          expiresAt = Math.min(
+            expiresAt,
+            nextScheduledAt > cachedAt
+              ? nextScheduledAt
+              : cachedAt + PENDING_SCHEDULE_CACHE_TTL_MS
+          )
+        }
+
         entry = {
           body,
           statusCode: res.statusCode,
-          cachedAt: Date.now(),
+          cachedAt,
+          expiresAt,
         }
 
         setCacheEntry(
