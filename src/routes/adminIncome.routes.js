@@ -26,6 +26,7 @@ import { getAdminStoryPayoutQueue } from '../controllers/adminStoryPayoutQueue.c
 import { getAdminAuthorPageAuthors, getAdminAuthorPageAuthorTransactions } from '../controllers/adminAuthorPageAuthorSummary.controller.js'
 import { getAdminAuthorIncomeTransactions } from '../controllers/adminAuthorIncomeTransactions.controller.js'
 import { getAdminAuthorIncomeExportData } from '../controllers/adminAuthorIncomeExport.controller.js'
+import { getAdminAuthorIncomeExportData } from '../controllers/adminAuthorIncomeExport.controller.js'
 
 const router = express.Router()
 const SUMMARY_CACHE_MS = 30 * 1000
@@ -278,6 +279,7 @@ router.get('/episode-sales', requireAdmin, getAdminEpisodeSales)
 router.get('/author-income', requireAdmin, getAdminAuthorIncome)
 router.post('/author-income/reconcile', requireAdmin, invalidateIncomeSummaryCache, reconcileAdminAuthorIncome)
 router.get('/author-income/:authorId/transactions', requireAdmin, getAdminAuthorIncomeTransactions)
+router.get('/author-income/:authorId/export-data', requireAdmin, getAdminAuthorIncomeExportData)
 router.get('/diamond-gifts', requireAdmin, getAdminDiamondGifts)
 router.get('/author-page', requireAdmin, getAdminAuthorPageIncome)
 router.get('/author-page/authors', requireAdmin, getAdminAuthorPageAuthors)
