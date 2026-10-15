@@ -1595,130 +1595,74 @@ return candidates
     .slice(0, limit)
 }
 
-async function createV2EchoReaderPost(
-  echo
-) {
-  const userId = String(
-    echo?.user_id || ''
-  )
-  const echoId = String(
-    echo?.id || ''
-  )
+async function createV2EchoReaderPost(echo) {
+  const userId = String(echo?.user_id || '')
+  const echoId = String(echo?.id || '')
 
-  if (!userId || !echoId) {
-    return null
-  }
-
-  const {
-    data: existingLink,
-    error: existingLinkError,
-  } = await supabase
-    .from(
-      'social_echo_reader_posts_v2'
-    )
-    .select('echo_id, reader_post_id, updated_at')
-.eq('echo_id', echoId)
-.maybeSingle()
-
-  if (existingLinkError) {
-    throw existingLinkError
-  }
-
-  if (existingLink?.reader_post_id) {
-  await syncV2EchoReaderPost(
-    echo,
-    existingLink
-  )
-
-  return existingLink
-}
+  if (!userId || !echoId) return null
 
   const timestamp =
     echo.updated_at ||
     echo.created_at ||
     new Date().toISOString()
 
-  const { data: post, error: postError } =
-    await supabase
-      .from('reader_posts')
-      .insert({
-        user_id: userId,
-        content: String(
-          echo.echo_text || ''
-        ).trim(),
-        image_urls: [],
-        visibility:
-          echoAudienceToVisibility(
-            echo.audience
-          ),
-        comments_permission: 'everyone',
-        story_sharing: true,
-        publish_at: timestamp,
-        like_count: 0,
-        comment_count: 0,
-        echo_count: 0,
-        created_at: timestamp,
-        updated_at: timestamp,
-      })
-      .select('id')
-      .single()
+  const { data: post, error: postError } = await supabase
+    .from('reader_posts')
+    .insert({
+      user_id: userId,
+      content: String(echo.echo_text || '').trim(),
+      image_urls: [],
+      visibility: echoAudienceToVisibility(echo.audience),
+      comments_permission: 'everyone',
+      story_sharing: true,
+      publish_at: timestamp,
+      like_count: 0,
+      comment_count: 0,
+      echo_count: 0,
+      created_at: timestamp,
+      updated_at: timestamp,
+    })
+    .select('id')
+    .single()
 
   if (postError) throw postError
 
-  const { data: link, error: linkError } =
-    await supabase
-      .from(
-        'social_echo_reader_posts_v2'
-      )
-      .insert({
-        echo_id: echoId,
-        reader_post_id: post.id,
-        user_id: userId,
-        created_at: timestamp,
-        updated_at: timestamp,
-      })
-      .select(
-        'echo_id, reader_post_id'
-      )
-      .single()
+  const { data: link, error: linkError } = await supabase
+    .from('social_echo_reader_posts_v2')
+    .insert({
+      echo_id: echoId,
+      reader_post_id: post.id,
+      user_id: userId,
+      created_at: timestamp,
+      updated_at: timestamp,
+    })
+    .select('echo_id, reader_post_id, updated_at')
+    .single()
 
-  if (!linkError) {
-    return link
-  }
+  if (!linkError) return link
 
   await supabase
     .from('reader_posts')
     .update({
-      deleted_at:
-        new Date().toISOString(),
-      updated_at:
-        new Date().toISOString(),
+      deleted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     })
     .eq('id', post.id)
     .eq('user_id', userId)
     .is('deleted_at', null)
 
-  const {
-    data: concurrentLink,
-    error: concurrentError,
-  } = await supabase
-    .from(
-      'social_echo_reader_posts_v2'
-    )
-    .select('echo_id, reader_post_id')
+  const { data: concurrentLink, error: concurrentError } = await supabase
+    .from('social_echo_reader_posts_v2')
+    .select('echo_id, reader_post_id, updated_at')
     .eq('echo_id', echoId)
     .maybeSingle()
 
-  if (concurrentError) {
-    throw concurrentError
-  }
-
-  if (concurrentLink) {
-    return concurrentLink
-  }
+  if (concurrentError) throw concurrentError
+  if (concurrentLink) return concurrentLink
 
   throw linkError
 }
+
 
 async function syncV2EchoReaderPost(
   echo,
