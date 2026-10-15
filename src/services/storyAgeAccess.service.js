@@ -2,6 +2,10 @@ import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 
 const ADULT_AGE = 18
+const AGE_ACCESS_CACHE_MS = 5 * 1000
+const AGE_ACCESS_CACHE_LIMIT = 1000
+const ageAccessCache = new Map()
+const ageAccessPending = new Map()
 
 function calculateAge(dateOfBirth) {
   const birthDate = new Date(dateOfBirth)
@@ -48,15 +52,7 @@ function getOptionalReaderUserId(req) {
   }
 }
 
-export async function getReaderAgeAccessByUserId(userId) {
-  if (!userId) {
-    return {
-      user_id: null,
-      age: null,
-      can_view_adult_stories: false,
-    }
-  }
-
+async function loadReaderAgeAccess(userId) {
   const { data, error } = await supabase
     .from('users')
     .select('id, date_of_birth, is_active')
@@ -75,6 +71,53 @@ export async function getReaderAgeAccessByUserId(userId) {
     age,
     can_view_adult_stories:
       Number.isFinite(age) && age >= ADULT_AGE,
+  }
+}
+
+export async function getReaderAgeAccessByUserId(userId) {
+  const readerId = String(userId || '').trim()
+
+  if (!readerId) {
+    return {
+      user_id: null,
+      age: null,
+      can_view_adult_stories: false,
+    }
+  }
+
+  const cached = ageAccessCache.get(readerId)
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value
+  }
+  if (cached) ageAccessCache.delete(readerId)
+
+  const existing = ageAccessPending.get(readerId)
+  if (existing) return existing
+
+  const pending = loadReaderAgeAccess(readerId)
+  if (ageAccessPending.size >= AGE_ACCESS_CACHE_LIMIT) {
+    return pending
+  }
+
+  ageAccessPending.set(readerId, pending)
+
+  try {
+    const access = await pending
+    ageAccessCache.delete(readerId)
+    ageAccessCache.set(readerId, {
+      value: access,
+      expiresAt: Date.now() + AGE_ACCESS_CACHE_MS,
+    })
+
+    while (ageAccessCache.size > AGE_ACCESS_CACHE_LIMIT) {
+      ageAccessCache.delete(ageAccessCache.keys().next().value)
+    }
+
+    return access
+  } finally {
+    if (ageAccessPending.get(readerId) === pending) {
+      ageAccessPending.delete(readerId)
+    }
   }
 }
 
