@@ -86,6 +86,16 @@ const privatePdfUpload = multer({
   },
 })
 
+const handlePrivatePdfUpload = (req, res, next) => {
+  privatePdfUpload.single('pdf')(req, res, (error) => {
+    if (!error) return next()
+    const tooLarge = error.code === 'LIMIT_FILE_SIZE'
+    const invalid = error instanceof multer.MulterError || error.statusCode === 400
+    console.error('AUTHOR STORE PDF UPLOAD REJECTED:', error)
+    return res.status(tooLarge ? 413 : invalid ? 400 : 500).json({ ok: false, code: error.code || 'PDF_UPLOAD_REJECTED', message: tooLarge ? 'PDF exceeds 50 MB' : invalid ? error.message : 'PDF could not be processed by server' })
+  })
+}
+
 function cleanupPrivatePdfTemp(req, res, next) {
   const filePath = String(req.file?.path || '').trim()
 
@@ -127,7 +137,7 @@ router.post('/me/products', requireUser, createMyAuthorStoreProduct)
 router.post(
   '/me/pdfs/upload-private',
   requireUser,
-  privatePdfUpload.single('pdf'),
+  handlePrivatePdfUpload
   cleanupPrivatePdfTemp,
   uploadMyAuthorStorePrivatePdf
 )
