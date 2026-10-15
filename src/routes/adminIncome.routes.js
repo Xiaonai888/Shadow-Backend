@@ -24,6 +24,8 @@ import {
 } from '../controllers/adminIncome.controller.js'
 import { getAdminStoryPayoutQueue } from '../controllers/adminStoryPayoutQueue.controller.js'
 import { getAdminAuthorPageAuthors, getAdminAuthorPageAuthorTransactions } from '../controllers/adminAuthorPageAuthorSummary.controller.js'
+import { getAdminAuthorIncomeTransactions } from '../controllers/adminAuthorIncomeTransactions.controller.js'
+import { getAdminAuthorIncomeExportData } from '../controllers/adminAuthorIncomeExport.controller.js'
 
 const router = express.Router()
 const SUMMARY_CACHE_MS = 30 * 1000
@@ -292,5 +294,8 @@ router.post('/payouts/generate', requireAdmin, invalidateIncomeSummaryCache, gen
 router.post('/payouts/:id/transfer-record', requireAdmin, invalidateIncomeSummaryCache, recordAdminStoryPayoutTransfer)
 router.post('/payouts/:id/receipt', requireAdmin, invalidateIncomeSummaryCache, uploadAdminStoryPayoutReceipt)
 router.post('/payouts/:id/paid', requireAdmin, invalidateIncomeSummaryCache, markAdminStoryPayoutPaid)
+router.get('/author-income/:authorId/transactions', requireAdmin, getAdminAuthorIncomeTransactions)
+router.get('/author-income/:authorId/export-data', requireAdmin, getAdminAuthorIncomeExportData)
+
 
 export default router
