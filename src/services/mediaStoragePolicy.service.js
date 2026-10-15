@@ -20,7 +20,7 @@ function fieldName(path) {
 }
 
 function hasMediaNoun(value) {
-  return /(image|photo|avatar|cover|thumbnail|banner|media|audio|video|voice|music|screenshot|attachment|file|pdf|logo|icon|poster|background)/i.test(
+  return /(image|photo|avatar|(?<!dis)cover|thumbnail|banner|media|audio|video|voice|music|screenshot|attachment|file|pdf|logo|icon|poster|background)/i.test(
     clean(value)
   )
 }
