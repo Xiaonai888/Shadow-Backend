@@ -1787,76 +1787,116 @@ async function syncV2EchoReaderPost(
   if (linkError) throw linkError
 }
 
-async function ensureV2EchoLinks(
-  echoes
-) {
-  const rows = Array.isArray(echoes)
-    ? echoes
-    : []
+const ECHO_LINK_CACHE_MS = 30 * 1000
+const ECHO_LINK_CACHE_MAX = 1000
+const echoLinkCache = new Map()
+const echoLinkBatches = new Map()
 
+function rememberEchoLink(echo, link) {
+  const id = String(echo?.id || '')
+  if (!id || !link?.reader_post_id) return
+
+  echoLinkCache.delete(id)
+  echoLinkCache.set(id, {
+    version: String(echo.updated_at || echo.created_at || ''),
+    expiresAt: Date.now() + ECHO_LINK_CACHE_MS,
+    link,
+  })
+
+  while (echoLinkCache.size > ECHO_LINK_CACHE_MAX) {
+    echoLinkCache.delete(echoLinkCache.keys().next().value)
+  }
+}
+
+async function ensureV2EchoLinks(echoes) {
+  const rows = Array.isArray(echoes) ? echoes : []
   if (!rows.length) return new Map()
 
-  const echoIds = uniqueStrings(
-    rows.map((echo) => echo.id)
+  const now = Date.now()
+  const linkMap = new Map()
+  const toLoad = []
+
+  for (const echo of rows) {
+    const id = String(echo?.id || '')
+    if (!id) continue
+
+    const version = String(echo.updated_at || echo.created_at || '')
+    const cached = echoLinkCache.get(id)
+
+    if (cached && cached.version === version && cached.expiresAt > now) {
+      linkMap.set(id, cached.link)
+    } else {
+      if (cached) echoLinkCache.delete(id)
+      toLoad.push(echo)
+    }
+  }
+
+  if (!toLoad.length) return linkMap
+
+  const batchKey = JSON.stringify(
+    toLoad
+      .map((echo) => [
+        String(echo.id),
+        String(echo.updated_at || echo.created_at || ''),
+      ])
+      .sort(([left], [right]) => left.localeCompare(right))
   )
 
-  const { data, error } = await supabase
-    .from(
-      'social_echo_reader_posts_v2'
-    )
-    .select(
-  'echo_id, reader_post_id, updated_at'
-)
-    .in('echo_id', echoIds)
+  let batch = echoLinkBatches.get(batchKey)
 
-  if (error) throw error
+  if (!batch) {
+    batch = (async () => {
+      const echoIds = uniqueStrings(toLoad.map((echo) => echo.id))
+      const { data, error } = await supabase
+        .from('social_echo_reader_posts_v2')
+        .select('echo_id, reader_post_id, updated_at')
+        .in('echo_id', echoIds)
 
-  const linkMap = new Map(
-    (data || []).map((link) => [
-      String(link.echo_id),
-      link,
-    ])
-  )
+      if (error) throw error
 
-  await Promise.all(
-  rows.map((echo) => {
-    const link = linkMap.get(
-      String(echo.id)
-    )
-
-    return link
-      ? syncV2EchoReaderPost(
-          echo,
-          link
-        )
-      : null
-  })
-)
-
-  const missing = rows.filter(
-    (echo) =>
-      !linkMap.has(String(echo.id))
-  )
-
-  if (missing.length) {
-    const created = await Promise.all(
-      missing.map((echo) =>
-        createV2EchoReaderPost(echo)
+      const links = new Map(
+        (data || []).map((link) => [String(link.echo_id), link])
       )
-    )
 
-    for (const link of created) {
-      if (link?.echo_id) {
-        linkMap.set(
-          String(link.echo_id),
-          link
-        )
-      }
+      await Promise.all(toLoad.map(async (echo) => {
+        const id = String(echo.id)
+        let link = links.get(id)
+
+        if (link) {
+          await syncV2EchoReaderPost(echo, link)
+        } else {
+          link = await createV2EchoReaderPost(echo)
+        }
+
+        if (link?.reader_post_id) links.set(id, link)
+      }))
+
+      return links
+    })()
+
+    echoLinkBatches.set(batchKey, batch)
+  }
+
+  try {
+    const links = await batch
+
+    for (const echo of toLoad) {
+      const id = String(echo.id)
+      const link = links.get(id)
+      if (!link?.reader_post_id) continue
+
+      linkMap.set(id, link)
+      rememberEchoLink(echo, link)
+    }
+  } finally {
+    if (echoLinkBatches.get(batchKey) === batch) {
+      echoLinkBatches.delete(batchKey)
     }
   }
 
   return linkMap
 }
+
 
 async function readCombinedEchoRows({
   ownerId = '',
