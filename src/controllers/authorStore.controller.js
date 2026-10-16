@@ -2856,6 +2856,7 @@ async function sendAuthorStoreAdminOrderReviewAlert(order) {
     '🧾 <b>Author Store Order Review</b>',
     '',
     `<b>Type:</b> ${html(orderType)}`,
+    ...buildAuthorStoreAttributionReportLines(order),
     `<b>Order ID:</b> <code>${html(order.order_id || order.order_number || order.id)}</code>`,
     `<b>Status:</b> ${html(order.status || order.order_status || 'under_review')}`,
     '',
