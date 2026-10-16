@@ -669,6 +669,8 @@ function recordHistoricalErrorEvidence(
       context.route,
       300
     ) || context.route
+  const responseCode =
+    context.response_error_code || ''
   const marker =
     context.diagnostic_marker &&
     typeof context.diagnostic_marker ===
@@ -677,10 +679,12 @@ function recordHistoricalErrorEvidence(
       : null
   const sampleError =
     cleanHistoricalErrorText(
+      ([401, 403].includes(status) ? responseCode : '') ||
       firstFailure?.message ||
       firstFailure?.details ||
       firstFailure?.code ||
       firstFailure?.status_text ||
+      responseCode ||
       marker?.error_code ||
       (
         marker?.feed_result === 'error'
@@ -698,6 +702,7 @@ function recordHistoricalErrorEvidence(
     windowStart,
     context.route,
     status,
+    responseCode,
     errorClass,
     provider,
     target,
@@ -713,6 +718,7 @@ function recordHistoricalErrorEvidence(
         windowEnd,
       route: context.route,
       http_status: status,
+      response_code: responseCode || null,
       error_class:
         errorClass,
       provider,
@@ -771,7 +777,7 @@ function logRequestEvidence(req, res, context, elapsedMs) {
   const status = Number(res.statusCode || 0)
   const sseResponse =
     isSseResponse(res)
-  const failed = status === 429 || status >= 500 || context.external_errors > 0
+  const failed = [401, 403, 429].includes(status) || status >= 500 || context.external_errors > 0
   const expensive = context.external_calls >= 8 ||
     (
       !sseResponse &&
@@ -857,6 +863,7 @@ function logRequestEvidence(req, res, context, elapsedMs) {
     time: new Date().toISOString(),
     route: context.route,
     http_status: status,
+    response_error_code: context.response_error_code || null,
     duration_ms: elapsedMs,
     account: diagnosticActor(req),
     visitor_claim: visitorClaim,
@@ -876,7 +883,7 @@ function logRequestEvidence(req, res, context, elapsedMs) {
 
   recentEvidence.push(evidence)
   if (recentEvidence.length > RECENT_EVIDENCE_LIMIT) recentEvidence.shift()
-  const groupKey = `${context.route}:${status}:${diagnosticKind}:${firstExternalFailure?.code || ''}`
+  const groupKey = `${context.route}:${status}:${diagnosticKind}:${context.response_error_code || firstExternalFailure?.code || ''}`
 if (logRequestEvidence.groupMinute !== minute) {
   logRequestEvidence.groupMinute = minute
   logRequestEvidence.groups = new Set()
@@ -935,6 +942,8 @@ export function getHistoricalErrorEvidence({
       route: entry.route,
       http_status:
         entry.http_status,
+      response_code:
+        entry.response_code || null,
       error_class:
         entry.error_class,
       provider:
@@ -1280,10 +1289,22 @@ export function trafficDiagnosticMiddleware(req, res, next) {
     targets: new Map(),
     diagnostic_marker: null,
     expected_episode_locked: false,
+    response_error_code: '',
   }
 
   const originalJson = res.json.bind(res)
   res.json = (body) => {
+    if (
+      Number(res.statusCode || 0) >= 400 &&
+      Number(res.statusCode || 0) < 600 &&
+      typeof body?.code === 'string'
+    ) {
+      const code = body.code.trim()
+      if (code.length <= 64 && /^[A-Z][A-Z0-9_]*$/.test(code)) {
+        context.response_error_code = code
+      }
+    }
+
     if (
       sourceKey === 'GET /api/public/stories/:id/episodes/:id' &&
       Number(res.statusCode || 0) === 423 &&
