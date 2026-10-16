@@ -14,7 +14,7 @@ import {
 const PRODUCT_TYPES = new Set(['book', 'pdf'])
 const PRODUCT_STATUSES = new Set(['draft', 'active', 'hidden'])
 import { handleCallbackQuery } from './telegramPayments.controller.js'
-import { applyDiscoverAuthorStoreCheckoutPrices } from '../services/discoverAuthorStoreCheckoutPricing.service.js'
+import { applyDiscoverAuthorStoreCheckoutPrices, buildAuthorStoreCheckoutAttribution } from '../services/discoverAuthorStoreCheckoutPricing.service.js'
 
 function normalizePageUsername(username) {
   return String(username || '')
@@ -2231,6 +2231,7 @@ function publicAuthorPaymentOrder(order) {
     order_number: order.order_number || order.order_id,
     aba_transaction_id: order.aba_transaction_id || '',
     items: order.items || [],
+    checkout_attribution: order.request_payload?.checkout_attribution || null,
     buyer_profile: order.buyer_profile || {},
     delivery_company: order.delivery_company || {},
    subtotal_usd: Number(order.subtotal_usd || order.subtotal || 0),
@@ -2393,6 +2394,48 @@ async function verifyAuthorStorePayWayPayment(order) {
   return Number.isFinite(Number(originalAmount)) && Number(originalAmount).toFixed(2) === Number(order.total_usd).toFixed(2)
 }
 
+export function buildAuthorStoreAttributionReportLines(order, productType = '') {
+  const attribution = order?.request_payload?.checkout_attribution
+  if (!attribution || !Array.isArray(attribution.items)) {
+    return ['📍 Source: <b>Not recorded (older order)</b>']
+  }
+
+  const sourceLabels = {
+    author_store: 'Author Page Store',
+    discover_promotion: 'Discover — Book & PDF Promotion',
+    mixed: 'Discover Promotion + Author Page Store',
+  }
+  const lines = [`📍 Source: <b>${html(sourceLabels[attribution.source] || 'Not recorded')}</b>`]
+  const matchingItems = attribution.items.filter((item) => !productType || item.product_type === productType)
+
+  for (const item of matchingItems.slice(0, 8)) {
+    if (item.source !== 'discover_promotion') continue
+    const original = Number(item.original_price_usd)
+    const author = Number(item.author_price_usd)
+    const paid = Number(item.unit_price_usd)
+    if (!Number.isFinite(original) || !Number.isFinite(author) || !Number.isFinite(paid) || original <= 0) continue
+    const discount = Math.max(0, original - paid)
+    const percent = Number.isFinite(Number(item.discount_percent))
+      ? Number(item.discount_percent)
+      : Math.round(discount * 100 / original)
+    const discountSource = item.discount_source === 'admin'
+      ? 'Discover Admin Promotion'
+      : item.discount_source === 'author' ? 'Author Discount' : 'Promotion'
+    lines.push(`🏷️ Promotion: <b>${html(item.title || item.product_id)}</b>`)
+    lines.push(`💰 Original: <b>${html(moneyFormatAttribution(original))}</b>`)
+    if (Math.abs(original - author) >= 0.005) {
+      lines.push(`🏪 Author Store Price: <b>${html(moneyFormatAttribution(author))}</b>`)
+    }
+    lines.push(`🏷️ Discount: <b>${html(percent)}% (${html(moneyFormatAttribution(discount))})</b> — ${html(discountSource)}`)
+    lines.push(`💵 Paid: <b>${html(moneyFormatAttribution(paid))}</b> each`)
+  }
+  return lines
+}
+
+function moneyFormatAttribution(value) {
+  return `$${Number(value || 0).toFixed(2)}`
+}
+
 function createAuthorCartSignature(orderItems, deliveryCompany, authorPageId) {
   const items = [...orderItems]
     .map((item) => ({
@@ -2405,6 +2448,15 @@ function createAuthorCartSignature(orderItems, deliveryCompany, authorPageId) {
     author_page_id: authorPageId,
     items,
     delivery_company_key: deliveryCompany?.key || deliveryCompany?.shortName || deliveryCompany?.name || '',
+  }
+
+  const discoverItems = orderItems.filter((item) => item.discover_promotion_snapshot)
+  if (discoverItems.length) {
+    payload.discover_promotion_items = discoverItems.map((item) => ({
+      product_id: String(item.product_id),
+      price_usd: Number(item.unit_price_usd).toFixed(2),
+      rotation_key: String(item.discover_promotion_snapshot.rotation_key),
+    })).sort((left, right) => left.product_id.localeCompare(right.product_id))
   }
 
   return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex')
@@ -2628,6 +2680,7 @@ function buildAuthorStoreBookOrderTelegramMessage(order, authorPage) {
     '',
     `📄 Page: <b>${html(pageName)}</b>`,
     pageUsername ? `🔗 Username: @${html(pageUsername)}` : '',
+    ...buildAuthorStoreAttributionReportLines(order),
     '',
     `📦 Order ID: <code>${html(getAuthorStoreOrderPublicId(order))}</code>`,
     `💵 Amount: <b>$${html(formatUsd(order.total_usd || order.total_amount))}</b>`,
@@ -3395,7 +3448,10 @@ export async function createAuthorStoreOrderPayment(req, res) {
         payment_status: 'pending',
         order_status: 'waiting_payment',
         note: needsDelivery ? buyerProfile?.delivery_note || '' : '',
-        request_payload: payload,
+        request_payload: {
+          ...payload,
+          checkout_attribution: buildAuthorStoreCheckoutAttribution(orderItems),
+        },
         aba_payload: aba.raw || {},
         expires_at: expiresAt,
         updated_at: new Date().toISOString(),
