@@ -167,6 +167,7 @@ function bytesOf(value, encoding) {
 }
 
 function normalizePath(value) {
+  if (/^\/rest\/v1\/rpc\/[a-z][a-z0-9_]{0,79}$/.test(String(value || ''))) return String(value)
   return String(value || '/')
     .split('?')[0]
     .split('/')
