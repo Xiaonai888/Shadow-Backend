@@ -1101,7 +1101,28 @@ async function getApprovedExclusiveStory(storyId) {
 
 export async function getPublicStories(req, res) {
   try {
-    const limit = normalizeLimit(req.query.limit, 10, 100)
+    const newArrivalsPagination =
+      String(req.query.new_arrivals_pagination || '') === '1'
+    const requestedOffset = Number(req.query.offset ?? 0)
+    const newArrivalsOffset = newArrivalsPagination ? requestedOffset : 0
+
+    if (
+      newArrivalsPagination &&
+      (!Number.isSafeInteger(newArrivalsOffset) ||
+        newArrivalsOffset < 0 ||
+        newArrivalsOffset > 999)
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid New Arrivals page offset',
+      })
+    }
+
+    const limit = normalizeLimit(
+      req.query.limit,
+      newArrivalsPagination ? 9 : 10,
+      newArrivalsPagination ? 9 : 100
+    )
     const genre = String(req.query.genre || '').trim()
     const relationshipGroup = resolveRelationshipGroup(genre)
     const language = String(req.query.language || '').trim()
@@ -1290,6 +1311,23 @@ export async function getPublicStories(req, res) {
       }
 
 
+      if (newArrivalsPagination) {
+        const orderedQuery = (
+          normalizedSort === 'popular'
+            ? nextQuery
+                .order('total_likes', { ascending: false })
+                .order('updated_at', { ascending: false })
+            : applyStorySort(nextQuery, sort)
+        ).order('id', { ascending: false })
+
+        return genre && !relationshipGroup
+          ? orderedQuery.limit(newArrivalsOffset + limit + 1)
+          : orderedQuery.range(
+              newArrivalsOffset,
+              newArrivalsOffset + limit
+            )
+      }
+
       if (genrePagination) {
         return applyGenrePaginationQuery(
           nextQuery,
@@ -1343,6 +1381,12 @@ export async function getPublicStories(req, res) {
       }
     }
 
+    if (newArrivalsPagination && genre && !relationshipGroup) {
+      mergedStories.sort((first, second) =>
+        String(second.id || '').localeCompare(String(first.id || ''))
+      )
+    }
+
     const episodeUpdateSummaries =
       [
         'episode_updated',
@@ -1355,9 +1399,10 @@ export async function getPublicStories(req, res) {
           )
         : null
 
-    const sortedStories = [
-      ...mergedStories,
-    ].sort((first, second) => {
+    const sortedStories =
+      newArrivalsPagination && (!genre || relationshipGroup)
+        ? [...mergedStories]
+        : [...mergedStories].sort((first, second) => {
       if (
         normalizedSort ===
         'weekly_updates'
@@ -1617,8 +1662,17 @@ export async function getPublicStories(req, res) {
           )
         : null
 
-    const stories =
-      genrePageResult
+    const newArrivalsSliceStart =
+      newArrivalsPagination && genre && !relationshipGroup
+        ? newArrivalsOffset
+        : 0
+
+    const stories = newArrivalsPagination
+      ? rankedStories.slice(
+          newArrivalsSliceStart,
+          newArrivalsSliceStart + limit
+        )
+      : genrePageResult
         ? genrePageResult.stories
         : isDiscoverMoreSort(sort)
           ? pickDiscoverMoreStories(
@@ -1629,6 +1683,10 @@ export async function getPublicStories(req, res) {
               0,
               limit
             )
+
+    const newArrivalsHasMore =
+      newArrivalsPagination &&
+      rankedStories.length > newArrivalsSliceStart + stories.length
 
     const authorIds = [
       ...new Set(
@@ -1701,6 +1759,18 @@ export async function getPublicStories(req, res) {
         ? {
             pagination:
               genrePageResult.pagination,
+          }
+        : {}),
+      ...(newArrivalsPagination
+        ? {
+            pagination: {
+              offset: newArrivalsOffset,
+              limit,
+              has_more: newArrivalsHasMore,
+              next_offset: newArrivalsHasMore
+                ? newArrivalsOffset + stories.length
+                : null,
+            },
           }
         : {}),
     })
