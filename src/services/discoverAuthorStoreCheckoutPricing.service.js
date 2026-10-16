@@ -92,6 +92,40 @@ export async function applyDiscoverAuthorStoreCheckoutPrices(cartItems, orderIte
       ...orderItem,
       unit_price_usd: unitPrice,
       total_usd: Number((unitPrice * Number(orderItem.quantity)).toFixed(2)),
+      discover_promotion_snapshot: {
+        original_price_usd: originalPrice / 100,
+        author_price_usd: authorPrice / 100,
+        promotion_price_usd: unitPrice,
+        discount_percent: Number(offer.discount_percent),
+        discount_source: String(offer.discount_source || 'none'),
+        rotation_key: String(rotation.rotation_key),
+      },
     }
   })
+}
+
+export function buildAuthorStoreCheckoutAttribution(orderItems) {
+  const items = (Array.isArray(orderItems) ? orderItems : []).map((item) => {
+    const promotion = item.discover_promotion_snapshot || null
+    return {
+      product_id: String(item.product_id || ''),
+      product_type: String(item.product_type || '').toLowerCase(),
+      title: String(item.product_title || item.title || ''),
+      quantity: Number(item.quantity || 1),
+      source: promotion ? 'discover_promotion' : 'author_store',
+      original_price_usd: promotion ? promotion.original_price_usd : null,
+      author_price_usd: promotion ? promotion.author_price_usd : null,
+      unit_price_usd: Number(item.unit_price_usd || 0),
+      discount_percent: promotion ? promotion.discount_percent : null,
+      discount_source: promotion ? promotion.discount_source : null,
+      promotion_rotation_key: promotion ? promotion.rotation_key : null,
+    }
+  })
+  const discoverCount = items.filter((item) => item.source === 'discover_promotion').length
+  return {
+    source: discoverCount === items.length && discoverCount > 0
+      ? 'discover_promotion'
+      : discoverCount > 0 ? 'mixed' : 'author_store',
+    items,
+  }
 }
