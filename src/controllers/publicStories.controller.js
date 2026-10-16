@@ -1124,7 +1124,7 @@ export async function getPublicStories(req, res) {
       newArrivalsPagination &&
       (!Number.isSafeInteger(newArrivalsOffset) ||
         newArrivalsOffset < 0 ||
-        newArrivalsOffset > 999)
+        !Number.isSafeInteger(newArrivalsOffset + 9))
     ) {
       return res.status(400).json({
         ok: false,
