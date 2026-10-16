@@ -93,6 +93,7 @@ import {
   saveMyAuthorPaymentMethod,
 } from '../controllers/authorRevenue.controller.js'
 import { getMyAuthorRecentEarnings } from '../controllers/authorRecentEarnings.controller.js'
+import { getMyAuthorIncomeReportExport } from '../controllers/authorIncomeReportExport.controller.js'
 import {
   getMyAuthorDiamonds,
   getMyAuthorGifts,
@@ -210,6 +211,7 @@ router.get('/me/quest', requireUser, getMyAuthorQuest)
 router.get('/me/income', requireUser, getMyAuthorIncome)
 router.get('/me/story-payout-status', requireUser, getMyAuthorStoryPayoutStatus)
 router.get('/me/recent-earnings', requireUser, getMyAuthorRecentEarnings)
+router.get('/me/income-report/export-data', requireUser, getMyAuthorIncomeReportExport)
 router.get('/me/top-supporters', requireUser, getMyAuthorTopSupporters)
 router.get('/me/monthly-earnings', requireUser, getMyAuthorMonthlyEarnings)
 router.get('/me/diamonds', requireUser, getMyAuthorDiamonds)
