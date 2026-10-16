@@ -10,6 +10,7 @@ import {
   unlockAuthorStorePdfDownloads,
   sendAuthorStoreBookOrderTelegram,
   buildAuthorStoreAttributionReportLines,
+  sendAuthorStorePdfCompletedReports,
 } from './authorStore.controller.js'
 import {
   answerCallbackQuery,
@@ -1150,7 +1151,7 @@ async function processAbaMessage(parsed, message) {
 
     try {
       await createAuthorStorePaidNotificationsSafely(completedOrder)
-      await sendAuthorPdfCompletedReport(completedOrder)
+      await sendAuthorStorePdfCompletedReports(completedOrder)
     } catch (error) {
       console.error('AUTHOR PDF COMPLETION NOTIFICATION ERROR:', error)
     }
