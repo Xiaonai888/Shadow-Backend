@@ -45,6 +45,89 @@ const publicStoriesListReadSpamGuard = createSpamGuard({
   windowSeconds: 60,
 })
 
+const NEW_ARRIVALS_WINDOW_MS = 60 * 1000
+const NEW_ARRIVALS_MAX_BOOKS = 100
+const NEW_ARRIVALS_MAX_IDENTITIES = 20000
+const newArrivalsReadBudgets = new Map()
+
+function getNewArrivalsReaderIdentity(req) {
+  const authorization = String(req.headers.authorization || '')
+  const token = authorization.startsWith('Bearer ')
+    ? authorization.slice(7)
+    : ''
+
+  if (token && process.env.JWT_SECRET) {
+    try {
+      const reader = jwt.verify(token, process.env.JWT_SECRET)
+      if (reader?.type === 'reader' && reader.user_id) {
+        return `reader:${reader.user_id}`
+      }
+    } catch {}
+  }
+
+  return `ip:${String(
+    req.headers['cf-connecting-ip'] ||
+    req.ip ||
+    req.socket?.remoteAddress ||
+    'unknown'
+  )}`
+}
+
+function limitNewArrivalsReadBudget(req, res, next) {
+  if (String(req.query.new_arrivals_pagination || '') !== '1') {
+    return next()
+  }
+
+  const offset = Number(req.query.offset ?? 0)
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 999) {
+    return res.status(400).json({
+      ok: false,
+      message: 'Invalid New Arrivals page offset',
+    })
+  }
+
+  const value = Number(req.query.limit)
+  const requested = Number.isFinite(value) && value > 0
+    ? Math.max(1, Math.min(9, Math.floor(value)))
+    : 9
+  const books = requested
+  const key = getNewArrivalsReaderIdentity(req)
+  const now = Date.now()
+  let state = newArrivalsReadBudgets.get(key)
+
+  if (!state || state.resetAt <= now) {
+    if (newArrivalsReadBudgets.size >= NEW_ARRIVALS_MAX_IDENTITIES) {
+      for (const [identity, record] of newArrivalsReadBudgets) {
+        if (record.resetAt <= now) newArrivalsReadBudgets.delete(identity)
+      }
+      if (newArrivalsReadBudgets.size >= NEW_ARRIVALS_MAX_IDENTITIES) {
+        newArrivalsReadBudgets.delete(newArrivalsReadBudgets.keys().next().value)
+      }
+    }
+
+    state = { used: 0, resetAt: now + NEW_ARRIVALS_WINDOW_MS }
+    newArrivalsReadBudgets.set(key, state)
+  }
+
+  if (state.used + books > NEW_ARRIVALS_MAX_BOOKS) {
+    const retryAfter = Math.max(
+      1,
+      Math.ceil((state.resetAt - now) / 1000)
+    )
+    res.setHeader('Retry-After', String(retryAfter))
+    res.setHeader('Cache-Control', 'no-store')
+    return res.status(429).json({
+      ok: false,
+      code: 'NEW_ARRIVALS_MINUTE_LIMIT',
+      message: 'New Arrivals limit reached. Please try again in one minute.',
+      retry_after_seconds: retryAfter,
+    })
+  }
+
+  state.used += books
+  return next()
+}
+
 const episodeReadRequests = new Map()
 const EPISODE_READ_INFLIGHT_MAX = 250
 
@@ -241,6 +324,7 @@ router.get('/apps', async (req, res) => {
 router.get(
   '/stories',
   publicStoriesListCacheHitLimit,
+  limitNewArrivalsReadBudget,
   cachePublicStoriesResponse,
   limitGenreReadBudget,
   publicStoriesListReadSpamGuard,
