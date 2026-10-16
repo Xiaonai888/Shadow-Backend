@@ -2906,6 +2906,95 @@ async function sendAuthorStoreAdminOrderReviewAlert(order) {
 
   
 
+
+export async function sendAuthorStorePdfCompletedReports(order) {
+  const items = Array.isArray(order?.items) ? order.items : []
+  const pdfItems = items.filter((item) => String(item.product_type || item.type || '').toLowerCase() === 'pdf')
+  if (!pdfItems.length || String(order?.payment_status || '').toLowerCase() !== 'paid' || String(order?.pdf_unlock_status || '').toLowerCase() !== 'unlocked') return
+
+  let authorPage = null
+  try {
+    const { data, error } = await supabase
+      .from('author_pages')
+      .select('page_name, page_username, telegram_chat_id')
+      .eq('id', order.author_page_id)
+      .maybeSingle()
+    if (error) throw error
+    authorPage = data
+  } catch (error) {
+    console.error('AUTHOR PDF REPORT PAGE LOOKUP ERROR:', error)
+  }
+
+  const buyer = order.buyer_profile || {}
+  const message = [
+    '📄 <b>AUTHOR PDF SOLD</b>',
+    '',
+    `📄 Page: <b>${html(authorPage?.page_name || 'Author Page')}</b>`,
+    authorPage?.page_username ? `🔗 Username: @${html(authorPage.page_username)}` : '',
+    ...buildAuthorStoreAttributionReportLines(order, 'pdf'),
+    '',
+    `📦 Order ID: <code>${html(getAuthorStoreOrderPublicId(order))}</code>`,
+    `💵 Amount: <b>${html(moneyFormatAttribution(order.total_usd || order.total_amount))}</b>`,
+    order.aba_transaction_id ? `🧾 Trx ID: <code>${html(order.aba_transaction_id)}</code>` : '',
+    '',
+    `👤 Buyer: <b>${html(buyer.name || order.buyer_name || order.buyer_id || 'Reader')}</b>`,
+    buyer.phone_number || order.buyer_phone ? `📞 Phone: <code>${html(buyer.phone_number || order.buyer_phone)}</code>` : '',
+    '',
+    '<b>PDF:</b>',
+    ...pdfItems.slice(0, 8).map((item) => `- ${html(item.product_title || item.title || 'PDF')} x${html(item.quantity || 1)}`),
+    `💜 Author Income: <b>${html(moneyFormatAttribution(order.author_income_usd))}</b>`,
+    '',
+    'Status: <b>Completed</b>',
+    'PDF available in Reader Library Purchased.',
+  ].filter(Boolean).join('\n')
+
+  const recipients = [
+    {
+      name: 'admin',
+      chatId: process.env.TELEGRAM_AUTHOR_STORE_ADMIN_CHAT_ID || process.env.TELEGRAM_AUTHOR_STORE_CHAT_ID || process.env.TELEGRAM_ADMIN_CHAT_ID,
+      send: sendTelegramMessage,
+    },
+    {
+      name: 'author',
+      chatId: authorPage?.telegram_chat_id,
+      send: sendAuthorStoreTelegramMessage,
+    },
+  ]
+  const results = {}
+
+  for (const recipient of recipients) {
+    if (!recipient.chatId) {
+      results[recipient.name] = { status: 'not_linked' }
+      continue
+    }
+    try {
+      const response = await recipient.send(message, { chat_id: String(recipient.chatId) })
+      if (response?.ok !== true) throw new Error('Telegram did not confirm delivery')
+      results[recipient.name] = { status: 'sent' }
+    } catch (error) {
+      results[recipient.name] = { status: 'failed', error: String(error?.message || error).slice(0, 500) }
+      console.error(`AUTHOR PDF ${recipient.name.toUpperCase()} TELEGRAM REPORT ERROR:`, error)
+    }
+  }
+
+  const now = new Date().toISOString()
+  const authorReport = results.author || { status: 'not_linked' }
+  const { error: saveError } = await supabase
+    .from('author_store_orders')
+    .update({
+      request_payload: {
+        ...(order.request_payload && typeof order.request_payload === 'object' ? order.request_payload : {}),
+        pdf_telegram_reports: { ...results, attempted_at: now },
+      },
+      telegram_status: authorReport.status,
+      telegram_sent_at: authorReport.status === 'sent' ? now : null,
+      telegram_error: authorReport.error || (authorReport.status === 'not_linked' ? 'Author Telegram group is not linked.' : ''),
+      updated_at: now,
+    })
+    .eq('id', order.id)
+  if (saveError) console.error('AUTHOR PDF REPORT STATUS SAVE ERROR:', saveError)
+}
+
 function publicOrder(order) {
   return {
     id: order.id,
@@ -3940,7 +4029,14 @@ export async function handleAuthorStoreAbaCallback(req, res) {
 
     await createAuthorStorePaidNotificationsSafely(processedOrder)
 
-    if (pdfOnly) return res.status(200).json({ ok: true })
+    if (pdfOnly) {
+      try {
+        await sendAuthorStorePdfCompletedReports(processedOrder)
+      } catch (reportError) {
+        console.error('AUTHOR PDF COMPLETED TELEGRAM REPORT ERROR:', reportError)
+      }
+      return res.status(200).json({ ok: true })
+    }
 
     await deductAuthorStoreOrderStock(processedOrder)
 
