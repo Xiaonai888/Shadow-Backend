@@ -188,6 +188,8 @@ async function publishedEpisodeCount(storyId) {
   }
 }
 
+let embeddedProgressListJoinAvailable = true
+
 export async function getReadingProgress(req, res) {
   try {
     const userId = String(req.user?.user_id || '').trim()
@@ -196,71 +198,104 @@ export async function getReadingProgress(req, res) {
       ? Math.min(30, Math.max(1, Math.floor(parsedLimit)))
       : 12
 
-    const { data: rows, error } = await supabase
-      .from('reading_progress')
-      .select(
-        'id, story_id, episode_id, episode_number, total_episodes, reading_percent, last_read_at'
-      )
-      .eq('user_id', userId)
-      .order('last_read_at', { ascending: false })
-      .limit(limit)
+    let progressRows = null
+    let stories = []
+    let episodes = []
 
-    if (error) throw error
+    if (embeddedProgressListJoinAvailable) {
+      const { data, error } = await supabase
+        .from('reading_progress')
+        .select('id, story_id, episode_id, episode_number, total_episodes, reading_percent, last_read_at, story:stories(id, title, cover_url, landscape_thumbnail_url, total_episodes, story_status, story_type, is_adult, status, deleted_at), episode:episodes(id, story_id, title, episode_number, status, deleted_at)')
+        .eq('user_id', userId)
+        .order('last_read_at', { ascending: false })
+        .limit(limit)
 
-    const progressRows = Array.isArray(rows) ? rows : []
-    if (!progressRows.length) {
-      return res.json({ ok: true, items: [] })
+      if (error) {
+        if (!['PGRST200', 'PGRST201'].includes(String(error.code || ''))) throw error
+        embeddedProgressListJoinAvailable = false
+      } else {
+        const joined = Array.isArray(data) ? data : []
+        progressRows = joined.map(({ story, episode, ...progress }) => progress)
+        stories = joined
+          .map((row) => Array.isArray(row.story) ? row.story[0] : row.story)
+          .filter((story) => story?.status === 'published' && !story.deleted_at)
+          .map((story) => ({
+            id: story.id,
+            title: story.title,
+            cover_url: story.cover_url,
+            landscape_thumbnail_url: story.landscape_thumbnail_url,
+            total_episodes: story.total_episodes,
+            story_status: story.story_status,
+            story_type: story.story_type,
+            is_adult: story.is_adult,
+          }))
+        episodes = joined
+          .map((row) => Array.isArray(row.episode) ? row.episode[0] : row.episode)
+          .filter((episode) => episode?.status === 'published' && !episode.deleted_at)
+          .map((episode) => ({
+            id: episode.id,
+            story_id: episode.story_id,
+            title: episode.title,
+            episode_number: episode.episode_number,
+          }))
+      }
     }
 
-    const storyIds = [...new Set(progressRows.map((item) => item.story_id).filter(Boolean))]
-    const episodeIds = [...new Set(progressRows.map((item) => item.episode_id).filter(Boolean))]
+    if (progressRows === null) {
+      const { data: rows, error } = await supabase
+        .from('reading_progress')
+        .select('id, story_id, episode_id, episode_number, total_episodes, reading_percent, last_read_at')
+        .eq('user_id', userId)
+        .order('last_read_at', { ascending: false })
+        .limit(limit)
 
-    const [
-      { data: stories, error: storiesError },
-      { data: episodes, error: episodesError },
-    ] = await Promise.all([
-      supabase
-        .from('stories')
-        .select(
-          'id, title, cover_url, landscape_thumbnail_url, total_episodes, story_status, story_type, is_adult'
-        )
-        .in('id', storyIds)
-        .eq('status', 'published')
-        .is('deleted_at', null),
-      supabase
-        .from('episodes')
-        .select('id, story_id, title, episode_number')
-        .in('id', episodeIds)
-        .eq('status', 'published')
-        .is('deleted_at', null),
-    ])
+      if (error) throw error
+      progressRows = Array.isArray(rows) ? rows : []
+      if (!progressRows.length) return res.json({ ok: true, items: [] })
 
-    if (storiesError) throw storiesError
-    if (episodesError) throw episodesError
+      const storyIds = [...new Set(progressRows.map((item) => item.story_id).filter(Boolean))]
+      const episodeIds = [...new Set(progressRows.map((item) => item.episode_id).filter(Boolean))]
+      const [storyResult, episodeResult] = await Promise.all([
+        supabase
+          .from('stories')
+          .select('id, title, cover_url, landscape_thumbnail_url, total_episodes, story_status, story_type, is_adult')
+          .in('id', storyIds)
+          .eq('status', 'published')
+          .is('deleted_at', null),
+        supabase
+          .from('episodes')
+          .select('id, story_id, title, episode_number')
+          .in('id', episodeIds)
+          .eq('status', 'published')
+          .is('deleted_at', null),
+      ])
 
-    const ageAccess = (stories || []).some((story) => story.is_adult)
+      if (storyResult.error) throw storyResult.error
+      if (episodeResult.error) throw episodeResult.error
+      stories = storyResult.data || []
+      episodes = episodeResult.data || []
+    }
+
+    if (!progressRows.length) return res.json({ ok: true, items: [] })
+
+    const ageAccess = stories.some((story) => story.is_adult)
       ? await getReaderAgeAccess(req)
       : null
     const storyMap = new Map(
-      (stories || [])
+      stories
         .filter((story) => isStoryVisibleToReader(story, ageAccess))
         .map((story) => [String(story.id), story])
     )
-    const episodeMap = new Map((episodes || []).map((episode) => [String(episode.id), episode]))
+    const episodeMap = new Map(episodes.map((episode) => [String(episode.id), episode]))
 
     const items = progressRows
       .map((row) => {
         const story = storyMap.get(String(row.story_id))
         const episode = episodeMap.get(String(row.episode_id))
-
         if (!story || !episode) return null
-
         return {
           ...row,
-          total_episodes: Math.max(
-            1,
-            Number(story.total_episodes || row.total_episodes || 1)
-          ),
+          total_episodes: Math.max(1, Number(story.total_episodes || row.total_episodes || 1)),
           story,
           episode,
         }
@@ -276,6 +311,7 @@ export async function getReadingProgress(req, res) {
     })
   }
 }
+
 
 export async function saveReadingProgress(req, res) {
   try {
