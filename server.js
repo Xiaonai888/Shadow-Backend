@@ -248,6 +248,54 @@ const corsOptions = {
   exposedHeaders: ['X-Reader-Token', 'X-Spin-Search-Remaining'],
 }
 
+function auditAuthorStorePdfUpload(req, res, next) {
+  const path = String(req.path || '').split('?')[0]
+  if (path !== '/api/author-store/me/pdfs/upload-private') return next()
+  if (req.method !== 'POST' && req.method !== 'OPTIONS') return next()
+
+  const trace = String(req.query.trace || '')
+    .replace(/[^a-zA-Z0-9-]/g, '')
+    .slice(0, 80) || 'none'
+  const started = Date.now()
+  const context = {
+    trace,
+    method: req.method,
+    declared_bytes: Number(req.headers['content-length'] || 0),
+    origin: String(req.headers.origin || '').slice(0, 180),
+  }
+  let finished = false
+
+  console.info('PDF_UPLOAD_REQUEST_RECEIVED', JSON.stringify(context))
+
+  res.once('finish', () => {
+    finished = true
+    console.info('PDF_UPLOAD_HTTP_COMPLETED', JSON.stringify({
+      ...context,
+      status: res.statusCode,
+      duration_ms: Date.now() - started,
+    }))
+  })
+
+  res.once('close', () => {
+    if (finished) return
+    console.error('PDF_UPLOAD_CONNECTION_CLOSED', JSON.stringify({
+      ...context,
+      status: res.statusCode,
+      duration_ms: Date.now() - started,
+    }))
+  })
+
+  req.once('aborted', () => {
+    console.warn('PDF_UPLOAD_REQUEST_ABORTED', JSON.stringify({
+      ...context,
+      duration_ms: Date.now() - started,
+    }))
+  })
+
+  next()
+}
+
+app.use(auditAuthorStorePdfUpload)
 app.use(cors(corsOptions))
 app.options('*', cors(corsOptions))
 app.use(workKillSwitch)
