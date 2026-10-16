@@ -40,6 +40,42 @@ function percentValue(value) {
   return Math.max(0, Math.min(100, number))
 }
 
+function getShareDuringWindow(event, at, endField = 'ends_at', limitEndedAt = false) {
+  if (!event) return 0
+
+  const transactionTime = new Date(at).getTime()
+  const startedAt = Date.parse(event.started_at)
+  const endsAt = Date.parse(event[endField])
+
+  if (
+    !Number.isFinite(transactionTime) ||
+    !Number.isFinite(startedAt) ||
+    !Number.isFinite(endsAt)
+  ) {
+    return 0
+  }
+
+  let effectiveEnd = endsAt
+
+  if (limitEndedAt && event.ended_at) {
+    const stoppedAt = Date.parse(event.ended_at)
+    if (Number.isFinite(stoppedAt)) {
+      effectiveEnd = Math.min(effectiveEnd, stoppedAt)
+    }
+  }
+
+  if (event.event_80_paused_at) {
+    const pausedAt = Date.parse(event.event_80_paused_at)
+    if (Number.isFinite(pausedAt)) {
+      effectiveEnd = Math.min(effectiveEnd, pausedAt)
+    }
+  }
+
+  return transactionTime >= startedAt && transactionTime < effectiveEnd
+    ? percentValue(event.share_percent)
+    : 0
+}
+
 function progressPercent(current, required) {
   if (!required || Number(required) <= 0) return 100
 
@@ -472,16 +508,21 @@ async function getOrCreateLifetimeBoost({
   return data
 }
 
-async function getActive49DayEvent(authorId) {
-  const { data, error } = await supabase
+async function getActive49DayEvent(authorId, includeHistorical = false) {
+  let query = supabase
     .from('author_49_day_event_progress')
     .select('*')
     .eq('author_id', authorId)
-    .eq('status', 'active')
-    .maybeSingle()
+
+  if (!includeHistorical) {
+    query = query.eq('status', 'active')
+  }
+
+  const { data, error } = await query.maybeSingle()
 
   if (error) throw error
   if (!data) return null
+  if (data.status !== 'active') return includeHistorical ? data : null
 
   const endsAt = new Date(data.ends_at).getTime()
 
@@ -506,7 +547,7 @@ async function getActive49DayEvent(authorId) {
 
   if (updateError) throw updateError
 
-  return null
+  return includeHistorical ? data : null
 }
 
 async function finish49DayEventForCreatorBoost(
@@ -674,7 +715,7 @@ async function upsertQuestProgress({
   return data
 }
 
-async function getActiveDaily80Boost(authorId) {
+async function getActiveDaily80Boost(authorId, includeHistorical = false) {
   const { data, error } = await supabase
     .from('author_daily_80_boost_progress')
     .select('*')
@@ -709,7 +750,7 @@ async function getActiveDaily80Boost(authorId) {
     )
 
     if (resumeError) throw resumeError
-    return null
+    return includeHistorical ? data : null
   }
 
   if (data.status === 'active') {
@@ -738,10 +779,10 @@ async function getActiveDaily80Boost(authorId) {
     }
   }
 
-  return null
+  return includeHistorical ? data : null
 }
 
-async function getActiveDaily50Boost(authorId) {
+async function getActiveDaily50Boost(authorId, includeHistorical = false) {
   const { data, error } = await supabase
     .from('author_daily_50_boost_progress')
     .select('*')
@@ -755,7 +796,7 @@ async function getActiveDaily50Boost(authorId) {
     data.status === 'paused_by_80_event' ||
     data.event_80_paused_at
   ) {
-    return null
+    return includeHistorical ? data : null
   }
 
   const endsAt = new Date(data.ends_at).getTime()
@@ -792,7 +833,7 @@ async function getActiveDaily50Boost(authorId) {
     if (updateError) throw updateError
   }
 
-  return null
+  return includeHistorical ? data : null
 }
 
 function resolveAuthorLoyaltyRewardAt(shareContext, transactionDate) {
@@ -850,7 +891,7 @@ async function getAuthorShareContext(
   await getAuthor100PercentEventState(authorPage.id)
 
   const activeDaily80Boost =
-    await getActiveDaily80Boost(authorPage.id)
+    await getActiveDaily80Boost(authorPage.id, true)
 
   const [
     active49DayEvent,
@@ -858,8 +899,8 @@ async function getAuthorShareContext(
     stages,
     totals,
   ] = await Promise.all([
-    getActive49DayEvent(authorPage.id),
-    getActiveDaily50Boost(authorPage.id),
+    getActive49DayEvent(authorPage.id, true),
+    getActiveDaily50Boost(authorPage.id, true),
     getQuestStages(),
     getAuthorTotals(authorPage),
   ])
@@ -902,27 +943,16 @@ async function getAuthorShareContext(
       10
   )
 
+  const now = new Date()
   const boostSharePercent =
     activeBoost?.status === 'active'
-      ? percentValue(activeBoost.share_percent)
+      ? getShareDuringWindow(activeBoost, now, 'ended_at')
       : 0
 
   const eventSharePercent = Math.max(
-    current49DayEvent?.status === 'active'
-      ? percentValue(
-          current49DayEvent.share_percent
-        )
-      : 0,
-    activeDaily80Boost?.status === 'active'
-      ? percentValue(
-          activeDaily80Boost.share_percent
-        )
-      : 0,
-    activeDaily50Boost?.status === 'active'
-      ? percentValue(
-          activeDaily50Boost.share_percent
-        )
-      : 0
+    getShareDuringWindow(current49DayEvent, now, 'ends_at', true),
+    getShareDuringWindow(activeDaily80Boost, now),
+    getShareDuringWindow(activeDaily50Boost, now)
   )
 
   return {
@@ -930,6 +960,12 @@ async function getAuthorShareContext(
     event_share_percent: eventSharePercent,
     boost_share_percent: boostSharePercent,
     loyalty_reward: loyaltyReward,
+    event_49_day: current49DayEvent,
+    event_daily_80: activeDaily80Boost,
+    event_daily_50: activeDaily50Boost,
+    event_creator_boost: lifetimeBoost?.admin_event_pause_cycle_id
+      ? null
+      : lifetimeBoost,
     loyalty_published_episode_times:
       totals.loyalty_published_episode_times,
     loyalty_undated_published_episodes:
@@ -1192,6 +1228,16 @@ export async function createAuthorEarningsFromDiamondUnlock({
       shareContext,
       transactionDate
     )
+    const eventShareAtPurchase = Math.max(
+      getShareDuringWindow(shareContext.event_49_day, transactionDate, 'ends_at', true),
+      getShareDuringWindow(shareContext.event_daily_80, transactionDate),
+      getShareDuringWindow(shareContext.event_daily_50, transactionDate)
+    )
+    const boostShareAtPurchase = getShareDuringWindow(
+      shareContext.event_creator_boost,
+      transactionDate,
+      'ended_at'
+    )
     const normalEventSharePercent = Math.max(
       percentValue(
         metadata.event_author_share_percent
@@ -1202,9 +1248,7 @@ export async function createAuthorEarningsFromDiamondUnlock({
       percentValue(
         metadata.writer_wednesday_author_share_percent
       ),
-      percentValue(
-        shareContext.event_share_percent
-      )
+      eventShareAtPurchase
     )
     const eventSharePercent = Math.max(
       normalEventSharePercent,
@@ -1215,7 +1259,7 @@ export async function createAuthorEarningsFromDiamondUnlock({
       loyaltyReward.share_percent > Math.max(
         normalEventSharePercent,
         percentValue(shareContext.quest_share_percent),
-        percentValue(shareContext.boost_share_percent)
+        boostShareAtPurchase
       )
     const shareDecision =
       resolveEffectiveAuthorShare({
@@ -1223,7 +1267,7 @@ export async function createAuthorEarningsFromDiamondUnlock({
           shareContext.quest_share_percent,
         eventSharePercent,
         boostSharePercent:
-          shareContext.boost_share_percent,
+          boostShareAtPurchase,
       })
 
     const directCostDiamonds =
@@ -1300,7 +1344,7 @@ export async function createAuthorEarningsFromDiamondUnlock({
       quest_stage_number:
         shareContext.quest_stage_number,
       lifetime_boost_id:
-        shareContext.lifetime_boost_id,
+        boostShareAtPurchase > 0 ? shareContext.lifetime_boost_id : null,
       author_earned_diamonds:
         authorEarnedDiamonds,
       platform_earned_diamonds:
@@ -1348,7 +1392,7 @@ export async function createAuthorEarningsFromDiamondUnlock({
           authorSharePercent,
         effective_share_source:
           shareDecision.effective_share_source,
-        revenue_rules_version: '2026-10-11',
+        revenue_rules_version: '2026-10-16',
       },
       created_at: transactionDate.toISOString(),
       updated_at: nowIso,
