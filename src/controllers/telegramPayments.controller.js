@@ -9,6 +9,7 @@ import {
   deductAuthorStoreOrderStock,
   unlockAuthorStorePdfDownloads,
   sendAuthorStoreBookOrderTelegram,
+  buildAuthorStoreAttributionReportLines,
 } from './authorStore.controller.js'
 import {
   answerCallbackQuery,
@@ -435,6 +436,7 @@ function authorStoreOrderUnderReviewMessage(order, authorPage) {
     '',
     `📄 Page: <b>${html(authorPage?.page_name || 'Author Page')}</b>`,
     authorPage?.page_username ? `🔗 Username: @${html(authorPage.page_username)}` : '',
+    ...buildAuthorStoreAttributionReportLines(order),
     '',
     `📦 Order ID: <code>${html(order.order_id || order.order_number)}</code>`,
     `💵 Amount: <b>${html(money(order.total_usd || order.total_amount))}</b>`,
@@ -492,6 +494,7 @@ function authorPdfCompletedMessage(order, authorPage) {
     '',
     `📄 Page: <b>${html(authorPage?.page_name || 'Author Page')}</b>`,
     authorPage?.page_username ? `🔗 Username: @${html(authorPage.page_username)}` : '',
+    ...buildAuthorStoreAttributionReportLines(order),
     '',
     `📦 Order ID: <code>${html(order.order_id || order.order_number)}</code>`,
     `💵 Amount: <b>${html(money(order.total_usd || order.total_amount))}</b>`,
@@ -502,6 +505,7 @@ function authorPdfCompletedMessage(order, authorPage) {
     '',
     '<b>PDF:</b>',
     ...pdfLines,
+    `💜 Author Income: <b>${html(money(order.author_income_usd))}</b>`,
     '',
     'Status: <b>Completed</b>',
     'PDF available in Reader Library Purchased.',
@@ -1154,9 +1158,13 @@ async function processAbaMessage(parsed, message) {
     try {
       await replyTelegram(chatId, messageId, [
         '📄 <b>AUTHOR PDF MATCHED</b>',
+        ...buildAuthorStoreAttributionReportLines(completedOrder, 'pdf'),
         `📦 Order ID: <code>${html(completedOrder.order_id || completedOrder.order_number)}</code>`,
         `💵 Amount: <b>${html(money(completedOrder.total_usd || completedOrder.total_amount))}</b>`,
         `🧾 Trx ID: <code>${html(completedOrder.aba_transaction_id)}</code>`,
+        `👤 Buyer: <b>${html(completedOrder.buyer_profile?.name || completedOrder.buyer_name || completedOrder.buyer_id)}</b>`,
+        ...getOrderItems(completedOrder).filter((item) => String(item.product_type || '').toLowerCase() === 'pdf').slice(0, 8).map((item) => `📄 PDF: ${html(item.product_title || item.title || 'PDF')} x${html(item.quantity || 1)}`),
+        `💜 Author Income: <b>${html(money(completedOrder.author_income_usd))}</b>`,
         'Status: <b>Completed</b>',
         'PDF is available in Reader Library Purchased.',
       ].join('\n'))
@@ -1191,9 +1199,10 @@ async function processAbaMessage(parsed, message) {
 
   try {
     await replyTelegram(chatId, messageId, [
-      '✍️ <b>AUTHOR STORE MATCHED</b>',
-      '',
-      `📦 Order ID: <code>${html(updatedAuthorOrder.order_id || updatedAuthorOrder.order_number)}</code>`,
+        '✍️ <b>AUTHOR STORE MATCHED</b>',
+        '',
+        ...buildAuthorStoreAttributionReportLines(updatedAuthorOrder),
+        `📦 Order ID: <code>${html(updatedAuthorOrder.order_id || updatedAuthorOrder.order_number)}</code>`,
       `💵 Amount: <b>${html(money(updatedAuthorOrder.total_usd || updatedAuthorOrder.total_amount))}</b>`,
       `🧾 Trx ID: <code>${html(updatedAuthorOrder.aba_transaction_id)}</code>`,
       '',
