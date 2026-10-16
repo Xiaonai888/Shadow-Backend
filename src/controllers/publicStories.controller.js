@@ -79,10 +79,6 @@ const NEW_ARRIVALS_STORY_LIST_SELECT = [
   'is_adult',
   'story_status',
   'total_episodes',
-  'created_at',
-  'updated_at',
-  'total_likes',
-  'total_views',
 ].join(', ')
 
 function publicAuthorPage(page) {
@@ -1211,11 +1207,22 @@ export async function getPublicStories(req, res) {
     const buildStoriesQuery = (
       genreMode = 'main'
     ) => {
+      const needsGenreSort = newArrivalsPagination && genre && !relationshipGroup
+      const newArrivalsSelect = !needsGenreSort
+        ? NEW_ARRIVALS_STORY_LIST_SELECT
+        : normalizedSort === 'latest'
+          ? `${NEW_ARRIVALS_STORY_LIST_SELECT}, created_at`
+          : normalizedSort === 'updated'
+            ? `${NEW_ARRIVALS_STORY_LIST_SELECT}, updated_at, created_at`
+            : normalizedSort === 'popular'
+              ? `${NEW_ARRIVALS_STORY_LIST_SELECT}, total_likes, updated_at, created_at`
+              : `${NEW_ARRIVALS_STORY_LIST_SELECT}, created_at, updated_at, total_likes, total_views, total_comments`
+
       let nextQuery = supabase
         .from('stories')
         .select(
           newArrivalsPagination
-            ? NEW_ARRIVALS_STORY_LIST_SELECT
+            ? newArrivalsSelect
             : PUBLIC_STORY_LIST_SELECT
         )
         .eq('status', 'published')
