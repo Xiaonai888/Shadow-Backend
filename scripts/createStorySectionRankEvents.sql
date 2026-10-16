@@ -10,7 +10,8 @@ create table if not exists public.story_section_rank_events (
       'weekly_update',
       'new_arrivals',
       'ranking',
-      'you_might_like'
+      'you_might_like',
+      'short_completed'
     )
   ),
   story_id uuid not null references public.stories(id) on delete cascade,
@@ -19,6 +20,22 @@ create table if not exists public.story_section_rank_events (
   constraint story_section_rank_events_unique
     unique (event_date, actor_key, section_key, story_id, action)
 );
+
+alter table public.story_section_rank_events
+  drop constraint if exists story_section_rank_events_section_key_check;
+
+alter table public.story_section_rank_events
+  add constraint story_section_rank_events_section_key_check
+  check (section_key in (
+    'daily_picks',
+    'trending_now',
+    'update_today',
+    'weekly_update',
+    'new_arrivals',
+    'ranking',
+    'you_might_like',
+    'short_completed'
+  ));
 
 create index if not exists story_section_rank_events_date_idx
   on public.story_section_rank_events (event_date desc);
