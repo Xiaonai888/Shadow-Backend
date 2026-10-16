@@ -42,6 +42,15 @@ const GUEST_TRAFFIC_MAX_WINDOWS = 60
 const GUEST_TRAFFIC_MAX_ROUTES = 160
 const guestTrafficWindows = new Map()
 
+function isExpectedEpisodeLock(context, res) {
+  return (
+    context?.route === 'GET /api/public/stories/:id/episodes/:id' &&
+    context?.expected_episode_locked === true &&
+    Number(res.statusCode || 0) === 423 &&
+    Number(context.external_errors || 0) === 0
+  )
+}
+
 function trackGuestRequest(req, res, context, durationMs, responseBytes) {
   if (req.user || req.admin || req.headers.authorization || req.method === 'OPTIONS') return
 
@@ -81,7 +90,7 @@ function trackGuestRequest(req, res, context, durationMs, responseBytes) {
   item.external_calls += Number(context?.external_calls || 0)
   item.denied += [401, 403, 429].includes(status) ? 1 : 0
   item.allowed += status >= 200 && status < 400 ? 1 : 0
-  item.errors_4xx += status >= 400 && status < 500 ? 1 : 0
+  item.errors_4xx += status >= 400 && status < 500 && !isExpectedEpisodeLock(context, res) ? 1 : 0
   item.errors_5xx += status >= 500 ? 1 : 0
   item.response_bytes += Math.max(0, Number(responseBytes) || 0)
   item.duration_total_ms += Math.max(0, Number(durationMs) || 0)
@@ -616,6 +625,8 @@ function recordHistoricalErrorEvidence(
     Number(
       context.external_errors || 0
     )
+
+  if (isExpectedEpisodeLock(context, res)) return
 
   if (
     status < 400 &&
@@ -1268,6 +1279,20 @@ export function trafficDiagnosticMiddleware(req, res, next) {
     dropped_targets: 0,
     targets: new Map(),
     diagnostic_marker: null,
+    expected_episode_locked: false,
+  }
+
+  const originalJson = res.json.bind(res)
+  res.json = (body) => {
+    if (
+      sourceKey === 'GET /api/public/stories/:id/episodes/:id' &&
+      Number(res.statusCode || 0) === 423 &&
+      body?.code === 'EPISODE_LOCKED' &&
+      body?.locked === true
+    ) {
+      context.expected_episode_locked = true
+    }
+    return originalJson(body)
   }
 
   let responseBytes = 0
@@ -1341,7 +1366,7 @@ export function trafficDiagnosticMiddleware(req, res, next) {
       inbound,
       key,
       responseBytes,
-      res.statusCode >= 400,
+      res.statusCode >= 400 && !isExpectedEpisodeLock(context, res),
       usageDurationMs
     )
 
