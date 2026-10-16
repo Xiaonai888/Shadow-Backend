@@ -278,9 +278,13 @@ function publicSelection(selection) {
 }
 
 let taskCenterRotationCheck = null
+let taskCenterRotationLastCheck = { date: '', until: 0 }
 
 export async function ensureTaskCenterAutoRotation() {
   if (taskCenterRotationCheck) return taskCenterRotationCheck
+
+  const today = getPhnomPenhDateKey()
+  if (taskCenterRotationLastCheck.date === today && Date.now() < taskCenterRotationLastCheck.until) return
 
   const check = (async () => {
     const settings = await getAutoSettings()
@@ -295,13 +299,16 @@ export async function ensureTaskCenterAutoRotation() {
   taskCenterRotationCheck = check
 
   try {
-    return await check
+    const result = await check
+    taskCenterRotationLastCheck = { date: getPhnomPenhDateKey(), until: Date.now() + 10_000 }
+    return result
   } finally {
     if (taskCenterRotationCheck === check) {
       taskCenterRotationCheck = null
     }
   }
 }
+
 
 export async function rotateTaskCenterAutoStories({ force = false } = {}) {
   const now = new Date()
