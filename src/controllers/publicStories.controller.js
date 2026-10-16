@@ -71,6 +71,20 @@ const PUBLIC_STORY_LIST_SELECT = [
   'updated_at',
 ].join(', ')
 
+const NEW_ARRIVALS_STORY_LIST_SELECT = [
+  'id',
+  'title',
+  'cover_url',
+  'main_genre',
+  'is_adult',
+  'story_status',
+  'total_episodes',
+  'created_at',
+  'updated_at',
+  'total_likes',
+  'total_views',
+].join(', ')
+
 function publicAuthorPage(page) {
   if (!page) return null
 
@@ -1199,7 +1213,11 @@ export async function getPublicStories(req, res) {
     ) => {
       let nextQuery = supabase
         .from('stories')
-        .select(PUBLIC_STORY_LIST_SELECT)
+        .select(
+          newArrivalsPagination
+            ? NEW_ARRIVALS_STORY_LIST_SELECT
+            : PUBLIC_STORY_LIST_SELECT
+        )
         .eq('status', 'published')
         .is('deleted_at', null)
         .or(
@@ -1687,6 +1705,30 @@ export async function getPublicStories(req, res) {
     const newArrivalsHasMore =
       newArrivalsPagination &&
       rankedStories.length > newArrivalsSliceStart + stories.length
+
+    if (newArrivalsPagination) {
+      return res.status(200).json({
+        ok: true,
+        stories: stories.map((story) => ({
+          id: story.id,
+          title: story.title,
+          cover_url: story.cover_url,
+          main_genre: story.main_genre,
+          is_adult: story.is_adult,
+          story_status: story.story_status,
+          total_episodes: story.total_episodes,
+          is_completed: isStoryCompleted(story),
+        })),
+        pagination: {
+          offset: newArrivalsOffset,
+          limit,
+          has_more: newArrivalsHasMore,
+          next_offset: newArrivalsHasMore
+            ? newArrivalsOffset + stories.length
+            : null,
+        },
+      })
+    }
 
     const authorIds = [
       ...new Set(
