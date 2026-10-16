@@ -845,46 +845,75 @@ async function claimCheckInReward(
   }
 }
 
-CREATE OR REPLACE FUNCTION public.get_task_checkin_snapshot(p_user_id uuid)
-RETURNS jsonb
-LANGUAGE sql
-STABLE
-SECURITY INVOKER
-SET search_path = ''
-AS $$
-SELECT jsonb_build_object(
-  'user', (
-    SELECT jsonb_build_object(
-      'role', u.role,
-      'is_premium', u.is_premium,
-      'premium_expires_at', u.premium_expires_at
-    )
-    FROM public.users u
-    WHERE u.id = p_user_id
-  ),
-  'wallet', (
-    SELECT jsonb_build_object(
-      'diamond_balance', w.diamond_balance,
-      'gem_balance', w.gem_balance,
-      'vote_balance', w.vote_balance,
-      'voucher_balance', w.voucher_balance
-    )
-    FROM public.user_wallets w
-    WHERE w.user_id = p_user_id
-  ),
-  'check_in', (
-    SELECT jsonb_build_object(
-      'last_claim_date', c.last_claim_date,
-      'current_day', c.current_day
-    )
-    FROM public.reader_checkins c
-    WHERE c.user_id = p_user_id
-  )
-);
-$$;
-REVOKE ALL ON FUNCTION public.get_task_checkin_snapshot(uuid) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.get_task_checkin_snapshot(uuid) TO service_role;
+export async function getTaskCheckIn(req, res) {
+  try {
+    const userId = getUserId(req)
+    if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
 
+    const { data, error } = await supabase.rpc('get_task_checkin_snapshot', { p_user_id: userId })
+    let user, wallet, checkInRow
+    if (error || !data || !data.user) {
+      ;[user, wallet, checkInRow] = await Promise.all([
+        getUserProfile(userId),
+        getOrCreateWallet(userId),
+        getCheckInRow(userId),
+      ])
+    } else {
+      user = data.user
+      wallet = data.wallet || await getOrCreateWallet(userId)
+      checkInRow = data.check_in || null
+    }
+
+    return res.status(200).json({
+      ok: true,
+      wallet: publicWallet(wallet),
+      check_in: publicCheckIn(checkInRow, isPremiumUser(user)),
+    })
+  } catch (error) {
+    console.error('GET TASK CHECK IN ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load check-in',
+      error: error.message,
+    })
+  }
+}
+
+export async function claimTaskCheckIn(req, res) {
+  try {
+    const userId = getUserId(req)
+
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'User is required' })
+    }
+
+    const user = await getUserProfile(userId)
+    const isPremium = isPremiumUser(user)
+    const result = await claimCheckInReward(userId, 'daily_bonus', isPremium)
+
+    return res.status(200).json({
+      ok: true,
+      already_claimed: result.already_claimed,
+      wallet: publicWallet(result.wallet),
+      check_in: publicCheckIn(result.check_in, isPremium),
+      reward: result.reward,
+      history_item: result.history_item ? publicHistoryItem(result.history_item) : null,
+      message: result.already_claimed
+        ? 'Already claimed today'
+        : result.reward?.gift
+          ? 'Daily gift claimed'
+          : 'Daily check-in claimed',
+    })
+  } catch (error) {
+    console.error('CLAIM TASK CHECK IN ERROR:', error)
+
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to claim check-in',
+      error: error.message,
+    })
+  }
+}
 
 export async function getRewardChest(req, res) {
   try {
