@@ -158,6 +158,8 @@ async function saveAssignment(dateKey, selected) {
   throw error
 }
 
+let assignmentPending = null
+
 export async function getTaskCenterDailyStoryAssignment() {
   const dateKey = getPhnomPenhDateKey()
   const now = Date.now()
@@ -177,32 +179,48 @@ export async function getTaskCenterDailyStoryAssignment() {
     return null
   }
 
-  const saved = await loadSavedAssignment(dateKey)
-
-  if (saved) {
-    return cacheAssignment(dateKey, saved)
+  if (assignmentPending?.date === dateKey) {
+    return assignmentPending.promise
   }
 
-  const stories = await loadEligibleStories()
-  const selected = pickDailyStories(stories)
+  const promise = (async () => {
+    const saved = await loadSavedAssignment(dateKey)
 
-  if (!selected) {
-    return cacheAssignment(
-      dateKey,
-      null,
-      Date.now() + RETRY_AFTER_MS
-    )
+    if (saved) {
+      return cacheAssignment(dateKey, saved)
+    }
+
+    const stories = await loadEligibleStories()
+    const selected = pickDailyStories(stories)
+
+    if (!selected) {
+      return cacheAssignment(
+        dateKey,
+        null,
+        Date.now() + RETRY_AFTER_MS
+      )
+    }
+
+    const created = await saveAssignment(dateKey, selected)
+
+    if (!created) {
+      return cacheAssignment(
+        dateKey,
+        null,
+        Date.now() + RETRY_AFTER_MS
+      )
+    }
+
+    return cacheAssignment(dateKey, created)
+  })()
+
+  assignmentPending = { date: dateKey, promise }
+
+  try {
+    return await promise
+  } finally {
+    if (assignmentPending?.promise === promise) {
+      assignmentPending = null
+    }
   }
-
-  const created = await saveAssignment(dateKey, selected)
-
-  if (!created) {
-    return cacheAssignment(
-      dateKey,
-      null,
-      Date.now() + RETRY_AFTER_MS
-    )
-  }
-
-  return cacheAssignment(dateKey, created)
 }
