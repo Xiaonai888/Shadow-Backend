@@ -211,14 +211,53 @@ export async function getManualPaymentStatus(req, res) {
     const orderId = String(req.params.orderId || '').trim()
     if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
     if (!orderId) return res.status(400).json({ ok: false, message: 'Order ID is required' })
-    const { data, error } = await supabase.from('payment_transactions').select('*').eq('order_id', orderId).eq('user_id', userId).maybeSingle()
+
+    const { data, error } = await supabase
+      .from('payment_transactions')
+      .select('*')
+      .eq('order_id', orderId)
+      .eq('user_id', userId)
+      .maybeSingle()
+
     if (error) throw error
     if (!data) return res.status(404).json({ ok: false, message: 'Payment order not found' })
+
     if (data.status === 'waiting_payment' && isProofExpired(data)) {
-      const { data: expired, error: expiredError } = await supabase.from('payment_transactions').update({ status: 'expired', match_status: 'expired', match_reason: 'Payment window expired without ABA Bot match.', updated_at: new Date().toISOString() }).eq('id', data.id).eq('status', 'waiting_payment').select('*').single()
+      const { data: expired, error: expiredError } = await supabase
+        .from('payment_transactions')
+        .update({
+          status: 'expired',
+          match_status: 'expired',
+          match_reason: 'Payment window expired without ABA Bot match.',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', data.id)
+        .eq('user_id', userId)
+        .eq('status', 'waiting_payment')
+        .select('*')
+        .maybeSingle()
+
       if (expiredError) throw expiredError
-      return res.status(200).json({ ok: true, expired: true, payment: publicManualPayment(expired) })
+      if (expired) {
+        return res.status(200).json({ ok: true, expired: true, payment: publicManualPayment(expired) })
+      }
+
+      const { data: latest, error: latestError } = await supabase
+        .from('payment_transactions')
+        .select('*')
+        .eq('id', data.id)
+        .eq('user_id', userId)
+        .maybeSingle()
+
+      if (latestError) throw latestError
+      if (!latest) return res.status(404).json({ ok: false, message: 'Payment order not found' })
+      return res.status(200).json({
+        ok: true,
+        expired: latest.status === 'expired',
+        payment: publicManualPayment(latest),
+      })
     }
+
     return res.status(200).json({ ok: true, payment: publicManualPayment(data) })
   } catch (error) {
     console.error('GET MANUAL PAYMENT STATUS ERROR:', error)
