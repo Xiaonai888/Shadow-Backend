@@ -79,7 +79,7 @@ function limitNewArrivalsReadBudget(req, res, next) {
   }
 
   const offset = Number(req.query.offset ?? 0)
-  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 999) {
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(offset + 9)) {
     return res.status(400).json({
       ok: false,
       message: 'Invalid New Arrivals page offset',
