@@ -12,7 +12,7 @@ router.get('/', (req, res) => {
 })
 
 router.get('/maintenance', (req, res) => {
-  res.set('Cache-Control', 'no-store')
+  res.set('Cache-Control', 'private, max-age=15')
 
   return res.status(200).json({
     ok: true,
