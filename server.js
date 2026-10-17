@@ -296,6 +296,7 @@ function auditAuthorStorePdfUpload(req, res, next) {
 }
 
 app.use(auditAuthorStorePdfUpload)
+app.options('/api/author-store/me/pdfs/upload-private', cors({ ...corsOptions, allowedHeaders: undefined }))
 app.use(cors(corsOptions))
 app.options('*', cors(corsOptions))
 app.use(workKillSwitch)
