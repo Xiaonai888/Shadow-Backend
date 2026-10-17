@@ -915,7 +915,14 @@ async function getViewCooldownHours() {
       .eq('id', 1)
       .maybeSingle()
 
-    if (error || !data) return 3
+    if (error || !data) {
+  cachedViewCooldown = {
+    value: 3,
+    expiresAt: Date.now() + 15 * 1000,
+  }
+  if (error) console.warn('VIEW_COOLDOWN_RULE_ERROR', { code: error.code, message: error.message })
+  return 3
+}
 
     const value = Number(data.view_count_cooldown_hours || 3)
     cachedViewCooldown = {
