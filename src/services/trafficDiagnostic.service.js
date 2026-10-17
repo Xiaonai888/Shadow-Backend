@@ -680,9 +680,12 @@ function recordHistoricalErrorEvidence(
       : null
   const sampleError =
     cleanHistoricalErrorText(
-      ([401, 403].includes(status) ? responseCode : '') ||
+      ([401, 403].includes(status)
+        ? [responseCode, context.response_error_message].filter(Boolean).join(': ')
+        : '') ||
       firstFailure?.message ||
       firstFailure?.details ||
+      context.response_error_message ||
       firstFailure?.code ||
       firstFailure?.status_text ||
       responseCode ||
@@ -1291,18 +1294,25 @@ export function trafficDiagnosticMiddleware(req, res, next) {
     diagnostic_marker: null,
     expected_episode_locked: false,
     response_error_code: '',
+    response_error_message: '',
   }
 
   const originalJson = res.json.bind(res)
   res.json = (body) => {
-    if (
-      Number(res.statusCode || 0) >= 400 &&
-      Number(res.statusCode || 0) < 600 &&
-      typeof body?.code === 'string'
-    ) {
-      const code = body.code.trim()
-      if (code.length <= 64 && /^[A-Z][A-Z0-9_]*$/.test(code)) {
-        context.response_error_code = code
+    const status = Number(res.statusCode || 0)
+    if (status >= 400 && status < 600) {
+      if (typeof body?.code === 'string') {
+        const code = body.code.trim()
+        if (code.length <= 64 && /^[A-Z][A-Z0-9_]*$/.test(code)) {
+          context.response_error_code = code
+        }
+      }
+
+      const message = [body?.message, body?.error]
+        .filter((value) => typeof value === 'string' && value.trim())
+        .join(' | ')
+      if (message) {
+        context.response_error_message = cleanHistoricalErrorText(message, 180)
       }
     }
 
