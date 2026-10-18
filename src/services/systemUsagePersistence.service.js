@@ -2,6 +2,7 @@ import { supabase } from '../config/supabase.js'
 import { getSystemUsageSnapshot } from './systemUsageMonitor.service.js'
 import {
   getHistoricalErrorEvidence,
+  getPageRequestSnapshot,
 } from './trafficDiagnostic.service.js'
 import {
   getSystemUsageRetentionPolicy,
