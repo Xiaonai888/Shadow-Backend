@@ -41,6 +41,124 @@ const GUEST_TRAFFIC_WINDOW_MS = 60 * 1000
 const GUEST_TRAFFIC_MAX_WINDOWS = 60
 const GUEST_TRAFFIC_MAX_ROUTES = 160
 const guestTrafficWindows = new Map()
+const PAGE_REQUEST_WINDOW_MS = 60 * 1000
+const PAGE_REQUEST_MAX_WINDOWS = 60
+const PAGE_REQUEST_MAX_ROUTES = 180
+const pageRequestWindows = new Map()
+
+function pageRequestLabel(req) {
+  const value = String(req.headers['x-shadow-page'] || '').trim()
+  const match = /^(ADMIN|WEB):(\/[a-z0-9_/:.-]{0,180})$/i.exec(value)
+  if (!match) return 'UNATTRIBUTED'
+  return `${match[1].toUpperCase()}:${normalizePath(match[2]).slice(0, 160)}`
+}
+
+function observeSupabaseRows(context, response) {
+  if (!context || !response?.ok) return
+  const range = String(response.headers?.get('content-range') || '').trim()
+  const match = /^(\d+)-(\d+)\/(?:\d+|\*)$/.exec(range)
+  if (!match) return
+  const first = Number(match[1])
+  const last = Number(match[2])
+  if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last) || last < first) return
+  const count = last - first + 1
+  if (count > 1000000) return
+  context.supabase_observed_rows += count
+  context.supabase_range_responses += 1
+}
+
+function trackPageRequest(req, res, context, durationMs, responseBytes) {
+  if (!context || req.method === 'OPTIONS' || context.route.startsWith('GET /api/admin/system-control')) return
+  const now = Date.now()
+  const windowKey = Math.floor(now / PAGE_REQUEST_WINDOW_MS) * PAGE_REQUEST_WINDOW_MS
+  let window = pageRequestWindows.get(windowKey)
+  if (!window) {
+    window = new Map()
+    pageRequestWindows.set(windowKey, window)
+    while (pageRequestWindows.size > PAGE_REQUEST_MAX_WINDOWS) {
+      pageRequestWindows.delete(pageRequestWindows.keys().next().value)
+    }
+  }
+  let page = context.page
+  let route = context.route
+  let key = `${page}\u001f${route}`
+  if (!window.has(key) && window.size >= PAGE_REQUEST_MAX_ROUTES - 1) {
+    page = 'OVERFLOW'
+    route = 'OTHER ROUTES'
+    key = `${page}\u001f${route}`
+  }
+  const item = window.get(key) || {
+    page,
+    route,
+    requests: 0,
+    supabase_calls: 0,
+    external_calls: 0,
+    external_errors: 0,
+    observed_supabase_rows: 0,
+    supabase_range_responses: 0,
+    errors_4xx: 0,
+    errors_5xx: 0,
+    response_bytes: 0,
+    duration_total_ms: 0,
+    duration_max_ms: 0,
+    last_seen_at: null,
+  }
+  const status = Number(res.statusCode || 0)
+  item.requests += 1
+  item.supabase_calls += Number(context.supabase_calls || 0)
+  item.external_calls += Number(context.external_calls || 0)
+  item.external_errors += Number(context.external_errors || 0)
+  item.observed_supabase_rows += Number(context.supabase_observed_rows || 0)
+  item.supabase_range_responses += Number(context.supabase_range_responses || 0)
+  item.errors_4xx += status >= 400 && status < 500 && !isExpectedEpisodeLock(context, res) ? 1 : 0
+  item.errors_5xx += status >= 500 ? 1 : 0
+  item.response_bytes += Math.max(0, Number(responseBytes) || 0)
+  item.duration_total_ms += Math.max(0, Number(durationMs) || 0)
+  item.duration_max_ms = Math.max(item.duration_max_ms, Number(durationMs) || 0)
+  item.last_seen_at = new Date(now).toISOString()
+  window.set(key, item)
+}
+
+export function getPageRequestSnapshot(minutes = 60) {
+  const windowMinutes = Math.min(PAGE_REQUEST_MAX_WINDOWS, Math.max(1, Math.floor(Number(minutes) || 60)))
+  const now = Date.now()
+  const from = Math.floor(now / PAGE_REQUEST_WINDOW_MS) * PAGE_REQUEST_WINDOW_MS - (windowMinutes - 1) * PAGE_REQUEST_WINDOW_MS
+  const pages = new Map()
+  const routes = new Map()
+  const metrics = ['requests', 'supabase_calls', 'external_calls', 'external_errors', 'observed_supabase_rows', 'supabase_range_responses', 'errors_4xx', 'errors_5xx', 'response_bytes']
+  const totals = Object.fromEntries(metrics.map((key) => [key, 0]))
+  const combine = (map, key, item) => {
+    const row = map.get(key) || { page: item.page, ...(item.route ? { route: item.route } : {}), ...Object.fromEntries(metrics.map((name) => [name, 0])), duration_total_ms: 0, duration_max_ms: 0, last_seen_at: null }
+    for (const name of metrics) row[name] += item[name]
+    row.duration_total_ms += item.duration_total_ms
+    row.duration_max_ms = Math.max(row.duration_max_ms, item.duration_max_ms)
+    if (!row.last_seen_at || row.last_seen_at < item.last_seen_at) row.last_seen_at = item.last_seen_at
+    map.set(key, row)
+  }
+  for (const [windowKey, window] of pageRequestWindows) {
+    if (windowKey < from || windowKey > now) continue
+    for (const item of window.values()) {
+      combine(pages, item.page, { ...item, route: '' })
+      combine(routes, `${item.page}\u001f${item.route}`, item)
+      for (const name of metrics) totals[name] += item[name]
+    }
+  }
+  const format = (row) => {
+    const { duration_total_ms, ...rest } = row
+    return { ...rest, average_duration_ms: row.requests ? Math.round(duration_total_ms / row.requests) : 0 }
+  }
+  const rank = (a, b) => b.observed_supabase_rows - a.observed_supabase_rows || b.supabase_calls - a.supabase_calls || b.requests - a.requests
+  return {
+    measurement: 'client_reported_page_and_supabase_content_range_rows',
+    persistence: 'in_memory_since_backend_restart',
+    window_minutes: windowMinutes,
+    from: new Date(from).toISOString(),
+    to: new Date(now).toISOString(),
+    totals,
+    pages: [...pages.values()].map(format).sort(rank).slice(0, 80),
+    routes: [...routes.values()].map(format).sort(rank).slice(0, 120),
+  }
+}
 
 function isExpectedEpisodeLock(context, res) {
   return (
@@ -866,6 +984,9 @@ function logRequestEvidence(req, res, context, elapsedMs) {
     request_id: context.request_id,
     time: new Date().toISOString(),
     route: context.route,
+    page: context.page,
+    observed_supabase_rows: context.supabase_observed_rows,
+    supabase_range_responses: context.supabase_range_responses,
     http_status: status,
     response_error_code: context.response_error_code || null,
     duration_ms: elapsedMs,
@@ -1070,6 +1191,7 @@ function installFetchDiagnostic() {
     try {
       const response = await nativeFetch(input, init)
       const elapsedMs = Date.now() - startedAt
+      if (provider === 'SUPABASE') observeSupabaseRows(context, response)
 
 if (provider === 'SUPABASE' && elapsedMs >= 2500) {
   const minute = Math.floor(Date.now() / 60000)
@@ -1284,6 +1406,9 @@ export function trafficDiagnosticMiddleware(req, res, next) {
 
   const context = {
     route: sourceKey,
+    page: pageRequestLabel(req),
+    supabase_observed_rows: 0,
+    supabase_range_responses: 0,
     request_id: `${process.pid}-${startedAt}-${++traceSequence}`,
     external_calls: 0,
     supabase_calls: 0,
@@ -1414,6 +1539,7 @@ export function trafficDiagnosticMiddleware(req, res, next) {
     }
 
     trackGuestRequest(req, res, context, elapsedMs, responseBytes)
+    trackPageRequest(req, res, context, elapsedMs, responseBytes)
 
     logRequestEvidence(
       req,
