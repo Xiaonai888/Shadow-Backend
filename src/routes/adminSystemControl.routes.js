@@ -5,7 +5,7 @@ import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { getSystemUsageCurrentSnapshot } from '../services/systemUsageMonitor.service.js'
 import { getSystemUsageAnomalySnapshot } from '../services/systemUsageAnomaly.service.js'
 import { getSystemUsageRegressionState } from '../services/systemUsageRegression.service.js'
-import { getRecentRequestEvidence, getGuestRequestSnapshot, getHistoricalErrorEvidence } from '../services/trafficDiagnostic.service.js'
+import { getRecentRequestEvidence, getGuestRequestSnapshot, getHistoricalErrorEvidence, getPageRequestSnapshot } from '../services/trafficDiagnostic.service.js'
 import {
   listSystemUsageIncidents,
   getSystemUsageIncident,
@@ -190,6 +190,7 @@ router.get(
       usage: getSystemUsageCurrentSnapshot(),
       evidence: getRecentRequestEvidence(),
       guest_requests: getGuestRequestSnapshot(),
+      page_requests: getPageRequestSnapshot(),
       anomaly: getSystemUsageAnomalySnapshot(),
       regression: getSystemUsageRegressionState(),
       providers: getSystemUsageProviderState(),
