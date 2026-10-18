@@ -244,6 +244,7 @@ const corsOptions = {
     'X-Admin-Id',
     'X-Shadow-Visitor-Id',
     'X-Shadow-Circuit-Canary',
+    'X-Shadow-Page',
   ],
   exposedHeaders: ['X-Reader-Token', 'X-Spin-Search-Remaining'],
 }
