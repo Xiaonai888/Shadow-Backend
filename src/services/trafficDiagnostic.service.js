@@ -119,10 +119,12 @@ function trackPageRequest(req, res, context, durationMs, responseBytes) {
   window.set(key, item)
 }
 
-export function getPageRequestSnapshot(minutes = 60) {
+export function getPageRequestSnapshot(minutes = 60, bounds = null) {
   const windowMinutes = Math.min(PAGE_REQUEST_MAX_WINDOWS, Math.max(1, Math.floor(Number(minutes) || 60)))
   const now = Date.now()
   const from = Math.floor(now / PAGE_REQUEST_WINDOW_MS) * PAGE_REQUEST_WINDOW_MS - (windowMinutes - 1) * PAGE_REQUEST_WINDOW_MS
+  const effectiveFrom = Number.isFinite(bounds?.from) ? bounds.from : from
+  const effectiveTo = Number.isFinite(bounds?.to) ? bounds.to : now
   const pages = new Map()
   const routes = new Map()
   const metrics = ['requests', 'supabase_calls', 'external_calls', 'external_errors', 'observed_supabase_rows', 'supabase_range_responses', 'errors_4xx', 'errors_5xx', 'response_bytes']
@@ -136,7 +138,7 @@ export function getPageRequestSnapshot(minutes = 60) {
     map.set(key, row)
   }
   for (const [windowKey, window] of pageRequestWindows) {
-    if (windowKey < from || windowKey > now) continue
+    if (windowKey < effectiveFrom || windowKey >= effectiveTo) continue
     for (const item of window.values()) {
       combine(pages, item.page, { ...item, route: '' })
       combine(routes, `${item.page}\u001f${item.route}`, item)
@@ -152,8 +154,8 @@ export function getPageRequestSnapshot(minutes = 60) {
     measurement: 'client_reported_page_and_supabase_content_range_rows',
     persistence: 'in_memory_since_backend_restart',
     window_minutes: windowMinutes,
-    from: new Date(from).toISOString(),
-    to: new Date(now).toISOString(),
+    from: new Date(effectiveFrom).toISOString(),
+    to: new Date(effectiveTo).toISOString(),
     totals,
     pages: [...pages.values()].map(format).sort(rank).slice(0, 80),
     routes: [...routes.values()].map(format).sort(rank).slice(0, 120),
