@@ -2024,6 +2024,79 @@ function analyzeHistoryCoverage(
   }
 }
 
+function buildPageRequestHistory(stored, fromMs, toMs) {
+  const metrics = [
+    'requests', 'supabase_calls', 'external_calls', 'external_errors',
+    'observed_supabase_rows', 'supabase_range_responses',
+    'errors_4xx', 'errors_5xx', 'response_bytes',
+  ]
+  const totals = Object.fromEntries(metrics.map((name) => [name, 0]))
+  const pageMap = new Map()
+  const routeMap = new Map()
+  let storedWindows = 0
+
+  const accumulate = (map, values, withRoute) => {
+    for (const item of values) {
+      if (!item || typeof item !== 'object') continue
+      const page = String(item.page || 'UNATTRIBUTED').slice(0, 180)
+      const route = withRoute ? String(item.route || 'UNKNOWN').slice(0, 260) : ''
+      const key = `${page}\u001f${route}`
+      const row = map.get(key) || {
+        page,
+        ...(withRoute ? { route } : {}),
+        ...Object.fromEntries(metrics.map((name) => [name, 0])),
+        duration_max_ms: 0,
+        duration_weight: 0,
+        last_seen_at: null,
+      }
+      for (const name of metrics) row[name] += safeNumber(item[name])
+      row.duration_weight += safeNumber(item.average_duration_ms) * safeNumber(item.requests)
+      row.duration_max_ms = Math.max(row.duration_max_ms, safeNumber(item.duration_max_ms))
+      if (item.last_seen_at && (!row.last_seen_at || item.last_seen_at > row.last_seen_at)) {
+        row.last_seen_at = item.last_seen_at
+      }
+      map.set(key, row)
+    }
+  }
+
+  for (const window of stored) {
+    const start = Date.parse(window.window_start)
+    const end = Date.parse(window.window_end)
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < fromMs || end > toMs || end - start !== SNAPSHOT_MS) continue
+    const data = window.payload?.page_requests
+    if (!data || !Array.isArray(data.pages) || !Array.isArray(data.routes)) continue
+    storedWindows += 1
+    for (const name of metrics) totals[name] += safeNumber(data.totals?.[name])
+    accumulate(pageMap, data.pages, false)
+    accumulate(routeMap, data.routes, true)
+  }
+
+  const rank = (a, b) => b.observed_supabase_rows - a.observed_supabase_rows || b.supabase_calls - a.supabase_calls || b.requests - a.requests
+  const finish = (map, limit) => [...map.values()]
+    .map(({ duration_weight, ...row }) => ({
+      ...row,
+      average_duration_ms: row.requests ? Math.round(duration_weight / row.requests) : 0,
+    }))
+    .sort(rank)
+    .slice(0, limit)
+
+  return {
+    measurement: 'client_reported_page_and_supabase_content_range_rows',
+    persistence: 'stored_15_minute_snapshot',
+    source: 'stored_detail_windows_only',
+    from: new Date(fromMs).toISOString(),
+    to: new Date(toMs).toISOString(),
+    window_minutes: storedWindows * 15,
+    stored_windows: storedWindows,
+    partial: storedWindows * SNAPSHOT_MS < toMs - fromMs,
+    detail_capped_per_snapshot: true,
+    totals,
+    pages: finish(pageMap, 80),
+    routes: finish(routeMap, 120),
+  }
+}
+
+
 export async function getSystemUsageHistory({
   from,
   to,
@@ -2335,8 +2408,9 @@ export async function getSystemUsageHistory({
       mb: toMb(totals.bytes),
       errors: totals.errors,
     },
-    rows,
+        rows,
     series,
+    page_requests: buildPageRequestHistory(stored, fromMs, toMs),
   }
 }
 
