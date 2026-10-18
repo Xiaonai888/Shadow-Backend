@@ -233,8 +233,17 @@ function buildSnapshot(now = Date.now()) {
         MAX_ERROR_EVIDENCE_ROWS,
       error_evidence_total:
         errorEvidenceTotal,
-      error_evidence:
+            error_evidence:
         errorEvidence,
+      page_requests: (() => {
+        const data = getPageRequestSnapshot(15, { from: windowStart, to: windowEnd })
+        return {
+          ...data,
+          persistence: 'stored_15_minute_snapshot',
+          pages: data.pages.slice(0, 20),
+          routes: data.routes.slice(0, 40),
+        }
+      })(),
       monitor: source.monitor,
       top_rows: aggregateRows(minutes),
       provider_reconciliation:
