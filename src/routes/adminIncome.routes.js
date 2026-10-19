@@ -9,7 +9,7 @@ import { getAdminAuthorLibrary, downloadAdminAuthorLibraryPdf, readAdminAuthorLi
 import { getAdminAuthorIncome, reconcileAdminAuthorIncome } from '../controllers/adminAuthorIncome.controller.js'
 import { getAdminAuthorIncomeTransactions } from '../controllers/adminAuthorIncomeTransactions.controller.js'
 import { getAdminShadowMallIncome } from '../controllers/adminShadowMallIncome.controller.js'
-import { streamAdminIncomeEvents } from '../services/adminIncomeEvents.service.js'
+import { streamAdminIncomeEvents, subscribeAdminIncomeChanges } from '../services/adminIncomeEvents.service.js'
 import { getAdminAuthorPageIncome } from '../controllers/adminAuthorPageIncome.controller.js'
 import {
   recordAdminStoryPayoutTransfer,
@@ -30,6 +30,15 @@ const SUMMARY_CACHE_MS = 30 * 1000
 const SUMMARY_CACHE_MAX_ENTRIES = 32
 const summaryCache = new Map()
 const summaryInFlight = new Map()
+let summaryRevision = 0
+
+function invalidateSummaryCache() {
+  summaryRevision += 1
+  summaryCache.clear()
+  summaryInFlight.clear()
+}
+
+subscribeAdminIncomeChanges(invalidateSummaryCache)
 
 function trimSummaryCache(now) {
   for (const [key, entry] of summaryCache) {
@@ -222,6 +231,7 @@ async function getCachedAdminIncomeSummary(req, res) {
     settle = resolve
   })
   summaryInFlight.set(key, pending)
+  const requestRevision = summaryRevision
   res.set('X-Shadow-Income-Summary-Cache', 'MISS')
 
   function finish(status, payload) {
@@ -234,7 +244,7 @@ async function getCachedAdminIncomeSummary(req, res) {
   const originalJson = res.json.bind(res)
   res.json = function respondWithIncomeSummary(payload) {
     const status = res.statusCode || 200
-    if (status === 200 && payload?.ok === true) {
+    if (status === 200 && payload?.ok === true && requestRevision === summaryRevision) {
       summaryCache.delete(key)
       summaryCache.set(key, {
         payload,
@@ -265,7 +275,7 @@ async function getCachedAdminIncomeSummary(req, res) {
 
 function invalidateIncomeSummaryCache(req, res, next) {
   res.once('finish', () => {
-    if (res.statusCode >= 200 && res.statusCode < 300) summaryCache.clear()
+    if (res.statusCode >= 200 && res.statusCode < 300) invalidateSummaryCache()
   })
   next()
 }
