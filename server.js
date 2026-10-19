@@ -26,6 +26,7 @@ import telegramRoutes from './src/routes/telegram.routes.js'
 import { startTelegramUserListener } from './src/listeners/telegramUserListener.js'
 import unlocksRoutes from './src/routes/unlocks.routes.js'
 import shadowMallProductsRoutes from './src/routes/shadowMallProducts.routes.js'
+import discoverInsightsRoutes from './src/routes/discoverInsights.routes.js'
 import adminCommunityRoutes from './src/routes/adminCommunity.routes.js'
 import adminSpamGuardRoutes from './src/routes/adminSpamGuard.routes.js'
 import tasksRoutes from './src/routes/tasks.routes.js'
@@ -823,6 +824,7 @@ app.use('/api/purchase', paymentSpamGuard, purchaseRoutes)
 app.use('/api/telegram', telegramRoutes)
 app.use('/api/unlocks', paymentSpamGuard, unlocksRoutes)
 app.use('/api/shadow-mall', shadowMallSpamGuard, shadowMallProductsRoutes)
+app.use('/api/discover-insights', discoverInsightsRoutes)
 app.use('/api/admin/community', adminCommunityRoutes)
 app.use('/api/admin/spam-guard', adminSpamGuardRoutes)
 app.use('/api/tasks', taskSpamGuard, tasksRoutes)
