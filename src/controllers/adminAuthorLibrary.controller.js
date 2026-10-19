@@ -53,6 +53,10 @@ async function authorMatches(query) {
   return [...new Set([...(named || []), ...(usernames || [])].map(item => String(item.id)).filter(id => UUID.test(id)))].slice(0, 100)
 }
 
+const AUTHOR_LIBRARY_CACHE_TTL = 60_000
+const AUTHOR_LIBRARY_CACHE_MAX = 30
+const authorLibraryCache = new Map()
+
 export async function getAdminAuthorLibrary(req, res) {
   setPrivateHeaders(res)
   try {
@@ -60,6 +64,14 @@ export async function getAdminAuthorLibrary(req, res) {
     if (!['all', 'book', 'pdf'].includes(type)) return res.status(400).json({ ok: false, message: 'Invalid type' })
     const page = Math.min(10000, Math.max(1, Math.floor(Number(req.query.page) || 1)))
     const search = safeQuery(req.query.q)
+    const key = JSON.stringify([type, search, page])
+    const refresh = String(req.query.refresh || '') === '1'
+    const cached = authorLibraryCache.get(key)
+
+    if (!refresh && cached && Date.now() - cached.time < AUTHOR_LIBRARY_CACHE_TTL) {
+      return res.json(cached.result)
+    }
+
     let query = supabase.from('author_store_products')
       .select('id, author_page_id, product_type, title, author_name, publisher, cover_url, sale_price, original_price, status, stock_quantity, pre_order, access_rule, pdf_file_name, pdf_is_private, pdf_storage_key, pdf_file_url, pdf_mime_type, pdf_file_size_bytes, created_at, updated_at', { count: 'exact' })
     if (type !== 'all') query = query.eq('product_type', type)
@@ -95,12 +107,19 @@ export async function getAdminAuthorLibrary(req, res) {
         created_at: p.created_at, updated_at: p.updated_at,
       }
     })
-    return res.json({ ok: true, items, page, limit: LIMIT, total: count || 0, has_next: page * LIMIT < (count || 0) })
+    const result = { ok: true, items, page, limit: LIMIT, total: count || 0, has_next: page * LIMIT < (count || 0) }
+    authorLibraryCache.delete(key)
+    authorLibraryCache.set(key, { time: Date.now(), result })
+    if (authorLibraryCache.size > AUTHOR_LIBRARY_CACHE_MAX) {
+      authorLibraryCache.delete(authorLibraryCache.keys().next().value)
+    }
+    return res.json(result)
   } catch (error) {
     console.error('ADMIN AUTHOR LIBRARY LIST ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Unable to load author library' })
   }
 }
+
 
 async function serveAdminAuthorLibraryPdf(req, res, mode) {
   setPrivateHeaders(res)
