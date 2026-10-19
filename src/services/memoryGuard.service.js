@@ -286,10 +286,28 @@ export function evaluateHeavyJobAdmission({
       ? Number(safetyReserveMb)
       : SAFETY_RESERVE_MB
 
+    const reclaimableMb = jobType === 'story_image_pipeline'
+    ? (() => {
+        try {
+          const stat = readFileSync('/sys/fs/cgroup/memory.stat', 'utf8')
+          const inactiveBytes = Number(stat.match(/^inactive_file\s+(\d+)$/m)?.[1] || 0)
+          const sharedBytes = Number(stat.match(/^shmem\s+(\d+)$/m)?.[1] || 0)
+          return Math.min(
+            memoryMb(Math.max(0, inactiveBytes - sharedBytes)),
+            Math.max(0, snapshot.container_total_mb - snapshot.rss_mb)
+          )
+        } catch {
+          return 0
+        }
+      })()
+    : 0
+
   const projectedMb =
-    snapshot.container_total_mb +
+    snapshot.container_total_mb -
+    reclaimableMb +
     costMb +
     reserveMb
+
 
   let allowed = true
   let reason = 'safe'
