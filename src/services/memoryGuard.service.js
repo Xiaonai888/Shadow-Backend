@@ -324,7 +324,10 @@ export function evaluateHeavyJobAdmission({
   } else if (snapshot.critical) {
     allowed = false
     reason = 'critical_memory'
-  } else if (snapshot.blocked) {
+    } else if (jobType === 'story_image_pipeline' && snapshot.active_manga_upload) {
+    allowed = false
+    reason = 'manga_upload_active'
+  } else if (snapshot.blocked && !storyImageMayRecover) {
     allowed = false
     reason = 'protect_state'
   } else if (
