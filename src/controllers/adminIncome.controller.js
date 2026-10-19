@@ -120,6 +120,60 @@ async function getEpisodeOrderCount(range) {
 }
 
 async function getEpisodeIncome(range) {
+  const { data: databaseSummary, error: summaryError } = await supabase.rpc(
+    'get_admin_episode_income_summary_v1',
+    {
+      p_from: range.from,
+      p_to: range.to,
+    }
+  )
+
+  if (!summaryError) {
+    const moneyFields = [
+      'gross_sales_usd',
+      'direct_cost_usd',
+      'distributable_revenue_usd',
+      'platform_income_usd',
+      'author_earnings_usd',
+      'author_net_payout_usd',
+      'withholding_usd',
+      'pending_payout_usd',
+      'paid_payout_usd',
+      'order_count',
+      'earning_row_count',
+      'reconciliation_difference_usd',
+    ]
+
+    if (
+      !databaseSummary ||
+      typeof databaseSummary !== 'object' ||
+      Array.isArray(databaseSummary) ||
+      databaseSummary.source !== 'episode_sales' ||
+      typeof databaseSummary.reconciliation_status !== 'string' ||
+      !moneyFields.every(
+        (field) =>
+          databaseSummary[field] !== null &&
+          databaseSummary[field] !== undefined &&
+          Number.isFinite(Number(databaseSummary[field]))
+      )
+    ) {
+      throw new Error('Invalid Episode Sales summary RPC response')
+    }
+
+    return databaseSummary
+  }
+
+  const summaryRpcCode = String(summaryError.code || '')
+
+  if (summaryRpcCode !== 'PGRST202' && summaryRpcCode !== '42883') {
+    throw summaryError
+  }
+
+  console.warn(
+    'EPISODE SALES SUMMARY RPC UNAVAILABLE; USING LEGACY READ:',
+    summaryRpcCode
+  )
+
   let query = supabase
     .from('author_earnings')
     .select(
