@@ -859,6 +859,32 @@ function groupByPurchaseMetadata(rows) {
   return map
 }
 
+async function loadEpisodePageRows(query) {
+  const rows = []
+  const batchSize = 1000
+  let start = 0
+
+  while (true) {
+    const result = await query.range(
+      start,
+      start + batchSize - 1
+    )
+
+    if (result.error) throw result.error
+
+    const batch = result.data || []
+    rows.push(...batch)
+
+    if (batch.length < batchSize) break
+    start += batchSize
+  }
+
+  return {
+    data: rows,
+    error: null,
+  }
+}
+
 export async function getAdminEpisodeSales(
   req,
   res
@@ -1111,7 +1137,7 @@ export async function getAdminEpisodeSales(
       Math.floor(numberValue(req.query.page) || 1)
     )
     const limit = Math.min(
-      100,
+      20,
       Math.max(
         1,
         Math.floor(
@@ -1150,6 +1176,50 @@ export async function getAdminEpisodeSales(
         ok: false,
         message: 'Invalid episode sales sort',
       })
+    }
+
+    const rpcResult = await supabase.rpc(
+      'get_admin_episode_sales_page_v1',
+      {
+        p_from: range.from,
+        p_to: range.to,
+        p_q: queryText,
+        p_status: status,
+        p_sort: sort,
+        p_page: page,
+        p_limit: limit,
+      }
+    )
+
+    let databasePagination = null
+    let databasePurchaseRows = null
+
+    if (!rpcResult.error) {
+      const payload = rpcResult.data
+      if (
+        !payload ||
+        !Array.isArray(payload.rows) ||
+        !payload.pagination ||
+        typeof payload.pagination !== 'object'
+      ) {
+        throw new Error(
+          'Invalid Episode Sales pagination response'
+        )
+      }
+
+      databasePagination = payload.pagination
+      databasePurchaseRows = payload.rows
+      res.set('X-Shadow-Episode-Sales-Source', 'database-rpc')
+    } else {
+      const rpcCode = String(rpcResult.error.code || '')
+      if (rpcCode !== 'PGRST202' && rpcCode !== '42883') {
+        throw rpcResult.error
+      }
+      console.warn(
+        'EPISODE SALES RPC UNAVAILABLE; USING LEGACY READ:',
+        rpcCode
+      )
+      res.set('X-Shadow-Episode-Sales-Source', 'legacy-rpc-unavailable')
     }
 
     let purchaseQuery = supabase
@@ -1255,6 +1325,16 @@ export async function getAdminEpisodeSales(
         range
       )
 
+    const scopedPurchaseKeys = databasePagination
+      ? [
+          ...new Set(
+            databasePurchaseRows
+              .map(episodeSalesRawPurchaseKey)
+              .filter(Boolean)
+          ),
+        ]
+      : []
+
     const [
       summary,
       purchaseResult,
@@ -1262,9 +1342,32 @@ export async function getAdminEpisodeSales(
       unlockTransactionResult,
     ] = await Promise.all([
       getEpisodeIncome(range),
-      purchaseQuery,
-      earningsQuery,
-      unlockTransactionQuery,
+      databasePagination
+        ? Promise.resolve({
+            data: databasePurchaseRows,
+            error: null,
+          })
+        : purchaseQuery,
+      databasePagination
+        ? scopedPurchaseKeys.length
+          ? loadEpisodePageRows(
+              earningsQuery.in(
+                'metadata->>purchase_key',
+                scopedPurchaseKeys
+              )
+            )
+          : Promise.resolve({ data: [], error: null })
+        : earningsQuery,
+      databasePagination
+        ? scopedPurchaseKeys.length
+          ? loadEpisodePageRows(
+              unlockTransactionQuery.in(
+                'metadata->>purchase_key',
+                scopedPurchaseKeys
+              )
+            )
+          : Promise.resolve({ data: [], error: null })
+        : unlockTransactionQuery,
     ])
 
     if (purchaseResult.error) {
@@ -1802,124 +1905,140 @@ export async function getAdminEpisodeSales(
       }
     )
 
-    if (status !== 'all') {
-      transactions = transactions.filter(
-        (item) =>
-          item.payout_status === status
-      )
-    }
+    if (!databasePagination) {
+      if (status !== 'all') {
+        transactions = transactions.filter(
+          (item) =>
+            item.payout_status === status
+        )
+      }
 
-    if (queryText) {
-      transactions = transactions.filter(
-        (item) => {
-          const episodeText = (
-            item.episodes || []
-          )
-            .map(
-              (episode) =>
-                `${episode.episode_number} ${episode.title}`
+      if (queryText) {
+        transactions = transactions.filter(
+          (item) => {
+            const episodeText = (
+              item.episodes || []
             )
-            .join(' ')
+              .map(
+                (episode) =>
+                  `${episode.episode_number} ${episode.title}`
+              )
+              .join(' ')
 
-          return [
-            item.purchase_key,
-            item.source_purchase_key,
-            item.buyer?.name,
-            item.buyer?.username,
-            item.buyer?.email,
-            item.story?.title,
-            item.author?.page_name,
-            item.author?.page_username,
-            item.package_key,
-            episodeText,
-          ]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase()
-            .includes(queryText)
-        }
+            return [
+              item.purchase_key,
+              item.source_purchase_key,
+              item.buyer?.name,
+              item.buyer?.username,
+              item.buyer?.email,
+              item.story?.title,
+              item.author?.page_name,
+              item.author?.page_username,
+              item.package_key,
+              episodeText,
+            ]
+              .filter(Boolean)
+              .join(' ')
+              .toLowerCase()
+              .includes(queryText)
+          }
+        )
+      }
+
+      const sortAscending =
+        sort.endsWith('_asc')
+      const sortField = sort.replace(
+        /_(asc|desc)$/,
+        ''
       )
-    }
+      const direction =
+        sortAscending ? 1 : -1
 
-    const sortAscending =
-      sort.endsWith('_asc')
-    const sortField = sort.replace(
-      /_(asc|desc)$/,
-      ''
-    )
-    const direction =
-      sortAscending ? 1 : -1
+      const sortValue = (item) => {
+        if (sortField === 'latest') {
+          const time = new Date(
+            item.created_at || 0
+          ).getTime()
 
-    const sortValue = (item) => {
-      if (sortField === 'latest') {
-        const time = new Date(
-          item.created_at || 0
+          return Number.isFinite(time)
+            ? time
+            : 0
+        }
+
+        if (sortField === 'paid_diamonds') {
+          return numberValue(
+            item.paid_diamonds
+          )
+        }
+
+        if (sortField === 'author_earnings') {
+          return numberValue(
+            item.author_earnings_usd
+          )
+        }
+
+        return numberValue(
+          item.platform_income_usd
+        )
+      }
+
+      transactions.sort((a, b) => {
+        const first = sortValue(a)
+        const second = sortValue(b)
+
+        if (first !== second) {
+          return (first - second) * direction
+        }
+
+        const firstTime = new Date(
+          a.created_at || 0
+        ).getTime()
+        const secondTime = new Date(
+          b.created_at || 0
         ).getTime()
 
-        return Number.isFinite(time)
-          ? time
-          : 0
-      }
+        if (firstTime !== secondTime) {
+          return secondTime - firstTime
+        }
 
-      if (sortField === 'paid_diamonds') {
-        return numberValue(
-          item.paid_diamonds
+        return String(
+          a.purchase_key || ''
+        ).localeCompare(
+          String(b.purchase_key || '')
         )
-      }
+      })
 
-      if (sortField === 'author_earnings') {
-        return numberValue(
-          item.author_earnings_usd
-        )
-      }
-
-      return numberValue(
-        item.platform_income_usd
-      )
     }
 
-    transactions.sort((a, b) => {
-      const first = sortValue(a)
-      const second = sortValue(b)
-
-      if (first !== second) {
-        return (first - second) * direction
-      }
-
-      const firstTime = new Date(
-        a.created_at || 0
-      ).getTime()
-      const secondTime = new Date(
-        b.created_at || 0
-      ).getTime()
-
-      if (firstTime !== secondTime) {
-        return secondTime - firstTime
-      }
-
-      return String(
-        a.purchase_key || ''
-      ).localeCompare(
-        String(b.purchase_key || '')
-      )
-    })
-
-    const total = transactions.length
-    const totalPages = Math.max(
-      1,
-      Math.ceil(total / limit)
-    )
-    const safePage = Math.min(
-      page,
-      totalPages
-    )
-    const start =
-      (safePage - 1) * limit
-    const pagedTransactions =
-      transactions.slice(
-        start,
-        start + limit
-      )
+    const total = databasePagination
+      ? numberValue(databasePagination.total)
+      : transactions.length
+    const totalPages = databasePagination
+      ? Math.max(
+          1,
+          Math.floor(
+            numberValue(databasePagination.total_pages) || 1
+          )
+        )
+      : Math.max(
+          1,
+          Math.ceil(total / limit)
+        )
+    const safePage = databasePagination
+      ? Math.max(
+          1,
+          Math.floor(
+            numberValue(databasePagination.page) || 1
+          )
+        )
+      : Math.min(page, totalPages)
+    const start = (safePage - 1) * limit
+    const pagedTransactions = databasePagination
+      ? transactions
+      : transactions.slice(
+          start,
+          start + limit
+        )
 
     return res.status(200).json({
       ok: true,
@@ -1942,10 +2061,11 @@ export async function getAdminEpisodeSales(
       transactions:
         pagedTransactions,
       truncated_source_scan:
-        purchaseRows.length >= 5000 ||
-        allEarningRows.length >= 5000 ||
-        allUnlockTransactions.length >=
-          5000,
+        !databasePagination && (
+          purchaseRows.length >= 5000 ||
+          allEarningRows.length >= 5000 ||
+          allUnlockTransactions.length >= 5000
+        ),
     })
   } catch (error) {
     console.error(
