@@ -209,7 +209,7 @@ export async function getAdminShadowMallIncome(
       )
     )
     const limit = Math.min(
-      100,
+      20,
       Math.max(
         1,
         Math.floor(
@@ -228,29 +228,105 @@ export async function getAdminShadowMallIncome(
       })
     }
 
-    let ordersQuery = supabase
-      .from('shadow_mall_orders')
-      .select('*')
-      .in('status', PAID_STATUSES)
-      .order('created_at', {
-        ascending: false,
+    if (
+      range.from &&
+      range.to &&
+      range.from >= range.to
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid date range',
       })
-      .limit(5000)
+    }
 
-    ordersQuery = applyCreatedAtRange(
-      ordersQuery,
-      range
+    const rpcResult = await supabase.rpc(
+      'get_admin_shadow_mall_income_v1',
+      {
+        p_from: range.from,
+        p_to: range.to,
+        p_q: queryText,
+        p_status: status,
+        p_page: page,
+        p_limit: limit,
+      }
     )
 
-    const {
-      data: orderRows,
-      error: ordersError,
-    } = await ordersQuery
+    let orders = []
+    let summary = null
+    let databasePagination = null
+    let fallbackTruncated = false
 
-    if (ordersError) throw ordersError
+    if (!rpcResult.error) {
+      const payload = rpcResult.data
 
-    const orders = orderRows || []
-    const summary = buildSummary(orders)
+      if (
+        !payload ||
+        !Array.isArray(payload.rows) ||
+        !payload.summary ||
+        typeof payload.summary !== 'object' ||
+        !payload.pagination ||
+        typeof payload.pagination !== 'object'
+      ) {
+        throw new Error(
+          'Invalid Shadow Mall income RPC response'
+        )
+      }
+
+      orders = payload.rows
+      summary = payload.summary
+      databasePagination = payload.pagination
+      res.set(
+        'X-Shadow-Mall-Income-Source',
+        'database-rpc'
+      )
+    } else {
+      const rpcCode = String(
+        rpcResult.error.code || ''
+      )
+
+      if (
+        rpcCode !== 'PGRST202' &&
+        rpcCode !== '42883'
+      ) {
+        throw rpcResult.error
+      }
+
+      console.warn(
+        'ADMIN SHADOW MALL RPC UNAVAILABLE; USING LEGACY READ:',
+        rpcCode
+      )
+
+      res.set(
+        'X-Shadow-Mall-Income-Source',
+        'legacy-rpc-unavailable'
+      )
+
+      let ordersQuery = supabase
+        .from('shadow_mall_orders')
+        .select('*')
+        .in('status', PAID_STATUSES)
+        .order('created_at', {
+          ascending: false,
+        })
+        .limit(5000)
+
+      ordersQuery = applyCreatedAtRange(
+        ordersQuery,
+        range
+      )
+
+      const {
+        data: orderRows,
+        error: ordersError,
+      } = await ordersQuery
+
+      if (ordersError) throw ordersError
+
+      orders = orderRows || []
+      summary = buildSummary(orders)
+      fallbackTruncated =
+        orders.length >= 5000
+    }
 
     const userIds = [
       ...new Set(
@@ -530,54 +606,73 @@ export async function getAdminShadowMallIncome(
       }
     )
 
-    if (status !== 'all') {
-      transactions = transactions.filter(
-        (item) => item.status === status
-      )
-    }
+    if (!databasePagination) {
+      if (status !== 'all') {
+        transactions = transactions.filter(
+          (item) => item.status === status
+        )
+      }
 
-    if (queryText) {
-      transactions = transactions.filter(
-        (item) => {
-          const itemText = (
-            item.items || []
-          )
-            .map(
-              (product) =>
-                `${product.title} ${product.author_name} ${product.publisher}`
+      if (queryText) {
+        transactions = transactions.filter(
+          (item) => {
+            const itemText = (
+              item.items || []
             )
-            .join(' ')
+              .map(
+                (product) =>
+                  `${product.title} ${product.author_name} ${product.publisher}`
+              )
+              .join(' ')
 
-          return [
-            item.id,
-            item.order_id,
-            item.aba_transaction_id,
-            item.buyer?.name,
-            item.buyer?.username,
-            item.buyer?.email,
-            item.buyer?.phone,
-            item.product_title,
-            item.publisher,
-            item.status,
-            itemText,
-          ]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase()
-            .includes(queryText)
-        }
-      )
+            return [
+              item.id,
+              item.order_id,
+              item.aba_transaction_id,
+              item.buyer?.name,
+              item.buyer?.username,
+              item.buyer?.email,
+              item.buyer?.phone,
+              item.product_title,
+              item.publisher,
+              item.status,
+              itemText,
+            ]
+              .filter(Boolean)
+              .join(' ')
+              .toLowerCase()
+              .includes(queryText)
+          }
+        )
+      }
+
     }
 
-    const total = transactions.length
-    const totalPages = Math.max(
-      1,
-      Math.ceil(total / limit)
-    )
-    const safePage = Math.min(
-      page,
-      totalPages
-    )
+    const total = databasePagination
+      ? numberValue(databasePagination.total)
+      : transactions.length
+    const totalPages = databasePagination
+      ? Math.max(
+          1,
+          Math.ceil(numberValue(
+            databasePagination.total_pages
+          ) || 1)
+        )
+      : Math.max(
+          1,
+          Math.ceil(total / limit)
+        )
+    const safePage = databasePagination
+      ? Math.max(
+          1,
+          Math.floor(numberValue(
+            databasePagination.page
+          ) || 1)
+        )
+      : Math.min(
+          page,
+          totalPages
+        )
     const start =
       (safePage - 1) * limit
 
@@ -598,12 +693,14 @@ export async function getAdminShadowMallIncome(
         has_next:
           safePage < totalPages,
       },
-      transactions: transactions.slice(
-        start,
-        start + limit
-      ),
+      transactions: databasePagination
+        ? transactions
+        : transactions.slice(
+            start,
+            start + limit
+          ),
       truncated_source_scan:
-        orders.length >= 5000,
+        fallbackTruncated,
     })
   } catch (error) {
     console.error(
