@@ -1,4 +1,5 @@
 const clients = new Set()
+const incomeChangeListeners = new Set()
 const HEARTBEAT_INTERVAL_MS = 25000
 
 let heartbeatTimer = null
@@ -69,6 +70,12 @@ function broadcast(eventName, payload) {
   }
 }
 
+export function subscribeAdminIncomeChanges(listener) {
+  if (typeof listener !== 'function') return () => {}
+  incomeChangeListeners.add(listener)
+  return () => incomeChangeListeners.delete(listener)
+}
+
 export function emitAdminIncomeChange(
   payload = {}
 ) {
@@ -76,15 +83,25 @@ export function emitAdminIncomeChange(
     payload.source || ''
   ).trim()
 
-  if (!source || !clients.size) return
+  if (!source) return
 
-  broadcast('income-change', {
+  const event = {
     ...payload,
     source,
     changed_at:
       payload.changed_at ||
       new Date().toISOString(),
-  })
+  }
+
+  for (const listener of incomeChangeListeners) {
+    try {
+      listener(event)
+    } catch (error) {
+      console.error('ADMIN INCOME CHANGE LISTENER ERROR:', error)
+    }
+  }
+
+  if (clients.size) broadcast('income-change', event)
 }
 
 export function streamAdminIncomeEvents(
