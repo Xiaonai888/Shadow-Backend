@@ -222,6 +222,174 @@ function buildSummary(rows) {
   }
 }
 
+function mapGiftTransactions(rows, readerMap, authorMap, storyMap) {
+  return rows.map((row) => {
+    const metadata = metadataObject(
+      row.metadata
+    )
+    const reader =
+      readerMap.get(
+        String(row.reader_id)
+      ) || null
+    const author =
+      authorMap.get(
+        String(row.author_id)
+      ) || null
+    const story =
+      storyMap.get(
+        String(row.story_id)
+      ) || null
+    const rate = numberValue(
+      row.diamond_to_usd_rate || 0.01
+    )
+    const paidDiamonds = numberValue(
+      row.paid_diamonds
+    )
+    const netPaidDiamonds = numberValue(
+      row.net_paid_diamonds
+    )
+    const authorEarnedDiamonds =
+      numberValue(
+        row.author_earned_diamonds
+      )
+    const platformEarnedDiamonds =
+      numberValue(
+        row.platform_earned_diamonds
+      )
+
+    return {
+      id: row.id,
+      created_at: row.created_at,
+      available_at: row.available_at,
+      earning_status:
+        row.earning_status || 'unknown',
+      source_type:
+        story || row.story_id
+          ? 'story'
+          : 'author_page',
+      source_label:
+        story?.title ||
+        metadata.story_title ||
+        author?.page_name ||
+        'Author Page',
+      gift_key: String(
+        metadata.gift_key || ''
+      ),
+      gift_name: String(
+        metadata.gift_name ||
+          'Diamond Gift'
+      ),
+      gift_quantity: Math.max(
+        1,
+        Math.floor(
+          numberValue(
+            metadata.gift_quantity || 1
+          )
+        )
+      ),
+      gift_support_points:
+        numberValue(
+          metadata.gift_support_points
+        ),
+      paid_diamonds: paidDiamonds,
+      original_diamonds:
+        numberValue(
+          row.original_diamonds
+        ),
+      net_paid_diamonds:
+        netPaidDiamonds,
+      diamond_to_usd_rate: rate,
+      gross_value_usd: roundMoney(
+        paidDiamonds * rate
+      ),
+      distributable_value_usd:
+        roundMoney(
+          netPaidDiamonds * rate
+        ),
+      author_earned_diamonds:
+        authorEarnedDiamonds,
+      platform_earned_diamonds:
+        platformEarnedDiamonds,
+      author_earnings_usd:
+        roundMoney(
+          authorEarnedDiamonds * rate
+        ),
+      platform_income_usd:
+        roundMoney(
+          platformEarnedDiamonds * rate
+        ),
+      author_share_percent:
+        numberValue(
+          row.author_share_percent
+        ),
+      share_source:
+        row.share_source || '',
+      withholding_usd:
+        roundMoney(
+          row.withholding_amount_usd
+        ),
+      author_net_payout_usd:
+        roundMoney(
+          row.author_net_payout_usd
+        ),
+      buyer: reader
+        ? {
+            id: reader.id,
+            name: reader.name || '',
+            username:
+              reader.username || '',
+            email: reader.email || '',
+            avatar_url:
+              reader.avatar_url || '',
+          }
+        : {
+            id: row.reader_id || null,
+            name:
+              metadata.reader_name || '',
+            username:
+              metadata.reader_username ||
+              '',
+            email: '',
+            avatar_url:
+              metadata.reader_avatar_url ||
+              '',
+          },
+      author: author
+        ? {
+            id: author.id,
+            user_id:
+              author.user_id || null,
+            page_name:
+              author.page_name || '',
+            page_username:
+              author.page_username || '',
+            page_slug:
+              author.page_slug || '',
+          }
+        : {
+            id: row.author_id || null,
+            user_id:
+              row.author_user_id || null,
+            page_name: '',
+            page_username: '',
+            page_slug: '',
+          },
+      story: story
+        ? {
+            id: story.id,
+            title: story.title || '',
+          }
+        : row.story_id
+          ? {
+              id: row.story_id,
+              title:
+                metadata.story_title || '',
+            }
+          : null,
+    }
+  })
+}
+
 export async function getAdminDiamondGifts(
   req,
   res
@@ -245,7 +413,7 @@ export async function getAdminDiamondGifts(
       )
     )
     const limit = Math.min(
-      100,
+      20,
       Math.max(
         1,
         Math.floor(
@@ -268,6 +436,77 @@ export async function getAdminDiamondGifts(
         message: 'Invalid payout status',
       })
     }
+
+    const rpcResult = await supabase.rpc('get_admin_diamond_gifts_page_v1', {
+      p_from: range.from,
+      p_to: range.to,
+      p_q: queryText,
+      p_status: status,
+      p_page: page,
+      p_limit: limit,
+    })
+
+    if (!rpcResult.error) {
+      const payload = rpcResult.data
+      const requiredSummaryFields = [
+        'gross_sales_usd',
+        'distributable_revenue_usd',
+        'platform_income_usd',
+        'author_earnings_usd',
+        'author_net_payout_usd',
+        'withholding_usd',
+        'pending_payout_usd',
+        'paid_payout_usd',
+        'gift_transaction_count',
+        'total_gift_diamonds',
+      ]
+
+      if (
+        !payload ||
+        !Array.isArray(payload.rows) ||
+        !payload.summary ||
+        !payload.pagination ||
+        !requiredSummaryFields.every((field) =>
+          payload.summary[field] != null &&
+          Number.isFinite(Number(payload.summary[field]))
+        ) ||
+        !Number.isSafeInteger(Number(payload.pagination.total)) ||
+        !Number.isSafeInteger(Number(payload.pagination.page)) ||
+        !Number.isSafeInteger(Number(payload.pagination.total_pages)) ||
+        Number(payload.pagination.limit) !== limit ||
+        payload.rows.length > limit
+      ) {
+        throw new Error('Invalid diamond gifts pagination response')
+      }
+
+      const rows = payload.rows
+      const readerMap = mapById(rows.map((row) => row.buyer))
+      const authorMap = mapById(rows.map((row) => row.author))
+      const storyMap = mapById(rows.map((row) => row.story))
+      const transactions = mapGiftTransactions(rows, readerMap, authorMap, storyMap)
+
+      res.set('X-Shadow-Diamond-Gifts-Source', 'database-rpc')
+      return res.status(200).json({
+        ok: true,
+        range,
+        filters: {
+          q: queryText,
+          status,
+        },
+        summary: payload.summary,
+        pagination: payload.pagination,
+        transactions,
+        truncated_source_scan: false,
+      })
+    }
+
+    const rpcCode = String(rpcResult.error.code || '')
+    if (rpcCode !== 'PGRST202' && rpcCode !== '42883') {
+      throw rpcResult.error
+    }
+
+    console.warn('ADMIN DIAMOND GIFTS RPC UNAVAILABLE; USING LEGACY READ:', rpcCode)
+    res.set('X-Shadow-Diamond-Gifts-Source', 'legacy-rpc-unavailable')
 
     let earningsQuery = supabase
       .from('author_earnings')
@@ -402,171 +641,7 @@ export async function getAdminDiamondGifts(
       storiesResult.data
     )
 
-    let transactions = rows.map((row) => {
-      const metadata = metadataObject(
-        row.metadata
-      )
-      const reader =
-        readerMap.get(
-          String(row.reader_id)
-        ) || null
-      const author =
-        authorMap.get(
-          String(row.author_id)
-        ) || null
-      const story =
-        storyMap.get(
-          String(row.story_id)
-        ) || null
-      const rate = numberValue(
-        row.diamond_to_usd_rate || 0.01
-      )
-      const paidDiamonds = numberValue(
-        row.paid_diamonds
-      )
-      const netPaidDiamonds = numberValue(
-        row.net_paid_diamonds
-      )
-      const authorEarnedDiamonds =
-        numberValue(
-          row.author_earned_diamonds
-        )
-      const platformEarnedDiamonds =
-        numberValue(
-          row.platform_earned_diamonds
-        )
-
-      return {
-        id: row.id,
-        created_at: row.created_at,
-        available_at: row.available_at,
-        earning_status:
-          row.earning_status || 'unknown',
-        source_type:
-          story || row.story_id
-            ? 'story'
-            : 'author_page',
-        source_label:
-          story?.title ||
-          metadata.story_title ||
-          author?.page_name ||
-          'Author Page',
-        gift_key: String(
-          metadata.gift_key || ''
-        ),
-        gift_name: String(
-          metadata.gift_name ||
-            'Diamond Gift'
-        ),
-        gift_quantity: Math.max(
-          1,
-          Math.floor(
-            numberValue(
-              metadata.gift_quantity || 1
-            )
-          )
-        ),
-        gift_support_points:
-          numberValue(
-            metadata.gift_support_points
-          ),
-        paid_diamonds: paidDiamonds,
-        original_diamonds:
-          numberValue(
-            row.original_diamonds
-          ),
-        net_paid_diamonds:
-          netPaidDiamonds,
-        diamond_to_usd_rate: rate,
-        gross_value_usd: roundMoney(
-          paidDiamonds * rate
-        ),
-        distributable_value_usd:
-          roundMoney(
-            netPaidDiamonds * rate
-          ),
-        author_earned_diamonds:
-          authorEarnedDiamonds,
-        platform_earned_diamonds:
-          platformEarnedDiamonds,
-        author_earnings_usd:
-          roundMoney(
-            authorEarnedDiamonds * rate
-          ),
-        platform_income_usd:
-          roundMoney(
-            platformEarnedDiamonds * rate
-          ),
-        author_share_percent:
-          numberValue(
-            row.author_share_percent
-          ),
-        share_source:
-          row.share_source || '',
-        withholding_usd:
-          roundMoney(
-            row.withholding_amount_usd
-          ),
-        author_net_payout_usd:
-          roundMoney(
-            row.author_net_payout_usd
-          ),
-        buyer: reader
-          ? {
-              id: reader.id,
-              name: reader.name || '',
-              username:
-                reader.username || '',
-              email: reader.email || '',
-              avatar_url:
-                reader.avatar_url || '',
-            }
-          : {
-              id: row.reader_id || null,
-              name:
-                metadata.reader_name || '',
-              username:
-                metadata.reader_username ||
-                '',
-              email: '',
-              avatar_url:
-                metadata.reader_avatar_url ||
-                '',
-            },
-        author: author
-          ? {
-              id: author.id,
-              user_id:
-                author.user_id || null,
-              page_name:
-                author.page_name || '',
-              page_username:
-                author.page_username || '',
-              page_slug:
-                author.page_slug || '',
-            }
-          : {
-              id: row.author_id || null,
-              user_id:
-                row.author_user_id || null,
-              page_name: '',
-              page_username: '',
-              page_slug: '',
-            },
-        story: story
-          ? {
-              id: story.id,
-              title: story.title || '',
-            }
-          : row.story_id
-            ? {
-                id: row.story_id,
-                title:
-                  metadata.story_title || '',
-              }
-            : null,
-      }
-    })
+    let transactions = mapGiftTransactions(rows, readerMap, authorMap, storyMap)
 
     if (status !== 'all') {
       transactions = transactions.filter(
@@ -644,8 +719,9 @@ export async function getAdminDiamondGifts(
       .json({
         ok: false,
         message:
-          error.message ||
-          'Failed to load diamond gifts',
+          error.statusCode === 400
+            ? error.message
+            : 'Failed to load diamond gifts',
       })
   }
 }
