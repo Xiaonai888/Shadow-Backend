@@ -1077,7 +1077,7 @@ async function getUnlockStatusPayload({
   const gemLimits = await getGemLimitStatus({
     userId,
     storyId,
-    tier,
+    tier: tier === 'premium' ? 'standard' : tier,
     rules,
   })
 
