@@ -278,6 +278,14 @@ export async function sendStoryGift(req, res) {
       })
     }
 
+    if (['diamond', 'diamonds'].includes(String(gift.currency || '').toLowerCase())) {
+      emitAdminIncomeChange({
+        source: 'diamond_gifts',
+        action: 'gift_sent',
+        gift_id: gift.id,
+      })
+    }
+
     const [story, reader] = await Promise.all([
       getStoryContextSafely(storyId),
       getReaderProfileSafely(userId),
@@ -350,14 +358,6 @@ export async function sendStoryGift(req, res) {
     console.error('SEND STORY GIFT ERROR:', error)
 
     const mapped = mapGiftError(error)
-
-    if (['diamond', 'diamonds'].includes(String(gift.currency || '').toLowerCase())) {
-  emitAdminIncomeChange({
-    source: 'diamond_gifts',
-    action: 'gift_sent',
-    gift_id: gift.id,
-  })
-}
 
     return res.status(mapped.status).json({
       ok: false,
