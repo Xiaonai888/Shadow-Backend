@@ -271,7 +271,7 @@ export async function getAdminAuthorPageIncome(
       )
     )
     const limit = Math.min(
-      100,
+      20,
       Math.max(
         1,
         Math.floor(
@@ -289,124 +289,180 @@ export async function getAdminAuthorPageIncome(
       })
     }
 
-    let ordersQuery = supabase
-      .from('author_store_orders')
-      .select(
-        '*, items:author_store_order_items(*)'
-      )
-      .eq('payment_status', 'paid')
-      .order('created_at', {
-        ascending: false,
+    if (range.from && range.to && range.from >= range.to) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid date range',
       })
-      .limit(5000)
+    }
 
-    ordersQuery = applyCreatedAtRange(
-      ordersQuery,
-      range
-    )
+    const rpcResult = await supabase.rpc('get_admin_author_page_income_v1', {
+      p_from: range.from,
+      p_to: range.to,
+      p_q: queryText,
+      p_type: type,
+      p_page: page,
+      p_limit: limit,
+    })
 
-    let withdrawalsQuery = supabase
-      .from(
-        'author_store_withdrawal_requests'
-      )
-      .select(
-        'id, amount_usd, paid_amount_usd, status, deleted_at, created_at'
-      )
-      .is('deleted_at', null)
-      .limit(5000)
+    let orders
+    let summary
+    let buyerMap
+    let authorMap
+    let serverPagination = null
+    let fallbackTruncated = false
 
-    withdrawalsQuery =
-      applyCreatedAtRange(
-        withdrawalsQuery,
+    if (!rpcResult.error) {
+      const payload = rpcResult.data
+      if (
+        !payload ||
+        !Array.isArray(payload.rows) ||
+        !payload.summary ||
+        typeof payload.summary !== 'object' ||
+        !payload.pagination ||
+        typeof payload.pagination !== 'object' ||
+        !Number.isFinite(Number(payload.pagination.total)) ||
+        !Number.isFinite(Number(payload.pagination.page)) ||
+        !Number.isFinite(Number(payload.pagination.total_pages))
+      ) {
+        throw new Error('Invalid Author Page income pagination response')
+      }
+
+      orders = payload.rows
+      summary = payload.summary
+      serverPagination = payload.pagination
+      buyerMap = mapById(orders.map((order) => order.buyer).filter(Boolean))
+      authorMap = mapById(orders.map((order) => order.author).filter(Boolean))
+      res.set('X-Shadow-Author-Page-Income-Source', 'database-rpc')
+    } else {
+      const code = String(rpcResult.error.code || '')
+      if (code !== 'PGRST202' && code !== '42883') {
+        throw rpcResult.error
+      }
+
+      console.warn('ADMIN AUTHOR PAGE INCOME RPC UNAVAILABLE; USING LEGACY READ:', code)
+      res.set('X-Shadow-Author-Page-Income-Source', 'legacy-rpc-unavailable')
+      let ordersQuery = supabase
+        .from('author_store_orders')
+        .select(
+          '*, items:author_store_order_items(*)'
+        )
+        .eq('payment_status', 'paid')
+        .order('created_at', {
+          ascending: false,
+        })
+        .limit(5000)
+
+      ordersQuery = applyCreatedAtRange(
+        ordersQuery,
         range
       )
 
-    const [
-      ordersResult,
-      withdrawalsResult,
-    ] = await Promise.all([
-      ordersQuery,
-      withdrawalsQuery,
-    ])
+      let withdrawalsQuery = supabase
+        .from(
+          'author_store_withdrawal_requests'
+        )
+        .select(
+          'id, amount_usd, paid_amount_usd, status, deleted_at, created_at'
+        )
+        .is('deleted_at', null)
+        .limit(5000)
 
-    if (ordersResult.error) {
-      throw ordersResult.error
-    }
+      withdrawalsQuery =
+        applyCreatedAtRange(
+          withdrawalsQuery,
+          range
+        )
 
-    if (withdrawalsResult.error) {
-      throw withdrawalsResult.error
-    }
+      const [
+        ordersResult,
+        withdrawalsResult,
+      ] = await Promise.all([
+        ordersQuery,
+        withdrawalsQuery,
+      ])
 
-    const orders = ordersResult.data || []
-    const withdrawals =
-      withdrawalsResult.data || []
+      if (ordersResult.error) {
+        throw ordersResult.error
+      }
 
-    const summary = buildSummary(
-      orders,
-      withdrawals
-    )
+      if (withdrawalsResult.error) {
+        throw withdrawalsResult.error
+      }
 
-    const buyerIds = [
-      ...new Set(
-        orders
-          .map((order) => order.buyer_id)
-          .filter(Boolean)
-      ),
-    ]
+      orders = ordersResult.data || []
+      const withdrawals =
+        withdrawalsResult.data || []
 
-    const authorPageIds = [
-      ...new Set(
-        orders
-          .map(
-            (order) =>
-              order.author_page_id
-          )
-          .filter(Boolean)
-      ),
-    ]
+      summary = buildSummary(
+        orders,
+        withdrawals
+      )
 
-    const [
-      buyersResult,
-      authorsResult,
-    ] = await Promise.all([
-      buyerIds.length
-        ? supabase
-            .from('users')
-            .select(
-              'id, name, username, email, avatar_url'
+      const buyerIds = [
+        ...new Set(
+          orders
+            .map((order) => order.buyer_id)
+            .filter(Boolean)
+        ),
+      ]
+
+      const authorPageIds = [
+        ...new Set(
+          orders
+            .map(
+              (order) =>
+                order.author_page_id
             )
-            .in('id', buyerIds)
-        : Promise.resolve({
-            data: [],
-            error: null,
-          }),
-      authorPageIds.length
-        ? supabase
-            .from('author_pages')
-            .select(
-              'id, user_id, page_name, page_username, page_slug, avatar_url'
-            )
-            .in('id', authorPageIds)
-        : Promise.resolve({
-            data: [],
-            error: null,
-          }),
-    ])
+            .filter(Boolean)
+        ),
+      ]
 
-    if (buyersResult.error) {
-      throw buyersResult.error
+      const [
+        buyersResult,
+        authorsResult,
+      ] = await Promise.all([
+        buyerIds.length
+          ? supabase
+              .from('users')
+              .select(
+                'id, name, username, email, avatar_url'
+              )
+              .in('id', buyerIds)
+          : Promise.resolve({
+              data: [],
+              error: null,
+            }),
+        authorPageIds.length
+          ? supabase
+              .from('author_pages')
+              .select(
+                'id, user_id, page_name, page_username, page_slug, avatar_url'
+              )
+              .in('id', authorPageIds)
+          : Promise.resolve({
+              data: [],
+              error: null,
+            }),
+      ])
+
+      if (buyersResult.error) {
+        throw buyersResult.error
+      }
+
+      if (authorsResult.error) {
+        throw authorsResult.error
+      }
+
+      buyerMap = mapById(
+        buyersResult.data
+      )
+      authorMap = mapById(
+        authorsResult.data
+      )
+
+      fallbackTruncated = orders.length >= 5000 || withdrawals.length >= 5000
     }
-
-    if (authorsResult.error) {
-      throw authorsResult.error
-    }
-
-    const buyerMap = mapById(
-      buyersResult.data
-    )
-    const authorMap = mapById(
-      authorsResult.data
-    )
 
     let transactions = orders.map(
       (order) => {
@@ -573,59 +629,59 @@ export async function getAdminAuthorPageIncome(
       }
     )
 
-    if (type !== 'all') {
-      transactions = transactions.filter(
-        (item) =>
-          item.order_type === type
-      )
-    }
+    if (!serverPagination) {
+      if (type !== 'all') {
+        transactions = transactions.filter(
+          (item) =>
+            item.order_type === type
+        )
+      }
 
-    if (queryText) {
-      transactions = transactions.filter(
-        (item) => {
-          const itemText = (
-            item.items || []
-          )
-            .map(
-              (product) =>
-                `${product.title} ${product.product_type}`
+      if (queryText) {
+        transactions = transactions.filter(
+          (item) => {
+            const itemText = (
+              item.items || []
             )
-            .join(' ')
+              .map(
+                (product) =>
+                  `${product.title} ${product.product_type}`
+              )
+              .join(' ')
 
-          return [
-            item.id,
-            item.order_id,
-            item.aba_transaction_id,
-            item.buyer?.name,
-            item.buyer?.username,
-            item.buyer?.email,
-            item.author?.page_name,
-            item.author?.page_username,
-            item.product_title,
-            item.order_type,
-            item.order_status,
-            item.payment_status,
-            itemText,
-          ]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase()
-            .includes(queryText)
-        }
-      )
+            return [
+              item.id,
+              item.order_id,
+              item.aba_transaction_id,
+              item.buyer?.name,
+              item.buyer?.username,
+              item.buyer?.email,
+              item.author?.page_name,
+              item.author?.page_username,
+              item.product_title,
+              item.order_type,
+              item.order_status,
+              item.payment_status,
+              itemText,
+            ]
+              .filter(Boolean)
+              .join(' ')
+              .toLowerCase()
+              .includes(queryText)
+          }
+        )
+      }
     }
 
-    const total = transactions.length
+    const total = serverPagination ? Number(serverPagination.total) : transactions.length
     const totalPages = Math.max(
       1,
       Math.ceil(total / limit)
     )
-    const safePage = Math.min(
-      page,
-      totalPages
-    )
-    const start =
-      (safePage - 1) * limit
+    const safePage = serverPagination
+      ? Number(serverPagination.page)
+      : Math.min(page, totalPages)
+    const start = serverPagination ? 0 : (safePage - 1) * limit
 
     return res.status(200).json({
       ok: true,
@@ -635,7 +691,7 @@ export async function getAdminAuthorPageIncome(
         type,
       },
       summary,
-      pagination: {
+      pagination: serverPagination || {
         page: safePage,
         limit,
         total,
@@ -644,13 +700,10 @@ export async function getAdminAuthorPageIncome(
         has_next:
           safePage < totalPages,
       },
-      transactions: transactions.slice(
-        start,
-        start + limit
-      ),
-      truncated_source_scan:
-        orders.length >= 5000 ||
-        withdrawals.length >= 5000,
+      transactions: serverPagination
+        ? transactions
+        : transactions.slice(start, start + limit),
+      truncated_source_scan: fallbackTruncated,
     })
   } catch (error) {
     console.error(
