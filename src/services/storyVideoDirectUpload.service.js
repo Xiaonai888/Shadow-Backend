@@ -135,30 +135,38 @@ function getAmzDate(date = new Date()) {
   return date.toISOString().replace(/[:-]|\.\d{3}/g, '')
 }
 
-export function createPresignedPutUrl(objectKey, mimeType, expiresInSeconds = PRESIGNED_URL_TTL_SECONDS) {
+export function createPresignedPutUrl(objectKey, mimeType, expiresInSeconds = PRESIGNED_URL_TTL_SECONDS, contentLength = null) {
+  if (contentLength !== null && (!Number.isSafeInteger(contentLength) || contentLength <= 0)) {
+    throw new Error('Invalid upload content length')
+  }
   const config = getR2Config()
   const amzDate = getAmzDate()
   const dateStamp = amzDate.slice(0, 8)
   const credentialScope = `${dateStamp}/auto/s3/aws4_request`
   const canonicalUri = `/${encodePath(config.bucket)}/${encodePath(objectKey)}`
+  const signedHeaders = contentLength === null
+    ? 'content-type;host'
+    : 'content-length;content-type;host'
   const query = {
     'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
     'X-Amz-Credential': `${config.accessKeyId}/${credentialScope}`,
     'X-Amz-Date': amzDate,
     'X-Amz-Expires': String(expiresInSeconds),
-    'X-Amz-SignedHeaders': 'content-type;host',
+    'X-Amz-SignedHeaders': signedHeaders,
   }
   const canonicalQuery = Object.entries(query)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => `${encodeRfc3986(key)}=${encodeRfc3986(value)}`)
     .join('&')
-  const canonicalHeaders = `content-type:${mimeType}\nhost:${config.host}\n`
+  const canonicalHeaders = contentLength === null
+    ? `content-type:${mimeType}\nhost:${config.host}\n`
+    : `content-length:${contentLength}\ncontent-type:${mimeType}\nhost:${config.host}\n`
   const canonicalRequest = [
     'PUT',
     canonicalUri,
     canonicalQuery,
     canonicalHeaders,
-    'content-type;host',
+    signedHeaders,
     'UNSIGNED-PAYLOAD',
   ].join('\n')
   const stringToSign = [
