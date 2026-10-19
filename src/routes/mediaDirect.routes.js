@@ -234,7 +234,7 @@ async function initiate(req, res, role) {
   }
   enforceRate(owner, role, category)
   const key = `media-direct-temp/${role}/${owner}/${Date.now()}-${randomUUID()}.${extension}`
-  const uploadUrl = createPresignedPutUrl(key, mimeType, SIGNED_URL_SECONDS)
+  const uploadUrl = createPresignedPutUrl(key, mimeType, SIGNED_URL_SECONDS, fileSize)
   const uploadToken = jwt.sign({
     v: 1,
     owner,
