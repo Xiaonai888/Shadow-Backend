@@ -120,6 +120,7 @@ import { backendOriginAudit } from './src/middleware/backendOriginAudit.middlewa
 import adminDeviceOfflineRoutes from './src/routes/adminDeviceOffline.routes.js'
 import readerOfflineControlRoutes from './src/routes/readerOfflineControl.routes.js'
 import storyEpisodePushWakeRoutes from './src/routes/storyEpisodePushWake.routes.js'
+import mediaDirectRoutes from './src/routes/mediaDirect.routes.js'
 
 dotenv.config()
 
@@ -880,6 +881,7 @@ app.use('/api/admin/apps', adminAppSettingsRoutes)
 app.use('/api/admin/work', adminWorkRoutes)
 app.use('/api/admin/system-control', adminSystemControlRoutes)
 app.use('/api/story-episode-push', storyEpisodePushWakeRoutes)
+app.use('/api/media-direct', mediaUploadRouteSpamGuard, mediaDirectRoutes)
 app.use((req, res) => {
   res.status(404).json({ ok: false, message: 'Route not found' })
 })
