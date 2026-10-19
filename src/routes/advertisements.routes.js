@@ -33,6 +33,7 @@ import {
   updateLegacyRotatingAdvertisement,
 } from '../controllers/adRotation.controller.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
+import { saveAdminAdvertisementBatch } from '../controllers/advertisementBatch.controller.js'
 
 const router = express.Router()
 const publicAdvertisementRateLimit = createRateLimit({
@@ -120,6 +121,7 @@ function updateAdvertisementHandler(req, res, next) {
 router.get('/public', publicAdvertisementRateLimit, getPublicAdvertisementHandler)
 router.get('/admin', requireAdmin, getAdminAdvertisements)
 router.get('/admin/logs', requireAdmin, getAdminAdvertisementLogs)
+router.post('/admin/batch/:placement', requireAdmin, saveAdminAdvertisementBatch)
 
 router.get('/admin/opening-rotation', requireAdmin, cacheAdminAdvertisementResponse, getAdminOpeningRotation)
 router.put('/admin/opening-rotation/settings', requireAdmin, updateAdminOpeningRotationSettings)
