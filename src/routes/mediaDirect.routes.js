@@ -35,6 +35,7 @@ const CATEGORIES = Object.freeze({
   story_cover: { scope: 'author', folder: 'story-covers', maxBytes: 5 * MB },
   story_landscape_thumbnail: { scope: 'author', folder: 'story-landscape-thumbnails', maxBytes: 5 * MB },
   story_slide: { scope: 'author', folder: 'story-slides', maxBytes: 5 * MB },
+  episode_cover: { scope: 'author', folder: 'episode-covers', maxBytes: 5 * MB },
   episode_content: { scope: 'author', folder: 'episode-content', maxBytes: 5 * MB },
   chat_story_character: { scope: 'author', folder: 'chat-story/characters', maxBytes: 2 * MB },
   chat_story_episode: { scope: 'author', folder: 'chat-story/episodes', maxBytes: 5 * MB },
