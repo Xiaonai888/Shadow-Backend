@@ -73,6 +73,10 @@ function mapGiftError(error) {
     return { status: 400, message: 'Not enough diamonds.' }
   }
 
+  if (message.includes('RATE_LIMITED')) {
+    return { status: 429, message: 'Too many gifts. Please try again later.' }
+  }
+
   if (message.includes('GIFT_REQUEST_ID_CONFLICT')) {
     return { status: 409, message: 'This gift request ID was used for a different gift. Please contact support.' }
   }
@@ -241,6 +245,36 @@ export async function sendStoryGift(req, res) {
       return res.status(400).json({
         ok: false,
         message: 'A valid gift request ID is required. Refresh the reader page.',
+      })
+    }
+
+    const { data: giftLimit, error: giftLimitError } = await supabase.rpc(
+      'consume_story_gift_rate_limit',
+      { p_user_id: userId, p_request_id: requestId }
+    )
+
+    if (giftLimitError) {
+      console.error('SEND_STORY_GIFT_LIMIT_ERROR', {
+        code: giftLimitError.code,
+        message: giftLimitError.message,
+      })
+      return res.status(503).json({
+        ok: false,
+        message: 'Gift service is temporarily unavailable. Please try again later.',
+      })
+    }
+
+    if (giftLimit === 'RATE_LIMITED') {
+      return res.status(429).json({
+        ok: false,
+        message: 'Too many gifts. Please try again later.',
+      })
+    }
+
+    if (giftLimit !== 'ALLOW') {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid gift request.',
       })
     }
 
