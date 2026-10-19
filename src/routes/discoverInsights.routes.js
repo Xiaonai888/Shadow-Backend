@@ -3,6 +3,8 @@ import jwt from 'jsonwebtoken'
 import { createHmac } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
+import { requireAdmin } from '../middleware/auth.middleware.js'
+import { getAdminDiscoverInsightsDaily } from '../controllers/adminDiscoverInsights.controller.js'
 
 const router = express.Router()
 const genderCache = new Map()
@@ -108,5 +110,7 @@ router.post('/events', rateLimit, async (req, res) => {
     return res.status(500).json({ ok: false, message: 'Could not record analytics event' })
   }
 })
+
+router.get('/admin/daily', requireAdmin, getAdminDiscoverInsightsDaily)
 
 export default router
