@@ -308,6 +308,12 @@ export function evaluateHeavyJobAdmission({
     costMb +
     reserveMb
 
+    const storyImageMayRecover =
+    jobType === 'story_image_pipeline' &&
+    snapshot.container_total_mb < PROTECT_TOTAL_MB &&
+    !snapshot.active_manga_upload &&
+    projectedMb < snapshot.container_limit_mb
+
 
   let allowed = true
   let reason = 'safe'
