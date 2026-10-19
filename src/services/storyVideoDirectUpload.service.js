@@ -135,7 +135,7 @@ function getAmzDate(date = new Date()) {
   return date.toISOString().replace(/[:-]|\.\d{3}/g, '')
 }
 
-function createPresignedPutUrl(objectKey, mimeType, expiresInSeconds = PRESIGNED_URL_TTL_SECONDS) {
+export function createPresignedPutUrl(objectKey, mimeType, expiresInSeconds = PRESIGNED_URL_TTL_SECONDS) {
   const config = getR2Config()
   const amzDate = getAmzDate()
   const dateStamp = amzDate.slice(0, 8)
