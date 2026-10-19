@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 import { recordAuthorGiftSafely } from '../services/authorGiftLedger.service.js'
+import { emitAdminIncomeChange } from '../services/adminIncomeEvents.service.js'
 
 function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
@@ -349,6 +350,14 @@ export async function sendStoryGift(req, res) {
     console.error('SEND STORY GIFT ERROR:', error)
 
     const mapped = mapGiftError(error)
+
+    if (['diamond', 'diamonds'].includes(String(gift.currency || '').toLowerCase())) {
+  emitAdminIncomeChange({
+    source: 'diamond_gifts',
+    action: 'gift_sent',
+    gift_id: gift.id,
+  })
+}
 
     return res.status(mapped.status).json({
       ok: false,
