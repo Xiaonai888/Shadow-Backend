@@ -69,7 +69,7 @@ async function readAuthorPreference({ appId, apiKey, authorUserId, type }) {
 
   const tags = user?.properties?.tags || {}
   const masterEnabled = String(tags[AUTHOR_TAG] || '').trim().toLowerCase() === 'true'
-  const typeEnabled = String(tags[AUTHOR_TYPE_TAGS[type]] || '').trim().toLowerCase() !== 'false'
+  const typeEnabled = String(tags[AUTHOR_TYPE_TAGS[type]] || '').trim().toLowerCase() === 'true'
   return masterEnabled && typeEnabled
 }
 
