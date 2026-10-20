@@ -130,6 +130,12 @@ async function sendBatch(batch, appId, apiKey) {
   }
 
   const { story, episode } = current
+  try {
+    const { error } = await supabase.rpc('record_story_episode_notification_batch', { p_batch_id: batch.id })
+    if (error) throw error
+  } catch (error) {
+    console.error('RECORD STORY EPISODE UPDATES ERROR:', error?.message || error)
+  }
   const link = `https://www.shadowerabook.site/story/${encodeURIComponent(job.story_id)}/episode/${encodeURIComponent(job.episode_id)}`
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 15000)
