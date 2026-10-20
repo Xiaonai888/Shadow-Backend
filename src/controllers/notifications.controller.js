@@ -5,11 +5,28 @@ function normalizeType(value) {
   return ['community', 'announcements'].includes(type) ? type : 'announcements'
 }
 
+const EPISODE_UPDATE_REFERENCE_PREFIX = 'episode-update:'
+
+function isEpisodeUpdate(item) {
+  return item?.type === 'announcements' && String(item?.reference_id || '').startsWith(EPISODE_UPDATE_REFERENCE_PREFIX)
+}
+
+function applyNotificationFilter(query, type) {
+  if (type === 'updates') {
+    return query.eq('type', 'announcements').like('reference_id', `${EPISODE_UPDATE_REFERENCE_PREFIX}%`)
+  }
+  if (type === 'announcements') {
+    return query.eq('type', 'announcements').or(`reference_id.is.null,reference_id.not.like.${EPISODE_UPDATE_REFERENCE_PREFIX}%`)
+  }
+  if (type === 'community') return query.eq('type', 'community')
+  return query
+}
+
 function publicNotification(item) {
   return {
     id: item.id,
     user_id: item.user_id,
-    type: item.type,
+    type: isEpisodeUpdate(item) ? 'updates' : item.type,
     title: item.title,
     message: item.message,
     image_url: item.image_url || '',
@@ -74,7 +91,7 @@ async function countNotifications(userId, { type = '', unreadOnly = false } = {}
   }
 
   if (type) {
-    query = query.eq('type', type)
+    query = applyNotificationFilter(query, type)
   }
 
   const { count, error } = await query
@@ -85,10 +102,11 @@ async function countNotifications(userId, { type = '', unreadOnly = false } = {}
 }
 
 async function getNotificationCounts(userId) {
-  const [all, unread, community, announcements] = await Promise.all([
+  const [all, unread, community, updates, announcements] = await Promise.all([
     countNotifications(userId),
     countNotifications(userId, { unreadOnly: true }),
     countNotifications(userId, { type: 'community', unreadOnly: true }),
+    countNotifications(userId, { type: 'updates', unreadOnly: true }),
     countNotifications(userId, { type: 'announcements', unreadOnly: true }),
   ])
 
@@ -96,6 +114,7 @@ async function getNotificationCounts(userId) {
     all,
     unread,
     community,
+    updates,
     announcements,
   }
 }
@@ -104,7 +123,7 @@ export async function getMyNotifications(req, res) {
   try {
     const userId = req.user?.user_id
     const requestedType = String(req.query.type || 'all').trim().toLowerCase()
-    const type = ['all', 'unread', 'community', 'announcements'].includes(requestedType)
+    const type = ['all', 'unread', 'community', 'updates', 'announcements'].includes(requestedType)
       ? requestedType
       : 'all'
     const page = parsePositiveInteger(req.query.page, 1)
@@ -131,8 +150,8 @@ export async function getMyNotifications(req, res) {
 
     if (type === 'unread') {
       query = query.eq('is_read', false)
-    } else if (type === 'community' || type === 'announcements') {
-      query = query.eq('type', type)
+    } else if (type === 'community' || type === 'updates' || type === 'announcements') {
+      query = applyNotificationFilter(query, type)
     }
 
     const { data, error, count } = await query
