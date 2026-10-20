@@ -140,6 +140,14 @@ import {
   unblockReaderAuthorPage,
 } from '../controllers/readerAuthorPageBlocks.controller.js'
 import { getAuthorPageTransparency } from '../controllers/authorPageTransparency.controller.js'
+import {
+  createAuthorPagePhotoComment,
+  deleteAuthorPagePhotoComment,
+  getAuthorPagePhotoComments,
+  getAuthorPagePhotoSummary,
+  setAuthorPagePhotoReaction,
+  updateAuthorPagePhotoComment,
+} from '../controllers/authorPagePhotoInteractions.controller.js'
 const router = express.Router()
 
 function invalidateMyAuthorPageAfterMutation(
@@ -265,6 +273,12 @@ router.delete('/page/:pageUsername/reviews/me', requireUser, deleteMyAuthorPageR
 router.get('/page/:pageUsername/block-status', requireUser, getReaderAuthorPageBlockStatus)
 router.post('/page/:pageUsername/block', requireUser, blockReaderAuthorPage)
 router.delete('/page/:pageUsername/block', requireUser, unblockReaderAuthorPage)
+router.get('/page/:pageUsername/photos/:photoKind/summary', getAuthorPagePhotoSummary)
+router.post('/page/:pageUsername/photos/:photoKind/react', requireUser, setAuthorPagePhotoReaction)
+router.get('/page/:pageUsername/photos/:photoKind/comments', getAuthorPagePhotoComments)
+router.post('/page/:pageUsername/photos/:photoKind/comments', requireUser, createAuthorPagePhotoComment)
+router.patch('/page/:pageUsername/photos/:photoKind/comments/:commentId', requireUser, updateAuthorPagePhotoComment)
+router.delete('/page/:pageUsername/photos/:photoKind/comments/:commentId', requireUser, deleteAuthorPagePhotoComment)
 router.get('/page/:pageUsername', getPublicAuthorPage)
 router.post(
   '/page/:pageUsername/follow',
