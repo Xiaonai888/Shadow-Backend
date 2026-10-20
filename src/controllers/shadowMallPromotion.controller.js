@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { assertR2MediaReference } from '../services/mediaStoragePolicy.service.js'
 import { invalidateShadowMallPromotionsCache } from '../services/shadowMallPromotionsResponseCache.service.js'
 import {
   deleteR2ObjectByUrl,
@@ -251,6 +252,26 @@ async function getNextDisplayOrder() {
   return Number(data?.display_order || 0) + 1
 }
 
+function getDirectPromotionImageUrl(value, field) {
+  const input = String(value || '').trim()
+  if (!input) return ''
+
+  const url = assertR2MediaReference(input, {
+    field,
+    allowEmpty: false,
+  })
+  const publicBase = String(process.env.R2_PUBLIC_URL || '').trim().replace(/\/+$/, '')
+  const key = url.slice(publicBase.length + 1)
+
+  if (!/^shadow-mall\/media\/[a-zA-Z0-9_-]{4,128}\/[a-zA-Z0-9-]+\.(?:jpg|jpeg|png|webp)$/.test(key)) {
+    const error = new Error('Promotion image must be uploaded to the Shadow Mall collection')
+    error.statusCode = 400
+    throw error
+  }
+
+  return url
+}
+
 async function preparePromotionImages(req, current = null) {
   const promotionImage = getUploadedFile(
     req,
@@ -270,6 +291,13 @@ async function preparePromotionImages(req, current = null) {
     'Profile file'
   )
 
+  const directImageUrl = promotionImage
+    ? ''
+    : getDirectPromotionImageUrl(req.body.image_url, 'shadow_mall_ads.image_url')
+  const directProfileImageUrl = profileImage
+    ? ''
+    : getDirectPromotionImageUrl(req.body.profile_image_url, 'shadow_mall_ads.profile_image_url')
+
   let imageUrl = current?.image_url || ''
   let profileImageUrl =
     current?.profile_image_url || ''
@@ -280,6 +308,8 @@ async function preparePromotionImages(req, current = null) {
   try {
     if (
       toBoolean(req.body.remove_image, false) &&
+      !promotionImage &&
+      !directImageUrl &&
       imageUrl
     ) {
       replacedUrls.push(imageUrl)
@@ -291,6 +321,8 @@ async function preparePromotionImages(req, current = null) {
         req.body.remove_profile_image,
         false
       ) &&
+      !profileImage &&
+      !directProfileImageUrl &&
       profileImageUrl
     ) {
       replacedUrls.push(profileImageUrl)
@@ -325,6 +357,11 @@ async function preparePromotionImages(req, current = null) {
       }
 
       imageUrl = nextImageUrl
+    } else if (directImageUrl) {
+      if (current?.image_url && current.image_url !== directImageUrl) {
+        replacedUrls.push(current.image_url)
+      }
+      imageUrl = directImageUrl
     }
 
     if (profileImage) {
@@ -358,6 +395,11 @@ async function preparePromotionImages(req, current = null) {
       }
 
       profileImageUrl = nextProfileImageUrl
+    } else if (directProfileImageUrl) {
+      if (current?.profile_image_url && current.profile_image_url !== directProfileImageUrl) {
+        replacedUrls.push(current.profile_image_url)
+      }
+      profileImageUrl = directProfileImageUrl
     }
 
     return {
