@@ -363,19 +363,40 @@ const content = JSON.stringify({
 
     const requestedEpisodeId = cleanNullableText(req.body.episode_id || req.body.episodeId)
     const existingEpisode = await getOwnedEpisode(storyId, requestedEpisodeId, userId)
+    const checkpoint = req.body.checkpoint === true
+    const expectedUpdatedAt = cleanNullableText(req.body.expected_updated_at)
+    const clientEpisodeId = cleanNullableText(req.body.client_episode_id)
+    if (requestedEpisodeId && !existingEpisode) {
+      return res.status(404).json({ ok: false, message: 'Episode not found' })
+    }
+    if (checkpoint && !existingEpisode) {
+      return res.status(400).json({ ok: false, message: 'Save the new episode before automatic server backup' })
+    }
+    if (clientEpisodeId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientEpisodeId)) {
+      return res.status(400).json({ ok: false, message: 'Invalid draft identifier' })
+    }
+    if (!requestedEpisodeId && clientEpisodeId) {
+      const previous = await getOwnedEpisode(storyId, clientEpisodeId, userId)
+      if (previous) {
+        return res.status(200).json({ ok: true, episode: previous, is_first_episode: Number(previous.episode_number || 0) === 1 })
+      }
+    }
+    if (existingEpisode && expectedUpdatedAt && existingEpisode.updated_at !== expectedUpdatedAt) {
+      return res.status(409).json({ ok: false, code: 'DRAFT_VERSION_CONFLICT', message: 'A newer episode version exists. Reload before saving.' })
+    }
     const now = new Date().toISOString()
     const episodeNumber = existingEpisode?.episode_number || await getNextEpisodeNumber(storyId)
     const payload = {
       title,
       content,
-      status: 'ready',
+      status: existingEpisode?.status || 'ready',
       published_at: existingEpisode?.published_at || null,
       is_locked:
         typeof req.body.is_locked === 'boolean'
           ? req.body.is_locked
           : typeof req.body.isLocked === 'boolean'
             ? req.body.isLocked
-            : true,
+            : existingEpisode?.is_locked ?? true,
       character_count: normalized.totalCharacters,
       word_count: calculateWordCount(storyPlainText),
       page_count: 0,
@@ -385,21 +406,26 @@ const content = JSON.stringify({
     let episode
 
     if (existingEpisode) {
-      const { data, error } = await supabase
+      let updateQuery = supabase
         .from('episodes')
         .update(payload)
         .eq('id', existingEpisode.id)
         .eq('story_id', storyId)
         .eq('user_id', userId)
-        .select()
-        .single()
-
+      updateQuery = existingEpisode.updated_at
+        ? updateQuery.eq('updated_at', existingEpisode.updated_at)
+        : updateQuery.is('updated_at', null)
+      const { data, error } = await updateQuery.select().maybeSingle()
       if (error) throw error
+      if (!data) {
+        return res.status(409).json({ ok: false, code: 'DRAFT_VERSION_CONFLICT', message: 'A newer episode version exists. Reload before saving.' })
+      }
       episode = data
     } else {
       const { data, error } = await supabase
         .from('episodes')
         .insert({
+          ...(clientEpisodeId ? { id: clientEpisodeId } : {}),
           story_id: story.id,
           author_id: story.author_id,
           user_id: userId,
@@ -412,6 +438,12 @@ const content = JSON.stringify({
         .select()
         .single()
 
+      if (error?.code === '23505' && clientEpisodeId) {
+        const previous = await getOwnedEpisode(storyId, clientEpisodeId, userId)
+        if (previous) {
+          return res.status(200).json({ ok: true, episode: previous, is_first_episode: Number(previous.episode_number || 0) === 1 })
+        }
+      }
       if (error) throw error
       episode = data
 
