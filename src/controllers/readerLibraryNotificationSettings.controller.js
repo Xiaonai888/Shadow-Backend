@@ -5,10 +5,10 @@ const FIELDS = ['master', 'novel', 'chat_story', 'manga']
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const DEFAULT_PREFERENCES = {
-  master: true,
-  novel: true,
-  chat_story: true,
-  manga: true,
+  master: false,
+  novel: false,
+  chat_story: false,
+  manga: false,
 }
 
 function getReaderId(req) {
@@ -17,7 +17,7 @@ function getReaderId(req) {
 }
 
 function toPreferences(row) {
-  return Object.fromEntries(FIELDS.map((field) => [field, row?.[field] !== false]))
+  return Object.fromEntries(FIELDS.map((field) => [field, row?.[field] === true]))
 }
 
 function parsePreferences(body) {
