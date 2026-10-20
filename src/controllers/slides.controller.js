@@ -1,451 +1,534 @@
-function formatMegabytes(bytes) {
-  return `${(Number(bytes || 0) / (1024 * 1024)).toFixed(1)} MB`
-}
+import { createReadStream } from 'node:fs'
+import {
+  DeleteObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3'
+import { supabase } from '../config/supabase.js'
+import { bumpContentVersions } from '../services/contentVersion.service.js'
+import { assertR2MediaReference } from '../services/mediaStoragePolicy.service.js'
 
-function ensureStyles() {
-  if (document.getElementById('shadow-media-upload-progress-styles')) return
+const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'media'
+const LOG_RETENTION_DAYS = 90
 
-  const style = document.createElement('style')
-  style.id = 'shadow-media-upload-progress-styles'
-  style.textContent = `
-    .shadow-upload-progress-layer {
-      position: fixed;
-      inset: 0;
-      z-index: 99999;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: rgba(15, 23, 42, 0.55);
-      padding: 20px;
-      backdrop-filter: blur(5px);
-    }
+let r2Client = null
 
-    .shadow-upload-progress-card {
-      width: min(460px, 100%);
-      border: 1px solid #E2E8F0;
-      border-radius: 24px;
-      background: #FFFFFF;
-      box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24);
-      padding: 24px;
-      color: #0F172A;
-    }
+function getR2Client() {
+  if (r2Client) return r2Client
 
-    .shadow-upload-progress-kicker {
-      color: #4F46E5;
-      font-size: 11px;
-      font-weight: 900;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
+  const accountId = process.env.R2_ACCOUNT_ID
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY
 
-    .shadow-upload-progress-card h2 {
-      margin: 7px 0 4px;
-      font-size: 22px;
-      font-weight: 950;
-    }
-
-    .shadow-upload-progress-status {
-      margin: 0;
-      color: #64748B;
-      font-size: 13px;
-      font-weight: 700;
-      line-height: 1.5;
-    }
-
-    .shadow-upload-progress-row {
-      display: flex;
-      align-items: flex-end;
-      justify-content: space-between;
-      gap: 16px;
-      margin-top: 22px;
-    }
-
-    .shadow-upload-progress-percent {
-      font-size: 38px;
-      font-weight: 950;
-      line-height: 1;
-    }
-
-    .shadow-upload-progress-size {
-      color: #475569;
-      font-size: 13px;
-      font-weight: 850;
-      text-align: right;
-    }
-
-    .shadow-upload-progress-track {
-      height: 12px;
-      overflow: hidden;
-      border-radius: 999px;
-      background: #EDE9FE;
-      margin-top: 14px;
-    }
-
-    .shadow-upload-progress-bar {
-      width: 0%;
-      height: 100%;
-      border-radius: inherit;
-      background: linear-gradient(90deg, #4F46E5, #7C3AED);
-      transition: width 180ms ease;
-    }
-
-    .shadow-upload-progress-details {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      margin-top: 16px;
-    }
-
-    .shadow-upload-progress-detail {
-      border-radius: 14px;
-      background: #F8FAFC;
-      padding: 12px;
-    }
-
-    .shadow-upload-progress-detail span {
-      display: block;
-      color: #94A3B8;
-      font-size: 10px;
-      font-weight: 850;
-      text-transform: uppercase;
-    }
-
-    .shadow-upload-progress-detail strong {
-      display: block;
-      margin-top: 4px;
-      color: #0F172A;
-      font-size: 13px;
-      font-weight: 900;
-    }
-
-    .shadow-upload-progress-processing .shadow-upload-progress-bar {
-      width: 100%;
-      animation: shadow-upload-processing 1.2s ease-in-out infinite;
-    }
-
-    .shadow-upload-progress-success .shadow-upload-progress-bar {
-      width: 100%;
-      background: #16A34A;
-      animation: none;
-    }
-
-    .shadow-upload-progress-error .shadow-upload-progress-bar {
-      background: #DC2626;
-      animation: none;
-    }
-
-    @keyframes shadow-upload-processing {
-      0%, 100% { opacity: 0.55; }
-      50% { opacity: 1; }
-    }
-  `
-  document.head.appendChild(style)
-}
-
-function createProgressView(fileCount, totalBytes) {
-  ensureStyles()
-
-  const layer = document.createElement('div')
-  layer.className = 'shadow-upload-progress-layer'
-  layer.innerHTML = `
-    <div class="shadow-upload-progress-card">
-      <div class="shadow-upload-progress-kicker">Shadow Media Library</div>
-      <h2>Uploading ${fileCount} images</h2>
-      <p class="shadow-upload-progress-status">Preparing one batch for upload...</p>
-
-      <div class="shadow-upload-progress-row">
-        <div class="shadow-upload-progress-percent">0%</div>
-        <div class="shadow-upload-progress-size">0.0 MB / ${formatMegabytes(totalBytes)}</div>
-      </div>
-
-      <div class="shadow-upload-progress-track">
-        <div class="shadow-upload-progress-bar"></div>
-      </div>
-
-      <div class="shadow-upload-progress-details">
-        <div class="shadow-upload-progress-detail">
-          <span>Images</span>
-          <strong>${fileCount} files</strong>
-        </div>
-        <div class="shadow-upload-progress-detail">
-          <span>Total size</span>
-          <strong>${formatMegabytes(totalBytes)}</strong>
-        </div>
-      </div>
-    </div>
-  `
-  document.body.appendChild(layer)
-
-  const card = layer.querySelector('.shadow-upload-progress-card')
-  const title = layer.querySelector('h2')
-  const status = layer.querySelector('.shadow-upload-progress-status')
-  const percent = layer.querySelector('.shadow-upload-progress-percent')
-  const size = layer.querySelector('.shadow-upload-progress-size')
-  const bar = layer.querySelector('.shadow-upload-progress-bar')
-
-  return {
-    updateUpload(progress, estimatedLoadedBytes) {
-      const safeProgress = Math.max(0, Math.min(100, Math.round(progress)))
-      percent.textContent = `${safeProgress}%`
-      size.textContent = `${formatMegabytes(estimatedLoadedBytes)} / ${formatMegabytes(totalBytes)}`
-      bar.style.width = `${safeProgress}%`
-      status.textContent = 'Sending all images in one batch...'
-    },
-    updateDirect(loadedBytes, fileIndex, totalFiles, stage) {
-      const safeBytes = Math.max(0, Math.min(totalBytes, Number(loadedBytes || 0)))
-      const progress = totalBytes ? Math.min(99, Math.round(safeBytes / totalBytes * 100)) : 0
-      card.classList.remove('shadow-upload-progress-processing')
-      percent.textContent = `${progress}%`
-      size.textContent = `${formatMegabytes(safeBytes)} / ${formatMegabytes(totalBytes)}`
-      bar.style.width = `${progress}%`
-      status.textContent = stage === 'fallback'
-        ? `Using existing upload service for remaining images (${fileIndex}/${totalFiles})...`
-        : stage === 'finalizing'
-          ? `Saving image ${fileIndex} of ${totalFiles} to Cloudflare...`
-          : `Uploading image ${fileIndex} of ${totalFiles} directly to Cloudflare...`
-    },
-    showProcessing() {
-      card.classList.add('shadow-upload-progress-processing')
-      percent.textContent = '100%'
-      size.textContent = `${formatMegabytes(totalBytes)} / ${formatMegabytes(totalBytes)}`
-      bar.style.width = '100%'
-      status.textContent = 'Upload received. Compressing and saving images to Cloudflare...'
-    },
-    showSuccess() {
-      card.classList.remove('shadow-upload-progress-processing')
-      card.classList.add('shadow-upload-progress-success')
-      title.textContent = 'Upload complete'
-      percent.textContent = '100%'
-      status.textContent = `${fileCount} images were compressed and saved successfully.`
-    },
-    showError(message) {
-      card.classList.remove('shadow-upload-progress-processing')
-      card.classList.add('shadow-upload-progress-error')
-      title.textContent = 'Upload failed'
-      status.textContent = message || 'The images could not be uploaded.'
-    },
-    remove(delay = 0) {
-      window.setTimeout(() => layer.remove(), delay)
-    },
+  if (!accountId || !accessKeyId || !secretAccessKey) {
+    throw new Error('Missing R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, or R2_SECRET_ACCESS_KEY')
   }
-}
 
-const DIRECT_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
-const DIRECT_MEDIA_MAX_BYTES = 5 * 1024 * 1024
-let directUnavailableUntil = 0
-
-function uploadError(message, status = 0, code = '') {
-  const error = new Error(message)
-  error.status = status
-  error.code = code
-  return error
-}
-
-async function readMediaResponse(response, fallbackMessage) {
-  const result = await response.json().catch(() => ({}))
-  if (!response.ok || result.ok === false) {
-    throw uploadError(
-      result.message || fallbackMessage,
-      response.status,
-      result.code || ''
-    )
-  }
-  return result
-}
-
-function uploadDirectImageBytes(url, file, onProgress) {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest()
-    xhr.open('PUT', url)
-    xhr.setRequestHeader('Content-Type', file.type)
-    xhr.timeout = 180000
-    xhr.upload.addEventListener('progress', (event) => {
-      if (event.lengthComputable && event.total) {
-        onProgress(Math.min(file.size, event.loaded))
-      }
-    })
-    xhr.addEventListener('load', () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        onProgress(file.size)
-        resolve()
-      } else {
-        reject(uploadError('Cloudflare R2 rejected the image', xhr.status))
-      }
-    })
-    xhr.addEventListener('error', () => reject(uploadError('Cannot connect to Cloudflare R2')))
-    xhr.addEventListener('timeout', () => reject(uploadError('Cloudflare R2 upload timed out', 408)))
-    xhr.addEventListener('abort', () => reject(uploadError('Image upload was canceled', 0, 'DIRECT_UPLOAD_CANCELED')))
-    xhr.send(file)
+  r2Client = new S3Client({
+    region: 'auto',
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId,
+      secretAccessKey,
+    },
   })
+
+  return r2Client
 }
 
-async function uploadImageDirect(apiUrl, token, file, onProgress) {
-  const initResponse = await fetch(`${apiUrl}/api/media-direct/admin/init`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      category: 'admin_media_library',
-      mime_type: file.type,
-      file_size: file.size,
-    }),
-  })
-  const init = await readMediaResponse(initResponse, 'Cannot start direct image upload')
-  if (!init.upload_url || !init.upload_token) {
-    throw uploadError('Cloudflare upload session is unavailable', 503)
+function getR2BucketName() {
+  const bucketName = process.env.R2_BUCKET_NAME
+
+  if (!bucketName) {
+    throw new Error('Missing R2_BUCKET_NAME')
   }
 
-  await uploadDirectImageBytes(init.upload_url, file, onProgress)
+  return bucketName
+}
 
-  const finalizeResponse = await fetch(`${apiUrl}/api/media-direct/admin/finalize`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ upload_token: init.upload_token }),
-  })
-  const result = await readMediaResponse(finalizeResponse, 'Cannot finish direct image upload')
-  const imageUrl = result.image_url || result.imageUrl || ''
-  const storageKey = result.path || result.storage_key || ''
-  if (!imageUrl || !storageKey) {
-    throw uploadError('Cloudflare returned an incomplete image reference', 503)
+function getR2PublicUrl() {
+  const publicUrl = process.env.R2_PUBLIC_URL
+
+  if (!publicUrl) {
+    throw new Error('Missing R2_PUBLIC_URL')
   }
-  return {
-    original_name: file.name,
-    image_url: imageUrl,
-    storage_key: storageKey,
-  }
+
+  return publicUrl.replace(/\/+$/, '')
 }
 
-function uploadImagesThroughRender(apiUrl, token, files, onProgress) {
-  return new Promise((resolve, reject) => {
-    const formData = new FormData()
-    files.forEach((file) => formData.append('images', file))
-
-    const xhr = new XMLHttpRequest()
-    xhr.open('POST', `${apiUrl}/api/admin/media-library/upload`)
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
-    xhr.timeout = 300000
-
-    xhr.upload.addEventListener('progress', (event) => {
-      if (event.lengthComputable && event.total) {
-        onProgress(Math.min(1, event.loaded / event.total))
-      }
-    })
-    xhr.addEventListener('load', () => {
-      let data = {}
-      try {
-        data = JSON.parse(xhr.responseText || '{}')
-      } catch {
-        data = {}
-      }
-      if (xhr.status >= 200 && xhr.status < 300 && data.ok !== false) {
-        const images = Array.isArray(data.images) ? data.images : []
-        if (images.length === files.length && images.every((item) => item?.image_url && item?.storage_key)) {
-          onProgress(1)
-          resolve(images)
-        } else {
-          reject(uploadError('Existing upload service returned incomplete images'))
-        }
-      } else {
-        reject(uploadError(data.message || 'Failed to upload images', xhr.status))
-      }
-    })
-    xhr.addEventListener('error', () => reject(uploadError('Network error while uploading images')))
-    xhr.addEventListener('timeout', () => reject(uploadError('Existing upload service timed out', 408)))
-    xhr.addEventListener('abort', () => reject(uploadError('Image upload was canceled', 0, 'DIRECT_UPLOAD_CANCELED')))
-    xhr.send(formData)
-  })
+function toBoolean(value, fallback = true) {
+  if (value === undefined || value === null || value === '') return fallback
+  if (value === true || value === 'true') return true
+  if (value === false || value === 'false') return false
+  return fallback
 }
 
-function canUseDirectUpload(file) {
-  return DIRECT_MEDIA_TYPES.has(file?.type) &&
-    Number.isSafeInteger(file.size) &&
-    file.size >= 16 &&
-    file.size <= DIRECT_MEDIA_MAX_BYTES
+function toNumber(value, fallback = 0) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : fallback
 }
 
-function canTryExistingService(error) {
-  if (error?.code === 'DIRECT_UPLOAD_CANCELED') return false
-  const status = Number(error?.status || 0)
-  return ![400, 401, 403, 413, 415, 422, 429].includes(status)
-}
-
-export async function uploadMediaLibraryWithProgress({
-  apiUrl,
-  token,
-  files,
-}) {
-  const selectedFiles = Array.from(files || [])
-  const totalBytes = selectedFiles.reduce(
-    (sum, file) => sum + Number(file?.size || 0),
-    0
+function getActor(req) {
+  return (
+    req.admin?.actor ||
+    req.admin?.name ||
+    req.get('x-admin-actor') ||
+    req.get('x-admin-name') ||
+    req.body?.admin_actor ||
+    req.query?.admin_actor ||
+    'Admin'
   )
-  const view = createProgressView(selectedFiles.length, totalBytes)
+}
+
+function cleanupDateIso() {
+  const date = new Date()
+  date.setDate(date.getDate() - LOG_RETENTION_DAYS)
+  return date.toISOString()
+}
+
+async function cleanupOldLogs() {
+  try {
+    await supabase
+      .from('admin_activity_logs')
+      .delete()
+      .lt('created_at', cleanupDateIso())
+  } catch (error) {
+    console.warn('CLEANUP OLD LOGS WARNING:', error.message)
+  }
+}
+
+function getChangedFields(oldSlide, newSlide, imageReplaced = false) {
+  const changed = []
+
+  if ((oldSlide?.title || '') !== (newSlide?.title || '')) changed.push('title')
+  if ((oldSlide?.subtitle || '') !== (newSlide?.subtitle || '')) changed.push('subtitle')
+  if ((oldSlide?.genre_label || '') !== (newSlide?.genre_label || '')) changed.push('genre')
+  if ((oldSlide?.link_url || '') !== (newSlide?.link_url || '')) changed.push('link')
+  if (Number(oldSlide?.order_index) !== Number(newSlide?.order_index)) changed.push('order')
+  if (Boolean(oldSlide?.is_active) !== Boolean(newSlide?.is_active)) changed.push('visibility')
+  if (imageReplaced) changed.push('image')
+
+  return changed
+}
+
+function makeUpdateMessage(slide, changedFields) {
+  const slideNumber = slide?.order_index ?? ''
+  const label = slideNumber !== '' ? `Slide ${slideNumber}` : 'slide'
+
+  if (changedFields.length === 0) {
+    return `Saved ${label} with no visible changes`
+  }
+
+  if (changedFields.length === 1 && changedFields[0] === 'visibility') {
+    return `Changed ${label} visibility to ${slide?.is_active ? 'ACTIVE' : 'INACTIVE'}`
+  }
+
+  return `Updated ${label}: ${changedFields.join(', ')}`
+}
+
+async function createActivityLog({ action, actor, slide, details = '' }) {
+  try {
+    await cleanupOldLogs()
+
+    await supabase.from('admin_activity_logs').insert({
+      action,
+      section_key: slide?.section_key || null,
+      slide_id: slide?.id || null,
+      slide_title: slide?.title || '',
+      order_index: slide?.order_index ?? null,
+      actor: actor || 'Admin',
+      details: typeof details === 'string' ? details : JSON.stringify(details),
+    })
+  } catch (error) {
+    console.warn('CREATE ACTIVITY LOG WARNING:', error.message)
+  }
+}
+
+function extractStoragePathFromPublicUrl(publicUrl) {
+  if (!publicUrl) return null
+
+  const marker = `/storage/v1/object/public/${BUCKET}/`
+  const markerIndex = publicUrl.indexOf(marker)
+
+  if (markerIndex === -1) return null
+
+  const encodedPath = publicUrl.slice(markerIndex + marker.length)
 
   try {
-    if (!selectedFiles.length) throw uploadError('Please choose at least one image')
-    if (!token) throw uploadError('Please log in again before uploading images', 401)
+    return decodeURIComponent(encodedPath)
+  } catch {
+    return encodedPath
+  }
+}
 
-    const results = new Array(selectedFiles.length)
-    const pendingLegacy = []
-    let completedBytes = 0
-    let directEnabled = Date.now() >= directUnavailableUntil
-    const baseUrl = String(apiUrl || '').replace(/\/+$/, '')
+function extractR2ObjectKeyFromPublicUrl(publicUrl) {
+  if (!publicUrl) return null
 
-    for (let index = 0; index < selectedFiles.length; index += 1) {
-      const file = selectedFiles[index]
-      if (!directEnabled || !canUseDirectUpload(file)) {
-        pendingLegacy.push(index)
-        continue
-      }
+  const publicBaseUrl = process.env.R2_PUBLIC_URL?.replace(/\/+$/, '')
+  if (!publicBaseUrl || !publicUrl.startsWith(`${publicBaseUrl}/`)) return null
 
-      try {
-        view.updateDirect(completedBytes, index + 1, selectedFiles.length, 'uploading')
-        const uploaded = await uploadImageDirect(baseUrl, token, file, (uploadedBytes) => {
-          view.updateDirect(completedBytes + uploadedBytes, index + 1, selectedFiles.length, 'uploading')
-        })
-        results[index] = uploaded
-        completedBytes += file.size
-        view.updateDirect(completedBytes, index + 1, selectedFiles.length, 'finalizing')
-      } catch (error) {
-        if (!canTryExistingService(error)) throw error
-        directEnabled = false
-        directUnavailableUntil = Date.now() + 60000
-        pendingLegacy.push(index)
-      }
-    }
+  const objectKey = publicUrl.slice(publicBaseUrl.length + 1)
+  return objectKey || null
+}
 
-    if (pendingLegacy.length) {
-      const legacyFiles = pendingLegacy.map((index) => selectedFiles[index])
-      const legacyBytes = legacyFiles.reduce((sum, file) => sum + file.size, 0)
-      view.updateDirect(completedBytes, selectedFiles.length - pendingLegacy.length, selectedFiles.length, 'fallback')
-      const uploaded = await uploadImagesThroughRender(baseUrl, token, legacyFiles, (ratio) => {
-        view.updateDirect(
-          completedBytes + Math.round(legacyBytes * ratio),
-          selectedFiles.length - pendingLegacy.length,
-          selectedFiles.length,
-          'fallback'
-        )
-      })
-      pendingLegacy.forEach((index, offset) => {
-        results[index] = uploaded[offset]
-      })
-    }
+function getDirectSlideImageUrl(value) {
+  const incoming = String(value || '').trim()
+  if (!incoming) return ''
 
-    if (results.some((item) => !item?.image_url || !item?.storage_key)) {
-      throw uploadError('Some images could not be uploaded. Please try again.')
-    }
+  const imageUrl = assertR2MediaReference(incoming, {
+    field: 'slides.image_url',
+    allowEmpty: false,
+  })
+  const storageKey = extractR2ObjectKeyFromPublicUrl(imageUrl)
 
-    view.showSuccess()
-    view.remove(900)
-    return { ok: true, images: results }
-  } catch (error) {
-    view.showError(error?.message || 'Failed to upload images')
-    view.remove(2200)
+  if (!storageKey || !/^slides\/[a-zA-Z0-9/_\-.]+\.(?:jpg|jpeg|png|webp)$/.test(storageKey) || storageKey.includes('..')) {
+    const error = new Error('Slide image must be uploaded to the Slide collection')
+    error.statusCode = 400
     throw error
+  }
+
+  return imageUrl
+}
+
+async function deleteImageFromStorage(publicUrl) {
+  try {
+    const r2ObjectKey = extractR2ObjectKeyFromPublicUrl(publicUrl)
+
+    if (r2ObjectKey) {
+      await getR2Client().send(
+        new DeleteObjectCommand({
+          Bucket: getR2BucketName(),
+          Key: r2ObjectKey,
+        })
+      )
+      return
+    }
+
+    const storagePath = extractStoragePathFromPublicUrl(publicUrl)
+    if (!storagePath) return
+
+    const { error } = await supabase.storage.from(BUCKET).remove([storagePath])
+    if (error) throw error
+  } catch (error) {
+    console.warn('DELETE IMAGE WARNING:', error.message)
+  }
+}
+
+async function uploadImage(file) {
+  if (!file) return null
+  if (!file.path) {
+    throw new Error('Temporary slide image file is required')
+  }
+
+  const originalName = file.originalname || 'slide-image'
+  const fileExt = originalName.includes('.') ? originalName.split('.').pop() : 'jpg'
+  const safeExt = fileExt.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
+  const fileName = `slides/${Date.now()}-${Math.random().toString(36).slice(2)}.${safeExt}`
+
+  await getR2Client().send(
+    new PutObjectCommand({
+      Bucket: getR2BucketName(),
+      Key: fileName,
+      Body: createReadStream(file.path),
+      ContentLength: Number(file.size || 0) || undefined,
+      ContentType: file.mimetype,
+      CacheControl: 'public, max-age=31536000, immutable',
+    })
+  )
+
+  return `${getR2PublicUrl()}/${fileName}`
+}
+
+export async function getSlides(req, res) {
+  try {
+    const sectionKey = req.query.section_key || 'home_top_slider'
+    const includeInactive =
+      req.query.include_inactive === 'true' ||
+      req.query.includeInactive === 'true'
+
+    let query = supabase
+      .from('slides')
+      .select('*')
+      .eq('section_key', sectionKey)
+
+    if (!includeInactive) {
+      query = query.eq('is_active', true)
+    }
+
+    const { data, error } = await query
+      .order('order_index', { ascending: true })
+      .order('updated_at', { ascending: false, nullsFirst: false })
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+
+    res.status(200).json({
+      ok: true,
+      include_inactive: includeInactive,
+      slides: data || [],
+    })
+  } catch (error) {
+    console.error('GET SLIDES ERROR:', error)
+
+    res.status(500).json({
+      ok: false,
+      message: 'Failed to fetch slides',
+    })
+  }
+}
+
+export async function createSlide(req, res) {
+  try {
+    const actor = getActor(req)
+
+    const {
+      section_key = 'home_top_slider',
+      title = '',
+      subtitle = '',
+      genre_label = '',
+      link_url = '',
+      order_index = 0,
+      is_active = 'true',
+    } = req.body
+
+    const directImageUrl = req.file ? '' : getDirectSlideImageUrl(req.body.image_url)
+
+    if (!req.file && !directImageUrl) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Slide image is required. Upload image or provide image_url',
+      })
+    }
+
+    const imageUrl = req.file ? await uploadImage(req.file) : directImageUrl
+
+    const { data, error } = await supabase
+      .from('slides')
+      .insert({
+        section_key,
+        title,
+        subtitle,
+        genre_label,
+        image_url: imageUrl,
+        link_url,
+        order_index: toNumber(order_index),
+        is_active: toBoolean(is_active),
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+
+    await createActivityLog({
+      action: 'CREATE',
+      actor,
+      slide: data,
+      details: `Created Slide ${data.order_index}`,
+    })
+
+    await bumpContentVersions(['home', 'slides'])
+
+    res.status(201).json({
+      ok: true,
+      slide: data,
+    })
+  } catch (error) {
+    console.error('CREATE SLIDE ERROR:', error)
+
+    res.status(error.statusCode === 400 ? 400 : 500).json({
+      ok: false,
+      message: error.statusCode === 400 ? error.message : 'Failed to create slide',
+    })
+  }
+}
+
+export async function updateSlide(req, res) {
+  try {
+    const actor = getActor(req)
+    const { id } = req.params
+
+    const { data: oldSlide, error: oldSlideError } = await supabase
+      .from('slides')
+      .select('*')
+      .eq('id', id)
+      .single()
+
+    if (oldSlideError) throw oldSlideError
+
+    const updatePayload = {
+      updated_at: new Date().toISOString(),
+    }
+
+    const allowedFields = [
+      'section_key',
+      'title',
+      'subtitle',
+      'genre_label',
+      'link_url',
+    ]
+
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        updatePayload[field] = req.body[field]
+      }
+    }
+
+    if (req.body.order_index !== undefined) {
+      updatePayload.order_index = toNumber(req.body.order_index)
+    }
+
+    if (req.body.is_active !== undefined) {
+      updatePayload.is_active = toBoolean(req.body.is_active)
+    }
+
+    const directImageUrl = req.file ? '' : getDirectSlideImageUrl(req.body.image_url)
+    const imageReplaced = Boolean(req.file) || Boolean(directImageUrl && directImageUrl !== oldSlide?.image_url)
+
+    if (req.file) {
+      updatePayload.image_url = await uploadImage(req.file)
+    } else if (imageReplaced) {
+      updatePayload.image_url = directImageUrl
+    }
+
+    const { data, error } = await supabase
+      .from('slides')
+      .update(updatePayload)
+      .eq('id', id)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    if (imageReplaced && oldSlide?.image_url) {
+      await deleteImageFromStorage(oldSlide.image_url)
+    }
+
+    const changedFields = getChangedFields(oldSlide, data, imageReplaced)
+    const isVisibilityOnly =
+      changedFields.length === 1 &&
+      changedFields[0] === 'visibility'
+
+    await createActivityLog({
+      action: isVisibilityOnly ? 'VISIBILITY' : 'UPDATE',
+      actor,
+      slide: data,
+      details: makeUpdateMessage(data, changedFields),
+    })
+
+    await bumpContentVersions(['home', 'slides'])
+
+    res.status(200).json({
+      ok: true,
+      slide: data,
+    })
+  } catch (error) {
+    console.error('UPDATE SLIDE ERROR:', error)
+
+    res.status(error.statusCode === 400 ? 400 : 500).json({
+      ok: false,
+      message: error.statusCode === 400 ? error.message : 'Failed to update slide',
+    })
+  }
+}
+
+export async function deleteSlide(req, res) {
+  try {
+    const actor = getActor(req)
+    const { id } = req.params
+
+    const { data: existingSlide, error: existingError } = await supabase
+      .from('slides')
+      .select('*')
+      .eq('id', id)
+      .single()
+
+    if (existingError) throw existingError
+
+    const { error } = await supabase
+      .from('slides')
+      .delete()
+      .eq('id', id)
+
+    if (error) throw error
+
+    await deleteImageFromStorage(existingSlide?.image_url)
+
+    await createActivityLog({
+      action: 'DELETE',
+      actor,
+      slide: existingSlide,
+      details: `Deleted Slide ${existingSlide?.order_index}`,
+    })
+
+    await bumpContentVersions(['home', 'slides'])
+
+    res.status(200).json({
+      ok: true,
+      slide: existingSlide,
+    })
+  } catch (error) {
+    console.error('DELETE SLIDE ERROR:', error)
+
+    res.status(500).json({
+      ok: false,
+      message: 'Failed to delete slide',
+    })
+  }
+}
+
+export async function getSlideActivityLogs(req, res) {
+  try {
+    await cleanupOldLogs()
+
+    const page = Math.max(toNumber(req.query.page, 1), 1)
+    const limit = Math.min(Math.max(toNumber(req.query.limit, 20), 1), 50)
+    const sectionKey = req.query.section_key || req.query.sectionKey || ''
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    let query = supabase
+      .from('admin_activity_logs')
+      .select('*', { count: 'exact' })
+
+    if (sectionKey) {
+      query = query.eq('section_key', sectionKey)
+    }
+
+    const { data, error, count } = await query
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (error) throw error
+
+    const records = (data || []).map((record) => ({
+      id: record.id,
+      action: record.action,
+      actor: record.actor || 'Admin',
+      order_index: record.order_index,
+      slide_title: record.slide_title || '',
+      details: record.details || '',
+      created_at: record.created_at,
+    }))
+
+    const total = count || 0
+    const totalPages = Math.max(Math.ceil(total / limit), 1)
+
+    res.status(200).json({
+      ok: true,
+      records,
+      logs: records,
+      page,
+      limit,
+      total,
+      total_pages: totalPages,
+      totalPages,
+    })
+  } catch (error) {
+    console.error('GET SLIDE ACTIVITY LOGS ERROR:', error)
+
+    res.status(500).json({
+      ok: false,
+      message: 'Failed to fetch slide records',
+    })
   }
 }
