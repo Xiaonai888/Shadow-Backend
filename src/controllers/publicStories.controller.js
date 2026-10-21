@@ -1338,9 +1338,9 @@ nextQuery = nextQuery.or(`${smartFilter || oldFilter}${tagFilter}`)
           .join(',')
         const tagFilter = tagValues ? `,tags.ov.{${tagValues}}` : ''
 
-        nextQuery = nextQuery.or(
-          `title.ilike.%${search}%,description.ilike.%${search}%,main_genre.ilike.%${search}%${tagFilter}`
-        )
+        const oldFilter = `title.ilike.%${search}%,description.ilike.%${search}%,main_genre.ilike.%${search}%`
+        const smartFilter = makeSmartSearchOrFilter(['title', 'description', 'main_genre'], search, 6)
+        nextQuery = nextQuery.or(`${smartFilter || oldFilter}${tagFilter}`)
       }
 
 
