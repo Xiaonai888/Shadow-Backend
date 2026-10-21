@@ -3,6 +3,7 @@ import readerSecurityRoutes from './readerSecurity.routes.js'
 import readerHiddenWordsRoutes from './readerHiddenWords.routes.js'
 import readerTagsMentionsRoutes from './readerTagsMentions.routes.js'
 import readerCommentSettingsRoutes from './readerCommentSettings.routes.js'
+import readerMessagesRepliesSettingsRoutes from './readerMessagesRepliesSettings.routes.js'
 import readerRestrictionSettingsRoutes from './readerRestrictionSettings.routes.js'
 import readerRestrictionsRoutes from './readerRestrictions.routes.js'
 import { getReaderAccountPrivacy, updateReaderAccountPrivacy } from '../controllers/readerAccountPrivacy.controller.js'
@@ -111,6 +112,7 @@ router.use('/security', readerSecurityRoutes)
 router.use('/me/hidden-words', readerHiddenWordsRoutes)
 router.use('/me/tags-mentions', readerTagsMentionsRoutes)
 router.use('/me/comment-settings', readerCommentSettingsRoutes)
+router.use('/me/messages-replies', readerMessagesRepliesSettingsRoutes)
 router.use('/me/restriction-settings', readerRestrictionSettingsRoutes)
 router.use('/me/restricted-readers', readerRestrictionsRoutes)
 router.get('/me', requireUser, getCurrentUser)
