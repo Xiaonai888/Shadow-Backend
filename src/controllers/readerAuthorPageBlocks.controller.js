@@ -55,7 +55,7 @@ async function getBlockStatus(readerUserId, authorPage) {
   const accountBlocked = Boolean(accountBlockResult.data)
 
   return {
-    is_blocked: pageBlocked || accountBlocked,
+    is_blocked: pageBlocked,
     page_blocked: pageBlocked,
     account_blocked: accountBlocked,
   }
@@ -181,10 +181,7 @@ export async function blockReaderAuthorPage(req, res) {
       ? pageBlock.id
       : null
 
-    await insertBlock('chat_blocks', {
-      blocker_user_id: readerUserId,
-      blocked_user_id: authorPage.user_id,
-    })
+    
 
     const blockStatus = await getBlockStatus(
       readerUserId,
@@ -245,38 +242,20 @@ export async function unblockReaderAuthorPage(req, res) {
       })
     }
 
-    const [
-      pageDeleteResult,
-      accountDeleteResult,
-    ] = await Promise.all([
-      supabase
-        .from('reader_blocked_author_pages')
-        .delete()
-        .eq('reader_user_id', readerUserId)
-        .eq('author_page_id', authorPage.id),
-      supabase
-        .from('chat_blocks')
-        .delete()
-        .eq('blocker_user_id', readerUserId)
-        .eq('blocked_user_id', authorPage.user_id),
-    ])
+    const { error: pageDeleteError } = await supabase
+      .from('reader_blocked_author_pages')
+      .delete()
+      .eq('reader_user_id', readerUserId)
+      .eq('author_page_id', authorPage.id)
 
-    if (pageDeleteResult.error) {
-      throw pageDeleteResult.error
-    }
+    if (pageDeleteError) throw pageDeleteError
 
-    if (accountDeleteResult.error) {
-      throw accountDeleteResult.error
-    }
+    const blockStatus = await getBlockStatus(readerUserId, authorPage)
 
     return res.status(200).json({
       ok: true,
       message: `${authorPage.page_name || 'Author Page'} unblocked`,
-      block_status: {
-        is_blocked: false,
-        page_blocked: false,
-        account_blocked: false,
-      },
+      block_status: blockStatus,
     })
   } catch (error) {
     console.error(
@@ -291,3 +270,4 @@ export async function unblockReaderAuthorPage(req, res) {
     })
   }
 }
+
