@@ -45,6 +45,7 @@ export async function getPublicStoryUpdates(req, res) {
     const storyType = normalizeStoryType(
       req.query.story_type || req.query.storyType
     )
+    const includeStoryType = String(req.query.include_story_type || '') === '1'
     const ageAccess = await getReaderAgeAccess(req)
 
     const rpcStartedAt = Date.now()
@@ -77,14 +78,41 @@ export async function getPublicStoryUpdates(req, res) {
       }))
     }
 
+    const updateStories = Array.isArray(data) ? data : []
+    const missingTypeIds = includeStoryType
+      ? [...new Set(updateStories
+          .filter((story) => story.id && !story.story_type)
+          .map((story) => String(story.id)))]
+      : []
+    const storyTypes = new Map()
+
+    for (let index = 0; index < missingTypeIds.length; index += 100) {
+      const { data: typeRows, error: typeError } = await supabase
+        .from('stories')
+        .select('id, story_type')
+        .in('id', missingTypeIds.slice(index, index + 100))
+
+      if (typeError) {
+        console.warn('[STORY_UPDATE_TYPE_LOOKUP_ERROR]', typeError.message)
+        break
+      }
+
+      for (const row of typeRows || []) {
+        storyTypes.set(String(row.id), String(row.story_type || 'novel').trim().toLowerCase())
+      }
+    }
+
     res.set('Cache-Control', 'private, no-store')
 
     return res.status(200).json({
       ok: true,
       today: getCambodiaDateKey(),
       days,
-      stories: (data || []).map((story) => ({
+      stories: updateStories.map((story) => ({
         id: story.id,
+        ...(includeStoryType ? {
+          story_type: String(story.story_type || storyTypes.get(String(story.id)) || 'novel').trim().toLowerCase(),
+        } : {}),
         title: story.title || 'Untitled Story',
         cover_url: story.cover_url || null,
         main_genre: story.main_genre || '',
