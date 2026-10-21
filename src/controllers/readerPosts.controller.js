@@ -1333,7 +1333,8 @@ function echoAudienceToVisibility(
 function canViewerSeeEcho(
   echo,
   viewerId,
-  relationships
+  relationships,
+  privateOwnerIds
 ) {
   const ownerId = String(
     echo.user_id || ''
@@ -1346,7 +1347,14 @@ function canViewerSeeEcho(
     currentViewerId &&
     currentViewerId === ownerId
   ) {
-    return true
+        return true
+  }
+
+  if (
+    privateOwnerIds.has(ownerId) &&
+    !relationships.viewerFollowsOwners.has(ownerId)
+  ) {
+    return false
   }
 
   const selectedReaderIds =
@@ -2304,7 +2312,7 @@ async function readSocialEchoPosts({
     await Promise.all([
       readUsersByIds(relationshipOwnerIds),
       getRelationshipMaps(viewerId, relationshipOwnerIds),
-      getPrivateReaderOwnerIds(sourceReaderUserIds),
+      getPrivateReaderOwnerIds(relationshipOwnerIds),
     ])
 
   const storyMap = new Map(
@@ -2356,7 +2364,8 @@ async function readSocialEchoPosts({
       canViewerSeeEcho(
         echo,
         viewerId,
-        relationships
+        relationships,
+        privateOwnerIds
       )
     )
     .map((echo) => {
