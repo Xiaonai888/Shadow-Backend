@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { getReaderCommentSettings } from '../services/readerCommentSettings.service.js'
 import { shouldRejectReaderPostSpam } from '../services/readerPostCommentSpam.service.js'
+
 const COMMENT_LIMIT = 1000
 const DEFAULT_PAGE_SIZE = 20
 const MAX_PAGE_SIZE = 30
@@ -840,13 +841,17 @@ export async function createReaderPostComment(
       })
     }
 
-    if (await shouldRejectReaderPostSpam({ text, postOwnerId: post.user_id, commenterId: userId })) {
-  return res.status(422).json({
-    ok: false,
-    code: 'COMMENT_SPAM',
-    message: 'This comment looks like spam. Please edit it.',
-  })
-}
+    if (await shouldRejectReaderPostSpam({
+      text,
+      postOwnerId: post.user_id,
+      commenterId: userId,
+    })) {
+      return res.status(422).json({
+        ok: false,
+        code: 'COMMENT_SPAM',
+        message: 'This comment looks like spam. Please edit it.',
+      })
+    }
 
     if (parentId) {
       const {
@@ -981,6 +986,18 @@ export async function updateOwnReaderPostComment(
         ok: false,
         message:
           'You can only edit your own comment',
+      })
+    }
+
+    if (await shouldRejectReaderPostSpam({
+      text,
+      postId: existingComment.post_id,
+      commenterId: userId,
+    })) {
+      return res.status(422).json({
+        ok: false,
+        code: 'COMMENT_SPAM',
+        message: 'This comment looks like spam. Please edit it.',
       })
     }
 
