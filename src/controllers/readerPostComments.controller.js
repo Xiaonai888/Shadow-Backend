@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { getReaderCommentSettings } from '../services/readerCommentSettings.service.js'
+import { canReplyToReaderPost } from '../services/readerMessagesRepliesSettings.service.js'
 import { shouldRejectReaderPostSpam } from '../services/readerPostCommentSpam.service.js'
 import { syncReaderCommentMentionLinks } from '../services/readerPostTagMentionLinks.service.js'
 
@@ -885,7 +886,15 @@ export async function createReaderPostComment(
           message:
             'Reply target is not valid',
         })
-      }
+         }
+    }
+
+    if (parentId && !(await canReplyToReaderPost(userId, post.user_id))) {
+      return res.status(403).json({
+        ok: false,
+        code: 'REPLY_NOT_ALLOWED',
+        message: 'You cannot reply on this reader post',
+      })
     }
 
     const {
