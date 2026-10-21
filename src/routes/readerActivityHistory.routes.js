@@ -7,6 +7,7 @@ const router = express.Router()
 const PAGE_SIZE = 10
 const RETENTION_MS = 365 * 86400000
 const DAY_MS = 86400000
+const ACTIVITY_DELAY_MS = 45 * 60000
 const CATEGORIES = new Set(['all', 'interactions', 'reading', 'transactions', 'security'])
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const cambodiaDayFormatter = new Intl.DateTimeFormat('en-US', {
@@ -63,26 +64,47 @@ function rowCursor(item) {
   }
 }
 
-async function readEvents(userId, category, state, limit, retentionStart) {
+function compareItems(left, right) {
+  const a = rowCursor(left)
+  const b = rowCursor(right)
+  if (a.time !== b.time) return a.time > b.time ? -1 : 1
+  if (a.id === b.id) return 0
+  return a.id > b.id ? -1 : 1
+}
+
+async function fetchEventRows(userId, category, state, limit, retentionStart, isDelayed) {
+  const cutoff = new Date(Date.parse(state.asOf) - ACTIVITY_DELAY_MS).toISOString()
   let query = supabase
     .from('reader_activity_events')
     .select('id,category,action,description,occurred_at,created_at')
     .eq('user_id', userId)
     .gte('occurred_at', state.start)
     .gte('occurred_at', retentionStart)
-    .lte('occurred_at', state.asOf)
+    .lte('occurred_at', isDelayed ? cutoff : state.asOf)
     .order('occurred_at', { ascending: false })
     .order('id', { ascending: false })
     .limit(limit + 1)
-  if (category !== 'all') query = query.eq('category', category)
+  if (isDelayed) query = query.lte('created_at', cutoff)
+  if (category === 'security') query = query.eq('category', 'security')
+  else if (category === 'nonsecurity') query = query.neq('category', 'security')
+  else query = query.eq('category', category)
   query = olderThan(query, 'occurred_at', state.after)
   const { data, error } = await query
   if (error) throw error
-  const rows = data || []
-  return {
-    items: rows.slice(0, limit).map((row) => ({ ...row, period: 'day', is_summary: false })),
-    hasMore: rows.length > limit,
-  }
+  return data || []
+}
+
+async function readEvents(userId, category, state, limit, retentionStart) {
+  const requests = category === 'all'
+    ? [
+      fetchEventRows(userId, 'security', state, limit, retentionStart, false),
+      fetchEventRows(userId, 'nonsecurity', state, limit, retentionStart, true),
+    ]
+    : [fetchEventRows(userId, category, state, limit, retentionStart, category !== 'security')]
+  const pages = await Promise.all(requests)
+  const rows = pages.flat().map((row) => ({ ...row, period: 'day', is_summary: false }))
+  rows.sort(compareItems)
+  return { items: rows.slice(0, limit), hasMore: rows.length > limit }
 }
 
 async function readArchive(userId, category, state, limit, retentionStart) {
@@ -141,13 +163,7 @@ async function readArchive(userId, category, state, limit, retentionStart) {
     }
   }
 
-  items.sort((left, right) => {
-    const a = rowCursor(left)
-    const b = rowCursor(right)
-    if (a.time !== b.time) return a.time > b.time ? -1 : 1
-    if (a.id === b.id) return 0
-    return a.id > b.id ? -1 : 1
-  })
+  items.sort(compareItems)
 
   return { items: items.slice(0, limit), hasMore: items.length > limit }
 }
