@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { getReaderCommentSettings } from '../services/readerCommentSettings.service.js'
 
 const COMMENT_LIMIT = 1000
 const DEFAULT_PAGE_SIZE = 20
@@ -255,8 +256,25 @@ async function canUserComment(post, userId) {
     .trim()
     .toLowerCase()
 
-  if (permission === 'everyone') return true
   if (permission === 'no_one') return false
+
+const settings = await getReaderCommentSettings(post.user_id)
+if (!settings.allowComments) return false
+
+if (settings.audience !== 'everyone') {
+  const followingDirection = settings.audience === 'following'
+  const { data, error } = await supabase
+    .from('user_follows')
+    .select('follower_user_id')
+    .eq('follower_user_id', followingDirection ? post.user_id : userId)
+    .eq('following_user_id', followingDirection ? userId : post.user_id)
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) return false
+}
+
+if (permission === 'everyone') return true
 
   const { data: viewerFollowsOwner, error } =
     await supabase
