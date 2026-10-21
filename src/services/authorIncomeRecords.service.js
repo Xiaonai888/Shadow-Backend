@@ -392,23 +392,35 @@ export async function getAuthorIncomeRecordData({
     new Date(yearRange.endIso).getTime()
   )
 
+  const selectedWithinSummaryRange =
+    new Date(selectedRange.startIso).getTime() >= summaryStartTime &&
+    new Date(selectedRange.endIso).getTime() <= summaryEndTime
+
   const [
-  summaryRows,
-  additionalSelectedRows,
-  selectedRecordRows,
-] = await Promise.all([
+    summaryRows,
+    additionalSelectedRows,
+    selectedRecordRows,
+  ] = await Promise.all([
     fetchAllSummaryRows(
       authorId,
       new Date(summaryStartTime).toISOString(),
       new Date(summaryEndTime).toISOString()
     ),
-    fetchAllSummaryRows(
-      authorId,
-      selectedRange.startIso,
-      selectedRange.endIso
-    ),
+    selectedWithinSummaryRange
+      ? Promise.resolve([])
+      : fetchAllSummaryRows(
+          authorId,
+          selectedRange.startIso,
+          selectedRange.endIso
+        ),
     fetchRecordRows(authorId, selectedRange),
   ])
+
+  const selectedSummaryRows = selectedWithinSummaryRange
+    ? summaryRows.filter((item) =>
+        isInsideRange(item.created_at, selectedRange)
+      )
+    : additionalSelectedRows
 
   const selectedRecords =
     await enrichRecords(selectedRecordRows)
