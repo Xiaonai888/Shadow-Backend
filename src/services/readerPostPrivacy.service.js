@@ -18,19 +18,117 @@ export async function getPrivateReaderOwnerIds(ownerIds) {
   return new Set((data || []).map((item) => String(item.id)))
 }
 
-async function resolveReaderPostSourceId(sourceId) {
+export async function getBlockedReaderOwnerIds(viewerId, ownerIds) {
+  const viewer = String(viewerId || '').trim()
+  const owners = uniqueIds(ownerIds).filter((id) => id !== viewer)
+  if (!viewer || !owners.length) return new Set()
+
+  const [outgoing, incoming] = await Promise.all([
+    supabase
+      .from('chat_blocks')
+      .select('blocked_user_id')
+      .eq('blocker_user_id', viewer)
+      .in('blocked_user_id', owners),
+    supabase
+      .from('chat_blocks')
+      .select('blocker_user_id')
+      .eq('blocked_user_id', viewer)
+      .in('blocker_user_id', owners),
+  ])
+
+  if (outgoing.error) throw outgoing.error
+  if (incoming.error) throw incoming.error
+
+  return new Set([
+    ...(outgoing.data || []).map((row) => String(row.blocked_user_id)),
+    ...(incoming.data || []).map((row) => String(row.blocker_user_id)),
+  ])
+}
+
+async function resolveReaderPostReference(sourceId) {
   const raw = String(sourceId || '').trim()
-  if (UUID.test(raw)) return raw
+  if (UUID.test(raw)) return { postId: raw, echoOwnerId: '', sourceType: '', sourceId: '' }
   const match = raw.match(/^(echo-v2|social-echo):([0-9a-f-]+)$/i)
   if (!match) return null
   const table = match[1].toLowerCase() === 'echo-v2' ? 'social_echoes_v2' : 'social_echoes'
-  const columns = table === 'social_echoes_v2' ? 'source_type, source_id' : 'source_type, source_id, reader_post_id'
+  const columns = table === 'social_echoes_v2'
+    ? 'user_id, source_type, source_id'
+    : 'user_id, source_type, source_id, reader_post_id'
   const { data, error } = await supabase.from(table).select(columns).eq('id', match[2]).maybeSingle()
   if (error) throw error
   if (!data) return null
-  const postId = String(data.reader_post_id || data.source_id || '').trim()
   const sourceType = String(data.source_type || '').trim().toLowerCase().replaceAll('-', '_')
-  return sourceType === 'reader_post' && UUID.test(postId) ? postId : null
+  const sourcePostId = String(data.reader_post_id || data.source_id || '').trim()
+  return {
+    postId: sourceType === 'reader_post' && UUID.test(sourcePostId) ? sourcePostId : '',
+    echoOwnerId: String(data.user_id || ''),
+    sourceType,
+    sourceId: String(data.source_id || ''),
+  }
+}
+
+async function resolveReaderPostSourceId(sourceId) {
+  return (await resolveReaderPostReference(sourceId))?.postId || null
+}
+
+async function getBlockedAuthorEchoSource(viewerId, sourceType, sourceId) {
+  if (!viewerId || !sourceId) return false
+  let pageId = ''
+  if (sourceType === 'author_post') {
+    const { data, error } = await supabase
+      .from('author_page_posts')
+      .select('author_page_id')
+      .eq('id', sourceId)
+      .maybeSingle()
+    if (error) throw error
+    pageId = String(data?.author_page_id || '')
+  } else if (sourceType === 'story') {
+    const { data, error } = await supabase
+      .from('stories')
+      .select('author_id')
+      .eq('id', sourceId)
+      .maybeSingle()
+    if (error) throw error
+    pageId = String(data?.author_id || '')
+  } else if (sourceType === 'episode') {
+    const episode = await supabase
+      .from('episodes')
+      .select('story_id')
+      .eq('id', sourceId)
+      .maybeSingle()
+    if (episode.error) throw episode.error
+    if (!episode.data?.story_id) return false
+    const story = await supabase
+      .from('stories')
+      .select('author_id')
+      .eq('id', episode.data.story_id)
+      .maybeSingle()
+    if (story.error) throw story.error
+    pageId = String(story.data?.author_id || '')
+  }
+  if (!pageId) return false
+
+  const [pageBlock, pageOwner] = await Promise.all([
+    supabase
+      .from('reader_blocked_author_pages')
+      .select('id')
+      .eq('reader_user_id', viewerId)
+      .eq('author_page_id', pageId)
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from('author_pages')
+      .select('user_id')
+      .eq('id', pageId)
+      .maybeSingle(),
+  ])
+  if (pageBlock.error) throw pageBlock.error
+  if (pageOwner.error) throw pageOwner.error
+  if (pageBlock.data) return true
+  const ownerId = String(pageOwner.data?.user_id || '')
+  if (!ownerId) return false
+  const blockedOwners = await getBlockedReaderOwnerIds(viewerId, [ownerId])
+  return blockedOwners.has(ownerId)
 }
 
 async function getPrivateAccessForOwner(ownerId, viewerId) {
@@ -61,7 +159,18 @@ export async function requirePrivateReaderPostAccess(req, res, next) {
       if (error) throw error
       sourceId = data?.post_id
     }
-    const postId = await resolveReaderPostSourceId(sourceId)
+    const reference = await resolveReaderPostReference(sourceId)
+    if (!reference) return next()
+    if (reference.echoOwnerId) {
+      const blockedEchoOwners = await getBlockedReaderOwnerIds(viewerId, [reference.echoOwnerId])
+      if (blockedEchoOwners.has(reference.echoOwnerId)) {
+        return res.status(404).json({ ok: false, message: 'Post not found' })
+      }
+    }
+    if (await getBlockedAuthorEchoSource(viewerId, reference.sourceType, reference.sourceId)) {
+      return res.status(404).json({ ok: false, message: 'Post not found' })
+    }
+    const postId = reference.postId
     if (!postId) return next()
     const { data: post, error } = await supabase
       .from('reader_posts')
@@ -72,6 +181,10 @@ export async function requirePrivateReaderPostAccess(req, res, next) {
     if (error) throw error
     if (!post) return next()
     const ownerId = String(post.user_id)
+    const blockedOwners = await getBlockedReaderOwnerIds(viewerId, [ownerId])
+    if (blockedOwners.has(ownerId)) {
+      return res.status(404).json({ ok: false, message: 'Post not found' })
+    }
     if (await getPrivateAccessForOwner(ownerId, viewerId)) return next()
     return res.status(404).json({ ok: false, message: 'Post not found' })
   } catch (error) {
@@ -95,8 +208,12 @@ export async function filterVisibleSavedReaderPosts(items, viewerId) {
     .is('deleted_at', null)
   if (error) throw error
   const postOwners = new Map((posts || []).map((post) => [String(post.id), String(post.user_id)]))
-  const privateOwners = await getPrivateReaderOwnerIds([...postOwners.values()])
-  const privateOtherOwners = [...privateOwners].filter((id) => id !== String(viewerId || ''))
+  const ownerIds = uniqueIds([...postOwners.values()])
+  const [privateOwners, blockedOwners] = await Promise.all([
+    getPrivateReaderOwnerIds(ownerIds),
+    getBlockedReaderOwnerIds(viewerId, ownerIds),
+  ])
+  const privateOtherOwners = [...privateOwners].filter((id) => id !== String(viewerId || '') && !blockedOwners.has(id))
   let followed = new Set()
   if (privateOtherOwners.length && viewerId) {
     const { data, error: followError } = await supabase
@@ -110,6 +227,6 @@ export async function filterVisibleSavedReaderPosts(items, viewerId) {
   return rows.filter((row) => {
     if (row?.source_type !== 'reader_post') return true
     const owner = postOwners.get(mapped.get(String(row.source_id)))
-    return Boolean(owner && (!privateOwners.has(owner) || owner === String(viewerId) || followed.has(owner)))
+    return Boolean(owner && !blockedOwners.has(owner) && (!privateOwners.has(owner) || owner === String(viewerId) || followed.has(owner)))
   })
 }
