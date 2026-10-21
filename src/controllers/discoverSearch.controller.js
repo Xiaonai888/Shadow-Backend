@@ -1425,6 +1425,48 @@ async function buildDiscoverSearchPayload({
           scanLimit
         )
 
+  const fuzzySearch = async (table, column, select, applyFilters) => {
+    const { normalizeSmartSearch, rankSmartSearchResults } = await import(
+      '../services/smartSearchCore.service.js'
+    )
+    const normalized = normalizeSmartSearch(keyword)
+      .replace(/[^\p{L}\p{M}\p{N}]/gu, '')
+    const characters = Array.from(normalized)
+
+    if (characters.length < 4 || characters.length > 32) return []
+
+    const width = characters.length >= 12 ? 4 : 3
+    const count = Math.min(6, characters.length - width + 1)
+    const fragments = new Set()
+
+    for (let index = 0; index < count; index += 1) {
+      const start = Math.round(
+        index * (characters.length - width) / Math.max(1, count - 1)
+      )
+      fragments.add(characters.slice(start, start + width).join(''))
+    }
+
+    let query = supabase
+      .from(table)
+      .select(select)
+      .or([...fragments].map((part) => `${column}.ilike.*${part}*`).join(','))
+      .limit(Math.min(scanLimit, 80))
+
+    query = applyFilters(query)
+    const { data, error } = await query
+
+    if (error) {
+      console.error('DISCOVER FUZZY SEARCH ERROR:', error.message)
+      return []
+    }
+
+    return rankSmartSearchResults(data || [], keyword, {
+      fields: [column],
+      minimumScore: 180,
+      limit: scanLimit,
+    })
+  }
+
   const sections = {
     readers: [],
     pages: [],
@@ -1444,19 +1486,6 @@ async function buildDiscoverSearchPayload({
           sectionLimit
         )
         .map(publicReader)
-  }
-
-  if (
-    type === 'all' ||
-    type === 'pages'
-  ) {
-    sections.pages =
-      matchedPages
-        .slice(
-          0,
-          sectionLimit
-        )
-        .map(publicPage)
   }
 
   let storyCandidates = []
@@ -1520,6 +1549,73 @@ async function buildDiscoverSearchPayload({
   }
 
   await Promise.all(requests)
+
+  const hasExactResults = Boolean(
+    matchedUsers.length ||
+    matchedPages.length ||
+    storyCandidates.length ||
+    pdfCandidates.length ||
+    postCandidates.readerPosts.length ||
+    postCandidates.authorPosts.length
+  )
+
+  if (type !== 'all' || !hasExactResults) {
+    const fallbackRequests = []
+
+    if ((type === 'all' || type === 'pages') && matchedPages.length === 0) {
+      fallbackRequests.push((async () => {
+        const pages = await fuzzySearch(
+          'author_pages',
+          'page_name',
+          'id, user_id, page_name, page_username, page_slug, bio, avatar_url, cover_url, total_stories, total_followers, status, created_at, updated_at',
+          (query) => query.eq('status', 'active')
+        )
+        matchedPages.push(...pages)
+      })())
+    }
+
+    if ((type === 'all' || type === 'stories') && storyCandidates.length === 0) {
+      fallbackRequests.push((async () => {
+        storyCandidates = await fuzzySearch(
+          'stories',
+          'title',
+          'id, author_id, user_id, title, story_type, story_language, main_genre, story_status, tags, description, is_adult, cover_url, landscape_thumbnail_url, status, access_type, total_episodes, total_views, total_likes, total_comments, created_at, updated_at',
+          (query) => {
+            let filtered = query.eq('status', 'published').is('deleted_at', null)
+            filtered = applyAdultStoryVisibility(filtered, ageAccess)
+            if (storySetting) filtered = filtered.contains('story_settings', [storySetting])
+            return filtered
+          }
+        )
+      })())
+    }
+
+    if ((type === 'all' || type === 'pdfs') && pdfCandidates.length === 0) {
+      fallbackRequests.push((async () => {
+        pdfCandidates = await fuzzySearch(
+          'author_store_products',
+          'title',
+          'id, author_page_id, user_id, product_type, title, author_name, publisher, category, genre, description, cover_url, original_price, sale_price, status, page_count, created_at, updated_at',
+          (query) => query.eq('product_type', 'pdf').eq('status', 'active')
+        )
+      })())
+    }
+
+    await Promise.all(fallbackRequests)
+  }
+
+  if (
+    type === 'all' ||
+    type === 'pages'
+  ) {
+    sections.pages =
+      matchedPages
+        .slice(
+          0,
+          sectionLimit
+        )
+        .map(publicPage)
+  }
 
   if (requests.length) {
     const {
@@ -1622,6 +1718,7 @@ async function buildDiscoverSearchPayload({
     },
   }
 }
+
 
 export async function searchDiscover(
   req,
