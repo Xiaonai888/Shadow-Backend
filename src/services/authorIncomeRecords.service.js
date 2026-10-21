@@ -393,10 +393,10 @@ export async function getAuthorIncomeRecordData({
   )
 
   const [
-    summaryRows,
-    selectedSummaryRows,
-    selectedRecordRows,
-  ] = await Promise.all([
+  summaryRows,
+  additionalSelectedRows,
+  selectedRecordRows,
+] = await Promise.all([
     fetchAllSummaryRows(
       authorId,
       new Date(summaryStartTime).toISOString(),
