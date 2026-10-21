@@ -149,3 +149,18 @@ When asked to create or modify backend data behavior:
 12. Preserve API compatibility and authorization.
 13. Implement the smallest safe change.
 14. Run the relevant existing checks before calling the task complete.
+
+## Supabase Public Table Access Standard (Effective 2026-10-30)
+
+- From October 30, 2026, existing Supabase projects will not automatically expose newly created `public` tables to the Data API (`supabase-js`, PostgREST, GraphQL). Existing tables retain their existing grants.
+- Every migration that creates or recreates a `public` table must explicitly decide whether the Data API needs access. When it does, include the required table `GRANT` statements in that same migration, instead of relying on implicit defaults.
+- Grant only necessary operations (`SELECT`, `INSERT`, `UPDATE`, `DELETE`) to the roles actually used (`anon`, `authenticated`, `service_role`). Do not copy blanket full-access grants to every table.
+- `anon` must have only deliberately public permissions. Restrict reader-private, Diamonds, payments, gifts, income, admin, and security-related data to appropriate roles and ownership rules.
+- Enable RLS and define appropriate per-operation policies for tables accessed by non-privileged roles. `GRANT` controls table operations while RLS controls permitted rows; one never replaces the other.
+- Keep `service_role` and all privileged credentials exclusively in trusted server environments. Remember that Supabase service-role access bypasses RLS; enforce authorization in Backend endpoints.
+- For new tables with identity/serial or other sequence-backed operations, inspect whether explicit sequence privileges are required; never grant more than necessary.
+- Recreated schemas in new projects, preview branches, and `supabase db reset` must work without relying on legacy default grants. Do not retroactively alter existing tables unless the task explicitly calls for it.
+- When encountering PostgREST error `42501 permission denied`, inspect the API role and the error hint, then add the smallest correct grant in the migration; also verify applicable RLS policies.
+- Before completion, test intended operations using the same roles as production clients, reject unauthorized access, and preserve existing API behavior.
+- Source: https://github.com/orgs/supabase/discussions/45329
+
