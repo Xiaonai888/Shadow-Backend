@@ -24,6 +24,7 @@ import {
   updateUserProfile,
 } from '../controllers/users.controller.js'
 import { searchReaderBlockTargets } from '../controllers/readerBlockSearch.controller.js'
+import { getMyReaderBlockedList } from '../controllers/readerBlockedList.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import readerDeviceAccessRoutes from './readerDeviceAccess.routes.js'
 import { verifyTurnstile } from '../middleware/turnstile.middleware.js'
@@ -106,6 +107,7 @@ router.get('/me/privacy', requireUser, getReaderAccountPrivacy)
 router.put('/me/privacy', requireUser, updateReaderAccountPrivacy)
 router.get('/me/summary', requireUser, getMeSummary)
 router.get('/me/block-targets/search', requireUser, searchReaderBlockTargets)
+router.get('/me/blocked', requireUser, getMyReaderBlockedList)
 router.get('/suggestions', requireUser, getUserSuggestions)
 router.put('/avatar', requireUser, updateUserAvatar)
 router.put('/profile', requireUser, updateUserProfile)
