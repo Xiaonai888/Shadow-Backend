@@ -221,11 +221,52 @@ export async function getFollowedAuthorPostsFeed(req, res) {
 
     if (authorPagesError) throw authorPagesError
 
+    if (!authorPages?.length) {
+      return res.status(200).json({
+        ok: true,
+        posts: [],
+        limit,
+        has_more: false,
+        next_cursor: null,
+        snapshot_at: snapshotAt,
+      })
+    }
+
+    const pageIds = [...new Set(authorPages.map((page) => page.id).filter(Boolean))]
+    const ownerIds = [...new Set(authorPages.map((page) => page.user_id).filter(Boolean))]
+
+    const [pageBlocksResult, accountBlocksResult] = await Promise.all([
+      supabase
+        .from('reader_blocked_author_pages')
+        .select('author_page_id')
+        .eq('reader_user_id', userId)
+        .in('author_page_id', pageIds),
+      ownerIds.length
+        ? supabase
+            .from('chat_blocks')
+            .select('blocked_user_id')
+            .eq('blocker_user_id', userId)
+            .in('blocked_user_id', ownerIds)
+        : Promise.resolve({ data: [], error: null }),
+    ])
+
+    if (pageBlocksResult.error) throw pageBlocksResult.error
+    if (accountBlocksResult.error) throw accountBlocksResult.error
+
+    const blockedPageIds = new Set(
+      (pageBlocksResult.data || []).map((row) => String(row.author_page_id))
+    )
+    const blockedOwnerIds = new Set(
+      (accountBlocksResult.data || []).map((row) => String(row.blocked_user_id))
+    )
+
     const authorById = new Map(
-      (authorPages || []).map((authorPage) => [
-        authorPage.id,
-        authorPage,
-      ])
+      authorPages
+        .filter((page) =>
+          !blockedPageIds.has(String(page.id)) &&
+          !blockedOwnerIds.has(String(page.user_id))
+        )
+        .map((page) => [page.id, page])
     )
     const activeAuthorIds = [...authorById.keys()]
 
