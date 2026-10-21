@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { canStartReaderMessageRequest } from './readerMessagesRepliesSettings.service.js'
 import {
   deleteR2ObjectByUrl,
   uploadFileToR2,
@@ -1024,6 +1025,15 @@ export async function createReaderReaderRequest({
           safeSenderUserId
         ),
     }
+  }
+
+    const allowed = await canStartReaderMessageRequest(
+    safeSenderUserId,
+    targetUser.id
+  )
+
+  if (!allowed) {
+    fail(403, 'MESSAGE_NOT_ALLOWED', 'This reader does not accept new message requests')
   }
 
   const {
