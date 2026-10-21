@@ -28,6 +28,7 @@ import {
   getReaderPostEchoes,
 } from '../controllers/readerPostEchoes.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
+import { requirePrivateReaderPostAccess } from '../services/readerPostPrivacy.service.js'
 
 const router = express.Router()
 const feedRequestsInFlight = new Map()
@@ -84,7 +85,7 @@ function coalesceReaderPostsFeed(req, res, next) {
 
 router.get('/feed', requireUser, coalesceReaderPostsFeed, getReaderPostsFeed)
 router.get('/me', requireUser, getMyReaderPosts)
-router.get('/:postId', requireUser, getReaderPostById)
+router.get('/:postId', requireUser, requirePrivateReaderPostAccess, getReaderPostById)
 router.post('/me', requireUser, createMyReaderPost)
 router.patch('/me/:postId', requireUser, updateMyReaderPost)
 router.delete('/me/:postId', requireUser, deleteMyReaderPost)
@@ -92,62 +93,74 @@ router.delete('/me/:postId', requireUser, deleteMyReaderPost)
 router.get(
   '/:postId/reactions',
   requireUser,
+  requirePrivateReaderPostAccess,
   getReaderPostReactions
 )
 
 router.get(
   '/:postId/reaction',
   requireUser,
+  requirePrivateReaderPostAccess,
   getReaderPostReactionStatus
 )
 router.post(
   '/:postId/reaction',
   requireUser,
+  requirePrivateReaderPostAccess,
   setReaderPostReaction
 )
 
 router.get(
   '/:postId/comments',
   requireUser,
+  requirePrivateReaderPostAccess,
   getReaderPostComments
 )
 router.post(
   '/:postId/comments',
   requireUser,
+  requirePrivateReaderPostAccess,
   createReaderPostComment
 )
 router.patch(
   '/comments/:commentId',
   requireUser,
+  requirePrivateReaderPostAccess,
   updateOwnReaderPostComment
 )
 router.delete(
   '/comments/:commentId',
   requireUser,
+  requirePrivateReaderPostAccess,
   deleteOwnReaderPostComment
 )
 router.post(
   '/comments/:commentId/like',
   requireUser,
+  requirePrivateReaderPostAccess,
   toggleReaderPostCommentLike
 )
 
 router.get(
   '/comments/:commentId/replies',
   requireUser,
+  requirePrivateReaderPostAccess,
   getReaderPostCommentReplies
 )
 
 router.get(
   '/:postId/echoes',
   requireUser,
+  requirePrivateReaderPostAccess,
   getReaderPostEchoes
 )
 router.post(
   '/:postId/echoes',
   requireUser,
+  requirePrivateReaderPostAccess,
   createReaderPostEcho
 )
+
 
 router.get(
   '/user/:username',
