@@ -207,6 +207,88 @@ function buildBlockStatus(
   }
 }
 
+async function synchronizeDirectPairConversations(firstUserId, secondUserId, shouldBlock) {
+  if (!shouldBlock) {
+    const remainingBlocks = await getBlockRows(firstUserId, secondUserId)
+    if (remainingBlocks.length) return
+  }
+
+  const findConversationIds = async (userId) => {
+    const ids = new Set()
+    const pageSize = 500
+
+    for (let offset = 0; ; offset += pageSize) {
+      const { data, error } = await supabase
+        .from('chat_participants')
+        .select('conversation_id')
+        .eq('user_id', userId)
+        .is('deleted_at', null)
+        .order('conversation_id', { ascending: true })
+        .range(offset, offset + pageSize - 1)
+
+      if (error) throw databaseFailure(error, 'Failed to load shared conversations')
+      const rows = data || []
+      for (const row of rows) {
+        if (row.conversation_id) ids.add(String(row.conversation_id))
+      }
+      if (rows.length < pageSize) break
+    }
+    return ids
+  }
+
+  const [mine, theirs] = await Promise.all([
+    findConversationIds(firstUserId),
+    findConversationIds(secondUserId),
+  ])
+  const sharedIds = [...mine].filter((id) => theirs.has(id))
+
+  for (let offset = 0; offset < sharedIds.length; offset += 80) {
+    const { data, error } = await supabase
+      .from('chat_conversations')
+      .select('id, conversation_type, is_group, request_status, request_decided_at, status_before_block, request_decided_at_before_block')
+      .in('id', sharedIds.slice(offset, offset + 80))
+
+    if (error) throw databaseFailure(error, 'Failed to load shared conversations')
+
+    for (const conversation of data || []) {
+      if (conversation.is_group === true || !['reader_reader', 'reader_author'].includes(conversation.conversation_type)) continue
+
+      if (shouldBlock && conversation.request_status !== 'blocked') {
+        const { error: updateError } = await supabase
+          .from('chat_conversations')
+          .update({
+            request_status: 'blocked',
+            request_decided_at: new Date().toISOString(),
+            status_before_block: conversation.request_status,
+            request_decided_at_before_block: conversation.request_decided_at,
+          })
+          .eq('id', conversation.id)
+          .eq('request_status', conversation.request_status)
+
+        if (updateError) throw databaseFailure(updateError, 'Failed to block shared conversation')
+      }
+
+      if (!shouldBlock && conversation.request_status === 'blocked') {
+        const restoreStatus = RESTORABLE_STATUSES.includes(conversation.status_before_block)
+          ? conversation.status_before_block
+          : 'pending'
+        const { error: restoreError } = await supabase
+          .from('chat_conversations')
+          .update({
+            request_status: restoreStatus,
+            request_decided_at: conversation.request_decided_at_before_block,
+            status_before_block: null,
+            request_decided_at_before_block: null,
+          })
+          .eq('id', conversation.id)
+          .eq('request_status', 'blocked')
+
+        if (restoreError) throw databaseFailure(restoreError, 'Failed to restore shared conversation')
+      }
+    }
+  }
+}
+
 export async function getConversationBlockStatus({
   userId,
   conversationId,
@@ -297,6 +379,8 @@ export async function blockConversation({
       'Failed to block conversation'
     )
   }
+
+  await synchronizeDirectPairConversations(safeUserId, otherUserId, true)
 
   const rows = await getBlockRows(
     safeUserId,
@@ -389,6 +473,8 @@ export async function unblockConversation({
 
     updatedConversation = data
   }
+
+  await synchronizeDirectPairConversations(safeUserId, otherUserId, false)
 
   return {
     conversation: updatedConversation,
