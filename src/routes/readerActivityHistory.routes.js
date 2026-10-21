@@ -32,7 +32,7 @@ function parseCursor(raw, category, now) {
   if (typeof raw !== 'string' || raw.length > 1024 || !/^[A-Za-z0-9_-]+$/.test(raw)) return false
   try {
     const state = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'))
-    if (!state || state.category !== category || !['events', 'summaries'].includes(state.phase)) return false
+    if (!state || state.category !== category || !['events', 'archive', 'summaries'].includes(state.phase)) return false
     const asOf = Date.parse(state.asOf)
     if (!Number.isFinite(asOf) || asOf > now + 60000 || asOf < now - DAY_MS) return false
     const start = detailedStart(new Date(asOf)).toISOString()
@@ -44,7 +44,7 @@ function parseCursor(raw, category, now) {
       if (!Number.isFinite(time) || time > asOf || time < now - RETENTION_MS - DAY_MS) return false
     }
     if (state.phase === 'events' && state.after === null) return false
-    return state
+    return { ...state, phase: state.phase === 'summaries' ? 'archive' : state.phase }
   } catch {
     return false
   }
@@ -54,6 +54,13 @@ function olderThan(query, column, after) {
   if (!after) return query
   const time = new Date(after.time).toISOString()
   return query.or(`${column}.lt.${time},and(${column}.eq.${time},id.lt.${after.id})`)
+}
+
+function rowCursor(item) {
+  return {
+    time: new Date(item.is_summary ? item.period_start : item.occurred_at).toISOString(),
+    id: item.id,
+  }
 }
 
 async function readEvents(userId, category, state, limit, retentionStart) {
@@ -78,36 +85,71 @@ async function readEvents(userId, category, state, limit, retentionStart) {
   }
 }
 
-async function readSummaries(userId, category, state, limit, retentionStart) {
-  let query = supabase
-    .from('reader_activity_summaries')
-    .select('id,category,action,period,period_start,event_count,first_at,last_at')
-    .eq('user_id', userId)
-    .gte('period_start', retentionStart)
-    .lt('period_start', state.start)
-    .lte('period_start', state.asOf)
-    .order('period_start', { ascending: false })
-    .order('id', { ascending: false })
-    .limit(limit + 1)
-  if (category !== 'all') query = query.eq('category', category)
-  query = olderThan(query, 'period_start', state.after)
-  const { data, error } = await query
-  if (error) throw error
-  const rows = data || []
-  return {
-    items: rows.slice(0, limit).map((row) => ({
-      id: row.id,
-      category: row.category,
-      action: row.action,
-      period: row.period,
-      period_start: row.period_start,
-      occurred_at: row.last_at,
-      first_at: row.first_at,
-      count: row.event_count,
-      is_summary: true,
-    })),
-    hasMore: rows.length > limit,
+async function readArchive(userId, category, state, limit, retentionStart) {
+  const requests = []
+
+  if (category !== 'security') {
+    let query = supabase
+      .from('reader_activity_summaries')
+      .select('id,category,action,period,period_start,event_count,first_at,last_at')
+      .eq('user_id', userId)
+      .gte('last_at', retentionStart)
+      .lt('period_start', state.start)
+      .lte('period_start', state.asOf)
+      .order('period_start', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(limit + 1)
+    if (category !== 'all') query = query.eq('category', category)
+    requests.push(olderThan(query, 'period_start', state.after))
   }
+
+  {
+    let query = supabase
+      .from('reader_activity_events')
+      .select('id,category,action,description,occurred_at,created_at')
+      .eq('user_id', userId)
+      .gte('occurred_at', retentionStart)
+      .lt('occurred_at', state.start)
+      .lte('occurred_at', state.asOf)
+      .order('occurred_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(limit + 1)
+    if (category !== 'all') query = query.eq('category', category)
+    requests.push(olderThan(query, 'occurred_at', state.after))
+  }
+
+  const results = await Promise.all(requests)
+  const items = []
+  for (const { data, error } of results) {
+    if (error) throw error
+    for (const row of data || []) {
+      if (row.event_count != null) {
+        items.push({
+          id: row.id,
+          category: row.category,
+          action: row.action,
+          period: row.period,
+          period_start: row.period_start,
+          occurred_at: row.last_at,
+          first_at: row.first_at,
+          count: row.event_count,
+          is_summary: true,
+        })
+      } else {
+        items.push({ ...row, period: 'day', is_summary: false })
+      }
+    }
+  }
+
+  items.sort((left, right) => {
+    const a = rowCursor(left)
+    const b = rowCursor(right)
+    if (a.time !== b.time) return a.time > b.time ? -1 : 1
+    if (a.id === b.id) return 0
+    return a.id > b.id ? -1 : 1
+  })
+
+  return { items: items.slice(0, limit), hasMore: items.length > limit }
 }
 
 router.get('/', requireUser, createRateLimit({
@@ -151,29 +193,24 @@ router.get('/', requireUser, createRateLimit({
       const results = await readEvents(userId, category, state, requestedLimit, retentionStart)
       items = results.items
       if (results.hasMore) {
-        const last = items[items.length - 1]
-        nextCursor = encodeCursor({
-          ...state,
-          after: { time: last.occurred_at, id: last.id },
-        })
+        nextCursor = encodeCursor({ ...state, after: rowCursor(items[items.length - 1]) })
       } else if (items.length === requestedLimit) {
-        nextCursor = encodeCursor({ ...state, phase: 'summaries', after: null })
+        nextCursor = encodeCursor({ ...state, phase: 'archive', after: null })
       }
     }
 
     if (!nextCursor && items.length < requestedLimit) {
-      const summaryState = state.phase === 'summaries'
+      const archiveState = state.phase === 'archive'
         ? state
-        : { ...state, phase: 'summaries', after: null }
-      const results = await readSummaries(
-        userId, category, summaryState, requestedLimit - items.length, retentionStart
+        : { ...state, phase: 'archive', after: null }
+      const results = await readArchive(
+        userId, category, archiveState, requestedLimit - items.length, retentionStart
       )
       items = [...items, ...results.items]
       if (results.hasMore) {
-        const last = results.items[results.items.length - 1]
         nextCursor = encodeCursor({
-          ...summaryState,
-          after: { time: last.period_start, id: last.id },
+          ...archiveState,
+          after: rowCursor(results.items[results.items.length - 1]),
         })
       }
     }
