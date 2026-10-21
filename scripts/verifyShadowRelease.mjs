@@ -13,7 +13,7 @@ const roots = {
 }
 
 const expected = [
-  ['backend', 'server.js', 'b60cea5f1c9f50f13f8e56f5b20c3bc974f728b5'],
+  ['backend', 'server.js', 'd676a7f141c0fa69236cb5106300b41561db7cee'],
   ['backend', 'src/middleware/workKillSwitch.middleware.js', 'b8b3c487d01c9f1b063e97b03d76ac6cdc9323df'],
   ['backend', 'src/middleware/workDetector.middleware.js', '21e967dcd42d116e200df61645826683fcd976e0'],
   ['backend', 'src/services/workKillSwitch.service.js', '953708e3cfde5e0434f0e346dec07903f3433ff5'],
@@ -22,15 +22,15 @@ const expected = [
   ['backend', 'src/services/criticalCircuitCanary.service.js', '3408529cea0822bb374ec05645564d750a3f68af'],
   ['backend', 'src/controllers/adminWorkKillSwitch.controller.js', 'b89011415493313f1dc97065daac2f7130d4187c'],
   ['backend', 'src/routes/adminWork.routes.js', '8468899267fff3516f2b0b5f2c9a09919f2a06c3'],
-  ['backend', 'src/controllers/readingProgress.controller.js', '741930e6d15f65c5c55769a813664d68afba1afb'],
+  ['backend', 'src/controllers/readingProgress.controller.js', '2e727a07108688335f724b6b207bae3fcca11dec'],
   ['backend', 'src/controllers/readerPresence.controller.js', '072720d00c56a4e8955b861a25a6213a97e1b5cf'],
-  ['backend', 'src/controllers/storySectionRank.controller.js', 'd9ecd4509f8609b2497bd21d7eea1031a3259bc1'],
+  ['backend', 'src/controllers/storySectionRank.controller.js', 'dd61724eebfc17b11b6dfa67e82cffcbcbdbe75b'],
   ['backend', 'src/controllers/authorStoryViews.controller.js', '2776a0c5b80401b2af1435b9c352e999c5f58386'],
-  ['backend', 'src/controllers/visitorAnalytics.controller.js', 'ef1ef9f2ca1cc0de4cd68b101fdd7d09535f6367'],
-  ['web', 'src/hooks/useReadingProgressSync.js', '87aa895bdcacc067aa02477c35eca0f74e5a59c3'],
-  ['web', 'src/utils/installReaderPresenceTracking.js', '89df99f686d3f7035e976dc7caf8d18b77bfc758'],
-  ['web', 'src/services/storySectionRankTracking.js', 'e390654965f81ad341a9825a3dc81116d9378a8e'],
-  ['web', 'src/components/VisitorTracker.jsx', '2125f9873bd941cde5939f9d4b8ac1a56dd89fb5'],
+  ['backend', 'src/controllers/visitorAnalytics.controller.js', 'daef95c606218676fc87de047f9c79d8d300ced7'],
+  ['web', 'src/hooks/useReadingProgressSync.js', '7229e954b584b6e893714529b6d4614dd02e8ba8'],
+  ['web', 'src/utils/installReaderPresenceTracking.js', 'ee9b3a300fa13b1843128dfbd0007aaeeecb0541'],
+  ['web', 'src/services/storySectionRankTracking.js', '6a8474688bf771640f09dd957247f5ffa03d46d9'],
+  ['web', 'src/components/VisitorTracker.jsx', 'd1506794d0cb9f19f27c974c8acd1c8ef2646c9f'],
   ['admin', 'src/pages/AdminKillSwitchPage.jsx', '891fc9028f3a19e95bfa6cb5059e2db1b5a9d7fc'],
   ['admin', 'src/components/CriticalCanaryPanel.jsx', '60f647763a2bc3fe79866a3c01940b05311c911e'],
 ]
