@@ -242,7 +242,7 @@ async function readPost(postId) {
   return data
 }
 
-async function canUserComment(post, userId) {
+async function canUserComment(post, userId, ownerSettings = null) {
   if (!post || !userId) return false
 
   if (
@@ -259,7 +259,7 @@ async function canUserComment(post, userId) {
 
   if (permission === 'no_one') return false
 
-const settings = await getReaderCommentSettings(post.user_id)
+const settings = ownerSettings || await getReaderCommentSettings(post.user_id)
 if (!settings.allowComments) return false
 
 if (settings.audience !== 'everyone') {
@@ -833,13 +833,19 @@ export async function createReaderPostComment(
       })
     }
 
-    if (!(await canUserComment(post, userId))) {
+    const ownerSettings = String(post.user_id) === String(userId)
+      ? null
+      : await getReaderCommentSettings(post.user_id)
+
+    if (!(await canUserComment(post, userId, ownerSettings))) {
       return res.status(403).json({
         ok: false,
         message:
           'You cannot comment on this post',
       })
     }
+
+    const pendingApproval = ownerSettings?.commentApproval === true
 
     if (await shouldRejectReaderPostSpam({
       text,
@@ -891,6 +897,8 @@ export async function createReaderPostComment(
         user_id: userId,
         parent_id: parentId,
         text,
+        moderation_status: pendingApproval ? 'pending' : 'approved',
+        is_hidden: pendingApproval,
       })
       .select(
         COMMENT_SELECT
@@ -899,18 +907,18 @@ export async function createReaderPostComment(
 
     if (createError) throw createError
 
-    const commentCount =
-      await countVisibleComments(postId)
-    await updatePostCommentCount(
-      postId,
-      commentCount
-    )
+    const commentCount = pendingApproval
+      ? Number(post.comment_count || 0)
+      : await countVisibleComments(postId)
+    if (!pendingApproval) {
+      await updatePostCommentCount(postId, commentCount)
+    }
 
-    return res.status(201).json({
+    return res.status(pendingApproval ? 202 : 201).json({
       ok: true,
-      comment: publicComment(
-        createdComment
-      ),
+      pending: pendingApproval,
+      moderation_status: pendingApproval ? 'pending' : 'approved',
+      comment: publicComment(createdComment),
       comment_count: commentCount,
     })
   } catch (error) {
@@ -965,7 +973,7 @@ export async function updateOwnReaderPostComment(
       error: findError,
     } = await supabase
       .from('reader_post_comments')
-      .select('id, user_id, post_id')
+      .select('id, user_id, post_id, is_hidden, moderation_status')
       .eq('id', commentId)
       .maybeSingle()
 
@@ -1001,6 +1009,19 @@ export async function updateOwnReaderPostComment(
       })
     }
 
+    const post = await readPost(existingComment.post_id)
+    if (!post) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Post not found',
+      })
+    }
+
+    const pendingApproval =
+      String(post.user_id) !== String(userId) &&
+      !(existingComment.is_hidden && existingComment.moderation_status === 'approved') &&
+      (await getReaderCommentSettings(post.user_id)).commentApproval === true
+
     const {
       data: updatedComment,
       error: updateError,
@@ -1008,8 +1029,13 @@ export async function updateOwnReaderPostComment(
       .from('reader_post_comments')
       .update({
         text,
-        updated_at:
-          new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        ...(pendingApproval ? {
+          moderation_status: 'pending',
+          is_hidden: true,
+          moderated_by: null,
+          moderated_at: null,
+        } : {}),
       })
       .eq('id', commentId)
       .eq('user_id', userId)
@@ -1019,6 +1045,12 @@ export async function updateOwnReaderPostComment(
       .single()
 
     if (updateError) throw updateError
+
+    let commentCount
+    if (pendingApproval && !existingComment.is_hidden) {
+      commentCount = await countVisibleComments(existingComment.post_id)
+      await updatePostCommentCount(existingComment.post_id, commentCount)
+    }
 
     const { data: reaction } =
       await supabase
@@ -1050,10 +1082,9 @@ export async function updateOwnReaderPostComment(
 
     return res.status(200).json({
       ok: true,
-      comment: publicComment(
-        updatedComment,
-        reactionMap
-      ),
+      pending: pendingApproval || updatedComment.is_hidden && existingComment.moderation_status === 'pending',
+      comment: publicComment(updatedComment, reactionMap),
+      ...(commentCount === undefined ? {} : { comment_count: commentCount }),
     })
   } catch (error) {
     console.error(
