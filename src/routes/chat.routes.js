@@ -71,6 +71,37 @@ const inboxSummaryLimit = createRateLimit({
   identity: (req) => req.user?.user_id,
 })
 
+
+router.get('/conversations/unread-sender-count', inboxSummaryLimit, async (req, res) => {
+  const role = String(req.query?.role || 'reader').trim().toLowerCase()
+
+  if (!['reader', 'author'].includes(role)) {
+    return res.status(400).json({ ok: false, message: 'Invalid chat role' })
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('get_chat_unread_sender_count_v1', {
+      p_user_id: req.user?.user_id,
+      p_role: role,
+    })
+
+    if (error) throw error
+    const count = Number(data)
+    if (!Number.isSafeInteger(count) || count < 0) {
+      throw new Error('Invalid unread sender count')
+    }
+
+    return res.status(200).json({ ok: true, unread_sender_count: count })
+  } catch (error) {
+    console.error('CHAT_UNREAD_SENDER_COUNT_ERROR', error?.message || error)
+    return res.status(503).json({
+      ok: false,
+      code: 'CHAT_UNREAD_SENDER_COUNT_UNAVAILABLE',
+      message: 'Unread sender count is temporarily unavailable',
+    })
+  }
+})
+
 router.get('/conversations/lightweight-page', inboxSummaryLimit, async (req, res) => {
   const role = String(req.query?.role || 'reader').trim().toLowerCase()
   const status = String(req.query?.status || 'all').trim().toLowerCase()
