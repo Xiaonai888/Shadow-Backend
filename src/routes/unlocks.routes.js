@@ -24,13 +24,30 @@ import { requireAdmin } from '../middleware/auth.middleware.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { loadReaderPremiumTier } from '../middleware/readerPremiumTier.middleware.js'
 
+function logReadGateFailure(req, res, next) {
+  const startedAt = Date.now()
+  const originalJson = res.json.bind(res)
+  res.json = (body) => {
+    if (res.statusCode >= 400) {
+      console.warn('READ_GATE_HTTP_ERROR', JSON.stringify({
+        status: res.statusCode,
+        code: String(body?.code || 'UNKNOWN'),
+        message: String(body?.message || '').slice(0, 120),
+        duration_ms: Date.now() - startedAt,
+      }))
+    }
+    return originalJson(body)
+  }
+  next()
+}
+
 const router = express.Router()
 
 router.get('/rules', getPlatformUnlockRules)
 router.get('/events/writer-wednesday', getWriterWednesdayStatus)
 router.get('/admin/rewarded-ad-analytics', requireAdmin, getAdminRewardedAdAnalytics)
 router.get('/stories/:storyId/episodes/:episodeId/status', requireUser, loadReaderPremiumTier, getEpisodeUnlockStatus)
-router.get('/stories/:storyId/episodes/:episodeId/read-gate', requireUser, loadReaderPremiumTier, getEpisodeReadGate)
+router.get('/stories/:storyId/episodes/:episodeId/read-gate', logReadGateFailure, requireUser, loadReaderPremiumTier, getEpisodeReadGate)
 router.post('/stories/:storyId/episodes/:episodeId/diamond', requireUser, loadReaderPremiumTier, unlockEpisodeWithDiamonds)
 router.post('/stories/:storyId/episodes/:episodeId/package', requireUser, loadReaderPremiumTier, unlockEpisodePackageWithDiamonds)
 router.post('/stories/:storyId/special-promotion', requireUser, unlockDiscoverSpecialPromotionWithDiamonds)
