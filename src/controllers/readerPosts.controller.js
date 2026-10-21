@@ -3591,6 +3591,18 @@ const content = validateContent(
 
         if (error) throw error
 
+    try {
+      await syncReaderPostTagMentionLinks({
+        postId: data.id,
+        actorUserId: userId,
+        content,
+        taggedUserIds: req.body.tagged_user_ids,
+        updateTags: req.body.tagged_user_ids !== undefined,
+      })
+    } catch (linkError) {
+      console.error('READER_POST_TAG_MENTION_SYNC_ERROR:', linkError)
+    }
+
     invalidateReaderPostsFeedCandidateCache()
     await bumpContentVersions(['discover'])
 
@@ -3739,6 +3751,22 @@ export async function updateMyReaderPost(
 
         if (error) throw error
 
+    if (req.body.content !== undefined || req.body.tagged_user_ids !== undefined) {
+      try {
+        await syncReaderPostTagMentionLinks({
+          postId,
+          actorUserId: userId,
+          content,
+          taggedUserIds: req.body.tagged_user_ids,
+          updateMentions: req.body.content !== undefined,
+          updateTags: req.body.tagged_user_ids !== undefined,
+          existingPost: true,
+        })
+      } catch (linkError) {
+        console.error('READER_POST_TAG_MENTION_SYNC_ERROR:', linkError)
+      }
+    }
+
     invalidateReaderPostsFeedCandidateCache()
     await bumpContentVersions(['discover'])
 
@@ -3828,6 +3856,17 @@ export async function deleteMyReaderPost(
       .is('deleted_at', null)
 
         if (error) throw error
+
+    try {
+      const { error: linkError } = await supabase
+        .from('reader_tag_mention_links')
+        .delete()
+        .eq('post_id', postId)
+        .eq('actor_user_id', userId)
+      if (linkError) throw linkError
+    } catch (linkError) {
+      console.error('READER_POST_TAG_MENTION_DELETE_ERROR:', linkError)
+    }
 
     invalidateReaderPostsFeedCandidateCache()
     await bumpContentVersions(['discover'])
