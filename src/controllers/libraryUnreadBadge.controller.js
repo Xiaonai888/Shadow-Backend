@@ -59,17 +59,9 @@ async function findUnreadStories(storyIds, userId, todayStart, now) {
         .in('story_id', ids)
         .eq('status', 'published')
         .is('deleted_at', null)
-        .gte('published_at', todayStart)
-        .lte('published_at', now)),
-      loadAllRows(() => supabase
-        .from('episodes')
-        .select('story_id, episode_number, published_at, created_at')
-        .in('story_id', ids)
-        .eq('status', 'published')
-        .is('deleted_at', null)
-        .is('published_at', null)
-        .gte('created_at', todayStart)
-        .lte('created_at', now)),
+        .or(
+          `and(published_at.gte.${todayStart},published_at.lte.${now}),and(published_at.is.null,created_at.gte.${todayStart},created_at.lte.${now})`
+        )),
       loadAllRows(() => supabase
         .from('reading_progress')
         .select('story_id, episode_number, last_read_at')
