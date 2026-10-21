@@ -7,6 +7,9 @@ const DAY_MS = 24 * 60 * 60 * 1000
 const PAGE_SIZE = 1000
 const COMMUNITY_OVERVIEW_CACHE_MS = 5 * 60 * 1000
 const COMMUNITY_VISITOR_OVERVIEW_CACHE_MS = 60 * 1000
+const COMMUNITY_FALLBACK_VISITOR_LIMIT = 999
+const COMMUNITY_FALLBACK_ACTIVE_LIMIT = 999
+const COMMUNITY_FALLBACK_EPISODE_LIMIT = 999
 const COMMUNITY_VISITOR_SUMMARY_FIELDS = 'id, visitor_id, session_id, ip_address, device_type, browser, operating_system, country_code, is_suspected_bot, bot_score, risk_level, page_views, last_seen_at, first_seen_at'
 const COMMUNITY_VISITOR_FULL_FIELDS = 'id, visitor_id, session_id, ip_address, device_type, browser, operating_system, country_code, cf_ray, is_suspected_bot, bot_reason, bot_score, risk_level, bot_signals, webdriver_detected, event_count, rapid_repeat_count, last_event_at, page_views, first_path, last_path, referrer, user_agent, first_seen_at, last_seen_at, created_at, updated_at'
 let communityOverviewCache = null
@@ -91,42 +94,19 @@ async function getReadersTodayCount() {
 }
 
 async function getReaderActivityToday() {
-  const { startIso, nowIso } = getCambodiaDayRange()
-  const activeStartIso = getActiveStartIso()
-  const rows = []
-  let from = 0
+  const { nowIso } = getCambodiaDayRange()
+  const { data, error } = await supabase
+    .from('reading_progress')
+    .select('user_id')
+    .gte('last_read_at', getActiveStartIso())
+    .lte('last_read_at', nowIso)
+    .order('last_read_at', { ascending: false })
+    .range(0, COMMUNITY_FALLBACK_ACTIVE_LIMIT)
 
-  while (true) {
-    const { data, error } = await supabase
-      .from('reading_progress')
-      .select('user_id, last_read_at')
-      .gte('last_read_at', startIso)
-      .lte('last_read_at', nowIso)
-      .order('last_read_at', { ascending: true })
-      .range(from, from + PAGE_SIZE - 1)
-
-    if (error) throw error
-
-    const pageRows = Array.isArray(data) ? data : []
-    rows.push(...pageRows)
-
-    if (pageRows.length < PAGE_SIZE) break
-    from += PAGE_SIZE
-  }
-
-  const readersToday = new Set()
-  const activeReaders = new Set()
-
-  for (const row of rows) {
-    const userId = String(row.user_id || '').trim()
-    if (!userId) continue
-
-    readersToday.add(userId)
-
-    if (row.last_read_at && row.last_read_at >= activeStartIso) {
-      activeReaders.add(userId)
-    }
-  }
+  if (error) throw error
+  const rows = Array.isArray(data) ? data : []
+  ensureCommunityFallbackBound(rows, COMMUNITY_FALLBACK_ACTIVE_LIMIT, 'active readers')
+  const activeReaders = new Set(rows.map((row) => String(row.user_id || '').trim()).filter(Boolean))
 
   return {
     readers_today: await getReadersTodayCount(),
@@ -140,39 +120,31 @@ async function getPublishedEpisodeRowsToday() {
   const rows = []
 
   for (const mode of ['scheduled', 'legacy']) {
-    let from = 0
+    let query = supabase
+      .from('episodes')
+      .select('id, story_id')
+      .eq('status', 'published')
+      .is('deleted_at', null)
+      .order(mode === 'scheduled' ? 'published_at' : 'created_at', { ascending: true })
+      .range(0, COMMUNITY_FALLBACK_EPISODE_LIMIT)
 
-    while (true) {
-      let query = supabase
-        .from('episodes')
-        .select('id, story_id, published_at, created_at')
-        .eq('status', 'published')
-        .is('deleted_at', null)
-        .order(mode === 'scheduled' ? 'published_at' : 'created_at', { ascending: true })
-        .range(from, from + PAGE_SIZE - 1)
-
-      if (mode === 'scheduled') {
-        query = query
-          .not('published_at', 'is', null)
-          .gte('published_at', startIso)
-          .lte('published_at', effectiveEndIso)
-      } else {
-        query = query
-          .is('published_at', null)
-          .gte('created_at', startIso)
-          .lte('created_at', effectiveEndIso)
-      }
-
-      const { data, error } = await query
-
-      if (error) throw error
-
-      const pageRows = Array.isArray(data) ? data : []
-      rows.push(...pageRows)
-
-      if (pageRows.length < PAGE_SIZE) break
-      from += PAGE_SIZE
+    if (mode === 'scheduled') {
+      query = query
+        .not('published_at', 'is', null)
+        .gte('published_at', startIso)
+        .lte('published_at', effectiveEndIso)
+    } else {
+      query = query
+        .is('published_at', null)
+        .gte('created_at', startIso)
+        .lte('created_at', effectiveEndIso)
     }
+
+    const { data, error } = await query
+    if (error) throw error
+    const pageRows = Array.isArray(data) ? data : []
+    ensureCommunityFallbackBound(pageRows, COMMUNITY_FALLBACK_EPISODE_LIMIT, `${mode} episodes`)
+    rows.push(...pageRows)
   }
 
   return rows
@@ -299,34 +271,27 @@ async function countVisitorRows(column, value) {
   return count || 0
 }
 
+function ensureCommunityFallbackBound(rows, limit, metric) {
+  if (rows.length <= limit) return
+  const error = new Error(`Community visitor metrics fallback exceeded ${metric} safety limit`)
+  error.code = 'COMMUNITY_FALLBACK_LIMIT'
+  throw error
+}
+
 async function getVisitorsTodayCount() {
   const { startIso, nowIso } = getCambodiaDayRange()
-  const visitorIds = new Set()
-  let from = 0
+  const { data, error } = await supabase
+    .from('anonymous_visitor_sessions')
+    .select('visitor_id')
+    .gte('last_seen_at', startIso)
+    .lte('last_seen_at', nowIso)
+    .order('last_seen_at', { ascending: true })
+    .range(0, COMMUNITY_FALLBACK_VISITOR_LIMIT)
 
-  while (true) {
-    const { data, error } = await supabase
-      .from('anonymous_visitor_sessions')
-      .select('visitor_id')
-      .gte('last_seen_at', startIso)
-      .lte('last_seen_at', nowIso)
-      .order('last_seen_at', { ascending: true })
-      .range(from, from + PAGE_SIZE - 1)
-
-    if (error) throw error
-
-    const rows = Array.isArray(data) ? data : []
-
-    for (const row of rows) {
-      const visitorId = String(row.visitor_id || '').trim()
-      if (visitorId) visitorIds.add(visitorId)
-    }
-
-    if (rows.length < PAGE_SIZE) break
-    from += PAGE_SIZE
-  }
-
-  return visitorIds.size
+  if (error) throw error
+  const rows = Array.isArray(data) ? data : []
+  ensureCommunityFallbackBound(rows, COMMUNITY_FALLBACK_VISITOR_LIMIT, 'visitors today')
+  return new Set(rows.map((row) => String(row.visitor_id || '').trim()).filter(Boolean)).size
 }
 
 async function getCachedCommunityOverview() {
@@ -1213,10 +1178,11 @@ export async function getAdminCommunityVisitorOverview(req, res) {
     return res.status(200).json(await communityVisitorOverviewPending)
   } catch (error) {
     console.error('ADMIN COMMUNITY VISITOR OVERVIEW ERROR:', error)
-    return res.status(500).json({
+    return res.status(error.code === 'COMMUNITY_FALLBACK_LIMIT' ? 503 : 500).json({
       ok: false,
-      message: 'Failed to load visitor overview',
-      error: error.message,
+      message: error.code === 'COMMUNITY_FALLBACK_LIMIT'
+        ? 'Visitor metrics temporarily unavailable; retry when the metrics RPC is restored'
+        : 'Failed to load visitor overview',
     })
   }
 }
