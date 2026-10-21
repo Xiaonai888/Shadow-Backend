@@ -1,7 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { getReaderTagMentionPermissions } from './readerTagMentionPermissions.service.js'
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i
 const LIMIT = 20
 
 function mentionsInText(content) {
@@ -38,7 +38,7 @@ function tagIds(value, actorId) {
     .filter((id) => UUID.test(id) && id !== actorId)
 }
 
-async function permittedRows({ actorId, postId, kind, targetIds }) {
+async function permittedRows({ actorId, postId, commentId, kind, targetIds }) {
   if (!targetIds.length) return []
   const checks = await getReaderTagMentionPermissions({
     actorUserId: actorId,
@@ -49,7 +49,7 @@ async function permittedRows({ actorId, postId, kind, targetIds }) {
     const permission = checks.get(id)
     if (!permission?.allowed) return []
     return [{
-      post_id: postId,
+      ...(postId ? { post_id: postId } : { comment_id: commentId }),
       actor_user_id: actorId,
       target_user_id: id,
       kind,
@@ -110,6 +110,75 @@ export async function syncReaderPostTagMentionLinks({
   }
   if (addRows.length) {
     const { error } = await supabase.from('reader_tag_mention_links').insert(addRows)
+    if (error && error.code !== '23505') throw error
+  }
+}
+
+export async function syncReaderCommentMentionLinks({
+  commentId,
+  actorUserId,
+  text,
+  existingComment = false,
+  moderationPending = false,
+}) {
+  const actorId = String(actorUserId || '').trim().toLowerCase()
+  const id = String(commentId || '').trim().toLowerCase()
+  if (!UUID.test(actorId) || !UUID.test(id)) {
+    throw new TypeError('Invalid comment or author ID')
+  }
+  const mentions = await mentionIds(text, actorId)
+  if (!existingComment && !mentions.length) return
+  const requested = await permittedRows({
+    actorId,
+    commentId: id,
+    kind: 'mention',
+    targetIds: mentions,
+  })
+  const desiredStatus = moderationPending ? 'pending' : 'approved'
+  let previous = []
+  if (existingComment) {
+    const { data, error } = await supabase
+      .from('reader_tag_mention_links')
+      .select('id,target_user_id,status')
+      .eq('comment_id', id)
+      .eq('actor_user_id', actorId)
+      .eq('kind', 'mention')
+    if (error) throw error
+    previous = data || []
+  }
+  const desiredIds = new Set(requested.map((row) => row.target_user_id))
+  const previousIds = new Set(previous.map((row) => String(row.target_user_id).toLowerCase()))
+  const removeIds = previous
+    .filter((row) => !desiredIds.has(String(row.target_user_id).toLowerCase()))
+    .map((row) => row.id)
+  const insertRows = requested
+    .filter((row) => !previousIds.has(row.target_user_id))
+    .map((row) => ({ ...row, status: desiredStatus }))
+  const statusIds = previous
+    .filter((row) => desiredIds.has(String(row.target_user_id).toLowerCase()) && row.status !== desiredStatus)
+    .map((row) => row.id)
+  if (removeIds.length) {
+    const { error } = await supabase
+      .from('reader_tag_mention_links')
+      .delete()
+      .eq('comment_id', id)
+      .eq('actor_user_id', actorId)
+      .in('id', removeIds)
+    if (error) throw error
+  }
+  if (statusIds.length) {
+    const { error } = await supabase
+      .from('reader_tag_mention_links')
+      .update({ status: desiredStatus, reviewed_at: null })
+      .eq('comment_id', id)
+      .eq('actor_user_id', actorId)
+      .in('id', statusIds)
+    if (error) throw error
+  }
+  if (insertRows.length) {
+    const { error } = await supabase
+      .from('reader_tag_mention_links')
+      .insert(insertRows)
     if (error && error.code !== '23505') throw error
   }
 }
