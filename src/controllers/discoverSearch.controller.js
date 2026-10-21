@@ -3,7 +3,7 @@ import {
   applyAdultStoryVisibility,
   getReaderAgeAccess,
 } from '../services/storyAgeAccess.service.js'
-
+import { getSmartSearchVariants } from '../services/smartSearchCore.service.js'
 
 const VALID_TYPES = new Set([
   'all',
@@ -127,10 +127,11 @@ function getSearchTerms(value) {
   const compactQuery = normalizedQuery.replace(/[\s._-]+/g, '')
   const tokens = keyword.split(/\s+/).filter(Boolean)
   const candidates = [
-    keyword,
-    compactQuery !== normalizedQuery ? compactQuery : '',
-    ...tokens,
-  ]
+  keyword,
+  ...getSmartSearchVariants(keyword, 8),
+  compactQuery !== normalizedQuery ? compactQuery : '',
+  ...tokens,
+]
 
   const addFuzzyFragments = (valueToSplit) => {
     const normalized = cleanFilterKeyword(valueToSplit)
