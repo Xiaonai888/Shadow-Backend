@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
 import { bumpContentVersions } from '../services/contentVersion.service.js'
+import { syncReaderPostTagMentionLinks } from '../services/readerPostTagMentionLinks.service.js'
 import {
   assertR2MediaReference,
 } from '../services/mediaStoragePolicy.service.js'
