@@ -1374,12 +1374,78 @@ export async function getPublicStories(req, res) {
       ).limit(queryLimit)
     }
 
-    const queryResults = genre && !relationshipGroup
+        let queryResults = genre && !relationshipGroup
       ? await Promise.all([
           buildStoriesQuery('main'),
           buildStoriesQuery('tag'),
         ])
       : [await buildStoriesQuery()]
+
+    if (
+      search &&
+      !newArrivalsPagination &&
+      !genrePagination &&
+      !genre &&
+      !language &&
+      !storySetting &&
+      !storyStatus &&
+      !authorId &&
+      !exclude &&
+      !rankingOnly &&
+      !(maxEpisodes > 0) &&
+      queryResults.every((result) => !result.error && !(result.data || []).length)
+    ) {
+      const { normalizeSmartSearch, rankSmartSearchResults } = await import(
+        '../services/smartSearchCore.service.js'
+      )
+      const normalized = normalizeSmartSearch(search)
+        .replace(/[^\p{L}\p{M}\p{N}]/gu, '')
+      const characters = Array.from(normalized)
+
+      if (characters.length >= 4 && characters.length <= 32) {
+        const width = characters.length >= 12 ? 4 : 3
+        const windowCount = Math.min(6, characters.length - width + 1)
+        const fragments = new Set()
+
+        for (let i = 0; i < windowCount; i += 1) {
+          const start = Math.round(
+            i * (characters.length - width) / Math.max(1, windowCount - 1)
+          )
+          fragments.add(characters.slice(start, start + width).join(''))
+        }
+
+        let fuzzyQuery = supabase
+          .from('stories')
+          .select(PUBLIC_STORY_LIST_SELECT)
+          .eq('status', 'published')
+          .is('deleted_at', null)
+          .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false')
+          .or([...fragments].map((term) => `title.ilike.*${term}*`).join(','))
+          .order('total_views', { ascending: false })
+          .limit(80)
+
+        fuzzyQuery = applyAdultStoryVisibility(fuzzyQuery, ageAccess)
+
+        if (['novel', 'manga', 'chat_story'].includes(storyType)) {
+          fuzzyQuery = fuzzyQuery.eq('story_type', storyType)
+        }
+
+        const fuzzyResult = await fuzzyQuery
+
+        if (!fuzzyResult.error) {
+          const fuzzyStories = rankSmartSearchResults(fuzzyResult.data || [], search, {
+            fields: ['title'],
+            minimumScore: 180,
+            limit,
+          })
+
+          if (fuzzyStories.length) {
+            queryResults = [{ data: fuzzyStories, error: null }]
+          }
+        }
+      }
+    }
+
 
     const queryError =
       queryResults.find(
