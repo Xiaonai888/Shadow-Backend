@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import { supabase } from '../config/supabase.js'
+import { recordReaderActivitySecurityAlert } from './readerActivitySecurityAlerts.service.js'
 
 const EMAIL_CODE_MINUTES = 10
 const EMAIL_MAX_ATTEMPTS = 5
@@ -140,6 +141,9 @@ export async function consumeReaderEmailChallenge({ userId, challengeId, purpose
       }).eq('id', challengeId).eq('email_attempts', challenge.email_attempts)
       .is('consumed_at', null)
     if (attemptError) throw attemptError
+    if (purpose === 'login' && attempts >= EMAIL_MAX_ATTEMPTS) {
+  await recordReaderActivitySecurityAlert({ userId, reason: 'repeated_failed_login', eventKey: challengeId })
+}
     return { ok: false, code: 'READER_SECURITY_CODE_INVALID' }
   }
   const { data: consumed, error: consumeError } = await supabase.from('reader_security_challenges')
