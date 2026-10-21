@@ -1,4 +1,5 @@
 const MAX_CACHE_ENTRIES = 50
+const MAX_CACHE_AGE_MS = 365 * 24 * 60 * 60 * 1000
 
 const shadowMallPromotionsCache = new Map()
 const shadowMallPromotionsInFlight = new Map()
@@ -20,12 +21,30 @@ function getCacheKey(req) {
   })
 }
 
+function getCacheEntry(key) {
+  const entry = shadowMallPromotionsCache.get(key)
+  if (!entry) return null
+
+  shadowMallPromotionsCache.delete(key)
+  if (entry.expiresAt <= Date.now()) return null
+
+  shadowMallPromotionsCache.set(key, entry)
+  return entry
+}
+
 function setCacheEntry(key, entry) {
+  const now = Date.now()
+  for (const [existingKey, existingEntry] of shadowMallPromotionsCache) {
+    if (existingEntry.expiresAt <= now) {
+      shadowMallPromotionsCache.delete(existingKey)
+    }
+  }
+
   if (shadowMallPromotionsCache.has(key)) {
     shadowMallPromotionsCache.delete(key)
   }
 
-  shadowMallPromotionsCache.set(key, entry)
+  shadowMallPromotionsCache.set(key, { ...entry, expiresAt: now + MAX_CACHE_AGE_MS })
 
   while (shadowMallPromotionsCache.size > MAX_CACHE_ENTRIES) {
     const oldestKey = shadowMallPromotionsCache.keys().next().value
@@ -41,13 +60,12 @@ export function invalidateShadowMallPromotionsCache() {
 }
 
 export function cacheShadowMallPromotionsResponse(req, res, next) {
+  res.setHeader('Cache-Control', 'no-store')
+
   const key = getCacheKey(req)
-  const cached = shadowMallPromotionsCache.get(key)
+  const cached = getCacheEntry(key)
 
   if (cached) {
-    shadowMallPromotionsCache.delete(key)
-    shadowMallPromotionsCache.set(key, cached)
-
     res.setHeader('X-Shadow-Mall-Promotions-Cache', 'HIT')
 
     return res
@@ -58,11 +76,12 @@ export function cacheShadowMallPromotionsResponse(req, res, next) {
   const existingInFlight = shadowMallPromotionsInFlight.get(key)
 
   if (existingInFlight) {
+    const waitVersion = shadowMallPromotionsCacheVersion
     res.setHeader('X-Shadow-Mall-Promotions-Cache', 'WAIT')
 
     existingInFlight.then((entry) => {
-      if (res.headersSent) return
-      if (!entry) return next()
+      if (res.headersSent || res.writableEnded || res.destroyed) return
+      if (!entry || shadowMallPromotionsCacheVersion !== waitVersion) return next()
 
       return res
         .status(entry.statusCode || 200)
