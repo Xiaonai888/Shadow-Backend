@@ -110,6 +110,20 @@ export async function reviewPendingReaderPostComments(req, res) {
     if (error) throw error
 
     const reviewedIds = (data || []).map((item) => item.id)
+    if (reviewedIds.length) {
+      const { error: mentionError } = await supabase
+        .from('reader_tag_mention_links')
+        .update({
+          status: approving ? 'approved' : 'rejected',
+          reviewed_at: new Date().toISOString(),
+        })
+        .in('comment_id', reviewedIds)
+        .eq('kind', 'mention')
+        .eq('status', 'pending')
+      if (mentionError) {
+        console.error('READER_COMMENT_MENTION_REVIEW_ERROR:', mentionError)
+      }
+    }
     let commentCount = null
     if (approving && reviewedIds.length) {
       const { count, error: countError } = await supabase
