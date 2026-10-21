@@ -1849,30 +1849,30 @@ export async function getAdminEpisodeSales(
               purchase.paid_diamonds
             ),
           diamond_to_usd_rate: rate,
-          gross_sales_usd: roundMoney(
+                    gross_sales_usd: roundAmount(
             numberValue(
               purchase.paid_diamonds
             ) * rate
           ),
-          direct_cost_usd: roundMoney(
+          direct_cost_usd: roundAmount(
             directCostDiamonds * rate
           ),
           distributable_revenue_usd:
-            roundMoney(
+            roundAmount(
               distributableDiamonds * rate
             ),
           author_earnings_usd:
-            roundMoney(authorEarningsUsd),
+            roundAmount(authorEarningsUsd),
           platform_income_usd:
-            roundMoney(platformIncomeUsd),
+            roundAmount(platformIncomeUsd),
           author_net_payout_usd:
-            roundMoney(authorNetPayoutUsd),
+            roundAmount(authorNetPayoutUsd),
           withholding_usd:
-            roundMoney(withholdingUsd),
+            roundAmount(withholdingUsd),
           pending_payout_usd:
-            roundMoney(pendingPayoutUsd),
+            roundAmount(pendingPayoutUsd),
           paid_payout_usd:
-            roundMoney(paidPayoutUsd),
+            roundAmount(paidPayoutUsd),
           author_share_percent:
             numberValue(
               purchase.author_share_percent ||
