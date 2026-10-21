@@ -3,10 +3,12 @@ import {
   getAdminCommunityAuthors,
   getAdminCommunityOverview,
   getAdminCommunityReaders,
+  getAdminCommunityReaderDetail,
   getAdminCommunityReadersToday,
   getAdminReaderPresence,
   getAdminCommunityVisitorOverview,
   getAdminCommunityVisitors,
+  getAdminCommunityVisitorDetail,
   getAdminReaderCountryAnalytics,
   getAdminReaderCountryReaders,
   getAdminDashboardGrowth,
@@ -30,6 +32,7 @@ router.get('/readers/daily', requireAdminPermission('readers.view'), getAdminDai
 router.get('/readers/ranking', requireAdminPermission('readers.view'), getAdminReaderRanking)
 router.get('/readers/period', requireAdminPermission('readers.view'), getAdminReaderPeriod)
 router.get('/readers/period/detail', requireAdminPermission('readers.view'), getAdminReaderPeriodDetail)
+router.get('/readers/:readerId', requireAdminPermission('community.view'), getAdminCommunityReaderDetail)
 router.get('/reader-presence', requireAdmin, getAdminReaderPresence)
 router.get('/reader-countries', requireAdminPermission('community.view'), getAdminReaderCountryAnalytics)
 router.get('/reader-growth/daily', requireAdminPermission('community.view'), getAdminReaderGrowthDaily)
@@ -38,6 +41,7 @@ router.get('/reader-countries/:countryCode/readers', requireAdminPermission('com
 router.get('/authors', requireAdminPermission('community.view'), getAdminCommunityAuthors)
 router.get('/visitors/overview', requireAdminPermission('community.view'), getAdminCommunityVisitorOverview)
 router.get('/visitors', requireAdminPermission('community.view'), getAdminCommunityVisitors)
+router.get('/visitors/:visitorId', requireAdminPermission('community.view'), getAdminCommunityVisitorDetail)
 router.get('/dashboard/growth', requireAdmin, getAdminDashboardGrowth)
 router.get('/dashboard/orders', requireAdmin, getAdminDashboardPaidOrders)
 
