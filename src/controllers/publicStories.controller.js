@@ -22,6 +22,7 @@ import {
   finalizeGenrePage,
 } from '../services/publicGenrePagination.service.js'
 import { isRelationshipGroup, normalizeRelationshipTag } from '../utils/storyRelationshipGroups.js'
+import { makeSmartSearchOrFilter } from '../services/smartSearchCore.service.js'
 
 function resolveRelationshipGroup(value) {
   if (!isRelationshipGroup(value)) return ''
@@ -1239,9 +1240,9 @@ export async function getPublicStories(req, res) {
         )
 
       if (rankingOnly) {
-        nextQuery = nextQuery.or(
-          'ranking_visibility_status.is.null,ranking_visibility_status.eq.visible'
-        )
+        const oldFilter = `title.ilike.%${search}%,description.ilike.%${search}%,main_genre.ilike.%${search}%`
+const smartFilter = makeSmartSearchOrFilter(['title', 'description', 'main_genre'], search, 6)
+nextQuery = nextQuery.or(`${smartFilter || oldFilter}${tagFilter}`)
       }
 
       nextQuery = applyAdultStoryVisibility(
