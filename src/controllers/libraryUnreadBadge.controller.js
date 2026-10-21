@@ -52,7 +52,7 @@ async function findUnreadStories(storyIds, userId, todayStart, now) {
 
   for (let i = 0; i < storyIds.length; i += BATCH_SIZE) {
     const ids = storyIds.slice(i, i + BATCH_SIZE)
-    const [scheduled, legacy, progress] = await Promise.all([
+    const [episodes, progress] = await Promise.all([
       loadAllRows(() => supabase
         .from('episodes')
         .select('story_id, episode_number, published_at, created_at')
@@ -81,7 +81,7 @@ async function findUnreadStories(storyIds, userId, todayStart, now) {
       progress.map((row) => [String(row.story_id), row])
     )
 
-    for (const episode of [...scheduled, ...legacy]) {
+    for (const episode of episodes) {
       const storyId = String(episode.story_id)
       if (unread.has(storyId)) continue
 
