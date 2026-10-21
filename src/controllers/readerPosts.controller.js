@@ -1,3 +1,4 @@
+import { getPrivateReaderOwnerIds } from '../services/readerPostPrivacy.service.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
@@ -700,7 +701,8 @@ async function getRelationshipMaps(
 function canViewerSeePost(
   post,
   viewerId,
-  relationships
+  relationships,
+  privateOwnerIds
 ) {
   const ownerId = String(
     post.user_id || ''
@@ -715,6 +717,8 @@ function canViewerSeePost(
   ) {
     return true
   }
+
+  if (privateOwnerIds.has(ownerId) && !relationships.viewerFollowsOwners.has(ownerId)) return false
 
   const visibility =
     normalizeVisibility(
@@ -993,10 +997,11 @@ async function attachVisibleUsers(
     ])
   )
 
-  const [
+    const [
     userMap,
     relationships,
     echoCounts,
+    privateOwnerIds,
   ] = await Promise.all([
     sharedStateReady
       ? sharedUserMap
@@ -1005,9 +1010,10 @@ async function attachVisibleUsers(
       viewerId,
       ownerIds
     ),
-    sharedStateReady
+        sharedStateReady
       ? sharedEchoCounts
       : readReaderPostEchoCounts(postIds),
+    getPrivateReaderOwnerIds(ownerIds),
   ])
 
   return rows
@@ -1015,7 +1021,8 @@ async function attachVisibleUsers(
       canViewerSeePost(
         post,
         viewerId,
-        relationships
+        relationships,
+        privateOwnerIds
       )
     )
     .map((post) => {
@@ -2293,15 +2300,11 @@ async function readSocialEchoPosts({
     ...echoOwnerIds,
     ...sourceReaderUserIds,
   ]
-  const [userMap, relationships] =
+  const [userMap, relationships, privateOwnerIds] =
     await Promise.all([
-      readUsersByIds(
-        relationshipOwnerIds
-      ),
-      getRelationshipMaps(
-        viewerId,
-        relationshipOwnerIds
-      ),
+      readUsersByIds(relationshipOwnerIds),
+      getRelationshipMaps(viewerId, relationshipOwnerIds),
+      getPrivateReaderOwnerIds(sourceReaderUserIds),
     ])
 
   const storyMap = new Map(
@@ -2523,7 +2526,8 @@ async function readSocialEchoPosts({
           !canViewerSeePost(
             post,
             viewerId,
-            relationships
+            relationships,
+            privateOwnerIds
           )
         ) {
           return null
