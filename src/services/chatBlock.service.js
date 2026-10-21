@@ -77,7 +77,7 @@ async function getBlockAccess({
     supabase
       .from('chat_conversations')
       .select(
-        'id, request_status, request_decided_at, status_before_block, request_decided_at_before_block'
+        'id, conversation_type, is_group, request_status, request_decided_at, status_before_block, request_decided_at_before_block'
       )
       .eq('id', safeConversationId)
       .maybeSingle(),
@@ -113,6 +113,14 @@ async function getBlockAccess({
       403,
       'CHAT_ACCESS_DENIED',
       'You cannot manage this conversation'
+    )
+  }
+
+  if (conversation.is_group === true) {
+    fail(
+      400,
+      'CHAT_BLOCK_DIRECT_ONLY',
+      'Block and unblock are only available in direct chats'
     )
   }
 
@@ -436,7 +444,7 @@ export async function unblockConversation({
       conversation.request_status,
   }
 
-  if (!remainingRows.length) {
+  if (!remainingRows.length && conversation.request_status === 'blocked') {
     const restoredStatus =
       RESTORABLE_STATUSES.includes(
         conversation.status_before_block
