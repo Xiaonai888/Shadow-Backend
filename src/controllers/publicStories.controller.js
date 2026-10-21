@@ -1239,12 +1239,11 @@ export async function getPublicStories(req, res) {
           'is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false'
         )
 
-      if (rankingOnly) {
-        const oldFilter = `title.ilike.%${search}%,description.ilike.%${search}%,main_genre.ilike.%${search}%`
-const smartFilter = makeSmartSearchOrFilter(['title', 'description', 'main_genre'], search, 6)
-nextQuery = nextQuery.or(`${smartFilter || oldFilter}${tagFilter}`)
-      }
-
+     if (rankingOnly) {
+  nextQuery = nextQuery.or(
+    'ranking_visibility_status.is.null,ranking_visibility_status.eq.visible'
+  )
+}
       nextQuery = applyAdultStoryVisibility(
         nextQuery,
         ageAccess
