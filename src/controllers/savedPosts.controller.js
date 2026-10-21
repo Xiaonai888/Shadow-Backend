@@ -673,9 +673,9 @@ export async function getSavedPostCollections(req, res) {
       return publicCollection(
         collection,
         Number(embeddedCount || 0),
-        previewItems
+                previewItems
       )
-    })
+    }))
 
     return res.status(200).json({
       ok: true,
