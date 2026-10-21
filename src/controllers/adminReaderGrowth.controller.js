@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 
+const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
 let cached = null
 let cachedFor = ''
 let running = null
@@ -27,7 +28,7 @@ async function loadGrowthSnapshot(dayKey) {
 }
 
 export async function getAdminReaderGrowthDaily(req, res) {
-  const dayKey = new Date(Date.now() + 390 * 60_000).toISOString().slice(0, 10)
+  const dayKey = new Date(Date.now() + CAMBODIA_OFFSET_MS).toISOString().slice(0, 10)
 
   try {
     const data = await loadGrowthSnapshot(dayKey)
