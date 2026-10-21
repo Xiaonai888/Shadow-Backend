@@ -1,5 +1,6 @@
 import express from 'express'
 import readerSecurityRoutes from './readerSecurity.routes.js'
+import readerHiddenWordsRoutes from './readerHiddenWords.routes.js'
 import { getReaderAccountPrivacy, updateReaderAccountPrivacy } from '../controllers/readerAccountPrivacy.controller.js'
 import {
   getMeSummary,
@@ -103,6 +104,7 @@ router.post('/forgot-password', readerPasswordRequestLimit, requestPasswordReset
 router.post('/reset-password', readerPasswordResetLimit, resetPassword)
 router.use('/devices', readerDeviceAccessRoutes)
 router.use('/security', readerSecurityRoutes)
+router.use('/me/hidden-words', readerHiddenWordsRoutes)
 router.get('/me', requireUser, getCurrentUser)
 router.get('/me/privacy', requireUser, getReaderAccountPrivacy)
 router.put('/me/privacy', requireUser, updateReaderAccountPrivacy)
