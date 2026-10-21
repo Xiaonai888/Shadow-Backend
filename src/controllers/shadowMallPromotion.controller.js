@@ -239,6 +239,58 @@ async function readPromotions({
   return data || []
 }
 
+async function readPromotionPage({
+  activeOnly = false,
+  page = 1,
+  limit = 20,
+} = {}) {
+  const pageSize = Math.min(toPositiveInteger(limit, 20), 20)
+  const currentPage = Math.min(toPositiveInteger(page, 1), 100000)
+  const start = (currentPage - 1) * pageSize
+
+  let query = supabase
+    .from('shadow_mall_ads')
+    .select('*', { count: 'exact' })
+    .order('is_pinned', { ascending: false })
+    .order('pinned_at', { ascending: true, nullsFirst: false })
+    .order('display_order', { ascending: true })
+    .order('created_at', { ascending: true })
+    .order('id', { ascending: true })
+    .range(start, start + pageSize - 1)
+
+  if (activeOnly) query = query.eq('is_active', true)
+
+  const { data, count, error } = await query
+  if (error) throw error
+
+  const total = Number(count || 0)
+  return {
+    promotions: (data || []).map(normalizePromotion),
+    page: currentPage,
+    limit: pageSize,
+    total,
+    has_next: start + pageSize < total,
+  }
+}
+
+async function getAdminPromotionsRevision() {
+  const { data, count, error } = await supabase
+    .from('shadow_mall_ads')
+    .select('id, updated_at', { count: 'exact' })
+    .order('updated_at', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(1)
+
+  if (error) throw error
+
+  const latest = (data || [])[0]
+  const total = Number(count || 0)
+  return {
+    total,
+    revision: `${total}:${latest?.updated_at || ''}:${latest?.id || 0}`,
+  }
+}
+
 async function getNextDisplayOrder() {
   const { data, error } = await supabase
     .from('shadow_mall_ads')
@@ -638,6 +690,15 @@ export async function getPublicShadowMallPromotions(
   res
 ) {
   try {
+    if (req.query.page !== undefined) {
+      const result = await readPromotionPage({
+        activeOnly: true,
+        page: req.query.page,
+        limit: req.query.limit,
+      })
+      return res.status(200).json({ ok: true, ...result })
+    }
+
     const promotions = await readPromotions({
       activeOnly: true,
       limit: req.query.limit,
@@ -698,6 +759,22 @@ export async function getAdminShadowMallPromotions(
   res
 ) {
   try {
+    res.setHeader('Cache-Control', 'private, no-store')
+
+    if (req.query.meta === '1') {
+      const metadata = await getAdminPromotionsRevision()
+      return res.status(200).json({ ok: true, ...metadata })
+    }
+
+    if (req.query.page !== undefined) {
+      const result = await readPromotionPage({
+        page: req.query.page,
+        limit: req.query.limit,
+      })
+      const { revision } = await getAdminPromotionsRevision()
+      return res.status(200).json({ ok: true, ...result, revision })
+    }
+
     const promotions = await readPromotions({
       limit: req.query.limit || 100,
     })
@@ -992,6 +1069,72 @@ export async function reorderAdminShadowMallPromotions(
   res
 ) {
   try {
+    if (req.body?.move_id !== undefined) {
+      const moveId = getPromotionId(req.body.move_id)
+      const direction = String(req.body.direction || '').toLowerCase()
+
+      if (direction !== 'up' && direction !== 'down') {
+        return res.status(400).json({
+          ok: false,
+          message: 'Direction must be up or down',
+        })
+      }
+
+      const current = await readPromotionById(moveId)
+      if (!current) {
+        return res.status(404).json({ ok: false, message: 'Ad not found' })
+      }
+      if (current.is_pinned) {
+        return res.status(400).json({
+          ok: false,
+          message: 'Unpin this ad before moving it',
+        })
+      }
+
+      const currentOrder = Number(current.display_order || 0)
+      let neighborQuery = supabase
+        .from('shadow_mall_ads')
+        .select('id, display_order, updated_at')
+        .eq('is_pinned', false)
+        .neq('id', current.id)
+        .order('display_order', { ascending: direction === 'down' })
+        .order('created_at', { ascending: direction === 'down' })
+        .order('id', { ascending: direction === 'down' })
+        .limit(1)
+
+      neighborQuery = direction === 'up'
+        ? neighborQuery.lt('display_order', currentOrder)
+        : neighborQuery.gt('display_order', currentOrder)
+
+      const { data: neighbor, error: neighborError } = await neighborQuery.maybeSingle()
+      if (neighborError) throw neighborError
+      if (!neighbor) return res.status(200).json({ ok: true, moved: false })
+
+      const updatedAt = new Date().toISOString()
+      const { error: firstError } = await supabase
+        .from('shadow_mall_ads')
+        .update({ display_order: currentOrder, updated_at: updatedAt })
+        .eq('id', neighbor.id)
+      if (firstError) throw firstError
+
+      const { error: secondError } = await supabase
+        .from('shadow_mall_ads')
+        .update({ display_order: neighbor.display_order, updated_at: updatedAt })
+        .eq('id', current.id)
+      if (secondError) {
+        const { error: rollbackError } = await supabase
+          .from('shadow_mall_ads')
+          .update({ display_order: neighbor.display_order, updated_at: neighbor.updated_at })
+          .eq('id', neighbor.id)
+        if (rollbackError) console.error('SHADOW MALL AD MOVE ROLLBACK ERROR:', rollbackError)
+        invalidateShadowMallPromotionsCache()
+        throw secondError
+      }
+
+      invalidateShadowMallPromotionsCache()
+      return res.status(200).json({ ok: true, moved: true })
+    }
+
     const orderedIds = Array.isArray(
       req.body.ordered_ids
     )
