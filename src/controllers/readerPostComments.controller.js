@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { getReaderCommentSettings } from '../services/readerCommentSettings.service.js'
 import { shouldRejectReaderPostSpam } from '../services/readerPostCommentSpam.service.js'
+import { syncReaderCommentMentionLinks } from '../services/readerPostTagMentionLinks.service.js'
 
 const COMMENT_LIMIT = 1000
 const DEFAULT_PAGE_SIZE = 20
@@ -907,6 +908,17 @@ export async function createReaderPostComment(
 
     if (createError) throw createError
 
+    try {
+      await syncReaderCommentMentionLinks({
+        commentId: createdComment.id,
+        actorUserId: userId,
+        text,
+        moderationPending: pendingApproval,
+      })
+    } catch (mentionError) {
+      console.error('READER_COMMENT_MENTION_CREATE_ERROR:', mentionError)
+    }
+
     const commentCount = pendingApproval
       ? Number(post.comment_count || 0)
       : await countVisibleComments(postId)
@@ -1045,6 +1057,21 @@ export async function updateOwnReaderPostComment(
       .single()
 
     if (updateError) throw updateError
+
+    try {
+      await syncReaderCommentMentionLinks({
+        commentId,
+        actorUserId: userId,
+        text,
+        existingComment: true,
+        moderationPending: pendingApproval || (
+          existingComment.is_hidden &&
+          existingComment.moderation_status === 'pending'
+        ),
+      })
+    } catch (mentionError) {
+      console.error('READER_COMMENT_MENTION_UPDATE_ERROR:', mentionError)
+    }
 
     let commentCount
     if (pendingApproval && !existingComment.is_hidden) {
