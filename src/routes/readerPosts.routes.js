@@ -29,6 +29,7 @@ import {
 } from '../controllers/readerPostEchoes.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requirePrivateReaderPostAccess } from '../services/readerPostPrivacy.service.js'
+import { getPendingReaderPostComments, reviewPendingReaderPostComments } from '../controllers/readerPostCommentModeration.controller.js'
 
 const router = express.Router()
 const feedRequestsInFlight = new Map()
@@ -85,6 +86,8 @@ function coalesceReaderPostsFeed(req, res, next) {
 
 router.get('/feed', requireUser, coalesceReaderPostsFeed, getReaderPostsFeed)
 router.get('/me', requireUser, getMyReaderPosts)
+router.get('/:postId/comments/pending', requireUser, getPendingReaderPostComments)
+router.post('/:postId/comments/review', requireUser, reviewPendingReaderPostComments)
 router.get('/:postId', requireUser, requirePrivateReaderPostAccess, getReaderPostById)
 router.post('/me', requireUser, createMyReaderPost)
 router.patch('/me/:postId', requireUser, updateMyReaderPost)
