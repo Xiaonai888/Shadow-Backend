@@ -291,6 +291,24 @@ async function getAdminPromotionsRevision() {
   }
 }
 
+async function getPublicPromotionsRevision() {
+  const { data, count, error } = await supabase
+    .from('shadow_mall_ads')
+    .select('id, updated_at', { count: 'exact' })
+    .eq('is_active', true)
+    .order('updated_at', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(1)
+
+  if (error) throw error
+
+  const latest = (data || [])[0]
+  const total = Number(count || 0)
+  return {
+    revision: `${total}:${latest?.updated_at || ''}:${latest?.id || 0}`,
+  }
+}
+
 async function getNextDisplayOrder() {
   const { data, error } = await supabase
     .from('shadow_mall_ads')
@@ -690,6 +708,11 @@ export async function getPublicShadowMallPromotions(
   res
 ) {
   try {
+    if (req.query.meta === '1') {
+      const metadata = await getPublicPromotionsRevision()
+      return res.status(200).json({ ok: true, ...metadata })
+    }
+
     if (req.query.page !== undefined) {
       const result = await readPromotionPage({
         activeOnly: true,
