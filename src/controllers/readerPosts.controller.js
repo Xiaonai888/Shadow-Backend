@@ -3192,6 +3192,8 @@ export async function getReaderPostsFeed(
       readerPosts,
       echoPosts,
       linkedEchoPostIds,
+      blockedReadersResult,
+      blockedPagesResult,
     ] = await Promise.all([
       attachVisibleUsers(
         data,
@@ -3205,7 +3207,39 @@ export async function getReaderPostsFeed(
       readLinkedEchoPostIds(
         data.map((post) => post.id)
       ),
+      supabase
+        .from('chat_blocks')
+        .select('blocked_user_id')
+        .eq('blocker_user_id', viewerId),
+      supabase
+        .from('reader_blocked_author_pages')
+        .select('author_page_id')
+        .eq('reader_user_id', viewerId),
     ])
+
+    if (blockedReadersResult.error) throw blockedReadersResult.error
+    if (blockedPagesResult.error) throw blockedPagesResult.error
+
+    const blockedReaderIds = new Set(
+      (blockedReadersResult.data || []).map((row) => String(row.blocked_user_id))
+    )
+    const blockedPageIds = new Set(
+      (blockedPagesResult.data || []).map((row) => String(row.author_page_id))
+    )
+
+    function isBlockedFeedPost(post) {
+      if (blockedReaderIds.has(String(post.user_id || ''))) return true
+      if (!post.is_echo) return false
+      if (blockedReaderIds.has(String(post.source_reader_post?.user_id || ''))) return true
+      if (blockedReaderIds.has(String(post.source_author_post?.user_id || ''))) return true
+      const sourcePage = post.source_author_post?.author_page || post.source_story?.author_page || null
+      return Boolean(
+        sourcePage && (
+          blockedPageIds.has(String(sourcePage.id)) ||
+          blockedReaderIds.has(String(sourcePage.user_id))
+        )
+      )
+    }
 
     const fanoutMs =
       Date.now() - fanoutStartedAt
@@ -3213,14 +3247,14 @@ export async function getReaderPostsFeed(
     const standardPosts =
       readerPosts.filter(
         (post) =>
-          !linkedEchoPostIds.has(
-            String(post.id)
-          )
+          !linkedEchoPostIds.has(String(post.id)) &&
+          !isBlockedFeedPost(post)
       )
+    const visibleEchoPosts = echoPosts.filter((post) => !isBlockedFeedPost(post))
 
     const timelinePosts =
       mergeRecommendedReaderPosts(
-        [standardPosts, echoPosts],
+        [standardPosts, visibleEchoPosts],
         limit,
         snapshotAt
       )
@@ -3245,9 +3279,9 @@ export async function getReaderPostsFeed(
       candidate_rows:
         data.length,
       visible_reader_rows:
-        readerPosts.length,
+        standardPosts.length,
       echo_rows:
-        echoPosts.length,
+        visibleEchoPosts.length,
       linked_echo_rows:
         linkedEchoPostIds.size,
       timeline_rows:
