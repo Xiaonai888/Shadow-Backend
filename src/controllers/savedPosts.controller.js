@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { filterVisibleSavedReaderPosts } from '../services/readerPostPrivacy.service.js'
 
 const SOURCE_TYPES = new Set(['reader_post', 'author_post', 'promotion'])
 const SORT_TYPES = new Set(['newest', 'oldest'])
@@ -187,10 +188,11 @@ async function getCollectionsBySavedPostIds(userId, savedPostIds) {
 }
 
 async function attachCollectionsToSavedPosts(userId, items) {
-  const ids = items.map((item) => item.id).filter(Boolean)
+  const visibleItems = await filterVisibleSavedReaderPosts(items, userId)
+const ids = visibleItems.map((item) => item.id).filter(Boolean)
   const collectionsBySavedPostId = await getCollectionsBySavedPostIds(userId, ids)
 
-  return items.map((item) =>
+  return visibleItems.map((item) =>
     publicSavedPost(
       item,
       collectionsBySavedPostId.get(item.id) || []
@@ -655,15 +657,18 @@ export async function getSavedPostCollections(req, res) {
     if (collectionsError) throw collectionsError
     if (latestError) throw latestError
 
-    const collectionItems = (collections || []).map((collection) => {
+    const collectionItems = await Promise.all(
+  (collections || []).map(async (collection) => {
       const embeddedCount = Array.isArray(collection.item_count)
         ? collection.item_count[0]?.count
         : collection.item_count?.count
 
-      const previewItems = (collection.preview_memberships || [])
-        .map((row) => row.saved_post)
-        .filter(Boolean)
-        .map((item) => publicSavedPost(item))
+      const previewItems = (await filterVisibleSavedReaderPosts(
+  (collection.preview_memberships || [])
+    .map((row) => row.saved_post)
+    .filter(Boolean),
+  userId
+)).map((item) => publicSavedPost(item))
 
       return publicCollection(
         collection,
@@ -682,9 +687,9 @@ export async function getSavedPostCollections(req, res) {
         cover_color: '#6D4AFF',
         sort_order: 0,
         item_count: Number(allSavedCount || 0),
-        preview_items: (latestSavedPosts || []).map((item) =>
-          publicSavedPost(item)
-        ),
+        preview_items: (await filterVisibleSavedReaderPosts(
+  latestSavedPosts || [], userId
+)).map((item) => publicSavedPost(item)),
       },
       collections: collectionItems,
     })
