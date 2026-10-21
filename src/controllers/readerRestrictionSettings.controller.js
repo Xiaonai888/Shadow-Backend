@@ -58,16 +58,45 @@ export async function updateMyReaderRestrictionSetting(req, res) {
     return res.status(400).json({ ok: false, message: 'Invalid restriction setting.' })
   }
 
+  const columns = 'hide_comments,filter_messages,hide_activity_status,mute_mentions'
+  const changes = { [key]: enabled, updated_at: new Date().toISOString() }
+
   try {
-    const { data, error } = await supabase
+    const updated = await supabase
       .from('reader_restriction_settings')
-      .upsert({ user_id: owner, [key]: enabled, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
-      .select('hide_comments,filter_messages,hide_activity_status,mute_mentions')
-      .single()
-    if (error) throw error
+      .update(changes)
+      .eq('user_id', owner)
+      .select(columns)
+      .maybeSingle()
+    if (updated.error) throw updated.error
+
+    let data = updated.data
+    if (!data) {
+      const inserted = await supabase
+        .from('reader_restriction_settings')
+        .insert({ user_id: owner, [key]: enabled })
+        .select(columns)
+        .maybeSingle()
+      if (inserted.error?.code === '23505') {
+        const retried = await supabase
+          .from('reader_restriction_settings')
+          .update(changes)
+          .eq('user_id', owner)
+          .select(columns)
+          .single()
+        if (retried.error) throw retried.error
+        data = retried.data
+      } else {
+        if (inserted.error) throw inserted.error
+        data = inserted.data
+      }
+    }
+    if (!data) throw new Error('Restriction setting was not saved.')
+
     res.set('Cache-Control', 'private, no-store')
     return res.status(200).json({ ok: true, settings: formattedSettings(data) })
   } catch (error) {
     return respondError(res, error, 'UPDATE')
   }
 }
+
