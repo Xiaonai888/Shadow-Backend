@@ -7,10 +7,17 @@ import {
   completeChatThemePhoto,
   deleteChatThemePhoto,
 } from "../controllers/readerChatThemes.controller.js";
+import { createRateLimit } from "../middleware/rateLimit.middleware.js";
 
 const router = express.Router();
 
 router.use(requireUser);
+router.use(createRateLimit({
+  key: "reader-chat-themes",
+  windowMs: 60 * 1000,
+  max: 60,
+  identity: (req) => req.user?.user_id || req.user?.id,
+}));
 router.use((req, res, next) => {
   res.set("Cache-Control", "private, no-store");
   next();
