@@ -621,9 +621,43 @@ function getTelegramWebhookMessage(update) {
 }
 
 function getTelegramStartToken(text) {
-  const match = String(text || '').trim().match(/^\/start(?:@\w+)?(?:\s+(.+))?$/i)
-  return String(match?.[1] || '').trim()
+  const source = String(text || '').trim()
+  if (source.slice(0, 6).toLowerCase() !== '/start') return ''
+
+  let index = 6
+  if (source[index] === '@') {
+    index += 1
+    const wordStart = index
+    while (index < source.length) {
+      const code = source.charCodeAt(index)
+      if (
+        (code >= 48 && code <= 57) ||
+        (code >= 65 && code <= 90) ||
+        (code >= 97 && code <= 122) ||
+        code === 95
+      ) {
+        index += 1
+      } else {
+        break
+      }
+    }
+    if (index === wordStart) return ''
+  }
+
+  if (index === source.length || source[index].trim() !== '') return ''
+  while (index < source.length && source[index].trim() === '') index += 1
+  if (index === source.length) return ''
+
+  const token = source.slice(index)
+  if (
+    token.includes('\n') ||
+    token.includes('\r') ||
+    token.includes('\u2028') ||
+    token.includes('\u2029')
+  ) return ''
+  return token
 }
+
 
 function isTelegramGroup(chat) {
   return chat?.type === 'group' || chat?.type === 'supergroup'
