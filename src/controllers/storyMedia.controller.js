@@ -2,6 +2,7 @@ import { createReadStream } from 'node:fs'
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { supabase } from '../config/supabase.js'
 import {
+  deleteR2ObjectByKey,
   uploadFileToR2,
 } from '../services/r2Storage.service.js'
 import {
@@ -22,6 +23,8 @@ const ALLOWED_FOLDERS = {
   story_slide: 'story-slides',
   episode_cover: 'episode-covers',
   episode_content: 'episode-content',
+  chat_story_character: 'chat-story/characters',
+  chat_story_episode: 'chat-story/episodes',
   payment_proof: 'payment-proofs',
   author_payment_qr: 'author-payment-methods',
 }
@@ -262,8 +265,9 @@ async function uploadAuthorImageToR2({
     })
   )
 
-  const asset =
-    await recordAuthorR2Asset({
+  let asset
+  try {
+    asset = await recordAuthorR2Asset({
       authorId: authorPage.id,
       category: folderKey,
       fileName,
@@ -285,11 +289,17 @@ async function uploadAuthorImageToR2({
         authorPage.page_username ||
         null,
     })
+  } catch (error) {
+    await deleteR2ObjectByKey(filePath).catch((cleanupError) => {
+      console.error('AUTHOR_R2_CLEANUP_ERROR:', cleanupError)
+    })
+    throw error
+  }
 
-  const quota =
-    await getAuthorStorageQuota(
-      authorPage.id
-    )
+  const quota = await getAuthorStorageQuota(authorPage.id).catch((error) => {
+    console.error('AUTHOR_QUOTA_REFRESH_ERROR:', error)
+    return null
+  })
 
   return {
     fileName,
@@ -299,6 +309,7 @@ async function uploadAuthorImageToR2({
     quota,
   }
 }
+
 
 export async function uploadStoryImage(
   req,
