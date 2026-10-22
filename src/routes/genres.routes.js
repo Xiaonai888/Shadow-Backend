@@ -146,13 +146,25 @@ async function uploadGenreBanner(req, res) {
 }
 
 function slugify(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/&/g, 'and')
-    .replace(/\+/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
+  const pieces = []
+  let pendingSeparator = false
+
+  for (const char of String(value || '').trim().toLowerCase()) {
+    if (char === '+') continue
+
+    const isLetter = char >= 'a' && char <= 'z'
+    const isDigit = char >= '0' && char <= '9'
+
+    if (char === '&' || isLetter || isDigit) {
+      if (pendingSeparator && pieces.length) pieces.push('-')
+      pieces.push(char === '&' ? 'and' : char)
+      pendingSeparator = false
+    } else if (pieces.length) {
+      pendingSeparator = true
+    }
+  }
+
+  return pieces.join('')
 }
 
 function toBoolean(value, fallback = true) {
