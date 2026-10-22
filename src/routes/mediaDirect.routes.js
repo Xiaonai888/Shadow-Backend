@@ -28,6 +28,13 @@ const MIME_EXTENSIONS = Object.freeze({
   'image/png': 'png',
   'image/webp': 'webp',
 })
+const AUDIO_EXTENSIONS = Object.freeze({
+  'audio/mpeg': 'mp3',
+  'audio/mp4': 'm4a',
+  'audio/aac': 'aac',
+  'audio/wav': 'wav',
+  'audio/webm': 'webm',
+})
 const CATEGORIES = Object.freeze({
   reader_story_image: { scope: 'user', folder: 'reader-stories/images', maxBytes: 5 * MB },
   reader_post_image: { scope: 'user', folder: 'reader-posts/images', maxBytes: 5 * MB },
@@ -39,6 +46,7 @@ const CATEGORIES = Object.freeze({
   episode_content: { scope: 'author', folder: 'episode-content', maxBytes: 5 * MB },
   chat_story_character: { scope: 'author', folder: 'chat-story/characters', maxBytes: 2 * MB },
   chat_story_episode: { scope: 'author', folder: 'chat-story/episodes', maxBytes: 5 * MB },
+  chat_story_audio: { scope: 'author', folder: 'chat-story/audio', maxBytes: 5 * MB, audio: true },
   author_post_image: { scope: 'author', folder: 'author-posts/images', maxBytes: 5 * MB, trackQuota: true },
   author_store_cover: { scope: 'author', folder: 'author-store/covers', maxBytes: 5 * MB, trackQuota: true },
   author_store_gallery: { scope: 'author', folder: 'author-store/gallery', maxBytes: 5 * MB, trackQuota: true },
@@ -118,13 +126,19 @@ function categoryFor(role, name) {
 function normalizeInput(req, role) {
   const { category, policy } = categoryFor(role, req.body?.category)
   const mimeType = String(req.body?.mime_type || '').trim().toLowerCase()
-  const extension = MIME_EXTENSIONS[mimeType]
+  const extension = (policy.audio ? AUDIO_EXTENSIONS : MIME_EXTENSIONS)[mimeType]
   const fileSize = Number(req.body?.file_size)
-  if (!extension) throw fail(415, 'DIRECT_UPLOAD_TYPE_INVALID', 'Only JPEG, PNG, or WebP images are allowed')
+  if (!extension) throw fail(415, 'DIRECT_UPLOAD_TYPE_INVALID', policy.audio ? 'Choose MP3, M4A, AAC, WAV, or WebM audio' : 'Only JPEG, PNG, or WebP images are allowed')
   if (!Number.isSafeInteger(fileSize) || fileSize < 16 || fileSize > Math.min(policy.maxBytes, MAX_FILE_BYTES)) {
     throw fail(413, 'DIRECT_UPLOAD_SIZE_INVALID', 'Image size is invalid or exceeds its limit')
   }
-  return { category, policy, mimeType, extension, fileSize }
+  const duration = policy.audio ? Number(req.body?.duration_seconds) : null
+  const storyId = policy.audio ? String(req.body?.story_id || '').trim() : null
+  if (policy.audio && (!Number.isFinite(duration) || duration < 1 || duration > 60))
+    throw fail(400, 'DIRECT_UPLOAD_AUDIO_DURATION_INVALID', 'Voice duration must be from 1 to 60 seconds')
+  if (policy.audio && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storyId))
+    throw fail(400, 'DIRECT_UPLOAD_STORY_INVALID', 'A valid Chat Story is required')
+  return { category, policy, mimeType, extension, fileSize, duration, storyId }
 }
 
 async function authorPageFor(userId) {
@@ -137,6 +151,56 @@ async function authorPageFor(userId) {
   if (error) throw error
   if (!data) throw fail(403, 'DIRECT_UPLOAD_AUTHOR_REQUIRED', 'Active author page required')
   return data
+}
+
+async function assertOwnedAudioStory(storyId, owner) {
+  const { data, error } = await supabase.from('stories')
+    .select('id').eq('id', storyId).eq('user_id', owner)
+    .eq('story_type', 'chat_story').is('deleted_at', null).maybeSingle()
+  if (error) throw error
+  if (!data) throw fail(403, 'DIRECT_UPLOAD_STORY_DENIED', 'Chat Story does not belong to this author')
+}
+
+async function verifyAudioHeader(key, mime, size, etag) {
+  const read = async (offset, count) => {
+    const response = await r2().send(new GetObjectCommand({
+      Bucket: config().bucket, Key: key,
+      Range: `bytes=${offset}-${Math.min(size - 1, offset + count - 1)}`,
+      IfMatch: etag,
+    }))
+    return Buffer.from(await response.Body.transformToByteArray())
+  }
+  const bytes = await read(0, 4096)
+  let valid = false
+  if (mime === 'audio/wav') {
+    valid = bytes.length >= 36 && bytes.toString('ascii', 0, 4) === 'RIFF' &&
+      bytes.toString('ascii', 8, 12) === 'WAVE' && bytes.readUInt32LE(4) === size - 8
+  } else if (mime === 'audio/aac') {
+    valid = bytes.length >= 7 && bytes[0] === 0xff && (bytes[1] & 0xf6) === 0xf0 && ((bytes[2] >> 2) & 15) < 13
+  } else if (mime === 'audio/mpeg') {
+    let frame = bytes
+    if (bytes.length >= 10 && bytes.toString('ascii', 0, 3) === 'ID3') {
+      if (bytes[3] < 2 || bytes[3] > 4 || bytes.subarray(6, 10).some((value) => value > 127))
+        throw fail(415, 'DIRECT_UPLOAD_AUDIO_INVALID', 'Invalid MP3 header')
+      const tagSize = 10 + ((bytes[6] << 21) | (bytes[7] << 14) | (bytes[8] << 7) | bytes[9]) + (bytes[3] === 4 && (bytes[5] & 16) ? 10 : 0)
+      if (tagSize + 4 > size) throw fail(415, 'DIRECT_UPLOAD_AUDIO_INVALID', 'MP3 contains no audio frames')
+      frame = await read(tagSize, 4)
+    }
+    valid = frame.length >= 4 && frame[0] === 0xff && (frame[1] & 0xe0) === 0xe0 &&
+      ((frame[1] >> 3) & 3) !== 1 && ((frame[1] >> 1) & 3) !== 0 &&
+      (frame[2] >> 4) > 0 && (frame[2] >> 4) < 15 && ((frame[2] >> 2) & 3) !== 3
+  } else if (mime === 'audio/mp4') {
+    const atomSize = bytes.length >= 16 ? bytes.readUInt32BE(0) : 0
+    const brands = ['M4A ', 'M4B ', 'isom', 'iso2', 'mp41', 'mp42', 'qt  ']
+    valid = atomSize >= 16 && atomSize <= size && bytes.toString('ascii', 4, 8) === 'ftyp' &&
+      brands.includes(bytes.toString('ascii', 8, 12))
+  } else if (mime === 'audio/webm') {
+    valid = bytes.length >= 16 && bytes.subarray(0, 4).equals(Buffer.from('1a45dfa3', 'hex')) &&
+      bytes.includes(Buffer.from('webm')) &&
+      (bytes.includes(Buffer.from('A_OPUS')) || bytes.includes(Buffer.from('A_VORBIS'))) &&
+      !bytes.includes(Buffer.from('V_VP8')) && !bytes.includes(Buffer.from('V_VP9')) && !bytes.includes(Buffer.from('V_AV1'))
+  }
+  if (!valid) throw fail(415, 'DIRECT_UPLOAD_AUDIO_INVALID', 'Audio format does not match the selected file')
 }
 
 function enforceRate(owner, role, category) {
@@ -197,12 +261,15 @@ function verifyToken(token, owner, role) {
     throw fail(403, 'DIRECT_UPLOAD_OWNER_MISMATCH', 'Upload does not belong to this account')
   }
   const { category, policy } = categoryFor(role, claims.category)
-  const extension = MIME_EXTENSIONS[claims.mime]
+  const extension = (policy.audio ? AUDIO_EXTENSIONS : MIME_EXTENSIONS)[claims.mime]
   if (!extension || !Number.isSafeInteger(claims.size) || claims.size < 16 || claims.size > policy.maxBytes) {
     throw fail(400, 'DIRECT_UPLOAD_TOKEN_INVALID', 'Invalid uploaded media information')
   }
+  if (policy.audio && (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(claims.story_id || '')) ||
+    !Number.isFinite(claims.duration) || claims.duration < 1 || claims.duration > 60))
+    throw fail(400, 'DIRECT_UPLOAD_TOKEN_INVALID', 'Invalid voice upload information')
   const expectedPrefix = `media-direct-temp/${role}/${owner}/`
-  if (!String(claims.key || '').startsWith(expectedPrefix) || !String(claims.key).endsWith(`.${extension}`) || !/^[a-zA-Z0-9/_-]+\.[a-z]+$/.test(claims.key)) {
+  if (!String(claims.key || '').startsWith(expectedPrefix) || !String(claims.key).endsWith(`.${extension}`) || !/^[a-zA-Z0-9/_-]+\.[a-z0-9]+$/.test(claims.key)) {
     throw fail(400, 'DIRECT_UPLOAD_KEY_INVALID', 'Invalid upload storage key')
   }
   return { ...claims, category, policy, extension }
@@ -233,6 +300,7 @@ async function initiate(req, res, role) {
     authorPage = await authorPageFor(owner)
     if (policy.trackQuota) await assertAuthorStorageAvailable(authorPage.id, fileSize)
   }
+  if (policy.audio) await assertOwnedAudioStory(input.storyId, owner)
   enforceRate(owner, role, category)
   const key = `media-direct-temp/${role}/${owner}/${Date.now()}-${randomUUID()}.${extension}`
   const uploadUrl = createPresignedPutUrl(key, mimeType, SIGNED_URL_SECONDS, fileSize)
@@ -245,6 +313,7 @@ async function initiate(req, res, role) {
     size: fileSize,
     key,
     author_page_id: authorPage?.id || null,
+    ...(policy.audio ? { story_id: input.storyId, duration: input.duration } : {}),
   }, process.env.JWT_SECRET, {
     expiresIn: FINALIZE_SECONDS,
     audience: 'shadow-media-direct',
@@ -272,15 +341,21 @@ async function finalize(req, res, role) {
   let copied = false
   try {
     const c = config()
+    if (claims.policy.audio) await assertOwnedAudioStory(claims.story_id, owner)
     const head = await r2().send(new HeadObjectCommand({ Bucket: c.bucket, Key: claims.key }))
     if (Number(head.ContentLength || 0) !== claims.size || String(head.ContentType || '').toLowerCase() !== claims.mime) {
       await deleteObject(claims.key).catch(() => {})
       throw fail(400, 'DIRECT_UPLOAD_FILE_MISMATCH', 'Uploaded file does not match the selected image')
     }
     try {
-      await verifyImageHeader(claims.key, claims.mime, claims.size)
+      if (claims.policy.audio) {
+        if (!head.ETag) throw fail(409, 'DIRECT_UPLOAD_FILE_CHANGED', 'Upload could not be verified; retry the upload')
+        await verifyAudioHeader(claims.key, claims.mime, claims.size, head.ETag)
+      } else {
+        await verifyImageHeader(claims.key, claims.mime, claims.size)
+      }
     } catch (error) {
-      if (error?.code === 'DIRECT_UPLOAD_IMAGE_INVALID') await deleteObject(claims.key).catch(() => {})
+      if (['DIRECT_UPLOAD_IMAGE_INVALID', 'DIRECT_UPLOAD_AUDIO_INVALID'].includes(error?.code)) await deleteObject(claims.key).catch(() => {})
       throw error
     }
     let authorPage = null
@@ -296,6 +371,7 @@ async function finalize(req, res, role) {
       Bucket: c.bucket,
       Key: finalKey,
       CopySource: source,
+      ...(claims.policy.audio ? { CopySourceIfMatch: head.ETag } : {}),
       MetadataDirective: 'REPLACE',
       ContentType: claims.mime,
       CacheControl: 'public, max-age=31536000, immutable',
@@ -322,8 +398,15 @@ async function finalize(req, res, role) {
       ok: true,
       category: claims.category,
       path: finalKey,
-      image_url: publicUrl,
-      imageUrl: publicUrl,
+      ...(claims.policy.audio ? {
+        audio_url: publicUrl,
+        audioUrl: publicUrl,
+        audio_duration: claims.duration,
+        story_id: claims.story_id,
+      } : {
+        image_url: publicUrl,
+        imageUrl: publicUrl,
+      }),
       file_url: publicUrl,
       fileUrl: publicUrl,
       asset,
@@ -360,3 +443,4 @@ router.post('/admin/init', requireAdmin, safeHandler(initiate, 'admin'))
 router.post('/admin/finalize', requireAdmin, safeHandler(finalize, 'admin'))
 
 export default router
+
