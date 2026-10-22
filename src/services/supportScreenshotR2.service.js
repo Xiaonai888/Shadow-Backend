@@ -1,3 +1,6 @@
+import { lstat, realpath } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { createReadStream } from 'node:fs'
 import {
   DeleteObjectCommand,
@@ -114,66 +117,75 @@ function createStorageKey(
   )
 }
 
+async function getVerifiedScreenshotFile(file) {
+  const invalid = () => {
+    const error = new Error('Invalid screenshot temporary upload file')
+    error.statusCode = 400
+    error.code = 'INVALID_SCREENSHOT_UPLOAD_PATH'
+    throw error
+  }
+
+  const filename = String(file?.filename || '')
+  if (!/^[a-f0-9]{32}$/i.test(filename)) invalid()
+
+  const root = path.resolve(os.tmpdir())
+  const requested = path.resolve(String(file?.path || ''))
+  const candidate = path.join(root, filename)
+  const actualRoot = await realpath(root)
+  const actualPath = path.join(actualRoot, filename)
+
+  if (requested !== candidate && requested !== actualPath) invalid()
+
+  const details = await lstat(candidate)
+  if (!details.isFile() || details.size < 1 || details.size > 2 * 1024 * 1024) {
+    invalid()
+  }
+
+  if (await realpath(candidate) !== actualPath) invalid()
+
+  return { path: candidate, size: details.size }
+}
+
 export async function uploadSupportScreenshotToR2({
   userId,
   requestId,
   file,
 }) {
   if (!file?.path) {
-    throw new Error(
-      'Screenshot file is required'
-    )
+    throw new Error('Screenshot file is required')
   }
 
-  const storageKey =
-    createStorageKey(
-      userId,
-      requestId,
-      file.originalname
-    )
+  const verified = await getVerifiedScreenshotFile(file)
+  const storageKey = createStorageKey(
+    userId,
+    requestId,
+    file.originalname
+  )
 
   await getPrivateR2Client().send(
     new PutObjectCommand({
-      Bucket:
-        getPrivateBucketName(),
+      Bucket: getPrivateBucketName(),
       Key: storageKey,
-      Body: createReadStream(
-        file.path
-      ),
-      ContentLength:
-        Number(file.size || 0) ||
-        undefined,
-      ContentType:
-        file.mimetype ||
-        'application/octet-stream',
-      CacheControl:
-        'private, no-store, no-cache, must-revalidate',
+      Body: createReadStream(verified.path),
+      ContentLength: verified.size,
+      ContentType: file.mimetype || 'application/octet-stream',
+      CacheControl: 'private, no-store, no-cache, must-revalidate',
       Metadata: {
-        user_id:
-          String(userId),
-        request_id:
-          String(requestId),
-        original_file_name:
-          safeFileName(
-            file.originalname
-          ),
+        user_id: String(userId),
+        request_id: String(requestId),
+        original_file_name: safeFileName(file.originalname),
       },
     })
   )
 
   return {
     storageKey,
-    fileName:
-      safeFileName(
-        file.originalname
-      ),
-    mimeType:
-      file.mimetype ||
-      'application/octet-stream',
-    fileSize:
-      Number(file.size || 0),
+    fileName: safeFileName(file.originalname),
+    mimeType: file.mimetype || 'application/octet-stream',
+    fileSize: verified.size,
   }
 }
+
 
 export async function getSupportScreenshotFromR2(
   storageKey
