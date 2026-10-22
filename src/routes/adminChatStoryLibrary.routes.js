@@ -157,17 +157,17 @@ router.get(
       .eq("chat_theme_enabled", true)
       .order("created_at", { ascending: false })
       .order("id", { ascending: false })
-      .range((page - 1) * 20, page * 20);
+      .range((page - 1) * 10, page * 10);
     if (status !== "all") query = query.eq("is_active", status === "visible");
     if (q.trim())
       query = query.ilike("title", `%${q.trim().replace(/[\\%_]/g, "\\$&")}%`);
     const rows = await checked(query);
     res.json({
       ok: true,
-      items: (rows || []).slice(0, 20),
+      items: (rows || []).slice(0, 10),
       page,
-      limit: 20,
-      has_more: rows?.length > 20,
+      limit: 10,
+      has_more: rows?.length > 10,
     });
   }),
 );
