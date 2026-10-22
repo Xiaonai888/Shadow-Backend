@@ -359,7 +359,7 @@ export async function deleteMediaLibraryObjects(
       index + 1000
     )
 
-    await r2().send(
+        const response = await r2().send(
       new DeleteObjectsCommand({
         Bucket: config.bucket,
         Delete: {
@@ -369,8 +369,10 @@ export async function deleteMediaLibraryObjects(
           })),
         },
       })
-    )
-
+        )
+    if (response.Errors?.length) {
+      throw new Error(`R2 failed to delete ${response.Errors.length} media objects`)
+    }
     deleted += batch.length
   }
 
