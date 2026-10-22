@@ -1,6 +1,7 @@
 import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
+import path from 'node:path'
 import { unlink } from 'node:fs/promises'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
@@ -42,8 +43,11 @@ const publicSlidesReadSpamGuard = createSpamGuard({
 })
 
 async function removeTempFile(req) {
-  if (!req.file?.path) return
-  await unlink(req.file.path).catch(() => {})
+  const fileName = req.file?.filename
+  if (typeof fileName !== 'string' || !/^[a-f0-9]{32}$/i.test(fileName)) return
+  const expectedPath = path.join(os.tmpdir(), fileName)
+  if (req.file.path !== expectedPath) return
+  await unlink(expectedPath).catch(() => {})
 }
 
 function cleanupTempFile(req, res, next) {
