@@ -11,6 +11,7 @@ import usersRoutes from './src/routes/users.routes.js'
 import authorsRoutes from './src/routes/authors.routes.js'
 import storiesRoutes from './src/routes/stories.routes.js'
 import storyMediaRoutes from './src/routes/storyMedia.routes.js'
+import mangaDirectUploadRoutes from './src/routes/mangaDirectUpload.routes.js'
 import publicStoriesRoutes from './src/routes/publicStories.routes.js'
 import adminExclusiveRoutes from './src/routes/adminExclusive.routes.js'
 import genresRoutes from './src/routes/genres.routes.js'
@@ -805,6 +806,7 @@ app.use('/api/authors/media', mediaUploadRouteSpamGuard, authorMediaRoutes)
 app.use('/api/authors', authorRouteSpamGuard, authorsRoutes)
 app.use('/api/stories', storyManagementSpamGuard, storiesRoutes)
 app.use('/api/story-media', mediaUploadRouteSpamGuard, storyMediaRoutes)
+app.use('/api/story-media/manga-direct', mediaUploadRouteSpamGuard, mangaDirectUploadRoutes)
 app.use('/api/public', publicReadSpamGuard)
 app.use('/api/public', publicStoriesRoutes)
 app.use('/api/public', publicAppSettingsRoutes)
