@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { open, stat, unlink } from 'node:fs/promises'
+import { lstat, open, realpath, stat, unlink } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -486,12 +486,12 @@ async function uploadMedia(userId, preparedMedia, mediaType) {
   const filePath =
     `reader-stories/${userId}/${mediaType}/` +
     `${Date.now()}-${random}.${preparedMedia.extension}`
-
+const sourcePath = await getValidatedReaderStoryMediaPath(preparedMedia, mediaType)
   await getR2Client().send(
     new PutObjectCommand({
       Bucket: getR2BucketName(),
       Key: filePath,
-      Body: createReadStream(preparedMedia.path),
+      Body: createReadStream(sourcePath),
       ContentLength: preparedMedia.fileSize,
       ContentType: preparedMedia.mimeType,
       CacheControl: 'public, max-age=86400',
