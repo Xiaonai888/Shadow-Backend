@@ -146,6 +146,15 @@ export async function syncReaderPostTagMentionLinks({
     .filter((row) => (row.kind === 'mention' ? updateMentions : updateTags) && !nextKeys.has(key(row)))
     .map((row) => row.id)
   const addRows = requested.filter((row) => !pastKeys.has(key(row)))
+  let inserted = []
+  if (addRows.length) {
+    const { data, error } = await supabase
+      .from('reader_tag_mention_links')
+      .insert(addRows)
+      .select('target_user_id,kind,status')
+    if (error) throw error
+    inserted = data || []
+  }
   if (removeIds.length) {
     const { error } = await supabase
       .from('reader_tag_mention_links')
@@ -155,15 +164,8 @@ export async function syncReaderPostTagMentionLinks({
       .in('id', removeIds)
     if (error) throw error
   }
-  if (addRows.length) {
-    const { data: inserted, error } = await supabase
-      .from('reader_tag_mention_links')
-      .insert(addRows)
-      .select('target_user_id,kind,status')
-    if (error && error.code !== '23505') throw error
-    if (!error && inserted?.length) {
-      await notifyNewLinks(inserted, { postId })
-    }
+  if (inserted.length) {
+    await notifyNewLinks(inserted, { postId })
   }
 }
 
@@ -210,14 +212,14 @@ export async function syncReaderCommentMentionLinks({
   const statusIds = previous
     .filter((row) => desiredIds.has(String(row.target_user_id).toLowerCase()) && row.status !== desiredStatus)
     .map((row) => row.id)
-  if (removeIds.length) {
-    const { error } = await supabase
+  let inserted = []
+  if (insertRows.length) {
+    const { data, error } = await supabase
       .from('reader_tag_mention_links')
-      .delete()
-      .eq('comment_id', id)
-      .eq('actor_user_id', actorId)
-      .in('id', removeIds)
+      .insert(insertRows)
+      .select('target_user_id,kind,status')
     if (error) throw error
+    inserted = data || []
   }
   if (statusIds.length) {
     const { error } = await supabase
@@ -228,14 +230,16 @@ export async function syncReaderCommentMentionLinks({
       .in('id', statusIds)
     if (error) throw error
   }
-  if (insertRows.length) {
-    const { data: inserted, error } = await supabase
+  if (removeIds.length) {
+    const { error } = await supabase
       .from('reader_tag_mention_links')
-      .insert(insertRows)
-      .select('target_user_id,kind,status')
-    if (error && error.code !== '23505') throw error
-    if (!error && !moderationPending && inserted?.length) {
-      await notifyNewLinks(inserted, { commentId: id })
-    }
+      .delete()
+      .eq('comment_id', id)
+      .eq('actor_user_id', actorId)
+      .in('id', removeIds)
+    if (error) throw error
+  }
+  if (!moderationPending && inserted.length) {
+    await notifyNewLinks(inserted, { commentId: id })
   }
 }
