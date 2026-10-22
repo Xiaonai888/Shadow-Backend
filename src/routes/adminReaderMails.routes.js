@@ -16,6 +16,7 @@ import {
   updateAdminReaderMail,
 } from '../controllers/adminReaderMailMediaGuard.controller.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
+import path from 'node:path'
 
 const router = express.Router()
 
@@ -76,9 +77,17 @@ function getSafeFileExt(file) {
   )
 }
 
+function getSafeMailTempPath(file) {
+  const fileName = file?.filename
+  if (typeof fileName !== 'string' || !/^[a-f0-9]{32}$/i.test(fileName)) return ''
+  const expectedPath = path.join(os.tmpdir(), fileName)
+  return file.path === expectedPath ? expectedPath : ''
+}
+
 async function removeTempFile(req) {
-  if (!req.file?.path) return
-  await unlink(req.file.path).catch(() => {})
+  const tempPath = getSafeMailTempPath(req.file)
+  if (!tempPath) return
+  await unlink(tempPath).catch(() => {})
 }
 
 function cleanupTempFile(req, res, next) {
@@ -187,7 +196,7 @@ router.post(
         new PutObjectCommand({
           Bucket: bucket,
           Key: key,
-          Body: createReadStream(req.file.path),
+          Body: createReadStream(tempFilePath),
           ContentLength:
             Number(req.file.size || 0) ||
             undefined,
