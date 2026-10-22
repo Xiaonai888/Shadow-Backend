@@ -388,6 +388,12 @@ async function copyLegacyAuthorPaymentQrToR2(
   const { bucket, objectPath } =
     getLegacySupabaseStorageTarget(value)
 
+    const { data: bucketInfo, error: bucketError } =
+    await supabase.storage.getBucket(bucket)
+  if (bucketError || bucketInfo?.public !== true) {
+    throw authorPaymentQrError('Only public legacy QR images are allowed')
+  }
+
   const { data, error } = await supabase.storage
     .from(bucket)
     .download(objectPath)
@@ -432,6 +438,7 @@ async function copyLegacyAuthorPaymentQrToR2(
 }
 async function normalizeAuthorPaymentQrImage(
   value,
+  userId
 ) {
   const input = String(value || '').trim()
 
