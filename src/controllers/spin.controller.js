@@ -1,4 +1,6 @@
 import { unlink } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { supabase } from '../config/supabase.js'
 import { searchDiscover } from './discoverSearch.controller.js'
 import {
@@ -724,9 +726,13 @@ export async function uploadSpinMedia(req, res) {
       message: error.message || 'Failed to upload spin image',
     })
   } finally {
-    if (req.file?.path) {
-      await unlink(req.file.path).catch(() => {})
-    }
+    const fileName = req.file?.filename
+if (typeof fileName === 'string' && /^[a-f0-9]{32}$/i.test(fileName)) {
+  const expectedPath = path.join(os.tmpdir(), fileName)
+  if (req.file.path === expectedPath) {
+    await unlink(expectedPath).catch(() => {})
+  }
+}
   }
 }
 
