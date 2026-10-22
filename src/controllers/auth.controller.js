@@ -44,7 +44,12 @@ function normalizeEmail(email) {
 }
 
 function isValidEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+  const value = String(email || '')
+  if (!value || value.length > 254 || /\s/.test(value)) return false
+  const at = value.indexOf('@')
+  if (at < 1 || at !== value.lastIndexOf('@')) return false
+  const dot = value.indexOf('.', at + 2)
+  return dot > at + 1 && dot < value.length - 1
 }
 
 function getAdminResetRequestKey(req, email) {
