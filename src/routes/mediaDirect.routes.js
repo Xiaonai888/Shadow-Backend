@@ -208,16 +208,16 @@ function verifyToken(token, owner, role) {
   return { ...claims, category, policy, extension }
 }
 
-async function verifyImageHeader(key, mime) {
+async function verifyImageHeader(key, mime, expectedSize) {
   const response = await r2().send(new GetObjectCommand({
     Bucket: config().bucket,
     Key: key,
-    Range: 'bytes=0-15',
+    Range: 'bytes=0-31',
   }))
   const bytes = Buffer.from(await response.Body.transformToByteArray())
   const isJpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-  const isPng = bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
-  const isWebp = bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP'
+  const isPng = bytes.length >= 24 && bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) && bytes.readUInt32BE(8) === 13 && bytes.toString('ascii', 12, 16) === 'IHDR' && bytes.readUInt32BE(16) > 0 && bytes.readUInt32BE(20) > 0
+  const isWebp = bytes.length >= 20 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP' && bytes.readUInt32LE(4) === expectedSize - 8 && ['VP8 ', 'VP8L', 'VP8X'].includes(bytes.toString('ascii', 12, 16))
   if (!({ 'image/jpeg': isJpeg, 'image/png': isPng, 'image/webp': isWebp }[mime])) {
     throw fail(415, 'DIRECT_UPLOAD_IMAGE_INVALID', 'Image format does not match the selected file')
   }
@@ -278,7 +278,7 @@ async function finalize(req, res, role) {
       throw fail(400, 'DIRECT_UPLOAD_FILE_MISMATCH', 'Uploaded file does not match the selected image')
     }
     try {
-      await verifyImageHeader(claims.key, claims.mime)
+      await verifyImageHeader(claims.key, claims.mime, claims.size)
     } catch (error) {
       if (error?.code === 'DIRECT_UPLOAD_IMAGE_INVALID') await deleteObject(claims.key).catch(() => {})
       throw error
