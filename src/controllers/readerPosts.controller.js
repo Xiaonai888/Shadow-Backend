@@ -3563,12 +3563,27 @@ const posts =
   }
 }
 
+function validateTaggedUserIds(value) {
+  if (value === undefined) return
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i
+  if (
+    !Array.isArray(value) ||
+    value.length > 20 ||
+    value.some((id) => typeof id !== 'string' || !uuid.test(id.trim()))
+  ) {
+    const error = new Error('Provide up to 20 valid reader IDs for tags.')
+    error.statusCode = 400
+    throw error
+  }
+}
+
 export async function createMyReaderPost(
   req,
   res
 ) {
   try {
     const userId = getUserId(req)
+    validateTaggedUserIds(req.body.tagged_user_ids)
     const imageUrls =
   normalizeImageUrls(
     req.body.image_urls
@@ -3625,6 +3640,7 @@ const content = validateContent(
 
         if (error) throw error
 
+    let tagSyncFailed = false
     try {
       await syncReaderPostTagMentionLinks({
         postId: data.id,
@@ -3635,6 +3651,30 @@ const content = validateContent(
       })
     } catch (linkError) {
       console.error('READER_POST_TAG_MENTION_SYNC_ERROR:', linkError)
+      let rolledBack = false
+      try {
+        const { data: removedPost, error: rollbackError } = await supabase
+          .from('reader_posts')
+          .delete()
+          .eq('id', data.id)
+          .eq('user_id', userId)
+          .select('id')
+          .maybeSingle()
+        if (rollbackError) throw rollbackError
+        rolledBack = Boolean(removedPost?.id)
+      } catch (rollbackError) {
+        console.error('READER_POST_TAG_SYNC_ROLLBACK_ERROR:', rollbackError)
+      }
+      if (rolledBack) {
+        invalidateReaderPostsFeedCandidateCache()
+        return res.status(503).json({
+          ok: false,
+          post_saved: false,
+          tag_sync_failed: true,
+          message: 'Post was not published because its tags or mentions could not be saved. Please retry.',
+        })
+      }
+      tagSyncFailed = true
     }
 
     invalidateReaderPostsFeedCandidateCache()
@@ -3646,8 +3686,13 @@ const content = validateContent(
       String(userId)
     )
 
-    return res.status(201).json({
-      ok: true,
+    return res.status(tagSyncFailed ? 207 : 201).json({
+      ok: !tagSyncFailed,
+      ...(tagSyncFailed ? {
+        post_saved: true,
+        tag_sync_failed: true,
+        message: 'Your post was published but tags or mentions could not be saved. Do not publish it again; edit this post to retry.',
+      } : {}),
       post: user
         ? normalizePost(
             data,
@@ -3681,6 +3726,7 @@ export async function updateMyReaderPost(
 ) {
   try {
     const userId = getUserId(req)
+    validateTaggedUserIds(req.body.tagged_user_ids)
     const postId = String(
       req.params.postId || ''
     ).trim()
@@ -3785,6 +3831,7 @@ export async function updateMyReaderPost(
 
         if (error) throw error
 
+    let tagSyncFailed = false
     if (req.body.content !== undefined || req.body.tagged_user_ids !== undefined) {
       try {
         await syncReaderPostTagMentionLinks({
@@ -3798,6 +3845,7 @@ export async function updateMyReaderPost(
         })
       } catch (linkError) {
         console.error('READER_POST_TAG_MENTION_SYNC_ERROR:', linkError)
+        tagSyncFailed = true
       }
     }
 
@@ -3818,8 +3866,13 @@ export async function updateMyReaderPost(
       String(userId)
     )
 
-    return res.status(200).json({
-      ok: true,
+    return res.status(tagSyncFailed ? 207 : 200).json({
+      ok: !tagSyncFailed,
+      ...(tagSyncFailed ? {
+        post_saved: true,
+        tag_sync_failed: true,
+        message: 'Post changes were saved, but tags or mentions could not be synchronized. Please retry saving.',
+      } : {}),
       post: user
         ? normalizePost(
             data,
