@@ -18,6 +18,7 @@ import {
   updateSpinWheel,
   uploadSpinMedia,
 } from '../controllers/spin.controller.js'
+import path from 'node:path'
 
 const router = express.Router()
 
@@ -33,9 +34,13 @@ function uploadImage(req, res, next) {
   upload.single('image')(req, res, async (error) => {
     if (!error) return next()
 
-    if (req.file?.path) {
-      await unlink(req.file.path).catch(() => {})
-    }
+    const fileName = req.file?.filename
+if (typeof fileName === 'string' && /^[a-f0-9]{32}$/i.test(fileName)) {
+  const expectedPath = path.join(os.tmpdir(), fileName)
+  if (req.file.path === expectedPath) {
+    await unlink(expectedPath).catch(() => {})
+  }
+}
 
     if (error.code === 'LIMIT_FILE_SIZE') {
       return res.status(413).json({
