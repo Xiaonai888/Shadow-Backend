@@ -32,7 +32,7 @@ function validCursor(value, firstDay, today) {
 
 async function getTotals(userId, firstDay, today) {
   const cache = totalsCache.get(userId)
-  if (cache?.day === today) return cache.totals
+  if (cache?.day === today && Date.now() - cache.savedAt < 30 * 60 * 1000) return cache.totals
   const { data, error } = await supabase
     .from('reader_reading_daily_summaries')
     .select('stories_read,episodes_read')
@@ -45,7 +45,7 @@ async function getTotals(userId, firstDay, today) {
     stories_read: result.stories_read + (Number(row.stories_read) || 0),
     episodes_read: result.episodes_read + (Number(row.episodes_read) || 0),
   }), { stories_read: 0, episodes_read: 0 })
-  totalsCache.set(userId, { day: today, totals })
+  totalsCache.set(userId, { day: today, totals, savedAt: Date.now() })
   if (totalsCache.size > 1000) totalsCache.delete(totalsCache.keys().next().value)
   return totals
 }
