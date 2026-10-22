@@ -389,26 +389,32 @@ if (requestedLeadCharacter) {
 }
 
 for (const character of characters) {
-      const { source_id: sourceId, ...payload } = character
+  const { source_id: sourceId, ...payload } = character
 
-      if (sourceId && existingIds.has(String(sourceId))) {
-        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(sourceId || ''))
-const { error } = await supabase
-  .from('chat_story_characters')
-  .insert({ ...payload, ...(isUuid ? { id: sourceId } : {}) })
-          .eq('id', sourceId)
-          .eq('story_id', storyId)
-          .eq('user_id', userId)
+  if (sourceId && existingIds.has(String(sourceId))) {
+    const { error } = await supabase
+      .from('chat_story_characters')
+      .update(payload)
+      .eq('id', sourceId)
+      .eq('story_id', storyId)
+      .eq('user_id', userId)
 
-        if (error) throw error
-      } else {
-        const { error } = await supabase
+    if (error) throw error
+  } else {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(sourceId || ''))
+    const newRow = isUuid ? { ...payload, id: sourceId } : payload
+
+    const { error } = isUuid
+      ? await supabase
           .from('chat_story_characters')
-          .insert(payload)
+          .upsert(newRow, { onConflict: 'id', ignoreDuplicates: true })
+      : await supabase
+          .from('chat_story_characters')
+          .insert(newRow)
 
-        if (error) throw error
-      }
-    }
+    if (error) throw error
+  }
+}
 
     const { data, error } = await supabase
       .from('chat_story_characters')
