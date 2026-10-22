@@ -66,28 +66,75 @@ function parseAbaDate(value) {
 }
 
 function parseAbaPaywayMessage(text) {
-  const source = String(text || '').replace(/\s+/g, ' ').trim()
-  const pattern = /\$\s*([0-9]+(?:\.[0-9]{1,2})?)\s+paid by\s+(.+?)\s+\(\*(\d+)\)\s+on\s+(.+?)\s+via\s+(.+?)\s+at\s+(.+?)\.\s*Trx\.\s*ID:\s*([A-Za-z0-9_-]+)\s*,\s*APV:\s*([A-Za-z0-9_-]+)/i
-  const match = source.match(pattern)
-  if (!match) return null
+  const source = String(text || '').slice(0, 8192).replace(/\s+/g, ' ').trim()
+  const lower = source.toLowerCase()
+  const dollar = source.indexOf('$')
+  if (dollar < 0) return null
 
-  const viaText = match[5].trim()
-  const bankMatch = viaText.match(/^(.*?)\s+\((.+)\)$/)
+  const paidBy = lower.indexOf(' paid by ', dollar + 1)
+  if (paidBy < 0) return null
+  const amountText = source.slice(dollar + 1, paidBy).trim()
+  if (!/^[0-9]+(?:\.[0-9]{1,2})?$/.test(amountText)) return null
+
+  const payerStart = paidBy + ' paid by '.length
+  const phoneStart = source.indexOf(' (*', payerStart)
+  if (phoneStart < 0) return null
+  const payerName = source.slice(payerStart, phoneStart).trim()
+  const phoneEnd = lower.indexOf(') on ', phoneStart + 3)
+  if (!payerName || phoneEnd < 0) return null
+  const payerPhone = source.slice(phoneStart + 3, phoneEnd)
+  if (!/^[0-9]+$/.test(payerPhone)) return null
+
+  const dateStart = phoneEnd + ') on '.length
+  const viaStart = lower.indexOf(' via ', dateStart)
+  if (viaStart < 0) return null
+  const dateText = source.slice(dateStart, viaStart).trim()
+  const methodStart = viaStart + ' via '.length
+  const outletStartMarker = lower.indexOf(' at ', methodStart)
+  if (!dateText || outletStartMarker < 0) return null
+  const viaText = source.slice(methodStart, outletStartMarker).trim()
+  if (!viaText) return null
+
+  const outletStart = outletStartMarker + ' at '.length
+  const trxLabel = lower.indexOf('trx.', outletStart)
+  if (trxLabel < 0) return null
+  const outletWithPeriod = source.slice(outletStart, trxLabel).trim()
+  if (!outletWithPeriod.endsWith('.')) return null
+  const outletName = outletWithPeriod.slice(0, -1).trim()
+  if (!outletName) return null
+
+  const idSection = source.slice(trxLabel + 'trx.'.length).trimStart()
+  if (!idSection.toLowerCase().startsWith('id:')) return null
+  const afterId = idSection.slice('id:'.length).trimStart()
+  const comma = afterId.indexOf(',')
+  if (comma < 0) return null
+  const transactionId = afterId.slice(0, comma).trim()
+  if (!/^[A-Za-z0-9_-]+$/.test(transactionId)) return null
+
+  const apvSection = afterId.slice(comma + 1).trimStart()
+  if (!apvSection.toLowerCase().startsWith('apv:')) return null
+  const apv = apvSection.slice('apv:'.length).trimStart().match(/^[A-Za-z0-9_-]+/)?.[0]
+  if (!apv) return null
+
+  const bankStart = viaText.indexOf(' (')
+  const hasBank = bankStart >= 0 && viaText.endsWith(')') && bankStart + 3 < viaText.length
+  const paymentMethod = hasBank ? viaText.slice(0, bankStart).trim() : viaText
+  const bankName = hasBank ? viaText.slice(bankStart + 2, -1).trim() : ''
 
   return {
-    amount: Number(match[1]),
+    amount: Number(amountText),
     currency: 'USD',
-    payer_name: match[2].trim(),
-    payer_name_normalized: normalizeName(match[2]),
-    payer_phone_last: match[3].trim(),
-    transaction_time: parseAbaDate(match[4]),
-    transaction_time_text: match[4].trim(),
-    payment_method_text: (bankMatch ? bankMatch[1] : viaText).trim(),
-    bank_name: bankMatch ? bankMatch[2].trim() : '',
-    outlet_name: match[6].trim(),
-    outlet_name_normalized: normalizeName(match[6]),
-    trx_id: match[7].trim(),
-    apv: match[8].trim(),
+    payer_name: payerName,
+    payer_name_normalized: normalizeName(payerName),
+    payer_phone_last: payerPhone,
+    transaction_time: parseAbaDate(dateText),
+    transaction_time_text: dateText,
+    payment_method_text: paymentMethod,
+    bank_name: bankName,
+    outlet_name: outletName,
+    outlet_name_normalized: normalizeName(outletName),
+    trx_id: transactionId,
+    apv,
     raw_text: source,
   }
 }
