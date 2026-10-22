@@ -236,7 +236,10 @@ export async function cleanupTemporaryMangaPartsV2(req, res) {
   const ownedPrefix =
     `${publicBaseUrl}/episode-content/${userId}/manga-v2/`
 
-  if (urls.some((url) => !url.startsWith(ownedPrefix))) {
+  if (urls.some((url) =>
+  !url.startsWith(ownedPrefix) ||
+  !/^[A-Za-z0-9_-]+\.webp$/.test(url.slice(ownedPrefix.length))
+)) {
     return res.status(400).json({
       ok: false,
       code: 'INVALID_MANGA_CLEANUP_URL',
