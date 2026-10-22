@@ -144,6 +144,7 @@ router.use((req, res, next) => {
 router.get(
   "/",
   requireAdminPermission("media_library.view"),
+  chatLibraryRateLimit,
   handle(async (req, res) => {
     const rawPage = req.query.page ?? "1";
     if (typeof rawPage !== "string" || !/^\d{1,5}$/.test(rawPage))
@@ -182,6 +183,7 @@ router.get(
 router.post(
   "/",
   requireAdminPermission("media_library.manage"),
+  chatLibraryRateLimit,
   handle(async (req, res) => {
     const id = validId(req.body?.id);
     const name = title(req.body?.title);
@@ -263,6 +265,7 @@ router.post(
 router.patch(
   "/:id",
   requireAdminPermission("media_library.manage"),
+  chatLibraryRateLimit,
   handle(async (req, res) => {
     const id = validId(req.params.id);
     const patch = { updated_at: new Date().toISOString() };
@@ -293,6 +296,7 @@ router.patch(
 router.delete(
   "/:id",
   requireAdminPermission("media_library.manage"),
+  chatLibraryRateLimit,
   handle(async (req, res) => {
     const id = validId(req.params.id);
     await checked(
