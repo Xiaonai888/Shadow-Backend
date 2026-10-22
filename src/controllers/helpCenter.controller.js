@@ -29,14 +29,29 @@ function isUuid(value) {
 }
 
 function slugify(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/&/g, 'and')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 120)
+  const source = String(value || '').trim().toLowerCase()
+  let result = ''
+  let separator = false
+  for (let i = 0; i < source.length && result.length < 120; i++) {
+    const character = source[i]
+    if (character === '&') {
+      if (separator && result) result += '-'
+      result += 'and'
+      separator = false
+      continue
+    }
+    const code = source.charCodeAt(i)
+    if ((code >= 97 && code <= 122) || (code >= 48 && code <= 57)) {
+      if (separator && result) result += '-'
+      result += character
+      separator = false
+    } else {
+      separator = true
+    }
+  }
+  return result.slice(0, 120)
 }
+
 
 function cleanColor(value, fallback = '#7458E8') {
   const color = String(value || '').trim()
