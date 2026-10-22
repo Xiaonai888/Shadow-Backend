@@ -5,7 +5,9 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3'
 import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { lstat, realpath } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { assertDiskBackedUploadFile } from './mediaStoragePolicy.service.js'
 
 let privateR2Client = null
@@ -89,22 +91,52 @@ export async function uploadPrivatePdfToR2({
     allowEmpty: false,
   })
 
+  const inputPath = String(file.path || '').trim()
+  const tempDir = path.resolve(os.tmpdir())
+  const fileName = path.basename(inputPath)
+  const candidatePath = path.join(tempDir, fileName)
+
+  if (
+    !path.isAbsolute(inputPath) ||
+    inputPath !== candidatePath ||
+    !/^[a-f0-9]{32}$/i.test(fileName)
+  ) {
+    const error = new Error('Invalid private PDF upload path')
+    error.statusCode = 400
+    error.code = 'INVALID_PRIVATE_PDF_UPLOAD_PATH'
+    throw error
+  }
+
+  const realTempDir = await realpath(tempDir)
+  const realFilePath = await realpath(candidatePath)
+  const fileStat = await lstat(candidatePath)
+
+  if (
+    path.dirname(realFilePath) !== realTempDir ||
+    path.basename(realFilePath) !== fileName ||
+    !fileStat.isFile() ||
+    fileStat.isSymbolicLink() ||
+    fileStat.size < 1 ||
+    fileStat.size > 50 * 1024 * 1024
+  ) {
+    const error = new Error('Invalid private PDF upload file')
+    error.statusCode = 400
+    error.code = 'INVALID_PRIVATE_PDF_UPLOAD_FILE'
+    throw error
+  }
+
   const storageKey = createPrivatePdfKey(
     authorPageId,
     file.originalname
   )
-  const declaredSize = Number(file.size || 0)
-  const fileStat = declaredSize > 0
-    ? null
-    : await stat(file.path)
-  const fileSize = declaredSize || Number(fileStat?.size || 0)
+  const fileSize = fileStat.size
 
   await getPrivateR2Client().send(
     new PutObjectCommand({
       Bucket: getPrivatePdfBucketName(),
       Key: storageKey,
-      Body: createReadStream(file.path),
-      ContentLength: fileSize || undefined,
+      Body: createReadStream(realFilePath),
+      ContentLength: fileSize,
       ContentType: 'application/pdf',
       ContentDisposition: 'inline',
       CacheControl: 'private, no-store, no-cache, must-revalidate',
@@ -122,6 +154,7 @@ export async function uploadPrivatePdfToR2({
     fileSize,
   }
 }
+
 
 export async function deletePrivatePdfFromR2(storageKey) {
   const key = String(storageKey || '').trim()
