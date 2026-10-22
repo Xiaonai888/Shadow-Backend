@@ -1,9 +1,11 @@
 import { supabase } from '../config/supabase.js'
+import { createNotification } from './notifications.controller.js'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const PAGE_SIZE = 20
 const MAX_PAGE_SIZE = 30
 const MAX_BATCH_SIZE = 30
+const NOTIFICATION_BATCH_SIZE = 10
 
 function actorId(req) {
   return String(req.user?.user_id || req.user?.id || '').trim()
@@ -34,6 +36,30 @@ async function readOwnedPost(postId, ownerId) {
     .maybeSingle()
   if (error) throw error
   return data
+}
+
+async function notifyApprovedCommentMentions(rows, postId) {
+  if (!rows.length) return
+  for (let index = 0; index < rows.length; index += NOTIFICATION_BATCH_SIZE) {
+    const batch = rows.slice(index, index + NOTIFICATION_BATCH_SIZE)
+    const results = await Promise.allSettled(
+      batch.map((row) =>
+        createNotification({
+          userId: row.target_user_id,
+          type: 'community',
+          title: 'You were mentioned',
+          message: 'Someone mentioned you in a comment.',
+          link: `/reader/post/${encodeURIComponent(postId)}`,
+          referenceId: `mention:${row.comment_id}:${row.target_user_id}`,
+        })
+      )
+    )
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        console.error('READER_APPROVED_MENTION_NOTIFICATION_ERROR:', result.reason)
+      }
+    }
+  }
 }
 
 export async function getPendingReaderPostComments(req, res) {
@@ -111,7 +137,7 @@ export async function reviewPendingReaderPostComments(req, res) {
 
     const reviewedIds = (data || []).map((item) => item.id)
     if (reviewedIds.length) {
-      const { error: mentionError } = await supabase
+      const { data: changedMentions, error: mentionError } = await supabase
         .from('reader_tag_mention_links')
         .update({
           status: approving ? 'approved' : 'rejected',
@@ -120,8 +146,15 @@ export async function reviewPendingReaderPostComments(req, res) {
         .in('comment_id', reviewedIds)
         .eq('kind', 'mention')
         .eq('status', 'pending')
+        .select('id,comment_id,target_user_id')
       if (mentionError) {
         console.error('READER_COMMENT_MENTION_REVIEW_ERROR:', mentionError)
+      } else if (approving && changedMentions?.length) {
+        try {
+          await notifyApprovedCommentMentions(changedMentions, postId)
+        } catch (notificationError) {
+          console.error('READER_APPROVED_MENTION_NOTIFICATION_ERROR:', notificationError)
+        }
       }
     }
     let commentCount = null
