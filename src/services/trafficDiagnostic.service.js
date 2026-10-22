@@ -417,7 +417,7 @@ function destination(hostname) {
   const host = String(hostname || '').toLowerCase()
   if (!host) return 'UNKNOWN'
   if (host.endsWith('.supabase.co')) return 'SUPABASE'
-  if (host.includes('r2.cloudflarestorage.com')) return 'CLOUDFLARE_R2'
+  if (host.endsWith('.r2.cloudflarestorage.com')) return 'CLOUDFLARE_R2'
   if (host === 'api.telegram.org') return 'TELEGRAM'
   if (host === 'ipwho.is' || host.endsWith('.ipwho.is')) return 'IPWHO'
   return `OTHER:${host}`
