@@ -1,8 +1,55 @@
 import { supabase } from '../config/supabase.js'
 import { getReaderTagMentionPermissions } from './readerTagMentionPermissions.service.js'
+import { createNotification } from '../controllers/notifications.controller.js'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i
 const LIMIT = 20
+
+async function notifyNewLinks(rows, { postId = '', commentId = '' } = {}) {
+  const actionable = (rows || []).filter((row) =>
+    row?.target_user_id && (row.kind === 'tag' || row.kind === 'mention') &&
+    (row.status === 'approved' || (row.kind === 'tag' && row.status === 'pending'))
+  )
+  if (!actionable.length) return
+
+  try {
+    let sourcePostId = String(postId || '')
+    if (!sourcePostId && commentId) {
+      const { data, error } = await supabase
+        .from('reader_post_comments')
+        .select('post_id')
+        .eq('id', commentId)
+        .maybeSingle()
+      if (error) throw error
+      sourcePostId = String(data?.post_id || '')
+    }
+    if (!sourcePostId) return
+
+    const notifications = actionable.map((row) => {
+      const pendingTag = row.kind === 'tag' && row.status === 'pending'
+      const isTag = row.kind === 'tag'
+      return createNotification({
+        userId: row.target_user_id,
+        type: 'community',
+        title: pendingTag ? 'Review a new tag' : isTag ? 'You were tagged in a post' : 'You were mentioned',
+        message: pendingTag
+          ? 'Someone tagged you in a post. Approve it before it appears on your profile.'
+          : isTag
+            ? 'Someone tagged you in a post.'
+            : commentId
+              ? 'Someone mentioned you in a comment.'
+              : 'Someone mentioned you in a post.',
+        link: pendingTag
+          ? '/profile/settings/tags-mentions/pending'
+          : `/reader/post/${encodeURIComponent(sourcePostId)}`,
+        referenceId: `${row.kind}:${commentId || sourcePostId}:${row.target_user_id}`,
+      })
+    })
+    await Promise.allSettled(notifications)
+  } catch (error) {
+    console.error('READER_TAG_MENTION_NOTIFICATION_ERROR:', error)
+  }
+}
 
 function mentionsInText(content) {
   const names = new Set()
@@ -109,8 +156,14 @@ export async function syncReaderPostTagMentionLinks({
     if (error) throw error
   }
   if (addRows.length) {
-    const { error } = await supabase.from('reader_tag_mention_links').insert(addRows)
+    const { data: inserted, error } = await supabase
+      .from('reader_tag_mention_links')
+      .insert(addRows)
+      .select('target_user_id,kind,status')
     if (error && error.code !== '23505') throw error
+    if (!error && inserted?.length) {
+      await notifyNewLinks(inserted, { postId })
+    }
   }
 }
 
@@ -176,9 +229,13 @@ export async function syncReaderCommentMentionLinks({
     if (error) throw error
   }
   if (insertRows.length) {
-    const { error } = await supabase
+    const { data: inserted, error } = await supabase
       .from('reader_tag_mention_links')
       .insert(insertRows)
+      .select('target_user_id,kind,status')
     if (error && error.code !== '23505') throw error
+    if (!error && !moderationPending && inserted?.length) {
+      await notifyNewLinks(inserted, { commentId: id })
+    }
   }
 }
