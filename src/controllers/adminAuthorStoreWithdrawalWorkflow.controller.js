@@ -35,7 +35,12 @@ function ownerAndId(req, res) {
 }
 
 export function storeReceiptPath(id, path) {
-  return new RegExp(`^store-withdrawals/${id}/[a-f\\d-]{36}\\.(png|jpg|webp)$`, 'i').test(String(path || ''))
+  const withdrawalId = String(id || '')
+  if (!ID_PATTERN.test(withdrawalId)) return false
+  const prefix = `store-withdrawals/${withdrawalId}/`
+  const value = String(path || '')
+  return value.toLowerCase().startsWith(prefix.toLowerCase()) &&
+    /^[a-f\d-]{36}\.(png|jpg|webp)$/i.test(value.slice(prefix.length))
 }
 
 async function loadWithdrawal(id) {
