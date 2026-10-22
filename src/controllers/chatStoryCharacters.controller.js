@@ -392,9 +392,10 @@ for (const character of characters) {
       const { source_id: sourceId, ...payload } = character
 
       if (sourceId && existingIds.has(String(sourceId))) {
-        const { error } = await supabase
-          .from('chat_story_characters')
-          .update(payload)
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(sourceId || ''))
+const { error } = await supabase
+  .from('chat_story_characters')
+  .insert({ ...payload, ...(isUuid ? { id: sourceId } : {}) })
           .eq('id', sourceId)
           .eq('story_id', storyId)
           .eq('user_id', userId)
