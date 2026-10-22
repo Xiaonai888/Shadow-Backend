@@ -108,11 +108,14 @@ function sendUploadError(
       .json({
         ok: false,
         code: error.code,
-        stage:
-          error.code ===
-          'STORY_IMAGE_COMPRESS_LIMIT'
+               stage:
+          error.code === 'STORY_IMAGE_COMPRESS_LIMIT'
             ? 'compress'
-            : 'decode',
+            : error.code === 'MANGA_PAGE_DIMENSIONS_TOO_LARGE'
+              ? 'validate'
+              : error.code.startsWith('STORY_IMAGE_PROCESSING_')
+                ? 'processing'
+                : 'decode',
         message:
           error.code ===
           'STORY_IMAGE_COMPRESS_LIMIT'
