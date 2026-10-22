@@ -164,3 +164,18 @@ When asked to create or modify backend data behavior:
 - Before completion, test intended operations using the same roles as production clients, reject unauthorized access, and preserve existing API behavior.
 - Source: https://github.com/orgs/supabase/discussions/45329
 
+  ## Security and CodeQL Rules (2026-10-22)
+
+- Before a security fix, read this AGENTS.md and inspect the latest related routes, middleware, controllers, services, SQL, and the affected Reader/Admin callers. Do not replace a full file from an outdated copy.
+- Treat request bodies, query strings, route parameters, headers, file metadata, webhook payloads, remote API responses, and database content as untrusted. Validate type, size, format, allowed values, and ownership at the server boundary.
+- Keep authentication, role checks, user ownership, rate limits, anti-fraud thresholds, payment verification, audit history, and Supabase RLS and grants intact. Apply least privilege to every database role and endpoint.
+- Use parameterized queries. Never interpolate untrusted text into SQL, shell commands, server-side templates, paths, redirects, or HTML. Escape output for its actual context and use JSON/plain-text content types when HTML is not required.
+- Validate outbound request hosts and protocols before network access to avoid SSRF. Validate redirect destinations and file/media URLs; reject dangerous URL schemes and unapproved hosts.
+- Never expose, log, commit, or return private API keys, tokens, service_role credentials, signed upload URLs, or sensitive payment details. Check logs and error responses for inadvertent disclosure.
+- Preserve payment webhook signature verification, reference uniqueness, authorization, and idempotency. Never credit Diamonds, Coins, gifts, or author income from an unverified client-supplied status.
+- Do not enable previously disabled features, bypass a kill switch, remove middleware, weaken upload validation, or silently change existing API contracts without an explicit and reviewed request.
+- Fix CodeQL findings by tracing the real untrusted source to the dangerous sink. Never silence a query, disable a scanner, dismiss a live finding, or make a cosmetic rewrite only to obtain zero open alerts.
+- Retain existing GitHub security workflows, including .github/workflows/secret-scan.yml. Do not install a duplicate CodeQL workflow without first checking repository CodeQL Default Setup or existing scanning configuration.
+- After changing code, review the complete diff and run applicable syntax checks, tests, build/startup validation, and affected consumer checks. Verify the security scan covers the new commit before claiming the alert is closed. Zero open CodeQL alerts does not guarantee complete application security.
+
+
