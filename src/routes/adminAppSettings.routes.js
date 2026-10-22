@@ -16,6 +16,7 @@ import {
   updateAdminBrush,
   uploadAdminAppProfile,
 } from '../controllers/appSettings.controller.js'
+import path from 'node:path'
 
 const router = express.Router()
 const IMAGE_TYPES = new Set([
@@ -65,9 +66,13 @@ async function removeTempFiles(req) {
   ]
 
   await Promise.all(
-    files
-      .filter((file) => file?.path)
-      .map((file) => unlink(file.path).catch(() => {}))
+    files.map(async (file) => {
+      const fileName = file?.filename
+      if (typeof fileName !== 'string' || !/^[a-f0-9]{32}$/i.test(fileName)) return
+      const expectedPath = path.join(os.tmpdir(), fileName)
+      if (file.path !== expectedPath) return
+      await unlink(expectedPath).catch(() => {})
+    })
   )
 }
 
