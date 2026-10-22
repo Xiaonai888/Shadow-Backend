@@ -11,6 +11,7 @@ import {
   uploadAdminNotificationImage,
 } from '../controllers/adminNotifications.controller.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
+import path from 'node:path'
 
 const router = express.Router()
 
@@ -23,8 +24,11 @@ const upload = multer({
 })
 
 async function removeTempFile(req) {
-  if (!req.file?.path) return
-  await unlink(req.file.path).catch(() => {})
+  const fileName = req.file?.filename
+  if (typeof fileName !== 'string' || !/^[a-f0-9]{32}$/i.test(fileName)) return
+  const expectedPath = path.join(os.tmpdir(), fileName)
+  if (req.file.path !== expectedPath) return
+  await unlink(expectedPath).catch(() => {})
 }
 
 function cleanupTempFile(req, res, next) {
