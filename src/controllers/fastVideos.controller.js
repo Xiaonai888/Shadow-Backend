@@ -39,10 +39,10 @@ function normalizeTags(value) {
 function detectPlatform(videoUrl) {
   const hostname = new URL(videoUrl).hostname.replace(/^www\./, '').toLowerCase()
 
-  if (hostname === 'youtu.be' || hostname.endsWith('youtube.com')) return 'youtube'
-  if (hostname.endsWith('vimeo.com')) return 'vimeo'
-  if (hostname.endsWith('tiktok.com')) return 'tiktok'
-  if (hostname.endsWith('facebook.com') || hostname.endsWith('fb.watch')) return 'facebook'
+  if (hostname === 'youtu.be' || hostname === 'youtube.com' || hostname.endsWith('.youtube.com')) return 'youtube'
+  if (hostname === 'vimeo.com' || hostname.endsWith('.vimeo.com')) return 'vimeo'
+  if (hostname === 'tiktok.com' || hostname.endsWith('.tiktok.com')) return 'tiktok'
+  if (hostname === 'facebook.com' || hostname.endsWith('.facebook.com') || hostname === 'fb.watch' || hostname.endsWith('.fb.watch')) return 'facebook'
 
   return 'external'
 }
