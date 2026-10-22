@@ -1,4 +1,7 @@
 import { createReadStream } from 'node:fs'
+import { lstat } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { supabase } from '../config/supabase.js'
 import {
@@ -212,6 +215,26 @@ async function getMyAuthorPage(
   return data
 }
 
+async function getValidatedStoryUploadPath(file) {
+  const reject = () => {
+    const error = new Error('Invalid temporary upload file')
+    error.statusCode = 400
+    throw error
+  }
+  const fileName = file?.filename
+  if (typeof fileName !== 'string' || !/^[a-f0-9]{32}$/i.test(fileName)) reject()
+  const expectedPath = path.join(os.tmpdir(), fileName)
+  if (file.path !== expectedPath) reject()
+  let details
+  try {
+    details = await lstat(expectedPath)
+  } catch {
+    reject()
+  }
+  if (!details.isFile() || details.size <= 0) reject()
+  return expectedPath
+}
+
 async function uploadAuthorImageToR2({
   authorPage,
   userId,
@@ -227,11 +250,7 @@ async function uploadAuthorImageToR2({
     )
   }
 
-  if (!file?.path) {
-    throw new Error(
-      'Temporary upload file is required'
-    )
-  }
+  const sourcePath = await getValidatedStoryUploadPath(file)
 
   const ext = safeFileExt(
     file?.originalname ||
@@ -254,8 +273,8 @@ async function uploadAuthorImageToR2({
       Bucket: getR2BucketName(),
       Key: filePath,
       Body: createReadStream(
-        file.path
-      ),
+  sourcePath
+),
       ContentLength:
         Number(file.size || 0) ||
         undefined,
