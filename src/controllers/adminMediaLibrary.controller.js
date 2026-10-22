@@ -246,11 +246,18 @@ export async function deleteMediaFolder(req, res) {
     const existing = await findFolder(req.params.folderId)
     if (!existing) return res.status(404).json({ ok: false, message: 'Folder not found' })
 
-    const { data: images, error: imagesError } = await supabase
-      .from('media_library')
-      .select('id, storage_key')
-      .eq('folder_id', existing.id)
-    if (imagesError) throw imagesError
+     const images = []
+    for (let start = 0; ; start += 1000) {
+      const { data: batch, error: imagesError } = await supabase
+        .from('media_library')
+        .select('id, storage_key')
+        .eq('folder_id', existing.id)
+        .order('id', { ascending: true })
+        .range(start, start + 999)
+      if (imagesError) throw imagesError
+      images.push(...(batch || []))
+      if (!batch || batch.length < 1000) break
+    }
 
     const { error } = await supabase
       .from('media_folders')
