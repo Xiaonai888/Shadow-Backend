@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { stat, unlink } from 'node:fs/promises'
+import { realpath, stat, unlink } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -89,9 +89,12 @@ function clampInteger(value, minimum, maximum, fallback) {
 }
 
 function safeFolderName(value, fallback = 'uploads') {
-  const input = String(value || fallback)
-    .trim()
-    .replace(/^\/+|\/+$/g, '')
+  const raw = String(value || fallback).trim()
+  let start = 0
+  let end = raw.length
+  while (start < end && raw[start] === '/') start += 1
+  while (end > start && raw[end - 1] === '/') end -= 1
+  const input = raw.slice(start, end)
 
   if (!input || input.includes('..') || input.includes('://')) {
     const error = new Error('Invalid R2 folder path')
@@ -138,15 +141,37 @@ function normalizeMetadata(value) {
   return entries.length ? Object.fromEntries(entries) : undefined
 }
 
-async function getDiskFileSize(file) {
-  const declaredSize = Number(file?.size || 0)
-
-  if (declaredSize > 0) {
-    return declaredSize
+async function getValidatedUploadFile(file) {
+  const invalid = () => {
+    const error = new Error('Invalid R2 temporary upload file')
+    error.statusCode = 400
+    error.code = 'INVALID_R2_UPLOAD_PATH'
+    throw error
   }
 
-  const fileStat = await stat(file.path)
-  return Number(fileStat.size || 0)
+  const root = path.resolve(os.tmpdir())
+  const input = String(file?.path || '').trim()
+  if (!input || !path.isAbsolute(input)) invalid()
+
+  const requested = path.resolve(input)
+  const inside = (base, target) => {
+    const relative = path.relative(base, target)
+    return relative !== '' &&
+      relative !== '..' &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative)
+  }
+
+  if (!inside(root, requested)) invalid()
+
+  const realRoot = await realpath(root)
+  const realFile = await realpath(requested)
+  if (!inside(realRoot, realFile)) invalid()
+
+  const details = await stat(realFile)
+  if (!details.isFile() || details.size <= 0) invalid()
+
+  return { path: realFile, size: details.size }
 }
 
 function sleep(ms) {
@@ -309,6 +334,7 @@ export async function uploadFileToR2(file, folder = 'uploads') {
     field: 'r2_upload_file',
     allowEmpty: false,
   })
+  const validatedFile = await getValidatedUploadFile(file)
 
   const safeFolder = safeFolderName(folder)
   const safeExt = getSafeExtension(file)
@@ -316,13 +342,13 @@ export async function uploadFileToR2(file, folder = 'uploads') {
     `${safeFolder}/${Date.now()}-${Math.random()
       .toString(36)
       .slice(2)}.${safeExt}`
-  const fileSize = await getDiskFileSize(file)
+  const fileSize = validatedFile.size
 
   await getR2Client().send(
     new PutObjectCommand({
       Bucket: getR2BucketName(),
       Key: fileName,
-      Body: createReadStream(file.path),
+      Body: createReadStream(validatedFile.path),
       ContentLength: fileSize || undefined,
       ContentType: file.mimetype,
       CacheControl:
@@ -344,6 +370,7 @@ export async function uploadImageToR2AsWebP(
     field: 'r2_image_upload_file',
     allowEmpty: false,
   })
+  const validatedFile = await getValidatedUploadFile(file)
 
   const safeFolder = safeFolderName(folder)
   const generatedFileName =
@@ -425,7 +452,7 @@ export async function uploadImageToR2AsWebP(
   )
 
   const optimized = await enqueuePathOptimization(
-    file.path,
+    validatedFile.path,
     {
       width,
       height,
