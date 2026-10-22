@@ -303,18 +303,17 @@ async function uploadAuthorPaymentQrToR2(
   }
 }
 
-async function copyLegacyAuthorPaymentQrToR2(
-  value,
-  userId
-) {
+function getLegacySupabaseStorageTarget(value) {
   let sourceUrl
 
   try {
     sourceUrl = new URL(value)
   } catch {
-    throw authorPaymentQrError(
-      'Invalid legacy QR image URL'
-    )
+    throw authorPaymentQrError('Invalid legacy QR image URL')
+  }
+
+  if (sourceUrl.protocol !== 'https:') {
+    throw authorPaymentQrError('Invalid legacy QR image URL')
   }
 
   const configuredSupabaseUrl = String(
@@ -345,17 +344,61 @@ async function copyLegacyAuthorPaymentQrToR2(
     )
   }
 
-  const response = await fetch(sourceUrl)
+  const match = sourceUrl.pathname.match(
+    /^\/storage\/v1\/object\/public\/([^/]+)\/(.+)$/
+  )
 
-  if (!response.ok) {
+  if (!match) {
+    throw authorPaymentQrError(
+      'Legacy QR image must be a public Supabase storage file'
+    )
+  }
+
+  const bucket = decodeURIComponent(
+    match[1] || ''
+  ).trim()
+
+  const objectPath = String(match[2] || '')
+    .split('/')
+    .map((segment) => decodeURIComponent(segment))
+    .join('/')
+    .replace(/^\/+/, '')
+
+  if (
+    !bucket ||
+    !objectPath ||
+    objectPath.includes('..') ||
+    objectPath.includes('\\')
+  ) {
+    throw authorPaymentQrError(
+      'Invalid legacy Supabase QR image URL'
+    )
+  }
+
+  return {
+    bucket,
+    objectPath,
+  }
+}
+
+async function copyLegacyAuthorPaymentQrToR2(
+  value,
+  userId
+) {
+  const { bucket, objectPath } =
+    getLegacySupabaseStorageTarget(value)
+
+  const { data, error } = await supabase.storage
+    .from(bucket)
+    .download(objectPath)
+
+  if (error || !data) {
     throw authorPaymentQrError(
       'Old QR image could not be read. Please upload it again.'
     )
   }
 
-  const contentLength = Number(
-    response.headers.get('content-length') || 0
-  )
+  const contentLength = Number(data.size || 0)
 
   if (contentLength > AUTHOR_PAYMENT_QR_MAX_BYTES) {
     throw authorPaymentQrError(
@@ -364,7 +407,7 @@ async function copyLegacyAuthorPaymentQrToR2(
   }
 
   const buffer = Buffer.from(
-    await response.arrayBuffer()
+    await data.arrayBuffer()
   )
   const type = detectAuthorPaymentQrType(buffer)
 
@@ -387,10 +430,8 @@ async function copyLegacyAuthorPaymentQrToR2(
     userId
   )
 }
-
 async function normalizeAuthorPaymentQrImage(
   value,
-  userId
 ) {
   const input = String(value || '').trim()
 
