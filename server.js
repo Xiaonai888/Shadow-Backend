@@ -125,6 +125,7 @@ import storyEpisodePushWakeRoutes from './src/routes/storyEpisodePushWake.routes
 import mediaDirectRoutes from './src/routes/mediaDirect.routes.js'
 import readerActivityHistoryRoutes from './src/routes/readerActivityHistory.routes.js'
 import readerReadingSummaryRoutes from './src/routes/readerReadingSummary.routes.js'
+import readerChatThemesRoutes from './src/routes/readerChatThemes.routes.js'
 
 dotenv.config()
 
@@ -822,6 +823,7 @@ app.use('/api/echoes', communityRouteSpamGuard, echoesRoutes)
 app.use('/api/echo-v2', communityRouteSpamGuard, echoV2Routes)
 app.use('/api/reader/activity-history', readerActivityHistoryRoutes)
 app.use('/api/reader/reading-summary', readerReadingSummaryRoutes)
+app.use('/api/reader/chat-themes', mediaUploadRouteSpamGuard, readerChatThemesRoutes)
 app.use('/api/reader', communityRouteSpamGuard, libraryRoutes)
 app.use('/api/saved-posts', communityRouteSpamGuard, savedPostsRoutes)
 app.use('/api/help-center', helpCenterRoutes)
