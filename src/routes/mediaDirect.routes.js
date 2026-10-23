@@ -17,8 +17,18 @@ import {
   recordAuthorR2Asset,
 } from '../services/authorStorageQuota.service.js'
 import { createPresignedPutUrl } from '../services/storyVideoDirectUpload.service.js'
+import { rateLimit } from 'express-rate-limit'
 
 const router = express.Router()
+const mediaDirectRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 300,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => req.admin?.admin_id
+    ? `admin:${req.admin.admin_id}`
+    : `user:${req.user?.user_id || req.user?.id}`,
+})
 const MB = 1024 * 1024
 const SIGNED_URL_SECONDS = 300
 const FINALIZE_SECONDS = 900
@@ -441,6 +451,11 @@ router.post('/user/init', requireUser, safeHandler(initiate, 'user'))
 router.post('/user/finalize', requireUser, safeHandler(finalize, 'user'))
 router.post('/admin/init', requireAdmin, safeHandler(initiate, 'admin'))
 router.post('/admin/finalize', requireAdmin, safeHandler(finalize, 'admin'))
+router.post('/user/init', requireUser, mediaDirectRateLimit, safeHandler(initiate, 'user'))
+router.post('/user/finalize', requireUser, mediaDirectRateLimit, safeHandler(finalize, 'user'))
+router.post('/admin/init', requireAdmin, mediaDirectRateLimit, safeHandler(initiate, 'admin'))
+router.post('/admin/finalize', requireAdmin, mediaDirectRateLimit, safeHandler(finalize, 'admin'))
+
 
 export default router
 
