@@ -1052,59 +1052,81 @@ export async function unlinkMyAuthorStoreTelegramGroup(req, res) {
 export async function getMyAuthorStoreIncome(req, res) {
   try {
     const userId = req.user?.user_id
-
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
-    }
+    if (!userId) return res.status(401).json({ ok: false, message: 'Unauthorized' })
 
     const authorPage = await getMyAuthorPage(userId)
-
     if (!authorPage) {
       return res.status(403).json({ ok: false, message: 'Please create an author page first' })
     }
 
-    const { data: orders, error: ordersError } = await supabase
-      .from('author_store_orders')
-      .select('id, payment_status, product_subtotal_usd, platform_fee_usd, author_income_usd, delivery_fee_usd')
-      .eq('author_page_id', authorPage.id)
+    const summaryOnly = String(req.query.summary_only || '') === '1'
+    const pageSize = 1000
+    let grossSales = 0
+    let platformFee = 0
+    let authorIncome = 0
+    let paidOrderCount = 0
 
-    if (ordersError) throw ordersError
+    for (let offset = 0; ; offset += pageSize) {
+      const { data, error } = await supabase
+        .from('author_store_orders')
+        .select('id,product_subtotal_usd,platform_fee_usd,author_income_usd,delivery_fee_usd')
+        .eq('author_page_id', authorPage.id)
+        .eq('payment_status', 'paid')
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: true })
+        .range(offset, offset + pageSize - 1)
+      if (error) throw error
+      const rows = Array.isArray(data) ? data : []
+      for (const order of rows) {
+        paidOrderCount += 1
+        grossSales += Number(order.product_subtotal_usd || 0)
+        platformFee += Number(order.platform_fee_usd || 0)
+        authorIncome += Number(order.author_income_usd || 0) + Number(order.delivery_fee_usd || 0)
+      }
+      if (rows.length < pageSize) break
+    }
 
-    const paidOrders = (orders || []).filter((order) => order.payment_status === 'paid')
+    let paidOut = 0
+    let pendingBalance = 0
+    const withdrawals = []
 
-    const grossSales = paidOrders.reduce((sum, order) => sum + Number(order.product_subtotal_usd || 0), 0)
-    const platformFee = paidOrders.reduce((sum, order) => sum + Number(order.platform_fee_usd || 0), 0)
-    const authorIncome = paidOrders.reduce((sum, order) => sum + Number(order.author_income_usd || 0) + Number(order.delivery_fee_usd || 0), 0)
-    const { data: withdrawals, error: withdrawalsError } = await supabase
-      .from('author_store_withdrawal_requests')
-      .select('*')
-      .eq('author_page_id', authorPage.id)
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
+    for (let offset = 0; ; offset += pageSize) {
+      const { data, error } = await supabase
+        .from('author_store_withdrawal_requests')
+        .select(summaryOnly ? 'status,amount_usd,deleted_at' : '*')
+        .eq('author_page_id', authorPage.id)
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: true })
+        .range(offset, offset + pageSize - 1)
+      if (error) throw error
+      const rows = Array.isArray(data) ? data : []
+      for (const item of rows) {
+        if (item.status === 'paid') paidOut += Number(item.amount_usd || 0)
+        if (item.status === 'in_review' || item.status === 'approved') {
+          pendingBalance += Number(item.amount_usd || 0)
+        }
+        if (!summaryOnly && !item.deleted_at) withdrawals.push(item)
+      }
+      if (rows.length < pageSize) break
+    }
 
-    if (withdrawalsError) throw withdrawalsError
-
-    const paidOut = (withdrawals || [])
-      .filter((item) => item.status === 'paid')
-      .reduce((sum, item) => sum + Number(item.amount_usd || 0), 0)
-
-    const pendingBalance = (withdrawals || [])
-      .filter((item) => item.status === 'in_review' || item.status === 'approved')
-      .reduce((sum, item) => sum + Number(item.amount_usd || 0), 0)
+    let paymentMethod = null
+    if (!summaryOnly) {
+      const { data, error } = await supabase
+        .from('author_payment_methods')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('status', 'active')
+        .order('is_primary', { ascending: false })
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (error) throw error
+      paymentMethod = data || null
+    }
 
     const availableBalance = Math.max(0, Number((authorIncome - paidOut - pendingBalance).toFixed(2)))
-
-    const { data: paymentMethod, error: paymentMethodError } = await supabase
-      .from('author_payment_methods')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('status', 'active')
-      .order('is_primary', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    if (paymentMethodError) throw paymentMethodError
 
     return res.status(200).json({
       ok: true,
@@ -1114,10 +1136,10 @@ export async function getMyAuthorStoreIncome(req, res) {
         gross_sales: Number(grossSales.toFixed(2)),
         platform_fee: Number(platformFee.toFixed(2)),
         paid_out: Number(paidOut.toFixed(2)),
-        total_orders: paidOrders.length,
+        total_orders: paidOrderCount,
       },
-      payment_method: paymentMethod || null,
-      withdrawals: (withdrawals || []).filter((item) => !item.deleted_at),
+      payment_method: paymentMethod,
+      withdrawals,
     })
   } catch (error) {
     console.error('GET MY AUTHOR STORE INCOME ERROR:', error)
@@ -3161,142 +3183,167 @@ function publicOrder(order) {
 }
 
 
+const AUTHOR_STORE_ORDER_SUMMARY_TTL = 3 * 60 * 1000
+const AUTHOR_STORE_ORDER_SUMMARY_LIMIT = 1000
+const authorStoreOrderSummaryCache = new Map()
+
 export async function getMyAuthorStoreOrders(req, res) {
   try {
     const userId = req.user?.user_id
-    const page = Math.max(Number(req.query.page || 1), 1)
-    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 100)
+    const page = Math.min(100000, Math.max(1, Math.floor(Number(req.query.page) || 1)))
+    const limit = Math.min(20, Math.max(1, Math.floor(Number(req.query.limit) || 20)))
     const type = String(req.query.type || 'all').trim().toLowerCase()
     const prepareStatus = String(req.query.prepare_status || 'all').trim().toLowerCase()
-    const q = String(req.query.q || '').trim().toLowerCase()
+    const q = String(req.query.q || '').trim().slice(0, 100)
 
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    if (!userId) return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    if (!['all', 'book', 'pdf'].includes(type)) {
+      return res.status(400).json({ ok: false, message: 'Invalid order type' })
+    }
+    if (!['all', 'to_prepare', 'preparing'].includes(prepareStatus)) {
+      return res.status(400).json({ ok: false, message: 'Invalid prepare status' })
     }
 
     const authorPage = await getMyAuthorPage(userId)
-
     if (!authorPage) {
       return res.status(403).json({ ok: false, message: 'Please create an author page first' })
     }
 
-    const { data: orders, error } = await supabase
+    const approved = 'payment_status.eq.paid,order_status.in.(confirmed,preparing,shipped,completed),and(order_status.is.null,status.in.(confirmed,preparing,shipped,completed))'
+    const summaryKey = `${userId}:${authorPage.id}`
+    let summary = authorStoreOrderSummaryCache.get(summaryKey)
+
+    if (!summary || Date.now() >= summary.expiresAt) {
+      let offset = 0
+      let ordersCount = 0
+      let grossRevenue = 0
+      let platformFee = 0
+      let authorIncome = 0
+
+      for (;;) {
+        const { data, error } = await supabase
+          .from('author_store_orders')
+          .select('id,product_subtotal_usd,subtotal_usd,subtotal,platform_fee_usd,author_income_usd')
+          .eq('author_page_id', authorPage.id)
+          .or(approved)
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: true })
+          .range(offset, offset + AUTHOR_STORE_ORDER_SUMMARY_LIMIT - 1)
+
+        if (error) throw error
+        const rows = Array.isArray(data) ? data : []
+
+        for (const order of rows) {
+          ordersCount += 1
+          grossRevenue += Number(order.product_subtotal_usd || order.subtotal_usd || order.subtotal || 0)
+          platformFee += Number(order.platform_fee_usd || 0)
+          authorIncome += Number(order.author_income_usd || 0)
+        }
+
+        if (rows.length < AUTHOR_STORE_ORDER_SUMMARY_LIMIT) break
+        offset += AUTHOR_STORE_ORDER_SUMMARY_LIMIT
+      }
+
+      summary = {
+        expiresAt: Date.now() + AUTHOR_STORE_ORDER_SUMMARY_TTL,
+        data: {
+          orders_count: ordersCount,
+          total_orders: ordersCount,
+          revenue: Number(authorIncome.toFixed(2)),
+          gross_revenue: Number(grossRevenue.toFixed(2)),
+          platform_fee: Number(platformFee.toFixed(2)),
+          author_income: Number(authorIncome.toFixed(2)),
+        },
+      }
+      authorStoreOrderSummaryCache.delete(summaryKey)
+      authorStoreOrderSummaryCache.set(summaryKey, summary)
+      while (authorStoreOrderSummaryCache.size > 200) {
+        authorStoreOrderSummaryCache.delete(authorStoreOrderSummaryCache.keys().next().value)
+      }
+    }
+
+    if (String(req.query.summary_only || '') === '1') {
+      return res.status(200).json({
+        ok: true,
+        summary: summary.data,
+        orders: [],
+        pagination: { page: 1, limit, total: 0, total_pages: 1, has_next: false, has_prev: false },
+      })
+    }
+
+    const selects = ['*', 'items:author_store_order_items(*)']
+    if (type !== 'all') selects.push('type_match:author_store_order_items()')
+    if (q) selects.push('item_search:author_store_order_items()')
+
+    let query = supabase
       .from('author_store_orders')
-      .select('*, items:author_store_order_items(*)')
+      .select(selects.join(','), { count: 'exact' })
       .eq('author_page_id', authorPage.id)
+      .or(approved)
+
+    if (type !== 'all') {
+      query = query.eq('type_match.product_type', type).not('type_match', 'is', null)
+    }
+
+    if (prepareStatus === 'preparing') {
+      query = query.eq('author_prepare_status', 'preparing')
+    } else if (prepareStatus === 'to_prepare') {
+      query = query.or('author_prepare_status.is.null,author_prepare_status.neq.preparing')
+    }
+
+    if (q) {
+      const term = q.replace(/[(),%*"\\]/g, ' ').trim()
+      if (term) {
+        query = query.or(
+          `product_title.ilike.%${term}%,product_type.ilike.%${term}%`,
+          { referencedTable: 'item_search' }
+        )
+        const filters = [
+          'order_id',
+          'order_number',
+          'aba_transaction_id',
+          'buyer_name',
+          'buyer_phone',
+          'buyer_email',
+        ].map((name) => `${name}.ilike.%${term}%`)
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(term)) {
+          filters.push(`id.eq.${term}`)
+        }
+        filters.push('item_search.not.is.null')
+        query = query.or(filters.join(','))
+      }
+    }
+
+    const from = (page - 1) * limit
+    const { data, error, count } = await query
       .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, from + limit - 1)
 
     if (error) throw error
 
-    const safeOrders = (orders || []).map(publicOrder)
-
-    const approvedOrders = safeOrders.filter((order) => {
-      const status = String(order.order_status || order.status || '').toLowerCase()
-      const paymentStatus = String(order.payment_status || '').toLowerCase()
-
-      return (
-        paymentStatus === 'paid' ||
-        status === 'confirmed' ||
-        status === 'preparing' ||
-        status === 'shipped' ||
-        status === 'completed'
-      )
-    })
-
-    const typeFilteredOrders = approvedOrders.filter((order) => {
-      if (type === 'all') return true
-
-      const items = Array.isArray(order.items) ? order.items : []
-      const hasBook = items.some((item) => String(item.product_type || '').toLowerCase() === 'book')
-      const hasPdf = items.some((item) => String(item.product_type || '').toLowerCase() === 'pdf')
-
-      if (type === 'book') return hasBook
-      if (type === 'pdf') return hasPdf
-
-      return true
-    })
-
-    const prepareFilteredOrders = typeFilteredOrders.filter((order) => {
-      const status = String(order.author_prepare_status || 'to_prepare').toLowerCase()
-
-      if (prepareStatus === 'all') return true
-      if (prepareStatus === 'to_prepare') return status !== 'preparing'
-      if (prepareStatus === 'preparing') return status === 'preparing'
-
-      return true
-    })
-
-    const searchFilteredOrders = q
-      ? prepareFilteredOrders.filter((order) => {
-          const items = Array.isArray(order.items) ? order.items : []
-          const searchText = [
-            order.id,
-            order.order_id,
-            order.order_number,
-            order.aba_transaction_id,
-            order.buyer_name,
-            order.buyer_phone,
-            order.buyer_email,
-            ...items.map((item) => [
-              item.product_title,
-              item.title,
-              item.product_type,
-            ].join(' ')),
-          ]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase()
-
-          return searchText.includes(q)
-        })
-      : prepareFilteredOrders
-
-    const grossRevenue = approvedOrders.reduce(
-      (sum, order) => sum + Number(order.product_subtotal_usd || order.subtotal || 0),
-      0
-    )
-
-    const platformFee = approvedOrders.reduce(
-      (sum, order) => sum + Number(order.platform_fee_usd || 0),
-      0
-    )
-
-    const authorIncome = approvedOrders.reduce(
-      (sum, order) => sum + Number(order.author_income_usd || 0),
-      0
-    )
-
-    const total = searchFilteredOrders.length
-    const from = (page - 1) * limit
-    const to = from + limit
-    const pagedOrders = searchFilteredOrders.slice(from, to)
-    const totalPages = Math.max(Math.ceil(total / limit), 1)
+    const orders = (data || []).map(publicOrder)
+    const total = Number(count || 0)
+    const totalPages = Math.max(1, Math.ceil(total / limit))
 
     return res.status(200).json({
       ok: true,
       type,
       prepare_status: prepareStatus,
-      summary: {
-        orders_count: approvedOrders.length,
-        total_orders: approvedOrders.length,
-        revenue: Number(authorIncome.toFixed(2)),
-        gross_revenue: Number(grossRevenue.toFixed(2)),
-        platform_fee: Number(platformFee.toFixed(2)),
-        author_income: Number(authorIncome.toFixed(2)),
-      },
-      orders: pagedOrders,
+      summary: summary.data,
+      orders,
       pagination: {
         page,
         limit,
         total,
         total_pages: totalPages,
-        has_next: to < total,
+        has_next: from + orders.length < total,
         has_prev: page > 1,
       },
       page,
       limit,
       total,
-      shown: pagedOrders.length,
+      shown: orders.length,
       total_pages: totalPages,
     })
   } catch (error) {
