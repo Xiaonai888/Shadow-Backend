@@ -212,6 +212,13 @@ function invalidatePublicStoriesAfterHiddenRestore(
   )
 }
 
+router.use('/me', rateLimit({
+  windowMs: 60000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+}))
+
 router.get('/me/49-day-event', requireUser, getMyAuthor49DayEvent)
 router.get('/me/daily-80-event', requireUser, getMyAuthorDaily80Event)
 router.get('/me/daily-50-event', requireUser, getMyAuthorDaily50Event)
