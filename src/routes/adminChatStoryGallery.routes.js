@@ -4,6 +4,7 @@ import os from 'node:os'
 import { createReadStream } from 'node:fs'
 import { unlink } from 'node:fs/promises'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
   createAdminChatStoryGalleryImage,
@@ -13,6 +14,19 @@ import {
 } from '../controllers/adminChatStoryGallery.controller.js'
 
 const router = express.Router()
+const galleryLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(
+    req.admin?.admin_id || req.admin?.id || req.admin?.sub || req.admin?.email || ipKeyGenerator(req.ip)
+  ),
+  message: {
+    ok: false,
+    message: 'Too many requests. Please try again later.',
+  },
+})
 
 const upload = multer({
   dest: os.tmpdir(),
@@ -110,11 +124,12 @@ function uploadGalleryImages(req, res, next) {
   })
 }
 
-router.get('/', requireAdmin, getAdminChatStoryGallery)
+router.get('/', requireAdmin, galleryLimiter, getAdminChatStoryGallery)
 
 router.post(
   '/upload',
   requireAdmin,
+  galleryLimiter,
   uploadGalleryImages,
   cleanupTempFiles,
   async (req, res) => {
@@ -180,8 +195,8 @@ router.post(
   }
 )
 
-router.post('/', requireAdmin, createAdminChatStoryGalleryImage)
-router.patch('/:imageId', requireAdmin, updateAdminChatStoryGalleryImage)
-router.delete('/:imageId', requireAdmin, deleteAdminChatStoryGalleryImage)
+router.post('/', requireAdmin, galleryLimiter, createAdminChatStoryGalleryImage)
+router.patch('/:imageId', requireAdmin, galleryLimiter, updateAdminChatStoryGalleryImage)
+router.delete('/:imageId', requireAdmin, galleryLimiter, deleteAdminChatStoryGalleryImage)
 
 export default router
