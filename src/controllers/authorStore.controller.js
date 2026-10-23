@@ -3841,22 +3841,69 @@ export async function getAuthorStoreOrderStatus(req, res) {
 export async function getMyAuthorStoreBuyerOrders(req, res) {
   try {
     const userId = getUserId(req)
-
     if (!userId) return res.status(401).json({ ok: false, message: 'User is required' })
 
-    const { data, error } = await supabase
-      .from('author_store_orders')
-      .select('*')
-      .eq('buyer_id', userId)
-      .in('status', AUTHOR_STORE_READER_STATUSES)
-      .order('created_at', { ascending: false })
-      .limit(50)
+    const allowedStatuses = [
+      'waiting_payment', 'pending', 'under_review', 'amount_mismatch',
+      'confirmed', 'preparing', 'shipped', 'completed',
+      'cancelled', 'rejected', 'refunded', 'expired',
+    ]
+    const paginated = ['page', 'limit', 'status', 'q'].some((key) => req.query?.[key] !== undefined)
+    const page = Math.min(100000, Math.max(1, Math.floor(Number(req.query?.page) || 1)))
+    const limit = Math.min(20, Math.max(1, Math.floor(Number(req.query?.limit) || 20)))
+    const status = String(req.query?.status || 'all').trim().toLowerCase()
+    const statusGroups = {
+      waiting: ['waiting_payment', 'pending'],
+      review: ['under_review', 'amount_mismatch'],
+      confirmed: ['confirmed'],
+      preparing: ['preparing'],
+      shipped: ['shipped'],
+      completed: ['completed'],
+      cancelled: ['cancelled', 'rejected', 'refunded', 'expired'],
+    }
 
+    if (status !== 'all' && !statusGroups[status]) {
+      return res.status(400).json({ ok: false, message: 'Invalid order status' })
+    }
+
+    let query = supabase
+      .from('author_store_orders')
+      .select('*, items:author_store_order_items(id, product_id, product_title, product_type, cover_url, quantity, unit_price, total_price)', paginated ? { count: 'exact' } : undefined)
+      .eq('buyer_id', userId)
+      .in('status', statusGroups[status] || allowedStatuses)
+
+    if (paginated) {
+      const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
+      query = query.gte('created_at', cutoff)
+      const term = String(req.query?.q || '').trim().slice(0, 100).replace(/[^\p{L}\p{N}_-]/gu, '')
+      if (term) {
+        query = query.or(`order_id.ilike.%${term}%,order_number.ilike.%${term}%,aba_transaction_id.ilike.%${term}%`)
+      }
+      query = query
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range((page - 1) * limit, page * limit - 1)
+    } else {
+      query = query.order('created_at', { ascending: false }).limit(50)
+    }
+
+    const { data, count, error } = await query
     if (error) throw error
 
+    const orders = (data || []).map(publicAuthorPaymentOrder)
+    if (!paginated) return res.status(200).json({ ok: true, orders })
+
+    const total = Number(count || 0)
     return res.status(200).json({
       ok: true,
-      orders: (data || []).map(publicAuthorPaymentOrder),
+      orders,
+      page,
+      limit,
+      total,
+      shown: orders.length,
+      total_pages: Math.max(Math.ceil(total / limit), 1),
+      has_next: page * limit < total,
+      has_prev: page > 1,
     })
   } catch (error) {
     console.error('GET MY AUTHOR STORE BUYER ORDERS ERROR:', error)
