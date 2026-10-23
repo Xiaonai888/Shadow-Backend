@@ -3,6 +3,7 @@ import multer from 'multer'
 import os from 'node:os'
 import { createReadStream } from 'node:fs'
 import { unlink } from 'node:fs/promises'
+import { rateLimit } from 'express-rate-limit'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import {
   deleteAdminReaderMail,
@@ -19,6 +20,54 @@ import { requireAdmin } from '../middleware/auth.middleware.js'
 import path from 'node:path'
 
 const router = express.Router()
+
+const adminMailReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_READER_MAIL_READ_RATE_LIMIT',
+    message: 'Too many mail requests. Please retry shortly.',
+  },
+})
+
+const adminMailWriteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_READER_MAIL_WRITE_RATE_LIMIT',
+    message: 'Too many mail actions. Please retry shortly.',
+  },
+})
+
+const adminMailUploadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_READER_MAIL_UPLOAD_RATE_LIMIT',
+    message: 'Too many mail image uploads. Please retry shortly.',
+  },
+})
+
+const adminMailBroadcastLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_READER_MAIL_BROADCAST_RATE_LIMIT',
+    message: 'Too many broadcast requests. Please retry shortly.',
+  },
+})
 
 const upload = multer({
   dest: os.tmpdir(),
@@ -127,42 +176,49 @@ function uploadReaderMailImage(req, res, next) {
 
 router.get(
   '/readers',
+  adminMailReadLimit,
   requireAdmin,
   searchReadersForMail
 )
 
 router.get(
   '/history',
+  adminMailReadLimit,
   requireAdmin,
   getAdminReaderMailHistory
 )
 
 router.get(
   '/logs',
+  adminMailReadLimit,
   requireAdmin,
   getAdminReaderMailLogs
 )
 
 router.delete(
   '/:mailId',
+  adminMailWriteLimit,
   requireAdmin,
   deleteAdminReaderMail
 )
 
 router.put(
   '/:mailId',
+  adminMailWriteLimit,
   requireAdmin,
   updateAdminReaderMail
 )
 
 router.post(
   '/upload-image',
+  adminMailUploadLimit,
   requireAdmin,
   uploadReaderMailImage,
   cleanupTempFile,
   async (req, res) => {
     try {
-      if (!req.file?.path) {
+      const tempFilePath = getSafeMailTempPath(req.file)
+      if (!tempFilePath) {
         return res.status(400).json({
           ok: false,
           message: 'Image file is required',
@@ -229,12 +285,14 @@ router.post(
 
 router.post(
   '/send',
+  adminMailWriteLimit,
   requireAdmin,
   sendReaderMailToOne
 )
 
 router.post(
   '/send-all',
+  adminMailBroadcastLimit,
   requireAdmin,
   sendReaderMailToAll
 )
