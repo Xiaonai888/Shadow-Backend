@@ -1,21 +1,31 @@
 function decodeEpisodeEntities(value) {
   return String(value || '')
     .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
     .replace(/&#039;/gi, "'")
+    .replace(/&amp;/gi, '&')
 }
 
-export function episodeContentToPlainText(value) {
-  return decodeEpisodeEntities(
-    String(value || '')
+function stripEpisodeMarkup(value) {
+  let text = String(value || '')
+  let previous
+
+  do {
+    previous = text
+    text = text
       .replace(/<img\b[^>]*>/gi, ' ')
       .replace(/<br\s*\/?\s*>/gi, '\n')
       .replace(/<\/(?:p|div)>/gi, '\n')
       .replace(/<[^>]+>/g, '')
-  )
+  } while (text !== previous)
+
+  return text
+}
+
+export function episodeContentToPlainText(value) {
+  return decodeEpisodeEntities(stripEpisodeMarkup(value))
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n[ \t]+/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
