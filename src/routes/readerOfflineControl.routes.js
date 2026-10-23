@@ -1,14 +1,19 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
-import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 
 const router = express.Router()
-const limiter = createRateLimit({
-  key: 'reader-offline-mode-read',
+const limiter = rateLimit({
   windowMs: 60000,
-  max: 15,
-  identity: (req) => req.user?.user_id,
+  limit: 15,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || 'unauthenticated'),
+  message: {
+    ok: false,
+    message: 'Too many requests. Please try again later.',
+  },
 })
 
 router.get('/', requireUser, limiter, async (req, res) => {
