@@ -138,6 +138,13 @@ async function verifyReference(imageUrl, key) {
   }
 }
 
+router.use(rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+}))
+
 router.use((req, res, next) => {
   res.set("Cache-Control", "private, no-store");
   next();
