@@ -76,13 +76,12 @@ const observeLoginSecurityWeakening = (action) => (req, res, next) => {
   return next()
 }
 
-router.use(requireAdmin)
-
-router.get('/overview', loginGuardLimiter, getAdminGuardOverview)
-router.get('/states', loginGuardLimiter, getAdminGuardStates)
-router.get('/events', loginGuardLimiter, getAdminGuardEvents)
+router.get('/overview', requireAdmin, loginGuardLimiter, getAdminGuardOverview)
+router.get('/states', requireAdmin, loginGuardLimiter, getAdminGuardStates)
+router.get('/events', requireAdmin, loginGuardLimiter, getAdminGuardEvents)
 router.patch(
   '/states/:stateId/release',
+  requireAdmin,
   loginGuardLimiter,
   observeLoginSecurityWeakening('release'),
   loginSecurityMutationGate,
@@ -90,27 +89,31 @@ router.patch(
 )
 router.patch(
   '/states/:stateId/permanent-block',
+  requireAdmin,
   loginGuardLimiter,
   loginSecurityDefenseGate,
   permanentBlockAdminGuard
 )
 router.patch(
   '/states/:stateId/unblock',
+  requireAdmin,
   loginGuardLimiter,
   observeLoginSecurityWeakening('unblock'),
   loginSecurityMutationGate,
   unblockAdminGuardPermanent
 )
-router.get('/trusted-devices', loginGuardLimiter, getAdminTrustedDevices)
+router.get('/trusted-devices', requireAdmin, loginGuardLimiter, getAdminTrustedDevices)
 router.patch(
   '/trusted-devices/:deviceId/revoke',
+  requireAdmin,
   loginGuardLimiter,
   loginSecurityDefenseGate,
   revokeAdminTrustedDevice
 )
-router.get('/trusted-ips', loginGuardLimiter, getAdminTrustedIps)
+router.get('/trusted-ips', requireAdmin, loginGuardLimiter, getAdminTrustedIps)
 router.post(
   '/trusted-ips',
+  requireAdmin,
   loginGuardLimiter,
   observeLoginSecurityWeakening('config_change'),
   loginSecurityMutationGate,
@@ -118,6 +121,7 @@ router.post(
 )
 router.patch(
   '/trusted-ips/:ipId/revoke',
+  requireAdmin,
   loginGuardLimiter,
   loginSecurityDefenseGate,
   revokeAdminTrustedIp
