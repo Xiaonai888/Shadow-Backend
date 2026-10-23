@@ -215,37 +215,61 @@ async function getMyAuthorPage(
   return data
 }
 
+async function getValidatedStoryUploadPath(file) {
+  const invalid = () => {
+    const error = new Error('Invalid temporary upload file')
+    error.statusCode = 400
+    error.code = 'INVALID_STORY_UPLOAD_PATH'
+    throw error
+  }
+
+  const name = file?.filename
+  if (typeof name !== 'string' || !/^[a-f0-9]{32}$/i.test(name)) invalid()
+
+  const expectedPath = path.join(os.tmpdir(), name)
+  if (file?.path !== expectedPath) invalid()
+
+  try {
+    const [root, details, actualPath] = await Promise.all([
+      realpath(os.tmpdir()),
+      lstat(expectedPath),
+      realpath(expectedPath),
+    ])
+
+    if (!details.isFile() || details.size <= 0 || path.dirname(actualPath) !== root) {
+      invalid()
+    }
+
+    return actualPath
+  } catch (error) {
+    if (error?.code === 'INVALID_STORY_UPLOAD_PATH') throw error
+    invalid()
+  }
+}
+
 async function uploadAuthorImageToR2({
   authorPage,
   userId,
   file,
   folderKey,
 }) {
-  const folder =
-    R2_FOLDERS[folderKey]
+  const folder = R2_FOLDERS[folderKey]
 
   if (!folder) {
-    throw new Error(
-      'Invalid R2 upload folder'
-    )
+    throw new Error('Invalid R2 upload folder')
   }
 
-  const temporaryName = file?.filename
-  if (
-    typeof temporaryName !== 'string' ||
-    !/^[a-f0-9]{32}$/i.test(temporaryName) ||
-    file.path !== path.join(os.tmpdir(), temporaryName)
-  ) {
-    const error = new Error('Invalid temporary upload file')
-    error.statusCode = 400
-    throw error
-  }
-
+  const sourcePath = await getValidatedStoryUploadPath(file)
   const publicUrl = await uploadFileToR2(
-    file,
+    { ...file, path: sourcePath },
     `${folder}/${authorPage.id}`
   )
   const publicBaseUrl = `${getR2PublicUrl()}/`
+
+  if (!publicUrl.startsWith(publicBaseUrl)) {
+    throw new Error('Invalid R2 upload response URL')
+  }
+
   const filePath = publicUrl.slice(publicBaseUrl.length)
   const fileName = filePath.split('/').pop()
 
@@ -294,101 +318,6 @@ async function uploadAuthorImageToR2({
   }
 }
 
-
-
-async function uploadAuthorImageToR2({
-  authorPage,
-  userId,
-  file,
-  folderKey,
-}) {
-  const folder =
-    R2_FOLDERS[folderKey]
-
-  if (!folder) {
-    throw new Error(
-      'Invalid R2 upload folder'
-    )
-  }
-
-  const sourcePath = await getValidatedStoryUploadPath(file)
-
-  const ext = safeFileExt(
-    file?.originalname ||
-      'image.webp',
-    file?.mimetype || ''
-  )
-  const random = Math.random()
-    .toString(36)
-    .slice(2)
-  const timestamp = Date.now()
-  const fileName =
-    `${timestamp}-${random}.${ext}`
-  const filePath =
-    `${folder}/${authorPage.id}/${fileName}`
-  const publicUrl =
-    `${getR2PublicUrl()}/${filePath}`
-
-  await getR2Client().send(
-    new PutObjectCommand({
-      Bucket: getR2BucketName(),
-      Key: filePath,
-      Body: createReadStream(
-  sourcePath
-),
-      ContentLength:
-        Number(file.size || 0) ||
-        undefined,
-      ContentType: file.mimetype,
-      CacheControl:
-        'public, max-age=31536000, immutable',
-    })
-  )
-
-  let asset
-  try {
-    asset = await recordAuthorR2Asset({
-      authorId: authorPage.id,
-      category: folderKey,
-      fileName,
-      filePath,
-      publicUrl,
-      mimeType: file.mimetype,
-      fileSize: file.size,
-      uploadedBy: userId,
-      sourceTable: [
-        'author_store_cover',
-        'author_store_pdf',
-        'author_store_gallery',
-      ].includes(folderKey)
-        ? 'author_store_products'
-        : 'author_page_posts',
-      sourceId: null,
-      ownerLabel:
-        authorPage.page_name ||
-        authorPage.page_username ||
-        null,
-    })
-  } catch (error) {
-    await deleteR2ObjectByKey(filePath).catch((cleanupError) => {
-      console.error('AUTHOR_R2_CLEANUP_ERROR:', cleanupError)
-    })
-    throw error
-  }
-
-  const quota = await getAuthorStorageQuota(authorPage.id).catch((error) => {
-    console.error('AUTHOR_QUOTA_REFRESH_ERROR:', error)
-    return null
-  })
-
-  return {
-    fileName,
-    filePath,
-    publicUrl,
-    asset,
-    quota,
-  }
-}
 
 
 export async function uploadStoryImage(
