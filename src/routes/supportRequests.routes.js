@@ -59,6 +59,8 @@ const supportAdminDeletePreAuthLimit = rateLimit({
   standardHeaders: 'draft-8',
   legacyHeaders: false,
 })
+
+const supportAdminPreAuthLimit = rateLimit({ windowMs: 60000, limit: 600, standardHeaders: 'draft-8', legacyHeaders: false })
 const allowedTypes = new Set([
   'image/jpeg',
   'image/png',
@@ -157,6 +159,7 @@ router.get(
 
 router.get(
   '/admin/requests',
+  supportAdminPreAuthLimit,
   requireAdmin,
   supportAdminReadLimit,
   listAdminSupportRequests
@@ -164,6 +167,7 @@ router.get(
 
 router.get(
   '/admin/requests/:requestId',
+  supportAdminPreAuthLimit,
   requireAdmin,
   supportAdminReadLimit,
   getAdminSupportRequest
@@ -171,6 +175,7 @@ router.get(
 
 router.patch(
   '/admin/requests/:requestId',
+  supportAdminPreAuthLimit,
   requireAdmin,
   supportAdminWriteLimit,
   updateAdminSupportRequest
@@ -178,6 +183,7 @@ router.patch(
 
 router.delete(
   '/admin/requests/:requestId',
+  supportAdminPreAuthLimit,
   supportAdminDeletePreAuthLimit,
   requireAdmin,
   supportAdminWriteLimit,
