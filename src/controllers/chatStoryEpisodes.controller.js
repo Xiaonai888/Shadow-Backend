@@ -103,7 +103,23 @@ async function getCharacters(storyId, userId) {
   return data || []
 }
 
-function normalizeMessages(input, characterIds) {
+function normalizeVoiceUrl(value, authorPageId) {
+  try {
+    const base = new URL(String(process.env.R2_PUBLIC_URL || '').replace(/\/+$/, '') + '/')
+    const url = new URL(String(value || '').trim())
+    const prefix = `${base.pathname}chat-story/audio/${authorPageId}/`
+    if (!authorPageId || base.protocol !== 'https:' || url.protocol !== 'https:' ||
+      url.origin !== base.origin || url.username || url.password || url.search || url.hash ||
+      !url.pathname.startsWith(prefix)) return null
+    const name = url.pathname.slice(prefix.length)
+    if (!/^[0-9]+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(mp3|m4a|aac|wav|webm)$/i.test(name)) return null
+    return url.href
+  } catch {
+    return null
+  }
+}
+
+function normalizeMessages(input, characterIds, audioOwnerId = '') {
   if (!Array.isArray(input)) return { error: 'Messages must be an array', messages: [] }
   if (input.length > MAX_MESSAGES) {
     return { error: `Maximum ${MAX_MESSAGES} messages allowed in one episode`, messages: [] }
@@ -115,14 +131,21 @@ function normalizeMessages(input, characterIds) {
   for (let index = 0; index < input.length; index += 1) {
     const item = input[index] || {}
     const requestedType = cleanText(item.type).toLowerCase()
-const type = ['chat', 'aside', 'author_note', 'image'].includes(requestedType)
+const type = requestedType === 'voice' ? 'audio' : ['chat', 'aside', 'author_note', 'image', 'audio'].includes(requestedType)
   ? requestedType
   : 'aside'
 const text = cleanText(item.text)
 const imageUrl = cleanNullableText(item.image_url || item.imageUrl)
 const characterId = cleanNullableText(item.character_id || item.characterId)
 if (type === 'image' && !imageUrl) continue
-if (type !== 'image' && !text) continue
+if (type !== 'image' && type !== 'audio' && !text) continue
+const audioUrl = type === 'audio' ? normalizeVoiceUrl(item.audio_url || item.audioUrl || item.voice_url || item.voiceUrl, audioOwnerId) : null
+const audioDuration = type === 'audio' ? Number(item.audio_duration ?? item.audioDuration ?? item.duration_seconds ?? item.duration) : null
+if (type === 'audio' && !audioUrl) return { error: 'Voice must be uploaded to this author account before saving', messages: [] }
+if (type === 'audio' && (!Number.isFinite(audioDuration) || audioDuration < 1 || audioDuration > 60))
+  return { error: 'Voice duration must be from 1 to 60 seconds', messages: [] }
+if (type === 'audio' && (!characterId || !characterIds.has(characterId)))
+  return { error: 'The selected voice character is invalid', messages: [] }
     if (type === 'author_note') {
   authorNoteCount += 1
 
@@ -149,9 +172,10 @@ if (type === 'image' && characterId && !characterIds.has(characterId)) {
     messages.push({
   id: cleanText(item.id) || `${Date.now()}-${index}`,
   type,
-  character_id: type === 'chat' || type === 'image' ? characterId : null,
-  text: type === 'image' ? '' : text,
+  character_id: ['chat', 'image', 'audio'].includes(type) ? characterId : null,
+  text: type === 'image' || type === 'audio' ? '' : text,
   image_url: type === 'image' ? imageUrl : null,
+  ...(type === 'audio' ? { audio_url: audioUrl, audio_duration: audioDuration } : {}),
   sort_order: messages.length,
   created_at: cleanNullableText(item.created_at || item.createdAt),
 })
@@ -264,9 +288,19 @@ const leadCharacterId =
     ? requestedLeadCharacterId
     : defaultLeadCharacter?.id || null
 
+let audioOwnerId = ''
+if (Array.isArray(req.body.messages) && req.body.messages.length <= MAX_MESSAGES &&
+  req.body.messages.some((item) => ['audio', 'voice'].includes(cleanText(item?.type).toLowerCase()))) {
+  const { data: page, error: pageError } = await supabase.from('author_pages')
+    .select('id').eq('user_id', userId).eq('status', 'active').maybeSingle()
+  if (pageError) throw pageError
+  if (!page) return res.status(403).json({ ok: false, message: 'An active author page is required to save voice messages' })
+  audioOwnerId = String(page.id)
+}
 const normalized = normalizeMessages(
   req.body.messages,
-  characterIds
+  characterIds,
+  audioOwnerId
 )
 
     if (normalized.error) {
@@ -656,3 +690,4 @@ export async function updateEpisodeStatusByStoryType(req, res, next) {
     })
   }
 }
+
