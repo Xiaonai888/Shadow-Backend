@@ -1,5 +1,6 @@
 import express from 'express'
 import multer from 'multer'
+import { rateLimit } from 'express-rate-limit'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
@@ -34,6 +35,7 @@ const publicSlidesCacheHitLimit = createRateLimit({
 })
 
 const publicSlidesReadSpamGuard = createSpamGuard({
+  const adminSlidesRateLimit = rateLimit({ windowMs: 60000, limit: 600, standardHeaders: 'draft-8', legacyHeaders: false })
   scope: 'reader_read',
   threshold: 300,
   windowSeconds: 60,
@@ -92,12 +94,14 @@ router.get(
 
 router.get(
   '/records',
+  adminSlidesRateLimit,
   requireAdmin,
   getSlideActivityLogs
 )
 
 router.post(
   '/',
+  adminSlidesRateLimit,
   requireAdmin,
   uploadSlideImage,
   invalidateSlidesAfterMutation,
@@ -106,6 +110,7 @@ router.post(
 
 router.put(
   '/:id',
+  adminSlidesRateLimit,
   requireAdmin,
   uploadSlideImage,
   invalidateSlidesAfterMutation,
@@ -114,6 +119,7 @@ router.put(
 
 router.delete(
   '/:id',
+  adminSlidesRateLimit,
   requireAdmin,
   invalidateSlidesAfterMutation,
   deleteSlide
