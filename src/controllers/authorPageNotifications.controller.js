@@ -26,6 +26,9 @@ const NOTIFICATION_PAGE_SIZE = 30
 const RETENTION_DAYS = 30
 const RETAIN_MINIMUM = 30
 const CLEANUP_BATCH_SIZE = 1000
+const NOTIFICATION_CLEANUP_INTERVAL_MS = 15 * 60 * 1000
+const notificationCleanupByPage = new Map()
+const notificationCleanupInFlight = new Map()
 
 function normalizeNotification(item) {
   if (!item) return null
@@ -312,197 +315,165 @@ export async function getMyAuthorPageNotificationUnreadCount(
   }
 }
 
-export async function getMyAuthorPageNotifications(
-  req,
-  res
-) {
+export async function getMyAuthorPageNotifications(req, res) {
   try {
     const userId = req.user?.user_id
-    const limit = Math.min(
-      NOTIFICATION_PAGE_SIZE,
-      Math.max(
-        1,
-        Number(
-          req.query.limit ||
-            NOTIFICATION_PAGE_SIZE
-        )
-      )
-    )
-    const type = String(
-      req.query.type || 'all'
-    )
-      .trim()
-      .toLowerCase()
-    const unreadOnly =
-      String(req.query.unread || '')
-        .toLowerCase() === 'true'
-    const before = parseBeforeCursor(
-      req.query.before
-    )
 
     if (!userId) {
-      return res.status(401).json({
-        ok: false,
-        message: 'Unauthorized',
-      })
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
     }
 
-    if (before === null) {
-      return res.status(400).json({
-        ok: false,
-        message:
-          'Notification cursor is not valid',
-      })
+    const requestedLimit = Number(req.query.limit)
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(NOTIFICATION_PAGE_SIZE, Math.max(1, Math.floor(requestedLimit)))
+      : NOTIFICATION_PAGE_SIZE
+    const type = String(req.query.type || 'all').trim().toLowerCase()
+    const unreadOnly = type === 'unread' || String(req.query.unread || '').toLowerCase() === 'true'
+    const includeMeta = String(req.query.include_meta || 'true').toLowerCase() !== 'false'
+    const rawCursor = String(req.query.before || '').trim()
+    let before = ''
+    let beforeId = ''
+
+    if (rawCursor.includes('|')) {
+      const parts = rawCursor.split('|')
+      const candidateDate = parts[0]
+      const candidateId = parts[1]
+      const validDate = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/i.test(candidateDate) && Number.isFinite(Date.parse(candidateDate))
+      const validId = /^[a-zA-Z0-9_-]{1,64}$/.test(candidateId || '')
+
+      if (parts.length !== 2 || !validDate || !validId) {
+        return res.status(400).json({ ok: false, message: 'Notification cursor is not valid' })
+      }
+
+      before = candidateDate
+      beforeId = candidateId
+    } else {
+      before = parseBeforeCursor(rawCursor)
+
+      if (before === null) {
+        return res.status(400).json({ ok: false, message: 'Notification cursor is not valid' })
+      }
     }
 
-    const authorPage =
-      await getMyAuthorPageByUserId(
-        userId
-      )
+    const authorPage = await getMyAuthorPageByUserId(userId)
 
     if (!authorPage) {
-      return res.status(404).json({
-        ok: false,
-        message:
-          'Author page not found',
-      })
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
     }
 
-    await cleanupOldAuthorPageNotifications(
-      authorPage.id
-    ).catch((error) => {
-      console.error(
-        'CLEANUP AUTHOR PAGE NOTIFICATIONS ERROR:',
-        error
-      )
-    })
+    const pendingCleanup = notificationCleanupInFlight.get(authorPage.id)
+    const now = Date.now()
+
+    if (pendingCleanup) {
+      await pendingCleanup
+    } else if (now - (notificationCleanupByPage.get(authorPage.id) || 0) >= NOTIFICATION_CLEANUP_INTERVAL_MS) {
+      notificationCleanupByPage.set(authorPage.id, now)
+      const cleanupTask = cleanupOldAuthorPageNotifications(authorPage.id)
+        .catch((error) => {
+          console.error('CLEANUP AUTHOR PAGE NOTIFICATIONS ERROR:', error)
+        })
+        .finally(() => {
+          notificationCleanupInFlight.delete(authorPage.id)
+        })
+      notificationCleanupInFlight.set(authorPage.id, cleanupTask)
+      await cleanupTask
+
+      if (notificationCleanupByPage.size > 500) {
+        notificationCleanupByPage.delete(notificationCleanupByPage.keys().next().value)
+      }
+    }
+
+    const filterGroups = {
+      comments: ['comment', 'comments', 'mention', 'mentions'],
+      activity: ['reaction', 'echo', 'follower', 'review', 'post', 'posts'],
+      orders: ['order', 'orders'],
+      income: ['income', 'withdrawal', 'payout'],
+      system: ['system', 'admin'],
+    }
 
     let query = supabase
-      .from(
-        'author_page_notifications'
-      )
-      .select('*')
-      .eq(
-        'author_page_id',
-        authorPage.id
-      )
-      .order('created_at', {
-        ascending: false,
-      })
+      .from('author_page_notifications')
+      .select('id,author_page_id,user_id,type,title,message,target_url,is_read,metadata,created_at,read_at')
+      .eq('author_page_id', authorPage.id)
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
       .limit(limit + 1)
 
-    if (before) {
-      query = query.lt(
-        'created_at',
-        before
-      )
+    if (beforeId) {
+      query = query.or(`created_at.lt.${before},and(created_at.eq.${before},id.lt.${beforeId})`)
+    } else if (before) {
+      query = query.lt('created_at', before)
     }
 
-    if (type !== 'all') {
-      query = query.eq(
-        'type',
-        type
-      )
+    if (filterGroups[type]) {
+      query = query.in('type', filterGroups[type])
+    } else if (type !== 'all' && type !== 'unread') {
+      query = query.eq('type', type)
     }
 
     if (unreadOnly) {
-      query = query.eq(
-        'is_read',
-        false
+      query = query.eq('is_read', false)
+    }
+
+    const requests = [query]
+
+    if (includeMeta) {
+      requests.push(
+        supabase
+          .from('author_page_notifications')
+          .select('id', { count: 'exact', head: true })
+          .eq('author_page_id', authorPage.id)
+          .eq('user_id', userId)
+          .eq('is_read', false),
+        supabase
+          .from('author_page_notification_preferences')
+          .select('type, is_enabled, frequency_level')
+          .eq('author_page_id', authorPage.id)
+          .eq('user_id', userId)
       )
     }
 
-    const [
-      { data, error },
-      {
-        count: unreadCount,
-        error: countError,
-      },
-      {
-        data: preferenceRows,
-        error: preferenceError,
-      },
-    ] = await Promise.all([
-      query,
-      supabase
-        .from(
-          'author_page_notifications'
-        )
-        .select('id', {
-          count: 'exact',
-          head: true,
-        })
-        .eq(
-          'author_page_id',
-          authorPage.id
-        )
-        .eq('is_read', false),
-      supabase
-        .from(
-          'author_page_notification_preferences'
-        )
-        .select(
-          'type, is_enabled, frequency_level'
-        )
-        .eq(
-          'author_page_id',
-          authorPage.id
-        ),
-    ])
+    const [listResult, countResult, preferenceResult] = await Promise.all(requests)
 
-    if (error) throw error
-    if (countError) throw countError
-    if (preferenceError) {
-      throw preferenceError
-    }
+    if (listResult.error) throw listResult.error
+    if (includeMeta && countResult.error) throw countResult.error
+    if (includeMeta && preferenceResult.error) throw preferenceResult.error
 
-    const rows = data || []
-    const hasMore =
-      rows.length > limit
-    const visibleRows =
-      rows.slice(0, limit)
-    const nextCursor =
-      hasMore &&
-      visibleRows.length
-        ? visibleRows[
-            visibleRows.length - 1
-          ].created_at
-        : null
+    const rows = listResult.data || []
+    const hasMore = rows.length > limit
+    const visibleRows = rows.slice(0, limit)
+    const lastRow = visibleRows[visibleRows.length - 1]
+    const nextCursor = hasMore && lastRow
+      ? `${lastRow.created_at}|${lastRow.id}`
+      : null
+
+    res.setHeader('Cache-Control', 'private, no-store')
 
     return res.status(200).json({
       ok: true,
-      notifications:
-        visibleRows.map(
-          normalizeNotification
-        ),
-      unread_count:
-        Number(unreadCount || 0),
-      preferences:
-        normalizePreferences(
-          preferenceRows || []
-        ),
+      notifications: visibleRows.map(normalizeNotification),
+      ...(includeMeta ? {
+        unread_count: Number(countResult.count || 0),
+        preferences: normalizePreferences(preferenceResult.data || []),
+      } : {}),
       has_more: hasMore,
       next_cursor: nextCursor,
       page_size: limit,
-      retention_days:
-        RETENTION_DAYS,
-      minimum_retained:
-        RETAIN_MINIMUM,
+      retention_days: RETENTION_DAYS,
+      minimum_retained: RETAIN_MINIMUM,
     })
   } catch (error) {
-    console.error(
-      'GET AUTHOR PAGE NOTIFICATIONS ERROR:',
-      error
-    )
+    console.error('GET AUTHOR PAGE NOTIFICATIONS ERROR:', error)
 
     return res.status(500).json({
       ok: false,
-      message:
-        'Failed to load page notifications',
+      message: 'Failed to load page notifications',
       error: error.message,
     })
   }
 }
+
 
 export async function markMyAuthorPageNotificationRead(
   req,
