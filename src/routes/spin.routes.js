@@ -84,6 +84,12 @@ function uploadImage(req, res, next) {
     })
   })
 }
+router.use(rateLimit({
+  windowMs: 60000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+}))
 
 router.use(requireUser)
 router.use(spinRateLimit)
