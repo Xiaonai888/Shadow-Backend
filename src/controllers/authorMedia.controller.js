@@ -2,17 +2,96 @@ import { createReadStream } from 'node:fs'
 import { lstat, realpath } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import {
-  PutObjectCommand,
-  S3Client,
-} from '@aws-sdk/client-s3'
+import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { supabase } from '../config/supabase.js'
+import {
+  deleteR2ObjectByKey,
+  uploadFileToR2,
+} from '../services/r2Storage.service.js'
+import {
+  cleanupStoryImageResult,
+  processStoryImageFile,
+} from '../services/storyImagePipeline.service.js'
 import {
   assertAuthorStorageAvailable,
   getAuthorStorageQuota,
   recordAuthorR2Asset,
 } from '../services/authorStorageQuota.service.js'
 
+const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'media'
+
+const ALLOWED_FOLDERS = {
+  story_cover: 'story-covers',
+  story_landscape_thumbnail: 'story-landscape-thumbnails',
+  story_slide: 'story-slides',
+  episode_cover: 'episode-covers',
+  episode_content: 'episode-content',
+  chat_story_character: 'chat-story/characters',
+  chat_story_episode: 'chat-story/episodes',
+  payment_proof: 'payment-proofs',
+  author_payment_qr: 'author-payment-methods',
+}
+
+
+const STORY_IMAGE_PROCESSING_OPTIONS = {
+  story_cover: {
+    width: 1200,
+    quality: 82,
+    minQuality: 50,
+    qualityStep: 6,
+    maxBytes: 800 * 1024,
+    fallbackWidth: 800,
+  },
+  story_landscape_thumbnail: {
+    width: 1600,
+    quality: 82,
+    minQuality: 50,
+    qualityStep: 6,
+    maxBytes: 800 * 1024,
+    fallbackWidth: 960,
+  },
+  story_slide: {
+    width: 1920,
+    quality: 82,
+    minQuality: 50,
+    qualityStep: 6,
+    maxBytes: 1024 * 1024,
+    fallbackWidth: 1280,
+  },
+  episode_content: {
+    width: 1600,
+    quality: 82,
+    minQuality: 40,
+    qualityStep: 6,
+    maxBytes: 500 * 1024,
+    fallbackWidth: 640,
+  },
+}
+
+const R2_FOLDERS = {
+  author_post_image: 'author-posts/images',
+  author_store_cover: 'author-store/covers',
+  author_store_pdf: 'author-store/pdfs',
+  author_store_gallery: 'author-store/gallery',
+  author_page_cover: 'author-page/covers',
+  author_page_slide: 'author-page/slides',
+  author_page_avatar: 'author-page/avatars',
+}
+
+function getMissingR2EnvKeys() {
+  return [
+    'R2_ACCOUNT_ID',
+    'R2_ACCESS_KEY_ID',
+    'R2_SECRET_ACCESS_KEY',
+    'R2_BUCKET_NAME',
+    'R2_PUBLIC_URL',
+  ].filter(
+    (key) =>
+      !String(
+        process.env[key] || ''
+      ).trim()
+  )
+}
 
 let r2Client = null
 
@@ -78,54 +157,46 @@ function getR2PublicUrl() {
   )
 }
 
-function safeExt(file) {
-  const originalName =
-    file?.originalname || ''
-  const ext = originalName.includes('.')
-    ? originalName.split('.').pop()
+function safeFileExt(
+  filename = '',
+  mimetype = ''
+) {
+  const ext = filename.includes('.')
+    ? filename.split('.').pop()
     : ''
-  const cleaned = String(ext || '')
+  const cleaned = String(
+    ext || ''
+  )
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '')
 
   if (cleaned) return cleaned
   if (
-    file?.mimetype === 'image/webp'
+    mimetype ===
+    'application/pdf'
   ) {
+    return 'pdf'
+  }
+  if (mimetype === 'image/webp') {
     return 'webp'
   }
-  if (
-    file?.mimetype === 'image/png'
-  ) {
+  if (mimetype === 'image/png') {
     return 'png'
   }
-  if (
-    file?.mimetype === 'image/jpeg'
-  ) {
+  if (mimetype === 'image/jpeg') {
     return 'jpg'
   }
 
   return 'jpg'
 }
 
-function publicAuthorPage(page) {
-  if (!page) return null
-
-  return {
-    id: page.id,
-    user_id: page.user_id,
-    page_name: page.page_name,
-    page_username: page.page_username,
-    page_slug: page.page_slug,
-    bio: page.bio,
-    avatar_url: page.avatar_url,
-    cover_url: page.cover_url,
-    status: page.status,
-    total_stories: page.total_stories,
-    total_followers: page.total_followers,
-    created_at: page.created_at,
-    updated_at: page.updated_at,
-  }
+function safeFolder(
+  folderKey = ''
+) {
+  return (
+    ALLOWED_FOLDERS[folderKey] ||
+    'story-uploads'
+  )
 }
 
 async function getMyAuthorPage(
@@ -136,6 +207,7 @@ async function getMyAuthorPage(
       .from('author_pages')
       .select('*')
       .eq('user_id', userId)
+      .eq('status', 'active')
       .maybeSingle()
 
   if (error) throw error
@@ -143,53 +215,69 @@ async function getMyAuthorPage(
   return data
 }
 
-async function getValidatedAuthorImagePath(file) {
-  const fileName = file?.filename
-  const invalid = () => {
-    const error = new Error('Invalid temporary author image file')
+async function getValidatedStoryUploadPath(file) {
+  const reject = () => {
+    const error = new Error('Invalid temporary upload file')
     error.statusCode = 400
-    error.code = 'AUTHOR_IMAGE_PATH_INVALID'
+    error.code = 'STORY_UPLOAD_PATH_INVALID'
     throw error
   }
-  if (typeof fileName !== 'string' || !/^[a-f0-9]{32}$/i.test(fileName)) invalid()
+  const fileName = file?.filename
+  if (typeof fileName !== 'string' || !/^[a-f0-9]{32}$/i.test(fileName)) reject()
   const expectedPath = path.join(os.tmpdir(), fileName)
-  if (file.path !== expectedPath) invalid()
-  const [tempRoot, realFile, info] = await Promise.all([
-    realpath(os.tmpdir()),
-    realpath(expectedPath),
-    lstat(expectedPath),
-  ])
-  if (!info.isFile() || info.size <= 0 || path.dirname(realFile) !== tempRoot) invalid()
-  return realFile
+  if (file.path !== expectedPath) reject()
+  let details, actualPath, tempRoot
+  try {
+    const results = await Promise.all([
+      lstat(expectedPath),
+      realpath(expectedPath),
+      realpath(os.tmpdir()),
+    ])
+    ;[details, actualPath, tempRoot] = results
+  } catch {
+    reject()
+  }
+  const declaredSize = Number(file.size)
+  if (
+    !details.isFile() ||
+    path.dirname(actualPath) !== tempRoot ||
+    !Number.isSafeInteger(declaredSize) ||
+    declaredSize <= 0 ||
+    details.size !== declaredSize
+  ) reject()
+  return expectedPath
 }
 
 async function uploadAuthorImageToR2({
   authorPage,
+  userId,
   file,
-  imageType,
+  folderKey,
 }) {
-  if (!file?.path) {
-    const error = new Error(
-      'Temporary image file is required'
+  const folder =
+    R2_FOLDERS[folderKey]
+
+  if (!folder) {
+    throw new Error(
+      'Invalid R2 upload folder'
     )
-    error.statusCode = 400
-    error.code =
-      'AUTHOR_PROFILE_IMAGE_FILE_MISSING'
-    throw error
   }
 
-  const sourcePath = await getValidatedAuthorImagePath(file)
-  const ext = safeExt(file)
-  const folder =
-    imageType === 'cover'
-      ? 'covers'
-      : 'avatars'
+  const sourcePath = await getValidatedStoryUploadPath(file)
+
+  const ext = safeFileExt(
+    file?.originalname ||
+      'image.webp',
+    file?.mimetype || ''
+  )
+  const random = Math.random()
+    .toString(36)
+    .slice(2)
+  const timestamp = Date.now()
   const fileName =
-    `${imageType}-${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2)}.${ext}`
+    `${timestamp}-${random}.${ext}`
   const filePath =
-    `authors/${authorPage.id}/${folder}/${fileName}`
+    `${folder}/${authorPage.id}/${fileName}`
   const publicUrl =
     `${getR2PublicUrl()}/${filePath}`
 
@@ -197,9 +285,7 @@ async function uploadAuthorImageToR2({
     new PutObjectCommand({
       Bucket: getR2BucketName(),
       Key: filePath,
-      Body: createReadStream(
-  sourcePath
-),
+      Body: createReadStream(sourcePath),
       ContentLength:
         Number(file.size || 0) ||
         undefined,
@@ -209,69 +295,58 @@ async function uploadAuthorImageToR2({
     })
   )
 
+  let asset
+  try {
+    asset = await recordAuthorR2Asset({
+      authorId: authorPage.id,
+      category: folderKey,
+      fileName,
+      filePath,
+      publicUrl,
+      mimeType: file.mimetype,
+      fileSize: file.size,
+      uploadedBy: userId,
+      sourceTable: [
+        'author_store_cover',
+        'author_store_pdf',
+        'author_store_gallery',
+      ].includes(folderKey)
+        ? 'author_store_products'
+        : 'author_page_posts',
+      sourceId: null,
+      ownerLabel:
+        authorPage.page_name ||
+        authorPage.page_username ||
+        null,
+    })
+  } catch (error) {
+    await deleteR2ObjectByKey(filePath).catch((cleanupError) => {
+      console.error('AUTHOR_R2_CLEANUP_ERROR:', cleanupError)
+    })
+    throw error
+  }
+
+  const quota = await getAuthorStorageQuota(authorPage.id).catch((error) => {
+    console.error('AUTHOR_QUOTA_REFRESH_ERROR:', error)
+    return null
+  })
+
   return {
     fileName,
     filePath,
     publicUrl,
+    asset,
+    quota,
   }
 }
 
-export async function getMyAuthorStorageQuota(
+
+export async function uploadStoryImage(
   req,
   res
 ) {
-  try {
-    const userId =
-      req.user?.user_id
+  let processed = null
 
-    if (!userId) {
-      return res.status(401).json({
-        ok: false,
-        message: 'Unauthorized',
-      })
-    }
-
-    const authorPage =
-      await getMyAuthorPage(userId)
-
-    if (!authorPage) {
-      return res.status(403).json({
-        ok: false,
-        message:
-          'Please create an author page first',
-      })
-    }
-
-    const quota =
-      await getAuthorStorageQuota(
-        authorPage.id
-      )
-
-    return res.status(200).json({
-      ok: true,
-      author_page:
-        publicAuthorPage(authorPage),
-      storage: quota,
-    })
-  } catch (error) {
-    console.error(
-      'GET AUTHOR STORAGE QUOTA ERROR:',
-      error
-    )
-
-    return res.status(500).json({
-      ok: false,
-      message:
-        'Failed to load author storage quota',
-      error: error.message,
-    })
-  }
-}
-
-export async function uploadMyAuthorProfileImage(
-  req,
-  res
-) {
   try {
     const userId =
       req.user?.user_id
@@ -291,31 +366,55 @@ export async function uploadMyAuthorProfileImage(
       })
     }
 
-    const imageType = String(
-      req.body.image_type ||
-        req.body.imageType ||
+    await getValidatedStoryUploadPath(req.file)
+
+    const requestedFolder = String(
+      req.body.folder ||
+        req.query.folder ||
         ''
-    )
-      .trim()
-      .toLowerCase()
+    ).trim()
+    const isPdfUpload =
+      requestedFolder ===
+      'author_store_pdf'
+    const isChatStoryCharacterUpload =
+      requestedFolder ===
+      'chat_story_character'
+    const storyImageProcessingOptions =
+  STORY_IMAGE_PROCESSING_OPTIONS[
+    requestedFolder
+  ] || null
 
     if (
-      ![
-        'avatar',
-        'cover',
-      ].includes(imageType)
+      isChatStoryCharacterUpload &&
+      req.file.size >
+        2 * 1024 * 1024
     ) {
-      return res.status(400).json({
+      return res.status(413).json({
         ok: false,
+        code:
+          'CHARACTER_IMAGE_TOO_LARGE',
         message:
-          'image_type must be avatar or cover',
+          'Character profile image must be 2 MB or smaller',
       })
     }
 
     if (
-      !String(
-        req.file.mimetype || ''
-      ).startsWith('image/')
+      isPdfUpload &&
+      req.file.mimetype !==
+        'application/pdf'
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          'Only PDF files are allowed',
+      })
+    }
+
+    if (
+      !isPdfUpload &&
+      !req.file.mimetype?.startsWith(
+        'image/'
+      )
     ) {
       return res.status(400).json({
         ok: false,
@@ -324,104 +423,210 @@ export async function uploadMyAuthorProfileImage(
       })
     }
 
-    const authorPage =
-      await getMyAuthorPage(userId)
+    if (storyImageProcessingOptions) {
+  try {
+    processed =
+      await processStoryImageFile(
+        req.file,
+        storyImageProcessingOptions
+      )
+  } catch (error) {
+    if (
+      error?.code ===
+        'STORY_IMAGE_DECODE_FAILED' ||
+      error?.code ===
+        'IMAGE_DIMENSIONS_MISSING'
+    ) {
+      const isEpisode =
+        requestedFolder ===
+        'episode_content'
 
-    if (!authorPage) {
-      return res.status(403).json({
+      return res.status(400).json({
         ok: false,
-        message:
-          'Please create an author page first',
+        code: isEpisode
+          ? 'EPISODE_IMAGE_INVALID'
+          : 'STORY_IMAGE_INVALID',
+        message: isEpisode
+          ? 'Episode image is invalid'
+          : 'Story image is invalid',
       })
     }
 
-    await assertAuthorStorageAvailable(
-      authorPage.id,
-      req.file.size
+    throw error
+  }
+
+  const folder = safeFolder(
+    requestedFolder
+  )
+
+  const imageUrl =
+    await uploadFileToR2(
+      {
+        path: processed.path,
+        size: processed.size,
+        mimetype: 'image/webp',
+        originalname:
+          'story-image.webp',
+      },
+      `${folder}/${userId}`
     )
 
-    const uploaded =
-      await uploadAuthorImageToR2({
-        authorPage,
-        file: req.file,
-        imageType,
-      })
+  const publicBaseUrl =
+    String(
+      process.env.R2_PUBLIC_URL ||
+        ''
+    ).replace(/\/+$/, '')
 
-    const updates = {
-      updated_at:
-        new Date().toISOString(),
-    }
+  const storagePath =
+    publicBaseUrl &&
+    imageUrl.startsWith(
+      `${publicBaseUrl}/`
+    )
+      ? imageUrl.slice(
+          publicBaseUrl.length + 1
+        )
+      : imageUrl
 
-    if (imageType === 'avatar') {
-      updates.avatar_url =
-        uploaded.publicUrl
-    } else {
-      updates.cover_url =
-        uploaded.publicUrl
-    }
+  return res.status(201).json({
+    ok: true,
+    message:
+      'Image uploaded successfully',
+    bucket:
+      process.env.R2_BUCKET_NAME,
+    path: storagePath,
+    image_url: imageUrl,
+    imageUrl,
+  })
+}
 
-    const {
-      data: updatedPage,
-      error: updateError,
-    } = await supabase
-      .from('author_pages')
-      .update(updates)
-      .eq('id', authorPage.id)
-      .select()
-      .single()
+    if (
+      R2_FOLDERS[
+        requestedFolder
+      ]
+    ) {
+      const missingR2EnvKeys =
+        getMissingR2EnvKeys()
 
-    if (updateError) {
-      throw updateError
-    }
+      if (
+        missingR2EnvKeys.length
+      ) {
+        return res.status(500).json({
+          ok: false,
+          code: 'R2_ENV_MISSING',
+          message:
+            `Missing R2 environment: ${missingR2EnvKeys.join(
+              ', '
+            )}`,
+          missing_env:
+            missingR2EnvKeys,
+          required_env: [
+            'R2_ACCOUNT_ID',
+            'R2_ACCESS_KEY_ID',
+            'R2_SECRET_ACCESS_KEY',
+            'R2_BUCKET_NAME',
+            'R2_PUBLIC_URL',
+          ],
+        })
+      }
 
-    const asset =
-      await recordAuthorR2Asset({
-        authorId: authorPage.id,
-        category:
-          imageType === 'avatar'
-            ? 'author_avatar'
-            : 'author_cover',
-        fileName:
-          uploaded.fileName,
-        filePath:
-          uploaded.filePath,
-        publicUrl:
-          uploaded.publicUrl,
-        mimeType:
-          req.file.mimetype,
-        fileSize: req.file.size,
-        uploadedBy: userId,
-        sourceTable:
-          'author_pages',
-        sourceId: authorPage.id,
-        ownerLabel:
-          authorPage.page_name ||
-          authorPage.page_username ||
-          null,
-      })
+      const authorPage =
+        await getMyAuthorPage(
+          userId
+        )
 
-    const quota =
-      await getAuthorStorageQuota(
-        authorPage.id
+      if (!authorPage) {
+        return res.status(403).json({
+          ok: false,
+          message:
+            'Please create an author page first',
+        })
+      }
+
+      await assertAuthorStorageAvailable(
+        authorPage.id,
+        req.file.size
       )
 
-    return res.status(200).json({
+      const uploaded =
+        await uploadAuthorImageToR2({
+          authorPage,
+          userId,
+          file: req.file,
+          folderKey:
+            requestedFolder,
+        })
+
+      return res
+        .status(201)
+        .json({
+          ok: true,
+          message: isPdfUpload
+            ? 'PDF uploaded successfully'
+            : 'Image uploaded successfully',
+          bucket:
+            getR2BucketName(),
+          folder:
+            R2_FOLDERS[
+              requestedFolder
+            ],
+          path:
+            uploaded.filePath,
+          file_url:
+            uploaded.publicUrl,
+          fileUrl:
+            uploaded.publicUrl,
+          image_url:
+            uploaded.publicUrl,
+          imageUrl:
+            uploaded.publicUrl,
+          pdf_url: isPdfUpload
+            ? uploaded.publicUrl
+            : '',
+          pdfUrl: isPdfUpload
+            ? uploaded.publicUrl
+            : '',
+          asset: uploaded.asset,
+          storage:
+            uploaded.quota,
+        })
+    }
+
+    const folder = safeFolder(
+      requestedFolder
+    )
+    const imageUrl =
+      await uploadFileToR2(
+        req.file,
+        `${folder}/${userId}`
+      )
+    const publicBaseUrl =
+      String(
+        process.env.R2_PUBLIC_URL ||
+          ''
+      ).replace(/\/+$/, '')
+    const storagePath =
+      publicBaseUrl &&
+      imageUrl.startsWith(
+        `${publicBaseUrl}/`
+      )
+        ? imageUrl.slice(
+            publicBaseUrl.length + 1
+          )
+        : imageUrl
+
+    return res.status(201).json({
       ok: true,
       message:
-        imageType === 'avatar'
-          ? 'Author profile photo uploaded'
-          : 'Author cover image uploaded',
-      image_type: imageType,
-      image_url:
-        uploaded.publicUrl,
-      author_page:
-        publicAuthorPage(updatedPage),
-      asset,
-      storage: quota,
+        'Image uploaded successfully',
+      bucket:
+        process.env.R2_BUCKET_NAME,
+      path: storagePath,
+      image_url: imageUrl,
+      imageUrl,
     })
   } catch (error) {
     console.error(
-      'UPLOAD AUTHOR PROFILE IMAGE ERROR:',
+      'UPLOAD STORY IMAGE ERROR:',
       error
     )
 
@@ -433,15 +638,20 @@ export async function uploadMyAuthorProfileImage(
         ok: false,
         code:
           error.code ||
-          'AUTHOR_PROFILE_IMAGE_UPLOAD_FAILED',
+          'IMAGE_UPLOAD_FAILED',
         message:
           error.message ||
-          'Failed to upload author profile image',
+          'Failed to upload image',
+        error: error.message,
         quota:
           error.quota || null,
         requested_bytes:
           error.requested_bytes ||
           null,
       })
+  } finally {
+    await cleanupStoryImageResult(
+      processed
+    )
   }
 }
