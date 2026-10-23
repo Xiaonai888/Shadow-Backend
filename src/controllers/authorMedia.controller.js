@@ -1,4 +1,7 @@
 import { createReadStream } from 'node:fs'
+import { lstat, realpath } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import {
   PutObjectCommand,
   S3Client,
@@ -9,6 +12,7 @@ import {
   getAuthorStorageQuota,
   recordAuthorR2Asset,
 } from '../services/authorStorageQuota.service.js'
+
 
 let r2Client = null
 
@@ -139,6 +143,26 @@ async function getMyAuthorPage(
   return data
 }
 
+async function getValidatedAuthorImagePath(file) {
+  const fileName = file?.filename
+  const invalid = () => {
+    const error = new Error('Invalid temporary author image file')
+    error.statusCode = 400
+    error.code = 'AUTHOR_IMAGE_PATH_INVALID'
+    throw error
+  }
+  if (typeof fileName !== 'string' || !/^[a-f0-9]{32}$/i.test(fileName)) invalid()
+  const expectedPath = path.join(os.tmpdir(), fileName)
+  if (file.path !== expectedPath) invalid()
+  const [tempRoot, realFile, info] = await Promise.all([
+    realpath(os.tmpdir()),
+    realpath(expectedPath),
+    lstat(expectedPath),
+  ])
+  if (!info.isFile() || info.size <= 0 || path.dirname(realFile) !== tempRoot) invalid()
+  return realFile
+}
+
 async function uploadAuthorImageToR2({
   authorPage,
   file,
@@ -154,6 +178,7 @@ async function uploadAuthorImageToR2({
     throw error
   }
 
+  const sourcePath = await getValidatedAuthorImagePath(file)
   const ext = safeExt(file)
   const folder =
     imageType === 'cover'
@@ -173,8 +198,8 @@ async function uploadAuthorImageToR2({
       Bucket: getR2BucketName(),
       Key: filePath,
       Body: createReadStream(
-        file.path
-      ),
+  sourcePath
+),
       ContentLength:
         Number(file.size || 0) ||
         undefined,
