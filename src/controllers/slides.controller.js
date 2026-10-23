@@ -1,7 +1,3 @@
-import { createReadStream } from 'node:fs'
-import { lstat, realpath } from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
 import {
   DeleteObjectCommand,
   PutObjectCommand,
@@ -216,28 +212,13 @@ async function deleteImageFromStorage(publicUrl) {
     console.warn('DELETE IMAGE WARNING:', error.message)
   }
 }
-async function getValidatedSlideImagePath(file) {
-  const fileName = file?.filename
-  const invalid = () => {
-    const error = new Error('Invalid temporary slide image file')
+async function uploadImage(file) {
+  if (!file) return null
+  if (!Buffer.isBuffer(file.buffer) || file.buffer.length === 0 || file.buffer.length > 5 * 1024 * 1024) {
+    const error = new Error('Invalid slide image buffer')
     error.statusCode = 400
     throw error
   }
-  if (typeof fileName !== 'string' || !/^[a-f0-9]{32}$/i.test(fileName)) invalid()
-  const expected = path.join(os.tmpdir(), fileName)
-  if (file.path !== expected) invalid()
-  const [tempRoot, realFile, info] = await Promise.all([
-    realpath(os.tmpdir()),
-    realpath(expected),
-    lstat(expected),
-  ])
-  if (!info.isFile() || path.dirname(realFile) !== tempRoot) invalid()
-  return realFile
-}
-
-async function uploadImage(file) {
-  if (!file) return null
-  const sourcePath = await getValidatedSlideImagePath(file)
 
   const originalName = file.originalname || 'slide-image'
   const fileExt = originalName.includes('.') ? originalName.split('.').pop() : 'jpg'
@@ -248,8 +229,8 @@ async function uploadImage(file) {
     new PutObjectCommand({
       Bucket: getR2BucketName(),
       Key: fileName,
-      Body: createReadStream(sourcePath),
-      ContentLength: Number(file.size || 0) || undefined,
+      Body: file.buffer,
+      ContentLength: file.buffer.length,
       ContentType: file.mimetype,
       CacheControl: 'public, max-age=31536000, immutable',
     })
