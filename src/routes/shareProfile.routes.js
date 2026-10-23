@@ -2,7 +2,7 @@ import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
-import { rateLimit } from 'express-rate-limit'
+import { rateLimit, ipKeyGenerator } from 'express-rate-limit'
 import {
   deleteShareProfileCustomImage,
   uploadShareProfileCustomImage,
@@ -11,16 +11,20 @@ import { requireUser } from '../middleware/user.middleware.js'
 import path from 'node:path'
 
 const router = express.Router()
-const customImageRateLimit = rateLimit({
+
+const shareProfileSafetyLimit = rateLimit({
   windowMs: 60 * 1000,
-  limit: 20,
+  limit: 300,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
-  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || req.user?.session_id || 'unauthenticated'),
+  keyGenerator: (req) =>
+    req.spamGuard?.identity_type === 'account' && req.spamGuard.guard_key
+      ? req.spamGuard.guard_key
+      : ipKeyGenerator(req.ip),
   message: {
     ok: false,
     code: 'SHARE_PROFILE_RATE_LIMIT',
-    message: 'Too many profile image requests. Please try again shortly.',
+    message: 'Too many profile image requests. Please retry shortly.',
   },
 })
 
@@ -74,13 +78,13 @@ function uploadCustomImage(req, res, next) {
 
 router.post(
   '/custom-image',
+  shareProfileSafetyLimit,
   requireUser,
-  customImageRateLimit,
   uploadCustomImage,
   cleanupTempFile,
   uploadShareProfileCustomImage
 )
-router.delete('/custom-image', requireUser, customImageRateLimit, deleteShareProfileCustomImage)
+router.delete('/custom-image', shareProfileSafetyLimit, requireUser, deleteShareProfileCustomImage)
 
 router.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
