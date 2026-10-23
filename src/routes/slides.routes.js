@@ -35,10 +35,13 @@ const publicSlidesCacheHitLimit = createRateLimit({
 })
 
 const publicSlidesReadSpamGuard = createSpamGuard({
-  const adminSlidesRateLimit = rateLimit({ windowMs: 60000, limit: 600, standardHeaders: 'draft-8', legacyHeaders: false })
   scope: 'reader_read',
   threshold: 300,
   windowSeconds: 60,
+})
+
+const adminSlidesRateLimit = rateLimit({
+  windowMs: 60000, limit: 600, standardHeaders: 'draft-8', legacyHeaders: false
 })
 
 function uploadSlideImage(req, res, next) {
