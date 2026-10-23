@@ -1,4 +1,5 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
   createAdminHelpArticle,
@@ -19,21 +20,57 @@ import {
 
 const router = express.Router()
 
-router.get('/', getPublicHelpCenter)
-router.get('/categories', getPublicHelpCategories)
-router.get('/articles', getPublicHelpArticles)
-router.get('/articles/:articleId', getPublicHelpArticleById)
+const publicHelpLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'HELP_CENTER_READ_RATE_LIMIT',
+    message: 'Too many help center requests. Please retry shortly.',
+  },
+})
 
-router.get('/admin/categories', requireAdmin, getAdminHelpCategories)
-router.post('/admin/categories', requireAdmin, createAdminHelpCategory)
-router.put('/admin/categories/reorder', requireAdmin, reorderAdminHelpCategories)
-router.put('/admin/categories/:categoryId', requireAdmin, updateAdminHelpCategory)
-router.delete('/admin/categories/:categoryId', requireAdmin, deleteAdminHelpCategory)
+const adminHelpReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'HELP_CENTER_ADMIN_READ_RATE_LIMIT',
+    message: 'Too many admin help requests. Please retry shortly.',
+  },
+})
 
-router.get('/admin/articles', requireAdmin, getAdminHelpArticles)
-router.post('/admin/articles', requireAdmin, createAdminHelpArticle)
-router.put('/admin/articles/reorder', requireAdmin, reorderAdminHelpArticles)
-router.put('/admin/articles/:articleId', requireAdmin, updateAdminHelpArticle)
-router.delete('/admin/articles/:articleId', requireAdmin, deleteAdminHelpArticle)
+const adminHelpWriteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'HELP_CENTER_ADMIN_WRITE_RATE_LIMIT',
+    message: 'Too many admin help changes. Please retry shortly.',
+  },
+})
+
+router.get('/', publicHelpLimit, getPublicHelpCenter)
+router.get('/categories', publicHelpLimit, getPublicHelpCategories)
+router.get('/articles', publicHelpLimit, getPublicHelpArticles)
+router.get('/articles/:articleId', publicHelpLimit, getPublicHelpArticleById)
+
+router.get('/admin/categories', adminHelpReadLimit, requireAdmin, getAdminHelpCategories)
+router.post('/admin/categories', adminHelpWriteLimit, requireAdmin, createAdminHelpCategory)
+router.put('/admin/categories/reorder', adminHelpWriteLimit, requireAdmin, reorderAdminHelpCategories)
+router.put('/admin/categories/:categoryId', adminHelpWriteLimit, requireAdmin, updateAdminHelpCategory)
+router.delete('/admin/categories/:categoryId', adminHelpWriteLimit, requireAdmin, deleteAdminHelpCategory)
+
+router.get('/admin/articles', adminHelpReadLimit, requireAdmin, getAdminHelpArticles)
+router.post('/admin/articles', adminHelpWriteLimit, requireAdmin, createAdminHelpArticle)
+router.put('/admin/articles/reorder', adminHelpWriteLimit, requireAdmin, reorderAdminHelpArticles)
+router.put('/admin/articles/:articleId', adminHelpWriteLimit, requireAdmin, updateAdminHelpArticle)
+router.delete('/admin/articles/:articleId', adminHelpWriteLimit, requireAdmin, deleteAdminHelpArticle)
 
 export default router
