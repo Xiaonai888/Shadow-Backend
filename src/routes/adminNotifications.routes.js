@@ -2,6 +2,7 @@ import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
+import { rateLimit } from 'express-rate-limit'
 import {
   createAdminAnnouncement,
   deleteAdminAnnouncement,
@@ -14,6 +15,42 @@ import { requireAdmin } from '../middleware/auth.middleware.js'
 import path from 'node:path'
 
 const router = express.Router()
+
+const adminNotificationReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_NOTIFICATION_READ_RATE_LIMIT',
+    message: 'Too many admin notification requests. Please retry shortly.',
+  },
+})
+
+const adminNotificationWriteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_NOTIFICATION_WRITE_RATE_LIMIT',
+    message: 'Too many admin notification changes. Please retry shortly.',
+  },
+})
+
+const adminNotificationUploadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_NOTIFICATION_UPLOAD_RATE_LIMIT',
+    message: 'Too many admin notification uploads. Please retry shortly.',
+  },
+})
 
 const upload = multer({
   dest: os.tmpdir(),
@@ -72,30 +109,35 @@ function uploadNotificationImage(req, res, next) {
 
 router.get(
   '/announcements',
+  adminNotificationReadLimit,
   requireAdmin,
   getAdminAnnouncements
 )
 
 router.post(
   '/announcements',
+  adminNotificationWriteLimit,
   requireAdmin,
   createAdminAnnouncement
 )
 
 router.patch(
   '/announcements/:referenceId',
+  adminNotificationWriteLimit,
   requireAdmin,
   updateAdminAnnouncement
 )
 
 router.delete(
   '/announcements/:referenceId',
+  adminNotificationWriteLimit,
   requireAdmin,
   deleteAdminAnnouncement
 )
 
 router.post(
   '/upload-image',
+  adminNotificationUploadLimit,
   requireAdmin,
   uploadNotificationImage,
   cleanupTempFile,
@@ -104,6 +146,7 @@ router.post(
 
 router.get(
   '/records',
+  adminNotificationReadLimit,
   requireAdmin,
   getAdminAnnouncementRecords
 )
