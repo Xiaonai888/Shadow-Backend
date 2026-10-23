@@ -1,5 +1,6 @@
 import express from 'express'
 import { createHash } from 'node:crypto'
+import { rateLimit } from 'express-rate-limit'
 import {
   createMyReaderPost,
   deleteMyReaderPost,
@@ -35,6 +36,32 @@ import { getMyReaderPostTags } from '../controllers/readerPostTags.controller.js
 const router = express.Router()
 const feedRequestsInFlight = new Map()
 const FEED_IN_FLIGHT_LIMIT = 200
+
+const readerPostReadLimit = rateLimit({
+  windowMs: 60000,
+  limit: 900,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || 'unauthenticated'),
+  message: {
+    ok: false,
+    code: 'READER_POST_READ_RATE_LIMIT',
+    message: 'Too many post requests. Please try again shortly.',
+  },
+})
+
+const readerPostWriteLimit = rateLimit({
+  windowMs: 60000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || 'unauthenticated'),
+  message: {
+    ok: false,
+    code: 'READER_POST_WRITE_RATE_LIMIT',
+    message: 'Too many post actions. Please try again shortly.',
+  },
+})
 
 function coalesceReaderPostsFeed(req, res, next) {
   const userId = String(req.user?.user_id || req.user?.id || '').trim()
@@ -85,19 +112,20 @@ function coalesceReaderPostsFeed(req, res, next) {
   next()
 }
 
-router.get('/feed', requireUser, coalesceReaderPostsFeed, getReaderPostsFeed)
-router.get('/me', requireUser, getMyReaderPosts)
-router.get('/me/:postId/tags', requireUser, getMyReaderPostTags)
-router.get('/:postId/comments/pending', requireUser, getPendingReaderPostComments)
-router.post('/:postId/comments/review', requireUser, reviewPendingReaderPostComments)
-router.get('/:postId', requireUser, requirePrivateReaderPostAccess, getReaderPostById)
-router.post('/me', requireUser, createMyReaderPost)
-router.patch('/me/:postId', requireUser, updateMyReaderPost)
-router.delete('/me/:postId', requireUser, deleteMyReaderPost)
+router.get('/feed', requireUser, readerPostReadLimit, coalesceReaderPostsFeed, getReaderPostsFeed)
+router.get('/me', requireUser, readerPostReadLimit, getMyReaderPosts)
+router.get('/me/:postId/tags', requireUser, readerPostReadLimit, getMyReaderPostTags)
+router.get('/:postId/comments/pending', requireUser, readerPostReadLimit, getPendingReaderPostComments)
+router.post('/:postId/comments/review', requireUser, readerPostWriteLimit, reviewPendingReaderPostComments)
+router.get('/:postId', requireUser, readerPostReadLimit, requirePrivateReaderPostAccess, getReaderPostById)
+router.post('/me', requireUser, readerPostWriteLimit, createMyReaderPost)
+router.patch('/me/:postId', requireUser, readerPostWriteLimit, updateMyReaderPost)
+router.delete('/me/:postId', requireUser, readerPostWriteLimit, deleteMyReaderPost)
 
 router.get(
   '/:postId/reactions',
   requireUser,
+  readerPostReadLimit,
   requirePrivateReaderPostAccess,
   getReaderPostReactions
 )
@@ -105,12 +133,14 @@ router.get(
 router.get(
   '/:postId/reaction',
   requireUser,
+  readerPostReadLimit,
   requirePrivateReaderPostAccess,
   getReaderPostReactionStatus
 )
 router.post(
   '/:postId/reaction',
   requireUser,
+  readerPostWriteLimit,
   requirePrivateReaderPostAccess,
   setReaderPostReaction
 )
@@ -118,30 +148,35 @@ router.post(
 router.get(
   '/:postId/comments',
   requireUser,
+  readerPostReadLimit,
   requirePrivateReaderPostAccess,
   getReaderPostComments
 )
 router.post(
   '/:postId/comments',
   requireUser,
+  readerPostWriteLimit,
   requirePrivateReaderPostAccess,
   createReaderPostComment
 )
 router.patch(
   '/comments/:commentId',
   requireUser,
+  readerPostWriteLimit,
   requirePrivateReaderPostAccess,
   updateOwnReaderPostComment
 )
 router.delete(
   '/comments/:commentId',
   requireUser,
+  readerPostWriteLimit,
   requirePrivateReaderPostAccess,
   deleteOwnReaderPostComment
 )
 router.post(
   '/comments/:commentId/like',
   requireUser,
+  readerPostWriteLimit,
   requirePrivateReaderPostAccess,
   toggleReaderPostCommentLike
 )
@@ -149,6 +184,7 @@ router.post(
 router.get(
   '/comments/:commentId/replies',
   requireUser,
+  readerPostReadLimit,
   requirePrivateReaderPostAccess,
   getReaderPostCommentReplies
 )
@@ -156,12 +192,14 @@ router.get(
 router.get(
   '/:postId/echoes',
   requireUser,
+  readerPostReadLimit,
   requirePrivateReaderPostAccess,
   getReaderPostEchoes
 )
 router.post(
   '/:postId/echoes',
   requireUser,
+  readerPostWriteLimit,
   requirePrivateReaderPostAccess,
   createReaderPostEcho
 )
@@ -170,6 +208,7 @@ router.post(
 router.get(
   '/user/:username',
   requireUser,
+  readerPostReadLimit,
   getReaderPostsByUsername
 )
 
