@@ -6,15 +6,17 @@ import {
   assertR2MediaReference,
   assertR2StorageKey,
 } from "../services/mediaStoragePolicy.service.js";
-import { createRateLimit } from "../middleware/rateLimit.middleware.js";
+import { rateLimit } from "express-rate-limit";
 
 const router = express.Router();
-const chatLibraryRateLimit = createRateLimit({
-  key: "admin-chat-story-library",
+const chatLibraryRateLimit = rateLimit({
   windowMs: 60 * 1000,
-  max: 60,
-  identity: (req) => req.admin?.admin_id,
+  limit: 60,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  keyGenerator: (req) => `admin:${req.admin.admin_id}:${req.method}:${req.route.path}`,
 });
+
 const FOLDER_ID = "9a98ad91-bc5a-4a1f-8c82-9f335ecd9716";
 const FIELDS = "id, title, image_url, is_active, created_at";
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
