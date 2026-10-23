@@ -41,20 +41,18 @@ import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseC
 import { invalidatePublicStoryDataCache } from '../services/publicStoryDataCache.service.js'
 
 const router = express.Router()
-
-const storyRoutesLimit = rateLimit({
+const storyRateLimit = rateLimit({
   windowMs: 60 * 1000,
-  limit: 600,
-  standardHeaders: 'draft-7',
+  limit: 300,
+  standardHeaders: 'draft-8',
   legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || req.user?.session_id || 'unauthenticated'),
   message: {
     ok: false,
     code: 'STORY_RATE_LIMIT',
     message: 'Too many story requests. Please try again shortly.',
   },
 })
-
-router.use(storyRoutesLimit)
 
 function invalidateMyStoriesAfterMutation(req, res, next) {
   const userId = req.user?.user_id
@@ -92,44 +90,46 @@ function invalidateMyStoriesAfterMutation(req, res, next) {
   next()
 }
 
-router.post('/create', requireUser, invalidateMyStoriesAfterMutation, createStory)
-router.get('/my', requireUser, getMyStories)
-router.get('/trash', requireUser, getStoryTrash)
-router.get('/chat/avatar-gallery', requireUser, getChatStoryAvatarGallery)
-router.get('/:storyId/chat/characters', requireUser, getChatStoryCharacters)
-router.put('/:storyId/chat/characters', requireUser, saveChatStoryCharacters)
-router.get('/:storyId/chat/characters/:characterId/profile', requireUser, getChatStoryCharacterProfile)
-router.patch('/:storyId/chat/characters/:characterId/profile', requireUser, updateChatStoryCharacterProfile)
-router.post('/:storyId/chat/episodes/save', requireUser, invalidateMyStoriesAfterMutation, saveChatStoryEpisode)
+router.post('/create', requireUser, storyRateLimit, invalidateMyStoriesAfterMutation, createStory)
+router.get('/my', requireUser, storyRateLimit, getMyStories)
+router.get('/trash', requireUser, storyRateLimit, getStoryTrash)
+router.get('/chat/avatar-gallery', requireUser, storyRateLimit, getChatStoryAvatarGallery)
+router.get('/:storyId/chat/characters', requireUser, storyRateLimit, getChatStoryCharacters)
+router.put('/:storyId/chat/characters', requireUser, storyRateLimit, saveChatStoryCharacters)
+router.get('/:storyId/chat/characters/:characterId/profile', requireUser, storyRateLimit, getChatStoryCharacterProfile)
+router.patch('/:storyId/chat/characters/:characterId/profile', requireUser, storyRateLimit, updateChatStoryCharacterProfile)
+router.post('/:storyId/chat/episodes/save', requireUser, storyRateLimit, invalidateMyStoriesAfterMutation, saveChatStoryEpisode)
 router.patch(
   '/:storyId/chat/episodes/:episodeId/status',
   requireUser,
+  storyRateLimit,
   invalidateMyStoriesAfterMutation,
   enforceFirstPublishAgreement,
   enforcePaidContentRequirement,
   updateChatStoryEpisodeStatus
 )
-router.get('/:storyId/manager-episodes', requireUser, getStoryManagerEpisodes)
-router.get('/:storyId/performance', requireUser, getStoryPerformance)
-router.get('/:storyId/publish-agreement', requireUser, getStoryPublishAgreement)
-router.post('/:storyId/publish-agreement', requireUser, acceptStoryPublishAgreement)
-router.get('/:storyId', requireUser, getStoryById)
-router.put('/:storyId', requireUser, invalidateMyStoriesAfterMutation, updateStory)
-router.delete('/:storyId', requireUser, invalidateMyStoriesAfterMutation, moveStoryToTrash)
-router.post('/:storyId/restore', requireUser, invalidateMyStoriesAfterMutation, restoreStoryFromTrash)
+router.get('/:storyId/manager-episodes', requireUser, storyRateLimit, getStoryManagerEpisodes)
+router.get('/:storyId/performance', requireUser, storyRateLimit, getStoryPerformance)
+router.get('/:storyId/publish-agreement', requireUser, storyRateLimit, getStoryPublishAgreement)
+router.post('/:storyId/publish-agreement', requireUser, storyRateLimit, acceptStoryPublishAgreement)
+router.get('/:storyId', requireUser, storyRateLimit, getStoryById)
+router.put('/:storyId', requireUser, storyRateLimit, invalidateMyStoriesAfterMutation, updateStory)
+router.delete('/:storyId', requireUser, storyRateLimit, invalidateMyStoriesAfterMutation, moveStoryToTrash)
+router.post('/:storyId/restore', requireUser, storyRateLimit, invalidateMyStoriesAfterMutation, restoreStoryFromTrash)
 
-router.post('/:storyId/episodes/create', requireUser, invalidateMyStoriesAfterMutation, createEpisode)
-router.get('/:storyId/episodes', requireUser, getStoryEpisodes)
-router.get('/:storyId/episodes/:episodeId', requireUser, getEpisodeById)
-router.put('/:storyId/episodes/:episodeId', requireUser, invalidateMyStoriesAfterMutation, updateEpisode)
+router.post('/:storyId/episodes/create', requireUser, storyRateLimit, invalidateMyStoriesAfterMutation, createEpisode)
+router.get('/:storyId/episodes', requireUser, storyRateLimit, getStoryEpisodes)
+router.get('/:storyId/episodes/:episodeId', requireUser, storyRateLimit, getEpisodeById)
+router.put('/:storyId/episodes/:episodeId', requireUser, storyRateLimit, invalidateMyStoriesAfterMutation, updateEpisode)
 router.patch(
   '/:storyId/episodes/:episodeId/status',
   requireUser,
+  storyRateLimit,
   invalidateMyStoriesAfterMutation,
   enforceFirstPublishAgreement,
   enforcePaidContentRequirement,
   updateEpisodeStatusByStoryType
 )
-router.delete('/:storyId/episodes/:episodeId', requireUser, invalidateMyStoriesAfterMutation, moveEpisodeToTrash)
+router.delete('/:storyId/episodes/:episodeId', requireUser, storyRateLimit, invalidateMyStoriesAfterMutation, moveEpisodeToTrash)
 
 export default router
