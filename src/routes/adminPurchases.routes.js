@@ -8,6 +8,7 @@ import {
 } from '../controllers/adminPaymentRecovery.controller.js'
 import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
 import express from 'express'
+import { rateLimit, ipKeyGenerator } from 'express-rate-limit'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
   getAdminPayment,
@@ -24,22 +25,48 @@ const router = express.Router()
 const recoveryReadGuard = createSpamGuard({ scope: 'admin_payment_recovery_read', threshold: 30, windowSeconds: 60 })
 const recoveryWriteGuard = createSpamGuard({ scope: 'admin_payment_recovery_write', threshold: 10, windowSeconds: 60 })
 
-router.get('/', requireAdmin, getAdminPayments)
-router.get('/manual', requireAdmin, getAdminManualPayments)
-router.get('/recovery', requireAdmin, recoveryReadGuard, getAdminPaymentRecovery)
-router.get('/recovery/recipients', requireAdmin, recoveryReadGuard, getAdminPaymentRecoveryRecipient)
-router.get('/recovery/history', requireAdmin, recoveryReadGuard, getAdminPaymentRecoveryHistory)
-router.post('/recovery/topup', requireAdmin, recoveryWriteGuard, confirmAdminManualTopUp)
-router.post('/recovery/:paymentId/confirm', requireAdmin, recoveryWriteGuard, confirmAdminPaymentRecovery)
-router.get('/manual/stream', requireAdmin, streamAdminPaymentEvents)
-router.post('/manual/:paymentId/confirm', requireAdmin, (_req, res) => {
+const adminPaymentPreAuthLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { ok: false, code: 'ADMIN_PAYMENT_PRE_AUTH_RATE_LIMIT', message: 'Too many payment requests. Please retry shortly.' },
+})
+const adminPaymentReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.admin?.admin_id || req.admin?.id || ipKeyGenerator(req.ip)),
+  message: { ok: false, code: 'ADMIN_PAYMENT_READ_RATE_LIMIT', message: 'Too many payment requests. Please retry shortly.' },
+})
+const adminPaymentWriteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.admin?.admin_id || req.admin?.id || ipKeyGenerator(req.ip)),
+  message: { ok: false, code: 'ADMIN_PAYMENT_WRITE_RATE_LIMIT', message: 'Too many payment actions. Please retry shortly.' },
+})
+
+router.use(adminPaymentPreAuthLimit)
+
+router.get('/', requireAdmin, adminPaymentReadLimit, getAdminPayments)
+router.get('/manual', requireAdmin, adminPaymentReadLimit, getAdminManualPayments)
+router.get('/recovery', requireAdmin, adminPaymentReadLimit, recoveryReadGuard, getAdminPaymentRecovery)
+router.get('/recovery/recipients', requireAdmin, adminPaymentReadLimit, recoveryReadGuard, getAdminPaymentRecoveryRecipient)
+router.get('/recovery/history', requireAdmin, adminPaymentReadLimit, recoveryReadGuard, getAdminPaymentRecoveryHistory)
+router.post('/recovery/topup', requireAdmin, adminPaymentWriteLimit, recoveryWriteGuard, confirmAdminManualTopUp)
+router.post('/recovery/:paymentId/confirm', requireAdmin, adminPaymentWriteLimit, recoveryWriteGuard, confirmAdminPaymentRecovery)
+router.get('/manual/stream', requireAdmin, adminPaymentReadLimit, streamAdminPaymentEvents)
+router.post('/manual/:paymentId/confirm', requireAdmin, adminPaymentWriteLimit, (_req, res) => {
   return res.status(410).json({
     ok: false,
     message: 'Use Payment Recovery & Top-Up with Admin Passkey.'
   })
 })
-router.post('/manual/:paymentId/reject', requireAdmin, rejectAdminManualPayment)
-router.post('/manual/:paymentId/retry-telegram-report', requireAdmin, retryAdminTelegramReport)
-router.get('/:paymentId', requireAdmin, getAdminPayment)
+router.post('/manual/:paymentId/reject', requireAdmin, adminPaymentWriteLimit, rejectAdminManualPayment)
+router.post('/manual/:paymentId/retry-telegram-report', requireAdmin, adminPaymentWriteLimit, retryAdminTelegramReport)
+router.get('/:paymentId', requireAdmin, adminPaymentReadLimit, getAdminPayment)
 
 export default router
