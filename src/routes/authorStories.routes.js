@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken'
 import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
+import { rateLimit, ipKeyGenerator } from 'express-rate-limit'
 import {
   createMyAuthorStory,
   deleteMyAuthorStory,
@@ -18,7 +19,6 @@ import { enforceAuthorStoryDailyLimit } from '../middleware/storyDailyLimit.midd
 import { requireUser } from '../middleware/user.middleware.js'
 import path from 'node:path'
 
-
 const router = express.Router()
 
 const upload = multer({
@@ -26,6 +26,37 @@ const upload = multer({
   limits: {
     fileSize: 30 * 1024 * 1024,
     files: 1,
+  },
+})
+
+const authorStoryRateLimitKey = (req) =>
+  req.spamGuard?.identity_type === 'account' && req.spamGuard.guard_key
+    ? req.spamGuard.guard_key
+    : ipKeyGenerator(req.ip)
+
+const authorStoryReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 900,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: authorStoryRateLimitKey,
+  message: {
+    ok: false,
+    code: 'AUTHOR_STORY_READ_RATE_LIMIT',
+    message: 'Too many story requests. Please retry shortly.',
+  },
+})
+
+const authorStoryActionLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: authorStoryRateLimitKey,
+  message: {
+    ok: false,
+    code: 'AUTHOR_STORY_ACTION_RATE_LIMIT',
+    message: 'Too many story actions. Please retry shortly.',
   },
 })
 
@@ -92,11 +123,12 @@ function uploadStoryMedia(req, res, next) {
   })
 }
 
-router.get('/feed', optionalUser, getAuthorStoriesFeed)
-router.get('/me', requireUser, getMyAuthorStories)
+router.get('/feed', authorStoryReadLimit, optionalUser, getAuthorStoriesFeed)
+router.get('/me', authorStoryReadLimit, requireUser, getMyAuthorStories)
 
 router.post(
   '/me/video-upload/init',
+  authorStoryActionLimit,
   requireUser,
   enforceAuthorStoryDailyLimit,
   initMyAuthorStoryVideoUpload
@@ -104,6 +136,7 @@ router.post(
 
 router.post(
   '/me/video-upload/finalize',
+  authorStoryActionLimit,
   requireUser,
   enforceAuthorStoryDailyLimit,
   finalizeMyAuthorStoryVideoUpload
@@ -111,15 +144,16 @@ router.post(
 
 router.post(
   '/me',
+  authorStoryActionLimit,
   requireUser,
   enforceAuthorStoryDailyLimit,
   uploadStoryMedia,
   cleanupStoryMediaTemp,
   createMyAuthorStory
 )
-router.patch('/me/:storyId/extras', requireUser, saveMyAuthorStoryExtras)
-router.delete('/me/:storyId', requireUser, deleteMyAuthorStory)
-router.post('/:storyId/view', requireUser, recordAuthorStoryView)
-router.get('/page/:pageUsername', getPublicAuthorStories)
+router.patch('/me/:storyId/extras', authorStoryActionLimit, requireUser, saveMyAuthorStoryExtras)
+router.delete('/me/:storyId', authorStoryActionLimit, requireUser, deleteMyAuthorStory)
+router.post('/:storyId/view', authorStoryActionLimit, requireUser, recordAuthorStoryView)
+router.get('/page/:pageUsername', authorStoryReadLimit, getPublicAuthorStories)
 
 export default router
