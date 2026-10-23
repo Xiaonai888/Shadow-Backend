@@ -15,6 +15,12 @@ import {
 } from '../controllers/savedPosts.controller.js'
 
 const router = express.Router()
+const savedPostsPreAuthLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1500,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+})
 const savedPostsReadLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 300,
@@ -30,17 +36,17 @@ const savedPostsWriteLimit = rateLimit({
   keyGenerator: (req) => String(req.user?.user_id || req.user?.id || 'unauthenticated'),
 })
 
-router.get('/', requireUser, savedPostsReadLimit, getSavedPosts)
-router.get('/status', requireUser, savedPostsReadLimit, getSavedPostStatus)
-router.post('/', requireUser, savedPostsWriteLimit, savePost)
-router.delete('/source', requireUser, savedPostsWriteLimit, removeSavedPostBySource)
+router.get('/', savedPostsPreAuthLimit, requireUser, savedPostsReadLimit, getSavedPosts)
+router.get('/status', savedPostsPreAuthLimit, requireUser, savedPostsReadLimit, getSavedPostStatus)
+router.post('/', savedPostsPreAuthLimit, requireUser, savedPostsWriteLimit, savePost)
+router.delete('/source', savedPostsPreAuthLimit, requireUser, savedPostsWriteLimit, removeSavedPostBySource)
 
-router.get('/collections', requireUser, savedPostsReadLimit, getSavedPostCollections)
-router.post('/collections', requireUser, savedPostsWriteLimit, createSavedPostCollection)
-router.patch('/collections/:collectionId', requireUser, savedPostsWriteLimit, updateSavedPostCollection)
-router.delete('/collections/:collectionId', requireUser, savedPostsWriteLimit, deleteSavedPostCollection)
+router.get('/collections', savedPostsPreAuthLimit, requireUser, savedPostsReadLimit, getSavedPostCollections)
+router.post('/collections', savedPostsPreAuthLimit, requireUser, savedPostsWriteLimit, createSavedPostCollection)
+router.patch('/collections/:collectionId', savedPostsPreAuthLimit, requireUser, savedPostsWriteLimit, updateSavedPostCollection)
+router.delete('/collections/:collectionId', savedPostsPreAuthLimit, requireUser, savedPostsWriteLimit, deleteSavedPostCollection)
 
-router.put('/:savedPostId/collections', requireUser, savedPostsWriteLimit, replaceSavedPostCollections)
-router.delete('/:savedPostId', requireUser, savedPostsWriteLimit, removeSavedPost)
+router.put('/:savedPostId/collections', savedPostsPreAuthLimit, requireUser, savedPostsWriteLimit, replaceSavedPostCollections)
+router.delete('/:savedPostId', savedPostsPreAuthLimit, requireUser, savedPostsWriteLimit, removeSavedPost)
 
 export default router
