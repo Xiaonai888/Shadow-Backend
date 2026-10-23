@@ -49,6 +49,13 @@ function handleError(error, res) {
   })
 }
 
+router.use(rateLimit({
+  windowMs: 60000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+}))
+
 router.use(requireUser)
 const securityReadLimit = rateLimit({
   windowMs: 60000,
