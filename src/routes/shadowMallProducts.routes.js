@@ -1,4 +1,5 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
@@ -80,6 +81,22 @@ const publicPromotionRateLimit = createRateLimit({
   windowMs: 60000,
   max: 120,
 })
+
+const shadowMallRouteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: (req) =>
+    req.method === 'POST' && req.path === '/orders/callback',
+  message: {
+    ok: false,
+    code: 'SHADOW_MALL_RATE_LIMIT',
+    message: 'Too many Shadow Mall requests. Please try again shortly.',
+  },
+})
+
+router.use(shadowMallRouteLimit)
 
 const upload = multer({
   dest: os.tmpdir(),
