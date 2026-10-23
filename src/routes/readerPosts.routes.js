@@ -1,6 +1,6 @@
 import express from 'express'
-import { createHash } from 'node:crypto'
 import { rateLimit } from 'express-rate-limit'
+import { createHash } from 'node:crypto'
 import {
   createMyReaderPost,
   deleteMyReaderPost,
@@ -37,31 +37,34 @@ const router = express.Router()
 const feedRequestsInFlight = new Map()
 const FEED_IN_FLIGHT_LIMIT = 200
 
-const readerPostReadLimit = rateLimit({
-  windowMs: 60000,
-  limit: 900,
+const readerPostsPreAuthLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 3000,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
-  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || 'unauthenticated'),
-  message: {
-    ok: false,
-    code: 'READER_POST_READ_RATE_LIMIT',
-    message: 'Too many post requests. Please try again shortly.',
-  },
 })
 
-const readerPostWriteLimit = rateLimit({
-  windowMs: 60000,
+const readerPostIdentity = (req) => String(
+  req.user?.user_id || req.user?.id || req.user?.session_id || 'unauthenticated'
+)
+
+const readerPostsReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 300,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: readerPostIdentity,
+})
+
+const readerPostsWriteLimit = rateLimit({
+  windowMs: 60 * 1000,
   limit: 120,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
-  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || 'unauthenticated'),
-  message: {
-    ok: false,
-    code: 'READER_POST_WRITE_RATE_LIMIT',
-    message: 'Too many post actions. Please try again shortly.',
-  },
+  keyGenerator: readerPostIdentity,
 })
+
+router.use(readerPostsPreAuthLimit)
 
 function coalesceReaderPostsFeed(req, res, next) {
   const userId = String(req.user?.user_id || req.user?.id || '').trim()
@@ -112,20 +115,20 @@ function coalesceReaderPostsFeed(req, res, next) {
   next()
 }
 
-router.get('/feed', requireUser, readerPostReadLimit, coalesceReaderPostsFeed, getReaderPostsFeed)
-router.get('/me', requireUser, readerPostReadLimit, getMyReaderPosts)
-router.get('/me/:postId/tags', requireUser, readerPostReadLimit, getMyReaderPostTags)
-router.get('/:postId/comments/pending', requireUser, readerPostReadLimit, getPendingReaderPostComments)
-router.post('/:postId/comments/review', requireUser, readerPostWriteLimit, reviewPendingReaderPostComments)
-router.get('/:postId', requireUser, readerPostReadLimit, requirePrivateReaderPostAccess, getReaderPostById)
-router.post('/me', requireUser, readerPostWriteLimit, createMyReaderPost)
-router.patch('/me/:postId', requireUser, readerPostWriteLimit, updateMyReaderPost)
-router.delete('/me/:postId', requireUser, readerPostWriteLimit, deleteMyReaderPost)
+router.get('/feed', requireUser, readerPostsReadLimit, coalesceReaderPostsFeed, getReaderPostsFeed)
+router.get('/me', requireUser, readerPostsReadLimit, getMyReaderPosts)
+router.get('/me/:postId/tags', requireUser, readerPostsReadLimit, getMyReaderPostTags)
+router.get('/:postId/comments/pending', requireUser, readerPostsReadLimit, getPendingReaderPostComments)
+router.post('/:postId/comments/review', requireUser, readerPostsWriteLimit, reviewPendingReaderPostComments)
+router.get('/:postId', requireUser, readerPostsReadLimit, requirePrivateReaderPostAccess, getReaderPostById)
+router.post('/me', requireUser, readerPostsWriteLimit, createMyReaderPost)
+router.patch('/me/:postId', requireUser, readerPostsWriteLimit, updateMyReaderPost)
+router.delete('/me/:postId', requireUser, readerPostsWriteLimit, deleteMyReaderPost)
 
 router.get(
   '/:postId/reactions',
   requireUser,
-  readerPostReadLimit,
+  readerPostsReadLimit,
   requirePrivateReaderPostAccess,
   getReaderPostReactions
 )
@@ -133,14 +136,14 @@ router.get(
 router.get(
   '/:postId/reaction',
   requireUser,
-  readerPostReadLimit,
+  readerPostsReadLimit,
   requirePrivateReaderPostAccess,
   getReaderPostReactionStatus
 )
 router.post(
   '/:postId/reaction',
   requireUser,
-  readerPostWriteLimit,
+  readerPostsWriteLimit,
   requirePrivateReaderPostAccess,
   setReaderPostReaction
 )
@@ -148,35 +151,35 @@ router.post(
 router.get(
   '/:postId/comments',
   requireUser,
-  readerPostReadLimit,
+  readerPostsReadLimit,
   requirePrivateReaderPostAccess,
   getReaderPostComments
 )
 router.post(
   '/:postId/comments',
   requireUser,
-  readerPostWriteLimit,
+  readerPostsWriteLimit,
   requirePrivateReaderPostAccess,
   createReaderPostComment
 )
 router.patch(
   '/comments/:commentId',
   requireUser,
-  readerPostWriteLimit,
+  readerPostsWriteLimit,
   requirePrivateReaderPostAccess,
   updateOwnReaderPostComment
 )
 router.delete(
   '/comments/:commentId',
   requireUser,
-  readerPostWriteLimit,
+  readerPostsWriteLimit,
   requirePrivateReaderPostAccess,
   deleteOwnReaderPostComment
 )
 router.post(
   '/comments/:commentId/like',
   requireUser,
-  readerPostWriteLimit,
+  readerPostsWriteLimit,
   requirePrivateReaderPostAccess,
   toggleReaderPostCommentLike
 )
@@ -184,7 +187,7 @@ router.post(
 router.get(
   '/comments/:commentId/replies',
   requireUser,
-  readerPostReadLimit,
+  readerPostsReadLimit,
   requirePrivateReaderPostAccess,
   getReaderPostCommentReplies
 )
@@ -192,14 +195,14 @@ router.get(
 router.get(
   '/:postId/echoes',
   requireUser,
-  readerPostReadLimit,
+  readerPostsReadLimit,
   requirePrivateReaderPostAccess,
   getReaderPostEchoes
 )
 router.post(
   '/:postId/echoes',
   requireUser,
-  readerPostWriteLimit,
+  readerPostsWriteLimit,
   requirePrivateReaderPostAccess,
   createReaderPostEcho
 )
@@ -208,7 +211,7 @@ router.post(
 router.get(
   '/user/:username',
   requireUser,
-  readerPostReadLimit,
+  readerPostsReadLimit,
   getReaderPostsByUsername
 )
 
