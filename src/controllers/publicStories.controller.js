@@ -664,35 +664,6 @@ function normalizeSearch(value) {
   return String(value || '').trim().slice(0, 120)
 }
 
-if (search) {
-  const tagKeyword = search
-    .replace(/^#+/, '')
-    .replace(/[^\p{L}\p{M}\p{N}\p{Extended_Pictographic}\u200d #_-]/gu, ' ')
-    .trim()
-
-  const tagVariants = [
-    tagKeyword,
-    tagKeyword.toLocaleLowerCase(),
-    tagKeyword.toLocaleUpperCase(),
-    tagKeyword.replace(/\b[a-z]+/gi, (word) =>
-      word[0].toUpperCase() + word.slice(1).toLowerCase()
-    ),
-  ]
-
-  const tagValues = [...new Set(tagVariants.flatMap((tag) => [tag, `#${tag}`]))]
-    .filter(Boolean)
-    .map((tag) => `"${tag}"`)
-    .join(',')
-
-  const smartFilter = makeSmartSearchOrFilter(['title', 'description', 'main_genre'], search, 6)
-  const filters = smartFilter ? [smartFilter] : []
-  if (tagValues) filters.push(`tags.ov.{${tagValues}}`)
-  nextQuery = nextQuery.or(
-    filters.length ? filters.join(',') : 'id.eq.00000000-0000-0000-0000-000000000000'
-  )
-}
-
-
 function isDiscoverMoreSort(sort) {
   return ['discover_more', 'discover-more', 'discover', 'hidden_gems', 'hidden-gems'].includes(String(sort || '').trim().toLowerCase())
 }
