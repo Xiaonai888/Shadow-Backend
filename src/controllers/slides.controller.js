@@ -3,6 +3,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
+import { randomUUID } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
 import { bumpContentVersions } from '../services/contentVersion.service.js'
 import { assertR2MediaReference } from '../services/mediaStoragePolicy.service.js'
@@ -154,9 +155,10 @@ function extractStoragePathFromPublicUrl(publicUrl) {
   const encodedPath = publicUrl.slice(markerIndex + marker.length)
 
   try {
-    return decodeURIComponent(encodedPath)
+    const key = decodeURIComponent(encodedPath)
+    return /^slides\/[a-zA-Z0-9/_\-.]+$/.test(key) && !key.includes('..') ? key : null
   } catch {
-    return encodedPath
+    return null
   }
 }
 
@@ -167,7 +169,7 @@ function extractR2ObjectKeyFromPublicUrl(publicUrl) {
   if (!publicBaseUrl || !publicUrl.startsWith(`${publicBaseUrl}/`)) return null
 
   const objectKey = publicUrl.slice(publicBaseUrl.length + 1)
-  return objectKey || null
+  return /^slides\/[a-zA-Z0-9/_\-.]+$/.test(objectKey) && !objectKey.includes('..') ? objectKey : null
 }
 
 function getDirectSlideImageUrl(value) {
@@ -223,7 +225,7 @@ async function uploadImage(file) {
   const originalName = file.originalname || 'slide-image'
   const fileExt = originalName.includes('.') ? originalName.split('.').pop() : 'jpg'
   const safeExt = fileExt.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
-  const fileName = `slides/${Date.now()}-${Math.random().toString(36).slice(2)}.${safeExt}`
+  const fileName = `slides/${Date.now()}-${randomUUID()}.${safeExt}`
 
   await getR2Client().send(
     new PutObjectCommand({
