@@ -1,13 +1,25 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
-import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 
 const router = express.Router()
 const PAGE_SIZE = 10
 const RETENTION_DAYS = 365
 const DAY_MS = 86400000
 const totalsCache = new Map()
+const readingSummaryRateLimit = rateLimit({
+  windowMs: 60000,
+  limit: 60,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || 'unauthenticated'),
+  message: {
+    ok: false,
+    code: 'READING_SUMMARY_RATE_LIMIT',
+    message: 'Too many reading summary requests. Please try again shortly.',
+  },
+})
 const dayFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'Asia/Phnom_Penh',
   year: 'numeric',
@@ -50,12 +62,7 @@ async function getTotals(userId, firstDay, today) {
   return totals
 }
 
-router.get('/', requireUser, createRateLimit({
-  key: 'reader-reading-summary',
-  windowMs: 60000,
-  max: 60,
-  identity: (req) => req.user?.user_id,
-}), async (req, res) => {
+router.get('/', requireUser, readingSummaryRateLimit, async (req, res) => {
   res.set('Cache-Control', 'private, no-store')
   const limit = req.query.limit === undefined ? PAGE_SIZE : Number(req.query.limit)
   if (!Number.isInteger(limit) || limit < 1 || limit > PAGE_SIZE) {
