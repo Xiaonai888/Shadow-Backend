@@ -357,6 +357,113 @@ export async function getPublicAuthorPage(req, res) {
   }
 }
 
+export async function getAuthorPageWorksPaginated(req, res) {
+  try {
+    const pageUsername = normalizePageUsername(req.params.pageUsername)
+    const limit = Math.min(10, Math.max(1, Number(req.query.limit) || 10))
+    const beforeId = String(req.query.before_id || '').trim()
+    const includeTotal = req.query.include_total === '1' && !beforeId
+
+    if (!pageUsername) {
+      return res.status(400).json({ ok: false, message: 'Page username is required' })
+    }
+
+    if (beforeId && !/^[a-zA-Z0-9_-]{1,100}$/.test(beforeId)) {
+      return res.status(400).json({ ok: false, message: 'Invalid pagination cursor' })
+    }
+
+    const { data: authorPage, error: authorError } = await supabase
+      .from('author_pages')
+      .select('id, user_id')
+      .eq('page_username', pageUsername)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (authorError) throw authorError
+    if (!authorPage) {
+      return res.status(404).json({ ok: false, message: 'Author page not found' })
+    }
+
+    const userId = getOptionalUserId(req)
+    const ageAccess = await getReaderAgeAccess(req)
+    const canViewAdultStories = Boolean(
+      (userId && String(userId) === String(authorPage.user_id)) ||
+      ageAccess.can_view_adult_stories
+    )
+
+    let anchor = null
+    if (beforeId) {
+      let anchorQuery = supabase
+        .from('stories')
+        .select('id, updated_at')
+        .eq('id', beforeId)
+        .eq('author_id', authorPage.id)
+        .eq('status', 'published')
+        .is('deleted_at', null)
+
+      anchorQuery = applyAdultStoryVisibility(anchorQuery, {
+        can_view_adult_stories: canViewAdultStories,
+      })
+
+      const { data, error } = await anchorQuery.maybeSingle()
+      if (error) throw error
+      if (!data?.updated_at || Number.isNaN(new Date(data.updated_at).getTime())) {
+        return res.status(400).json({ ok: false, message: 'Pagination cursor no longer available' })
+      }
+      anchor = data
+    }
+
+    let worksQuery = supabase
+      .from('stories')
+      .select(
+        'id, author_id, user_id, title, story_language, main_genre, story_status, tags, description, is_adult, cover_url, status, access_type, total_episodes, total_views, total_likes, total_comments, created_at, updated_at',
+        includeTotal ? { count: 'exact' } : {}
+      )
+      .eq('author_id', authorPage.id)
+      .eq('status', 'published')
+      .is('deleted_at', null)
+
+    worksQuery = applyAdultStoryVisibility(worksQuery, {
+      can_view_adult_stories: canViewAdultStories,
+    })
+
+    if (anchor) {
+      const timestamp = new Date(anchor.updated_at).toISOString()
+      worksQuery = worksQuery.or(
+        `updated_at.lt.${timestamp},and(updated_at.eq.${timestamp},id.lt.${beforeId})`
+      )
+    }
+
+    const { data: rows, error, count } = await worksQuery
+      .order('updated_at', { ascending: false, nullsFirst: false })
+      .order('id', { ascending: false })
+      .limit(limit + 1)
+
+    if (error) throw error
+
+    const visibleRows = (rows || []).slice(0, limit)
+    const hasMore = (rows || []).length > limit
+    const lastWork = visibleRows[visibleRows.length - 1]
+
+    res.set('Cache-Control', 'private, no-store')
+    return res.status(200).json({
+      ok: true,
+      works: visibleRows.map(publicAuthorWork),
+      has_more: hasMore,
+      next_before_id: hasMore ? lastWork?.id || null : null,
+      total_count: includeTotal ? Number(count || 0) : null,
+    })
+  } catch (error) {
+    console.error('GET AUTHOR PAGE WORKS PAGINATED ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load author works',
+      error: error.message,
+    })
+  }
+}
+
+
 export async function getTopAuthorPages(req, res) {
   try {
     const rawLimit = Number(req.query.limit || 20)
