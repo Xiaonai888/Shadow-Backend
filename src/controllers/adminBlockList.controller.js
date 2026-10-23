@@ -110,13 +110,10 @@ export async function getBlockedWords(req, res) {
       .from('blocked_words')
       .select('*', { count: 'exact' })
 
-    if (search) {
-      const escapedSearch = search
-  .replace(/\\/g, '\\\\\\\\')
-  .replace(/"/g, '\\"')
-  .replace(/[%_]/g, '\\$&')
-const searchPattern = `"%${escapedSearch}%"`
-query = query.or(`word.ilike.${searchPattern},normalized_word.ilike.${searchPattern},category.ilike.${searchPattern}`)
+        if (search) {
+      const escapedSearch = search.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')
+      const searchPattern = JSON.stringify(`%${escapedSearch}%`)
+      query = query.or(`word.ilike.${searchPattern},normalized_word.ilike.${searchPattern},category.ilike.${searchPattern}`)
     }
 
     if (category !== 'all') query = query.eq('category', category)
