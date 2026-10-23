@@ -1,4 +1,5 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
@@ -17,6 +18,40 @@ import {
 import path from 'node:path'
 
 const router = express.Router()
+const supportScreenshotLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 180,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+})
+const supportReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || req.user?.session_id || 'unauthenticated'),
+})
+const supportCreateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || req.user?.session_id || 'unauthenticated'),
+})
+const supportAdminReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.admin?.admin_id || req.admin?.id || req.admin?.user_id || req.admin?.sub || 'unauthenticated'),
+})
+const supportAdminWriteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 30,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.admin?.admin_id || req.admin?.id || req.admin?.user_id || req.admin?.sub || 'unauthenticated'),
+})
 const allowedTypes = new Set([
   'image/jpeg',
   'image/png',
@@ -86,12 +121,14 @@ function uploadScreenshot(req, res, next) {
 
 router.get(
   '/screenshot/:requestId',
+  supportScreenshotLimit,
   streamSupportScreenshot
 )
 
 router.post(
   '/requests',
   requireUser,
+  supportCreateLimit,
   uploadScreenshot,
   cleanupTempFile,
   createSupportRequest
@@ -100,36 +137,42 @@ router.post(
 router.get(
   '/requests',
   requireUser,
+  supportReadLimit,
   listMySupportRequests
 )
 
 router.get(
   '/requests/:requestId',
   requireUser,
+  supportReadLimit,
   getMySupportRequest
 )
 
 router.get(
   '/admin/requests',
   requireAdmin,
+  supportAdminReadLimit,
   listAdminSupportRequests
 )
 
 router.get(
   '/admin/requests/:requestId',
   requireAdmin,
+  supportAdminReadLimit,
   getAdminSupportRequest
 )
 
 router.patch(
   '/admin/requests/:requestId',
   requireAdmin,
+  supportAdminWriteLimit,
   updateAdminSupportRequest
 )
 
 router.delete(
   '/admin/requests/:requestId',
   requireAdmin,
+  supportAdminWriteLimit,
   deleteAdminSupportRequest
 )
 
