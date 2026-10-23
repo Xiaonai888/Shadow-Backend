@@ -42,6 +42,13 @@ const adminReviewWriteLimit = rateLimit({
   },
 })
 
+router.use(rateLimit({
+  windowMs: 60000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+}))
+
 router.get('/', requireAdmin, adminReviewReadLimit, getAdminAuthorReviews)
 router.patch('/:reviewId', requireAdmin, adminReviewWriteLimit, moderateAdminAuthorReview)
 
