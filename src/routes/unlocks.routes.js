@@ -54,7 +54,7 @@ const unlockWriteLimit = rateLimit({
     code: 'UNLOCK_RATE_LIMIT',
     message: 'Too many unlock requests. Please try again shortly.',
   },
-}).
+})
 
   router.use(rateLimit({
   windowMs: 60000, limit: 1200, standardHeaders: 'draft-8', legacyHeaders: false,
