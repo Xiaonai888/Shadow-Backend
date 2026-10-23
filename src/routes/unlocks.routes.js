@@ -1,4 +1,5 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import {
   getWriterWednesdayStatus,
   getEpisodeUnlockStatus,
@@ -42,20 +43,32 @@ function logReadGateFailure(req, res, next) {
 }
 
 const router = express.Router()
+const unlockWriteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || 'unknown'),
+  message: {
+    ok: false,
+    code: 'UNLOCK_RATE_LIMIT',
+    message: 'Too many unlock requests. Please try again shortly.',
+  },
+})
 
 router.get('/rules', getPlatformUnlockRules)
 router.get('/events/writer-wednesday', getWriterWednesdayStatus)
 router.get('/admin/rewarded-ad-analytics', requireAdmin, getAdminRewardedAdAnalytics)
 router.get('/stories/:storyId/episodes/:episodeId/status', requireUser, loadReaderPremiumTier, getEpisodeUnlockStatus)
 router.get('/stories/:storyId/episodes/:episodeId/read-gate', logReadGateFailure, requireUser, loadReaderPremiumTier, getEpisodeReadGate)
-router.post('/stories/:storyId/episodes/:episodeId/diamond', requireUser, loadReaderPremiumTier, unlockEpisodeWithDiamonds)
-router.post('/stories/:storyId/episodes/:episodeId/package', requireUser, loadReaderPremiumTier, unlockEpisodePackageWithDiamonds)
-router.post('/stories/:storyId/special-promotion', requireUser, unlockDiscoverSpecialPromotionWithDiamonds)
-router.post('/stories/:storyId/episodes/:episodeId/gem', requireUser, loadReaderPremiumTier, unlockEpisodeWithGems)
-router.post('/stories/:storyId/episodes/:episodeId/voucher', requireUser, loadReaderPremiumTier, unlockEpisodeWithVoucher)
-router.post('/stories/:storyId/episodes/:episodeId/story-card', requireUser, loadReaderPremiumTier, unlockEpisodeWithStoryCard)
-router.post('/stories/:storyId/episodes/:episodeId/ad/challenge', requireUser, createRewardedAdChallenge)
-router.post('/stories/:storyId/episodes/:episodeId/ad/event', requireUser, trackRewardedAdEvent)
-router.post('/stories/:storyId/episodes/:episodeId/ad', requireUser, loadReaderPremiumTier, consumeRewardedAdChallenge, unlockEpisodeWithAd)
+router.post('/stories/:storyId/episodes/:episodeId/diamond', requireUser, unlockWriteLimit, loadReaderPremiumTier, unlockEpisodeWithDiamonds)
+router.post('/stories/:storyId/episodes/:episodeId/package', requireUser, unlockWriteLimit, loadReaderPremiumTier, unlockEpisodePackageWithDiamonds)
+router.post('/stories/:storyId/special-promotion', requireUser, unlockWriteLimit, unlockDiscoverSpecialPromotionWithDiamonds)
+router.post('/stories/:storyId/episodes/:episodeId/gem', requireUser, unlockWriteLimit, loadReaderPremiumTier, unlockEpisodeWithGems)
+router.post('/stories/:storyId/episodes/:episodeId/voucher', requireUser, unlockWriteLimit, loadReaderPremiumTier, unlockEpisodeWithVoucher)
+router.post('/stories/:storyId/episodes/:episodeId/story-card', requireUser, unlockWriteLimit, loadReaderPremiumTier, unlockEpisodeWithStoryCard)
+router.post('/stories/:storyId/episodes/:episodeId/ad/challenge', requireUser, unlockWriteLimit, createRewardedAdChallenge)
+router.post('/stories/:storyId/episodes/:episodeId/ad/event', requireUser, unlockWriteLimit, trackRewardedAdEvent)
+router.post('/stories/:storyId/episodes/:episodeId/ad', requireUser, unlockWriteLimit, loadReaderPremiumTier, consumeRewardedAdChallenge, unlockEpisodeWithAd)
 
 export default router
