@@ -1,4 +1,7 @@
+import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { supabase } from '../config/supabase.js'
 import { deletePrivatePdfFromR2 } from '../services/privatePdfStorage.service.js'
 
@@ -14,9 +17,22 @@ export async function validateAuthorStorePdf(req, res, next) {
       return res.status(400).json({ ok: false, code: 'PDF_FILE_EMPTY', message: 'The PDF file is empty' })
     }
 
-    const file = await open(req.file.path, 'r')
+    const fileName = req.file.filename
+    if (typeof fileName !== 'string' || !/^[a-f0-9]{32}$/i.test(fileName)) {
+      return res.status(400).json({ ok: false, code: 'PDF_UPLOAD_PATH_INVALID', message: 'Invalid temporary PDF file' })
+    }
+    const sourcePath = path.join(os.tmpdir(), fileName)
+    if (req.file.path !== sourcePath) {
+      return res.status(400).json({ ok: false, code: 'PDF_UPLOAD_PATH_INVALID', message: 'Invalid temporary PDF file' })
+    }
+
+    const file = await open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW)
     let header
     try {
+      const details = await file.stat()
+      if (!details.isFile()) {
+        return res.status(400).json({ ok: false, code: 'PDF_UPLOAD_PATH_INVALID', message: 'Invalid temporary PDF file' })
+      }
       const buffer = Buffer.alloc(1024)
       const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
       header = buffer.subarray(0, bytesRead).toString('latin1')
