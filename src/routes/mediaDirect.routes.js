@@ -20,6 +20,12 @@ import { createPresignedPutUrl } from '../services/storyVideoDirectUpload.servic
 import { rateLimit } from 'express-rate-limit'
 
 const router = express.Router()
+router.use(rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+}))
 const mediaDirectRateLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 300,
