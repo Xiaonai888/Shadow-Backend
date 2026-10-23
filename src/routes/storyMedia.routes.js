@@ -12,6 +12,7 @@ import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import express from 'express'
 import multer from 'multer'
+import { rateLimit } from 'express-rate-limit'
 import { uploadStoryImage } from '../controllers/storyMedia.controller.js'
 import {
   uploadMangaPageImage,
@@ -31,6 +32,32 @@ const router = express.Router()
 const NOVEL_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 const MANGA_PAGE_MAX_BYTES = 5 * 1024 * 1024
 
+const storyMediaUploadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 240,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || 'unknown'),
+  message: {
+    ok: false,
+    code: 'STORY_MEDIA_RATE_LIMIT',
+    message: 'Too many media requests. Please retry shortly.',
+  },
+})
+
+const storyMediaStatusLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 900,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || 'unknown'),
+  message: {
+    ok: false,
+    code: 'STORY_MEDIA_STATUS_RATE_LIMIT',
+    message: 'Too many status requests. Please retry shortly.',
+  },
+})
+
 const upload = multer({
   dest: os.tmpdir(),
   limits: {
@@ -44,8 +71,19 @@ function cleanHeader(value, maxLength = 300) {
 }
 
 async function removeTempFile(req) {
-  if (!req.file?.path) return
-  await unlink(req.file.path).catch(() => {})
+  const file = req.file
+  if (typeof file?.path !== 'string') return
+
+  const name = typeof file.filename === 'string'
+    ? file.filename
+    : path.basename(file.path)
+  const isMulter = typeof file.filename === 'string' && /^[a-f0-9]{32}$/i.test(name)
+  const isRaw = file.filename == null && /^story-raw-(?:novel|manga)-\d{13}-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(name)
+  if (!isMulter && !isRaw) return
+
+  const expectedPath = path.join(os.tmpdir(), name)
+  if (file.path !== expectedPath) return
+  await unlink(expectedPath).catch(() => {})
 }
 
 function cleanupTempFile(req, res, next) {
@@ -237,6 +275,7 @@ function uploadStoryImageFile(req, res, next) {
 router.post(
   '/upload-novel-image',
   requireUser,
+  storyMediaUploadLimit,
   stageRawImageFile('novel', NOVEL_IMAGE_MAX_BYTES),
   cleanupTempFile,
   uploadNovelEpisodeImage
@@ -245,6 +284,7 @@ router.post(
 router.post(
   '/upload-manga-page',
   requireUser,
+  storyMediaUploadLimit,
   guardMangaUploadMemory,
   stageRawImageFile('manga', MANGA_PAGE_MAX_BYTES),
   cleanupTempFile,
@@ -254,6 +294,7 @@ router.post(
 router.post(
   '/upload-manga-page-v2',
   requireUser,
+  storyMediaUploadLimit,
   guardMangaTempUploadMemory,
   stageMangaV2UploadToR2,
   uploadMangaPageImageV2
@@ -262,18 +303,21 @@ router.post(
 router.get(
   '/manga-page-v2/jobs/:jobId',
   requireUser,
+  storyMediaStatusLimit,
   getMangaPageImageV2JobStatus
 )
 
 router.post(
   '/cleanup-manga-page-v2',
   requireUser,
+  storyMediaUploadLimit,
   cleanupTemporaryMangaPartsV2
 )
 
 router.post(
   '/upload-image',
   requireUser,
+  storyMediaUploadLimit,
   uploadStoryImageFile,
   cleanupTempFile,
   uploadStoryImage
