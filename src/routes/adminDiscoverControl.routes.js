@@ -44,6 +44,13 @@ const adminDiscoverWriteLimit = rateLimit({
   },
 })
 
+router.use(rateLimit({
+  windowMs: 60000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+}))
+
 router.use(requireAdmin)
 
 router.get('/authors', adminDiscoverReadLimit, getDiscoverControlAuthors)
