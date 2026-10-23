@@ -216,7 +216,12 @@ export async function getAdminPaymentRecoveryHistory(req, res) {
       .order('created_at', { ascending: false })
       .range((page - 1) * limit, page * limit)
     if (error) throw error
-    return res.status(200).json({ ok: true, items: (data || []).slice(0, limit), page, has_next: (data || []).length > limit, has_prev: page > 1 })
+    const rows = (data || []).slice(0, limit)
+const ids = [...new Set(rows.map(row => row.user_id).filter(Boolean))]
+const lookup = ids.length ? await supabase.from('users').select('id,name,username').in('id', ids) : { data: [] }
+const names = new Map((lookup.data || []).map(user => [user.id, String(user.name || '').trim() || String(user.username || '').trim()]))
+const items = rows.map(row => ({ ...row, user_name: names.get(row.user_id) || null }))
+return res.status(200).json({ ok: true, items, page, has_next: (data || []).length > limit, has_prev: page > 1 })
   } catch (error) {
     console.error('ADMIN PAYMENT RECOVERY HISTORY ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Unable to load recovery history. Install the SQL setup first.' })
