@@ -1,4 +1,5 @@
 import express from 'express'
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit'
 import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
@@ -21,6 +22,64 @@ import {
 import path from 'node:path'
 
 const router = express.Router()
+
+const taskCenterPublicLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'TASK_CENTER_PUBLIC_RATE_LIMIT',
+    message: 'Too many Task Center requests. Please retry shortly.',
+  },
+})
+
+const adminTaskCenterIdentity = (req) => String(
+  req.admin?.admin_id ||
+  req.admin?.id ||
+  req.admin?.sub ||
+  req.admin?.email ||
+  ipKeyGenerator(req.ip)
+)
+
+const adminTaskCenterReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 240,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: adminTaskCenterIdentity,
+  message: {
+    ok: false,
+    code: 'ADMIN_TASK_CENTER_READ_RATE_LIMIT',
+    message: 'Too many Task Center requests. Please retry shortly.',
+  },
+})
+
+const adminTaskCenterWriteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: adminTaskCenterIdentity,
+  message: {
+    ok: false,
+    code: 'ADMIN_TASK_CENTER_WRITE_RATE_LIMIT',
+    message: 'Too many Task Center changes. Please retry shortly.',
+  },
+})
+
+const taskCenterAutoRunLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 30,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'TASK_CENTER_AUTO_RUN_RATE_LIMIT',
+    message: 'Too many Task Center rotation requests. Please retry shortly.',
+  },
+})
 
 const upload = multer({
   dest: os.tmpdir(),
@@ -77,22 +136,23 @@ function uploadTaskCenterCover(req, res, next) {
   })
 }
 
-router.get('/public/version', getPublicTaskCenterVersion)
-router.get('/public', getPublicTaskCenterSettings)
-router.get('/admin', requireAdmin, getAdminTaskCenterSettings)
-router.get('/admin/reader-activity', requireAdmin, getAdminReaderActivity)
-router.get('/admin/reading-missions', requireAdmin, getAdminReadingMissions)
-router.post('/admin/reading-missions', requireAdmin, createAdminReadingMission)
-router.put('/admin/reading-missions/:missionId', requireAdmin, updateAdminReadingMission)
-router.delete('/admin/reading-missions/:missionId', requireAdmin, deleteAdminReadingMission)
-router.put('/admin/reading-task', requireAdmin, updateAdminReadingTask)
-router.put('/admin/reading-mode', requireAdmin, updateAdminReadingMissionMode)
-router.post('/admin/auto-rotate', requireAdmin, rotateAdminTaskCenterAutoStories)
-router.post('/auto-rotate/run', runTaskCenterAutoRotation)
+router.get('/public/version', taskCenterPublicLimit, getPublicTaskCenterVersion)
+router.get('/public', taskCenterPublicLimit, getPublicTaskCenterSettings)
+router.get('/admin', requireAdmin, adminTaskCenterReadLimit, getAdminTaskCenterSettings)
+router.get('/admin/reader-activity', requireAdmin, adminTaskCenterReadLimit, getAdminReaderActivity)
+router.get('/admin/reading-missions', requireAdmin, adminTaskCenterReadLimit, getAdminReadingMissions)
+router.post('/admin/reading-missions', requireAdmin, adminTaskCenterWriteLimit, createAdminReadingMission)
+router.put('/admin/reading-missions/:missionId', requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingMission)
+router.delete('/admin/reading-missions/:missionId', requireAdmin, adminTaskCenterWriteLimit, deleteAdminReadingMission)
+router.put('/admin/reading-task', requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingTask)
+router.put('/admin/reading-mode', requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingMissionMode)
+router.post('/admin/auto-rotate', requireAdmin, adminTaskCenterWriteLimit, rotateAdminTaskCenterAutoStories)
+router.post('/auto-rotate/run', taskCenterAutoRunLimit, runTaskCenterAutoRotation)
 
 router.put(
   '/admin/cover',
   requireAdmin,
+  adminTaskCenterWriteLimit,
   uploadTaskCenterCover,
   cleanupTempFile,
   updateAdminTaskCenterCover
