@@ -90,6 +90,31 @@ const readerEmailChangeConfirmLimit = createRateLimit({
   message: 'Too many email verification attempts. Please wait and try again.',
 })
 
+const readerAuthSafetyLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1000,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'READER_AUTH_RATE_LIMIT',
+    message: 'Too many account requests. Please wait before trying again.',
+  },
+})
+
+const readerProfileRouteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 240,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: (req) => `reader:${req.user.user_id}`,
+  message: {
+    ok: false,
+    code: 'READER_PROFILE_RATE_LIMIT',
+    message: 'Too many profile requests. Please wait before trying again.',
+  },
+})
+
 const readerProtectedRouteLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 180,
@@ -116,11 +141,11 @@ function invalidatePublicStoriesAfterMutation(req, res, next) {
   next()
 }
 
-router.post('/register', readerRegisterLimit, verifyTurnstile, registerUser)
-router.post('/login', readerLoginLimit, loginUser)
-router.post('/login/verify', readerLoginLimit, verifyReaderLogin)
-router.post('/forgot-password', readerPasswordRequestLimit, requestPasswordReset)
-router.post('/reset-password', readerPasswordResetLimit, resetPassword)
+router.post('/register', readerRegisterLimit, readerAuthSafetyLimit, verifyTurnstile, registerUser)
+router.post('/login', readerLoginLimit, readerAuthSafetyLimit, loginUser)
+router.post('/login/verify', readerLoginLimit, readerAuthSafetyLimit, verifyReaderLogin)
+router.post('/forgot-password', readerPasswordRequestLimit, readerAuthSafetyLimit, requestPasswordReset)
+router.post('/reset-password', readerPasswordResetLimit, readerAuthSafetyLimit, resetPassword)
 router.use('/devices', readerDeviceAccessRoutes)
 router.use('/security', readerSecurityRoutes)
 router.use('/me/hidden-words', readerHiddenWordsRoutes)
@@ -129,20 +154,21 @@ router.use('/me/comment-settings', readerCommentSettingsRoutes)
 router.use('/me/messages-replies', readerMessagesRepliesSettingsRoutes)
 router.use('/me/restriction-settings', readerRestrictionSettingsRoutes)
 router.use('/me/restricted-readers', readerRestrictionsRoutes)
-router.get('/me', requireUser, getCurrentUser)
-router.get('/me/privacy', requireUser, getReaderAccountPrivacy)
-router.put('/me/privacy', requireUser, updateReaderAccountPrivacy)
-router.get('/me/summary', requireUser, getMeSummary)
-router.get('/me/block-targets/search', requireUser, searchReaderBlockTargets)
-router.get('/me/blocked', requireUser, getMyReaderBlockedList)
-router.post('/me/blocked/readers/:readerId', requireUser, blockReaderAccount)
-router.delete('/me/blocked/readers/:readerId', requireUser, unblockReaderAccount)
-router.get('/suggestions', requireUser, getUserSuggestions)
-router.put('/avatar', requireUser, updateUserAvatar)
-router.put('/profile', requireUser, updateUserProfile)
+router.get('/me', requireUser, readerProfileRouteLimit, getCurrentUser)
+router.get('/me/privacy', requireUser, readerProfileRouteLimit, getReaderAccountPrivacy)
+router.put('/me/privacy', requireUser, readerProfileRouteLimit, updateReaderAccountPrivacy)
+router.get('/me/summary', requireUser, readerProfileRouteLimit, getMeSummary)
+router.get('/me/block-targets/search', requireUser, readerProfileRouteLimit, searchReaderBlockTargets)
+router.get('/me/blocked', requireUser, readerProfileRouteLimit, getMyReaderBlockedList)
+router.post('/me/blocked/readers/:readerId', requireUser, readerProfileRouteLimit, blockReaderAccount)
+router.delete('/me/blocked/readers/:readerId', requireUser, readerProfileRouteLimit, unblockReaderAccount)
+router.get('/suggestions', requireUser, readerProfileRouteLimit, getUserSuggestions)
+router.put('/avatar', requireUser, readerProfileRouteLimit, updateUserAvatar)
+router.put('/profile', requireUser, readerProfileRouteLimit, updateUserProfile)
 router.put(
   '/date-of-birth',
   requireUser,
+  readerProfileRouteLimit,
   invalidatePublicStoriesAfterMutation,
   updateDateOfBirth
 )
