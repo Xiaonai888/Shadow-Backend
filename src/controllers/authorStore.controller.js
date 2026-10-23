@@ -1778,6 +1778,22 @@ export async function getPublicAuthorStoreProducts(req, res) {
       return res.status(404).json({ ok: false, message: 'Author page not found' })
     }
 
+    if (req.query.product_id !== undefined) {
+      const productId = cleanText(req.query.product_id)
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(productId)) {
+        return res.status(400).json({ ok: false, message: 'Invalid product ID' })
+      }
+      const { data, error } = await supabase
+        .from('author_store_products')
+        .select('*')
+        .eq('id', productId)
+        .eq('author_page_id', authorPage.id)
+        .eq('status', 'active')
+        .maybeSingle()
+      if (error) throw error
+      return res.status(200).json({ ok: true, products: data ? [publicProduct(data)] : [] })
+    }
+
     const paginated = req.query.page !== undefined || req.query.limit !== undefined
     const pageRaw = Number(req.query.page ?? 1)
     const limitRaw = Number(req.query.limit ?? 9)
