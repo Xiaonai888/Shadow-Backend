@@ -8,6 +8,7 @@ import {
   consumeReaderEmailChallenge,
   hashReaderPin,
 } from '../services/readerSecurity.service.js'
+import { rateLimit } from 'express-rate-limit'
 
 const router = express.Router()
 const REQUEST_PURPOSES = new Set([
@@ -49,8 +50,15 @@ function handleError(error, res) {
 }
 
 router.use(requireUser)
+const securityReadLimit = rateLimit({
+  windowMs: 60000,
+  limit: 180,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user.user_id),
+})
 
-router.get('/', async (req, res) => {
+router.get('/', securityReadLimit, async (req, res) => {
   try {
     const settings = await getReaderSecuritySettings(req.user.user_id)
     return res.status(200).json({
