@@ -7,6 +7,12 @@ import {
 import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
+router.use(rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+}))
 const progressRateLimit = rateLimit({
   windowMs: 60000,
   limit: 120,
