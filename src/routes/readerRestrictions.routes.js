@@ -1,6 +1,6 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import { requireUser } from '../middleware/user.middleware.js'
-import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import {
   listMyRestrictedReaders,
   searchReadersForRestriction,
@@ -9,17 +9,36 @@ import {
 } from '../controllers/readerRestrictions.controller.js'
 
 const router = express.Router()
-const readLimit = createRateLimit({
-  key: 'reader-restrictions-read',
+
+const restrictionLimitKey = (req) => {
+  const readerId = String(req.user?.user_id || req.user?.id || 'unauthenticated')
+  return `${readerId}:${req.method}:${req.route?.path || req.path}`
+}
+
+const readLimit = rateLimit({
   windowMs: 60000,
-  max: 60,
-  identity: (req) => req.user?.user_id,
+  limit: 60,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: restrictionLimitKey,
+  message: {
+    ok: false,
+    code: 'READER_RESTRICTIONS_READ_RATE_LIMIT',
+    message: 'Too many restriction requests. Please try again shortly.',
+  },
 })
-const writeLimit = createRateLimit({
-  key: 'reader-restrictions-write',
+
+const writeLimit = rateLimit({
   windowMs: 60000,
-  max: 20,
-  identity: (req) => req.user?.user_id,
+  limit: 20,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: restrictionLimitKey,
+  message: {
+    ok: false,
+    code: 'READER_RESTRICTIONS_WRITE_RATE_LIMIT',
+    message: 'Too many restriction updates. Please try again shortly.',
+  },
 })
 
 router.use(requireUser)
