@@ -12,7 +12,8 @@ const ACTIVE_ORDER_STATUSES = new Set(['confirmed', 'preparing', 'shipped', 'com
 const FULL_REFUND_ORDER_STATUSES = new Set(['cancelled', 'refunded'])
 const FULL_REFUND_PAYMENT_STATUSES = new Set(['refunded'])
 const SYNC_BATCH_SIZE = 200
-const MAX_SYNC_ORDERS = 10000
+const SYNC_ORDER_READ_SIZE = 200
+const SYNC_TRACKING_READ_SIZE = 100
 const TIME_ZONE_OFFSET_MINUTES = 420
 
 function cleanText(value) {
@@ -303,18 +304,37 @@ async function getIntegration(authorPageId) {
   return data || null
 }
 
-async function getTrackingMap(spreadsheetId) {
-  const { data, error } = await supabase
-    .from('author_store_sales_report_sync_items')
-    .select('*')
-    .eq('spreadsheet_id', spreadsheetId)
-    .limit(10000)
+async function getTrackingMap(spreadsheetId, orders) {
+  const itemIds = new Set()
+  for (const order of orders) {
+    const items = Array.isArray(order.items)
+      ? order.items
+      : Array.isArray(order.order_items)
+        ? order.order_items
+        : []
+    for (const item of items) {
+      const itemId = cleanText(item?.id)
+      if (itemId) itemIds.add(itemId)
+    }
+  }
 
-  if (error) throw error
+  const tracking = new Map()
+  const ids = [...itemIds]
+  for (let offset = 0; offset < ids.length; offset += SYNC_TRACKING_READ_SIZE) {
+    const { data, error } = await supabase
+      .from('author_store_sales_report_sync_items')
+      .select('order_item_id,sync_status,payload_hash')
+      .eq('spreadsheet_id', spreadsheetId)
+      .in('order_item_id', ids.slice(offset, offset + SYNC_TRACKING_READ_SIZE))
 
-  return new Map(
-    (data || []).map((item) => [cleanText(item.order_item_id), item])
-  )
+    if (error) throw error
+    for (const row of data || []) {
+      const itemId = cleanText(row.order_item_id)
+      if (itemId) tracking.set(itemId, row)
+    }
+  }
+
+  return tracking
 }
 
 function isRevenueOrder(order) {
@@ -543,16 +563,34 @@ async function updateIntegrationSyncState(integrationId, payload) {
   if (error) throw error
 }
 
-async function loadOrdersForSync(authorPageId) {
-  const { data, error } = await supabase
-    .from('author_store_orders')
-    .select('*, items:author_store_order_items(*)')
-    .eq('author_page_id', authorPageId)
-    .order('updated_at', { ascending: true })
-    .limit(MAX_SYNC_ORDERS)
+async function loadOrdersForSync(authorPageId, onBatch) {
+  let lastId = null
 
-  if (error) throw error
-  return data || []
+  for (;;) {
+    let query = supabase
+      .from('author_store_orders')
+      .select('*, items:author_store_order_items(*)')
+      .eq('author_page_id', authorPageId)
+      .order('id', { ascending: true })
+      .limit(SYNC_ORDER_READ_SIZE)
+
+    if (lastId !== null) query = query.gt('id', lastId)
+
+    const { data, error } = await query
+    if (error) throw error
+
+    const orders = Array.isArray(data) ? data : []
+    if (!orders.length) break
+
+    const nextId = cleanText(orders[orders.length - 1]?.id)
+    if (!nextId || nextId === lastId) {
+      throw new Error('Invalid Sales Reports order pagination cursor')
+    }
+
+    await onBatch(orders)
+    lastId = nextId
+    if (orders.length < SYNC_ORDER_READ_SIZE) break
+  }
 }
 
 function buildRowsForSync(orders, trackingMap) {
@@ -628,12 +666,9 @@ async function markTrackingRows(integration, authorPageId, rows, status, errorMe
 
 async function syncIntegration(integration, authorPage) {
   const authorPageId = authorPage.id
-  const trackingMap = await getTrackingMap(integration.spreadsheet_id)
-  const orders = await loadOrdersForSync(authorPageId)
-  const rows = buildRowsForSync(orders, trackingMap)
   const totals = {
-    found: rows.length,
-    attempted: rows.length,
+    found: 0,
+    attempted: 0,
     appended: 0,
     updated: 0,
     moved: 0,
@@ -642,69 +677,42 @@ async function syncIntegration(integration, authorPage) {
     skipped: 0,
   }
 
-  if (!rows.length) {
-    const syncedAt = new Date().toISOString()
+  await loadOrdersForSync(authorPageId, async (orders) => {
+    const trackingMap = await getTrackingMap(integration.spreadsheet_id, orders)
+    const rows = buildRowsForSync(orders, trackingMap)
+    totals.found += rows.length
+    totals.attempted += rows.length
 
-    await updateIntegrationSyncState(integration.id, {
-      connection_status: 'connected',
-      last_synced_at: syncedAt,
-      last_sync_error: null,
-    })
+    for (const batch of chunk(rows)) {
+      await markTrackingRows(integration, authorPageId, batch, 'syncing')
 
-    return {
-      scope: 'this_month_then_changes',
-      ...totals,
-      last_synced_at: syncedAt,
-    }
-  }
-
-  for (const batch of chunk(rows)) {
-    await markTrackingRows(
-      integration,
-      authorPageId,
-      batch,
-      'syncing'
-    )
-
-    try {
-      const result = await appendAuthorStoreSalesReportRows(
-  integration.spreadsheet_id,
-  batch.map(({ month_name, payload_hash, ...row }) => row),
-  authorPage
-)
-
-      totals.appended += cleanNumber(result.appended)
-      totals.updated += cleanNumber(result.updated)
-      totals.moved += cleanNumber(result.moved)
-      totals.removed += cleanNumber(result.removed)
-      totals.duplicates += cleanNumber(result.duplicates)
-      totals.skipped += cleanNumber(result.skipped)
-
-      await markTrackingRows(
-        integration,
-        authorPageId,
-        batch,
-        'synced'
-      )
-    } catch (error) {
       try {
-        await markTrackingRows(
-          integration,
-          authorPageId,
-          batch,
-          'failed',
-          error.message
+        const result = await appendAuthorStoreSalesReportRows(
+          integration.spreadsheet_id,
+          batch.map(({ month_name, payload_hash, ...row }) => row),
+          authorPage
         )
-      } catch (trackingError) {
-        console.error('MARK SALES REPORT TRACKING FAILED:', trackingError)
-      }
 
-      throw error
+        totals.appended += cleanNumber(result.appended)
+        totals.updated += cleanNumber(result.updated)
+        totals.moved += cleanNumber(result.moved)
+        totals.removed += cleanNumber(result.removed)
+        totals.duplicates += cleanNumber(result.duplicates)
+        totals.skipped += cleanNumber(result.skipped)
+
+        await markTrackingRows(integration, authorPageId, batch, 'synced')
+      } catch (error) {
+        try {
+          await markTrackingRows(integration, authorPageId, batch, 'failed', error.message)
+        } catch (trackingError) {
+          console.error('MARK SALES REPORT TRACKING FAILED:', trackingError)
+        }
+        throw error
+      }
     }
-  }
+  })
 
   const syncedAt = new Date().toISOString()
-
   await updateIntegrationSyncState(integration.id, {
     connection_status: 'connected',
     last_synced_at: syncedAt,
