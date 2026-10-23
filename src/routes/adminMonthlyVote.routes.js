@@ -22,6 +22,13 @@ import {
 
 const router = express.Router()
 
+router.use(rateLimit({
+  windowMs: 60000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+}))
+
 router.use(requireAdmin)
 router.use(rateLimit({
   windowMs: 60 * 1000,
