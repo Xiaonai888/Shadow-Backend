@@ -1,5 +1,6 @@
 import { createReadStream } from 'node:fs'
 import { lstat, realpath } from 'node:fs/promises'
+import { lstat, realpath, readdir } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
@@ -226,7 +227,9 @@ async function getValidatedStoryUploadPath(file) {
   const name = file?.filename
   if (typeof name !== 'string' || !/^[a-f0-9]{32}$/i.test(name)) invalid()
 
-  const expectedPath = path.join(os.tmpdir(), name)
+  const trustedName = (await readdir(os.tmpdir())).find((entry) => entry === name)
+if (!trustedName) invalid()
+const expectedPath = path.join(os.tmpdir(), trustedName)
   if (file?.path !== expectedPath) invalid()
 
   try {
