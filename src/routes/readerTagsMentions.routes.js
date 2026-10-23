@@ -28,6 +28,13 @@ const limitTagReviews = rateLimit({
   keyGenerator: (req) => String(req.user?.user_id || req.user?.id || req.user?.session_id || 'unauthenticated'),
 })
 
+const limitTagsPreAuth = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+})
+
 async function getApprovedTaggedPosts(req, res) {
   res.set('Cache-Control', 'private, no-store')
   const userId = String(req.user?.user_id || req.user?.id || '').trim()
@@ -104,10 +111,10 @@ async function getApprovedTaggedPosts(req, res) {
   }
 }
 
-router.get('/pending', requireUser, limitTagReads, getPendingReaderTags)
-router.get('/approved', requireUser, limitTagReads, getApprovedTaggedPosts)
-router.post('/review', requireUser, limitTagReviews, reviewPendingReaderTags)
-router.get('/', requireUser, limitTagReads, getReaderTagsMentions)
-router.put('/', requireUser, limitSettingsUpdates, updateReaderTagsMentions)
+router.get('/pending', limitTagsPreAuth, requireUser, limitTagReads, getPendingReaderTags)
+router.get('/approved', limitTagsPreAuth, requireUser, limitTagReads, getApprovedTaggedPosts)
+router.post('/review', limitTagsPreAuth, requireUser, limitTagReviews, reviewPendingReaderTags)
+router.get('/', limitTagsPreAuth, requireUser, limitTagReads, getReaderTagsMentions)
+router.put('/', limitTagsPreAuth, requireUser, limitSettingsUpdates, updateReaderTagsMentions)
 
 export default router
