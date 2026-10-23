@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs'
-import { lstat } from 'node:fs/promises'
+import { lstat, realpath } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
@@ -414,6 +414,8 @@ export async function uploadStoryImage(
           'Image file is required. Use form field name: image',
       })
     }
+
+    await getValidatedStoryUploadPath(req.file)
 
     const requestedFolder = String(
       req.body.folder ||
