@@ -1,22 +1,31 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
-import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { getReaderTagsMentions, updateReaderTagsMentions } from '../controllers/readerTagsMentions.controller.js'
 import { getPendingReaderTags, reviewPendingReaderTags } from '../controllers/readerTagReview.controller.js'
 
 const router = express.Router()
-const limitSettingsUpdates = createRateLimit({
-  key: 'reader-tag-mention-settings',
+const limitTagReads = rateLimit({
   windowMs: 60000,
-  max: 20,
-  identity: (req) => req.user?.user_id || req.ip,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || req.user?.session_id || 'unauthenticated'),
 })
-const limitTagReviews = createRateLimit({
-  key: 'reader-tag-mention-reviews',
+const limitSettingsUpdates = rateLimit({
   windowMs: 60000,
-  max: 20,
-  identity: (req) => req.user?.user_id || req.ip,
+  limit: 20,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || req.user?.session_id || 'unauthenticated'),
+})
+const limitTagReviews = rateLimit({
+  windowMs: 60000,
+  limit: 20,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || req.user?.session_id || 'unauthenticated'),
 })
 
 async function getApprovedTaggedPosts(req, res) {
@@ -95,10 +104,10 @@ async function getApprovedTaggedPosts(req, res) {
   }
 }
 
-router.get('/pending', requireUser, getPendingReaderTags)
-router.get('/approved', requireUser, getApprovedTaggedPosts)
+router.get('/pending', requireUser, limitTagReads, getPendingReaderTags)
+router.get('/approved', requireUser, limitTagReads, getApprovedTaggedPosts)
 router.post('/review', requireUser, limitTagReviews, reviewPendingReaderTags)
-router.get('/', requireUser, getReaderTagsMentions)
+router.get('/', requireUser, limitTagReads, getReaderTagsMentions)
 router.put('/', requireUser, limitSettingsUpdates, updateReaderTagsMentions)
 
 export default router
