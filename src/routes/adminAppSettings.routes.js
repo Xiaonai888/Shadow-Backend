@@ -1,4 +1,5 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
@@ -19,6 +20,30 @@ import {
 import path from 'node:path'
 
 const router = express.Router()
+
+const adminAppSettingsReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_APP_SETTINGS_READ_RATE_LIMIT',
+    message: 'Too many app settings requests. Please retry shortly.',
+  },
+})
+
+const adminAppSettingsWriteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_APP_SETTINGS_WRITE_RATE_LIMIT',
+    message: 'Too many app settings changes. Please retry shortly.',
+  },
+})
 const IMAGE_TYPES = new Set([
   'image/jpeg',
   'image/png',
@@ -121,11 +146,12 @@ function runBrushFiles(req, res, next) {
   })
 }
 
-router.get('/:appKey', requireAdmin, getAdminApp)
-router.patch('/:appKey', requireAdmin, updateAdminApp)
+router.get('/:appKey', adminAppSettingsReadLimit, requireAdmin, getAdminApp)
+router.patch('/:appKey', adminAppSettingsWriteLimit, requireAdmin, updateAdminApp)
 
 router.post(
   '/:appKey/profile',
+  adminAppSettingsWriteLimit,
   requireAdmin,
   runSingle('profile'),
   cleanupTempFiles,
@@ -135,12 +161,14 @@ router.post(
 
 router.delete(
   '/:appKey/profile',
+  adminAppSettingsWriteLimit,
   requireAdmin,
   removeAdminAppProfile
 )
 
 router.post(
   '/:appKey/brushes',
+  adminAppSettingsWriteLimit,
   requireAdmin,
   runBrushFiles,
   cleanupTempFiles,
@@ -150,12 +178,14 @@ router.post(
 
 router.patch(
   '/:appKey/brushes/:brushId',
+  adminAppSettingsWriteLimit,
   requireAdmin,
   updateAdminBrush
 )
 
 router.post(
   '/:appKey/brushes/:brushId/file',
+  adminAppSettingsWriteLimit,
   requireAdmin,
   runBrushFiles,
   cleanupTempFiles,
@@ -165,6 +195,7 @@ router.post(
 
 router.post(
   '/:appKey/brushes/:brushId/thumbnail',
+  adminAppSettingsWriteLimit,
   requireAdmin,
   runSingle('thumbnail'),
   cleanupTempFiles,
@@ -174,12 +205,14 @@ router.post(
 
 router.delete(
   '/:appKey/brushes/:brushId/thumbnail',
+  adminAppSettingsWriteLimit,
   requireAdmin,
   removeAdminBrushThumbnail
 )
 
 router.delete(
   '/:appKey/brushes/:brushId',
+  adminAppSettingsWriteLimit,
   requireAdmin,
   deleteAdminBrush
 )
