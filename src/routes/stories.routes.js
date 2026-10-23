@@ -1,4 +1,5 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import { wakeStoryEpisodePushScheduler } from '../services/storyEpisodePushScheduler.js'
 import {
   createEpisode,
@@ -40,6 +41,20 @@ import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseC
 import { invalidatePublicStoryDataCache } from '../services/publicStoryDataCache.service.js'
 
 const router = express.Router()
+
+const storyRoutesLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'STORY_RATE_LIMIT',
+    message: 'Too many story requests. Please try again shortly.',
+  },
+})
+
+router.use(storyRoutesLimit)
 
 function invalidateMyStoriesAfterMutation(req, res, next) {
   const userId = req.user?.user_id
