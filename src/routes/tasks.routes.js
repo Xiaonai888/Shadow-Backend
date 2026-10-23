@@ -22,6 +22,12 @@ import {
 import { getWeeklyReading, claimWeeklyReadingReward } from '../controllers/weeklyReading.controller.js'
 
 const router = express.Router()
+router.use(rateLimit({
+  windowMs: 60 * 1000,
+  limit: 3000,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+}))
 const taskRateLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 300,
