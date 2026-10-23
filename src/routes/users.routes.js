@@ -36,6 +36,7 @@ import { requireUser } from '../middleware/user.middleware.js'
 import readerDeviceAccessRoutes from './readerDeviceAccess.routes.js'
 import { verifyTurnstile } from '../middleware/turnstile.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
+import { rateLimit } from 'express-rate-limit'
 import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
 
 const router = express.Router()
@@ -89,6 +90,19 @@ const readerEmailChangeConfirmLimit = createRateLimit({
   message: 'Too many email verification attempts. Please wait and try again.',
 })
 
+const readerProtectedRouteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 180,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: (req) => `reader:${req.user.user_id}`,
+  message: {
+    ok: false,
+    code: 'READER_RATE_LIMIT',
+    message: 'Too many requests. Please wait before trying again.',
+  },
+})
+
 function invalidatePublicStoriesAfterMutation(req, res, next) {
   res.once('finish', () => {
     if (
@@ -132,24 +146,26 @@ router.put(
   invalidatePublicStoriesAfterMutation,
   updateDateOfBirth
 )
-router.put('/change-password', readerChangePasswordLimit, requireUser, changePassword)
+router.put('/change-password', readerChangePasswordLimit, requireUser, readerProtectedRouteLimit, changePassword)
 router.post(
   '/email-change/request',
   readerEmailChangeRequestLimit,
   requireUser,
+  readerProtectedRouteLimit,
   requestEmailChange
 )
 router.post(
   '/email-change/confirm',
   readerEmailChangeConfirmLimit,
   requireUser,
+  readerProtectedRouteLimit,
   confirmEmailChange
 )
-router.put('/payment-profile', requireUser, updatePaymentProfile)
-router.get('/:username/profile', requireUser, getPublicUserProfile)
-router.get('/:username/followers', requireUser, getUserFollowers)
-router.get('/:username/following', requireUser, getUserFollowing)
-router.post('/:username/follow', requireUser, followUser)
-router.delete('/:username/follow', requireUser, unfollowUser)
+router.put('/payment-profile', requireUser, readerProtectedRouteLimit, updatePaymentProfile)
+router.get('/:username/profile', requireUser, readerProtectedRouteLimit, getPublicUserProfile)
+router.get('/:username/followers', requireUser, readerProtectedRouteLimit, getUserFollowers)
+router.get('/:username/following', requireUser, readerProtectedRouteLimit, getUserFollowing)
+router.post('/:username/follow', requireUser, readerProtectedRouteLimit, followUser)
+router.delete('/:username/follow', requireUser, readerProtectedRouteLimit, unfollowUser)
 
 export default router
