@@ -1,4 +1,5 @@
 import express from 'express'
+import { rateLimit, ipKeyGenerator } from 'express-rate-limit'
 import { requireUser } from '../middleware/user.middleware.js'
 import {
   createMangaDirectUploadSession,
@@ -8,6 +9,22 @@ import {
 import { wakeHeavyMediaWorkerCoordinator } from '../services/heavyMediaWorkerCoordinator.service.js'
 
 const router = express.Router()
+
+const mangaDirectSessionLimit = rateLimit({
+  windowMs: 60000,
+  limit: 240,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) =>
+    req.spamGuard?.identity_type === 'account' && req.spamGuard.guard_key
+      ? req.spamGuard.guard_key
+      : ipKeyGenerator(req.ip),
+  message: {
+    ok: false,
+    code: 'MANGA_DIRECT_RATE_LIMIT',
+    message: 'Too many upload session requests. Please retry shortly.',
+  },
+})
 
 function handleRoute(operation, successStatus = 200) {
   return async (req, res) => {
@@ -37,7 +54,7 @@ function handleRoute(operation, successStatus = 200) {
   }
 }
 
-router.post('/init', requireUser, handleRoute(
+router.post('/init', mangaDirectSessionLimit, requireUser, handleRoute(
   ({ userId, body }) => createMangaDirectUploadSession({
     userId,
     fileSize: body.file_size,
@@ -47,7 +64,7 @@ router.post('/init', requireUser, handleRoute(
   201
 ))
 
-router.post('/finalize', requireUser, handleRoute(async ({ userId, body }) => {
+router.post('/finalize', mangaDirectSessionLimit, requireUser, handleRoute(async ({ userId, body }) => {
   const result = await finalizeMangaDirectUploadSession({
     userId,
     uploadToken: body.upload_token,
@@ -56,7 +73,7 @@ router.post('/finalize', requireUser, handleRoute(async ({ userId, body }) => {
   return result
 }, 202))
 
-router.post('/cancel', requireUser, handleRoute(
+router.post('/cancel', mangaDirectSessionLimit, requireUser, handleRoute(
   ({ userId, body }) => cancelMangaDirectUploadSession({
     userId,
     uploadToken: body.upload_token,
