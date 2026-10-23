@@ -1,4 +1,5 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { getAdminActor, logAdminActivity } from '../services/adminActivity.service.js'
@@ -6,8 +7,32 @@ import { createSecurityGate } from '../middleware/securityGate.middleware.js'
 import { guardSecurityMutation } from '../services/tamperGuard.service.js'
 
 const router = express.Router()
+const adminAccountsPreAuthLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+})
 const viewAccounts = requireAdminPermission('accounts.view')
 const manageAccounts = requireAdminPermission('accounts.manage')
+const adminAccountsIdentity = (req) => String(req.admin?.admin_id || req.admin?.id || 'unauthenticated')
+const adminAccountsReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 180,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: adminAccountsIdentity,
+  message: { ok: false, code: 'ADMIN_ACCOUNTS_READ_RATE_LIMIT', message: 'Too many account requests. Please retry shortly.' },
+})
+const adminAccountsWriteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 30,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: adminAccountsIdentity,
+  message: { ok: false, code: 'ADMIN_ACCOUNTS_WRITE_RATE_LIMIT', message: 'Too many account changes. Please retry shortly.' },
+})
+router.use(adminAccountsPreAuthLimit)
 const accountMutationGate = createSecurityGate({
   gateId: 'admin_account_mutation',
   roles: ['owner', 'admin', 'staff'],
@@ -192,7 +217,7 @@ function canManageTarget(req, account) {
   return { ok: true }
 }
 
-router.get('/roles', viewAccounts, async (req, res) => {
+router.get('/roles', viewAccounts, adminAccountsReadLimit, async (req, res) => {
   try {
     const roles = await loadAvailableRoles()
 
@@ -210,7 +235,7 @@ router.get('/roles', viewAccounts, async (req, res) => {
   }
 })
 
-router.get('/', viewAccounts, async (req, res) => {
+router.get('/', viewAccounts, adminAccountsReadLimit, async (req, res) => {
   try {
     const accounts = await loadAccounts()
 
@@ -232,6 +257,7 @@ router.get('/', viewAccounts, async (req, res) => {
 router.post(
   '/',
   manageAccounts,
+  adminAccountsWriteLimit,
   observeAccountSecurityMutation,
   accountMutationGate,
   async (req, res) => {
@@ -354,6 +380,7 @@ router.post(
 router.patch(
   '/:accountId',
   manageAccounts,
+  adminAccountsWriteLimit,
   observeAccountSecurityMutation,
   accountMutationGate,
   async (req, res) => {
