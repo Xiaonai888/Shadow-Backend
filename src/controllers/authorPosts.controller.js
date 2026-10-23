@@ -377,60 +377,109 @@ if (after) {
 }
 
 const before = String(req.query.before || '').trim()
+const beforeId = String(req.query.before_id || '').trim()
 
-    if (before) {
-      if (/^\d{4}-\d{2}-\d{2}$/.test(before)) {
-        const beforeDate = new Date(`${before}T23:59:59.999Z`)
+if (beforeId && !/^[a-zA-Z0-9_-]{1,100}$/.test(beforeId)) {
+  return res.status(400).json({ ok: false, message: 'Invalid pagination cursor' })
+}
 
-        if (!Number.isNaN(beforeDate.getTime())) {
-          postsQuery = postsQuery.lte(
-            'created_at',
-            beforeDate.toISOString()
-          )
-        }
-      } else {
-        const beforeDate = new Date(before)
+if (beforeId) {
+  let anchorQuery = supabase
+    .from('author_page_posts')
+    .select('id, created_at, is_pinned, pinned_at')
+    .eq('author_page_id', authorPage.id)
+    .eq('id', beforeId)
 
-        if (!Number.isNaN(beforeDate.getTime())) {
-          postsQuery = postsQuery.lt(
-            'created_at',
-            beforeDate.toISOString()
-          )
-        }
-      }
-    }
+  if (contentLibrary) {
+    anchorQuery = ['active', 'scheduled', 'uploaded'].includes(requestedStatus)
+      ? anchorQuery.eq('status', requestedStatus)
+      : anchorQuery.in('status', ['active', 'scheduled', 'uploaded'])
+  } else {
+    anchorQuery = anchorQuery.eq('status', 'active')
+  }
 
-    let orderedQuery = postsQuery
+  const { data: anchor, error: anchorError } = await anchorQuery.maybeSingle()
+  if (anchorError) throw anchorError
+  if (!anchor?.created_at) {
+    return res.status(400).json({ ok: false, message: 'Pagination cursor no longer available' })
+  }
 
-    if (contentLibrary) {
-      orderedQuery = orderedQuery.order(
-        'created_at',
-        { ascending: false }
-      )
-    } else {
-      orderedQuery = orderedQuery
-        .order('is_pinned', { ascending: false })
-        .order('pinned_at', {
-          ascending: false,
-          nullsFirst: false,
-        })
-        .order('created_at', { ascending: false })
-    }
+  const timestamp = new Date(anchor.created_at).toISOString()
+  const older = `or(created_at.lt.${timestamp},and(created_at.eq.${timestamp},id.lt.${beforeId}))`
 
-    const { data: postRows, error: postsError } =
-  await orderedQuery.limit(limit + 1)
+  if (contentLibrary) {
+    postsQuery = postsQuery.or(`created_at.lt.${timestamp},and(created_at.eq.${timestamp},id.lt.${beforeId})`)
+  } else if (!anchor.is_pinned) {
+    postsQuery = postsQuery.or(
+      `and(is_pinned.eq.false,${older}),and(is_pinned.is.null,${older})`
+    )
+  } else if (anchor.pinned_at) {
+    const pinnedAt = new Date(anchor.pinned_at).toISOString()
+    postsQuery = postsQuery.or(
+      `is_pinned.eq.false,is_pinned.is.null,` +
+      `and(is_pinned.eq.true,pinned_at.is.null),` +
+      `and(is_pinned.eq.true,pinned_at.lt.${pinnedAt}),` +
+      `and(is_pinned.eq.true,pinned_at.eq.${pinnedAt},${older})`
+    )
+  } else {
+    postsQuery = postsQuery.or(
+      `is_pinned.eq.false,is_pinned.is.null,` +
+      `and(is_pinned.eq.true,pinned_at.is.null,${older})`
+    )
+  }
+} else if (before) {
+  const isDateFilter = /^\d{4}-\d{2}-\d{2}$/.test(before)
+  const date = new Date(isDateFilter ? `${before}T23:59:59.999Z` : before)
+  if (!Number.isNaN(date.getTime())) {
+    postsQuery = postsQuery[isDateFilter ? 'lte' : 'lt']('created_at', date.toISOString())
+  }
+}
 
-if (postsError) throw postsError
+let orderedQuery = postsQuery
+
+if (contentLibrary) {
+  orderedQuery = orderedQuery.order('created_at', { ascending: false })
+} else {
+  orderedQuery = orderedQuery
+    .order('is_pinned', { ascending: false, nullsFirst: false })
+    .order('pinned_at', { ascending: false, nullsFirst: false })
+    .order('created_at', { ascending: false })
+}
+
+orderedQuery = orderedQuery.order('id', { ascending: false })
+
+let totalQuery = null
+if (req.query.include_total === '1') {
+  totalQuery = supabase
+    .from('author_page_posts')
+    .select('id', { count: 'exact', head: true })
+    .eq('author_page_id', authorPage.id)
+
+  if (contentLibrary) {
+    totalQuery = ['active', 'scheduled', 'uploaded'].includes(requestedStatus)
+      ? totalQuery.eq('status', requestedStatus)
+      : totalQuery.in('status', ['active', 'scheduled', 'uploaded'])
+  } else {
+    totalQuery = totalQuery.eq('status', 'active')
+  }
+}
+
+const [postsResult, countResult] = await Promise.all([
+  orderedQuery.limit(limit + 1),
+  totalQuery,
+])
+if (postsResult.error) throw postsResult.error
+if (countResult?.error) throw countResult.error
 
 const pagePosts = await hydrateAuthorEchoPosts(
-  (postRows || []).slice(0, limit),
+  (postsResult.data || []).slice(0, limit),
   supabase
 )
-const hasMore = (postRows || []).length > limit
-const nextBefore =
-  hasMore && pagePosts.length
-    ? pagePosts[pagePosts.length - 1].created_at
-    : null
+const hasMore = (postsResult.data || []).length > limit
+const lastPost = pagePosts[pagePosts.length - 1]
+const nextBefore = hasMore ? lastPost?.created_at || null : null
+const nextBeforeId = hasMore ? String(lastPost?.id || '') || null : null
+const totalCount = countResult ? Number(countResult.count || 0) : null
 
 const postIds = pagePosts
   .map((post) => post.id)
@@ -545,6 +594,8 @@ return res.status(200).json({
   }),
   has_more: hasMore,
   next_before: nextBefore,
+  next_before_id: nextBeforeId,
+  total_count: totalCount,
 })
 
   } catch (error) {
