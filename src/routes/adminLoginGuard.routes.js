@@ -1,4 +1,5 @@
 import express from 'express'
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { createSecurityGate } from '../middleware/securityGate.middleware.js'
 import { guardSecurityMutation } from '../services/tamperGuard.service.js'
@@ -17,6 +18,19 @@ import {
 } from '../controllers/adminLoginGuard.controller.js'
 
 const router = express.Router()
+const loginGuardLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(
+    req.admin?.admin_id || req.admin?.id || req.admin?.sub || req.admin?.email || ipKeyGenerator(req.ip)
+  ),
+  message: {
+    ok: false,
+    message: 'Too many requests. Please try again later.',
+  },
+})
 
 const loginSecurityMutationGate = createSecurityGate({
   gateId: 'admin_login_security_mutation',
@@ -64,41 +78,47 @@ const observeLoginSecurityWeakening = (action) => (req, res, next) => {
 
 router.use(requireAdmin)
 
-router.get('/overview', getAdminGuardOverview)
-router.get('/states', getAdminGuardStates)
-router.get('/events', getAdminGuardEvents)
+router.get('/overview', loginGuardLimiter, getAdminGuardOverview)
+router.get('/states', loginGuardLimiter, getAdminGuardStates)
+router.get('/events', loginGuardLimiter, getAdminGuardEvents)
 router.patch(
   '/states/:stateId/release',
+  loginGuardLimiter,
   observeLoginSecurityWeakening('release'),
   loginSecurityMutationGate,
   releaseAdminGuardBlock
 )
 router.patch(
   '/states/:stateId/permanent-block',
+  loginGuardLimiter,
   loginSecurityDefenseGate,
   permanentBlockAdminGuard
 )
 router.patch(
   '/states/:stateId/unblock',
+  loginGuardLimiter,
   observeLoginSecurityWeakening('unblock'),
   loginSecurityMutationGate,
   unblockAdminGuardPermanent
 )
-router.get('/trusted-devices', getAdminTrustedDevices)
+router.get('/trusted-devices', loginGuardLimiter, getAdminTrustedDevices)
 router.patch(
   '/trusted-devices/:deviceId/revoke',
+  loginGuardLimiter,
   loginSecurityDefenseGate,
   revokeAdminTrustedDevice
 )
-router.get('/trusted-ips', getAdminTrustedIps)
+router.get('/trusted-ips', loginGuardLimiter, getAdminTrustedIps)
 router.post(
   '/trusted-ips',
+  loginGuardLimiter,
   observeLoginSecurityWeakening('config_change'),
   loginSecurityMutationGate,
   addAdminTrustedIp
 )
 router.patch(
   '/trusted-ips/:ipId/revoke',
+  loginGuardLimiter,
   loginSecurityDefenseGate,
   revokeAdminTrustedIp
 )
