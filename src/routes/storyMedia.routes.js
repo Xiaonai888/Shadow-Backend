@@ -272,6 +272,11 @@ function uploadStoryImageFile(req, res, next) {
   })
 }
 
+router.use(rateLimit({
+  windowMs: 60000, limit: 1500, standardHeaders: 'draft-8', legacyHeaders: false,
+  keyGenerator: (req) => req.spamGuard?.identity_type === 'account' ? req.spamGuard.guard_key : String(req.socket?.remoteAddress || 'unknown')
+}))
+
 router.post(
   '/upload-novel-image',
   requireUser,
