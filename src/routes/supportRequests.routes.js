@@ -52,6 +52,13 @@ const supportAdminWriteLimit = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => String(req.admin?.admin_id || req.admin?.id || req.admin?.user_id || req.admin?.sub || 'unauthenticated'),
 })
+
+const supportAdminDeletePreAuthLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+})
 const allowedTypes = new Set([
   'image/jpeg',
   'image/png',
@@ -171,6 +178,7 @@ router.patch(
 
 router.delete(
   '/admin/requests/:requestId',
+  supportAdminDeletePreAuthLimit,
   requireAdmin,
   supportAdminWriteLimit,
   deleteAdminSupportRequest
