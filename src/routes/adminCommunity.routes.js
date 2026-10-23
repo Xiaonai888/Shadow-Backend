@@ -25,6 +25,12 @@ import { getAdminReaderPeriod } from '../controllers/adminReaderPeriod.controlle
 import { getAdminReaderPeriodDetail } from '../controllers/adminReaderPeriodDetail.controller.js'
 
 const router = express.Router()
+router.use(rateLimit({
+  windowMs: 60000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+}))
 
 const adminCommunityReadLimit = rateLimit({
   windowMs: 60 * 1000,
