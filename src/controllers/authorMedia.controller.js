@@ -655,3 +655,115 @@ export async function uploadStoryImage(
     )
   }
 }
+
+function publicAuthorPage(page) {
+  if (!page) return null
+  return {
+    id: page.id,
+    user_id: page.user_id,
+    page_name: page.page_name,
+    page_username: page.page_username,
+    page_slug: page.page_slug,
+    bio: page.bio,
+    avatar_url: page.avatar_url,
+    cover_url: page.cover_url,
+    status: page.status,
+    total_stories: page.total_stories,
+    total_followers: page.total_followers,
+    created_at: page.created_at,
+    updated_at: page.updated_at,
+  }
+}
+
+export async function getMyAuthorStorageQuota(req, res) {
+  try {
+    const userId = req.user?.user_id
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+    const authorPage = await getMyAuthorPage(userId)
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+    const quota = await getAuthorStorageQuota(authorPage.id)
+    return res.status(200).json({
+      ok: true,
+      author_page: publicAuthorPage(authorPage),
+      storage: quota,
+    })
+  } catch (error) {
+    console.error('GET AUTHOR STORAGE QUOTA ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Failed to load author storage quota',
+    })
+  }
+}
+
+export async function uploadMyAuthorProfileImage(req, res) {
+  try {
+    const userId = req.user?.user_id
+    if (!userId) {
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
+    }
+    if (!req.file?.path) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Image file is required. Use form field name: image',
+      })
+    }
+    const imageType = String(req.body?.image_type || req.body?.imageType || '').trim().toLowerCase()
+    if (imageType !== 'avatar' && imageType !== 'cover') {
+      return res.status(400).json({
+        ok: false,
+        message: 'image_type must be avatar or cover',
+      })
+    }
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(String(req.file.mimetype || ''))) {
+      return res.status(400).json({ ok: false, message: 'Only JPEG, PNG or WebP images are allowed' })
+    }
+    const authorPage = await getMyAuthorPage(userId)
+    if (!authorPage) {
+      return res.status(403).json({ ok: false, message: 'Please create an author page first' })
+    }
+    await assertAuthorStorageAvailable(authorPage.id, req.file.size)
+    const folderKey = imageType === 'avatar' ? 'author_page_avatar' : 'author_page_cover'
+    const uploaded = await uploadAuthorImageToR2({
+      authorPage,
+      userId,
+      file: req.file,
+      folderKey,
+    })
+    const updates = {
+      updated_at: new Date().toISOString(),
+      [imageType === 'avatar' ? 'avatar_url' : 'cover_url']: uploaded.publicUrl,
+    }
+    const { data: updatedPage, error: updateError } = await supabase
+      .from('author_pages')
+      .update(updates)
+      .eq('id', authorPage.id)
+      .eq('user_id', userId)
+      .select()
+      .single()
+    if (updateError) throw updateError
+    return res.status(200).json({
+      ok: true,
+      message: imageType === 'avatar' ? 'Author profile photo uploaded' : 'Author cover image uploaded',
+      image_type: imageType,
+      image_url: uploaded.publicUrl,
+      author_page: publicAuthorPage(updatedPage),
+      asset: uploaded.asset,
+      storage: uploaded.quota || await getAuthorStorageQuota(authorPage.id),
+    })
+  } catch (error) {
+    console.error('UPLOAD AUTHOR PROFILE IMAGE ERROR:', error)
+    return res.status(error.statusCode || 500).json({
+      ok: false,
+      code: error.code || 'AUTHOR_PROFILE_IMAGE_UPLOAD_FAILED',
+      message: error.message || 'Failed to upload author profile image',
+      quota: error.quota || null,
+      requested_bytes: error.requested_bytes || null,
+    })
+  }
+}
+
