@@ -447,10 +447,7 @@ function safeHandler(handler, role) {
     })
 }
 
-router.post('/user/init', requireUser, safeHandler(initiate, 'user'))
-router.post('/user/finalize', requireUser, safeHandler(finalize, 'user'))
-router.post('/admin/init', requireAdmin, safeHandler(initiate, 'admin'))
-router.post('/admin/finalize', requireAdmin, safeHandler(finalize, 'admin'))
+
 router.post('/user/init', requireUser, mediaDirectRateLimit, safeHandler(initiate, 'user'))
 router.post('/user/finalize', requireUser, mediaDirectRateLimit, safeHandler(finalize, 'user'))
 router.post('/admin/init', requireAdmin, mediaDirectRateLimit, safeHandler(initiate, 'admin'))
