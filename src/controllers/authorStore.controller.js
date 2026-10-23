@@ -1637,23 +1637,103 @@ export async function getMyAuthorStoreProducts(req, res) {
       return res.status(403).json({ ok: false, message: 'Please create an author page first' })
     }
 
-    const { data, error } = await supabase
+    const paginated = req.query.page !== undefined || req.query.limit !== undefined
+
+    if (!paginated) {
+      const { data, error } = await supabase
+        .from('author_store_products')
+        .select('*')
+        .eq('author_page_id', authorPage.id)
+        .order('created_at', { ascending: false })
+
+      if (error) throw error
+
+      return res.status(200).json({
+        ok: true,
+        products: (data || []).map(publicProduct),
+      })
+    }
+
+    const page = Math.min(100000, Math.max(1, Math.floor(Number(req.query.page) || 1)))
+    const limit = Math.min(10, Math.max(1, Math.floor(Number(req.query.limit) || 10)))
+    const type = String(req.query.type || 'all').trim().toLowerCase()
+    const sort = String(req.query.sort || 'newest').trim().toLowerCase()
+    const q = String(req.query.q || '').trim().slice(0, 100)
+
+    if (!['all', 'book', 'pdf', 'active', 'draft', 'hidden'].includes(type)) {
+      return res.status(400).json({ ok: false, message: 'Invalid product filter' })
+    }
+
+    if (!['newest', 'oldest', 'recently_updated', 'low_stock', 'sold_out'].includes(sort)) {
+      return res.status(400).json({ ok: false, message: 'Invalid product sort' })
+    }
+
+    let query = supabase
       .from('author_store_products')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('author_page_id', authorPage.id)
-      .order('created_at', { ascending: false })
+
+    if (type === 'book' || type === 'pdf') {
+      query = query.eq('product_type', type)
+    } else if (type !== 'all') {
+      query = query.eq('status', type)
+    }
+
+    if (sort === 'low_stock') {
+      query = query.eq('product_type', 'book').gt('stock_quantity', 0).lte('stock_quantity', 5)
+    } else if (sort === 'sold_out') {
+      query = query.eq('product_type', 'book').lte('stock_quantity', 0)
+    }
+
+    const term = q.replace(/[(),%"\\_]/g, ' ').trim()
+
+    if (term) {
+      const clauses = [
+        `title.ilike.%${term}%`,
+        `category.ilike.%${term}%`,
+        `status.ilike.%${term}%`,
+        `product_type.ilike.%${term}%`,
+      ]
+
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(term)) {
+        clauses.push(`id.eq.${term}`)
+      }
+
+      query = query.or(clauses.join(','))
+    }
+
+    const ascending = sort === 'oldest'
+    const sortColumn = sort === 'recently_updated' ? 'updated_at' : 'created_at'
+    const start = (page - 1) * limit
+    const { data, error, count } = await query
+      .order(sortColumn, { ascending })
+      .order('id', { ascending })
+      .range(start, start + limit - 1)
 
     if (error) throw error
 
+    const products = (data || []).map(publicProduct)
+    const total = Number(count || 0)
+    const totalPages = Math.max(1, Math.ceil(total / limit))
+
     return res.status(200).json({
       ok: true,
-      products: (data || []).map(publicProduct),
+      products,
+      pagination: {
+        page,
+        limit,
+        total,
+        total_pages: totalPages,
+        has_next: start + products.length < total,
+        has_prev: page > 1,
+      },
     })
   } catch (error) {
     console.error('GET MY AUTHOR STORE PRODUCTS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load store products', error: error.message })
   }
 }
+
 
 export async function getPublicAuthorStoreProducts(req, res) {
   try {
