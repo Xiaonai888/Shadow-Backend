@@ -1,14 +1,15 @@
-import { createHash } from 'node:crypto'
+import { createHmac, randomBytes } from 'node:crypto'
 import { createAdminSecurityAlert } from './adminSecurityAlerts.service.js'
 
 const blockedWindowMs = 6 * 60 * 60 * 1000
 const newBrowserWindowMs = 24 * 60 * 60 * 1000
 const maxKeys = 500
 const seen = new Map()
+const dedupeSecret = randomBytes(32)
 
 function allowOnce(value, windowMs) {
   const now = Date.now()
-  const key = createHash('sha256').update(String(value)).digest('hex')
+  const key = createHmac('sha256', dedupeSecret).update(String(value)).digest('hex')
   const previous = seen.get(key)
   if (previous && now - previous < windowMs) return false
   for (const [oldKey, time] of seen) {
