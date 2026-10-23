@@ -1,4 +1,5 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import { requireUser } from '../middleware/user.middleware.js'
 import {
   claimReadingMissionReward,
@@ -21,29 +22,42 @@ import {
 import { getWeeklyReading, claimWeeklyReadingReward } from '../controllers/weeklyReading.controller.js'
 
 const router = express.Router()
-router.get('/overview', requireUser, getTaskOverview)
+const taskRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 300,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || req.user?.session_id || 'unauthenticated'),
+  message: {
+    ok: false,
+    code: 'TASK_RATE_LIMIT',
+    message: 'Too many task requests. Please try again shortly.',
+  },
+})
 
-router.get('/check-in', requireUser, getTaskCheckIn)
-router.post('/check-in/claim', requireUser, claimTaskCheckIn)
+router.get('/overview', requireUser, taskRateLimit, getTaskOverview)
 
-router.get('/reward-chest', requireUser, getRewardChest)
-router.post('/reward-chest/claim', requireUser, claimRewardChest)
+router.get('/check-in', requireUser, taskRateLimit, getTaskCheckIn)
+router.post('/check-in/claim', requireUser, taskRateLimit, claimTaskCheckIn)
 
-router.get('/reading-reward', requireUser, getReadingReward)
-router.post('/reading-reward/progress', requireUser, trackReadingRewardProgress)
-router.post('/reading-reward/claim', requireUser, claimReadingReward)
-router.get('/weekly-reading', requireUser, getWeeklyReading)
-router.post('/weekly-reading/claim', requireUser, claimWeeklyReadingReward)
+router.get('/reward-chest', requireUser, taskRateLimit, getRewardChest)
+router.post('/reward-chest/claim', requireUser, taskRateLimit, claimRewardChest)
 
-router.post('/reading-session/progress', requireUser, trackReadingSessionProgress)
+router.get('/reading-reward', requireUser, taskRateLimit, getReadingReward)
+router.post('/reading-reward/progress', requireUser, taskRateLimit, trackReadingRewardProgress)
+router.post('/reading-reward/claim', requireUser, taskRateLimit, claimReadingReward)
+router.get('/weekly-reading', requireUser, taskRateLimit, getWeeklyReading)
+router.post('/weekly-reading/claim', requireUser, taskRateLimit, claimWeeklyReadingReward)
 
-router.get('/reading-missions', requireUser, getReadingMissions)
-router.get('/reading-missions/:missionId', requireUser, getReadingMission)
-router.post('/reading-missions/:missionId/progress', requireUser, trackReadingMissionProgress)
-router.post('/reading-missions/:missionId/claim', requireUser, claimReadingMissionReward)
+router.post('/reading-session/progress', requireUser, taskRateLimit, trackReadingSessionProgress)
 
-router.get('/daily-vote-reward', requireUser, getDailyVoteReward)
-router.post('/daily-vote-reward/claim', requireUser, claimDailyVoteReward)
-router.get('/history', requireUser, getTaskHistory)
+router.get('/reading-missions', requireUser, taskRateLimit, getReadingMissions)
+router.get('/reading-missions/:missionId', requireUser, taskRateLimit, getReadingMission)
+router.post('/reading-missions/:missionId/progress', requireUser, taskRateLimit, trackReadingMissionProgress)
+router.post('/reading-missions/:missionId/claim', requireUser, taskRateLimit, claimReadingMissionReward)
+
+router.get('/daily-vote-reward', requireUser, taskRateLimit, getDailyVoteReward)
+router.post('/daily-vote-reward/claim', requireUser, taskRateLimit, claimDailyVoteReward)
+router.get('/history', requireUser, taskRateLimit, getTaskHistory)
 
 export default router
