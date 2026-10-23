@@ -1049,6 +1049,88 @@ export async function unlinkMyAuthorStoreTelegramGroup(req, res) {
   }
 }
 
+const AUTHOR_STORE_FINANCE_PAGE_SIZE = 1000
+const authorStoreWithdrawalRequestsInProgress = new Set()
+
+function authorStoreMoneyCents(value) {
+  const amount = Number(value ?? 0)
+  const cents = Math.round(amount * 100)
+  if (!Number.isFinite(amount) || !Number.isSafeInteger(cents)) {
+    throw new Error('Invalid Author Store financial amount')
+  }
+  return cents
+}
+
+async function getAuthorStoreFinanceSnapshot(authorPageId, userId, includeHistory = false) {
+  let grossSalesCents = 0
+  let platformFeeCents = 0
+  let authorIncomeCents = 0
+  let paidOrderCount = 0
+
+  for (let offset = 0; ; offset += AUTHOR_STORE_FINANCE_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from('author_store_orders')
+      .select('id,product_subtotal_usd,platform_fee_usd,author_income_usd,delivery_fee_usd')
+      .eq('author_page_id', authorPageId)
+      .eq('payment_status', 'paid')
+      .order('id', { ascending: true })
+      .range(offset, offset + AUTHOR_STORE_FINANCE_PAGE_SIZE - 1)
+
+    if (error) throw error
+    const rows = Array.isArray(data) ? data : []
+    for (const order of rows) {
+      paidOrderCount += 1
+      grossSalesCents += authorStoreMoneyCents(order.product_subtotal_usd)
+      platformFeeCents += authorStoreMoneyCents(order.platform_fee_usd)
+      authorIncomeCents += authorStoreMoneyCents(order.author_income_usd)
+      authorIncomeCents += authorStoreMoneyCents(order.delivery_fee_usd)
+    }
+    if (rows.length < AUTHOR_STORE_FINANCE_PAGE_SIZE) break
+  }
+
+  let paidOutCents = 0
+  let pendingBalanceCents = 0
+  const withdrawals = []
+
+  for (let offset = 0; ; offset += AUTHOR_STORE_FINANCE_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from('author_store_withdrawal_requests')
+      .select(includeHistory ? '*' : 'id,status,amount_usd')
+      .eq('author_page_id', authorPageId)
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(offset, offset + AUTHOR_STORE_FINANCE_PAGE_SIZE - 1)
+
+    if (error) throw error
+    const rows = Array.isArray(data) ? data : []
+    for (const item of rows) {
+      const amountCents = authorStoreMoneyCents(item.amount_usd)
+      if (item.status === 'paid') paidOutCents += amountCents
+      if (item.status === 'in_review' || item.status === 'approved') {
+        pendingBalanceCents += amountCents
+      }
+      if (includeHistory && !item.deleted_at) withdrawals.push(item)
+    }
+    if (rows.length < AUTHOR_STORE_FINANCE_PAGE_SIZE) break
+  }
+
+  const availableBalanceCents = Math.max(0, authorIncomeCents - paidOutCents - pendingBalanceCents)
+  if (![grossSalesCents, platformFeeCents, authorIncomeCents, paidOutCents, pendingBalanceCents, availableBalanceCents].every(Number.isSafeInteger)) {
+    throw new Error('Author Store financial balance exceeds supported range')
+  }
+
+  return {
+    availableBalanceCents,
+    paidOutCents,
+    pendingBalanceCents,
+    grossSalesCents,
+    platformFeeCents,
+    paidOrderCount,
+    withdrawals,
+  }
+}
+
 export async function getMyAuthorStoreIncome(req, res) {
   try {
     const userId = req.user?.user_id
@@ -1059,57 +1141,8 @@ export async function getMyAuthorStoreIncome(req, res) {
       return res.status(403).json({ ok: false, message: 'Please create an author page first' })
     }
 
-    const summaryOnly = String(req.query.summary_only || '') === '1'
-    const pageSize = 1000
-    let grossSales = 0
-    let platformFee = 0
-    let authorIncome = 0
-    let paidOrderCount = 0
-
-    for (let offset = 0; ; offset += pageSize) {
-      const { data, error } = await supabase
-        .from('author_store_orders')
-        .select('id,product_subtotal_usd,platform_fee_usd,author_income_usd,delivery_fee_usd')
-        .eq('author_page_id', authorPage.id)
-        .eq('payment_status', 'paid')
-        .order('created_at', { ascending: false })
-        .order('id', { ascending: true })
-        .range(offset, offset + pageSize - 1)
-      if (error) throw error
-      const rows = Array.isArray(data) ? data : []
-      for (const order of rows) {
-        paidOrderCount += 1
-        grossSales += Number(order.product_subtotal_usd || 0)
-        platformFee += Number(order.platform_fee_usd || 0)
-        authorIncome += Number(order.author_income_usd || 0) + Number(order.delivery_fee_usd || 0)
-      }
-      if (rows.length < pageSize) break
-    }
-
-    let paidOut = 0
-    let pendingBalance = 0
-    const withdrawals = []
-
-    for (let offset = 0; ; offset += pageSize) {
-      const { data, error } = await supabase
-        .from('author_store_withdrawal_requests')
-        .select(summaryOnly ? 'status,amount_usd,deleted_at' : '*')
-        .eq('author_page_id', authorPage.id)
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .order('id', { ascending: true })
-        .range(offset, offset + pageSize - 1)
-      if (error) throw error
-      const rows = Array.isArray(data) ? data : []
-      for (const item of rows) {
-        if (item.status === 'paid') paidOut += Number(item.amount_usd || 0)
-        if (item.status === 'in_review' || item.status === 'approved') {
-          pendingBalance += Number(item.amount_usd || 0)
-        }
-        if (!summaryOnly && !item.deleted_at) withdrawals.push(item)
-      }
-      if (rows.length < pageSize) break
-    }
+    const summaryOnly = String(req.query?.summary_only || '') === '1'
+    const financial = await getAuthorStoreFinanceSnapshot(authorPage.id, userId, !summaryOnly)
 
     let paymentMethod = null
     if (!summaryOnly) {
@@ -1126,27 +1159,24 @@ export async function getMyAuthorStoreIncome(req, res) {
       paymentMethod = data || null
     }
 
-    const availableBalance = Math.max(0, Number((authorIncome - paidOut - pendingBalance).toFixed(2)))
-
     return res.status(200).json({
       ok: true,
       summary: {
-        available_balance: availableBalance,
-        pending_balance: Number(pendingBalance.toFixed(2)),
-        gross_sales: Number(grossSales.toFixed(2)),
-        platform_fee: Number(platformFee.toFixed(2)),
-        paid_out: Number(paidOut.toFixed(2)),
-        total_orders: paidOrderCount,
+        available_balance: financial.availableBalanceCents / 100,
+        pending_balance: financial.pendingBalanceCents / 100,
+        gross_sales: financial.grossSalesCents / 100,
+        platform_fee: financial.platformFeeCents / 100,
+        paid_out: financial.paidOutCents / 100,
+        total_orders: financial.paidOrderCount,
       },
       payment_method: paymentMethod,
-      withdrawals,
+      withdrawals: financial.withdrawals,
     })
   } catch (error) {
     console.error('GET MY AUTHOR STORE INCOME ERROR:', error)
     return res.status(500).json({
       ok: false,
       message: 'Failed to load Author Store income',
-      error: error.message,
     })
   }
 }
@@ -1162,7 +1192,7 @@ async function sendAuthorStoreWithdrawalAdminAlert(withdrawal, authorPage, payme
   const amount = Number(withdrawal.amount_usd || 0).toFixed(2)
 
   const paymentLines = [
-    method.type ? `Type: ${html(method.type)}` : '',
+    (method.method_type || method.type) ? `Type: ${html(method.method_type || method.type)}` : '',
     method.bank_name ? `Bank: ${html(method.bank_name)}` : '',
     method.account_name ? `Account name: ${html(method.account_name)}` : '',
     method.account_number ? `Account number: <code>${html(method.account_number)}</code>` : '',
@@ -1203,55 +1233,47 @@ async function sendAuthorStoreWithdrawalAdminAlert(withdrawal, authorPage, payme
 
 
 export async function createMyAuthorStoreWithdrawal(req, res) {
+  const userId = req.user?.user_id
+  if (!userId) {
+    return res.status(401).json({ ok: false, message: 'Unauthorized' })
+  }
+
+  const amount = Number(req.body?.amount)
+  const amountCents = Math.round(amount * 100)
+  if (
+    !Number.isFinite(amount) ||
+    !Number.isSafeInteger(amountCents) ||
+    amountCents < 1000 ||
+    Math.abs(amount * 100 - amountCents) > 0.000001
+  ) {
+    return res.status(400).json({
+      ok: false,
+      message: 'Withdrawal amount must be at least $10.00 with no more than two decimal places',
+    })
+  }
+
+  const lockKey = String(userId)
+  if (authorStoreWithdrawalRequestsInProgress.has(lockKey)) {
+    return res.status(409).json({
+      ok: false,
+      message: 'A withdrawal request is already being processed. Please try again shortly.',
+    })
+  }
+  authorStoreWithdrawalRequestsInProgress.add(lockKey)
+
   try {
-    const userId = req.user?.user_id
-    const amount = Number(req.body.amount || 0)
-
-    if (!userId) {
-      return res.status(401).json({ ok: false, message: 'Unauthorized' })
-    }
-
-    if (!Number.isFinite(amount) || amount < 10) {
-      return res.status(400).json({ ok: false, message: 'Minimum withdrawal amount is $10.00' })
-    }
-
     const authorPage = await getMyAuthorPage(userId)
-
     if (!authorPage) {
       return res.status(403).json({ ok: false, message: 'Please create an author page first' })
     }
 
     await archiveExpiredAuthorStoreWithdrawals()
 
-    const { data: orders, error: ordersError } = await supabase
-      .from('author_store_orders')
-      .select('payment_status, author_income_usd, delivery_fee_usd')
-      .eq('author_page_id', authorPage.id)
-
-    if (ordersError) throw ordersError
-
-    const authorIncome = (orders || [])
-      .filter((order) => order.payment_status === 'paid')
-      .reduce((sum, order) => sum + Number(order.author_income_usd || 0) + Number(order.delivery_fee_usd || 0), 0)
-
-    const { data: oldWithdrawals, error: withdrawalsError } = await supabase
-      .from('author_store_withdrawal_requests')
-      .select('amount_usd, status')
-      .eq('author_page_id', authorPage.id)
-      .eq('user_id', userId)
-
-    if (withdrawalsError) throw withdrawalsError
-
-    const lockedAmount = (oldWithdrawals || [])
-      .filter((item) => item.status === 'in_review' || item.status === 'approved' || item.status === 'paid')
-      .reduce((sum, item) => sum + Number(item.amount_usd || 0), 0)
-
-    const availableBalance = Math.max(0, Number((authorIncome - lockedAmount).toFixed(2)))
-
-    if (amount > availableBalance) {
+    const financial = await getAuthorStoreFinanceSnapshot(authorPage.id, userId)
+    if (amountCents > financial.availableBalanceCents) {
       return res.status(400).json({
         ok: false,
-        message: `Available balance is only $${availableBalance.toFixed(2)}`,
+        message: `Available balance is only $${(financial.availableBalanceCents / 100).toFixed(2)}`,
       })
     }
 
@@ -1266,7 +1288,6 @@ export async function createMyAuthorStoreWithdrawal(req, res) {
       .maybeSingle()
 
     if (paymentMethodError) throw paymentMethodError
-
     if (!paymentMethod) {
       return res.status(400).json({ ok: false, message: 'Please add a payment method first' })
     }
@@ -1277,7 +1298,7 @@ export async function createMyAuthorStoreWithdrawal(req, res) {
         author_page_id: authorPage.id,
         user_id: userId,
         payment_method_id: paymentMethod.id,
-        amount_usd: amount,
+        amount_usd: amountCents / 100,
         status: 'in_review',
         payment_method_snapshot: paymentMethod,
       })
@@ -1286,27 +1307,28 @@ export async function createMyAuthorStoreWithdrawal(req, res) {
 
     if (error) throw error
 
-try {
-  await sendAuthorStoreWithdrawalAdminAlert(data, authorPage, paymentMethod)
-} catch (notifyError) {
-  console.error('AUTHOR STORE WITHDRAWAL ADMIN ALERT FAILED:', {
-    withdrawal_id: data.id,
-    error: notifyError.message,
-  })
-}
+    try {
+      await sendAuthorStoreWithdrawalAdminAlert(data, authorPage, paymentMethod)
+    } catch (notifyError) {
+      console.error('AUTHOR STORE WITHDRAWAL ADMIN ALERT FAILED:', {
+        withdrawal_id: data.id,
+        error: notifyError.message,
+      })
+    }
 
-return res.status(201).json({
-  ok: true,
-  message: 'Withdrawal request submitted',
-  withdrawal: data,
-})
+    return res.status(201).json({
+      ok: true,
+      message: 'Withdrawal request submitted',
+      withdrawal: data,
+    })
   } catch (error) {
     console.error('CREATE MY AUTHOR STORE WITHDRAWAL ERROR:', error)
     return res.status(500).json({
       ok: false,
       message: 'Failed to submit withdrawal request',
-      error: error.message,
     })
+  } finally {
+    authorStoreWithdrawalRequestsInProgress.delete(lockKey)
   }
 }
 
