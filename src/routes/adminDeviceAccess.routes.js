@@ -1,44 +1,53 @@
 import express from 'express'
-import { requireAdmin } from '../middleware/auth.middleware.js'
-import { createSecurityGate } from '../middleware/securityGate.middleware.js'
+import { rateLimit } from 'express-rate-limit'
 import {
-  emergencyResetDevices,
-  getAdminDeviceAccessOverview,
-  getAdminDeviceEvents,
-  getAdminDevices,
-  logoutCurrentDevice,
-  revokeAdminDevice,
-  getAdminSecurityAlerts,
-  markAdminSecurityAlertRead,
-  markAllAdminSecurityAlertsReadController,
-} from '../controllers/adminDeviceAccess.controller.js'
+  getAdminCommentTrash,
+  getMyAuthorCommentTrash,
+  recoverAdminTrashComment,
+  recoverMyAuthorTrashComment,
+} from '../controllers/commentTrash.controller.js'
+import { requireAdmin } from '../middleware/auth.middleware.js'
+import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
 
-const deviceMutationGate = createSecurityGate({
-  gateId: 'admin_device_access_mutation',
-  roles: ['owner', 'admin'],
-  allowOwner: true,
-  allowInSafeMode: false,
+const commentTrashReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'COMMENT_TRASH_READ_RATE_LIMIT',
+    message: 'Too many comment trash requests. Please retry shortly.',
+  },
 })
 
-const emergencyRecoveryGate = createSecurityGate({
-  gateId: 'admin_device_access_emergency_recovery',
-  roles: ['owner', 'admin'],
-  allowOwner: true,
-  allowInSafeMode: true,
+const commentTrashRecoverLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'COMMENT_TRASH_RECOVER_RATE_LIMIT',
+    message: 'Too many comment restore requests. Please retry shortly.',
+  },
 })
 
-router.use(requireAdmin)
-
-router.get('/overview', getAdminDeviceAccessOverview)
-router.get('/devices', getAdminDevices)
-router.get('/events', getAdminDeviceEvents)
-router.post('/logout-current', deviceMutationGate, logoutCurrentDevice)
-router.patch('/devices/:deviceId/revoke', deviceMutationGate, revokeAdminDevice)
-router.post('/emergency-reset', emergencyRecoveryGate, emergencyResetDevices)
-router.get('/security-alerts', getAdminSecurityAlerts)
-router.patch('/security-alerts/read-all', markAllAdminSecurityAlertsReadController)
-router.patch('/security-alerts/:alertId/read', markAdminSecurityAlertRead)
+router.get('/author', commentTrashReadLimit, requireUser, getMyAuthorCommentTrash)
+router.patch(
+  '/author/:source/:commentId/recover',
+  commentTrashRecoverLimit,
+  requireUser,
+  recoverMyAuthorTrashComment
+)
+router.get('/admin', commentTrashReadLimit, requireAdmin, getAdminCommentTrash)
+router.patch(
+  '/admin/:source/:commentId/recover',
+  commentTrashRecoverLimit,
+  requireAdmin,
+  recoverAdminTrashComment
+)
 
 export default router
