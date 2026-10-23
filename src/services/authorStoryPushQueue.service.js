@@ -162,7 +162,7 @@ export function startAuthorStoryPushQueue() {
   if (started) return
 
   const status = getConfigStatus()
-  console.info('AUTHOR_PUSH_STARTUP', status)
+  console.info('AUTHOR_PUSH_STARTUP')
   if (!status.enabled) return
 
   started = true
