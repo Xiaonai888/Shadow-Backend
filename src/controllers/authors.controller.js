@@ -313,34 +313,47 @@ export async function getPublicAuthorPage(req, res) {
       })
     }
 
-    const isOwner =
-      Boolean(userId) &&
-      String(data.user_id) === String(userId)
+    const isOwner = Boolean(userId) && String(data.user_id) === String(userId)
+    const canViewAdultStories = isOwner || ageAccess.can_view_adult_stories
+    const includeWorks = String(req.query.include_works ?? '1') !== '0'
 
-    const canViewAdultStories =
-      isOwner ||
-      ageAccess.can_view_adult_stories
+    let worksRequest
+    if (includeWorks) {
+      worksRequest = getAuthorPageWorks(data.id, canViewAdultStories)
+    } else {
+      let countQuery = supabase
+        .from('stories')
+        .select('id', { count: 'exact', head: true })
+        .eq('author_id', data.id)
+        .eq('status', 'published')
+        .is('deleted_at', null)
 
-    const [isFollowing, works] = await Promise.all([
+      worksRequest = applyAdultStoryVisibility(countQuery, {
+        can_view_adult_stories: canViewAdultStories,
+      })
+    }
+
+    const [isFollowing, worksOrCount] = await Promise.all([
       getFollowStatus(data.id, userId),
-      getAuthorPageWorks(
-        data.id,
-        canViewAdultStories
-      ),
+      worksRequest,
     ])
 
+    if (!includeWorks && worksOrCount.error) throw worksOrCount.error
+
+    const works = includeWorks ? worksOrCount : []
+    const totalStories = includeWorks
+      ? works.length
+      : Number(worksOrCount.count || 0)
+
     if (!isOwner) {
-      await incrementAuthorPageAnalytics(
-        data.id,
-        'page_views'
-      )
+      await incrementAuthorPageAnalytics(data.id, 'page_views')
     }
 
     return res.status(200).json({
       ok: true,
       author_page: publicAuthorPage({
         ...data,
-        total_stories: works.length,
+        total_stories: totalStories,
       }),
       is_following: isFollowing,
       total_followers: Number(data.total_followers || 0),
@@ -356,6 +369,7 @@ export async function getPublicAuthorPage(req, res) {
     })
   }
 }
+
 
 export async function getAuthorPageWorksPaginated(req, res) {
   try {
