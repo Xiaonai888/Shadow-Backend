@@ -1,5 +1,4 @@
 import { createReadStream } from 'node:fs'
-import { lstat, realpath } from 'node:fs/promises'
 import { lstat, realpath, readdir } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
