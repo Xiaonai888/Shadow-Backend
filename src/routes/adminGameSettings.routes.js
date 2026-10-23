@@ -2,6 +2,7 @@ import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { guardDiskBackedUploads } from '../middleware/globalMediaUploadGuard.middleware.js'
 import {
@@ -12,6 +13,19 @@ import {
 import path from 'node:path'
 
 const router = express.Router()
+const gameSettingsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(
+    req.admin?.admin_id || req.admin?.id || req.admin?.sub || req.admin?.email || ipKeyGenerator(req.ip)
+  ),
+  message: {
+    ok: false,
+    message: 'Too many requests. Please try again later.',
+  },
+})
 const allowedTypes = new Set([
   'image/jpeg',
   'image/png',
@@ -77,11 +91,12 @@ function cleanupTempFile(req, res, next) {
   next()
 }
 
-router.get('/', requireAdmin, getAdminGames)
-router.patch('/:gameKey', requireAdmin, updateAdminGame)
+router.get('/', requireAdmin, gameSettingsLimiter, getAdminGames)
+router.patch('/:gameKey', requireAdmin, gameSettingsLimiter, updateAdminGame)
 router.post(
   '/:gameKey/profile',
   requireAdmin,
+  gameSettingsLimiter,
   runUpload,
   cleanupTempFile,
   guardDiskBackedUploads,
