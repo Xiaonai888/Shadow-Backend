@@ -1,4 +1,5 @@
 import express from "express";
+import { rateLimit } from "express-rate-limit";
 import { requireUser } from "../middleware/user.middleware.js";
 import {
   listChatThemeBackgrounds,
@@ -11,6 +12,12 @@ import { createRateLimit } from "../middleware/rateLimit.middleware.js";
 
 const router = express.Router();
 
+router.use(rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+}));
 router.use(requireUser);
 router.use(createRateLimit({
   key: "reader-chat-themes",
