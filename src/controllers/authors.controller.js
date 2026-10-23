@@ -873,6 +873,14 @@ export async function getAuthorPageReviews(req, res) {
   try {
     const pageUsername = normalizePageUsername(req.params.pageUsername)
     const userId = getOptionalUserId(req)
+    const rawLimit = Number(req.query?.limit)
+    const rawOffset = Number(req.query?.offset)
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(50, Math.trunc(rawLimit))
+      : 50
+    const offset = Number.isFinite(rawOffset) && rawOffset >= 0
+      ? Math.min(100000, Math.trunc(rawOffset))
+      : 0
 
     if (!pageUsername) {
       return res.status(400).json({ ok: false, message: 'Page username is required' })
@@ -891,19 +899,47 @@ export async function getAuthorPageReviews(req, res) {
       return res.status(404).json({ ok: false, message: 'Author page not found' })
     }
 
-    const { data: reviewRows, error: reviewError } = await supabase
-      .from('author_page_reviews')
-      .select('id, reviewer_user_id, is_recommended, review_text, status, created_at, updated_at')
-      .eq('author_page_id', authorPage.id)
-      .eq('status', 'active')
-      .order('created_at', { ascending: false })
-      .limit(50)
+    const reviewFields = 'id, reviewer_user_id, is_recommended, review_text, status, created_at, updated_at'
+    const [reviewsResult, recommendedResult] = await Promise.all([
+      supabase
+        .from('author_page_reviews')
+        .select(reviewFields, { count: 'exact' })
+        .eq('author_page_id', authorPage.id)
+        .eq('status', 'active')
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range(offset, offset + limit - 1),
+      supabase
+        .from('author_page_reviews')
+        .select('id', { count: 'exact', head: true })
+        .eq('author_page_id', authorPage.id)
+        .eq('status', 'active')
+        .eq('is_recommended', true),
+    ])
 
-    if (reviewError) throw reviewError
+    if (reviewsResult.error) throw reviewsResult.error
+    if (recommendedResult.error) throw recommendedResult.error
+
+    const reviewRows = reviewsResult.data || []
+    let myReviewRow = userId
+      ? reviewRows.find((item) => String(item.reviewer_user_id) === String(userId)) || null
+      : null
+
+    if (userId && !myReviewRow) {
+      const { data: ownRow, error: ownError } = await supabase
+        .from('author_page_reviews')
+        .select(reviewFields)
+        .eq('author_page_id', authorPage.id)
+        .eq('reviewer_user_id', userId)
+        .eq('status', 'active')
+        .maybeSingle()
+      if (ownError) throw ownError
+      myReviewRow = ownRow || null
+    }
 
     const reviewerIds = [
       ...new Set(
-        (reviewRows || [])
+        [...reviewRows, ...(myReviewRow ? [myReviewRow] : [])]
           .map((item) => item.reviewer_user_id)
           .filter(Boolean)
       ),
@@ -917,12 +953,11 @@ export async function getAuthorPageReviews(req, res) {
         .in('id', reviewerIds)
 
       if (usersError) throw usersError
-      usersById = new Map((users || []).map((user) => [user.id, user]))
+      usersById = new Map((users || []).map((user) => [String(user.id), user]))
     }
 
-    const reviews = (reviewRows || []).map((item) => {
-      const user = usersById.get(item.reviewer_user_id) || {}
-
+    const toPublicReview = (item) => {
+      const user = usersById.get(String(item.reviewer_user_id)) || {}
       return {
         id: item.id,
         reviewer_user_id: item.reviewer_user_id,
@@ -933,21 +968,19 @@ export async function getAuthorPageReviews(req, res) {
         review_text: item.review_text || '',
         created_at: item.created_at,
         updated_at: item.updated_at,
-        is_mine: userId
-          ? String(item.reviewer_user_id) === String(userId)
-          : false,
+        is_mine: Boolean(userId && String(item.reviewer_user_id) === String(userId)),
       }
-    })
+    }
 
-    const totalCount = reviews.length
-    const recommendCount = reviews.filter((item) => item.is_recommended).length
+    const reviews = reviewRows.map(toPublicReview)
+    const totalCount = Number(reviewsResult.count || 0)
+    const recommendCount = Number(recommendedResult.count || 0)
     const recommendPercent = totalCount
       ? Math.round((recommendCount / totalCount) * 100)
       : 0
-    const myReview = userId
-      ? reviews.find((item) => item.is_mine) || null
-      : null
+    const hasMore = offset + reviews.length < totalCount
 
+    res.set('Cache-Control', 'private, no-store')
     return res.status(200).json({
       ok: true,
       summary: {
@@ -956,7 +989,11 @@ export async function getAuthorPageReviews(req, res) {
         recommend_percent: recommendPercent,
       },
       reviews,
-      my_review: myReview,
+      my_review: myReviewRow ? toPublicReview(myReviewRow) : null,
+      limit,
+      offset,
+      has_more: hasMore,
+      next_offset: hasMore ? offset + reviews.length : null,
     })
   } catch (error) {
     console.error('GET AUTHOR PAGE REVIEWS ERROR:', error)
