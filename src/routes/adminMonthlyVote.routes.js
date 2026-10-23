@@ -1,4 +1,5 @@
 import express from 'express'
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
   addMonthlyVoteCandidate,
@@ -21,24 +22,39 @@ import {
 
 const router = express.Router()
 
-router.get('/campaigns', requireAdmin, listMonthlyVoteCampaigns)
-router.post('/campaigns', requireAdmin, createMonthlyVoteCampaign)
-router.patch('/campaigns/:campaignId', requireAdmin, updateMonthlyVoteCampaign)
-router.post('/campaigns/:campaignId/finalize', requireAdmin, finalizeMonthlyVoteCampaign)
+router.use(requireAdmin)
+router.use(rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(
+    req.admin?.admin_id || req.admin?.id || req.admin?.sub || req.admin?.email || ipKeyGenerator(req.ip)
+  ),
+  message: {
+    ok: false,
+    message: 'Too many requests. Please try again later.',
+  },
+}))
 
-router.get('/campaigns/:campaignId/design', requireAdmin, getMonthlyVoteDesign)
-router.put('/campaigns/:campaignId/design', requireAdmin, saveMonthlyVoteDesign)
-router.post('/campaigns/:campaignId/design/publish', requireAdmin, publishMonthlyVoteDesign)
-router.post('/campaigns/:campaignId/design/unpublish', requireAdmin, unpublishMonthlyVoteDesign)
+router.get('/campaigns', listMonthlyVoteCampaigns)
+router.post('/campaigns', createMonthlyVoteCampaign)
+router.patch('/campaigns/:campaignId', updateMonthlyVoteCampaign)
+router.post('/campaigns/:campaignId/finalize', finalizeMonthlyVoteCampaign)
 
-router.get('/campaigns/:campaignId/announcements', requireAdmin, listMonthlyVoteAnnouncements)
-router.post('/campaigns/:campaignId/announcements', requireAdmin, createMonthlyVoteAnnouncement)
-router.patch('/announcements/:announcementId', requireAdmin, updateMonthlyVoteAnnouncement)
-router.delete('/announcements/:announcementId', requireAdmin, deleteMonthlyVoteAnnouncement)
+router.get('/campaigns/:campaignId/design', getMonthlyVoteDesign)
+router.put('/campaigns/:campaignId/design', saveMonthlyVoteDesign)
+router.post('/campaigns/:campaignId/design/publish', publishMonthlyVoteDesign)
+router.post('/campaigns/:campaignId/design/unpublish', unpublishMonthlyVoteDesign)
 
-router.get('/campaigns/:campaignId/candidates', requireAdmin, listMonthlyVoteCandidates)
-router.post('/campaigns/:campaignId/candidates', requireAdmin, addMonthlyVoteCandidate)
-router.patch('/candidates/:candidateId', requireAdmin, updateMonthlyVoteCandidate)
-router.delete('/candidates/:candidateId', requireAdmin, removeMonthlyVoteCandidate)
+router.get('/campaigns/:campaignId/announcements', listMonthlyVoteAnnouncements)
+router.post('/campaigns/:campaignId/announcements', createMonthlyVoteAnnouncement)
+router.patch('/announcements/:announcementId', updateMonthlyVoteAnnouncement)
+router.delete('/announcements/:announcementId', deleteMonthlyVoteAnnouncement)
+
+router.get('/campaigns/:campaignId/candidates', listMonthlyVoteCandidates)
+router.post('/campaigns/:campaignId/candidates', addMonthlyVoteCandidate)
+router.patch('/candidates/:candidateId', updateMonthlyVoteCandidate)
+router.delete('/candidates/:candidateId', removeMonthlyVoteCandidate)
 
 export default router
