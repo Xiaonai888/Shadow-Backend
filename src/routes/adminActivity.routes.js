@@ -5,6 +5,13 @@ import { getAdminActivityLogs } from '../controllers/adminActivity.controller.js
 
 const router = express.Router()
 
+const adminActivityPreAuthLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+})
+
 const adminActivityReadLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 180,
@@ -17,6 +24,6 @@ const adminActivityReadLimit = rateLimit({
   },
 })
 
-router.get('/', requireAdmin, adminActivityReadLimit, getAdminActivityLogs)
+router.get('/', adminActivityPreAuthLimit, requireAdmin, adminActivityReadLimit, getAdminActivityLogs)
 
 export default router
