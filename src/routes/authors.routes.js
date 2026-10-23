@@ -28,6 +28,7 @@ import {
   followAuthorPage,
   getAuthorPageFollowers,
   getAuthorPageReviews,
+  getAuthorPageWorksPaginated,
   upsertMyAuthorPageReview,
   deleteMyAuthorPageReview,
   getFollowedAuthorPages,
@@ -265,6 +266,7 @@ router.get('/hashtags/suggest', requireUser, getAuthorHashtagSuggestions)
 router.post('/hashtags/interest', requireUser, recordAuthorHashtagInterest)
 router.get('/discover/posts/feed', requireUser, getDiscoverAuthorPostsFeed)
 router.get('/top', getTopAuthorPages)
+router.get('/page/:pageUsername/works', getAuthorPageWorksPaginated)
 router.get('/page/:pageUsername/followers', getAuthorPageFollowers)
 router.get('/page/:pageUsername/reviews', getAuthorPageReviews)
 router.get('/page/:pageUsername/transparency', getAuthorPageTransparency)
