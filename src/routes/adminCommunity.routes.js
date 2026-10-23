@@ -1,4 +1,5 @@
 import express from 'express'
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit'
 import {
   getAdminCommunityAuthors,
   getAdminCommunityOverview,
@@ -25,24 +26,40 @@ import { getAdminReaderPeriodDetail } from '../controllers/adminReaderPeriodDeta
 
 const router = express.Router()
 
-router.get('/overview', requireAdminPermission('community.view'), getAdminCommunityOverview)
-router.get('/readers', requireAdminPermission('community.view'), getAdminCommunityReaders)
-router.get('/readers/today', requireAdminPermission('readers.view'), getAdminCommunityReadersToday)
-router.get('/readers/daily', requireAdminPermission('readers.view'), getAdminDailyReaders)
-router.get('/readers/ranking', requireAdminPermission('readers.view'), getAdminReaderRanking)
-router.get('/readers/period', requireAdminPermission('readers.view'), getAdminReaderPeriod)
-router.get('/readers/period/detail', requireAdminPermission('readers.view'), getAdminReaderPeriodDetail)
-router.get('/readers/:readerId', requireAdminPermission('community.view'), getAdminCommunityReaderDetail)
-router.get('/reader-presence', requireAdmin, getAdminReaderPresence)
-router.get('/reader-countries', requireAdminPermission('community.view'), getAdminReaderCountryAnalytics)
-router.get('/reader-growth/daily', requireAdminPermission('community.view'), getAdminReaderGrowthDaily)
-router.get('/visitor-growth/daily', requireAdminPermission('community.view'), getAdminVisitorGrowthDaily)
-router.get('/reader-countries/:countryCode/readers', requireAdminPermission('community.view'), getAdminReaderCountryReaders)
-router.get('/authors', requireAdminPermission('community.view'), getAdminCommunityAuthors)
-router.get('/visitors/overview', requireAdminPermission('community.view'), getAdminCommunityVisitorOverview)
-router.get('/visitors', requireAdminPermission('community.view'), getAdminCommunityVisitors)
-router.get('/visitors/:visitorId', requireAdminPermission('community.view'), getAdminCommunityVisitorDetail)
-router.get('/dashboard/growth', requireAdmin, getAdminDashboardGrowth)
-router.get('/dashboard/orders', requireAdmin, getAdminDashboardPaidOrders)
+const adminCommunityReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(
+    req.admin?.admin_id || req.admin?.id || req.admin?.sub ||
+    req.admin?.email || ipKeyGenerator(req.ip)
+  ),
+  message: {
+    ok: false,
+    code: 'ADMIN_COMMUNITY_READ_RATE_LIMIT',
+    message: 'Too many community requests. Please retry shortly.',
+  },
+})
+
+router.get('/overview', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminCommunityOverview)
+router.get('/readers', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminCommunityReaders)
+router.get('/readers/today', requireAdminPermission('readers.view'), adminCommunityReadLimit, getAdminCommunityReadersToday)
+router.get('/readers/daily', requireAdminPermission('readers.view'), adminCommunityReadLimit, getAdminDailyReaders)
+router.get('/readers/ranking', requireAdminPermission('readers.view'), adminCommunityReadLimit, getAdminReaderRanking)
+router.get('/readers/period', requireAdminPermission('readers.view'), adminCommunityReadLimit, getAdminReaderPeriod)
+router.get('/readers/period/detail', requireAdminPermission('readers.view'), adminCommunityReadLimit, getAdminReaderPeriodDetail)
+router.get('/readers/:readerId', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminCommunityReaderDetail)
+router.get('/reader-presence', requireAdmin, adminCommunityReadLimit, getAdminReaderPresence)
+router.get('/reader-countries', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminReaderCountryAnalytics)
+router.get('/reader-growth/daily', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminReaderGrowthDaily)
+router.get('/visitor-growth/daily', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminVisitorGrowthDaily)
+router.get('/reader-countries/:countryCode/readers', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminReaderCountryReaders)
+router.get('/authors', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminCommunityAuthors)
+router.get('/visitors/overview', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminCommunityVisitorOverview)
+router.get('/visitors', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminCommunityVisitors)
+router.get('/visitors/:visitorId', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminCommunityVisitorDetail)
+router.get('/dashboard/growth', requireAdmin, adminCommunityReadLimit, getAdminDashboardGrowth)
+router.get('/dashboard/orders', requireAdmin, adminCommunityReadLimit, getAdminDashboardPaidOrders)
 
 export default router
