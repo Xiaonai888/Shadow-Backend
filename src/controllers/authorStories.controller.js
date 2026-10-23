@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { open, stat, unlink } from 'node:fs/promises'
+import { lstat, open, realpath, stat, unlink } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -183,8 +183,34 @@ async function findDirectChildBox(fileHandle, start, end, wantedType) {
   return null
 }
 
-async function readVideoDurationSeconds(filePath) {
-  const fileHandle = await open(filePath, 'r')
+async function getValidatedAuthorStoryMediaPath(file, mediaType) {
+  const inputPath = file?.path
+  const fileName = typeof inputPath === 'string' ? path.basename(inputPath) : ''
+  const multerVideo = /^[a-f0-9]{32}$/i.test(fileName)
+  const processedImage = /^author-story-\d{13}-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.webp$/i.test(fileName)
+  const invalid = () => {
+    const error = new Error('Invalid temporary author story media file')
+    error.statusCode = 400
+    error.code = 'AUTHOR_STORY_MEDIA_PATH_INVALID'
+    throw error
+  }
+  if (!((mediaType === 'video' && multerVideo) || (mediaType === 'image' && processedImage))) invalid()
+  const expectedPath = path.join(os.tmpdir(), fileName)
+  if (inputPath !== expectedPath) invalid()
+  const [tempRoot, realFile, fileInfo] = await Promise.all([
+    realpath(os.tmpdir()),
+    realpath(expectedPath),
+    lstat(expectedPath),
+  ])
+  const declaredSize = Number(file.fileSize ?? file.size)
+  if (!fileInfo.isFile() || path.dirname(realFile) !== tempRoot || !Number.isSafeInteger(declaredSize) || declaredSize < 1 || fileInfo.size !== declaredSize) invalid()
+  return realFile
+}
+
+
+async function readVideoDurationSeconds(file) {
+  const sourcePath = await getValidatedAuthorStoryMediaPath(file, 'video')
+  const fileHandle = await open(sourcePath, 'r')
 
   try {
     const fileStat = await fileHandle.stat()
@@ -271,7 +297,7 @@ async function validateMedia(file) {
   }
 
   if (isVideo) {
-    const duration = await readVideoDurationSeconds(file.path)
+    const duration = await readVideoDurationSeconds(file)
 
     if (!Number.isFinite(duration) || duration <= 0) {
       const error = new Error('Could not read video duration')
@@ -476,11 +502,12 @@ async function uploadMedia(authorPageId, preparedMedia, mediaType) {
   const filePath =
     `author-stories/${authorPageId}/${mediaType}/` +
     `${Date.now()}-${random}.${preparedMedia.extension}`
-
+Body: createReadStream(preparedMedia.path),
+  
   await getR2Client().send(new PutObjectCommand({
     Bucket: getR2BucketName(),
     Key: filePath,
-    Body: createReadStream(preparedMedia.path),
+    Body: createReadStream(sourcePath),
     ContentLength: preparedMedia.fileSize,
     ContentType: preparedMedia.mimeType,
     CacheControl: 'public, max-age=86400',
