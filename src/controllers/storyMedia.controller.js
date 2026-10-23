@@ -215,25 +215,85 @@ async function getMyAuthorPage(
   return data
 }
 
-async function getValidatedStoryUploadPath(file) {
-  const reject = () => {
+async function uploadAuthorImageToR2({
+  authorPage,
+  userId,
+  file,
+  folderKey,
+}) {
+  const folder =
+    R2_FOLDERS[folderKey]
+
+  if (!folder) {
+    throw new Error(
+      'Invalid R2 upload folder'
+    )
+  }
+
+  const temporaryName = file?.filename
+  if (
+    typeof temporaryName !== 'string' ||
+    !/^[a-f0-9]{32}$/i.test(temporaryName) ||
+    file.path !== path.join(os.tmpdir(), temporaryName)
+  ) {
     const error = new Error('Invalid temporary upload file')
     error.statusCode = 400
     throw error
   }
-  const fileName = file?.filename
-  if (typeof fileName !== 'string' || !/^[a-f0-9]{32}$/i.test(fileName)) reject()
-  const expectedPath = path.join(os.tmpdir(), fileName)
-  if (file.path !== expectedPath) reject()
-  let details
+
+  const publicUrl = await uploadFileToR2(
+    file,
+    `${folder}/${authorPage.id}`
+  )
+  const publicBaseUrl = `${getR2PublicUrl()}/`
+  const filePath = publicUrl.slice(publicBaseUrl.length)
+  const fileName = filePath.split('/').pop()
+
+  let asset
   try {
-    details = await lstat(expectedPath)
-  } catch {
-    reject()
+    asset = await recordAuthorR2Asset({
+      authorId: authorPage.id,
+      category: folderKey,
+      fileName,
+      filePath,
+      publicUrl,
+      mimeType: file.mimetype,
+      fileSize: file.size,
+      uploadedBy: userId,
+      sourceTable: [
+        'author_store_cover',
+        'author_store_pdf',
+        'author_store_gallery',
+      ].includes(folderKey)
+        ? 'author_store_products'
+        : 'author_page_posts',
+      sourceId: null,
+      ownerLabel:
+        authorPage.page_name ||
+        authorPage.page_username ||
+        null,
+    })
+  } catch (error) {
+    await deleteR2ObjectByKey(filePath).catch((cleanupError) => {
+      console.error('AUTHOR_R2_CLEANUP_ERROR:', cleanupError)
+    })
+    throw error
   }
-  if (!details.isFile() || details.size <= 0) reject()
-  return expectedPath
+
+  const quota = await getAuthorStorageQuota(authorPage.id).catch((error) => {
+    console.error('AUTHOR_QUOTA_REFRESH_ERROR:', error)
+    return null
+  })
+
+  return {
+    fileName,
+    filePath,
+    publicUrl,
+    asset,
+    quota,
+  }
 }
+
 
 async function uploadAuthorImageToR2({
   authorPage,
