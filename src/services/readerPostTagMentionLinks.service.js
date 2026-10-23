@@ -64,7 +64,7 @@ function mentionsInText(content) {
 async function mentionIds(content, actorId) {
   const names = mentionsInText(content)
   if (!names.length) return []
-  const filters = names.map((name) => `username.ilike.${name.replace(/[\\%_]/g, '\\$&')}`).join(',')
+  const filters = names.map((name) => `username.ilike.${name.replaceAll('_', '\\_')}`).join(',')
   const { data, error } = await supabase
     .from('users')
     .select('id,username')
