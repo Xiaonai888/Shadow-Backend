@@ -502,9 +502,9 @@ async function uploadMedia(authorPageId, preparedMedia, mediaType) {
   const filePath =
     `author-stories/${authorPageId}/${mediaType}/` +
     `${Date.now()}-${random}.${preparedMedia.extension}`
-Body: createReadStream(preparedMedia.path),
-  
-  await getR2Client().send(new PutObjectCommand({
+const sourcePath = await getValidatedAuthorStoryMediaPath(preparedMedia, mediaType)
+
+await getR2Client().send(new PutObjectCommand({
     Bucket: getR2BucketName(),
     Key: filePath,
     Body: createReadStream(sourcePath),
