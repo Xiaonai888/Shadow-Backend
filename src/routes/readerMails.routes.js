@@ -1,4 +1,5 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
 import {
   claimMailReward,
@@ -13,12 +14,36 @@ import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
 
-router.get('/', requireUser, getMyMails)
-router.get('/unread-count', requireUser, getMyMailUnreadCount)
-router.get('/daily-checkin-reminder', requireUser, getDailyCheckInReminder)
-router.patch('/daily-checkin-reminder', requireUser, updateDailyCheckInReminder)
-router.post('/daily-checkin-reminder/run', runDailyCheckInReminderMails)
-router.post('/author-loyalty-reminders/run', async (req, res) => {
+const mailReadSafetyLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 900,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { ok: false, code: 'MAIL_READ_RATE_LIMIT', message: 'Too many mail requests. Please retry shortly.' },
+})
+
+const mailWriteSafetyLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 300,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { ok: false, code: 'MAIL_WRITE_RATE_LIMIT', message: 'Too many mail actions. Please retry shortly.' },
+})
+
+const mailCronSafetyLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 30,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { ok: false, code: 'MAIL_CRON_RATE_LIMIT', message: 'Too many scheduled mail requests. Please retry shortly.' },
+})
+
+router.get('/', mailReadSafetyLimit, requireUser, getMyMails)
+router.get('/unread-count', mailReadSafetyLimit, requireUser, getMyMailUnreadCount)
+router.get('/daily-checkin-reminder', mailReadSafetyLimit, requireUser, getDailyCheckInReminder)
+router.patch('/daily-checkin-reminder', mailWriteSafetyLimit, requireUser, updateDailyCheckInReminder)
+router.post('/daily-checkin-reminder/run', mailCronSafetyLimit, runDailyCheckInReminderMails)
+router.post('/author-loyalty-reminders/run', mailCronSafetyLimit, async (req, res) => {
   const expected = String(process.env.CRON_SECRET || '').trim()
   const received = String(req.headers['x-cron-secret'] || '').trim()
 
@@ -39,7 +64,7 @@ router.post('/author-loyalty-reminders/run', async (req, res) => {
     return res.status(500).json({ ok: false, message: 'Author loyalty mail delivery failed' })
   }
 })
-router.patch('/:mailId/read', requireUser, markMailAsRead)
-router.patch('/:mailId/claim', requireUser, claimMailReward)
+router.patch('/:mailId/read', mailWriteSafetyLimit, requireUser, markMailAsRead)
+router.patch('/:mailId/claim', mailWriteSafetyLimit, requireUser, claimMailReward)
 
 export default router
