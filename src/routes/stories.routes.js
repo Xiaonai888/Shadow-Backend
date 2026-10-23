@@ -53,6 +53,12 @@ const storyRateLimit = rateLimit({
     message: 'Too many story requests. Please try again shortly.',
   },
 })
+router.use(rateLimit({
+  windowMs: 60000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+}))
 
 router.use(requireUser)
 router.use(storyRateLimit)
