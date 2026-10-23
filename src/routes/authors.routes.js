@@ -149,6 +149,8 @@ import {
   setAuthorPagePhotoReaction,
   updateAuthorPagePhotoComment,
 } from '../controllers/authorPagePhotoInteractions.controller.js'
+import { rateLimit } from 'express-rate-limit'
+
 const router = express.Router()
 
 function invalidateMyAuthorPageAfterMutation(
@@ -215,7 +217,7 @@ router.get('/me/daily-80-event', requireUser, getMyAuthorDaily80Event)
 router.get('/me/daily-50-event', requireUser, getMyAuthorDaily50Event)
 router.get('/me/dashboard', requireUser, getMyAuthorDashboard)
 router.get('/me/dashboard-badges', requireUser, getMyAuthorDashboardBadges)
-router.get('/me', requireUser, getMyAuthorPage)
+router.get('/me', rateLimit({ windowMs: 60000, limit: 1200, standardHeaders: 'draft-8', legacyHeaders: false }), requireUser, getMyAuthorPage)
 router.get('/me/quest', requireUser, getMyAuthorQuest)
 router.get('/me/income', requireUser, getMyAuthorIncome)
 router.get('/me/story-payout-status', requireUser, getMyAuthorStoryPayoutStatus)
