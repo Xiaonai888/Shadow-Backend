@@ -1,4 +1,5 @@
 import express from 'express'
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { createSecurityGate } from '../middleware/securityGate.middleware.js'
@@ -13,6 +14,22 @@ import {
 } from '../controllers/adminSpamGuard.controller.js'
 
 const router = express.Router()
+
+const adminSpamGuardLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(
+    req.admin?.admin_id || req.admin?.id || req.admin?.sub ||
+    req.admin?.email || ipKeyGenerator(req.ip)
+  ),
+  message: {
+    ok: false,
+    code: 'ADMIN_SPAM_GUARD_RATE_LIMIT',
+    message: 'Too many security requests. Please try again shortly.',
+  },
+})
 
 const manageSpamGuard = requireAdminPermission('admin_guard.manage')
 
@@ -61,6 +78,7 @@ const observeSpamGuardRelease = (action) => (req, res, next) => {
 }
 
 router.use(requireAdmin)
+router.use(adminSpamGuardLimit)
 
 router.get('/overview', getAdminSpamGuardOverview)
 router.get('/states', getAdminSpamGuardStates)
