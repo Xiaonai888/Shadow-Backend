@@ -55,17 +55,41 @@ const unlockWriteLimit = rateLimit({
     message: 'Too many unlock requests. Please try again shortly.',
   },
 })
+const unlockReaderReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || req.user?.session_id || 'unauthenticated'),
+  message: {
+    ok: false,
+    code: 'UNLOCK_READ_RATE_LIMIT',
+    message: 'Too many reading requests. Please try again shortly.',
+  },
+})
+const unlockAdminReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 300,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.admin?.admin_id || req.admin?.id || req.admin?.user_id || req.admin?.sub || 'unauthenticated'),
+  message: {
+    ok: false,
+    code: 'UNLOCK_ADMIN_RATE_LIMIT',
+    message: 'Too many admin requests. Please try again shortly.',
+  },
+})
 
-  router.use(rateLimit({
+router.use(rateLimit({
   windowMs: 60000, limit: 1200, standardHeaders: 'draft-8', legacyHeaders: false,
   keyGenerator: (req) => req.spamGuard?.identity_type === 'account' ? req.spamGuard.guard_key : String(req.socket?.remoteAddress || 'unknown')
 }))
 
 router.get('/rules', getPlatformUnlockRules)
 router.get('/events/writer-wednesday', getWriterWednesdayStatus)
-router.get('/admin/rewarded-ad-analytics', requireAdmin, getAdminRewardedAdAnalytics)
-router.get('/stories/:storyId/episodes/:episodeId/status', requireUser, loadReaderPremiumTier, getEpisodeUnlockStatus)
-router.get('/stories/:storyId/episodes/:episodeId/read-gate', logReadGateFailure, requireUser, loadReaderPremiumTier, getEpisodeReadGate)
+router.get('/admin/rewarded-ad-analytics', requireAdmin, unlockAdminReadLimit, getAdminRewardedAdAnalytics)
+router.get('/stories/:storyId/episodes/:episodeId/status', requireUser, unlockReaderReadLimit, loadReaderPremiumTier, getEpisodeUnlockStatus)
+router.get('/stories/:storyId/episodes/:episodeId/read-gate', logReadGateFailure, requireUser, unlockReaderReadLimit, loadReaderPremiumTier, getEpisodeReadGate)
 router.post('/stories/:storyId/episodes/:episodeId/diamond', requireUser, unlockWriteLimit, loadReaderPremiumTier, unlockEpisodeWithDiamonds)
 router.post('/stories/:storyId/episodes/:episodeId/package', requireUser, unlockWriteLimit, loadReaderPremiumTier, unlockEpisodePackageWithDiamonds)
 router.post('/stories/:storyId/special-promotion', requireUser, unlockWriteLimit, unlockDiscoverSpecialPromotionWithDiamonds)
