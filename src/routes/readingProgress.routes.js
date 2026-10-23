@@ -1,4 +1,4 @@
-import { createRateLimit } from '../middleware/rateLimit.middleware.js'
+import { rateLimit } from 'express-rate-limit'
 import express from 'express'
 import {
   getReadingProgress,
@@ -7,7 +7,18 @@ import {
 import { requireUser } from '../middleware/user.middleware.js'
 
 const router = express.Router()
-const progressRateLimit = createRateLimit({ key: 'reading-progress', windowMs: 60000, max: 120, identity: (req) => req.user?.user_id })
+const progressRateLimit = rateLimit({
+  windowMs: 60000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => `${String(req.user?.user_id || req.user?.id || 'unauthenticated')}:${req.method}`,
+  message: {
+    ok: false,
+    code: 'READING_PROGRESS_RATE_LIMIT',
+    message: 'Too many reading progress requests. Please try again shortly.',
+  },
+})
 
 router.get('/', requireUser, progressRateLimit, getReadingProgress)
 router.post('/', requireUser, progressRateLimit, saveReadingProgress)
