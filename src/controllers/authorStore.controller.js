@@ -1778,13 +1778,67 @@ export async function getPublicAuthorStoreProducts(req, res) {
       return res.status(404).json({ ok: false, message: 'Author page not found' })
     }
 
-    const { data, error } = await supabase
+    const paginated = req.query.page !== undefined || req.query.limit !== undefined
+    const pageRaw = Number(req.query.page ?? 1)
+    const limitRaw = Number(req.query.limit ?? 9)
+
+    if (paginated && (!Number.isSafeInteger(pageRaw) || pageRaw < 1 || pageRaw > 100000 || !Number.isSafeInteger(limitRaw) || limitRaw < 1 || limitRaw > 50)) {
+      return res.status(400).json({ ok: false, message: 'Invalid products pagination' })
+    }
+
+    const categoryKey = paginated ? cleanText(req.query.category_key).toLowerCase() : ''
+    const supportedCategories = new Set(['', 'new-books', 'pdf-books', 'pre-order', 'best-seller', 'second-hand', 'author-picks', 'sold-out'])
+    if (!supportedCategories.has(categoryKey)) {
+      return res.status(400).json({ ok: false, message: 'Invalid product category' })
+    }
+
+    let query = supabase
       .from('author_store_products')
-      .select('*')
+      .select('*', paginated ? { count: 'exact' } : undefined)
       .eq('author_page_id', authorPage.id)
       .eq('status', 'active')
-      .order('created_at', { ascending: false })
 
+    if (categoryKey === 'new-books') {
+      query = query.eq('product_type', 'book').in('category', ['New Books', 'New Release', 'Special Edition'])
+    } else if (categoryKey === 'pdf-books') {
+      query = query.eq('product_type', 'pdf')
+    } else if (categoryKey === 'pre-order') {
+      query = query.eq('product_type', 'book').eq('pre_order', true)
+    } else if (categoryKey === 'best-seller') {
+      query = query.eq('product_type', 'book').eq('category', 'Best Seller')
+    } else if (categoryKey === 'second-hand') {
+      query = query.eq('product_type', 'book').eq('book_condition', 'Second Hand')
+    } else if (categoryKey === 'author-picks') {
+      query = query.eq('category', 'Author Picks')
+    } else if (categoryKey === 'sold-out') {
+      query = query.eq('product_type', 'book')
+        .or('and(stock_quantity.eq.0,pre_order.eq.false),and(stock_quantity.eq.0,pre_order.is.null),and(stock_quantity.is.null,pre_order.eq.false),and(stock_quantity.is.null,pre_order.is.null)')
+    }
+
+    query = query.order('created_at', { ascending: false })
+
+    if (paginated) {
+      query = query.order('id', { ascending: true })
+      const start = (pageRaw - 1) * limitRaw
+      const { data, error, count } = await query.range(start, start + limitRaw - 1)
+      if (error) throw error
+      const total = Number(count || 0)
+      const totalPages = Math.max(1, Math.ceil(total / limitRaw))
+      return res.status(200).json({
+        ok: true,
+        products: (data || []).map(publicProduct),
+        pagination: {
+          page: pageRaw,
+          limit: limitRaw,
+          total,
+          total_pages: totalPages,
+          has_next: start + (data || []).length < total,
+          has_prev: pageRaw > 1,
+        },
+      })
+    }
+
+    const { data, error } = await query
     if (error) throw error
 
     return res.status(200).json({
