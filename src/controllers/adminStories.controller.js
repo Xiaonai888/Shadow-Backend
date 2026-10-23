@@ -198,9 +198,13 @@ function extractStoryIdFromPickerQuery(value) {
 function normalizeStoryPickerSearch(value) {
   return cleanText(value)
     .replace(/[(),]/g, ' ')
-    .replace(/[%_]/g, '\\$&')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function storyPickerIlike(value) {
+  const pattern = `%${String(value).replace(/[\\%_]/g, '\\$&')}%`
+  return `"${pattern.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
 }
 
 function publicStoryPickerItem(story, author = null) {
@@ -660,8 +664,8 @@ export async function getAdminStoryPicker(
           .select('id')
           .or(
             [
-              `page_name.ilike.%${authorSearchText}%`,
-              `page_username.ilike.%${authorSearchText}%`,
+              `page_name.ilike.${storyPickerIlike(authorSearchText)}`,
+              `page_username.ilike.${storyPickerIlike(authorSearchText)}`,
             ].join(',')
           )
           .limit(100)
@@ -680,7 +684,7 @@ export async function getAdminStoryPicker(
       }
 
       const searchFilters = [
-        `title.ilike.%${searchText}%`,
+        `title.ilike.${storyPickerIlike(searchText)}`,
       ]
 
       if (authorIds.length) {
@@ -791,7 +795,7 @@ export async function getAdminStories(req, res) {
         const { data: matchedAuthors, error: authorSearchError } = await supabase
           .from('author_pages')
           .select('id')
-          .or(`page_name.ilike.%${authorSearch}%,page_username.ilike.%${authorSearch}%`)
+          .or(`page_name.ilike.${storyPickerIlike(authorSearch)},page_username.ilike.${storyPickerIlike(authorSearch)}`)
           .limit(100)
         if (authorSearchError) throw authorSearchError
         matchedAuthorIds = (matchedAuthors || []).map((author) => author.id).filter(Boolean)
@@ -827,9 +831,9 @@ export async function getAdminStories(req, res) {
       } else {
         const safeSearch = normalizeStoryPickerSearch(search)
         const filters = [
-          `title.ilike.%${safeSearch}%`,
-          `main_genre.ilike.%${safeSearch}%`,
-          `story_language.ilike.%${safeSearch}%`,
+          `title.ilike.${storyPickerIlike(safeSearch)}`,
+          `main_genre.ilike.${storyPickerIlike(safeSearch)}`,
+          `story_language.ilike.${storyPickerIlike(safeSearch)}`,
         ]
         if (matchedAuthorIds.length) filters.push(`author_id.in.(${matchedAuthorIds.join(',')})`)
         query = query.or(filters.join(','))
