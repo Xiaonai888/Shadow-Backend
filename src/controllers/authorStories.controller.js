@@ -194,7 +194,7 @@ async function getValidatedAuthorStoryMediaPath(file, mediaType) {
     error.code = 'AUTHOR_STORY_MEDIA_PATH_INVALID'
     throw error
   }
-  if (!((mediaType === 'video' && multerVideo) || (mediaType === 'image' && processedImage))) invalid()
+  if (!((mediaType === 'video' && multerVideo) || (mediaType === 'image' && (multerVideo || processedImage)))) invalid()
   const expectedPath = path.join(os.tmpdir(), fileName)
   if (inputPath !== expectedPath) invalid()
   const [tempRoot, realFile, fileInfo] = await Promise.all([
@@ -419,7 +419,7 @@ async function optimizeStoryImage(file) {
   )
 
   try {
-    await runImageWorker(file.path, outputPath)
+    await runImageWorker(await getValidatedAuthorStoryMediaPath(file, 'image'), outputPath)
     const outputStat = await stat(outputPath)
 
     if (!outputStat.isFile() || outputStat.size <= 0) {
