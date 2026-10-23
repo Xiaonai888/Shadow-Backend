@@ -1,5 +1,6 @@
 import express from 'express'
 import cors from 'cors'
+import { rateLimit } from 'express-rate-limit'
 import dotenv from 'dotenv'
 import { trafficDiagnosticMiddleware } from './src/services/trafficDiagnostic.service.js'
 
@@ -308,6 +309,26 @@ app.use(auditAuthorStorePdfUpload)
 app.options('/api/author-store/me/pdfs/upload-private', cors({ ...corsOptions, allowedHeaders: undefined }))
 app.use(cors(corsOptions))
 app.options('*', cors(corsOptions))
+const apiRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 6000,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: (req) => (
+    req.method === 'OPTIONS' ||
+    !req.path.startsWith('/api/') ||
+    (req.method === 'POST' && (
+      req.path.startsWith('/api/purchase/aba/callback') ||
+      req.path.startsWith('/api/author-store/telegram/webhook')
+    ))
+  ),
+  message: {
+    ok: false,
+    code: 'API_RATE_LIMITED',
+    message: 'Too many requests. Please try again later.',
+  },
+})
+app.use(apiRateLimiter)
 app.use(workKillSwitch)
 app.use(workDetector)
 app.use(ipsEnforcement)
