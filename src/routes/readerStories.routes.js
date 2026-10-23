@@ -2,6 +2,7 @@ import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
+import { rateLimit, ipKeyGenerator } from 'express-rate-limit'
 import {
   createMyReaderStory,
   deleteMyReaderStory,
@@ -29,6 +30,37 @@ const upload = multer({
   limits: {
     fileSize: 30 * 1024 * 1024,
     files: 1,
+  },
+})
+
+const readerStoryRateLimitKey = (req) =>
+  req.spamGuard?.identity_type === 'account' && req.spamGuard.guard_key
+    ? req.spamGuard.guard_key
+    : ipKeyGenerator(req.ip)
+
+const readerStoryReadLimit = rateLimit({
+  windowMs: 60000,
+  limit: 900,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: readerStoryRateLimitKey,
+  message: {
+    ok: false,
+    code: 'READER_STORY_READ_RATE_LIMIT',
+    message: 'Too many story requests. Please retry shortly.',
+  },
+})
+
+const readerStoryActionLimit = rateLimit({
+  windowMs: 60000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: readerStoryRateLimitKey,
+  message: {
+    ok: false,
+    code: 'READER_STORY_ACTION_RATE_LIMIT',
+    message: 'Too many story actions. Please retry shortly.',
   },
 })
 
@@ -78,13 +110,14 @@ function uploadStoryMedia(req, res, next) {
 
 router.get(
   '/me',
+  readerStoryReadLimit,
   requireUser,
   getMyReaderStories
 )
 
-
 router.post(
   '/me/video-upload/init',
+  readerStoryActionLimit,
   requireUser,
   enforceReaderStoryDailyLimit,
   initMyReaderStoryVideoUpload
@@ -92,6 +125,7 @@ router.post(
 
 router.post(
   '/me/video-upload/finalize',
+  readerStoryActionLimit,
   requireUser,
   enforceReaderStoryDailyLimit,
   finalizeMyReaderStoryVideoUpload
@@ -99,6 +133,7 @@ router.post(
 
 router.post(
   '/me',
+  readerStoryActionLimit,
   requireUser,
   enforceReaderStoryDailyLimit,
   uploadStoryMedia,
@@ -108,6 +143,7 @@ router.post(
 
 router.post(
   '/me/repost',
+  readerStoryActionLimit,
   requireUser,
   enforceReaderStoryDailyLimit,
   repostReaderStory
@@ -115,18 +151,21 @@ router.post(
 
 router.patch(
   '/me/:storyId/extras',
+  readerStoryActionLimit,
   requireUser,
   saveMyReaderStoryExtras
 )
 
 router.delete(
   '/me/:storyId',
+  readerStoryActionLimit,
   requireUser,
   deleteMyReaderStory
 )
 
 router.post(
   '/:storyId/view',
+  readerStoryActionLimit,
   requireUser,
   recordReaderStoryView
 )
