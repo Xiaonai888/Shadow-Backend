@@ -3,6 +3,7 @@ import { getMyAuthorDashboardBadges } from '../controllers/authorDashboardBadges
 import { getFollowedAuthorPostsFeed } from '../controllers/followedAuthorPostsFeed.controller.js'
 import { getDiscoverAuthorSuggestions } from '../controllers/authorDiscovery.controller.js'
 import { getDiscoverAuthorPostsFeed } from '../controllers/discoverAuthorPostsFeed.controller.js'
+import { recordAuthorAdDiscoverEngagement } from '../controllers/authorAdDiscoverDelivery.controller.js'
 import { inviteAuthorPageFriend } from '../controllers/authorPageInvites.controller.js'
 import { getMyAuthorTopSupporters } from '../controllers/authorTopSupporters.controller.js'
 import { getMyAuthorMonthlyEarnings } from '../controllers/authorMonthlyEarnings.controller.js'
@@ -153,6 +154,31 @@ import { rateLimit } from 'express-rate-limit'
 
 const router = express.Router()
 
+const discoverBoostIpLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 180,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'DISCOVER_BOOST_IP_RATE_LIMIT',
+    message: 'Too many Boost requests. Please try again shortly.',
+  },
+})
+
+const discoverBoostViewerLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 30,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || 'unauthenticated'),
+  message: {
+    ok: false,
+    code: 'DISCOVER_BOOST_VIEWER_RATE_LIMIT',
+    message: 'Too many Boost actions. Please try again shortly.',
+  },
+})
+
 const authorPageFollowIpLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 90,
@@ -299,6 +325,13 @@ router.get('/discover', requireUser, getDiscoverAuthorSuggestions)
 router.get('/hashtags/suggest', requireUser, getAuthorHashtagSuggestions)
 router.post('/hashtags/interest', requireUser, recordAuthorHashtagInterest)
 router.get('/discover/posts/feed', requireUser, getDiscoverAuthorPostsFeed)
+router.post(
+  '/discover/posts/boost-engagement',
+  discoverBoostIpLimit,
+  requireUser,
+  discoverBoostViewerLimit,
+  recordAuthorAdDiscoverEngagement
+)
 router.get('/top', getTopAuthorPages)
 router.get('/page/:pageUsername/works', getAuthorPageWorksPaginated)
 router.get('/page/:pageUsername/followers', getAuthorPageFollowers)
