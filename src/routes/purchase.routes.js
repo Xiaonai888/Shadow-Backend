@@ -28,6 +28,10 @@ import {
   getPremiumStatus,
 } from '../controllers/premiumPayments.controller.js'
 import { openPaymentEventStream } from '../services/paymentEvents.service.js'
+import {
+  getNextDiamondCreditNotice,
+  markDiamondCreditNoticeSeen,
+} from '../controllers/diamondCreditNotices.controller.js'
 
 const router = express.Router()
 const purchasePreAuthLimit = rateLimit({
@@ -66,6 +70,8 @@ router.post('/manual/cancel/:orderId', purchasePreAuthLimit, requireUser, purcha
 router.post('/manual/proof/:orderId', purchasePreAuthLimit, requireUser, purchaseWriteLimit, upload.single('proof_image'), submitManualPaymentProof)
 router.get('/manual/status/:orderId', purchasePreAuthLimit, requireUser, purchaseReadLimit, getManualPaymentStatus)
 router.get('/manual/events/:orderId', purchasePreAuthLimit, requireUser, purchaseReadLimit, openPaymentEventStream)
+router.get('/credit-notices/next', purchasePreAuthLimit, requireUser, purchaseReadLimit, getNextDiamondCreditNotice)
+router.patch('/credit-notices/:noticeId/seen', purchasePreAuthLimit, requireUser, purchaseWriteLimit, markDiamondCreditNoticeSeen)
 
 router.get('/premium/plans', purchasePreAuthLimit, getPremiumPlans)
 router.get('/premium/status', purchasePreAuthLimit, requireUser, purchaseReadLimit, getPremiumStatus)
