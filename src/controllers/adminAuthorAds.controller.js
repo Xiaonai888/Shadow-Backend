@@ -244,17 +244,73 @@ export async function getAdminAuthorAdSummary(req, res) {
       ['active', 'status', 'active'],
       ['completed', 'status', 'completed'],
     ]
-    const results = await Promise.all(filters.map(([, field, value]) => {
-      let query = supabase.from('author_ad_campaigns')
-        .select('id', { count: 'exact', head: true })
-      if (field) query = query.eq(field, value)
-      return query
-    }))
+    const [results, spendingResult] = await Promise.all([
+      Promise.all(filters.map(([, field, value]) => {
+        let query = supabase.from('author_ad_campaigns')
+          .select('id', { count: 'exact', head: true })
+        if (field) query = query.eq(field, value)
+        return query
+      })),
+      supabase.rpc('get_admin_author_ad_money_totals_v1'),
+    ])
     const summary = {}
     results.forEach((result, index) => {
       if (result.error) throw result.error
       summary[filters[index][0]] = Number(result.count || 0)
     })
+
+    const emptySpending = () => ({
+      campaigns_with_spend: 0,
+      budget_usd: 0,
+      funded_usd: 0,
+      spent_usd: 0,
+      refunded_usd: 0,
+      remaining_funds_usd: 0,
+    })
+    const spending = {
+      all: emptySpending(),
+      post: emptySpending(),
+      book: emptySpending(),
+    }
+    let spendingAvailable = false
+
+    if (spendingResult.error) {
+      console.error('ADMIN AUTHOR ADS SPENDING SUMMARY ERROR:', spendingResult.error)
+    } else if (Array.isArray(spendingResult.data)) {
+      try {
+        if (!spendingResult.data.some((row) => row.campaign_kind === 'all')) {
+          throw new Error('Spending summary total row is missing')
+        }
+        for (const row of spendingResult.data) {
+          const kind = String(row.campaign_kind || '')
+          if (!Object.prototype.hasOwnProperty.call(spending, kind)) continue
+          const amounts = ['budget_cents', 'funded_cents', 'spent_cents', 'refunded_cents']
+            .map((field) => Number(row[field]))
+          if (amounts.some((amount) => !Number.isSafeInteger(amount) || amount < 0)) {
+            throw new Error('Spending summary amount is invalid')
+          }
+          const campaignsWithSpend = Number(row.campaigns_with_spend)
+          if (!Number.isSafeInteger(campaignsWithSpend) || campaignsWithSpend < 0) {
+            throw new Error('Spending campaign count is invalid')
+          }
+          const [budgetCents, fundedCents, spentCents, refundedCents] = amounts
+          spending[kind] = {
+            campaigns_with_spend: campaignsWithSpend,
+            budget_usd: money(budgetCents),
+            funded_usd: money(fundedCents),
+            spent_usd: money(spentCents),
+            refunded_usd: money(refundedCents),
+            remaining_funds_usd: money(Math.max(0, fundedCents - spentCents - refundedCents)),
+          }
+        }
+        spendingAvailable = true
+      } catch (error) {
+        console.error('ADMIN AUTHOR ADS SPENDING SUMMARY ERROR:', error)
+      }
+    }
+
+    summary.spending = spendingAvailable ? spending : null
+    summary.spending_available = spendingAvailable
     return res.json({ ok: true, summary })
   })
 }
@@ -407,3 +463,4 @@ export async function reviewAdminAuthorAdCampaign(req, res) {
     })
   })
 }
+
