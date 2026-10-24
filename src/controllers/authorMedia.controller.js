@@ -216,35 +216,46 @@ async function getMyAuthorPage(
 }
 
 async function getValidatedStoryUploadPath(file) {
-  const reject = () => {
+  const invalidPathError = () => {
     const error = new Error('Invalid temporary upload file')
     error.statusCode = 400
     error.code = 'STORY_UPLOAD_PATH_INVALID'
-    throw error
+    return error
   }
   const fileName = file?.filename
-  if (typeof fileName !== 'string' || !/^[a-f0-9]{32}$/i.test(fileName)) reject()
-  const expectedPath = path.join(os.tmpdir(), fileName)
-  if (file.path !== expectedPath) reject()
+  if (typeof fileName !== 'string' || !/^[a-f0-9]{32}$/i.test(fileName)) {
+    throw invalidPathError()
+  }
+  const tempDir = path.resolve(os.tmpdir())
+  const expectedPath = path.resolve(tempDir, fileName)
+  if (!expectedPath.startsWith(`${tempDir}${path.sep}`)) {
+    throw invalidPathError()
+  }
+  if (path.dirname(expectedPath) !== tempDir || file.path !== expectedPath) {
+    throw invalidPathError()
+  }
   let details, actualPath, tempRoot
   try {
     const results = await Promise.all([
       lstat(expectedPath),
       realpath(expectedPath),
-      realpath(os.tmpdir()),
+      realpath(tempDir),
     ])
     ;[details, actualPath, tempRoot] = results
   } catch {
-    reject()
+    throw invalidPathError()
   }
   const declaredSize = Number(file.size)
   if (
     !details.isFile() ||
+    details.isSymbolicLink() ||
     path.dirname(actualPath) !== tempRoot ||
     !Number.isSafeInteger(declaredSize) ||
     declaredSize <= 0 ||
     details.size !== declaredSize
-  ) reject()
+  ) {
+    throw invalidPathError()
+  }
   return expectedPath
 }
 
