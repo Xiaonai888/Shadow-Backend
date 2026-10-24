@@ -1,6 +1,6 @@
 import express from 'express'
 import { ipKeyGenerator, rateLimit } from 'express-rate-limit'
-import { requireAdmin } from '../middleware/auth.middleware.js'
+import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { getAdminBoostInsights } from '../controllers/adminBoostInsights.controller.js'
 
 const router = express.Router()
@@ -36,6 +36,6 @@ const adminBoostInsightsReadLimit = rateLimit({
   },
 })
 
-router.get('/insights', adminBoostInsightsIpLimit, requireAdmin, adminBoostInsightsReadLimit, getAdminBoostInsights)
+router.get('/insights', adminBoostInsightsIpLimit, requireAdminPermission('advertisement.view'), adminBoostInsightsReadLimit, getAdminBoostInsights)
 
 export default router
