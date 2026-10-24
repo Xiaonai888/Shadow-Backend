@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
+import { recordReaderBoostInterest } from '../services/boostAnalyticsTracking.service.js'
 import {
   getCachedMyAuthorPage,
   invalidateMyAuthorPageCache,
@@ -1268,6 +1269,16 @@ const alreadyFollowing = await getFollowStatus(
     }
 
     if (followCreated) {
+      if (String(authorPage.user_id) !== String(userId)) {
+        void recordReaderBoostInterest({
+          readerId: userId,
+          eventType: 'follow',
+          sourceId: `author_page:${authorPage.id}`,
+          actionId: `follow:${authorPage.id}`,
+        }).catch((trackingError) => {
+          console.error('AUTHOR_PAGE_BOOST_FOLLOW_TRACKING_ERROR:', trackingError)
+        })
+      }
       await incrementAuthorPageAnalytics(
         authorPage.id,
         'new_followers'
@@ -1740,4 +1751,5 @@ export async function updateMyAuthorPage(req, res) {
     return res.status(500).json({ ok: false, message: 'Failed to update author page', error: error.message })
   }
 }
+
 
