@@ -12,6 +12,20 @@ import {
   getAdminPaymentActionEdits,
   updateAdminPaymentActionMetadata,
 } from '../controllers/adminPaymentHistoryEdits.controller.js'
+import {
+  getAdminBinanceReceivedUsdt,
+  getAdminBinanceAlertHistory,
+  getAdminBinanceReceiptDetails,
+} from '../controllers/adminBinanceReceipts.controller.js'
+import {
+  getAdminBinanceCreditAvailability,
+  getAdminBinanceCreditHistory,
+  getAdminBinanceCreditActionDetails,
+  getAdminBinanceCreditActionEdits,
+  confirmAdminBinanceReceiptCredit,
+  confirmAdminBinanceManualTopUp,
+  updateAdminBinanceCreditActionMetadata,
+} from '../controllers/adminBinanceCredits.controller.js'
 import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
 import express from 'express'
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit'
@@ -30,6 +44,8 @@ import {
 const router = express.Router()
 const recoveryReadGuard = createSpamGuard({ scope: 'admin_payment_recovery_read', threshold: 30, windowSeconds: 60 })
 const recoveryWriteGuard = createSpamGuard({ scope: 'admin_payment_recovery_write', threshold: 10, windowSeconds: 60 })
+const binanceReadGuard = createSpamGuard({ scope: 'admin_binance_credit_read', threshold: 30, windowSeconds: 60 })
+const binanceWriteGuard = createSpamGuard({ scope: 'admin_binance_credit_write', threshold: 5, windowSeconds: 60 })
 
 const adminPaymentPreAuthLimit = rateLimit({
   windowMs: 60 * 1000,
@@ -68,6 +84,17 @@ router.get('/recovery/history/:actionId', requireAdmin, adminPaymentReadLimit, r
 router.patch('/recovery/history/:actionId', requireAdmin, adminPaymentWriteLimit, recoveryWriteGuard, updateAdminPaymentActionMetadata)
 router.post('/recovery/topup', requireAdmin, adminPaymentWriteLimit, recoveryWriteGuard, confirmAdminManualTopUp)
 router.post('/recovery/:paymentId/confirm', requireAdmin, adminPaymentWriteLimit, recoveryWriteGuard, confirmAdminPaymentRecovery)
+router.get('/binance/received-usdt', requireAdmin, adminPaymentReadLimit, binanceReadGuard, getAdminBinanceReceivedUsdt)
+router.get('/binance/alert-history', requireAdmin, adminPaymentReadLimit, binanceReadGuard, getAdminBinanceAlertHistory)
+router.get('/binance/availability', requireAdmin, adminPaymentReadLimit, binanceReadGuard, getAdminBinanceCreditAvailability)
+router.get('/binance/recipients', requireAdmin, adminPaymentReadLimit, binanceReadGuard, getAdminPaymentRecoveryRecipient)
+router.get('/binance/receipts/:transactionId', requireAdmin, adminPaymentReadLimit, binanceReadGuard, getAdminBinanceReceiptDetails)
+router.get('/binance/history', requireAdmin, adminPaymentReadLimit, binanceReadGuard, getAdminBinanceCreditHistory)
+router.get('/binance/history/:actionId/edits', requireAdmin, adminPaymentReadLimit, binanceReadGuard, getAdminBinanceCreditActionEdits)
+router.get('/binance/history/:actionId', requireAdmin, adminPaymentReadLimit, binanceReadGuard, getAdminBinanceCreditActionDetails)
+router.patch('/binance/history/:actionId', requireAdmin, adminPaymentWriteLimit, binanceWriteGuard, updateAdminBinanceCreditActionMetadata)
+router.post('/binance/recovery/confirm', requireAdmin, adminPaymentWriteLimit, binanceWriteGuard, confirmAdminBinanceReceiptCredit)
+router.post('/binance/topup', requireAdmin, adminPaymentWriteLimit, binanceWriteGuard, confirmAdminBinanceManualTopUp)
 router.get('/manual/stream', requireAdmin, adminPaymentReadLimit, streamAdminPaymentEvents)
 router.post('/manual/:paymentId/confirm', requireAdmin, adminPaymentWriteLimit, (_req, res) => {
   return res.status(410).json({
