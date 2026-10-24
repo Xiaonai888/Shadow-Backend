@@ -3,7 +3,10 @@ import { getMyAuthorDashboardBadges } from '../controllers/authorDashboardBadges
 import { getFollowedAuthorPostsFeed } from '../controllers/followedAuthorPostsFeed.controller.js'
 import { getDiscoverAuthorSuggestions } from '../controllers/authorDiscovery.controller.js'
 import { getDiscoverAuthorPostsFeed } from '../controllers/discoverAuthorPostsFeed.controller.js'
-import { recordAuthorAdDiscoverEngagement } from '../controllers/authorAdDiscoverDelivery.controller.js'
+import {
+  recordAuthorAdDiscoverEngagement,
+  recordAuthorAdDiscoverBookEngagement,
+} from '../controllers/authorAdDiscoverDelivery.controller.js'
 import { inviteAuthorPageFriend } from '../controllers/authorPageInvites.controller.js'
 import { getMyAuthorTopSupporters } from '../controllers/authorTopSupporters.controller.js'
 import { getMyAuthorMonthlyEarnings } from '../controllers/authorMonthlyEarnings.controller.js'
@@ -331,6 +334,13 @@ router.post(
   requireUser,
   discoverBoostViewerLimit,
   recordAuthorAdDiscoverEngagement
+)
+router.post(
+  '/discover/books/boost-engagement',
+  discoverBoostIpLimit,
+  requireUser,
+  discoverBoostViewerLimit,
+  recordAuthorAdDiscoverBookEngagement
 )
 router.get('/top', getTopAuthorPages)
 router.get('/page/:pageUsername/works', getAuthorPageWorksPaginated)
