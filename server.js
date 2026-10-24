@@ -10,6 +10,7 @@ import authRoutes from './src/routes/auth.routes.js'
 import booksRoutes from './src/routes/books.routes.js'
 import usersRoutes from './src/routes/users.routes.js'
 import authorsRoutes from './src/routes/authors.routes.js'
+import authorAdsRoutes from './src/routes/authorAds.routes.js'
 import storiesRoutes from './src/routes/stories.routes.js'
 import storyMediaRoutes from './src/routes/storyMedia.routes.js'
 import mangaDirectUploadRoutes from './src/routes/mangaDirectUpload.routes.js'
@@ -100,6 +101,7 @@ import adminRolesRoutes from './src/routes/adminRoles.routes.js'
 import adminAccountsRoutes from './src/routes/adminAccounts.routes.js'
 import adminSearchInsightsRoutes from './src/routes/adminSearchInsights.routes.js'
 import adminBoostInsightsRoutes from './src/routes/adminBoostInsights.routes.js'
+import adminAuthorAdsRoutes from './src/routes/adminAuthorAds.routes.js'
 import { startBoostAnalyticsRetention } from './src/services/boostAnalyticsTracking.service.js'
 import musicRoutes from './src/routes/music.routes.js'
 import { startMangaR2DeleteRetryWorker } from './src/services/mangaR2DeleteRetry.service.js'
@@ -830,6 +832,7 @@ app.use('/api/books', publicReadSpamGuard, booksRoutes)
 app.use('/api/users', accountAccessSpamGuard, usersRoutes)
 app.use('/api/authors/media', mediaUploadRouteSpamGuard, authorMediaRoutes)
 app.use('/api/authors', authorRouteSpamGuard, authorsRoutes)
+app.use('/api/author-ads', authorAdsRoutes)
 app.use('/api/stories', storyManagementSpamGuard, storiesRoutes)
 app.use('/api/story-media', mediaUploadRouteSpamGuard, storyMediaRoutes)
 app.use('/api/story-media/manga-direct', mediaUploadRouteSpamGuard, mangaDirectUploadRoutes)
@@ -911,6 +914,7 @@ app.use('/api/admin/roles', adminRolesRoutes)
 app.use('/api/admin/accounts', adminAccountsRoutes)
 app.use('/api/admin/search-insights', adminSearchInsightsRoutes)
 app.use('/api/admin/boost', adminBoostInsightsRoutes)
+app.use('/api/admin/author-ads', adminAuthorAdsRoutes)
 app.use('/api/music', musicRoutes)
 app.use('/api/story-translation', storyTranslationSpamGuard, storyTranslationRoutes)
 app.use('/api/games', readerReadSpamGuard, gameSettingsRoutes)
