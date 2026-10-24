@@ -12,6 +12,18 @@ import {
 
 const router = express.Router()
 
+const campaignIpLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: false,
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'AUTHOR_ADS_IP_RATE_LIMITED',
+    message: 'Too many campaign requests. Please try again shortly.',
+  },
+})
+
 const campaignReadLimiter = rateLimit({
   windowMs: 60 * 1000,
   limit: 240,
@@ -40,6 +52,7 @@ const campaignWriteLimiter = rateLimit({
   },
 })
 
+router.use(campaignIpLimiter)
 router.use(requireUser)
 router.use((req, res, next) => {
   res.set('Cache-Control', 'private, no-store')
