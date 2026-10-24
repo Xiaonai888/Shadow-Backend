@@ -1,4 +1,6 @@
 import { supabase } from '../config/supabase.js'
+import { getEligibleDiscoverBoostPosts } from '../services/authorAdDiscoverCandidates.service.js'
+import { issueAuthorAdDiscoverReceipt } from '../services/authorAdDiscoverEngagement.service.js'
 import {
   getDiscoverAuthorPostsSharedCatalog,
 } from '../services/discoverAuthorPostsSharedCache.service.js'
@@ -284,6 +286,73 @@ function buildReactionData(rows, userId) {
   }
 }
 
+async function loadDiscoverBoostPosts(userId) {
+  const candidates = await getEligibleDiscoverBoostPosts({
+    viewerUserId: userId,
+    limit: 3,
+  })
+  if (!candidates.length) return []
+
+  const postIds = candidates.map(item => item.postId)
+  const pageIds = [...new Set(candidates.map(item => item.authorPageId))]
+  const [postResult, pageResult, followResult] = await Promise.all([
+    supabase.from('author_page_posts')
+      .select('id,author_page_id,user_id,post_type,content,image_urls,like_count,comment_count,echo_count,created_at,updated_at')
+      .eq('status', 'active')
+      .in('id', postIds),
+    supabase.from('author_pages')
+      .select('id,user_id,page_name,page_username,avatar_url,total_followers')
+      .eq('status', 'active')
+      .in('id', pageIds),
+    supabase.from('author_page_follows')
+      .select('author_page_id')
+      .eq('follower_user_id', userId)
+      .in('author_page_id', pageIds),
+  ])
+  for (const result of [postResult, pageResult, followResult]) {
+    if (result.error) throw result.error
+  }
+
+  const postsById = new Map((postResult.data || []).map(post => [post.id, post]))
+  const pagesById = new Map((pageResult.data || []).map(page => [page.id, page]))
+  const followedPageIds = new Set(
+    (followResult.data || []).map(item => item.author_page_id)
+  )
+  const selected = []
+
+  for (const candidate of candidates) {
+    const post = postsById.get(candidate.postId)
+    const page = pagesById.get(candidate.authorPageId)
+    if (
+      !post || !page ||
+      post.author_page_id !== page.id ||
+      post.user_id !== page.user_id ||
+      page.user_id === userId ||
+      !Array.isArray(post.image_urls) ||
+      !post.image_urls.some(value => typeof value === 'string' && value.trim())
+    ) continue
+
+    const receipt = issueAuthorAdDiscoverReceipt(candidate, userId)
+    selected.push({
+      post,
+      receipt,
+      campaignId: candidate.campaignId,
+      authorPage: {
+        id: page.id,
+        user_id: page.user_id,
+        page_name: page.page_name,
+        page_username: page.page_username,
+        avatar_url: page.avatar_url,
+        total_followers: Number(page.total_followers || 0),
+        is_following: followedPageIds.has(page.id),
+        is_owner: false,
+      },
+    })
+  }
+
+  return selected
+}
+
 export async function getDiscoverAuthorPostsFeed(req, res) {
   try {
     const userId = req.user?.user_id
@@ -321,6 +390,7 @@ export async function getDiscoverAuthorPostsFeed(req, res) {
       return res.status(200).json({
         ok: true,
         posts: [],
+        boost_posts: [],
         limit,
         has_more: false,
         next_cursor: null,
@@ -483,7 +553,21 @@ export async function getDiscoverAuthorPostsFeed(req, res) {
       offset,
       offset + limit
     )
-    const selectedPostIds = selectedPosts.map((post) => post.id)
+    let boostItems = []
+    if (offset === 0 && process.env.AUTHOR_ADS_DELIVERY_ENABLED === 'true') {
+      try {
+        boostItems = await loadDiscoverBoostPosts(userId)
+      } catch (error) {
+        console.warn('DISCOVER BOOST OPTIONAL LOAD FAILED:', error?.code || 'UNKNOWN')
+      }
+    }
+
+    const selectedPostIds = [
+      ...new Set([
+        ...selectedPosts.map((post) => post.id),
+        ...boostItems.map(item => item.post.id),
+      ]),
+    ]
     let reactionRows = []
     const echoCountByPost = new Map()
 
@@ -520,10 +604,8 @@ export async function getDiscoverAuthorPostsFeed(req, res) {
       myReactionByPost,
     } = buildReactionData(reactionRows, userId)
 
-    const posts = selectedPosts.map((post) => {
+    const formatPost = (post, authorPage) => {
       const postId = String(post.id)
-      const authorPage =
-        authorById.get(String(post.author_page_id)) || null
 
       return {
         id: post.id,
@@ -545,7 +627,17 @@ export async function getDiscoverAuthorPostsFeed(req, res) {
         is_owner: Boolean(authorPage?.is_owner),
         author_page: authorPage,
       }
-    })
+    }
+
+    const posts = selectedPosts.map(post =>
+      formatPost(post, authorById.get(String(post.author_page_id)) || null)
+    )
+    const boostPosts = boostItems.map(item => ({
+      ...formatPost(item.post, item.authorPage),
+      sponsored: true,
+      boost_campaign_id: item.campaignId,
+      boost_receipt: item.receipt,
+    }))
 
     const nextOffset = offset + posts.length
     const hasMore = nextOffset < visiblePosts.length
@@ -553,6 +645,7 @@ export async function getDiscoverAuthorPostsFeed(req, res) {
     return res.status(200).json({
       ok: true,
       posts,
+      boost_posts: boostPosts,
       limit,
       has_more: hasMore,
       next_cursor: hasMore
