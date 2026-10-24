@@ -169,6 +169,7 @@ function attachAuthor(row, maps) {
 function parseFilters(query = {}) {
   const kind = String(query.kind || 'all').trim().toLowerCase()
   const status = String(query.status || 'all').trim().toLowerCase()
+  const sort = String(query.sort || 'newest').trim().toLowerCase()
   const page = Number(query.page || 1)
   const limit = Number(query.limit || 20)
   if (!['all', 'post', 'book'].includes(kind)) {
@@ -176,6 +177,9 @@ function parseFilters(query = {}) {
   }
   if (status !== 'all' && !STATUSES.has(status)) {
     fail(400, 'INVALID_STATUS', 'Invalid campaign status filter')
+  }
+  if (!['newest', 'top', 'low'].includes(sort)) {
+    fail(400, 'INVALID_SORT', 'Invalid campaign sorting option')
   }
   if (!Number.isInteger(page) || !Number.isInteger(limit) ||
       page < 1 || page > 10000 || limit < 1 || limit > MAX_PAGE_LIMIT) {
@@ -186,14 +190,14 @@ function parseFilters(query = {}) {
     fail(400, 'INVALID_AUTHOR', 'Invalid Author Page ID')
   }
   const search = String(query.search || '').trim().slice(0, 80)
-  return { kind, status, page, limit, authorPageId, search }
+  return { kind, status, sort, page, limit, authorPageId, search }
 }
 
 export async function listAdminAuthorAdCampaigns(req, res) {
   return respond(res, async () => {
     requireAdminIdentity(req)
     const filters = parseFilters(req.query)
-    const { kind, status, page, limit, authorPageId, search } = filters
+    const { kind, status, sort, page, limit, authorPageId, search } = filters
     let query = supabase.from('author_ad_campaigns')
       .select(CAMPAIGN_RETURN_COLUMNS, { count: 'exact' })
     if (kind !== 'all') query = query.eq('campaign_kind', kind)
@@ -207,6 +211,9 @@ export async function listAdminAuthorAdCampaigns(req, res) {
         query = query.ilike('content_title', `%${escaped}%`)
       }
     }
+    if (sort !== 'newest') {
+      query = query.order('spent_cents', { ascending: sort === 'low' })
+    }
     const { data, count, error } = await query
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
@@ -219,6 +226,7 @@ export async function listAdminAuthorAdCampaigns(req, res) {
       total: Number(count || 0),
       page,
       limit,
+      sort,
       has_more: page * limit < Number(count || 0),
     })
   })
