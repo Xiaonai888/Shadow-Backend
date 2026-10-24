@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
 import { createAuthorEarningsFromDiamondUnlock } from '../services/authorRevenue.service.js'
 import { createStoryReadingIncome } from '../services/storyReadingIncome.service.js'
+import { recordReaderBoostInterest } from '../services/boostAnalyticsTracking.service.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 import {
   applyEpisodeAccess,
@@ -17,6 +18,19 @@ import { getAdditiveDiscountResult } from '../services/revenueRules.service.js'
 
 const CAMBODIA_TIME_OFFSET_MS =
   7 * 60 * 60 * 1000
+
+function trackVerifiedEpisodeUnlockInterest({ userId, storyId, episodeId }) {
+  if (!userId || !storyId || !episodeId) return
+  const dayKh = new Date(Date.now() + CAMBODIA_TIME_OFFSET_MS).toISOString().slice(0, 10)
+  void recordReaderBoostInterest({
+    readerId: userId,
+    eventType: 'unlock',
+    sourceId: `story:${storyId}`,
+    actionId: `${episodeId}:${dayKh}`,
+  }).catch((trackingError) => {
+    console.error('BOOST_UNLOCK_INTEREST_ERROR:', trackingError)
+  })
+}
 
 const AD_ACCESS_MINUTES = 15
 const AD_DAILY_LIMIT = 5
@@ -1601,6 +1615,13 @@ async function commitDiamondUnlockPurchase({
             (episode) => episode.id
           ),
   })
+  if (!data?.idempotent && unlocks.length) {
+    trackVerifiedEpisodeUnlockInterest({
+      userId,
+      storyId,
+      episodeId: unlocks[0]?.episode_id,
+    })
+  }
 
   return {
     idempotent: Boolean(data?.idempotent),
@@ -1722,6 +1743,14 @@ async function createUnlocksAndTransactions({
     .select()
 
   if (transactionError) throw transactionError
+
+  if (unlocks?.length) {
+    trackVerifiedEpisodeUnlockInterest({
+      userId,
+      storyId,
+      episodeId: unlocks[0]?.episode_id,
+    })
+  }
 
   return unlocks || []
 }
@@ -3113,3 +3142,4 @@ export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
     })
   }
 }
+
