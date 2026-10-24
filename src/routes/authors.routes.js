@@ -153,6 +153,31 @@ import { rateLimit } from 'express-rate-limit'
 
 const router = express.Router()
 
+const authorPageFollowIpLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 90,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'AUTHOR_PAGE_FOLLOW_IP_RATE_LIMIT',
+    message: 'Too many follow requests. Please try again shortly.',
+  },
+})
+
+const authorPageFollowAccountLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 20,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || 'unauthenticated'),
+  message: {
+    ok: false,
+    code: 'AUTHOR_PAGE_FOLLOW_ACCOUNT_RATE_LIMIT',
+    message: 'Too many follow actions. Please try again shortly.',
+  },
+})
+
 function invalidateMyAuthorPageAfterMutation(
   req,
   res,
@@ -293,13 +318,17 @@ router.delete('/page/:pageUsername/photos/:photoKind/comments/:commentId', requi
 router.get('/page/:pageUsername', getPublicAuthorPage)
 router.post(
   '/page/:pageUsername/follow',
+  authorPageFollowIpLimit,
   requireUser,
+  authorPageFollowAccountLimit,
   invalidatePublicStoriesAfterMutation,
   followAuthorPage
 )
 router.delete(
   '/page/:pageUsername/follow',
+  authorPageFollowIpLimit,
   requireUser,
+  authorPageFollowAccountLimit,
   invalidatePublicStoriesAfterMutation,
   unfollowAuthorPage
 )
