@@ -1,6 +1,16 @@
 import { supabase } from '../config/supabase.js'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const MAX_PAGE_LIMIT = 50
+const CAMPAIGN_RETURN_COLUMNS = [
+  'id', 'author_page_id', 'owner_user_id', 'campaign_kind',
+  'content_type', 'content_id', 'content_title', 'content_image_url',
+  'goal', 'audience_mode', 'audience_filters', 'placements',
+  'budget_cents', 'funded_cents', 'spent_cents', 'refunded_cents',
+  'duration_days', 'status', 'review_status', 'review_reason',
+  'reviewed_by', 'reviewed_at', 'submitted_at', 'start_at',
+  'end_at', 'created_at', 'updated_at',
+].join(', ')
 const STATUSES = new Set([
   'draft', 'pending_review', 'approved', 'scheduled', 'active',
   'paused', 'completed', 'rejected', 'cancelled',
@@ -108,7 +118,7 @@ function campaignResult(row) {
 
 async function campaignById(id) {
   const { data, error } = await supabase.from('author_ad_campaigns')
-    .select('*')
+    .select(CAMPAIGN_RETURN_COLUMNS)
     .eq('id', id)
     .maybeSingle()
   if (error) throw error
@@ -124,11 +134,13 @@ async function getAuthorMaps(rows) {
       ? supabase.from('author_pages')
           .select('id, page_name, page_username, avatar_url, status')
           .in('id', pageIds)
+          .limit(MAX_PAGE_LIMIT)
       : Promise.resolve({ data: [], error: null }),
     userIds.length
       ? supabase.from('users')
           .select('id, name, username')
           .in('id', userIds)
+          .limit(MAX_PAGE_LIMIT)
       : Promise.resolve({ data: [], error: null }),
   ])
   if (pagesResult.error) throw pagesResult.error
@@ -166,7 +178,7 @@ function parseFilters(query = {}) {
     fail(400, 'INVALID_STATUS', 'Invalid campaign status filter')
   }
   if (!Number.isInteger(page) || !Number.isInteger(limit) ||
-      page < 1 || page > 10000 || limit < 1 || limit > 50) {
+      page < 1 || page > 10000 || limit < 1 || limit > MAX_PAGE_LIMIT) {
     fail(400, 'INVALID_PAGINATION', 'Invalid pagination')
   }
   const authorPageId = String(query.author_page_id || '').trim()
@@ -183,7 +195,7 @@ export async function listAdminAuthorAdCampaigns(req, res) {
     const filters = parseFilters(req.query)
     const { kind, status, page, limit, authorPageId, search } = filters
     let query = supabase.from('author_ad_campaigns')
-      .select('*', { count: 'exact' })
+      .select(CAMPAIGN_RETURN_COLUMNS, { count: 'exact' })
     if (kind !== 'all') query = query.eq('campaign_kind', kind)
     if (status !== 'all') query = query.eq('status', status)
     if (authorPageId) query = query.eq('author_page_id', authorPageId)
@@ -371,7 +383,7 @@ export async function reviewAdminAuthorAdCampaign(req, res) {
     if (action === 'reject') {
       query = query.eq('funded_cents', 0).eq('spent_cents', 0).eq('refunded_cents', 0)
     }
-    const { data, error } = await query.select('*').maybeSingle()
+    const { data, error } = await query.select(CAMPAIGN_RETURN_COLUMNS).maybeSingle()
     if (error) throw error
     if (!data) fail(409, 'CAMPAIGN_CHANGED', 'Campaign changed; refresh before reviewing')
     console.info('ADMIN_AUTHOR_AD_REVIEW', JSON.stringify({
