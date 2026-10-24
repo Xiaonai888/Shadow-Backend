@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
+import { selectAuthorAdBoostSlots } from './authorAdBoostSlots.service.js'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const POOL_LIMIT = 64
-const RESULT_LIMIT = 9
+const RESULT_LIMIT = 3
 const INPUT_LIST_LIMIT = 100
 const CAMPAIGN_COLUMNS = [
-  'id', 'owner_user_id', 'author_page_id', 'content_id',
+  'id', 'owner_user_id', 'author_page_id', 'campaign_kind', 'content_type', 'content_id',
   'audience_mode', 'audience_filters', 'placements',
   'budget_cents', 'funded_cents', 'refunded_cents', 'spent_cents',
 ].join(',')
@@ -67,15 +68,14 @@ function hasVerifiedBudget(campaign) {
   return budget > 0 && spent < budget && funded - refunded >= budget && funded - refunded - spent > 0
 }
 
-async function loadCampaignPool() {
+async function loadCampaignPool(kind) {
   const pivot = randomUUID()
   const now = new Date().toISOString()
   const query = () => supabase.from('author_ad_campaigns')
     .select(CAMPAIGN_COLUMNS)
     .eq('status', 'active')
     .eq('review_status', 'approved')
-    .eq('campaign_kind', 'post')
-    .eq('content_type', 'post')
+    .eq('campaign_kind', kind)
     .eq('currency', 'USD')
     .lte('start_at', now)
     .gt('end_at', now)
@@ -95,87 +95,146 @@ async function loadCampaignPool() {
   return candidates
 }
 
-export async function getEligibleDiscoverBoostPosts({
-  viewerUserId,
-  limit = 3,
-  viewerGenres = [],
-  viewerLanguage = '',
-  viewerCountry = '',
-  excludePostIds = [],
-  excludeAuthorPageIds = [],
-} = {}) {
-  if (process.env.AUTHOR_ADS_DELIVERY_ENABLED !== 'true') return []
-
-  const userId = requireUuid(viewerUserId, 'viewer ID')
+async function loadCandidates(kind, input) {
+  if (process.env.AUTHOR_ADS_DELIVERY_ENABLED !== 'true') return null
+  const userId = requireUuid(input.viewerUserId, 'viewer ID')
+  const limit = input.limit ?? RESULT_LIMIT
   if (!Number.isInteger(limit) || limit < 1 || limit > RESULT_LIMIT) {
     throw new RangeError('Invalid Discover Boost limit')
   }
 
-  const excludedPosts = idSet(excludePostIds, 'excluded post IDs')
-  const excludedPages = idSet(excludeAuthorPageIds, 'excluded page IDs')
-  const viewer = preferences({ viewerGenres, viewerLanguage, viewerCountry })
-  const pool = await loadCampaignPool()
+  const excludedContent = idSet(
+    kind === 'post' ? input.excludePostIds ?? [] : input.excludeContentIds ?? [],
+    'excluded content IDs'
+  )
+  const excludedPages = idSet(input.excludeAuthorPageIds ?? [], 'excluded page IDs')
+  const viewer = preferences({
+    viewerGenres: input.viewerGenres ?? [],
+    viewerLanguage: input.viewerLanguage ?? '',
+    viewerCountry: input.viewerCountry ?? '',
+  })
+  const pool = await loadCampaignPool(kind)
   const candidates = pool.filter(campaign =>
+    campaign.campaign_kind === kind &&
+    (kind === 'post' ? campaign.content_type === 'post'
+      : ['story', 'product'].includes(campaign.content_type)) &&
     UUID.test(String(campaign.id || '')) &&
     UUID.test(String(campaign.owner_user_id || '')) &&
     UUID.test(String(campaign.author_page_id || '')) &&
     UUID.test(String(campaign.content_id || '')) &&
     campaign.owner_user_id !== userId &&
-    !excludedPosts.has(campaign.content_id) &&
+    !excludedContent.has(campaign.content_id) &&
     !excludedPages.has(campaign.author_page_id) &&
     Array.isArray(campaign.placements) &&
     campaign.placements.includes('discover') &&
     hasVerifiedBudget(campaign) &&
     matchingAudience(campaign, viewer)
   )
-  if (!candidates.length) return []
+  if (!candidates.length) return { candidates: [], pages: new Map(), limit }
 
-  const postIds = [...new Set(candidates.map(item => item.content_id))]
   const pageIds = [...new Set(candidates.map(item => item.author_page_id))]
   const ownerIds = [...new Set(candidates.map(item => item.owner_user_id))]
-
-  const [posts, pages, blockedPages, blockedAccounts] = await Promise.all([
-    supabase.from('author_page_posts')
-      .select('id,author_page_id,user_id,image_urls')
-      .in('id', postIds).eq('status', 'active'),
-    supabase.from('author_pages')
-      .select('id,user_id')
+  const [pages, blockedPages, blockedAccounts] = await Promise.all([
+    supabase.from('author_pages').select('id,user_id')
       .in('id', pageIds).eq('status', 'active'),
-    supabase.from('reader_blocked_author_pages')
-      .select('author_page_id')
+    supabase.from('reader_blocked_author_pages').select('author_page_id')
       .eq('reader_user_id', userId).in('author_page_id', pageIds),
-    supabase.from('chat_blocks')
-      .select('blocked_user_id')
+    supabase.from('chat_blocks').select('blocked_user_id')
       .eq('blocker_user_id', userId).in('blocked_user_id', ownerIds),
   ])
-  for (const response of [posts, pages, blockedPages, blockedAccounts]) {
+  for (const response of [pages, blockedPages, blockedAccounts]) {
     if (response.error) throw response.error
   }
 
-  const postsById = new Map((posts.data || []).map(item => [item.id, item]))
-  const pagesById = new Map((pages.data || []).map(item => [item.id, item]))
   const blockedPageIds = new Set((blockedPages.data || []).map(item => item.author_page_id))
   const blockedUserIds = new Set((blockedAccounts.data || []).map(item => item.blocked_user_id))
-  const seenPosts = new Set()
-  const selected = []
+  return {
+    candidates: candidates.filter(item =>
+      !blockedPageIds.has(item.author_page_id) && !blockedUserIds.has(item.owner_user_id)
+    ),
+    pages: new Map((pages.data || []).map(item => [item.id, item])),
+    limit,
+  }
+}
 
-  for (const campaign of candidates) {
-    if (blockedPageIds.has(campaign.author_page_id) || blockedUserIds.has(campaign.owner_user_id)) continue
+export async function getEligibleDiscoverBoostPosts(input = {}) {
+  const loaded = await loadCandidates('post', input)
+  if (!loaded || !loaded.candidates.length) return []
+  const postIds = [...new Set(loaded.candidates.map(item => item.content_id))]
+  const posts = await supabase.from('author_page_posts')
+    .select('id,author_page_id,user_id,image_urls')
+    .in('id', postIds).eq('status', 'active')
+  if (posts.error) throw posts.error
+
+  const postsById = new Map((posts.data || []).map(item => [item.id, item]))
+  const selected = []
+  for (const campaign of loaded.candidates) {
     const post = postsById.get(campaign.content_id)
-    const page = pagesById.get(campaign.author_page_id)
+    const page = loaded.pages.get(campaign.author_page_id)
     if (!post || !page || page.user_id !== campaign.owner_user_id) continue
     if (post.author_page_id !== page.id || post.user_id !== page.user_id) continue
     if (!Array.isArray(post.image_urls) || !post.image_urls.some(url => typeof url === 'string' && url.trim())) continue
-    if (seenPosts.has(post.id)) continue
-
-    seenPosts.add(post.id)
-    selected.push({
-      campaignId: campaign.id,
-      postId: post.id,
-      authorPageId: page.id,
-    })
-    if (selected.length >= limit) break
+    selected.push({ campaignId: campaign.id, postId: post.id, authorPageId: page.id })
   }
 
-  return selected
+  return selectAuthorAdBoostSlots({
+    posts: selected,
+    alreadyShown: input.alreadyShown ?? [],
+  }).posts.slice(0, loaded.limit)
+}
+
+export async function getEligibleDiscoverBoostBooks(input = {}) {
+  const loaded = await loadCandidates('book', input)
+  if (!loaded || !loaded.candidates.length) return []
+  const storyIds = [...new Set(loaded.candidates
+    .filter(item => item.content_type === 'story').map(item => item.content_id))]
+  const productIds = [...new Set(loaded.candidates
+    .filter(item => item.content_type === 'product').map(item => item.content_id))]
+  const [stories, products] = await Promise.all([
+    storyIds.length ? supabase.from('stories')
+      .select('id,author_id,cover_url').in('id', storyIds)
+      .eq('status', 'published').is('deleted_at', null)
+      : Promise.resolve({ data: [], error: null }),
+    productIds.length ? supabase.from('author_store_products')
+      .select('id,author_page_id,cover_url,product_type').in('id', productIds)
+      .eq('status', 'active').in('product_type', ['book', 'pdf'])
+      : Promise.resolve({ data: [], error: null }),
+  ])
+  if (stories.error) throw stories.error
+  if (products.error) throw products.error
+
+  const storiesById = new Map((stories.data || []).map(item => [item.id, item]))
+  const productsById = new Map((products.data || []).map(item => [item.id, item]))
+  const selected = []
+  for (const campaign of loaded.candidates) {
+    const page = loaded.pages.get(campaign.author_page_id)
+    if (!page || page.user_id !== campaign.owner_user_id) continue
+    const item = campaign.content_type === 'story'
+      ? storiesById.get(campaign.content_id) : productsById.get(campaign.content_id)
+    if (!item || typeof item.cover_url !== 'string' || !item.cover_url.trim()) continue
+    if (campaign.content_type === 'story' && item.author_id !== page.id) continue
+    if (campaign.content_type === 'product' && item.author_page_id !== page.id) continue
+    selected.push({
+      campaignId: campaign.id,
+      contentType: campaign.content_type,
+      contentId: item.id,
+      authorPageId: page.id,
+    })
+  }
+
+  return selectAuthorAdBoostSlots({
+    books: selected,
+    alreadyShown: input.alreadyShown ?? [],
+  }).books.slice(0, loaded.limit)
+}
+
+export async function getEligibleDiscoverBoostSlots(input = {}) {
+  if (process.env.AUTHOR_ADS_DELIVERY_ENABLED !== 'true') {
+    return { posts: [], books: [] }
+  }
+  const [posts, books] = await Promise.all([
+    getEligibleDiscoverBoostPosts(input),
+    getEligibleDiscoverBoostBooks(input),
+  ])
+  return selectAuthorAdBoostSlots({ posts, books, alreadyShown: input.alreadyShown ?? [] })
 }
