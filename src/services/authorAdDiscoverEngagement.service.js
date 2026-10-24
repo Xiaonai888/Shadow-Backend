@@ -153,3 +153,143 @@ export function verifyAuthorAdDiscoverReceipt({
     placement: 'discover',
   })
 }
+
+function assertBookEnabled() {
+  assertEnabled()
+  if (process.env.AUTHOR_ADS_BOOK_DELIVERY_ENABLED !== 'true') {
+    const error = new Error('Discover Book Boost delivery is disabled')
+    error.code = 'AUTHOR_ADS_BOOK_DELIVERY_DISABLED'
+    throw error
+  }
+}
+
+function requireBookContentType(value) {
+  if (value !== 'story' && value !== 'product') {
+    throw new TypeError('Invalid Discover Book Boost content type')
+  }
+  return value
+}
+
+function signBook(data) {
+  return createHmac('sha256', signingSecret())
+    .update('shadow-author-ads-discover-book-v2:')
+    .update(data)
+    .digest('hex')
+}
+
+export function issueAuthorAdDiscoverBookReceipt(candidate, viewerUserId) {
+  assertBookEnabled()
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    throw new TypeError('Invalid Discover Book Boost candidate')
+  }
+
+  const issuedAt = Math.floor(Date.now() / 1000)
+  const receipt = {
+    v: 2,
+    c: requireId(candidate.campaignId, 'campaign ID'),
+    t: requireBookContentType(candidate.contentType),
+    b: requireId(candidate.contentId, 'content ID'),
+    a: requireId(candidate.authorPageId, 'author page ID'),
+    u: requireId(viewerUserId, 'viewer ID'),
+    iat: issuedAt,
+    exp: issuedAt + TOKEN_TTL_SECONDS,
+    n: randomUUID(),
+  }
+
+  const encoded = encodedReceipt(receipt)
+  if (Buffer.byteLength(encoded, 'utf8') > MAX_RECEIPT_BYTES * 2) {
+    throw new Error('Discover Book Boost receipt is too large')
+  }
+  return encoded + '.' + signBook(encoded)
+}
+
+export function verifyAuthorAdDiscoverBookReceipt({
+  token,
+  viewerUserId,
+  contentId,
+  contentType,
+  eventType,
+} = {}) {
+  assertBookEnabled()
+
+  const expectedViewerId = requireId(viewerUserId, 'viewer ID')
+  const expectedContentId = requireId(contentId, 'content ID')
+  const expectedContentType = requireBookContentType(contentType)
+  if (!EVENT_TYPES.has(eventType)) {
+    throw new TypeError('Invalid Discover Book Boost event type')
+  }
+  if (typeof token !== 'string' || token.length > MAX_TOKEN_LENGTH) {
+    throw new TypeError('Invalid Discover Book Boost receipt')
+  }
+
+  const parts = token.split('.')
+  if (parts.length !== 2 || !ENCODED.test(parts[0]) || !SIGNATURE.test(parts[1])) {
+    throw new TypeError('Invalid Discover Book Boost receipt')
+  }
+
+  const encoded = parts[0]
+  const decoded = Buffer.from(encoded, 'base64url')
+  if (
+    !decoded.length ||
+    decoded.length > MAX_RECEIPT_BYTES ||
+    decoded.toString('base64url') !== encoded
+  ) {
+    throw new TypeError('Invalid Discover Book Boost receipt')
+  }
+
+  const suppliedSignature = Buffer.from(parts[1], 'hex')
+  const expectedSignature = Buffer.from(signBook(encoded), 'hex')
+  if (!timingSafeEqual(suppliedSignature, expectedSignature)) {
+    throw new TypeError('Discover Book Boost receipt signature failed')
+  }
+
+  let receipt
+  try {
+    receipt = JSON.parse(decoded.toString('utf8'))
+  } catch {
+    throw new TypeError('Invalid Discover Book Boost receipt payload')
+  }
+
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) {
+    throw new TypeError('Invalid Discover Book Boost receipt payload')
+  }
+
+  const campaignId = requireId(receipt.c, 'receipt campaign ID')
+  const receiptContentId = requireId(receipt.b, 'receipt content ID')
+  const receiptContentType = requireBookContentType(receipt.t)
+  const authorPageId = requireId(receipt.a, 'receipt author page ID')
+  const receiptViewerId = requireId(receipt.u, 'receipt viewer ID')
+  const verifiedActionId = requireId(receipt.n, 'receipt action ID')
+  const now = Math.floor(Date.now() / 1000)
+  const age = now - receipt.iat
+  const allowedAge = eventType === 'impression'
+    ? IMPRESSION_AGE_SECONDS
+    : TOKEN_TTL_SECONDS
+
+  if (
+    receipt.v !== 2 ||
+    !Number.isSafeInteger(receipt.iat) ||
+    !Number.isSafeInteger(receipt.exp) ||
+    receipt.exp - receipt.iat !== TOKEN_TTL_SECONDS ||
+    age < -CLOCK_SKEW_SECONDS ||
+    age > allowedAge ||
+    now > receipt.exp ||
+    receiptViewerId !== expectedViewerId ||
+    receiptContentId !== expectedContentId ||
+    receiptContentType !== expectedContentType
+  ) {
+    throw new TypeError('Discover Book Boost receipt expired or does not match')
+  }
+
+  return Object.freeze({
+    campaignId,
+    contentId: receiptContentId,
+    contentType: receiptContentType,
+    authorPageId,
+    viewerUserId: receiptViewerId,
+    verifiedActionId,
+    eventType,
+    placement: 'discover',
+  })
+}
+
