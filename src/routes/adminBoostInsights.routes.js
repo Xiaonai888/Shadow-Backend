@@ -5,6 +5,18 @@ import { getAdminBoostInsights } from '../controllers/adminBoostInsights.control
 
 const router = express.Router()
 
+const adminBoostInsightsIpLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: false,
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_BOOST_INSIGHTS_IP_RATE_LIMIT',
+    message: 'Too many Boost Insights requests. Please retry shortly.',
+  },
+})
+
 const adminBoostInsightsReadLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 240,
@@ -24,6 +36,6 @@ const adminBoostInsightsReadLimit = rateLimit({
   },
 })
 
-router.get('/insights', requireAdmin, adminBoostInsightsReadLimit, getAdminBoostInsights)
+router.get('/insights', adminBoostInsightsIpLimit, requireAdmin, adminBoostInsightsReadLimit, getAdminBoostInsights)
 
 export default router
