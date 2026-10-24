@@ -6,9 +6,10 @@ import {
 
 const TABLE = 'profile_frames'
 const SELECTIONS = 'reader_profile_frame_selections'
+const PURCHASES = 'reader_profile_frame_purchases'
 const PAGE_SIZE = 9
-const ADMIN_FIELDS = 'id, name, image_url, storage_key, access_tier, is_active, sort_order, created_at, updated_at'
-const READER_FIELDS = 'id, name, image_url, access_tier, sort_order'
+const ADMIN_FIELDS = 'id, name, image_url, storage_key, access_tier, coin_price, diamond_price, is_active, sort_order, created_at, updated_at'
+const READER_FIELDS = 'id, name, image_url, access_tier, coin_price, diamond_price, sort_order'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 function invalid(message) {
@@ -55,8 +56,14 @@ function nameValue(value) {
 }
 
 function accessValue(value) {
-  if (value !== 'free' && value !== 'premium') throw invalid('Access must be Free or Premium')
+  if (!['free', 'premium', 'coins', 'diamonds'].includes(value)) throw invalid('Invalid frame access type')
   return value
+}
+
+function priceValue(value, field) {
+  const price = Number(value)
+  if (!Number.isSafeInteger(price) || price < 0 || price > 1000000000) throw invalid(`Invalid ${field}`)
+  return price
 }
 
 function activeValue(value) {
@@ -80,13 +87,22 @@ function mediaValue(imageUrl, storageKey) {
   return { image_url: url, storage_key: key }
 }
 
-function adminPatch(body, creating = false) {
+function adminPatch(body, creating = false, existing = null) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw invalid('Invalid frame data')
   const patch = {}
   if (creating || Object.hasOwn(body, 'name')) patch.name = nameValue(body.name)
   if (creating || Object.hasOwn(body, 'access_tier')) patch.access_tier = accessValue(body.access_tier)
   if (creating || Object.hasOwn(body, 'is_active')) patch.is_active = activeValue(body.is_active)
   if (creating || Object.hasOwn(body, 'sort_order')) patch.sort_order = orderValue(body.sort_order)
+  if (creating || Object.hasOwn(body, 'access_tier') || Object.hasOwn(body, 'coin_price') || Object.hasOwn(body, 'diamond_price')) {
+    const tier = patch.access_tier || existing?.access_tier || 'free'
+    const coinPrice = tier === 'coins' ? priceValue(body.coin_price ?? existing?.coin_price ?? 0, 'Coin price') : 0
+    const diamondPrice = tier === 'diamonds' ? priceValue(body.diamond_price ?? existing?.diamond_price ?? 0, 'Diamond price') : 0
+    if (tier === 'coins' && coinPrice === 0) throw invalid('Coin price must be greater than zero')
+    if (tier === 'diamonds' && diamondPrice === 0) throw invalid('Diamond price must be greater than zero')
+    patch.coin_price = coinPrice
+    patch.diamond_price = diamondPrice
+  }
   const hasImage = Object.hasOwn(body, 'image_url')
   const hasKey = Object.hasOwn(body, 'storage_key')
   if (creating || hasImage || hasKey) {
@@ -119,6 +135,21 @@ async function visibleFrame(id) {
   return data
 }
 
+async function frameAllowed(userId, frame) {
+  if (frame.access_tier === 'free') return true
+  if (frame.access_tier === 'premium') return premiumActive(userId)
+  const { data, error } = await supabase.from(PURCHASES)
+    .select('id, expires_at')
+    .eq('user_id', userId)
+    .eq('frame_id', frame.id)
+    .eq('currency', frame.access_tier)
+    .order('purchased_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw error
+  return Boolean(data && (frame.access_tier === 'diamonds' || (data.expires_at && Date.parse(data.expires_at) > Date.now())))
+}
+
 export async function listAdminProfileFrames(req, res) {
   try {
     res.set('Cache-Control', 'private, no-store')
@@ -126,7 +157,7 @@ export async function listAdminProfileFrames(req, res) {
     const access = typeof req.query.access === 'string' ? req.query.access : 'all'
     const status = typeof req.query.status === 'string' ? req.query.status : 'all'
     const search = typeof req.query.search === 'string' ? req.query.search.trim() : ''
-    if (!['all', 'free', 'premium'].includes(access)) throw invalid('Invalid access filter')
+    if (!['all', 'free', 'premium', 'coins', 'diamonds'].includes(access)) throw invalid('Invalid access filter')
     if (!['all', 'active', 'hidden'].includes(status)) throw invalid('Invalid status filter')
     if (search.length > 80 || Array.isArray(req.query.search)) throw invalid('Search is too long')
     const offset = (page - 1) * PAGE_SIZE
@@ -169,7 +200,12 @@ export async function createAdminProfileFrame(req, res) {
       .limit(1)
       .maybeSingle()
     if (lookupError) throw lookupError
-    if (existing) return res.status(200).json({ ok: true, frame: existing, reused: true })
+    if (existing) {
+      if (existing.access_tier !== payload.access_tier || Number(existing.coin_price || 0) !== payload.coin_price || Number(existing.diamond_price || 0) !== payload.diamond_price) {
+        return res.status(409).json({ ok: false, message: 'Image already belongs to a frame with different pricing' })
+      }
+      return res.status(200).json({ ok: true, frame: existing, reused: true })
+    }
     const { data, error } = await supabase.from(TABLE).insert(payload).select(ADMIN_FIELDS).single()
     if (error) throw error
     return res.status(201).json({ ok: true, frame: data })
@@ -182,7 +218,13 @@ export async function updateAdminProfileFrame(req, res) {
   try {
     res.set('Cache-Control', 'private, no-store')
     const id = requiredId(req.params.frameId)
-    const payload = adminPatch(req.body)
+    const { data: existing, error: lookupError } = await supabase.from(TABLE)
+      .select('access_tier, coin_price, diamond_price')
+      .eq('id', id)
+      .maybeSingle()
+    if (lookupError) throw lookupError
+    if (!existing) return res.status(404).json({ ok: false, message: 'Frame not found' })
+    const payload = adminPatch(req.body, false, existing)
     const { data, error } = await supabase.from(TABLE)
       .update(payload)
       .eq('id', id)
@@ -205,6 +247,7 @@ export async function deleteAdminProfileFrame(req, res) {
       .eq('id', id)
       .select('id')
       .maybeSingle()
+    if (error?.code === '23503') return res.status(409).json({ ok: false, message: 'Purchased frame cannot be deleted. Hide it instead.' })
     if (error) throw error
     if (!data) return res.status(404).json({ ok: false, message: 'Frame not found' })
     return res.status(200).json({ ok: true, deleted_id: id })
@@ -218,7 +261,7 @@ export async function listReaderProfileFrames(req, res) {
     const page = pageNumber(req.query.page)
     if (!req.user && page > 1) return res.status(401).json({ ok: false, message: 'Sign in to view more frames' })
     const access = typeof req.query.access === 'string' ? req.query.access : 'all'
-    if (!['all', 'free', 'premium'].includes(access)) throw invalid('Invalid access filter')
+    if (!['all', 'free', 'premium', 'coins', 'diamonds'].includes(access)) throw invalid('Invalid access filter')
     const offset = (page - 1) * PAGE_SIZE
     let query = supabase.from(TABLE)
       .select(READER_FIELDS)
@@ -249,7 +292,7 @@ export async function getReaderProfileFrameSelection(req, res) {
     if (error) throw error
     if (!data?.frame_id) return res.status(200).json({ ok: true, frame: null })
     const frame = await visibleFrame(data.frame_id)
-    if (!frame || (frame.access_tier === 'premium' && !(await premiumActive(userId)))) {
+    if (!frame || !(await frameAllowed(userId, frame))) {
       return res.status(200).json({ ok: true, frame: null })
     }
     res.set('Cache-Control', 'private, no-store')
@@ -269,8 +312,8 @@ export async function setReaderProfileFrameSelection(req, res) {
     if (frameId) {
       frame = await visibleFrame(frameId)
       if (!frame) return res.status(404).json({ ok: false, message: 'Frame unavailable' })
-      if (frame.access_tier === 'premium' && !(await premiumActive(userId))) {
-        return res.status(403).json({ ok: false, message: 'Active Premium membership required' })
+      if (!(await frameAllowed(userId, frame))) {
+        return res.status(403).json({ ok: false, message: frame.access_tier === 'premium' ? 'Active Premium membership required' : 'Purchase or renew this frame first' })
       }
     }
     const { error } = await supabase.from(SELECTIONS).upsert({
@@ -283,5 +326,64 @@ export async function setReaderProfileFrameSelection(req, res) {
     return res.status(200).json({ ok: true, frame })
   } catch (error) {
     return sendError(res, error, 'READER_APPLY')
+  }
+}
+
+export async function listReaderProfileFramePurchases(req, res) {
+  try {
+    res.set('Cache-Control', 'private, no-store')
+    const userId = selectionUserId(req)
+    const page = pageNumber(req.query.page)
+    const offset = (page - 1) * PAGE_SIZE
+    const { data, error } = await supabase.from(PURCHASES)
+      .select('id, frame_id, currency, amount, purchased_at, expires_at, frame:profile_frames(id, name, image_url, access_tier, is_active, sort_order, coin_price, diamond_price)')
+      .eq('user_id', userId)
+      .order('purchased_at', { ascending: false })
+      .range(offset, offset + PAGE_SIZE)
+    if (error) throw error
+    const now = Date.now()
+    const items = (data || []).slice(0, PAGE_SIZE).map(item => ({
+      ...item,
+      valid: Boolean(item.frame?.is_active && item.frame.access_tier === item.currency &&
+        (item.currency === 'diamonds' || (item.expires_at && Date.parse(item.expires_at) > now))),
+    }))
+    return res.status(200).json({ ok: true, items, pagination: { page, limit: PAGE_SIZE, has_more: (data?.length || 0) > PAGE_SIZE } })
+  } catch (error) {
+    return sendError(res, error, 'READER_PURCHASES')
+  }
+}
+
+export async function purchaseReaderProfileFrame(req, res) {
+  try {
+    res.set('Cache-Control', 'private, no-store')
+    const userId = selectionUserId(req)
+    const frameId = requiredId(req.params.frameId)
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) throw invalid('Invalid purchase request')
+    const key = requiredId(req.body.idempotency_key, 'purchase key')
+    const { data, error } = await supabase.rpc('purchase_profile_frame_v1', {
+      p_user_id: userId,
+      p_frame_id: frameId,
+      p_idempotency_key: key,
+    })
+    if (error?.code === 'PGRST202' || error?.code === '42883') {
+      return res.status(503).json({ ok: false, message: 'Frame purchase setup is not ready' })
+    }
+    if (error?.code === 'P0001') return res.status(409).json({ ok: false, message: error.message })
+    if (error?.code === '22023') return res.status(400).json({ ok: false, message: error.message })
+    if (error) throw error
+    const purchase = Array.isArray(data) ? data[0] : data
+    if (!purchase || typeof purchase.charged !== 'boolean' || !['coins', 'diamonds'].includes(purchase.purchase_currency)) {
+      throw new Error('Invalid frame purchase result')
+    }
+    return res.status(200).json({ ok: true, purchase: {
+      id: purchase.purchase_id,
+      charged: purchase.charged,
+      currency: purchase.purchase_currency,
+      amount: Number(purchase.amount),
+      expires_at: purchase.expires_at,
+      wallet_balance: Number(purchase.wallet_balance),
+    } })
+  } catch (error) {
+    return sendError(res, error, 'READER_PURCHASE')
   }
 }
