@@ -108,6 +108,7 @@ import { startMangaR2DeleteRetryWorker } from './src/services/mangaR2DeleteRetry
 import { startHeavyMediaWorkerCoordinator } from './src/services/heavyMediaWorkerCoordinator.service.js'
 import { startAuthorStoryPushQueue } from './src/services/authorStoryPushQueue.service.js'
 import { startStoryEpisodePushScheduler } from './src/services/storyEpisodePushScheduler.js'
+import { startBinanceUsdtAlertWorker } from './src/services/binanceUsdtAlertWorker.service.js'
 import {
   memoryIncidentTracer,
   startMemoryIncidentMonitor,
@@ -954,6 +955,7 @@ app.listen(PORT, () => {
   startHeavyMediaWorkerCoordinator()
   startAuthorStoryPushQueue()
   startStoryEpisodePushScheduler()
+  startBinanceUsdtAlertWorker()
   startMemoryIncidentMonitor()
   startWorkDetectorMonitor()
   startSystemUsagePersistence()
