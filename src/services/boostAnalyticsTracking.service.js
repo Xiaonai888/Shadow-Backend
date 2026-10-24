@@ -111,7 +111,7 @@ export function startBoostAnalyticsRetention() {
   if (cleanupStarted) return
   cleanupStarted = true
   const cleanup = async () => {
-    const { error } = await supabase.rpc('prune_shadow_boost_analytics')
+    const { error } = await supabase.rpc('prune_shadow_boost_analytics_v2')
     if (error) console.error('BOOST_ANALYTICS_RETENTION_ERROR:', error)
   }
   cleanup().catch((error) => console.error('BOOST_ANALYTICS_RETENTION_ERROR:', error))
