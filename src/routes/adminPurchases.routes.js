@@ -6,6 +6,12 @@ import {
   confirmAdminPaymentRecovery,
   confirmAdminManualTopUp,
 } from '../controllers/adminPaymentRecovery.controller.js'
+import {
+  getAdminPaymentHistoryMetadata,
+  getAdminPaymentActionDetails,
+  getAdminPaymentActionEdits,
+  updateAdminPaymentActionMetadata,
+} from '../controllers/adminPaymentHistoryEdits.controller.js'
 import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
 import express from 'express'
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit'
@@ -56,6 +62,10 @@ router.get('/manual', requireAdmin, adminPaymentReadLimit, getAdminManualPayment
 router.get('/recovery', requireAdmin, adminPaymentReadLimit, recoveryReadGuard, getAdminPaymentRecovery)
 router.get('/recovery/recipients', requireAdmin, adminPaymentReadLimit, recoveryReadGuard, getAdminPaymentRecoveryRecipient)
 router.get('/recovery/history', requireAdmin, adminPaymentReadLimit, recoveryReadGuard, getAdminPaymentRecoveryHistory)
+router.get('/recovery/history/metadata', requireAdmin, adminPaymentReadLimit, recoveryReadGuard, getAdminPaymentHistoryMetadata)
+router.get('/recovery/history/:actionId/edits', requireAdmin, adminPaymentReadLimit, recoveryReadGuard, getAdminPaymentActionEdits)
+router.get('/recovery/history/:actionId', requireAdmin, adminPaymentReadLimit, recoveryReadGuard, getAdminPaymentActionDetails)
+router.patch('/recovery/history/:actionId', requireAdmin, adminPaymentWriteLimit, recoveryWriteGuard, updateAdminPaymentActionMetadata)
 router.post('/recovery/topup', requireAdmin, adminPaymentWriteLimit, recoveryWriteGuard, confirmAdminManualTopUp)
 router.post('/recovery/:paymentId/confirm', requireAdmin, adminPaymentWriteLimit, recoveryWriteGuard, confirmAdminPaymentRecovery)
 router.get('/manual/stream', requireAdmin, adminPaymentReadLimit, streamAdminPaymentEvents)
