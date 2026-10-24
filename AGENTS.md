@@ -164,6 +164,40 @@ When asked to create or modify backend data behavior:
 - Before completion, test intended operations using the same roles as production clients, reject unauthorized access, and preserve existing API behavior.
 - Source: https://github.com/orgs/supabase/discussions/45329
 
+## Mandatory Request Rate Limiting Standard (2026-10-24)
+
+This rule applies to every new or modified Backend HTTP route, including routes intended to be mounted later. An existing global API limiter is a defense-in-depth layer, not proof that a sensitive route is correctly protected.
+
+### Rate Limit Is Different from Data Limit
+- Request rate limiting bounds requests per client and time window to prevent denial of service and abuse.
+- Pagination, database `.limit()`/`.range()`, upload byte limits, batch limits, and caching bound work per request. They do not replace request rate limiting.
+- Every new or modified route must pass BOTH checks when applicable.
+
+### Required Express Route Pattern
+1. Inspect the current route file, controller, authentication and permission middleware, any inherited limiter in `server.js`, and the actual route mount. Never assume a new router is already registered.
+2. For expensive or privileged routes, apply an appropriate IP-based limiter BEFORE JWT verification, device/session checks, database queries, file operations, or other expensive middleware.
+3. After authentication, keep the existing per-account/per-admin limiter and any stricter write, review, payment, upload, fraud, or action-specific limiter. Do not replace one tier with another.
+4. Prefer explicit, auditable per-route ordering: IP limiter, authentication, authorization/permission, per-identity or action limiter, then controller. Shared `router.use()` guards may be valid at runtime, but must be confirmed to run before expensive operations; if CodeQL cannot recognize the protection, establish clearly ordered route-level protection and verify the new scan.
+5. Apply protection to GET, POST, PUT, PATCH, DELETE, and other relevant handlers. Include each new endpoint, not only the first endpoint in a router.
+6. Never move or remove existing `requireUser`, `requireAdmin`, permission checks, ownership validation, anti-fraud controls, audit logging, or response cache controls as a shortcut.
+7. Reuse the repository's `express-rate-limit` package and working patterns. Choose and document limits based on endpoint cost, legitimate traffic, and existing clients; DO NOT blindly copy 600/min, 240/min, 90/min, 20/min, or 10/min to unrelated endpoints.
+8. Use `req.ip` or the package's supported IP key generation for pre-authentication clients. Use verified `req.user`/`req.admin` identity only after auth has populated it. Never trust an arbitrary `X-Forwarded-For` header or change Express `trust proxy` without verifying Render/proxy topology and abuse implications.
+9. Return HTTP 429 with a stable JSON error and sensible rate-limit headers where appropriate. Avoid caching private responses. Ensure OPTIONS preflight, retries, mobile clients, shared-network users, and normal polling are not broken.
+10. Webhooks, payment callbacks, health checks, and trusted machine-to-machine routes need an explicit threat-specific plan. Preserve signatures, idempotency, source validation, and delivery/retry behavior; do not insert a generic limiter that silently rejects legitimate callbacks.
+11. If a route genuinely cannot use a normal limiter, document the reason and alternative protection in that route's review. An exemption is not permission to ignore abuse risk.
+
+### Mandatory Route Review Before Delivery
+For EACH new or changed Backend route, verify:
+1. Is there a request-rate limit before expensive authentication, database or filesystem work?
+2. Are the correct post-auth user/admin and write limits retained?
+3. Are page size, offsets, payload size, nested data and bulk work independently bounded?
+4. Are all handlers and HTTP methods covered, and is the router mounted only when the feature is intended to be active?
+5. Does a normal authorized request succeed, while missing/invalid auth is rejected and excessive requests receive 429?
+6. Do proxy/IP handling, shared users, legitimate traffic, error shape, cache behavior and existing frontend callers remain compatible?
+7. Have syntax/runtime tests, the relevant diff, and the CodeQL result for the new commit been checked?
+
+Do not claim a Missing rate limiting alert is fixed just because a limiter variable exists. Verify that execution passes through the limiter before the reported expensive route action. Do not dismiss, silence, or disable the CodeQL rule. If these checks cannot be performed, report what is unverified.
+
   ## Security and CodeQL Rules (2026-10-22)
 
 - Before a security fix, read this AGENTS.md and inspect the latest related routes, middleware, controllers, services, SQL, and the affected Reader/Admin callers. Do not replace a full file from an outdated copy.
@@ -177,5 +211,6 @@ When asked to create or modify backend data behavior:
 - Fix CodeQL findings by tracing the real untrusted source to the dangerous sink. Never silence a query, disable a scanner, dismiss a live finding, or make a cosmetic rewrite only to obtain zero open alerts.
 - Retain existing GitHub security workflows, including .github/workflows/secret-scan.yml. Do not install a duplicate CodeQL workflow without first checking repository CodeQL Default Setup or existing scanning configuration.
 - After changing code, review the complete diff and run applicable syntax checks, tests, build/startup validation, and affected consumer checks. Verify the security scan covers the new commit before claiming the alert is closed. Zero open CodeQL alerts does not guarantee complete application security.
+
 
 
