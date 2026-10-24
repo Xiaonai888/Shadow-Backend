@@ -34,6 +34,7 @@ async function loadReport(params) {
           p_page: params.page,
           p_limit: params.limit,
           p_search: params.search,
+        ...(params.sort !== 'newest' ? { p_sort: params.sort } : {}),
         }
     const { data, error } = await supabase.rpc(name, args)
     if (error) throw error
@@ -55,6 +56,7 @@ export async function getAdminBoostInsights(req, res) {
   const start = String(req.query.start || '')
   const end = String(req.query.end || '')
   const search = String(req.query.search || '').trim()
+  const sort = String(req.query.sort ?? 'newest')
   const page = Number(req.query.page ?? 1)
   const limit = Number(req.query.limit ?? 20)
   const yesterday = new Date(Date.parse(`${cambodiaDay()}T00:00:00Z`) - DAY_MS).toISOString().slice(0, 10)
@@ -66,13 +68,15 @@ export async function getAdminBoostInsights(req, res) {
     Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`) > 365 * DAY_MS ||
     !Number.isSafeInteger(page) || page < 1 || page > 100000 ||
     !Number.isSafeInteger(limit) || limit < 1 || limit > 20 ||
-    search.length > 80
+    search.length > 80 ||
+!['newest', 'top', 'low'].includes(sort) ||
+(audience === 'reader' && sort !== 'newest')
   ) {
     return res.status(400).json({ ok: false, message: 'Invalid Boost Analytics filters' })
   }
 
   try {
-    const data = await loadReport({ audience, kind, start, end, search: audience === 'author' ? search : '', page, limit })
+    const data = await loadReport({ audience, kind, start, end, search: audience === 'author' ? search : '', sort, page, limit })
     res.set('Cache-Control', 'private, max-age=300')
     return res.status(200).json({ ok: true, data })
   } catch (error) {
