@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { transitionOwnedAuthorAdCampaign } from '../services/authorAdLifecycle.service.js'
 
 const CAMPAIGN_STATUSES = new Set([
   'draft', 'pending_review', 'approved', 'scheduled', 'active',
@@ -433,6 +434,42 @@ export async function submitMyAuthorAdForReview(req, res) {
       campaign: publicCampaign(data),
       payment_required: true,
       delivery_active: false,
+    })
+  })
+}
+
+export async function transitionMyAuthorAdCampaign(req, res) {
+  return respond(res, async () => {
+    res.set('Cache-Control', 'private, no-store')
+    const userId = authenticatedUserId(req)
+    const id = requireUuid(req.params.campaignId, 'campaign ID')
+    const action = req.body?.action
+
+    if (typeof action !== 'string' || !['start', 'pause', 'resume'].includes(action)) {
+      throw apiError(400, 'INVALID_CAMPAIGN_ACTION', 'Choose start, pause or resume')
+    }
+
+    const transition = await transitionOwnedAuthorAdCampaign({
+      campaignId: id,
+      ownerUserId: userId,
+      action,
+    })
+
+    const { data, error } = await supabase.from('author_ad_campaigns')
+      .select(CAMPAIGN_RETURN_COLUMNS)
+      .eq('id', id)
+      .eq('owner_user_id', userId)
+      .maybeSingle()
+
+    if (error) throw error
+    if (!data) throw apiError(404, 'CAMPAIGN_NOT_FOUND', 'Campaign not found')
+
+    return res.json({
+      ok: true,
+      changed: transition.changed,
+      campaign: publicCampaign(data),
+      payment_required: Number(data.funded_cents) - Number(data.refunded_cents) < Number(data.budget_cents),
+      delivery_active: data.status === 'active',
     })
   })
 }
