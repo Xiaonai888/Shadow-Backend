@@ -45,13 +45,13 @@ const readerKey = req => String(
   ipKeyGenerator(req.ip)
 )
 
-const adminReadIp = limiter({
+const adminReadIp = createIpLimiter({
   limit: 120,
   code: 'PROFILE_FRAMES_ADMIN_READ_IP_LIMIT',
   message: 'Too many frame catalog requests. Please retry shortly.',
 })
 
-const adminWriteIp = limiter({
+const adminWriteIp = createIpLimiter({
   limit: 45,
   code: 'PROFILE_FRAMES_ADMIN_WRITE_IP_LIMIT',
   message: 'Too many frame changes. Please retry shortly.',
@@ -71,19 +71,19 @@ const adminWriteAccount = limiter({
   keyGenerator: adminKey,
 })
 
-const readerCatalogIp = limiter({
+const readerCatalogIp = createIpLimiter({
   limit: 180,
   code: 'PROFILE_FRAMES_READER_CATALOG_IP_LIMIT',
   message: 'Too many frame requests. Please retry shortly.',
 })
 
-const readerSelectionIp = limiter({
+const readerSelectionIp = createIpLimiter({
   limit: 90,
   code: 'PROFILE_FRAMES_READER_SELECTION_IP_LIMIT',
   message: 'Too many frame selection requests. Please retry shortly.',
 })
 
-const readerApplyIp = limiter({
+const readerApplyIp = createIpLimiter({
   limit: 45,
   code: 'PROFILE_FRAMES_READER_APPLY_IP_LIMIT',
   message: 'Too many frame updates. Please retry shortly.',
