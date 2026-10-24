@@ -8,6 +8,8 @@ import {
   getReaderProfileFrameSelection,
   listAdminProfileFrames,
   listReaderProfileFrames,
+  listReaderProfileFramePurchases,
+  purchaseReaderProfileFrame,
   setReaderProfileFrameSelection,
   updateAdminProfileFrame,
 } from '../controllers/profileFrames.controller.js'
@@ -168,3 +170,6 @@ readerProfileFramesRouter.put(
   readerApplyAccount,
   setReaderProfileFrameSelection
 )
+
+readerProfileFramesRouter.get('/purchases', readerSelectionIp, requireUser, readerSelectionAccount, listReaderProfileFramePurchases)
+readerProfileFramesRouter.post('/:frameId/purchase', readerApplyIp, requireUser, readerApplyAccount, purchaseReaderProfileFrame)
