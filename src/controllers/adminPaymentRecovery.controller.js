@@ -34,8 +34,8 @@ async function matchingUserIds(term) {
 
 export async function getAdminPaymentRecovery(req, res) {
   try {
-    const page = Math.min(Math.max(parseInt(req.query.page, 10) || 1, 1), 100)
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 50)
+    const page = Math.min(Math.max(parseInt(req.query.page, 10) || 1, 1), 100000)
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 10)
     const rawSearch = String(req.query.q || '').trim().replace(/^@+/, '')
     const search = safeSearch(rawSearch)
     const status = String(req.query.status || 'all').trim().toLowerCase()
@@ -208,8 +208,8 @@ export async function getAdminPaymentRecoveryRecipient(req, res) {
 
 export async function getAdminPaymentRecoveryHistory(req, res) {
   try {
-    const page = Math.min(Math.max(Number.parseInt(req.query.page, 10) || 1, 1), 100)
-    const limit = 20
+    const page = Math.min(Math.max(Number.parseInt(req.query.page, 10) || 1, 1), 100000)
+    const limit = 10
     const { data, error } = await supabase
       .from('admin_payment_recovery_actions')
       .select('id,action_type,payment_id,user_id,reference,diamonds,amount_usd,bank_paid_at,balance_before,balance_after,admin_email,reason,created_at')
@@ -221,7 +221,7 @@ const ids = [...new Set(rows.map(row => row.user_id).filter(Boolean))]
 const lookup = ids.length ? await supabase.from('users').select('id,name,username').in('id', ids) : { data: [] }
 const names = new Map((lookup.data || []).map(user => [user.id, String(user.name || '').trim() || String(user.username || '').trim()]))
 const items = rows.map(row => ({ ...row, user_name: names.get(row.user_id) || null }))
-return res.status(200).json({ ok: true, items, page, has_next: (data || []).length > limit, has_prev: page > 1 })
+return res.status(200).json({ ok: true, items, page, limit, has_next: (data || []).length > limit, has_prev: page > 1 })
   } catch (error) {
     console.error('ADMIN PAYMENT RECOVERY HISTORY ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Unable to load recovery history. Install the SQL setup first.' })
