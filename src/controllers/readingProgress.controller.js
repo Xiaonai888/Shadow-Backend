@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { recordReaderBoostInterest } from '../services/boostAnalyticsTracking.service.js'
 import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 import {
   getReaderAgeAccess,
@@ -402,6 +403,18 @@ export async function saveReadingProgress(req, res) {
       .single()
 
     if (error) throw error
+
+    if (userId && readingPercent > 0) {
+      const dayKh = new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10)
+      void recordReaderBoostInterest({
+        readerId: userId,
+        eventType: 'read',
+        sourceId: `story:${storyId}`,
+        actionId: `${episodeId}:${dayKh}`,
+      }).catch((trackingError) => {
+        console.error('BOOST_READING_INTEREST_ERROR', trackingError)
+      })
+    }
 
     return res.json({
       ok: true,
