@@ -16,6 +16,14 @@ const GOALS = {
   story: new Set(['readers', 'followers', 'unlocks']),
   product: new Set(['sales', 'followers']),
 }
+const CAMPAIGN_RETURN_COLUMNS = [
+  'id', 'campaign_kind', 'content_type', 'content_id',
+  'content_title', 'content_image_url', 'goal', 'audience_mode',
+  'audience_filters', 'placements', 'budget_cents', 'funded_cents',
+  'spent_cents', 'refunded_cents', 'duration_days', 'status',
+  'review_status', 'review_reason', 'submitted_at', 'start_at',
+  'end_at', 'created_at', 'updated_at',
+].join(',')
 
 function apiError(status, code, message) {
   const error = new Error(message)
@@ -188,7 +196,7 @@ async function getAuthorizedContent(page, userId, campaign) {
 
 async function getOwnedCampaign(id, page, userId) {
   const { data, error } = await supabase.from('author_ad_campaigns')
-    .select('*')
+    .select(CAMPAIGN_RETURN_COLUMNS)
     .eq('id', id)
     .eq('author_page_id', page.id)
     .eq('owner_user_id', userId)
@@ -281,7 +289,7 @@ export async function listMyAuthorAdCampaigns(req, res) {
       throw apiError(400, 'INVALID_STATUS', 'Invalid campaign status')
     }
     let query = supabase.from('author_ad_campaigns')
-      .select('*', { count: 'exact' })
+      .select(CAMPAIGN_RETURN_COLUMNS, { count: 'exact' })
       .eq('owner_user_id', userId)
       .eq('author_page_id', page.id)
       .order('created_at', { ascending: false })
@@ -326,7 +334,7 @@ export async function createMyAuthorAdDraft(req, res) {
         status: 'draft',
         review_status: 'not_submitted',
       })
-      .select('*')
+      .select(CAMPAIGN_RETURN_COLUMNS)
       .single()
     if (error) throw error
     return res.status(201).json({ ok: true, campaign: publicCampaign(data) })
@@ -354,7 +362,7 @@ export async function updateMyAuthorAdDraft(req, res) {
       .eq('review_status', 'not_submitted')
       .eq('funded_cents', 0)
       .eq('spent_cents', 0)
-      .select('*')
+      .select(CAMPAIGN_RETURN_COLUMNS)
       .maybeSingle()
     if (error) throw error
     if (!data) throw apiError(409, 'DRAFT_LOCKED', 'Draft was changed. Please refresh')
@@ -416,7 +424,7 @@ export async function submitMyAuthorAdForReview(req, res) {
       .eq('review_status', 'not_submitted')
       .eq('funded_cents', 0)
       .eq('spent_cents', 0)
-      .select('*')
+      .select(CAMPAIGN_RETURN_COLUMNS)
       .maybeSingle()
     if (error) throw error
     if (!data) throw apiError(409, 'DRAFT_LOCKED', 'Draft was changed. Please refresh')
