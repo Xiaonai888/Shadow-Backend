@@ -56,7 +56,7 @@ function matchingAudience(campaign, viewer) {
   return true
 }
 
-function hasVerifiedBudget(campaign) {
+function hasVerifiedBudget(campaign, funding) {
   const values = [
     campaign.budget_cents,
     campaign.funded_cents,
@@ -65,7 +65,21 @@ function hasVerifiedBudget(campaign) {
   ].map(Number)
   if (!values.every(value => Number.isSafeInteger(value) && value >= 0)) return false
   const [budget, funded, refunded, spent] = values
-  return budget > 0 && spent < budget && funded - refunded >= budget && funded - refunded - spent > 0
+  if (funding) {
+    const diamonds = [
+      funding.funded_diamonds,
+      funding.spent_diamonds,
+      funding.refunded_diamonds,
+    ].map(Number)
+    if (!diamonds.every(value => Number.isSafeInteger(value) && value >= 0)) return false
+    const [fundedDiamonds, spentDiamonds, refundedDiamonds] = diamonds
+    return funding.owner_user_id === campaign.owner_user_id &&
+      budget > 0 && fundedDiamonds === budget &&
+      funded === 0 && refunded === 0 && spent === 0 &&
+      spentDiamonds + refundedDiamonds < fundedDiamonds
+  }
+  return budget > 0 && spent < budget &&
+    funded - refunded >= budget && funded - refunded - spent > 0
 }
 
 async function loadCampaignPool(kind) {
@@ -97,6 +111,7 @@ async function loadCampaignPool(kind) {
 
 async function loadCandidates(kind, input) {
   if (process.env.AUTHOR_ADS_DELIVERY_ENABLED !== 'true') return null
+  if (kind === 'book' && process.env.AUTHOR_ADS_BOOK_DELIVERY_ENABLED !== 'true') return null
   const userId = requireUuid(input.viewerUserId, 'viewer ID')
   const limit = input.limit ?? RESULT_LIMIT
   if (!Number.isInteger(limit) || limit < 1 || limit > RESULT_LIMIT) {
@@ -114,7 +129,7 @@ async function loadCandidates(kind, input) {
     viewerCountry: input.viewerCountry ?? '',
   })
   const pool = await loadCampaignPool(kind)
-  const candidates = pool.filter(campaign =>
+  let candidates = pool.filter(campaign =>
     campaign.campaign_kind === kind &&
     (kind === 'post' ? campaign.content_type === 'post'
       : ['story', 'product'].includes(campaign.content_type)) &&
@@ -127,8 +142,21 @@ async function loadCandidates(kind, input) {
     !excludedPages.has(campaign.author_page_id) &&
     Array.isArray(campaign.placements) &&
     campaign.placements.includes('discover') &&
-    hasVerifiedBudget(campaign) &&
     matchingAudience(campaign, viewer)
+  )
+  if (!candidates.length) return { candidates: [], pages: new Map(), limit }
+
+  const fundingResult = await supabase.from('author_ad_diamond_funding')
+    .select('campaign_id,owner_user_id,funded_diamonds,spent_diamonds,refunded_diamonds')
+    .in('campaign_id', candidates.map(item => item.id))
+  const missingFundingTable = ['42P01', 'PGRST205'].includes(fundingResult.error?.code)
+  if (fundingResult.error && !missingFundingTable) throw fundingResult.error
+  const fundingByCampaign = new Map(
+    (missingFundingTable ? [] : fundingResult.data || [])
+      .map(item => [item.campaign_id, item])
+  )
+  candidates = candidates.filter(campaign =>
+    hasVerifiedBudget(campaign, fundingByCampaign.get(campaign.id))
   )
   if (!candidates.length) return { candidates: [], pages: new Map(), limit }
 
