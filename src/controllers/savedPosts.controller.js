@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { filterVisibleSavedReaderPosts } from '../services/readerPostPrivacy.service.js'
+import { recordReaderBoostInterest } from '../services/boostAnalyticsTracking.service.js'
 
 const SOURCE_TYPES = new Set(['reader_post', 'author_post', 'promotion'])
 const SORT_TYPES = new Set(['newest', 'oldest'])
@@ -393,6 +394,27 @@ export async function getSavedPostStatus(req, res) {
   }
 }
 
+const BOOST_POST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+async function recordVerifiedBoostSavedPost(userId, sourceId, savedPostId) {
+  if (!BOOST_POST_ID.test(sourceId)) return
+  const { data, error } = await supabase
+    .from('author_page_posts')
+    .select('id')
+    .eq('id', sourceId)
+    .eq('status', 'active')
+    .limit(1)
+    .maybeSingle()
+  if (error) throw error
+  if (!data) return
+  await recordReaderBoostInterest({
+    readerId: userId,
+    eventType: 'save',
+    sourceId: `author_post:${sourceId}`,
+    actionId: savedPostId,
+  })
+}
+
 export async function savePost(req, res) {
   try {
     const userId = getUserId(req)
@@ -506,6 +528,12 @@ export async function savePost(req, res) {
     )
 
     const item = await getSavedPostWithCollections(userId, savedPost.id)
+
+    if (!existingItem && sourceType === 'author_post') {
+      void recordVerifiedBoostSavedPost(userId, sourceId, savedPost.id).catch((error) => {
+        console.error('BOOST_SAVED_POST_TRACKING_ERROR:', error)
+      })
+    }
 
     return res.status(existingItem ? 200 : 201).json({
       ok: true,
