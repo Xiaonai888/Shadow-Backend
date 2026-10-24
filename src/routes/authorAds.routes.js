@@ -1,5 +1,5 @@
 import express from 'express'
-import { rateLimit } from 'express-rate-limit'
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit'
 import { requireUser } from '../middleware/user.middleware.js'
 import {
   listMyAuthorAdCampaigns,
@@ -11,6 +11,22 @@ import {
 } from '../controllers/authorAds.controller.js'
 
 const router = express.Router()
+
+const campaignReadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 240,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(
+    req.user?.user_id ||
+    ipKeyGenerator(req.ip)
+  ),
+  message: {
+    ok: false,
+    code: 'AUTHOR_ADS_READ_RATE_LIMITED',
+    message: 'Too many campaign requests. Please try again shortly.',
+  },
+})
 
 const campaignWriteLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -30,8 +46,8 @@ router.use((req, res, next) => {
   next()
 })
 
-router.get('/me/campaigns', listMyAuthorAdCampaigns)
-router.get('/me/campaigns/:campaignId', getMyAuthorAdCampaign)
+router.get('/me/campaigns', campaignReadLimiter, listMyAuthorAdCampaigns)
+router.get('/me/campaigns/:campaignId', campaignReadLimiter, getMyAuthorAdCampaign)
 router.post('/me/campaigns', campaignWriteLimiter, createMyAuthorAdDraft)
 router.put('/me/campaigns/:campaignId', campaignWriteLimiter, updateMyAuthorAdDraft)
 router.delete('/me/campaigns/:campaignId', campaignWriteLimiter, deleteMyAuthorAdDraft)
