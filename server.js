@@ -99,6 +99,8 @@ import adminEventsRoutes from './src/routes/adminEvents.routes.js'
 import adminRolesRoutes from './src/routes/adminRoles.routes.js'
 import adminAccountsRoutes from './src/routes/adminAccounts.routes.js'
 import adminSearchInsightsRoutes from './src/routes/adminSearchInsights.routes.js'
+import adminBoostInsightsRoutes from './src/routes/adminBoostInsights.routes.js'
+import { startBoostAnalyticsRetention } from './src/services/boostAnalyticsTracking.service.js'
 import musicRoutes from './src/routes/music.routes.js'
 import { startMangaR2DeleteRetryWorker } from './src/services/mangaR2DeleteRetry.service.js'
 import { startHeavyMediaWorkerCoordinator } from './src/services/heavyMediaWorkerCoordinator.service.js'
@@ -908,6 +910,7 @@ app.use('/api/admin/events', adminEventsRoutes)
 app.use('/api/admin/roles', adminRolesRoutes)
 app.use('/api/admin/accounts', adminAccountsRoutes)
 app.use('/api/admin/search-insights', adminSearchInsightsRoutes)
+app.use('/api/admin/boost', adminBoostInsightsRoutes)
 app.use('/api/music', musicRoutes)
 app.use('/api/story-translation', storyTranslationSpamGuard, storyTranslationRoutes)
 app.use('/api/games', readerReadSpamGuard, gameSettingsRoutes)
@@ -933,6 +936,7 @@ await startWorkKillSwitchService()
 startSecuritySupervisor()
 
 app.listen(PORT, () => {
+  if (process.env.BOOST_ANALYTICS_RETENTION_ENABLED === 'true') startBoostAnalyticsRetention()
   console.log(`Shadow Backend running on port ${PORT}`)
   startAuthorStoriesCleanup()
   startReaderStoriesCleanup()
