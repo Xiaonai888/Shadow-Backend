@@ -52,18 +52,16 @@ const campaignWriteLimiter = rateLimit({
   },
 })
 
-router.use(campaignIpLimiter)
-router.use(requireUser)
-router.use((req, res, next) => {
+function privateNoStore(req, res, next) {
   res.set('Cache-Control', 'private, no-store')
   next()
-})
+}
 
-router.get('/me/campaigns', campaignReadLimiter, listMyAuthorAdCampaigns)
-router.get('/me/campaigns/:campaignId', campaignReadLimiter, getMyAuthorAdCampaign)
-router.post('/me/campaigns', campaignWriteLimiter, createMyAuthorAdDraft)
-router.put('/me/campaigns/:campaignId', campaignWriteLimiter, updateMyAuthorAdDraft)
-router.delete('/me/campaigns/:campaignId', campaignWriteLimiter, deleteMyAuthorAdDraft)
-router.post('/me/campaigns/:campaignId/submit', campaignWriteLimiter, submitMyAuthorAdForReview)
+router.get('/me/campaigns', campaignIpLimiter, requireUser, privateNoStore, campaignReadLimiter, listMyAuthorAdCampaigns)
+router.get('/me/campaigns/:campaignId', campaignIpLimiter, requireUser, privateNoStore, campaignReadLimiter, getMyAuthorAdCampaign)
+router.post('/me/campaigns', campaignIpLimiter, requireUser, privateNoStore, campaignWriteLimiter, createMyAuthorAdDraft)
+router.put('/me/campaigns/:campaignId', campaignIpLimiter, requireUser, privateNoStore, campaignWriteLimiter, updateMyAuthorAdDraft)
+router.delete('/me/campaigns/:campaignId', campaignIpLimiter, requireUser, privateNoStore, campaignWriteLimiter, deleteMyAuthorAdDraft)
+router.post('/me/campaigns/:campaignId/submit', campaignIpLimiter, requireUser, privateNoStore, campaignWriteLimiter, submitMyAuthorAdForReview)
 
 export default router
