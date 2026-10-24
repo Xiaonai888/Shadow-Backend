@@ -20,6 +20,18 @@ function adminRateLimitIdentity(req) {
   )
 }
 
+const adminAdsIpLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: false,
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_AUTHOR_ADS_IP_LIMIT',
+    message: 'Too many Author Ads requests. Please retry shortly.',
+  },
+})
+
 const adminAdsReadLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 90,
@@ -46,15 +58,14 @@ const adminAdsReviewLimit = rateLimit({
   },
 })
 
-router.use(requireAdmin)
-router.use((req, res, next) => {
+function noStore(req, res, next) {
   res.set('Cache-Control', 'private, no-store')
   next()
-})
+}
 
-router.get('/campaigns/summary', adminAdsReadLimit, getAdminAuthorAdSummary)
-router.get('/campaigns', adminAdsReadLimit, listAdminAuthorAdCampaigns)
-router.get('/campaigns/:campaignId', adminAdsReadLimit, getAdminAuthorAdCampaign)
-router.post('/campaigns/:campaignId/review', adminAdsReviewLimit, reviewAdminAuthorAdCampaign)
+router.get('/campaigns/summary', adminAdsIpLimit, requireAdmin, noStore, adminAdsReadLimit, getAdminAuthorAdSummary)
+router.get('/campaigns', adminAdsIpLimit, requireAdmin, noStore, adminAdsReadLimit, listAdminAuthorAdCampaigns)
+router.get('/campaigns/:campaignId', adminAdsIpLimit, requireAdmin, noStore, adminAdsReadLimit, getAdminAuthorAdCampaign)
+router.post('/campaigns/:campaignId/review', adminAdsIpLimit, requireAdmin, noStore, adminAdsReviewLimit, reviewAdminAuthorAdCampaign)
 
 export default router
