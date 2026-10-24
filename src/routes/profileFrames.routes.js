@@ -25,6 +25,9 @@ function limiter({ windowMs = 60 * 1000, limit, code, message, keyGenerator }) {
     message: { ok: false, code, message },
   })
 }
+function createIpLimiter(options) {
+  return limiter({ ...options, keyGenerator: undefined })
+}
 
 const adminKey = req => String(
   req.admin?.admin_id ||
