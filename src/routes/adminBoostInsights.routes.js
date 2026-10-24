@@ -1,9 +1,29 @@
 import express from 'express'
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { getAdminBoostInsights } from '../controllers/adminBoostInsights.controller.js'
 
 const router = express.Router()
 
-router.get('/insights', requireAdmin, getAdminBoostInsights)
+const adminBoostInsightsReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 240,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(
+    req.admin?.admin_id ||
+    req.admin?.id ||
+    req.admin?.sub ||
+    req.admin?.email ||
+    ipKeyGenerator(req.ip)
+  ),
+  message: {
+    ok: false,
+    code: 'ADMIN_BOOST_INSIGHTS_RATE_LIMIT',
+    message: 'Too many Boost Insights requests. Please retry shortly.',
+  },
+})
+
+router.get('/insights', requireAdmin, adminBoostInsightsReadLimit, getAdminBoostInsights)
 
 export default router
