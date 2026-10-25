@@ -60,13 +60,13 @@ import {
   syncMyAuthorStoreSalesReports,
 } from '../controllers/authorStoreSalesReports.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
-import authorStoreBookProofRoutes from './authorStoreBookProof.routes.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { getAdminAuthorStoreWithdrawalNotifications } from '../controllers/adminAuthorStoreWithdrawalNotifications.controller.js'
 import { validateAuthorStorePdf, deleteMyAuthorStoreTemporaryPdf } from '../controllers/authorStorePdfGuard.controller.js'
+import authorStoreBookProofRoutes from './authorStoreBookProof.routes.js'
+import authorStoreBookShipmentRoutes from './authorStoreBookShipment.routes.js'
 
 const router = express.Router()
-router.use(authorStoreBookProofRoutes)
 
 const privatePdfUpload = multer({
   dest: os.tmpdir(),
@@ -188,5 +188,8 @@ router.get('/page/:pageUsername/products', getPublicAuthorStoreProducts)
 router.post('/admin/orders/:orderId/resend-telegram', requireAdmin, resendAdminAuthorStoreOrderTelegram)
 router.get('/admin/stores', requireAdmin, getAdminAuthorStoreStores)
 router.get('/admin/stores/:authorPageId', requireAdmin, getAdminAuthorStoreStoreDetails)
+
+router.use(authorStoreBookShipmentRoutes)
+router.use(authorStoreBookProofRoutes)
 
 export default router
