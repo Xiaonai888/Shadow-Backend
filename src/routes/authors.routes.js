@@ -12,6 +12,11 @@ import { getMyAuthorTopSupporters } from '../controllers/authorTopSupporters.con
 import { getMyAuthorMonthlyEarnings } from '../controllers/authorMonthlyEarnings.controller.js'
 import { getMyAuthorStoryPayoutStatus } from '../controllers/authorStoryPayoutStatus.controller.js'
 import {
+  getMyAuthorBinancePayout,
+  saveMyAuthorBinancePayout,
+  disableMyAuthorBinancePayout,
+} from '../controllers/authorBinancePayout.controller.js'
+import {
   getAuthorHashtagSuggestions,
   recordAuthorHashtagInterest,
 } from '../controllers/authorHashtags.controller.js'
@@ -156,6 +161,7 @@ import {
 import { rateLimit } from 'express-rate-limit'
 
 const router = express.Router()
+const binancePayoutLimit = rateLimit({ windowMs: 3600000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (req) => String(req.user?.user_id || 'unauthorized') })
 
 const discoverBoostIpLimit = rateLimit({
   windowMs: 60 * 1000,
@@ -308,6 +314,9 @@ router.put('/me/comment-protection/cleanup-settings', requireUser, updateMyAutho
 router.post('/me/comment-protection/cleanup/run', requireUser, runMyAuthorCommentCleanupNow)
 router.get('/me/comment-protection/moderation-history', requireUser, getMyAuthorModerationHistory)
 router.get('/me/payment-methods', requireUser, getMyAuthorPaymentMethods)
+router.get('/me/binance-payout', requireUser, getMyAuthorBinancePayout)
+router.post('/me/binance-payout', requireUser, binancePayoutLimit, saveMyAuthorBinancePayout)
+router.patch('/me/binance-payout/disable', requireUser, binancePayoutLimit, disableMyAuthorBinancePayout)
 router.get('/me/page-notifications', requireUser, getMyAuthorPageNotifications)
 router.get('/me/page-notifications/unread-count', requireUser, getMyAuthorPageNotificationUnreadCount)
 router.get('/me/page-notifications/stream', requireUser, streamMyAuthorPageNotifications)
