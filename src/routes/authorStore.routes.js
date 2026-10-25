@@ -1,6 +1,7 @@
 import { getReaderStoreHome } from '../controllers/readerStore.controller.js'
 import { getMyAuthorStoreEarnings } from '../controllers/authorStoreEarnings.controller.js'
 import { getMyAuthorStoreBookPending, confirmMyAuthorStoreBookReceived } from '../controllers/authorStoreBookPending.controller.js'
+import { approveAdminAuthorStoreBookHold } from '../controllers/adminAuthorStoreBookApproval.controller.js'
 import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
@@ -157,6 +158,7 @@ router.get('/me/earnings', requireUser, getMyAuthorStoreEarnings)
 router.get('/me/book-pending', requireUser, getMyAuthorStoreBookPending)
 router.post('/me/withdrawals', requireUser, createMyAuthorStoreWithdrawal)
 router.get('/admin/orders', requireAdmin, getAdminAuthorStoreOrders)
+router.post('/admin/books/:orderId/approve-hold', requireAdmin, approveAdminAuthorStoreBookHold)
 router.patch('/admin/orders/:orderId/status', requireAdmin, updateAdminAuthorStoreOrderStatus)
 router.get('/admin/withdrawals', requireAdmin, getAdminAuthorStoreWithdrawals)
 router.get('/admin/withdrawal-notifications', requireAdmin, getAdminAuthorStoreWithdrawalNotifications)
