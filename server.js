@@ -100,6 +100,7 @@ import eventsRoutes from './src/routes/events.routes.js'
 import adminEventsRoutes from './src/routes/adminEvents.routes.js'
 import adminRolesRoutes from './src/routes/adminRoles.routes.js'
 import adminAccountsRoutes from './src/routes/adminAccounts.routes.js'
+import adminSupportChatRoutes from './src/routes/adminSupportChat.routes.js'
 import adminSearchInsightsRoutes from './src/routes/adminSearchInsights.routes.js'
 import adminBoostInsightsRoutes from './src/routes/adminBoostInsights.routes.js'
 import adminAuthorAdsRoutes from './src/routes/adminAuthorAds.routes.js'
@@ -928,6 +929,7 @@ app.use('/api/events', eventsRoutes)
 app.use('/api/admin/events', adminEventsRoutes)
 app.use('/api/admin/roles', adminRolesRoutes)
 app.use('/api/admin/accounts', adminAccountsRoutes)
+app.use('/api/admin/support-chat', adminSupportChatRoutes)
 app.use('/api/admin/search-insights', adminSearchInsightsRoutes)
 app.use('/api/admin/boost', adminBoostInsightsRoutes)
 app.use('/api/admin/author-ads', adminAuthorAdsRoutes)
