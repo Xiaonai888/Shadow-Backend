@@ -88,27 +88,40 @@ router.get('/conversations', preAuthLimit, viewChat, inboxLimit, async (req, res
     return problem(res, 400, 'ADMIN_CHAT_INVALID_FILTER', 'Invalid inbox filter')
   }
 
+  const pageInput = req.query.page
+  if (pageInput !== undefined && (typeof pageInput !== 'string' || !/^[1-9]\d{0,4}$/.test(pageInput))) {
+    return problem(res, 400, 'ADMIN_CHAT_INVALID_PAGE', 'Invalid page number')
+  }
+  const pageNumber = pageInput === undefined ? 1 : Number(pageInput)
+  if (pageNumber > 10000) return problem(res, 400, 'ADMIN_CHAT_INVALID_PAGE', 'Invalid page number')
+  const start = (pageNumber - 1) * PAGE_SIZE
+
   try {
     let query = supabase
       .from('admin_support_conversations')
       .select('id, reader_user_id, status, priority, detected_country_code, override_country_code, assigned_admin_id, assigned_mode, last_message_at, last_message_preview, unread_for_admin, unread_for_reader, archived_at, created_at')
 
     if (filter === 'archived') {
-      query = query.eq('status', 'archived').order('archived_at', { ascending: false })
+      query = query.eq('status', 'archived')
+        .order('archived_at', { ascending: false })
+        .order('id', { ascending: false })
     } else {
       query = query.neq('status', 'archived')
         .order('last_message_at', { ascending: false, nullsFirst: false })
         .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
       if (filter === 'unread') query = query.gt('unread_for_admin', 0)
       if (filter === 'seen') query = query.eq('unread_for_admin', 0)
       if (filter === 'assigned') query = query.not('assigned_admin_id', 'is', null)
     }
 
     if (req.admin.role === 'staff') {
-  query = query.eq('assigned_admin_id', String(req.admin.admin_id))
-}
-const { data, error } = await query.limit(PAGE_SIZE + 1)
+      query = query.eq('assigned_admin_id', String(req.admin.admin_id))
+    }
+
+    const { data, error } = await query.range(start, start + PAGE_SIZE)
     if (error) throw error
+    const hasMore = (data || []).length > PAGE_SIZE
     const page = (data || []).slice(0, PAGE_SIZE)
     const userIds = [...new Set(page.map((row) => row.reader_user_id).filter(Boolean))]
     let users = []
@@ -125,7 +138,14 @@ const { data, error } = await query.limit(PAGE_SIZE + 1)
       reader: byId.get(chat.reader_user_id) || null,
     }))
     res.set('Cache-Control', 'no-store')
-    return res.json({ ok: true, conversations, limit: PAGE_SIZE, has_more: (data || []).length > PAGE_SIZE })
+    return res.json({
+      ok: true,
+      conversations,
+      limit: PAGE_SIZE,
+      page: pageNumber,
+      next_page: hasMore ? pageNumber + 1 : null,
+      has_more: hasMore,
+    })
   } catch (error) {
     return failed(res, error, 'inbox')
   }
