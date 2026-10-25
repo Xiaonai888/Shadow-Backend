@@ -282,85 +282,203 @@ export async function listAdminAuthorAdCampaigns(req, res) {
   })
 }
 
+function createUsdTotals() {
+  return {
+    campaign_count: 0,
+    campaigns_with_spend: 0,
+    budget_cents: 0,
+    funded_cents: 0,
+    spent_cents: 0,
+    refunded_cents: 0,
+  }
+}
+
+function createDiamondTotals() {
+  return {
+    campaign_count: 0,
+    campaigns_with_spend: 0,
+    budget_diamonds: 0,
+    funded_diamonds: 0,
+    spent_diamonds: 0,
+    refunded_diamonds: 0,
+  }
+}
+
+function addSummaryAmount(target, key, amount) {
+  const result = target[key] + amount
+  if (!Number.isSafeInteger(result) || result < 0) {
+    fail(503, 'INVALID_BOOST_SUMMARY', 'Campaign summary exceeds safe limits')
+  }
+  target[key] = result
+}
+
+function requireSummaryAmount(value, name) {
+  if (value === null || value === undefined || value === '') {
+    fail(503, 'INVALID_BOOST_SUMMARY', `Missing ${name}`)
+  }
+  const amount = Number(value)
+  if (!Number.isSafeInteger(amount) || amount < 0) {
+    fail(503, 'INVALID_BOOST_SUMMARY', `Invalid ${name}`)
+  }
+  return amount
+}
+
+function verifiedDiamondFunding(value) {
+  if (value == null) return null
+  if (Array.isArray(value)) {
+    if (value.length > 1) fail(503, 'INVALID_BOOST_SUMMARY', 'Duplicate Diamond funding')
+    return value[0] || null
+  }
+  if (typeof value !== 'object') {
+    fail(503, 'INVALID_BOOST_SUMMARY', 'Invalid Diamond funding relationship')
+  }
+  return value
+}
+
+function presentUsdTotals(totals) {
+  return {
+    campaign_count: totals.campaign_count,
+    campaigns_with_spend: totals.campaigns_with_spend,
+    budget_usd: money(totals.budget_cents),
+    funded_usd: money(totals.funded_cents),
+    spent_usd: money(totals.spent_cents),
+    refunded_usd: money(totals.refunded_cents),
+    remaining_funds_usd: money(totals.funded_cents - totals.spent_cents - totals.refunded_cents),
+  }
+}
+
+function presentDiamondTotals(totals) {
+  return {
+    campaign_count: totals.campaign_count,
+    campaigns_with_spend: totals.campaigns_with_spend,
+    budget_diamonds: totals.budget_diamonds,
+    funded_diamonds: totals.funded_diamonds,
+    spent_diamonds: totals.spent_diamonds,
+    refunded_diamonds: totals.refunded_diamonds,
+    remaining_diamonds: totals.funded_diamonds - totals.spent_diamonds - totals.refunded_diamonds,
+  }
+}
+
 export async function getAdminAuthorAdSummary(req, res) {
   return respond(res, async () => {
     requireAdminIdentity(req)
-    const filters = [
-      ['total', null, null],
-      ['boost_posts', 'campaign_kind', 'post'],
-      ['boost_books', 'campaign_kind', 'book'],
-      ['pending_review', 'status', 'pending_review'],
-      ['approved', 'status', 'approved'],
-      ['active', 'status', 'active'],
-      ['completed', 'status', 'completed'],
-    ]
-    const [results, spendingResult] = await Promise.all([
-      Promise.all(filters.map(([, field, value]) => {
-        let query = supabase.from('author_ad_campaigns')
-          .select('id', { count: 'exact', head: true })
-        if (field) query = query.eq(field, value)
-        return query
-      })),
-      supabase.rpc('get_admin_author_ad_money_totals_v1'),
-    ])
-    const summary = {}
-    results.forEach((result, index) => {
-      if (result.error) throw result.error
-      summary[filters[index][0]] = Number(result.count || 0)
-    })
-
-    const emptySpending = () => ({
-      campaigns_with_spend: 0,
-      budget_usd: 0,
-      funded_usd: 0,
-      spent_usd: 0,
-      refunded_usd: 0,
-      remaining_funds_usd: 0,
-    })
-    const spending = {
-      all: emptySpending(),
-      post: emptySpending(),
-      book: emptySpending(),
+    const summary = {
+      total: 0,
+      boost_posts: 0,
+      boost_books: 0,
+      pending_review: 0,
+      approved: 0,
+      active: 0,
+      completed: 0,
     }
-    let spendingAvailable = false
+    const usd = { all: createUsdTotals(), post: createUsdTotals(), book: createUsdTotals() }
+    const diamonds = { all: createDiamondTotals(), post: createDiamondTotals(), book: createDiamondTotals() }
+    const unfunded = {
+      all: { campaign_count: 0, budget_units: 0 },
+      post: { campaign_count: 0, budget_units: 0 },
+      book: { campaign_count: 0, budget_units: 0 },
+    }
+    const columns = [
+      'id', 'owner_user_id', 'campaign_kind', 'status', 'budget_cents',
+      'funded_cents', 'spent_cents', 'refunded_cents',
+      'author_ad_diamond_funding(campaign_id,owner_user_id,funded_diamonds,spent_diamonds,refunded_diamonds)',
+    ].join(',')
+    const pageSize = 500
+    const maxCampaigns = 5000
+    let offset = 0
+    let total = null
 
-    if (spendingResult.error) {
-      console.error('ADMIN AUTHOR ADS SPENDING SUMMARY ERROR:', spendingResult.error)
-    } else if (Array.isArray(spendingResult.data)) {
-      try {
-        if (!spendingResult.data.some((row) => row.campaign_kind === 'all')) {
-          throw new Error('Spending summary total row is missing')
+    do {
+      const { data, error, count } = await supabase.from('author_ad_campaigns')
+        .select(columns, { count: offset === 0 ? 'exact' : undefined })
+        .order('id', { ascending: true })
+        .range(offset, offset + pageSize - 1)
+      if (error) throw error
+      if (offset === 0) {
+        if (!Number.isSafeInteger(count) || count < 0) {
+          fail(503, 'INVALID_BOOST_SUMMARY', 'Campaign summary total is unavailable')
         }
-        for (const row of spendingResult.data) {
-          const kind = String(row.campaign_kind || '')
-          if (!Object.prototype.hasOwnProperty.call(spending, kind)) continue
-          const amounts = ['budget_cents', 'funded_cents', 'spent_cents', 'refunded_cents']
-            .map((field) => Number(row[field]))
-          if (amounts.some((amount) => !Number.isSafeInteger(amount) || amount < 0)) {
-            throw new Error('Spending summary amount is invalid')
-          }
-          const campaignsWithSpend = Number(row.campaigns_with_spend)
-          if (!Number.isSafeInteger(campaignsWithSpend) || campaignsWithSpend < 0) {
-            throw new Error('Spending campaign count is invalid')
-          }
-          const [budgetCents, fundedCents, spentCents, refundedCents] = amounts
-          spending[kind] = {
-            campaigns_with_spend: campaignsWithSpend,
-            budget_usd: money(budgetCents),
-            funded_usd: money(fundedCents),
-            spent_usd: money(spentCents),
-            refunded_usd: money(refundedCents),
-            remaining_funds_usd: money(Math.max(0, fundedCents - spentCents - refundedCents)),
-          }
+        total = count
+        if (total > maxCampaigns) {
+          fail(503, 'BOOST_SUMMARY_AGGREGATION_REQUIRED', 'Campaign summary needs a database aggregation upgrade')
         }
-        spendingAvailable = true
-      } catch (error) {
-        console.error('ADMIN AUTHOR ADS SPENDING SUMMARY ERROR:', error)
       }
-    }
+      const rows = data || []
+      if (!Array.isArray(rows) || (offset < total && rows.length === 0)) {
+        fail(503, 'INVALID_BOOST_SUMMARY', 'Campaign summary is incomplete')
+      }
+      for (const row of rows) {
+        if (!['post', 'book'].includes(row.campaign_kind)) {
+          fail(503, 'INVALID_BOOST_SUMMARY', 'Unknown campaign kind')
+        }
+        addSummaryAmount(summary, 'total', 1)
+        addSummaryAmount(summary, row.campaign_kind === 'post' ? 'boost_posts' : 'boost_books', 1)
+        const statusKey = {
+          pending_review: 'pending_review',
+          approved: 'approved',
+          active: 'active',
+          completed: 'completed',
+        }[row.status]
+        if (statusKey) addSummaryAmount(summary, statusKey, 1)
 
-    summary.spending = spendingAvailable ? spending : null
-    summary.spending_available = spendingAvailable
+        const budget = requireSummaryAmount(row.budget_cents, 'campaign budget')
+        const fundedUsd = requireSummaryAmount(row.funded_cents, 'USD funded amount')
+        const spentUsd = requireSummaryAmount(row.spent_cents, 'USD spent amount')
+        const refundedUsd = requireSummaryAmount(row.refunded_cents, 'USD refunded amount')
+        if (budget < 100 || fundedUsd > budget || spentUsd + refundedUsd > fundedUsd) {
+          fail(503, 'INVALID_BOOST_SUMMARY', 'Inconsistent campaign USD amounts')
+        }
+        const funding = verifiedDiamondFunding(row.author_ad_diamond_funding)
+        const kinds = ['all', row.campaign_kind]
+        if (funding) {
+          const funded = requireSummaryAmount(funding.funded_diamonds, 'Diamonds funded amount')
+          const spent = requireSummaryAmount(funding.spent_diamonds, 'Diamonds spent amount')
+          const refunded = requireSummaryAmount(funding.refunded_diamonds, 'Diamonds refunded amount')
+          if (funding.campaign_id !== row.id || funding.owner_user_id !== row.owner_user_id ||
+              funded !== budget || funded > 1000000 || spent + refunded > funded ||
+              fundedUsd !== 0 || spentUsd !== 0 || refundedUsd !== 0) {
+            fail(503, 'INVALID_BOOST_SUMMARY', 'Inconsistent Diamonds funding')
+          }
+          for (const kind of kinds) {
+            const totals = diamonds[kind]
+            addSummaryAmount(totals, 'campaign_count', 1)
+            if (spent > 0) addSummaryAmount(totals, 'campaigns_with_spend', 1)
+            addSummaryAmount(totals, 'budget_diamonds', budget)
+            addSummaryAmount(totals, 'funded_diamonds', funded)
+            addSummaryAmount(totals, 'spent_diamonds', spent)
+            addSummaryAmount(totals, 'refunded_diamonds', refunded)
+          }
+        } else if (fundedUsd > 0) {
+          for (const kind of kinds) {
+            const totals = usd[kind]
+            addSummaryAmount(totals, 'campaign_count', 1)
+            if (spentUsd > 0) addSummaryAmount(totals, 'campaigns_with_spend', 1)
+            addSummaryAmount(totals, 'budget_cents', budget)
+            addSummaryAmount(totals, 'funded_cents', fundedUsd)
+            addSummaryAmount(totals, 'spent_cents', spentUsd)
+            addSummaryAmount(totals, 'refunded_cents', refundedUsd)
+          }
+        } else {
+          if (['scheduled', 'active', 'paused', 'completed'].includes(row.status)) {
+            fail(503, 'INVALID_BOOST_SUMMARY', 'Live Boost is missing verified funding')
+          }
+          for (const kind of kinds) {
+            addSummaryAmount(unfunded[kind], 'campaign_count', 1)
+            addSummaryAmount(unfunded[kind], 'budget_units', budget)
+          }
+        }
+      }
+      offset += rows.length
+    } while (offset < total)
+
+    summary.spending_currency_separated = true
+    summary.spending_usd = Object.fromEntries(Object.entries(usd)
+      .map(([kind, totals]) => [kind, presentUsdTotals(totals)]))
+    summary.spending_diamonds = Object.fromEntries(Object.entries(diamonds)
+      .map(([kind, totals]) => [kind, presentDiamondTotals(totals)]))
+    summary.spending_unfunded = unfunded
+    summary.spending = summary.spending_usd
+    summary.spending_available = true
     return res.json({ ok: true, summary })
   })
 }
