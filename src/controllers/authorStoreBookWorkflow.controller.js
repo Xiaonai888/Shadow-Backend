@@ -23,8 +23,8 @@ export async function submitMyAuthorStoreBookEvidence(req, res) {
   const tracking = String(req.body?.tracking_number || '').trim()
   const proof = String(req.body?.proof_url || '').trim()
   if (!UUID.test(userId) || !UUID.test(holdId)) return res.status(400).json({ ok: false, message: 'Invalid account or hold ID' })
-  if (company.length < 2 || company.length > 120 || tracking.length < 4 || tracking.length > 120 || proof.length < 12 || proof.length > 1024 || !/^https:\/\/[^\s<>"']+$/i.test(proof)) {
-    return res.status(400).json({ ok: false, message: 'A delivery company, tracking number and valid HTTPS proof link are required' })
+  if (company.length < 2 || company.length > 120 || (tracking.length > 0 && tracking.length < 4) || tracking.length > 120 || proof.length < 12 || proof.length > 1024 || !/^https:\/\/[^\s<>"']+$/i.test(proof)) {
+    return res.status(400).json({ ok: false, message: 'A delivery company and valid HTTPS shipping proof are required; tracking number is optional' })
   }
   try {
     const { data, error } = await supabase.rpc('submit_author_store_book_delivery_evidence', {
@@ -106,7 +106,7 @@ export async function getAdminAuthorStoreBookHolds(req, res) {
     })
     return res.status(200).json({ ok: true, rows, total: Number(count || 0), page, limit, has_next: from + rows.length < Number(count || 0) })
   } catch (error) {
-    console.error('ADMIN AUTHOR STORE BOOK HOLDS ERROR:', error)
+    console.error('ADMIN AUTHOR STORE BOOK HOLDS ERROR', error)
     return res.status(500).json({ ok: false, message: 'Could not load book holds' })
   }
 }
