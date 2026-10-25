@@ -716,6 +716,66 @@ function validateStoryPayload({
   return ''
 }
 
+const CREATE_REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function getCreateRequestId(req) {
+  const supplied = req.body?.create_request_id ?? req.body?.createRequestId ?? req.headers?.['idempotency-key']
+  if (supplied === undefined || supplied === null || supplied === '') {
+    return { value: null, error: '' }
+  }
+  if (typeof supplied !== 'string' || !CREATE_REQUEST_ID_PATTERN.test(supplied.trim())) {
+    return { value: null, error: 'create_request_id must be a valid UUID' }
+  }
+  return { value: supplied.trim().toLowerCase(), error: '' }
+}
+
+async function findCreatedStoryByRequestId(userId, requestId) {
+  if (!requestId) return null
+  const { data, error } = await supabase
+    .from('stories')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('create_request_id', requestId)
+    .maybeSingle()
+  if (error) throw error
+  return data
+}
+
+async function findCreatedEpisodeByRequestId(storyId, userId, requestId) {
+  if (!requestId) return null
+  const { data, error } = await supabase
+    .from('episodes')
+    .select('*')
+    .eq('story_id', storyId)
+    .eq('user_id', userId)
+    .eq('create_request_id', requestId)
+    .maybeSingle()
+  if (error) throw error
+  return data
+}
+
+async function respondWithCreatedStory(res, story) {
+  const slides = await getStorySlides(story.id)
+  return res.status(200).json({
+    ok: true,
+    replayed: true,
+    message: 'Story already created for this request',
+    story: publicStory(story, slides),
+  })
+}
+
+async function respondWithCreatedEpisode(res, story, episode) {
+  const pages = story.story_type === 'manga' ? await getEpisodePages(episode.id) : []
+  const access = await getStoryEpisodeAccess(story.id)
+  return res.status(200).json({
+    ok: true,
+    replayed: true,
+    message: 'Episode already created for this request',
+    episode: publicEpisode(episode, pages, story.story_type, access),
+    total_episodes: Number(story.total_episodes || 0),
+  })
+}
+
 export async function createStory(req, res) {
   try {
     const userId = req.user?.user_id
@@ -735,6 +795,13 @@ export async function createStory(req, res) {
         message: 'Please create an author page first',
       })
     }
+
+    const { value: createRequestId, error: requestIdError } = getCreateRequestId(req)
+    if (requestIdError) {
+      return res.status(400).json({ ok: false, message: requestIdError })
+    }
+    const priorStory = await findCreatedStoryByRequestId(userId, createRequestId)
+    if (priorStory) return await respondWithCreatedStory(res, priorStory)
 
     const title = cleanText(req.body.title)
     const storyType = cleanStoryType(
@@ -790,6 +857,7 @@ export async function createStory(req, res) {
       .insert({
         author_id: authorPage.id,
         user_id: userId,
+        ...(createRequestId ? { create_request_id: createRequestId } : {}),
         story_type: storyType,
         title,
         story_language: storyLanguage,
@@ -807,7 +875,13 @@ export async function createStory(req, res) {
       .select()
       .single()
 
-    if (storyError) throw storyError
+    if (storyError) {
+      if (storyError.code === '23505' && createRequestId) {
+        const prior = await findCreatedStoryByRequestId(userId, createRequestId)
+        if (prior) return await respondWithCreatedStory(res, prior)
+      }
+      throw storyError
+    }
 
     const createdSlides = await replaceStorySlides(story.id, slides)
 
@@ -1083,6 +1157,13 @@ export async function createEpisode(req, res) {
       })
     }
 
+    const { value: createRequestId, error: requestIdError } = getCreateRequestId(req)
+    if (requestIdError) {
+      return res.status(400).json({ ok: false, message: requestIdError })
+    }
+    const priorEpisode = await findCreatedEpisodeByRequestId(storyId, userId, createRequestId)
+    if (priorEpisode) return await respondWithCreatedEpisode(res, story, priorEpisode)
+
     const isManga = story.story_type === 'manga'
     const title = cleanText(req.body.title)
     const content = isManga ? '' : String(req.body.content || '')
@@ -1213,6 +1294,7 @@ const isLocked =
         story_id: story.id,
         author_id: story.author_id,
         user_id: userId,
+        ...(createRequestId ? { create_request_id: createRequestId } : {}),
         title,
         cover_url: coverUrl,
         content,
@@ -1232,7 +1314,13 @@ const isLocked =
       .select()
       .single()
 
-    if (episodeError) throw episodeError
+    if (episodeError) {
+      if (episodeError.code === '23505' && createRequestId) {
+        const prior = await findCreatedEpisodeByRequestId(storyId, userId, createRequestId)
+        if (prior) return await respondWithCreatedEpisode(res, story, prior)
+      }
+      throw episodeError
+    }
 
     let savedPages = []
 
