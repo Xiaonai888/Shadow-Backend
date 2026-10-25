@@ -58,13 +58,17 @@ async function folderExists(folderId) {
 router.get('/folders', ipGuard, view, identityGuard, async (req, res) => {
   try {
     const result = await supabase.from('admin_support_folders')
-      .select('id, name, sort_order, created_at')
+      .select('id, name, sort_order, created_at, created_by_admin_id')
       .order('sort_order', { ascending: true })
       .order('name', { ascending: true })
       .limit(11)
     if (result.error) throw result.error
+    const folders = (result.data || []).slice(0, 10).map(({ created_by_admin_id, ...folder }) => ({
+      ...folder,
+      can_manage: req.admin.role !== 'staff' || created_by_admin_id === String(req.admin.admin_id),
+    }))
     res.set('Cache-Control', 'no-store')
-    return res.json({ ok: true, folders: (result.data || []).slice(0, 10), limit: 10, has_more: (result.data || []).length > 10 })
+    return res.json({ ok: true, folders, limit: 10, has_more: (result.data || []).length > 10 })
   } catch (error) {
     return failed(res, error)
   }
@@ -114,7 +118,7 @@ router.post('/folders', ipGuard, manage, identityGuard, async (req, res) => {
       .select('id, name, sort_order, created_at').single()
     if (result.error) throw result.error
     res.set('Cache-Control', 'no-store')
-    return res.status(201).json({ ok: true, folder: result.data })
+    return res.status(201).json({ ok: true, folder: { ...result.data, can_manage: true } })
   } catch (error) {
     return failed(res, error)
   }
