@@ -1062,15 +1062,28 @@ function authorStoreMoneyCents(value) {
 }
 
 async function getAuthorStoreFinanceSnapshot(authorPageId, userId, includeHistory = false) {
+  const { data: activation, error: activationError } = await supabase
+    .from('author_store_book_hold_activation')
+    .select('activated_at')
+    .eq('id', 1)
+    .maybeSingle()
+
+  if (activationError) throw activationError
+  const activatedAt = Date.parse(activation?.activated_at || '')
+  if (!Number.isFinite(activatedAt)) {
+    throw new Error('Author Store financial activation is not configured')
+  }
+
   let grossSalesCents = 0
   let platformFeeCents = 0
   let authorIncomeCents = 0
+  let currentIncomeCents = 0
   let paidOrderCount = 0
 
   for (let offset = 0; ; offset += AUTHOR_STORE_FINANCE_PAGE_SIZE) {
     const { data, error } = await supabase
       .from('author_store_orders')
-      .select('id,product_subtotal_usd,platform_fee_usd,author_income_usd,delivery_fee_usd')
+      .select('id,created_at,order_status,status,product_subtotal_usd,platform_fee_usd,author_income_usd,delivery_fee_usd')
       .eq('author_page_id', authorPageId)
       .eq('payment_status', 'paid')
       .order('id', { ascending: true })
@@ -1082,20 +1095,27 @@ async function getAuthorStoreFinanceSnapshot(authorPageId, userId, includeHistor
       paidOrderCount += 1
       grossSalesCents += authorStoreMoneyCents(order.product_subtotal_usd)
       platformFeeCents += authorStoreMoneyCents(order.platform_fee_usd)
-      authorIncomeCents += authorStoreMoneyCents(order.author_income_usd)
-      authorIncomeCents += authorStoreMoneyCents(order.delivery_fee_usd)
+      const earnedCents = authorStoreMoneyCents(order.author_income_usd) + authorStoreMoneyCents(order.delivery_fee_usd)
+      authorIncomeCents += earnedCents
+      const state = String(order.order_status || order.status || '').toLowerCase()
+      if (Date.parse(order.created_at) >= activatedAt &&
+          !['cancelled', 'canceled', 'refunded', 'rejected', 'expired'].includes(state)) {
+        currentIncomeCents += earnedCents
+      }
     }
     if (rows.length < AUTHOR_STORE_FINANCE_PAGE_SIZE) break
   }
 
   let paidOutCents = 0
   let pendingBalanceCents = 0
+  let currentPaidOutCents = 0
+  let currentPendingCents = 0
   const withdrawals = []
 
   for (let offset = 0; ; offset += AUTHOR_STORE_FINANCE_PAGE_SIZE) {
     const { data, error } = await supabase
       .from('author_store_withdrawal_requests')
-      .select(includeHistory ? '*' : 'id,status,amount_usd')
+      .select(includeHistory ? '*' : 'id,status,amount_usd,created_at')
       .eq('author_page_id', authorPageId)
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
@@ -1106,9 +1126,14 @@ async function getAuthorStoreFinanceSnapshot(authorPageId, userId, includeHistor
     const rows = Array.isArray(data) ? data : []
     for (const item of rows) {
       const amountCents = authorStoreMoneyCents(item.amount_usd)
-      if (item.status === 'paid') paidOutCents += amountCents
+      const current = Date.parse(item.created_at) >= activatedAt
+      if (item.status === 'paid') {
+        paidOutCents += amountCents
+        if (current) currentPaidOutCents += amountCents
+      }
       if (item.status === 'in_review' || item.status === 'approved') {
         pendingBalanceCents += amountCents
+        if (current) currentPendingCents += amountCents
       }
       if (includeHistory && !item.deleted_at) withdrawals.push(item)
     }
@@ -1143,10 +1168,10 @@ async function getAuthorStoreFinanceSnapshot(authorPageId, userId, includeHistor
 
   const availableBalanceCents = Math.max(
     0,
-    authorIncomeCents - paidOutCents - pendingBalanceCents - bookPendingBalanceCents
+    currentIncomeCents - currentPaidOutCents - currentPendingCents - bookPendingBalanceCents
   )
 
-  if (![grossSalesCents, platformFeeCents, authorIncomeCents, paidOutCents, pendingBalanceCents, bookPendingBalanceCents, availableBalanceCents].every(Number.isSafeInteger)) {
+  if (![grossSalesCents, platformFeeCents, authorIncomeCents, paidOutCents, pendingBalanceCents, currentIncomeCents, currentPaidOutCents, currentPendingCents, bookPendingBalanceCents, availableBalanceCents].every(Number.isSafeInteger)) {
     throw new Error('Author Store financial balance exceeds supported range')
   }
 
