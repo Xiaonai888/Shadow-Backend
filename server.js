@@ -278,6 +278,7 @@ const corsOptions = {
     'X-Shadow-Visitor-Id',
     'X-Shadow-Circuit-Canary',
     'X-Shadow-Page',
+    'X-Shadow-Country-Ticket',
   ],
   exposedHeaders: ['X-Reader-Token', 'X-Spin-Search-Remaining'],
 }
