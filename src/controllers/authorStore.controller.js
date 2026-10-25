@@ -1168,7 +1168,7 @@ async function getAuthorStoreFinanceSnapshot(authorPageId, userId, includeHistor
 
   const availableBalanceCents = Math.max(
     0,
-    currentIncomeCents - currentPaidOutCents - currentPendingCents - bookPendingBalanceCents
+    authorIncomeCents - paidOutCents - pendingBalanceCents - bookPendingBalanceCents
   )
 
   if (![grossSalesCents, platformFeeCents, authorIncomeCents, paidOutCents, pendingBalanceCents, currentIncomeCents, currentPaidOutCents, currentPendingCents, bookPendingBalanceCents, availableBalanceCents].every(Number.isSafeInteger)) {
