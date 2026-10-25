@@ -53,6 +53,16 @@ BEGIN
       USING ERRCODE = 'P0001';
   END IF;
 
+  IF v_funding.owner_user_id IS DISTINCT FROM v_campaign.owner_user_id
+    OR v_funding.funded_diamonds IS DISTINCT FROM v_campaign.budget_cents
+    OR v_funding.spent_diamonds < 0
+    OR v_funding.refunded_diamonds < 0
+    OR v_funding.spent_diamonds + v_funding.refunded_diamonds > v_funding.funded_diamonds
+  THEN
+    RAISE EXCEPTION 'Campaign Diamonds funding ledger does not match budget'
+      USING ERRCODE = 'P0001';
+  END IF;
+
   v_refund := v_funding.funded_diamonds
     - v_funding.spent_diamonds
     - v_funding.refunded_diamonds;
