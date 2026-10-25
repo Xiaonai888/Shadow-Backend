@@ -130,6 +130,7 @@ import { startSystemUsageIncidentService } from './src/services/systemUsageIncid
 import { startSystemUsageRegressionWatch } from './src/services/systemUsageRegression.service.js'
 import adminAppSettingsRoutes from './src/routes/adminAppSettings.routes.js'
 import publicAppSettingsRoutes from './src/routes/publicAppSettings.routes.js'
+import publicCountrySettingsRoutes from './src/routes/publicCountrySettings.routes.js'
 import { backendOriginAudit } from './src/middleware/backendOriginAudit.middleware.js'
 import adminDeviceOfflineRoutes from './src/routes/adminDeviceOffline.routes.js'
 import adminCountrySettingsRoutes from './src/routes/adminCountrySettings.routes.js'
@@ -858,6 +859,7 @@ app.use('/api/story-media/manga-direct', mediaUploadRouteSpamGuard, mangaDirectU
 app.use('/api/public', publicReadSpamGuard)
 app.use('/api/public', publicStoriesRoutes)
 app.use('/api/public', publicAppSettingsRoutes)
+app.use('/api/public/country-settings', publicCountrySettingsRoutes)
 app.use('/api/admin/exclusive', adminExclusiveRoutes)
 app.use('/api/admin/comments', adminCommentsRoutes)
 app.use('/api/admin/purchases', adminPurchasesRoutes)
