@@ -1,5 +1,22 @@
 import { supabase } from '../config/supabase.js'
 
+function matchesBinanceMethod(method, saved) {
+  if (!method || !saved || saved.status !== 'active') return false
+  const clean = (value) => String(value || '').trim()
+  const uid = clean(saved.binance_uid)
+  const payId = clean(saved.binance_pay_id)
+  return Boolean(
+    (uid || payId) &&
+    clean(saved.account_name) &&
+    clean(saved.qr_image_url).startsWith('https://') &&
+    clean(method.bank_name) === 'Binance Auto' &&
+    clean(method.account_name) === clean(saved.account_name) &&
+    clean(method.binance_uid) === uid &&
+    clean(method.binance_pay_id) === payId &&
+    clean(method.qr_image_url) === clean(saved.qr_image_url)
+  )
+}
+
 export async function getMyAuthorStoryPayoutStatus(req, res) {
   res.set('Cache-Control', 'no-store')
   try {
@@ -18,11 +35,11 @@ export async function getMyAuthorStoryPayoutStatus(req, res) {
     const [balanceResult, methodResult, payoutResult] = await Promise.all([
       supabase.rpc('get_author_story_payout_balance', { p_author_id: page.id }),
       supabase.from('author_payment_methods')
-        .select('id, method_type, display_name, bank_name, account_name, qr_image_url')
+        .select('id,method_type,display_name,bank_name,account_name,qr_image_url,binance_uid,binance_pay_id')
         .eq('author_id', page.id).eq('is_primary', true).eq('status', 'active')
         .order('updated_at', { ascending: false }).limit(1).maybeSingle(),
       supabase.from('author_payouts')
-        .select('id, payout_month, status, net_payout_usd, paid_at')
+        .select('id,payout_month,status,net_payout_usd,paid_at,payment_method_id,payment_method_snapshot')
         .eq('author_id', page.id)
         .order('payout_month', { ascending: false })
         .limit(1).maybeSingle(),
@@ -31,11 +48,21 @@ export async function getMyAuthorStoryPayoutStatus(req, res) {
     if (methodResult.error) throw methodResult.error
     if (payoutResult.error) throw payoutResult.error
 
+    let method = methodResult.data || null
+    if (method?.method_type === 'binance') {
+      const { data: saved, error: binanceError } = await supabase
+        .from('author_binance_payout_methods')
+        .select('account_name,bank_name,binance_uid,binance_pay_id,qr_image_url,status')
+        .eq('author_id', page.id)
+        .maybeSingle()
+      if (binanceError) throw binanceError
+      if (!matchesBinanceMethod(method, saved)) method = null
+    }
+
     const balance = balanceResult.data || {}
     const unpaidUsd = Number(balance.unpaid_usd || 0)
     const readyUsd = Number(balance.ready_usd || 0)
     const minimumUsd = Number(balance.minimum_payout_usd || 10)
-    const method = methodResult.data || null
     const latest = payoutResult.data || null
     const activePayout = latest && ['scheduled', 'missing_payment_method', 'awaiting_receipt'].includes(latest.status) ? latest : null
     const status = activePayout ? activePayout.status
