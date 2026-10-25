@@ -10,8 +10,8 @@ select
   coalesce((select max(sort_order) from public.admin_permissions), 0) + item.sort_order
 from (values
   ('admin_chat.view', 'view', 'View', 'View support conversations and search Reader/Author accounts.', 10),
-  ('admin_chat.reply', 'reply', 'Reply', 'Send support messages to assigned conversations.', 20),
-  ('admin_chat.manage', 'manage', 'Manage', 'Archive, restore, update notes and priority in support chats.', 30),
+  ('admin_chat.reply', 'special', 'Reply', 'Send support messages to assigned conversations.', 20),
+  ('admin_chat.assign', 'special', 'Assign', 'Assign and transfer support conversations to Admin staff.', 40)
   ('admin_chat.assign', 'assign', 'Assign', 'Assign and transfer support conversations to Admin staff.', 40)
 ) as item(permission_key, action, label, description, sort_order)
 where not exists (
