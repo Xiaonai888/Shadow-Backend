@@ -1115,8 +1115,38 @@ async function getAuthorStoreFinanceSnapshot(authorPageId, userId, includeHistor
     if (rows.length < AUTHOR_STORE_FINANCE_PAGE_SIZE) break
   }
 
-  const availableBalanceCents = Math.max(0, authorIncomeCents - paidOutCents - pendingBalanceCents)
-  if (![grossSalesCents, platformFeeCents, authorIncomeCents, paidOutCents, pendingBalanceCents, availableBalanceCents].every(Number.isSafeInteger)) {
+  let bookPendingBalanceCents = 0
+
+  for (let offset = 0; ; offset += AUTHOR_STORE_FINANCE_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from('author_store_book_payment_holds')
+      .select('id,held_amount_cents')
+      .eq('author_page_id', authorPageId)
+      .in('status', ['awaiting_reader', 'under_review'])
+      .order('id', { ascending: true })
+      .range(offset, offset + AUTHOR_STORE_FINANCE_PAGE_SIZE - 1)
+
+    if (error) throw error
+    const rows = Array.isArray(data) ? data : []
+    for (const hold of rows) {
+      const heldCents = Number(hold.held_amount_cents)
+      if (!Number.isSafeInteger(heldCents) || heldCents <= 0) {
+        throw new Error('Invalid physical book hold amount')
+      }
+      bookPendingBalanceCents += heldCents
+      if (!Number.isSafeInteger(bookPendingBalanceCents)) {
+        throw new Error('Physical book pending balance exceeds supported range')
+      }
+    }
+    if (rows.length < AUTHOR_STORE_FINANCE_PAGE_SIZE) break
+  }
+
+  const availableBalanceCents = Math.max(
+    0,
+    authorIncomeCents - paidOutCents - pendingBalanceCents - bookPendingBalanceCents
+  )
+
+  if (![grossSalesCents, platformFeeCents, authorIncomeCents, paidOutCents, pendingBalanceCents, bookPendingBalanceCents, availableBalanceCents].every(Number.isSafeInteger)) {
     throw new Error('Author Store financial balance exceeds supported range')
   }
 
@@ -1124,6 +1154,7 @@ async function getAuthorStoreFinanceSnapshot(authorPageId, userId, includeHistor
     availableBalanceCents,
     paidOutCents,
     pendingBalanceCents,
+    bookPendingBalanceCents,
     grossSalesCents,
     platformFeeCents,
     paidOrderCount,
@@ -1164,6 +1195,7 @@ export async function getMyAuthorStoreIncome(req, res) {
       summary: {
         available_balance: financial.availableBalanceCents / 100,
         pending_balance: financial.pendingBalanceCents / 100,
+        book_pending_balance: financial.bookPendingBalanceCents / 100,
         gross_sales: financial.grossSalesCents / 100,
         platform_fee: financial.platformFeeCents / 100,
         paid_out: financial.paidOutCents / 100,
@@ -1180,6 +1212,7 @@ export async function getMyAuthorStoreIncome(req, res) {
     })
   }
 }
+
 
 async function sendAuthorStoreWithdrawalAdminAlert(withdrawal, authorPage, paymentMethod) {
   const chatId = process.env.TELEGRAM_WITHDRAWAL_ADMIN_CHAT_ID || process.env.TELEGRAM_ADMIN_CHAT_ID
