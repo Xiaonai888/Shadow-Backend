@@ -154,3 +154,63 @@ export async function getMyAuthorStoreBookPending(req, res) {
     return res.status(500).json({ ok: false, message: 'Failed to load pending book payments' })
   }
 }
+
+export async function confirmMyAuthorStoreBookReceived(req, res) {
+  res.set('Cache-Control', 'private, no-store')
+  res.set('Vary', 'Authorization')
+
+  const buyerId = String(req.user?.user_id || req.user?.id || '').trim()
+  const orderId = String(req.params?.orderId || '').trim()
+  const uuidPattern = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i
+
+  if (!buyerId) {
+    return res.status(401).json({ ok: false, message: 'Unauthorized' })
+  }
+  if (!uuidPattern.test(orderId)) {
+    return res.status(400).json({ ok: false, message: 'Invalid order ID' })
+  }
+  if (!uuidPattern.test(buyerId)) {
+    return res.status(401).json({ ok: false, message: 'Invalid reader session' })
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('confirm_author_store_book_received', {
+      p_order_id: orderId,
+      p_buyer_id: buyerId,
+    })
+
+    if (error) {
+      if (error.code === '42501') {
+        return res.status(403).json({ ok: false, message: 'Not authorized for this order' })
+      }
+      if (error.code === 'P0002') {
+        return res.status(404).json({ ok: false, message: 'Book payment hold not found' })
+      }
+      if (error.code === '23514' || error.code === '40001') {
+        return res.status(409).json({ ok: false, message: 'Receipt confirmation is not allowed in the current state' })
+      }
+      console.error('CONFIRM AUTHOR STORE BOOK RECEIVED ERROR:', {
+        code: error.code,
+        message: error.message,
+      })
+      return res.status(500).json({ ok: false, message: 'Could not confirm book receipt' })
+    }
+
+    if (!data || data.ok !== true || data.status !== 'released') {
+      console.error('CONFIRM AUTHOR STORE BOOK RECEIVED INVALID RESULT')
+      return res.status(500).json({ ok: false, message: 'Could not verify receipt confirmation' })
+    }
+
+    return res.status(200).json({
+      ok: true,
+      already_confirmed: data.already_confirmed === true,
+      order_id: data.order_id,
+      hold_id: data.hold_id,
+      status: data.status,
+      released_at: data.released_at,
+    })
+  } catch (error) {
+    console.error('CONFIRM AUTHOR STORE BOOK RECEIVED ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Could not confirm book receipt' })
+  }
+}
