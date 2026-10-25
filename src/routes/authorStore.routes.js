@@ -61,6 +61,7 @@ import {
 } from '../controllers/authorStoreSalesReports.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireAuthorStorePhysicalBookCountry } from '../middleware/authorStorePhysicalBookGuard.middleware.js'
+import { createRateLimit as createIpLimiter } from '../middleware/rateLimit.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { getAdminAuthorStoreWithdrawalNotifications } from '../controllers/adminAuthorStoreWithdrawalNotifications.controller.js'
 import { validateAuthorStorePdf, deleteMyAuthorStoreTemporaryPdf } from '../controllers/authorStorePdfGuard.controller.js'
@@ -184,7 +185,13 @@ const legacyAuthorBookCountryGate = (req, res, next) => {
   return requireUser(req, res, () => requireAuthorStorePhysicalBookCountry(req, res, next))
 }
 
-router.post('/orders', legacyAuthorBookCountryGate, createAuthorStoreOrder)
+const createOrderIpLimit = createIpLimiter({
+  key: 'author-store-order-create-ip',
+  windowMs: 60 * 1000,
+  max: 30,
+})
+
+router.post('/orders', createOrderIpLimit, legacyAuthorBookCountryGate, createAuthorStoreOrder)
 router.post('/orders/create-payment', requireUser, authorBookCountryGate, createAuthorStoreOrderPayment)
 router.get('/orders/my', requireUser, getMyAuthorStoreBuyerOrders)
 router.get('/orders/book-holds/my', requireUser, getMyAuthorStoreBuyerBookHoldStatuses)
