@@ -109,7 +109,7 @@ export async function getMyAuthorStoreBookPending(req, res) {
     if (orderIds.length) {
       const { data: orders, error: ordersError } = await supabase
         .from('author_store_orders')
-        .select('id,order_id,order_number,buyer_name,delivery_company,created_at,items:author_store_order_items(product_title,product_type)')
+        .select('id,order_id,order_number,buyer_name,delivery_company,order_status,status,created_at,items:author_store_order_items(product_title,product_type)')
         .eq('author_page_id', authorPage.id)
         .in('id', orderIds)
 
@@ -132,6 +132,7 @@ export async function getMyAuthorStoreBookPending(req, res) {
         deliveryCompany: shippingCompanyName(hold.delivery_company || order?.delivery_company),
         trackingNumber: hold.tracking_number || '',
         date: order?.created_at || hold.created_at,
+        orderStatus: order?.order_status || order?.status || '',
         status: hold.status,
         proofSent: Array.isArray(hold.proof_refs) && hold.proof_refs.length > 0,
       }
