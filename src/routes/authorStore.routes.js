@@ -59,6 +59,7 @@ import {
   getMyAuthorStoreSalesReports,
   syncMyAuthorStoreSalesReports,
 } from '../controllers/authorStoreSalesReports.controller.js'
+import { requireUser } from '../middleware/user.middleware.js'
 import { requireAuthorStorePhysicalBookCountry } from '../middleware/authorStorePhysicalBookGuard.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { getAdminAuthorStoreWithdrawalNotifications } from '../controllers/adminAuthorStoreWithdrawalNotifications.controller.js'
