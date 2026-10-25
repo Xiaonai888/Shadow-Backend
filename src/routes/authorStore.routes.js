@@ -172,12 +172,19 @@ router.post('/admin/withdrawals/:withdrawalId/transfer-record', requireAdmin, re
 router.post('/admin/withdrawals/:withdrawalId/receipt', requireAdmin, uploadAdminAuthorStoreReceipt)
 router.get('/admin/withdrawals/:withdrawalId/receipt', requireAdmin, getAdminAuthorStoreReceipt)
 router.patch('/admin/withdrawals/:withdrawalId/status', requireAdmin, updateAdminAuthorStoreWithdrawalStatus)
+
 const authorBookCountryGate = (req, res, next) =>
   process.env.SHADOW_PHYSICAL_BOOKS_COUNTRY_ENFORCE === 'true'
     ? requireAuthorStorePhysicalBookCountry(req, res, next)
     : next()
 
-router.post('/orders', authorBookCountryGate, createAuthorStoreOrder)
+const legacyAuthorBookCountryGate = (req, res, next) => {
+  if (process.env.SHADOW_PHYSICAL_BOOKS_COUNTRY_ENFORCE !== 'true') return next()
+  if (!req.get('authorization')) return requireAuthorStorePhysicalBookCountry(req, res, next)
+  return requireUser(req, res, () => requireAuthorStorePhysicalBookCountry(req, res, next))
+}
+
+router.post('/orders', legacyAuthorBookCountryGate, createAuthorStoreOrder)
 router.post('/orders/create-payment', requireUser, authorBookCountryGate, createAuthorStoreOrderPayment)
 router.get('/orders/my', requireUser, getMyAuthorStoreBuyerOrders)
 router.get('/orders/book-holds/my', requireUser, getMyAuthorStoreBuyerBookHoldStatuses)
