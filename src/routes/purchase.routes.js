@@ -94,7 +94,14 @@ router.post('/premium/create', purchasePreAuthLimit, requireUser, purchaseWriteL
 router.get('/premium/status/:orderId', purchasePreAuthLimit, requireUser, purchaseReadLimit, getPremiumPaymentStatus)
 router.post('/premium/cancel/:orderId', purchasePreAuthLimit, requireUser, purchaseWriteLimit, cancelPremiumPayment)
 
-router.post('/aba/create', purchasePreAuthLimit, requireUser, purchaseWriteLimit, createAbaPayment)
+router.post(
+  '/aba/create',
+  purchasePreAuthLimit,
+  requireUser,
+  purchaseWriteLimit,
+  requirePaymentCountry('payway'),
+  createAbaPayment
+)
 router.get('/aba/status/:orderId', purchasePreAuthLimit, requireUser, purchaseReadLimit, getAbaPaymentStatus)
 router.post('/aba/callback', handleAbaCallback)
 
