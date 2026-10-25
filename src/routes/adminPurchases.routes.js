@@ -1,4 +1,6 @@
 import { streamAdminPaymentEvents } from '../services/adminPaymentSse.service.js'
+import binanceCheckoutAdminReviewRoutes from './binanceCheckoutAdminReview.routes.js'
+import binanceCheckoutAdminDecisionRoutes from './binanceCheckoutAdminDecision.routes.js'
 import {
   getAdminPaymentRecovery,
   getAdminPaymentRecoveryRecipient,
@@ -72,6 +74,9 @@ const adminPaymentWriteLimit = rateLimit({
 })
 
 router.use(adminPaymentPreAuthLimit)
+
+router.use('/binance', binanceCheckoutAdminReviewRoutes)
+router.use('/binance', binanceCheckoutAdminDecisionRoutes)
 
 router.get('/', requireAdmin, adminPaymentReadLimit, getAdminPayments)
 router.get('/manual', requireAdmin, adminPaymentReadLimit, getAdminManualPayments)
