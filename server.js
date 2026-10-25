@@ -250,6 +250,7 @@ const corsOptions = {
     return callback(new Error(`Not allowed by CORS: ${origin}`))
   },
   credentials: true,
+  maxAge: 600,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: [
     'Content-Type',
