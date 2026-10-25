@@ -1351,16 +1351,13 @@ export async function getMeSummary(req, res) {
     mailCutoff.setDate(mailCutoff.getDate() - 365)
 
     const reminderCutoff = new Date()
-    reminderCutoff.setDate(
-      reminderCutoff.getDate() - 7
-    )
+    reminderCutoff.setDate(reminderCutoff.getDate() - 7)
 
     const [
       userResult,
       walletResult,
       authorPageResult,
       unreadResult,
-      expiredReminderResult,
     ] = await Promise.all([
       supabase
         .from('users')
@@ -1396,31 +1393,9 @@ export async function getMeSummary(req, res) {
         .eq('user_id', userId)
         .eq('is_read', false)
         .is('deleted_at', null)
-        .gte(
-          'created_at',
-          mailCutoff.toISOString()
-        ),
-
-      supabase
-        .from('reader_mails')
-        .select('id', {
-          count: 'exact',
-          head: true,
-        })
-        .eq('user_id', userId)
-        .eq('is_read', false)
-        .is('deleted_at', null)
-        .gte(
-          'created_at',
-          mailCutoff.toISOString()
-        )
-        .lt(
-          'created_at',
-          reminderCutoff.toISOString()
-        )
-        .ilike(
-          'reference_id',
-          'daily_checkin_reminder_%'
+        .gte('created_at', mailCutoff.toISOString())
+        .or(
+          `reference_id.is.null,reference_id.not.ilike.daily_checkin_reminder_%,created_at.gte.${reminderCutoff.toISOString()}`
         ),
     ])
 
@@ -1428,8 +1403,7 @@ export async function getMeSummary(req, res) {
       userResult.error ||
       walletResult.error ||
       authorPageResult.error ||
-      unreadResult.error ||
-      expiredReminderResult.error
+      unreadResult.error
 
     if (error) throw error
 
@@ -1448,10 +1422,7 @@ export async function getMeSummary(req, res) {
       authorPageResult.data || null
     const inboxUnreadCount = Math.max(
       0,
-      Number(unreadResult.count || 0) -
-        Number(
-          expiredReminderResult.count || 0
-        )
+      Number(unreadResult.count || 0)
     )
 
     res.setHeader(
@@ -1489,6 +1460,7 @@ export async function getMeSummary(req, res) {
     })
   }
 }
+
 
 
 export async function getCurrentUser(req, res) {
