@@ -25,21 +25,47 @@ function requireOwnerAction(value) {
   return value
 }
 
-async function transition(campaignId, action) {
-  const { data, error } = await supabase.rpc('transition_author_ad_campaign_v1', {
-    p_campaign_id: campaignId,
-    p_action: action,
-  })
+function assertDeliveryEnabled(action, kind) {
+  if (action !== 'start' && action !== 'resume') return
+  if (process.env.AUTHOR_ADS_DELIVERY_ENABLED !== 'true') {
+    throw lifecycleError('AUTHOR_ADS_DELIVERY_NOT_READY', 'Boost delivery is not enabled yet', 503)
+  }
+  if (kind === 'book' && process.env.AUTHOR_ADS_BOOK_DELIVERY_ENABLED !== 'true') {
+    throw lifecycleError('AUTHOR_ADS_BOOK_DELIVERY_NOT_READY', 'Book Boost delivery is not enabled yet', 503)
+  }
+}
+
+async function transition(campaignId, action, ownerUserId = null) {
+  const atomicDiamondStart = action === 'start' && typeof ownerUserId === 'string'
+  const functionName = atomicDiamondStart
+    ? 'start_author_ad_campaign_with_diamonds_v1'
+    : 'transition_author_ad_campaign_v1'
+  const params = atomicDiamondStart
+    ? { p_campaign_id: campaignId, p_owner_user_id: ownerUserId }
+    : { p_campaign_id: campaignId, p_action: action }
+
+  const { data, error } = await supabase.rpc(functionName, params)
 
   if (error) {
-    if (error.code === 'PGRST202' || error.code === '42883') {
-      throw lifecycleError('AUTHOR_AD_LIFECYCLE_SQL_REQUIRED', 'Author ad lifecycle SQL is not installed', 503)
+    if (error.code === 'PGRST202' || error.code === '42883' ||
+      error.code === '42P01' || error.code === 'PGRST205') {
+      throw lifecycleError(
+        atomicDiamondStart ? 'AUTHOR_AD_DIAMOND_START_SQL_REQUIRED' : 'AUTHOR_AD_LIFECYCLE_SQL_REQUIRED',
+        atomicDiamondStart ? 'Atomic Diamond Boost start SQL is not installed' : 'Author ad lifecycle SQL is not installed',
+        503
+      )
     }
     if (error.code === 'P0002') {
       throw lifecycleError('AUTHOR_AD_CAMPAIGN_NOT_FOUND', 'Campaign not found', 404)
     }
     if (error.code === 'P0001') {
-      throw lifecycleError('AUTHOR_AD_TRANSITION_DENIED', 'Campaign cannot change status yet')
+      throw lifecycleError(
+        atomicDiamondStart ? 'AUTHOR_AD_DIAMOND_START_DENIED' : 'AUTHOR_AD_TRANSITION_DENIED',
+        atomicDiamondStart ? 'Campaign cannot start or Reader Diamonds balance is insufficient' : 'Campaign cannot change status yet'
+      )
+    }
+    if (error.code === '22023') {
+      throw lifecycleError('INVALID_AUTHOR_AD_DIAMOND_START', 'Invalid campaign funding request', 400)
     }
     throw error
   }
@@ -74,7 +100,7 @@ export async function transitionOwnedAuthorAdCampaign({ campaignId, ownerUserId,
   const transitionAction = requireOwnerAction(action)
 
   const { data, error } = await supabase.from('author_ad_campaigns')
-    .select('id')
+    .select('id,status,campaign_kind,funded_cents,spent_cents,refunded_cents')
     .eq('id', id)
     .eq('owner_user_id', ownerId)
     .maybeSingle()
@@ -84,7 +110,17 @@ export async function transitionOwnedAuthorAdCampaign({ campaignId, ownerUserId,
     throw lifecycleError('AUTHOR_AD_CAMPAIGN_NOT_FOUND', 'Campaign not found', 404)
   }
 
-  return transition(id, transitionAction)
+  assertDeliveryEnabled(transitionAction, data.campaign_kind)
+
+  const money = [data.funded_cents, data.spent_cents, data.refunded_cents].map(Number)
+  if (!money.every(value => Number.isSafeInteger(value) && value >= 0)) {
+    throw lifecycleError('INVALID_AUTHOR_AD_FUNDING', 'Invalid campaign funding state', 409)
+  }
+
+  const atomicDiamondStart = transitionAction === 'start' && data.status === 'approved' &&
+    money.every(value => value === 0)
+
+  return transition(id, transitionAction, atomicDiamondStart ? ownerId : null)
 }
 
 export async function expireAuthorAdCampaign(campaignId) {
