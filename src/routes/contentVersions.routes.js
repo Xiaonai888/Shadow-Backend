@@ -35,6 +35,7 @@ async function handleGetContentVersions(
           : undefined
       )
 
+    res.set('Cache-Control', 'public, max-age=30, must-revalidate')
     return res.status(200).json({
       ok: true,
       versions,
