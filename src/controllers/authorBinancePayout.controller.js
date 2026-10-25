@@ -80,13 +80,16 @@ async function uploadQr(value, userId) {
 
 function respondError(res, error, operation) {
   const missingTable = ['42P01', 'PGRST205'].includes(String(error.code || ''))
-  const status = missingTable ? 503 : Number(error.statusCode) || 500
+  const duplicateId = String(error?.code || '') === '23505'
+  const status = duplicateId ? 409 : missingTable ? 503 : Number(error.statusCode) || 500
   if (status >= 500) console.error(`AUTHOR BINANCE PAYOUT ${operation} ERROR:`, error)
   return res.status(status).json({
     ok: false,
-    message: missingTable
-      ? 'Install the Author Binance Payout SQL first'
-      : status < 500 ? error.message : `Failed to ${operation.toLowerCase()} Binance payout details`,
+    message: duplicateId
+  ? 'This Binance UID or Pay ID is already linked to another author payout account.'
+  : missingTable
+    ? 'Install the Author Binance Payout SQL first'
+    : status < 500 ? error.message : `Failed to ${operation.toLowerCase()} Binance payout details`,
   })
 }
 
