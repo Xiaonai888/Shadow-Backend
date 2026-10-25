@@ -151,9 +151,12 @@ export async function getBinanceCheckoutOrder({ userId, orderId }) {
   if (error) throw error
   if (!data) throw new BinanceCheckoutError('CHECKOUT_NOT_FOUND', 404)
   if (data.status === 'waiting_payment' && !isExpired(data)) {
-    const receiver = await verifyReceiver()
-    if (!matchesReceiver(data, receiver)) throw new BinanceReceiverUnavailableError()
-    return present(data, true)
+    try {
+      const receiver = await verifyReceiver()
+      if (matchesReceiver(data, receiver)) return present(data, true)
+    } catch (receiverError) {
+      if (!(receiverError instanceof BinanceReceiverUnavailableError)) throw receiverError
+    }
   }
   return present(data, false)
 }
