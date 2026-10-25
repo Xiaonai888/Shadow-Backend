@@ -48,22 +48,42 @@ export async function requireCambodiaPhysicalBooks(req, res, next) {
   }
 
   try {
-    const { data, error } = await supabase
-      .from('shadow_country_settings')
-      .select('rules,revision')
-      .eq('settings_key', 'default')
-      .single()
+    const [settingsResult, exceptionResult] = await Promise.all([
+      supabase
+        .from('shadow_country_settings')
+        .select('rules,revision')
+        .eq('settings_key', 'default')
+        .single(),
+      supabase
+        .from('shadow_country_user_exceptions')
+        .select('mode,overrides,expires_at')
+        .eq('user_id', userId)
+        .maybeSingle(),
+    ])
 
-    if (error || !data || !Number.isSafeInteger(Number(data.revision))) {
-      throw error || new Error('Country rules unavailable')
+    if (settingsResult.error || !settingsResult.data || !Number.isSafeInteger(Number(settingsResult.data.revision))) {
+      throw settingsResult.error || new Error('Country rules unavailable')
     }
 
-    if (String(claims.revision) !== String(data.revision)) {
+    if (exceptionResult.error) throw exceptionResult.error
+
+    const settings = settingsResult.data
+    if (String(claims.revision) !== String(settings.revision)) {
       return fail(res, 409, 'BOOK_COUNTRY_REFRESH_REQUIRED', 'Country settings changed. Refresh and try again')
     }
 
-    if (data.rules?.kh?.physicalBooks !== true) {
-      return fail(res, 403, 'BOOK_COUNTRY_BLOCKED', 'Physical book purchases are not available')
+    if (settings.rules?.kh?.physicalBooks !== true || settings.rules?.kh?.payway !== true) {
+      return fail(res, 403, 'BOOK_COUNTRY_BLOCKED', 'Physical book payment is not available')
+    }
+
+    const exception = exceptionResult.data
+    const active = exception && (!exception.expires_at || Date.parse(exception.expires_at) > Date.now())
+    if (
+      active &&
+      exception.mode === 'custom' &&
+      (exception.overrides?.physicalBooks === 'block' || exception.overrides?.payway === 'block')
+    ) {
+      return fail(res, 403, 'BOOK_COUNTRY_BLOCKED', 'Physical book payment is disabled for your account')
     }
 
     return next()
