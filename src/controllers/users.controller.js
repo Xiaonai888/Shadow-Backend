@@ -1930,6 +1930,42 @@ export async function updatePaymentProfile(req, res) {
   }
 }
 
+async function getPublicActiveFrame(user) {
+  const { data: selection, error: selectionError } = await supabase
+    .from('reader_profile_frame_selections')
+    .select('frame_id')
+    .eq('user_id', user.id)
+    .maybeSingle()
+  if (selectionError) throw selectionError
+  if (!selection?.frame_id) return null
+
+  const { data: frame, error: frameError } = await supabase
+    .from('profile_frames')
+    .select('id, name, image_url, access_tier')
+    .eq('id', selection.frame_id)
+    .eq('is_active', true)
+    .maybeSingle()
+  if (frameError) throw frameError
+  if (!frame) return null
+  if (frame.access_tier === 'free') return frame
+  if (frame.access_tier === 'premium') {
+    return user.is_premium === true && user.premium_expires_at && Date.parse(user.premium_expires_at) > Date.now() ? frame : null
+  }
+  if (!['coins', 'diamonds'].includes(frame.access_tier)) return null
+
+  const { data: purchase, error: purchaseError } = await supabase
+    .from('reader_profile_frame_purchases')
+    .select('expires_at')
+    .eq('user_id', user.id)
+    .eq('frame_id', frame.id)
+    .eq('currency', frame.access_tier)
+    .order('purchased_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (purchaseError) throw purchaseError
+  return purchase && (frame.access_tier === 'diamonds' || (purchase.expires_at && Date.parse(purchase.expires_at) > Date.now())) ? frame : null
+}
+
 export async function getPublicUserProfile(req, res) {
   try {
     const currentUserId = req.user?.user_id || ''
@@ -1958,14 +1994,18 @@ export async function getPublicUserProfile(req, res) {
       })
     }
 
-    const [counts, isFollowing] = await Promise.all([
+    const [counts, isFollowing, activeFrame] = await Promise.all([
       getUserFollowCounts(user.id),
       isFollowingUser(currentUserId, user.id),
+      getPublicActiveFrame(user).catch((frameError) => {
+        console.error('GET PUBLIC USER FRAME ERROR:', frameError)
+        return null
+      }),
     ])
 
     return res.status(200).json({
       ok: true,
-      user: publicUserProfile(user, counts, isFollowing),
+      user: { ...publicUserProfile(user, counts, isFollowing), profile_frame: activeFrame },
     })
   } catch (error) {
     console.error('GET PUBLIC USER PROFILE ERROR:', error)
