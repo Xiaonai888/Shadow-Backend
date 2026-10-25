@@ -2,6 +2,7 @@ import express from 'express'
 import multer from 'multer'
 import { rateLimit } from 'express-rate-limit'
 import { requireUser } from '../middleware/user.middleware.js'
+import binanceReceiverRoutes from './binanceReceiver.routes.js'
 import {
   createAbaPayment,
   getAbaPaymentStatus,
@@ -59,6 +60,8 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 })
 
+router.use('/binance', purchasePreAuthLimit, binanceReceiverRoutes)
+
 router.get('/packages', purchasePreAuthLimit, getPurchasePackages)
 router.get('/wallet', purchasePreAuthLimit, requireUser, purchaseReadLimit, getMyWallet)
 router.get('/requests', purchasePreAuthLimit, requireUser, purchaseReadLimit, getMyPurchaseRequests)
@@ -77,7 +80,7 @@ router.get('/premium/plans', purchasePreAuthLimit, getPremiumPlans)
 router.get('/premium/status', purchasePreAuthLimit, requireUser, purchaseReadLimit, getPremiumStatus)
 router.post('/premium/create', purchasePreAuthLimit, requireUser, purchaseWriteLimit, createPremiumPayment)
 router.get('/premium/status/:orderId', purchasePreAuthLimit, requireUser, purchaseReadLimit, getPremiumPaymentStatus)
-router.post('/premium/cancel/:orderId', purchasePreAuthLimit, requireUser, purchaseWriteLimit, cancelPremiumPayment)
+router.post('/premium/cancel/:orderId', purchasePreAuthLimit, requireUser, purchaseReadLimit, cancelPremiumPayment)
 
 router.post('/aba/create', purchasePreAuthLimit, requireUser, purchaseWriteLimit, createAbaPayment)
 router.get('/aba/status/:orderId', purchasePreAuthLimit, requireUser, purchaseReadLimit, getAbaPaymentStatus)
