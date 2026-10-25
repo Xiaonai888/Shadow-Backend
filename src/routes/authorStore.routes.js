@@ -1,5 +1,6 @@
 import { getReaderStoreHome } from '../controllers/readerStore.controller.js'
 import { getMyAuthorStoreEarnings } from '../controllers/authorStoreEarnings.controller.js'
+import { getMyAuthorStoreBookPending } from '../controllers/authorStoreBookPending.controller.js'
 import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
@@ -153,6 +154,7 @@ router.get('/me/orders', requireUser, getMyAuthorStoreOrders)
 router.patch('/me/orders/:orderId/preparing', requireUser, markMyAuthorStoreOrderPreparing)
 router.get('/me/income', requireUser, getMyAuthorStoreIncome)
 router.get('/me/earnings', requireUser, getMyAuthorStoreEarnings)
+router.get('/me/book-pending', requireUser, getMyAuthorStoreBookPending)
 router.post('/me/withdrawals', requireUser, createMyAuthorStoreWithdrawal)
 router.get('/admin/orders', requireAdmin, getAdminAuthorStoreOrders)
 router.patch('/admin/orders/:orderId/status', requireAdmin, updateAdminAuthorStoreOrderStatus)
