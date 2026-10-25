@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
+import { createPaymentCountryTicket } from '../middleware/paymentCountryGate.middleware.js'
 
 const router = express.Router()
 const TTL = 45000
@@ -16,7 +17,7 @@ let pending = null
 function readCountry(req) {
   const secret = process.env.SHADOW_GEO_PROXY_SECRET || ''
   const supplied = String(req.get('x-shadow-geo-secret') || '')
-  if (!secret || !supplied) return null
+  if (secret.length < 32 || !supplied) return null
   const a = Buffer.from(secret)
   const b = Buffer.from(supplied)
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null
@@ -83,8 +84,10 @@ function resolveRules(rules, region, countryVerified, exception) {
     if (LANGUAGES.has(exception.overrides.storyLanguage)) effective.storyLanguage = exception.overrides.storyLanguage
     if (TARGETS.has(exception.overrides.shopTarget)) effective.shopTarget = exception.overrides.shopTarget
   }
-  if (!countryVerified || region !== 'kh') effective.physicalBooks = false
-  return effective
+  effective.payway = Boolean(countryVerified && rules[region]?.payway === true && effective.payway)
+effective.binancePay = Boolean(countryVerified && rules[region]?.binancePay === true && effective.binancePay)
+effective.physicalBooks = Boolean(countryVerified && region === 'kh' && rules.kh.physicalBooks === true && effective.physicalBooks)
+return effective
 }
 
 router.use(createRateLimit({
@@ -111,6 +114,14 @@ router.get('/', optionalReader, async (req, res) => {
       effective,
       hasException: Boolean(exception),
       revision: settings.revision,
+      paymentCountryTicket: country && userId && req.user?.session_id
+  ? createPaymentCountryTicket({
+      userId,
+      sessionId: req.user.session_id,
+      country,
+      revision: settings.revision,
+    })
+  : null,
     })
   } catch (error) {
     console.error('PUBLIC COUNTRY SETTINGS ERROR:', error)
