@@ -59,7 +59,7 @@ import {
   getMyAuthorStoreSalesReports,
   syncMyAuthorStoreSalesReports,
 } from '../controllers/authorStoreSalesReports.controller.js'
-import { requireUser } from '../middleware/user.middleware.js'
+import { requireAuthorStorePhysicalBookCountry } from '../middleware/authorStorePhysicalBookGuard.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { getAdminAuthorStoreWithdrawalNotifications } from '../controllers/adminAuthorStoreWithdrawalNotifications.controller.js'
 import { validateAuthorStorePdf, deleteMyAuthorStoreTemporaryPdf } from '../controllers/authorStorePdfGuard.controller.js'
@@ -171,8 +171,13 @@ router.post('/admin/withdrawals/:withdrawalId/transfer-record', requireAdmin, re
 router.post('/admin/withdrawals/:withdrawalId/receipt', requireAdmin, uploadAdminAuthorStoreReceipt)
 router.get('/admin/withdrawals/:withdrawalId/receipt', requireAdmin, getAdminAuthorStoreReceipt)
 router.patch('/admin/withdrawals/:withdrawalId/status', requireAdmin, updateAdminAuthorStoreWithdrawalStatus)
-router.post('/orders', createAuthorStoreOrder)
-router.post('/orders/create-payment', requireUser, createAuthorStoreOrderPayment)
+const authorBookCountryGate = (req, res, next) =>
+  process.env.SHADOW_PHYSICAL_BOOKS_COUNTRY_ENFORCE === 'true'
+    ? requireAuthorStorePhysicalBookCountry(req, res, next)
+    : next()
+
+router.post('/orders', authorBookCountryGate, createAuthorStoreOrder)
+router.post('/orders/create-payment', requireUser, authorBookCountryGate, createAuthorStoreOrderPayment)
 router.get('/orders/my', requireUser, getMyAuthorStoreBuyerOrders)
 router.get('/orders/book-holds/my', requireUser, getMyAuthorStoreBuyerBookHoldStatuses)
 router.post('/orders/:orderId/confirm-received', requireUser, confirmMyAuthorStoreBookReceived)
