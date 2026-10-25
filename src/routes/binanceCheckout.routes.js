@@ -1,6 +1,7 @@
 import express from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { requireUser } from '../middleware/user.middleware.js'
+import { requirePaymentCountry } from '../middleware/paymentCountryGate.middleware.js'
 import {
   createBinanceCheckout,
   getBinanceCheckout,
@@ -30,7 +31,7 @@ const writeLimit = rateLimit({
   keyGenerator: (req) => String(req.user?.user_id || req.user?.id),
 })
 
-router.post('/checkout', ipLimit, requireUser, writeLimit, createBinanceCheckout)
+router.post('/checkout', ipLimit, requireUser, writeLimit, requirePaymentCountry('binancePay'), createBinanceCheckout)
 router.get('/checkout/:orderId', ipLimit, requireUser, readLimit, getBinanceCheckout)
 router.post('/checkout/:orderId/cancel', ipLimit, requireUser, writeLimit, cancelBinanceCheckout)
 
