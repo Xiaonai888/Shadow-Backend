@@ -2,6 +2,7 @@ import express from 'express'
 import multer from 'multer'
 import { rateLimit } from 'express-rate-limit'
 import { requireUser } from '../middleware/user.middleware.js'
+import { requirePaymentCountry } from '../middleware/paymentCountryGate.middleware.js'
 import binanceReceiverRoutes from './binanceReceiver.routes.js'
 import binanceCheckoutRoutes from './binanceCheckout.routes.js'
 import binanceCheckoutClaimsRoutes from './binanceCheckoutClaims.routes.js'
@@ -72,7 +73,14 @@ router.get('/requests', purchasePreAuthLimit, requireUser, purchaseReadLimit, ge
 router.get('/first-topup-bonus', purchasePreAuthLimit, requireUser, purchaseReadLimit, getFirstTopupBonus)
 router.post('/first-topup-bonus/open', purchasePreAuthLimit, requireUser, purchaseWriteLimit, openFirstTopupBonus)
 
-router.post('/manual/create', purchasePreAuthLimit, requireUser, purchaseWriteLimit, createManualPayment)
+router.post(
+  '/manual/create',
+  purchasePreAuthLimit,
+  requireUser,
+  purchaseWriteLimit,
+  requirePaymentCountry('payway'),
+  createManualPayment
+)
 router.post('/manual/cancel/:orderId', purchasePreAuthLimit, requireUser, purchaseWriteLimit, cancelManualPayment)
 router.post('/manual/proof/:orderId', purchasePreAuthLimit, requireUser, purchaseWriteLimit, upload.single('proof_image'), submitManualPaymentProof)
 router.get('/manual/status/:orderId', purchasePreAuthLimit, requireUser, purchaseReadLimit, getManualPaymentStatus)
