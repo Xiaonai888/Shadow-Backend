@@ -1,5 +1,17 @@
 begin;
 
+create table if not exists public.author_store_book_hold_activation (
+  id smallint primary key check (id = 1),
+  activated_at timestamptz not null
+);
+
+insert into public.author_store_book_hold_activation (id, activated_at)
+values (1, clock_timestamp())
+on conflict (id) do nothing;
+
+grant select on public.author_store_book_hold_activation to service_role;
+
+
 alter table public.author_store_book_payment_hold_events
   drop constraint if exists author_store_book_payment_hold_events_action_check;
 
@@ -24,6 +36,13 @@ declare
   existing_hold public.author_store_book_payment_holds%rowtype;
   inserted_hold_id uuid;
 begin
+  if not exists (
+    select 1 from public.author_store_book_hold_activation
+    where id = 1 and new.created_at >= activated_at
+  ) then
+    return new;
+  end if;
+
   if new.payment_status is distinct from 'paid' then
     return new;
   end if;
