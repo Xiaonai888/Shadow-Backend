@@ -104,7 +104,10 @@ router.get('/conversations', preAuthLimit, viewChat, inboxLimit, async (req, res
       if (filter === 'assigned') query = query.not('assigned_admin_id', 'is', null)
     }
 
-    const { data, error } = await query.limit(PAGE_SIZE + 1)
+    if (req.admin.role === 'staff') {
+  query = query.eq('assigned_admin_id', String(req.admin.admin_id))
+}
+const { data, error } = await query.limit(PAGE_SIZE + 1)
     if (error) throw error
     const page = (data || []).slice(0, PAGE_SIZE)
     const userIds = [...new Set(page.map((row) => row.reader_user_id).filter(Boolean))]
@@ -191,8 +194,12 @@ router.get('/conversations/:conversationId/messages', preAuthLimit, viewChat, in
   }
 
   try {
-    const existing = await supabase.from('admin_support_conversations')
-      .select('id').eq('id', id).maybeSingle()
+    let scope = supabase.from('admin_support_conversations')
+  .select('id').eq('id', id)
+if (req.admin.role === 'staff') {
+  scope = scope.eq('assigned_admin_id', String(req.admin.admin_id))
+}
+const existing = await scope.maybeSingle()
     if (existing.error) throw existing.error
     if (!existing.data) return problem(res, 404, 'ADMIN_CHAT_NOT_FOUND', 'Conversation not found')
 
