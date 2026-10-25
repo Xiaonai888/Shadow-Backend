@@ -1,6 +1,7 @@
 import { getReaderStoreHome } from '../controllers/readerStore.controller.js'
 import { getMyAuthorStoreEarnings } from '../controllers/authorStoreEarnings.controller.js'
 import { getMyAuthorStoreBookPending, confirmMyAuthorStoreBookReceived } from '../controllers/authorStoreBookPending.controller.js'
+import { submitMyAuthorStoreBookEvidence, getMyAuthorStoreBuyerBookHoldStatuses, getAdminAuthorStoreBookHolds } from '../controllers/authorStoreBookWorkflow.controller.js'
 import { approveAdminAuthorStoreBookHold } from '../controllers/adminAuthorStoreBookApproval.controller.js'
 import express from 'express'
 import multer from 'multer'
@@ -156,8 +157,10 @@ router.patch('/me/orders/:orderId/preparing', requireUser, markMyAuthorStoreOrde
 router.get('/me/income', requireUser, getMyAuthorStoreIncome)
 router.get('/me/earnings', requireUser, getMyAuthorStoreEarnings)
 router.get('/me/book-pending', requireUser, getMyAuthorStoreBookPending)
+router.post('/me/book-pending/:holdId/evidence', requireUser, submitMyAuthorStoreBookEvidence)
 router.post('/me/withdrawals', requireUser, createMyAuthorStoreWithdrawal)
 router.get('/admin/orders', requireAdmin, getAdminAuthorStoreOrders)
+router.get('/admin/books/holds', requireAdmin, getAdminAuthorStoreBookHolds)
 router.post('/admin/books/:orderId/approve-hold', requireAdmin, approveAdminAuthorStoreBookHold)
 router.patch('/admin/orders/:orderId/status', requireAdmin, updateAdminAuthorStoreOrderStatus)
 router.get('/admin/withdrawals', requireAdmin, getAdminAuthorStoreWithdrawals)
@@ -169,6 +172,7 @@ router.patch('/admin/withdrawals/:withdrawalId/status', requireAdmin, updateAdmi
 router.post('/orders', createAuthorStoreOrder)
 router.post('/orders/create-payment', requireUser, createAuthorStoreOrderPayment)
 router.get('/orders/my', requireUser, getMyAuthorStoreBuyerOrders)
+router.get('/orders/book-holds/my', requireUser, getMyAuthorStoreBuyerBookHoldStatuses)
 router.post('/orders/:orderId/confirm-received', requireUser, confirmMyAuthorStoreBookReceived)
 router.get('/downloads/my', requireUser, getMyAuthorStoreReaderDownloads)
 router.get('/downloads/:productId/offline-grant', requireUser, getMyAuthorStoreOfflinePdfGrant)
