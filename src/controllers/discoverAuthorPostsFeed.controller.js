@@ -1,6 +1,6 @@
 import { supabase } from '../config/supabase.js'
-import { getEligibleDiscoverBoostPosts } from '../services/authorAdDiscoverCandidates.service.js'
-import { issueAuthorAdDiscoverReceipt } from '../services/authorAdDiscoverEngagement.service.js'
+import { getEligibleDiscoverBoostBooks, getEligibleDiscoverBoostPosts } from '../services/authorAdDiscoverCandidates.service.js'
+import { issueAuthorAdDiscoverBookReceipt, issueAuthorAdDiscoverReceipt } from '../services/authorAdDiscoverEngagement.service.js'
 import {
   getDiscoverAuthorPostsSharedCatalog,
 } from '../services/discoverAuthorPostsSharedCache.service.js'
@@ -353,6 +353,75 @@ async function loadDiscoverBoostPosts(userId) {
   return selected
 }
 
+async function loadDiscoverBoostBooks(userId) {
+  const candidates = await getEligibleDiscoverBoostBooks({
+    viewerUserId: userId,
+    limit: 3,
+  })
+  if (!candidates.length) return []
+
+  const storyIds = candidates.filter(item => item.contentType === 'story').map(item => item.contentId)
+  const productIds = candidates.filter(item => item.contentType === 'product').map(item => item.contentId)
+  const pageIds = [...new Set(candidates.map(item => item.authorPageId))]
+  const [storyResult, productResult, pageResult] = await Promise.all([
+    storyIds.length
+      ? supabase.from('stories').select('id,author_id,title,cover_url')
+        .in('id', storyIds).eq('status', 'published').is('deleted_at', null)
+      : Promise.resolve({ data: [], error: null }),
+    productIds.length
+      ? supabase.from('author_store_products')
+        .select('id,author_page_id,title,cover_url,product_type')
+        .in('id', productIds).eq('status', 'active')
+        .in('product_type', ['book', 'pdf'])
+      : Promise.resolve({ data: [], error: null }),
+    supabase.from('author_pages')
+      .select('id,user_id,page_name,page_username,avatar_url')
+      .in('id', pageIds).eq('status', 'active'),
+  ])
+  for (const result of [storyResult, productResult, pageResult]) {
+    if (result.error) throw result.error
+  }
+
+  const storiesById = new Map((storyResult.data || []).map(item => [item.id, item]))
+  const productsById = new Map((productResult.data || []).map(item => [item.id, item]))
+  const pagesById = new Map((pageResult.data || []).map(item => [item.id, item]))
+  const selected = []
+
+  for (const candidate of candidates) {
+    const page = pagesById.get(candidate.authorPageId)
+    const content = candidate.contentType === 'story'
+      ? storiesById.get(candidate.contentId)
+      : productsById.get(candidate.contentId)
+    if (!page || !content || page.user_id === userId) continue
+    if (candidate.contentType === 'story' && content.author_id !== page.id) continue
+    if (candidate.contentType === 'product' &&
+      (content.author_page_id !== page.id || !String(page.page_username || '').trim())) continue
+
+    const title = String(content.title || '').trim()
+    const coverUrl = String(content.cover_url || '').trim()
+    if (!title || !coverUrl) continue
+
+    selected.push({
+      id: content.id,
+      content_type: candidate.contentType,
+      title,
+      cover_url: coverUrl,
+      author_page: {
+        id: page.id,
+        page_name: page.page_name,
+        page_username: page.page_username,
+        avatar_url: page.avatar_url,
+      },
+      sponsored: true,
+      boost_campaign_id: candidate.campaignId,
+      boost_receipt: issueAuthorAdDiscoverBookReceipt(candidate, userId),
+      boost_delivery_ready: true,
+    })
+  }
+
+  return selected
+}
+
 export async function getDiscoverAuthorPostsFeed(req, res) {
   try {
     const userId = req.user?.user_id
@@ -378,6 +447,20 @@ export async function getDiscoverAuthorPostsFeed(req, res) {
     const discoverControlAuthorPageIds =
       catalog.discoverControlAuthorPageIds || []
 
+    let boostBooks = []
+    if (
+      offset === 0 &&
+      req.query.boost_book_tracking === '1' &&
+      process.env.AUTHOR_ADS_DELIVERY_ENABLED === 'true' &&
+      process.env.AUTHOR_ADS_BOOK_DELIVERY_ENABLED === 'true'
+    ) {
+      try {
+        boostBooks = await loadDiscoverBoostBooks(userId)
+      } catch (error) {
+        console.warn('DISCOVER BOOK BOOST OPTIONAL LOAD FAILED:', error?.code || 'UNKNOWN')
+      }
+    }
+
     const authorPageIds = [
       ...new Set(
         candidatePosts
@@ -391,6 +474,7 @@ export async function getDiscoverAuthorPostsFeed(req, res) {
         ok: true,
         posts: [],
         boost_posts: [],
+        boost_books: boostBooks,
         limit,
         has_more: false,
         next_cursor: null,
@@ -646,6 +730,7 @@ export async function getDiscoverAuthorPostsFeed(req, res) {
       ok: true,
       posts,
       boost_posts: boostPosts,
+      boost_books: boostBooks,
       limit,
       has_more: hasMore,
       next_cursor: hasMore
