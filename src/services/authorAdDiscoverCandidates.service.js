@@ -160,6 +160,22 @@ async function loadCandidates(kind, input) {
   )
   if (!candidates.length) return { candidates: [], pages: new Map(), limit }
 
+  const diamondCampaignIds = candidates
+    .filter(campaign => fundingByCampaign.has(campaign.id))
+    .map(campaign => campaign.id)
+  if (diamondCampaignIds.length) {
+    const reachedResult = await supabase.from('author_ad_delivery_events')
+      .select('campaign_id')
+      .eq('viewer_user_id', userId)
+      .eq('event_type', 'impression')
+      .like('event_key', 'diamond-reach:%')
+      .in('campaign_id', diamondCampaignIds)
+    if (reachedResult.error) throw reachedResult.error
+    const reachedCampaignIds = new Set((reachedResult.data || []).map(row => row.campaign_id))
+    candidates = candidates.filter(campaign => !reachedCampaignIds.has(campaign.id))
+  }
+  if (!candidates.length) return { candidates: [], pages: new Map(), limit }
+
   const pageIds = [...new Set(candidates.map(item => item.author_page_id))]
   const ownerIds = [...new Set(candidates.map(item => item.owner_user_id))]
   const [pages, blockedPages, blockedAccounts] = await Promise.all([
