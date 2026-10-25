@@ -143,15 +143,26 @@ app.use(backendOriginAudit)
 app.use(trafficDiagnosticMiddleware)
 app.use((req, res, next) => {
   const started = Date.now()
+  const progress = req.method === 'POST' && req.path === '/api/reading-progress'
+  const view = req.method === 'POST' && /^\/api\/public\/stories\/[^/]+\/episodes\/[^/]+\/view\/?$/.test(req.path)
   res.on('finish', () => {
-    if (res.statusCode < 500) return
-    console.error('[API_5XX]', JSON.stringify({
-      time: new Date().toISOString(), method: req.method,
-      path: req.path, status: res.statusCode, durationMs: Date.now() - started
-    }))
+    if (res.statusCode >= 500) {
+      console.error('[API_5XX]', JSON.stringify({
+        time: new Date().toISOString(), method: req.method,
+        path: req.path, status: res.statusCode, durationMs: Date.now() - started
+      }))
+    } else if ((progress || view) && res.statusCode >= 400) {
+      console.warn('[READ_ACTIVITY_4XX]', JSON.stringify({
+        time: new Date().toISOString(),
+        route: progress ? 'reading-progress' : 'episode-view',
+        status: res.statusCode,
+        durationMs: Date.now() - started
+      }))
+    }
   })
   next()
 })
+
 app.use(memoryIncidentTracer)
 app.use(sensitivePathGuard)
 
