@@ -215,25 +215,44 @@ router.get('/conversations/:conversationId/messages', preAuthLimit, viewChat, in
 
   try {
     let scope = supabase.from('admin_support_conversations')
-  .select('id').eq('id', id)
-if (req.admin.role === 'staff') {
-  scope = scope.eq('assigned_admin_id', String(req.admin.admin_id))
-}
-const existing = await scope.maybeSingle()
+      .select('id').eq('id', id)
+    if (req.admin.role === 'staff') {
+      scope = scope.eq('assigned_admin_id', String(req.admin.admin_id))
+    }
+    const existing = await scope.maybeSingle()
     if (existing.error) throw existing.error
     if (!existing.data) return problem(res, 404, 'ADMIN_CHAT_NOT_FOUND', 'Conversation not found')
 
     let query = supabase.from('admin_support_messages')
-      .select('id, conversation_id, sender_kind, public_support_id, message_text, attachments, seen_at, created_at')
+      .select('id, conversation_id, sender_kind, sender_admin_id, public_support_id, message_text, attachments, seen_at, created_at')
       .eq('conversation_id', id).order('created_at', { ascending: false })
     if (before) query = query.lt('created_at', new Date(before).toISOString())
     const { data, error } = await query.limit(21)
     if (error) throw error
     const page = (data || []).slice(0, 20)
+    const adminIds = [...new Set(page.filter((message) => message.sender_kind === 'admin').map((message) => message.sender_admin_id).filter(Boolean))]
+    let admins = []
+    if (adminIds.length) {
+      const accounts = await supabase.from('admin_users')
+        .select('id, name, role')
+        .in('id', adminIds).limit(20)
+      if (accounts.error) throw accounts.error
+      admins = accounts.data || []
+    }
+    const adminById = new Map(admins.map((account) => [String(account.id), account]))
+    const messages = page.reverse().map((message) => {
+      if (message.sender_kind !== 'admin') return message
+      const account = adminById.get(String(message.sender_admin_id))
+      return {
+        ...message,
+        sender_admin_name: account?.name || null,
+        sender_admin_role: account?.role || null,
+      }
+    })
     res.set('Cache-Control', 'no-store')
     return res.json({
       ok: true,
-      messages: page.reverse(),
+      messages,
       limit: 20,
       has_more: (data || []).length > 20,
       next_before: page.length ? page[0].created_at : null,
