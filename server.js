@@ -132,6 +132,7 @@ import adminAppSettingsRoutes from './src/routes/adminAppSettings.routes.js'
 import publicAppSettingsRoutes from './src/routes/publicAppSettings.routes.js'
 import { backendOriginAudit } from './src/middleware/backendOriginAudit.middleware.js'
 import adminDeviceOfflineRoutes from './src/routes/adminDeviceOffline.routes.js'
+import adminCountrySettingsRoutes from './src/routes/adminCountrySettings.routes.js'
 import readerOfflineControlRoutes from './src/routes/readerOfflineControl.routes.js'
 import storyEpisodePushWakeRoutes from './src/routes/storyEpisodePushWake.routes.js'
 import mediaDirectRoutes from './src/routes/mediaDirect.routes.js'
@@ -906,6 +907,7 @@ app.use('/api/task-center', adminTaskCenterRoutes)
 app.use('/api/admin/login-guard', adminLoginGuardRoutes)
 app.use('/api/admin/device-access', adminDeviceAccessRoutes)
 app.use('/api/admin/device-offline', adminDeviceOfflineRoutes)
+app.use('/api/admin/country-settings', adminCountrySettingsRoutes)
 app.use('/api/reader/offline-control', readerOfflineControlRoutes)
 app.use('/api/admin/two-factor', adminTwoFactorRoutes)
 app.use('/api/admin/passkey-pin', adminPasskeyPinRoutes)
