@@ -78,9 +78,32 @@ function money(cents) {
   return Number(cents || 0) / 100
 }
 
-function campaignResult(row) {
-  const budget = Number(row.budget_cents || 0)
-  const spent = Number(row.spent_cents || 0)
+function campaignResult(row, funding = null) {
+  const budget = Number(row.budget_cents)
+  const usd = [row.funded_cents, row.spent_cents, row.refunded_cents].map(Number)
+  if (!Number.isSafeInteger(budget) || budget < 100 ||
+    !usd.every(value => Number.isSafeInteger(value) && value >= 0)) {
+    fail(503, 'INVALID_CAMPAIGN_FUNDING', 'Campaign funding values are invalid')
+  }
+  const [fundedUsd, spentUsd, refundedUsd] = usd
+  const hasDiamondFunding = Boolean(funding)
+  const diamonds = hasDiamondFunding
+    ? [funding.funded_diamonds, funding.spent_diamonds, funding.refunded_diamonds].map(Number)
+    : [0, 0, 0]
+  const [fundedDiamonds, spentDiamonds, refundedDiamonds] = diamonds
+  if (hasDiamondFunding && (
+    funding.campaign_id !== row.id || funding.owner_user_id !== row.owner_user_id ||
+    !diamonds.every(value => Number.isSafeInteger(value) && value >= 0) ||
+    fundedDiamonds !== budget || spentDiamonds + refundedDiamonds > fundedDiamonds ||
+    fundedUsd !== 0 || spentUsd !== 0 || refundedUsd !== 0
+  )) {
+    fail(503, 'INVALID_DIAMOND_FUNDING', 'Campaign Diamond funding requires review')
+  }
+  const fundingType = hasDiamondFunding ? 'diamonds'
+    : fundedUsd > 0 || spentUsd > 0 || refundedUsd > 0 ? 'usd' : 'unfunded'
+  const availableDiamonds = fundedDiamonds - spentDiamonds - refundedDiamonds
+  const paidUsd = fundedUsd - refundedUsd >= budget
+  const spent = hasDiamondFunding ? spentDiamonds : spentUsd
   return {
     id: row.id,
     author_page_id: row.author_page_id,
@@ -94,7 +117,14 @@ function campaignResult(row) {
     audience_mode: row.audience_mode,
     audience_filters: row.audience_filters || {},
     placements: row.placements || ['discover'],
-    currency: 'USD',
+    currency: hasDiamondFunding ? 'DIAMONDS' : 'USD',
+    funding_type: fundingType,
+    payment_status: hasDiamondFunding || paidUsd ? 'paid' : 'unpaid',
+    budget_diamonds: fundingType === 'usd' ? 0 : budget,
+    funded_diamonds: fundedDiamonds,
+    spent_diamonds: spentDiamonds,
+    refunded_diamonds: refundedDiamonds,
+    remaining_diamonds: availableDiamonds,
     budget_usd: money(row.budget_cents),
     funded_usd: money(row.funded_cents),
     spent_usd: money(row.spent_cents),
@@ -111,9 +141,26 @@ function campaignResult(row) {
     end_at: row.end_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
-    payment_required: Number(row.funded_cents || 0) - Number(row.refunded_cents || 0) < budget,
+    payment_required: !hasDiamondFunding && !paidUsd,
     delivery_active: row.status === 'active',
   }
+}
+
+async function getDiamondFunding(rows) {
+  const ids = [...new Set(rows.map(row => row.id).filter(Boolean))]
+  if (!ids.length) return new Map()
+  const { data, error } = await supabase.from('author_ad_diamond_funding')
+    .select('campaign_id,owner_user_id,funded_diamonds,spent_diamonds,refunded_diamonds')
+    .in('campaign_id', ids)
+  if (error) throw error
+  const funding = new Map()
+  for (const row of data || []) {
+    if (funding.has(row.campaign_id)) {
+      fail(503, 'DUPLICATE_DIAMOND_FUNDING', 'Duplicate campaign funding found')
+    }
+    funding.set(row.campaign_id, row)
+  }
+  return funding
 }
 
 async function campaignById(id) {
@@ -151,11 +198,11 @@ async function getAuthorMaps(rows) {
   }
 }
 
-function attachAuthor(row, maps) {
+function attachAuthor(row, maps, funding = null) {
   const author = maps.pages.get(String(row.author_page_id)) || null
   const user = maps.users.get(String(row.owner_user_id)) || null
   return {
-    ...campaignResult(row),
+    ...campaignResult(row, funding),
     author: {
       page_name: author?.page_name || 'Unknown Author',
       page_username: author?.page_username || '',
@@ -219,10 +266,13 @@ export async function listAdminAuthorAdCampaigns(req, res) {
       .order('id', { ascending: false })
       .range((page - 1) * limit, page * limit - 1)
     if (error) throw error
-    const maps = await getAuthorMaps(data || [])
+    const [maps, funding] = await Promise.all([
+      getAuthorMaps(data || []),
+      getDiamondFunding(data || []),
+    ])
     return res.json({
       ok: true,
-      campaigns: (data || []).map(row => attachAuthor(row, maps)),
+      campaigns: (data || []).map(row => attachAuthor(row, maps, funding.get(row.id))),
       total: Number(count || 0),
       page,
       limit,
@@ -320,8 +370,9 @@ export async function getAdminAuthorAdCampaign(req, res) {
     requireAdminIdentity(req)
     const id = requireId(req.params.campaignId)
     const row = await campaignById(id)
-    const [maps, ...eventResults] = await Promise.all([
+    const [maps, funding, ...eventResults] = await Promise.all([
       getAuthorMaps([row]),
+      getDiamondFunding([row]),
       ...EVENT_TYPES.map(eventType => supabase.from('author_ad_delivery_events')
         .select('id', { count: 'exact', head: true })
         .eq('campaign_id', id)
@@ -336,9 +387,20 @@ export async function getAdminAuthorAdCampaign(req, res) {
     const impressions = events.impression
     const clicks = events.click
     const goalResults = goalEvent ? events[goalEvent] : null
+    const diamondFunding = funding.get(row.id)
+    let verifiedReach = null
+    if (diamondFunding) {
+      const { count, error } = await supabase.from('author_ad_delivery_events')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', id)
+        .eq('event_type', 'impression')
+        .like('event_key', 'diamond-reach:%')
+      if (error) throw error
+      verifiedReach = Number(count || 0)
+    }
     return res.json({
       ok: true,
-      campaign: attachAuthor(row, maps),
+      campaign: attachAuthor(row, maps, diamondFunding),
       performance: {
         impressions,
         clicks,
@@ -354,8 +416,8 @@ export async function getAdminAuthorAdCampaign(req, res) {
         conversion_rate_percent: goalEvent && clicks > 0
           ? Math.round(goalResults / clicks * 10000) / 100
           : null,
-        unique_reach: null,
-        unique_reach_available: false,
+        unique_reach: verifiedReach,
+        unique_reach_available: diamondFunding != null,
       },
     })
   })
@@ -425,8 +487,10 @@ export async function reviewAdminAuthorAdCampaign(req, res) {
     if (current.status !== 'pending_review' || current.review_status !== 'pending') {
       fail(409, 'CAMPAIGN_NOT_PENDING', 'Only pending campaigns can be reviewed')
     }
+    const currentFunding = await getDiamondFunding([current])
     if (action === 'reject' && (Number(current.funded_cents) !== 0 ||
-        Number(current.spent_cents) !== 0 || Number(current.refunded_cents) !== 0)) {
+        Number(current.spent_cents) !== 0 || Number(current.refunded_cents) !== 0 ||
+        currentFunding.has(id))) {
       fail(409, 'REFUND_WORKFLOW_REQUIRED', 'Refund funded campaign before rejecting it')
     }
     if (action === 'approve') await ensureStillPublished(current)
@@ -455,11 +519,13 @@ export async function reviewAdminAuthorAdCampaign(req, res) {
       action,
       actor: String(admin.admin_id || admin.id || admin.email || 'admin').slice(0, 120),
     }))
+    const updatedFunding = await getDiamondFunding([data])
+    const reviewed = campaignResult(data, updatedFunding.get(data.id))
     return res.json({
       ok: true,
-      campaign: campaignResult(data),
+      campaign: reviewed,
       delivery_active: false,
-      payment_required: Number(data.funded_cents) < Number(data.budget_cents),
+      payment_required: reviewed.payment_required,
     })
   })
 }
