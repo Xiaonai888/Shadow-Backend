@@ -1,6 +1,6 @@
 import { getReaderStoreHome } from '../controllers/readerStore.controller.js'
 import { getMyAuthorStoreEarnings } from '../controllers/authorStoreEarnings.controller.js'
-import { getMyAuthorStoreBookPending } from '../controllers/authorStoreBookPending.controller.js'
+import { getMyAuthorStoreBookPending, confirmMyAuthorStoreBookReceived } from '../controllers/authorStoreBookPending.controller.js'
 import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
@@ -167,6 +167,7 @@ router.patch('/admin/withdrawals/:withdrawalId/status', requireAdmin, updateAdmi
 router.post('/orders', createAuthorStoreOrder)
 router.post('/orders/create-payment', requireUser, createAuthorStoreOrderPayment)
 router.get('/orders/my', requireUser, getMyAuthorStoreBuyerOrders)
+router.post('/orders/:orderId/confirm-received', requireUser, confirmMyAuthorStoreBookReceived)
 router.get('/downloads/my', requireUser, getMyAuthorStoreReaderDownloads)
 router.get('/downloads/:productId/offline-grant', requireUser, getMyAuthorStoreOfflinePdfGrant)
 router.get('/downloads/:productId/pdf', requireUser, getMyAuthorStorePurchasedPdf)
