@@ -65,17 +65,51 @@ export async function getAdminStoryPayoutQueue(req, res) {
 
     const authors = new Map((pagesResult.data || []).map((row) => [String(row.id), row]))
     const users = new Map((usersResult.data || []).map((row) => [String(row.id), row]))
+    let binanceError = false
+    let binanceMethods = new Map()
+
+    if (view === 'pending' && authorIds.length) {
+      try {
+        const result = await supabase
+          .from('author_binance_payout_methods')
+          .select('author_id,account_name,bank_name,binance_uid,binance_pay_id,qr_image_url,status,updated_at')
+          .in('author_id', authorIds)
+          .eq('status', 'active')
+        if (result.error) throw result.error
+        binanceMethods = new Map((result.data || []).map((item) => [String(item.author_id), item]))
+      } catch (lookupError) {
+        binanceError = true
+        console.warn('ADMIN STORY PAYOUT BINANCE PREVIEW WARNING:', lookupError)
+      }
+    }
+
     const total = count || 0
+    res.set('Cache-Control', 'private, no-store')
 
     return res.status(200).json({
       ok: true,
       month,
       view,
-      payouts: rows.map((row) => ({
-        ...row,
-        author_page: authors.get(String(row.author_id)) || null,
-        author_user: users.get(String(row.user_id)) || null,
-      })),
+      binance_preview_unavailable: binanceError,
+      payouts: rows.map((row) => {
+        const binance = view === 'pending' ? binanceMethods.get(String(row.author_id)) : null
+        return {
+          ...row,
+          author_page: authors.get(String(row.author_id)) || null,
+          author_user: users.get(String(row.user_id)) || null,
+          binance_payout_preview: binance ? {
+            bank_name: binance.bank_name,
+            account_name: binance.account_name,
+            binance_uid: binance.binance_uid,
+            binance_pay_id: binance.binance_pay_id,
+            qr_image_url: binance.qr_image_url,
+            updated_at: binance.updated_at,
+            available_for_review: true,
+            selected_for_this_payout: false,
+            ownership_verified: false,
+          } : null,
+        }
+      }),
       pagination: {
         page, limit: PAGE_SIZE, total,
         total_pages: Math.max(1, Math.ceil(total / PAGE_SIZE)),
