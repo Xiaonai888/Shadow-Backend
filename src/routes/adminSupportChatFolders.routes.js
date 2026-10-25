@@ -44,6 +44,11 @@ function staffScope(req, query) {
   return query.eq('assigned_admin_id', String(req.admin.admin_id))
 }
 
+function folderWriteScope(req, query) {
+  if (req.admin.role !== 'staff') return query
+  return query.eq('created_by_admin_id', String(req.admin.admin_id))
+}
+
 async function folderExists(folderId) {
   const response = await supabase.from('admin_support_folders').select('id').eq('id', folderId).maybeSingle()
   if (response.error) throw response.error
@@ -119,11 +124,11 @@ router.patch('/folders/:folderId', ipGuard, manage, identityGuard, async (req, r
   const name = validName(req.body?.name)
   if (!UUID.test(req.params.folderId) || !name) return fail(res, 400, 'ADMIN_FOLDER_BAD_INPUT', 'Invalid folder or name')
   try {
-    const result = await supabase.from('admin_support_folders')
-      .update({ name }).eq('id', req.params.folderId)
-      .select('id, name, sort_order, created_at').maybeSingle()
+    let query = supabase.from('admin_support_folders').update({ name }).eq('id', req.params.folderId)
+    query = folderWriteScope(req, query)
+    const result = await query.select('id, name, sort_order, created_at').maybeSingle()
     if (result.error) throw result.error
-    if (!result.data) return fail(res, 404, 'ADMIN_FOLDER_NOT_FOUND', 'Folder not found')
+    if (!result.data) return fail(res, 404, 'ADMIN_FOLDER_NOT_FOUND', 'Folder not found or not editable')
     res.set('Cache-Control', 'no-store')
     return res.json({ ok: true, folder: result.data })
   } catch (error) {
@@ -134,10 +139,11 @@ router.patch('/folders/:folderId', ipGuard, manage, identityGuard, async (req, r
 router.delete('/folders/:folderId', ipGuard, manage, identityGuard, async (req, res) => {
   if (!UUID.test(req.params.folderId)) return fail(res, 400, 'ADMIN_FOLDER_BAD_INPUT', 'Invalid folder ID')
   try {
-    const result = await supabase.from('admin_support_folders')
-      .delete().eq('id', req.params.folderId).select('id').maybeSingle()
+    let query = supabase.from('admin_support_folders').delete().eq('id', req.params.folderId)
+    query = folderWriteScope(req, query)
+    const result = await query.select('id').maybeSingle()
     if (result.error) throw result.error
-    if (!result.data) return fail(res, 404, 'ADMIN_FOLDER_NOT_FOUND', 'Folder not found')
+    if (!result.data) return fail(res, 404, 'ADMIN_FOLDER_NOT_FOUND', 'Folder not found or not editable')
     res.set('Cache-Control', 'no-store')
     return res.json({ ok: true, deleted_folder_id: result.data.id })
   } catch (error) {
