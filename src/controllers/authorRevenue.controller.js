@@ -2743,23 +2743,91 @@ export async function saveMyAuthorPaymentMethod(req, res) {
       }
     }
 
-    await supabase
+    const { data: existingMethods, error: lookupError } = await supabase
       .from('author_payment_methods')
-      .update({
-        is_primary: false,
-        updated_at: new Date().toISOString(),
-      })
+      .select('id,is_primary')
       .eq('author_id', authorPage.id)
+      .eq('method_type', methodType)
+      .eq('status', 'active')
+      .order('updated_at', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(1)
 
-    const { data, error } = await supabase
-      .from('author_payment_methods')
-      .insert(payload)
-      .select()
-      .single()
+    if (lookupError) throw lookupError
 
-    if (error) throw error
+    const existingMethod = existingMethods?.[0] || null
+    let canReuse = false
+
+    if (existingMethod) {
+      const { data: linkedPayout, error: payoutError } = await supabase
+        .from('author_payouts')
+        .select('id')
+        .eq('payment_method_id', existingMethod.id)
+        .limit(1)
+        .maybeSingle()
+
+      if (payoutError) throw payoutError
+      canReuse = !linkedPayout
+    }
+
+    const nowIso = new Date().toISOString()
+    const staged = { ...payload, updated_at: nowIso }
+    const saveQuery = canReuse
+      ? supabase.from('author_payment_methods')
+        .update({ ...staged, is_primary: Boolean(existingMethod.is_primary) })
+        .eq('id', existingMethod.id)
+        .eq('author_id', authorPage.id)
+        .eq('status', 'active')
+      : supabase.from('author_payment_methods')
+        .insert({ ...staged, is_primary: false })
+
+    const { data: savedMethod, error: saveError } = await saveQuery
+      .select('*')
+      .maybeSingle()
+
+    if (saveError) throw saveError
+    if (!savedMethod) {
+      const saveConflict = new Error('Payment method changed. Refresh and try again.')
+      saveConflict.statusCode = 409
+      throw saveConflict
+    }
 
     uploadedQrUrl = null
+
+    const { error: retireError } = await supabase
+      .from('author_payment_methods')
+      .update({ status: 'inactive', is_primary: false, updated_at: nowIso })
+      .eq('author_id', authorPage.id)
+      .eq('method_type', methodType)
+      .eq('status', 'active')
+      .neq('id', savedMethod.id)
+
+    if (retireError) throw retireError
+
+    const { error: demoteError } = await supabase
+      .from('author_payment_methods')
+      .update({ is_primary: false, updated_at: nowIso })
+      .eq('author_id', authorPage.id)
+      .eq('is_primary', true)
+      .neq('id', savedMethod.id)
+
+    if (demoteError) throw demoteError
+
+    const { data, error: promoteError } = await supabase
+      .from('author_payment_methods')
+      .update({ is_primary: true, updated_at: nowIso })
+      .eq('id', savedMethod.id)
+      .eq('author_id', authorPage.id)
+      .eq('status', 'active')
+      .select('*')
+      .maybeSingle()
+
+    if (promoteError) throw promoteError
+    if (!data) {
+      const saveConflict = new Error('Payment method changed. Refresh and try again.')
+      saveConflict.statusCode = 409
+      throw saveConflict
+    }
 
     return res.status(201).json({
       ok: true,
@@ -2789,7 +2857,7 @@ export async function saveMyAuthorPaymentMethod(req, res) {
     return res.status(statusCode).json({
       ok: false,
       message:
-        statusCode === 400
+        [400, 409].includes(statusCode)
           ? error.message
           : 'Failed to save payment method',
       error: error.message,
