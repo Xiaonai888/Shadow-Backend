@@ -56,19 +56,29 @@ async function folderExists(folderId) {
 }
 
 router.get('/folders', ipGuard, view, identityGuard, async (req, res) => {
+  const rawPage = req.query.page
+  if (rawPage !== undefined && (typeof rawPage !== 'string' || !/^[1-9]\d{0,3}$/.test(rawPage))) {
+    return fail(res, 400, 'ADMIN_FOLDER_BAD_PAGE', 'Invalid folder page')
+  }
+  const page = rawPage === undefined ? 1 : Number(rawPage)
+  if (page > 1000) return fail(res, 400, 'ADMIN_FOLDER_BAD_PAGE', 'Invalid folder page')
+  const start = (page - 1) * 10
   try {
     const result = await supabase.from('admin_support_folders')
       .select('id, name, sort_order, created_at, created_by_admin_id')
       .order('sort_order', { ascending: true })
       .order('name', { ascending: true })
-      .limit(11)
+      .order('id', { ascending: true })
+      .range(start, start + 10)
     if (result.error) throw result.error
-    const folders = (result.data || []).slice(0, 10).map(({ created_by_admin_id, ...folder }) => ({
+    const rows = result.data || []
+    const hasMore = rows.length > 10
+    const folders = rows.slice(0, 10).map(({ created_by_admin_id, ...folder }) => ({
       ...folder,
       can_manage: req.admin.role !== 'staff' || created_by_admin_id === String(req.admin.admin_id),
     }))
     res.set('Cache-Control', 'no-store')
-    return res.json({ ok: true, folders, limit: 10, has_more: (result.data || []).length > 10 })
+    return res.json({ ok: true, folders, page, limit: 10, has_more: hasMore, next_page: hasMore ? page + 1 : null })
   } catch (error) {
     return failed(res, error)
   }
