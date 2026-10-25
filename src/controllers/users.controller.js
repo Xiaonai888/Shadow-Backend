@@ -1466,45 +1466,42 @@ export async function getMeSummary(req, res) {
 export async function getCurrentUser(req, res) {
   try {
     const userId = req.user?.user_id
-
     if (!userId) {
-      return res.status(401).json({
-        ok: false,
-        message: 'Unauthorized',
-      })
+      return res.status(401).json({ ok: false, message: 'Unauthorized' })
     }
 
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', userId)
-      .eq('is_active', true)
-      .maybeSingle()
+    const [userResult, binanceResult] = await Promise.all([
+      supabase
+        .from('users')
+        .select('*')
+        .eq('id', userId)
+        .eq('is_active', true)
+        .maybeSingle(),
+      supabase
+        .from('reader_binance_payment_profiles')
+        .select('binance_account_name,binance_uid')
+        .eq('user_id', userId)
+        .maybeSingle(),
+    ])
 
-    if (error) throw error
-
-    if (!data) {
-      return res.status(404).json({
-        ok: false,
-        message: 'User not found',
-      })
+    if (userResult.error) throw userResult.error
+    if (binanceResult.error) throw binanceResult.error
+    if (!userResult.data) {
+      return res.status(404).json({ ok: false, message: 'User not found' })
     }
 
     return res.status(200).json({
       ok: true,
       user: {
-        ...publicUser(data),
-        payment_account_name: data.payment_account_name || '',
+        ...publicUser(userResult.data),
+        payment_account_name: userResult.data.payment_account_name || '',
+        binance_name: binanceResult.data?.binance_account_name || '',
+        binance_uid: binanceResult.data?.binance_uid || '',
       },
     })
   } catch (error) {
-    console.error('GET CURRENT USER ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to fetch user',
-      error: error.message,
-    })
+    console.error('GET CURRENT USER ERROR:', String(error?.message || error).slice(0, 200))
+    return res.status(500).json({ ok: false, message: 'Failed to fetch user' })
   }
 }
 
@@ -1856,49 +1853,116 @@ export async function updateDateOfBirth(req, res) {
 export async function updatePaymentProfile(req, res) {
   try {
     const userId = req.user?.user_id
-    const paymentAccountName = String(req.body.payment_account_name || '').trim().toUpperCase()
-
     if (!userId) {
       return res.status(401).json({ ok: false, message: 'Unauthorized' })
     }
 
-    if (!paymentAccountName || paymentAccountName.length < 2) {
-      return res.status(400).json({ ok: false, message: 'Payment account name is required' })
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+      ? req.body
+      : {}
+    const hasBank = Object.prototype.hasOwnProperty.call(body, 'payment_account_name')
+    const hasBinanceName = Object.prototype.hasOwnProperty.call(body, 'binance_name')
+    const hasBinanceUid = Object.prototype.hasOwnProperty.call(body, 'binance_uid')
+
+    if (!hasBank && !hasBinanceName && !hasBinanceUid) {
+      return res.status(400).json({ ok: false, message: 'Payment profile details are required' })
+    }
+    if (hasBinanceName !== hasBinanceUid) {
+      return res.status(400).json({ ok: false, message: 'Binance Name and UID must be provided together' })
+    }
+    if ((hasBank && typeof body.payment_account_name !== 'string') ||
+        (hasBinanceName && typeof body.binance_name !== 'string') ||
+        (hasBinanceUid && typeof body.binance_uid !== 'string')) {
+      return res.status(400).json({ ok: false, message: 'Invalid payment profile field type' })
     }
 
-    if (paymentAccountName.length > 80) {
-      return res.status(400).json({ ok: false, message: 'Payment account name must be 80 characters or less' })
+    const [userResult, binanceResult] = await Promise.all([
+      supabase
+        .from('users')
+        .select('*')
+        .eq('id', userId)
+        .eq('is_active', true)
+        .maybeSingle(),
+      supabase
+        .from('reader_binance_payment_profiles')
+        .select('binance_account_name,binance_uid')
+        .eq('user_id', userId)
+        .maybeSingle(),
+    ])
+    if (userResult.error) throw userResult.error
+    if (binanceResult.error) throw binanceResult.error
+    if (!userResult.data) {
+      return res.status(404).json({ ok: false, message: 'User not found' })
     }
 
-    const { data, error } = await supabase
-      .from('users')
-      .update({
-        payment_account_name: paymentAccountName,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', userId)
-      .eq('is_active', true)
-      .select()
-      .single()
+    const bankName = hasBank
+      ? body.payment_account_name.trim().toUpperCase()
+      : String(userResult.data.payment_account_name || '')
+    const binanceName = hasBinanceName
+      ? body.binance_name.trim()
+      : String(binanceResult.data?.binance_account_name || '')
+    const binanceUid = hasBinanceUid
+      ? body.binance_uid.trim()
+      : String(binanceResult.data?.binance_uid || '')
 
-    if (error) throw error
+    if ((bankName && (bankName.length < 2 || bankName.length > 80)) ||
+        (binanceName && (binanceName.length < 2 || binanceName.length > 80))) {
+      return res.status(400).json({ ok: false, message: 'Payment account names must contain 2–80 characters' })
+    }
+    if ((binanceName && !binanceUid) || (!binanceName && binanceUid)) {
+      return res.status(400).json({ ok: false, message: 'Binance Name and UID are both required' })
+    }
+    if (binanceUid && !/^[0-9]{5,20}$/.test(binanceUid)) {
+      return res.status(400).json({ ok: false, message: 'Binance UID must contain 5–20 digits' })
+    }
+    if (!bankName && !binanceName) {
+      return res.status(400).json({ ok: false, message: 'Bank or Binance account details are required' })
+    }
+
+    if (hasBinanceName && (
+      binanceName !== String(binanceResult.data?.binance_account_name || '') ||
+      binanceUid !== String(binanceResult.data?.binance_uid || '')
+    )) {
+      const { error } = await supabase
+        .from('reader_binance_payment_profiles')
+        .upsert({
+          user_id: userId,
+          binance_account_name: binanceName,
+          binance_uid: binanceUid,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'user_id' })
+      if (error) throw error
+    }
+
+    let savedUser = userResult.data
+    if (hasBank && bankName !== String(userResult.data.payment_account_name || '')) {
+      const { data, error } = await supabase
+        .from('users')
+        .update({
+          payment_account_name: bankName,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', userId)
+        .eq('is_active', true)
+        .select()
+        .single()
+      if (error) throw error
+      savedUser = data
+    }
 
     return res.status(200).json({
       ok: true,
       message: 'Payment profile saved',
       user: {
-        ...publicUser(data),
-        payment_account_name: data.payment_account_name || '',
+        ...publicUser(savedUser),
+        payment_account_name: bankName,
+        binance_name: binanceName,
+        binance_uid: binanceUid,
       },
     })
   } catch (error) {
-    console.error('UPDATE PAYMENT PROFILE ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to save payment profile',
-      error: error.message,
-    })
+    console.error('UPDATE PAYMENT PROFILE ERROR:', String(error?.message || error).slice(0, 200))
+    return res.status(500).json({ ok: false, message: 'Failed to save payment profile' })
   }
 }
 
