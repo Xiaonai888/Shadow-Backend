@@ -1,6 +1,7 @@
 import chatConversationManagementRoutes from './chatConversationManagement.routes.js'
 import chatMessageActionsRoutes from './chatMessageActions.routes.js'
 import chatArchivedPageRoutes from './chatArchivedPage.routes.js'
+import authorStoreBookChatRoutes from './authorStoreBookChat.routes.js'
 import express from 'express'
 import { supabase } from '../config/supabase.js'
 import {
@@ -59,6 +60,7 @@ const chatPresenceRateLimit =
       req.user?.user_id,
   })
 
+router.use(authorStoreBookChatRoutes)
 router.use(requireUser)
 router.use(chatArchivedPageRoutes)
 router.use(chatConversationManagementRoutes)
