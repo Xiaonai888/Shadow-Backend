@@ -18,7 +18,7 @@ const GOALS = {
   product: new Set(['sales', 'followers']),
 }
 const CAMPAIGN_RETURN_COLUMNS = [
-  'id', 'campaign_kind', 'content_type', 'content_id',
+  'id', 'owner_user_id', 'campaign_kind', 'content_type', 'content_id',
   'content_title', 'content_image_url', 'goal', 'audience_mode',
   'audience_filters', 'placements', 'budget_cents', 'funded_cents',
   'spent_cents', 'refunded_cents', 'duration_days', 'status',
@@ -207,7 +207,73 @@ async function getOwnedCampaign(id, page, userId) {
   return data
 }
 
-function publicCampaign(row) {
+function campaignAmounts(row) {
+  const amounts = [row.budget_cents, row.funded_cents, row.spent_cents, row.refunded_cents].map(Number)
+  if (!amounts.every(value => Number.isSafeInteger(value) && value >= 0) || amounts[0] < 100) {
+    throw apiError(503, 'INVALID_AUTHOR_AD_FUNDING', 'Campaign funding data is invalid')
+  }
+  return amounts
+}
+
+function campaignPayment(row, funding = null) {
+  const [budget, fundedUsd, spentUsd, refundedUsd] = campaignAmounts(row)
+  if (funding) {
+    const diamonds = [funding.funded_diamonds, funding.spent_diamonds, funding.refunded_diamonds].map(Number)
+    if (!diamonds.every(value => Number.isSafeInteger(value) && value >= 0)
+      || funding.campaign_id !== row.id
+      || funding.owner_user_id !== row.owner_user_id
+      || diamonds[0] !== budget
+      || diamonds[1] + diamonds[2] > diamonds[0]
+      || fundedUsd !== 0 || spentUsd !== 0 || refundedUsd !== 0) {
+      throw apiError(503, 'INVALID_AUTHOR_AD_DIAMOND_FUNDING', 'Campaign Diamonds funding needs review')
+    }
+    return {
+      paymentRequired: false,
+      paymentStatus: 'paid',
+      fundingType: 'diamonds',
+      budgetDiamonds: budget,
+      fundedDiamonds: diamonds[0],
+      spentDiamonds: diamonds[1],
+      refundedDiamonds: diamonds[2],
+      remainingDiamonds: diamonds[0] - diamonds[1] - diamonds[2],
+    }
+  }
+
+  const usdPaid = fundedUsd - refundedUsd >= budget
+  if (['active', 'paused', 'scheduled'].includes(row.status) && !usdPaid) {
+    throw apiError(503, 'AUTHOR_AD_FUNDING_UNVERIFIED', 'Active Boost funding could not be verified')
+  }
+  return {
+    paymentRequired: !usdPaid,
+    paymentStatus: usdPaid ? 'paid' : 'unpaid',
+    fundingType: fundedUsd > 0 ? 'usd' : 'unfunded',
+    budgetDiamonds: budget,
+    fundedDiamonds: 0,
+    spentDiamonds: 0,
+    refundedDiamonds: 0,
+    remainingDiamonds: 0,
+  }
+}
+
+async function loadCampaignFunding(campaigns) {
+  const ids = [...new Set(campaigns.map(item => item.id).filter(Boolean))]
+  if (!ids.length) return new Map()
+  const { data, error } = await supabase.from('author_ad_diamond_funding')
+    .select('campaign_id,owner_user_id,funded_diamonds,spent_diamonds,refunded_diamonds')
+    .in('campaign_id', ids)
+  if (error) throw error
+  const funding = new Map()
+  for (const row of data || []) {
+    if (funding.has(row.campaign_id)) {
+      throw apiError(503, 'INVALID_AUTHOR_AD_DIAMOND_FUNDING', 'Duplicate campaign funding data')
+    }
+    funding.set(row.campaign_id, row)
+  }
+  return funding
+}
+
+function publicCampaign(row, funding = null) {
+  const payment = campaignPayment(row, funding)
   return {
     id: row.id,
     kind: row.campaign_kind,
@@ -224,6 +290,7 @@ function publicCampaign(row) {
       country: row.audience_filters?.country || '',
     },
     placements: row.placements,
+    ...payment,
     budgetUsd: Number(row.budget_cents) / 100,
     fundedUsd: Number(row.funded_cents) / 100,
     spentUsd: Number(row.spent_cents) / 100,
@@ -299,9 +366,10 @@ export async function listMyAuthorAdCampaigns(req, res) {
     if (status && status !== 'all') query = query.eq('status', status)
     const { data, count, error } = await query
     if (error) throw error
+    const funding = await loadCampaignFunding(data || [])
     return res.json({
       ok: true,
-      campaigns: (data || []).map(publicCampaign),
+      campaigns: (data || []).map(row => publicCampaign(row, funding.get(row.id))),
       total: Number(count || 0),
       page: requestedPage,
       limit: requestedLimit,
@@ -316,7 +384,8 @@ export async function getMyAuthorAdCampaign(req, res) {
     const page = await getOwnedAuthorPage(userId)
     const id = requireUuid(req.params.campaignId, 'campaign ID')
     const campaign = await getOwnedCampaign(id, page, userId)
-    return res.json({ ok: true, campaign: publicCampaign(campaign) })
+    const funding = await loadCampaignFunding([campaign])
+    return res.json({ ok: true, campaign: publicCampaign(campaign, funding.get(campaign.id)) })
   })
 }
 
@@ -464,11 +533,13 @@ export async function transitionMyAuthorAdCampaign(req, res) {
     if (error) throw error
     if (!data) throw apiError(404, 'CAMPAIGN_NOT_FOUND', 'Campaign not found')
 
+    const funding = await loadCampaignFunding([data])
+    const campaign = publicCampaign(data, funding.get(data.id))
     return res.json({
       ok: true,
       changed: transition.changed,
-      campaign: publicCampaign(data),
-      payment_required: Number(data.funded_cents) - Number(data.refunded_cents) < Number(data.budget_cents),
+      campaign,
+      payment_required: campaign.paymentRequired,
       delivery_active: data.status === 'active',
     })
   })
