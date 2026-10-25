@@ -54,16 +54,37 @@ BEGIN
 
   SELECT f.* INTO v_funding
   FROM public.author_ad_diamond_funding AS f
-  WHERE f.campaign_id = p_campaign_id;
+  WHERE f.campaign_id = p_campaign_id
+  FOR UPDATE;
 
   IF FOUND THEN
-    SELECT COALESCE(w.diamond_balance, 0)::bigint INTO v_wallet_after
+    IF v_funding.owner_user_id IS DISTINCT FROM v_campaign.owner_user_id
+      OR v_funding.funded_diamonds IS DISTINCT FROM v_campaign.budget_cents
+      OR v_funding.funded_diamonds NOT BETWEEN 100 AND 1000000
+      OR v_funding.spent_diamonds < 0
+      OR v_funding.refunded_diamonds < 0
+      OR v_funding.spent_diamonds + v_funding.refunded_diamonds > v_funding.funded_diamonds
+      OR v_campaign.currency <> 'USD'
+      OR v_campaign.funded_cents <> 0
+      OR v_campaign.spent_cents <> 0
+      OR v_campaign.refunded_cents <> 0
+    THEN
+      RAISE EXCEPTION 'Existing Boost Diamonds funding ledger is invalid'
+        USING ERRCODE = 'P0001';
+    END IF;
+
+    SELECT w.diamond_balance::bigint INTO v_wallet_after
     FROM public.user_wallets AS w
     WHERE w.user_id = p_owner_user_id;
 
+    IF NOT FOUND OR v_wallet_after IS NULL OR v_wallet_after < 0 THEN
+      RAISE EXCEPTION 'Reader Diamonds wallet is unavailable'
+        USING ERRCODE = 'P0002';
+    END IF;
+
     RETURN QUERY SELECT
       false, v_funding.campaign_id, v_funding.funded_diamonds,
-      COALESCE(v_wallet_after, 0::bigint);
+      v_wallet_after;
     RETURN;
   END IF;
 
@@ -74,6 +95,8 @@ BEGIN
     OR v_campaign.funded_cents <> 0
     OR v_campaign.spent_cents <> 0
     OR v_campaign.refunded_cents <> 0
+    OR v_campaign.start_at IS NOT NULL
+    OR v_campaign.end_at IS NOT NULL
   THEN
     RAISE EXCEPTION 'Author ad campaign is not eligible for Diamonds funding'
       USING ERRCODE = 'P0001';
