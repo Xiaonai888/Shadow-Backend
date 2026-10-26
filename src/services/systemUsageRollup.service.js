@@ -7,6 +7,7 @@ const HOURLY_RETENTION_MS = 30 * DAY_MS
 const PAGE_SIZE = 1000
 const UPSERT_BATCH = 250
 const MAX_TOP_ROWS = 100
+const MAX_SUMMARY_ROWS = 30
 
 function safeNumber(value) {
   const number = Number(value)
@@ -141,6 +142,79 @@ function serializeDetailRows(map) {
         b.count - a.count
     )
     .slice(0, MAX_TOP_ROWS)
+}
+
+function mergeSummaryRows(target, rows = []) {
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue
+    const kind = String(row.kind || 'unknown')
+    const feature = String(row.feature || 'unknown')
+    const dependency = String(row.dependency || 'UNKNOWN')
+    const key = `${kind}\u001f${feature}\u001f${dependency}`
+    const item = target.get(key) || {
+      kind,
+      feature,
+      dependency,
+      count: 0,
+      bytes: 0,
+      errors: 0,
+    }
+    item.count += safeNumber(row.count)
+    item.bytes += safeNumber(row.bytes)
+    item.errors += safeNumber(row.errors)
+    target.set(key, item)
+  }
+}
+
+function sourceSummaryRows(row) {
+  const payload = row?.payload || {}
+  if (Array.isArray(payload.summary_rows)) {
+    return { rows: payload.summary_rows, legacy: false }
+  }
+
+  const detail = Array.isArray(payload.top_rows) ? payload.top_rows : []
+  const observed = detail.reduce((sum, item) => ({
+    count: sum.count + safeNumber(item.count),
+    bytes: sum.bytes + safeNumber(item.bytes),
+    errors: sum.errors + safeNumber(item.errors),
+  }), { count: 0, bytes: 0, errors: 0 })
+
+  return {
+    legacy: true,
+    rows: [
+      ...detail,
+      {
+        kind: 'unclassified',
+        feature: 'OTHER',
+        dependency: 'UNKNOWN',
+        count: Math.max(0, safeNumber(row.request_count) - observed.count),
+        bytes: Math.max(0, safeNumber(row.bytes) - observed.bytes),
+        errors: Math.max(0, safeNumber(row.errors) - observed.errors),
+      },
+    ],
+  }
+}
+
+function serializeSummaryRows(map, totals) {
+  const classified = [...map.values()]
+    .filter((row) => row.kind !== 'unclassified')
+    .sort((a, b) => b.count - a.count || b.bytes - a.bytes)
+  const selected = classified.slice(0, MAX_SUMMARY_ROWS)
+  const included = selected.reduce((sum, row) => ({
+    count: sum.count + row.count,
+    bytes: sum.bytes + row.bytes,
+    errors: sum.errors + row.errors,
+  }), { count: 0, bytes: 0, errors: 0 })
+  const other = {
+    kind: 'unclassified',
+    feature: 'OTHER',
+    dependency: 'UNKNOWN',
+    count: Math.max(0, totals.count - included.count),
+    bytes: Math.max(0, totals.bytes - included.bytes),
+    errors: Math.max(0, totals.errors - included.errors),
+  }
+  if (other.count || other.bytes || other.errors) selected.push(other)
+  return selected
 }
 
 async function loadEligibleRows({
@@ -346,6 +420,8 @@ function groupSourceRows(
         errors: 0,
         source_rows: 0,
         details: new Map(),
+        summaries: new Map(),
+        legacy_summary_windows: 0,
       }
 
     current.request_count +=
@@ -376,6 +452,10 @@ function groupSourceRows(
       row?.payload
         ?.top_rows || []
     )
+    const sourceSummary = sourceSummaryRows(row)
+    mergeSummaryRows(current.summaries, sourceSummary.rows)
+    current.legacy_summary_windows += safeNumber(row?.payload?.summary_legacy_windows) +
+      (sourceSummary.legacy ? (sourceType === 'snapshot' ? 1 : Math.max(1, safeNumber(row.source_rows))) : 0)
 
     groups.set(
       key,
@@ -400,13 +480,20 @@ function groupSourceRows(
       source_rows:
         group.source_rows,
       payload: {
-        version: 2,
+        version: 3,
         granularity:
           group.granularity,
         top_rows:
           serializeDetailRows(
             group.details
           ),
+        summary_rows: serializeSummaryRows(group.summaries, {
+          count: group.request_count,
+          bytes: group.bytes,
+          errors: group.errors,
+        }),
+        summary_legacy_windows: group.legacy_summary_windows,
+        summary_limit: MAX_SUMMARY_ROWS,
       },
     }))
     .sort(
