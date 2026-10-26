@@ -13,6 +13,12 @@ import {
   setReaderProfileFrameSelection,
   updateAdminProfileFrame,
 } from '../controllers/profileFrames.controller.js'
+import {
+  createAdminProfileFrameFolder,
+  deleteAdminProfileFrameFolder,
+  listAdminProfileFrameFolders,
+  updateAdminProfileFrameFolder,
+} from '../controllers/profileFrameFolders.controller.js'
 
 export const adminProfileFramesRouter = express.Router()
 export const readerProfileFramesRouter = express.Router()
@@ -114,6 +120,38 @@ function optionalReaderSession(req, res, next) {
   if (!req.headers.authorization) return next()
   return requireUser(req, res, next)
 }
+
+adminProfileFramesRouter.get(
+  '/folders',
+  adminReadIp,
+  requireAdminPermission('media_library.view'),
+  adminReadAccount,
+  listAdminProfileFrameFolders
+)
+
+adminProfileFramesRouter.post(
+  '/folders',
+  adminWriteIp,
+  requireAdminPermission('media_library.manage'),
+  adminWriteAccount,
+  createAdminProfileFrameFolder
+)
+
+adminProfileFramesRouter.patch(
+  '/folders/:folderId',
+  adminWriteIp,
+  requireAdminPermission('media_library.manage'),
+  adminWriteAccount,
+  updateAdminProfileFrameFolder
+)
+
+adminProfileFramesRouter.delete(
+  '/folders/:folderId',
+  adminWriteIp,
+  requireAdminPermission('media_library.manage'),
+  adminWriteAccount,
+  deleteAdminProfileFrameFolder
+)
 
 adminProfileFramesRouter.get(
   '/',
