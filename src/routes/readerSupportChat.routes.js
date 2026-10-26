@@ -39,9 +39,26 @@ function unavailable(res, error) {
   return problem(res, 503, 'READER_SUPPORT_UNAVAILABLE', 'Support chat is temporarily unavailable')
 }
 
+function actionError(res, error) {
+  const detail = String(error?.message || '').toLowerCase()
+  if (detail.includes('archived')) {
+    return problem(res, 409, 'READER_SUPPORT_ARCHIVED', 'This support chat is archived')
+  }
+  if (detail.includes('not found')) {
+    return problem(res, 404, 'READER_SUPPORT_MESSAGE_NOT_FOUND', 'Support message not found')
+  }
+  if (detail.includes('deleted')) {
+    return problem(res, 409, 'READER_SUPPORT_MESSAGE_DELETED', 'This message was deleted')
+  }
+  if (detail.includes('invalid') || detail.includes('1–2000') || detail.includes('1-2000') || detail.includes('already')) {
+    return problem(res, 400, 'READER_SUPPORT_INVALID_ACTION', 'Invalid message action')
+  }
+  return unavailable(res, error)
+}
+
 async function getOwnConversation(userId) {
   const result = await supabase.from('admin_support_conversations')
-    .select('id, reader_user_id, status, last_message_at, last_message_preview, unread_for_reader, created_at')
+    .select('id, reader_user_id, status, last_message_at, last_message_preview, unread_for_reader, created_at, updated_at')
     .eq('reader_user_id', userId).maybeSingle()
   if (result.error) throw result.error
   return result.data
@@ -66,14 +83,16 @@ router.get('/mine/messages', preAuthLimit, requireUser, readLimit, async (req, r
     const conversation = await getOwnConversation(req.user.user_id)
     if (!conversation) return res.json({ ok: true, messages: [], limit: 20, has_more: false, next_before: null })
     let query = supabase.from('admin_support_messages')
-      .select('id, sender_kind, public_support_id, message_text, attachments, seen_at, created_at')
+      .select('id, sender_kind, public_support_id, message_text, attachments, seen_at, created_at, edited_at, deleted_at, reply_to_message_id')
       .eq('conversation_id', conversation.id)
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
     if (before) query = query.lt('created_at', new Date(before).toISOString())
     const { data, error } = await query.limit(21)
     if (error) throw error
-    const page = (data || []).slice(0, 20)
+    const page = (data || []).slice(0, 20).map(message => message.deleted_at
+      ? { ...message, message_text: null, attachments: [] }
+      : message)
     res.set('Cache-Control', 'no-store')
     return res.json({
       ok: true,
@@ -115,6 +134,75 @@ router.post('/mine/messages', preAuthLimit, requireUser, writeLimit, async (req,
     }
     res.set('Cache-Control', 'no-store')
     return res.status(data?.created ? 201 : 200).json(data)
+  } catch (error) {
+    return unavailable(res, error)
+  }
+})
+
+router.post('/mine/messages/:messageId/reply', preAuthLimit, requireUser, writeLimit, async (req, res) => {
+  const messageId = req.params.messageId
+  const message = req.body?.message
+  const requestId = req.body?.request_id || randomUUID()
+  if (!UUID.test(String(messageId)) || !UUID.test(String(requestId))) {
+    return problem(res, 400, 'READER_SUPPORT_BAD_REQUEST_ID', 'Invalid message ID')
+  }
+  if (typeof message !== 'string' || message.trim().length < 1 || message.trim().length > 2000) {
+    return problem(res, 400, 'READER_SUPPORT_BAD_MESSAGE', 'Message must contain 1–2000 characters')
+  }
+  try {
+    const { data, error } = await supabase.rpc('admin_support_reader_reply_v1', {
+      p_reader_user_id: req.user.user_id,
+      p_message_text: message.trim(),
+      p_message_id: requestId,
+      p_reply_to_message_id: messageId,
+    })
+    if (error) return actionError(res, error)
+    res.set('Cache-Control', 'no-store')
+    return res.status(data?.created ? 201 : 200).json(data)
+  } catch (error) {
+    return unavailable(res, error)
+  }
+})
+
+router.patch('/mine/messages/:messageId', preAuthLimit, requireUser, writeLimit, async (req, res) => {
+  const messageId = req.params.messageId
+  const message = req.body?.message
+  if (!UUID.test(String(messageId))) {
+    return problem(res, 400, 'READER_SUPPORT_BAD_MESSAGE_ID', 'Invalid message ID')
+  }
+  if (typeof message !== 'string' || message.trim().length < 1 || message.trim().length > 2000) {
+    return problem(res, 400, 'READER_SUPPORT_BAD_MESSAGE', 'Message must contain 1–2000 characters')
+  }
+  try {
+    const { data, error } = await supabase.rpc('admin_support_reader_message_action_v1', {
+      p_reader_user_id: req.user.user_id,
+      p_message_id: messageId,
+      p_action: 'edit',
+      p_message_text: message.trim(),
+    })
+    if (error) return actionError(res, error)
+    res.set('Cache-Control', 'no-store')
+    return res.json(data)
+  } catch (error) {
+    return unavailable(res, error)
+  }
+})
+
+router.delete('/mine/messages/:messageId', preAuthLimit, requireUser, writeLimit, async (req, res) => {
+  const messageId = req.params.messageId
+  if (!UUID.test(String(messageId))) {
+    return problem(res, 400, 'READER_SUPPORT_BAD_MESSAGE_ID', 'Invalid message ID')
+  }
+  try {
+    const { data, error } = await supabase.rpc('admin_support_reader_message_action_v1', {
+      p_reader_user_id: req.user.user_id,
+      p_message_id: messageId,
+      p_action: 'delete',
+      p_message_text: null,
+    })
+    if (error) return actionError(res, error)
+    res.set('Cache-Control', 'no-store')
+    return res.json(data)
   } catch (error) {
     return unavailable(res, error)
   }
