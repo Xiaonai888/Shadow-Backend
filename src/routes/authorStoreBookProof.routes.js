@@ -1,6 +1,7 @@
 import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
+import path from 'node:path'
 import { unlink } from 'node:fs/promises'
 import { requireUser } from '../middleware/user.middleware.js'
 import {
@@ -27,10 +28,12 @@ function uploadOne(req, res, next) {
     if (!req.file) return res.status(400).json({ ok: false, message: 'JPEG, PNG or WebP shipping proof is required' })
     let removed = false
     const cleanup = () => {
-      if (removed) return
-      removed = true
-      unlink(req.file.path).catch(() => {})
-    }
+  if (removed) return
+  removed = true
+  const filename = String(req.file.filename || '')
+  if (!/^[0-9a-f]{32}$/i.test(filename)) return
+  unlink(path.join(os.tmpdir(), filename)).catch(() => {})
+}
     res.once('finish', cleanup)
     res.once('close', cleanup)
     next()
