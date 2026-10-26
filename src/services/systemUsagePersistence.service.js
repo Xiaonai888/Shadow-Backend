@@ -22,6 +22,7 @@ const RETENTION_RETRY_MS = HOUR_MS
 const HISTORY_MAX_RANGE_MS = 31 * DAY_MS
 const HISTORY_PAGE_SIZE = 1000
 const MAX_DETAIL_ROWS = 100
+const MAX_SUMMARY_ROWS = 30
 const MAX_ERROR_EVIDENCE_ROWS = 250
 
 let startTimer = null
@@ -132,6 +133,164 @@ function serializeRows(map) {
     }))
     .sort((a, b) => b.count - a.count || b.bytes - a.bytes)
     .slice(0, MAX_DETAIL_ROWS)
+}
+
+function compactUsageSummary(groups, totals) {
+  const summary = new Map()
+  let observedCount = 0
+  let observedBytes = 0
+  let observedErrors = 0
+
+  for (const row of groups) {
+    const kind = String(row.kind || 'unknown')
+    const feature = String(row.feature || 'unknown')
+    const dependency = String(row.dependency || 'UNKNOWN')
+    const key = `${kind}\u001f${feature}\u001f${dependency}`
+    const current = summary.get(key) || {
+      kind,
+      feature,
+      dependency,
+      count: 0,
+      bytes: 0,
+      errors: 0,
+    }
+    const count = safeNumber(row.count)
+    const bytes = safeNumber(row.bytes)
+    const errors = safeNumber(row.errors)
+    current.count += count
+    current.bytes += bytes
+    current.errors += errors
+    observedCount += count
+    observedBytes += bytes
+    observedErrors += errors
+    summary.set(key, current)
+  }
+
+  const ranked = [...summary.values()]
+    .filter((row) => row.kind !== 'unclassified')
+    .sort((a, b) => b.count - a.count || b.bytes - a.bytes)
+  const selected = ranked.slice(0, MAX_SUMMARY_ROWS)
+  const covered = selected.reduce((sum, row) => ({
+    count: sum.count + row.count,
+    bytes: sum.bytes + row.bytes,
+    errors: sum.errors + row.errors,
+  }), { count: 0, bytes: 0, errors: 0 })
+  const unclassified = {
+    kind: 'unclassified',
+    feature: 'OTHER',
+    dependency: 'UNKNOWN',
+    count: Math.max(0, safeNumber(totals.count) - covered.count),
+    bytes: Math.max(0, safeNumber(totals.bytes) - covered.bytes),
+    errors: Math.max(0, safeNumber(totals.errors) - covered.errors),
+  }
+  if (unclassified.count || unclassified.bytes || unclassified.errors) {
+    selected.push(unclassified)
+  }
+
+  return {
+    rows: selected,
+    detail_capped: ranked.length > MAX_SUMMARY_ROWS ||
+      observedCount < safeNumber(totals.count) ||
+      observedBytes < safeNumber(totals.bytes),
+    source_row_groups: ranked.length,
+    raw_unclassified_events: Math.max(0, safeNumber(totals.count) - observedCount),
+    classified_events: Math.min(observedCount, safeNumber(totals.count)),
+    classified_bytes: Math.min(observedBytes, safeNumber(totals.bytes)),
+    classified_errors: Math.min(observedErrors, safeNumber(totals.errors)),
+  }
+}
+
+function summarizeUsageMinutes(minutes) {
+  const rows = []
+  for (const minute of minutes) {
+    rows.push(...(minute.rows || []))
+  }
+  return compactUsageSummary(rows, summarizeMinutes(minutes))
+}
+
+function summarizeUsageHistory(persisted, liveMinutes, totals) {
+  const groups = []
+  let legacyWindows = 0
+  for (const window of persisted) {
+    if (Array.isArray(window.payload?.summary_rows)) {
+      groups.push(...window.payload.summary_rows)
+    } else {
+      legacyWindows += 1
+      groups.push(...(window.payload?.top_rows || []))
+      const listed = (window.payload?.top_rows || []).reduce(
+        (sum, row) => ({
+          count: sum.count + safeNumber(row.count),
+          bytes: sum.bytes + safeNumber(row.bytes),
+          errors: sum.errors + safeNumber(row.errors),
+        }), { count: 0, bytes: 0, errors: 0 }
+      )
+      groups.push({
+        kind: 'unclassified',
+        feature: 'OTHER',
+        dependency: 'UNKNOWN',
+        count: Math.max(0, safeNumber(window.request_count) - listed.count),
+        bytes: Math.max(0, safeNumber(window.bytes) - listed.bytes),
+        errors: Math.max(0, safeNumber(window.errors) - listed.errors),
+      })
+    }
+  }
+  for (const minute of liveMinutes) {
+    const usage = summarizeUsageMinutes([minute])
+    groups.push(...usage.rows)
+  }
+  const summarized = compactUsageSummary(groups, totals)
+  const tracked = summarized.rows.filter((row) => row.kind !== 'unclassified')
+  const http = tracked.filter((row) => row.kind === 'http_response')
+    .reduce((sum, row) => sum + row.count, 0)
+  const external = tracked.filter((row) => row.kind === 'external_request')
+    .reduce((sum, row) => sum + row.count, 0)
+  const supabaseCalls = tracked.filter(
+    (row) => row.kind === 'external_request' && row.dependency === 'SUPABASE'
+  ).reduce((sum, row) => sum + row.count, 0)
+  return {
+    measurement: 'backend_measured_events_not_provider_billing',
+    complete_detail: !summarized.detail_capped && legacyWindows === 0,
+    legacy_windows: legacyWindows,
+    source_row_groups: summarized.source_row_groups,
+    totals: {
+      events: safeNumber(totals.count),
+      http_responses_observed: http,
+      external_calls_observed: external,
+      supabase_calls_observed: supabaseCalls,
+      unclassified_events: Math.max(0, safeNumber(totals.count) - http - external),
+    },
+    rows: summarized.rows,
+  }
+}
+
+function compactHistorySeries(series, rangeMs) {
+  const bucketMs = rangeMs > DAY_MS
+    ? DAY_MS
+    : rangeMs > 6 * HOUR_MS
+      ? HOUR_MS
+      : 0
+  if (!bucketMs) return series
+  const groups = new Map()
+  for (const item of series) {
+    const started = Date.parse(item.started_at || '')
+    if (!Number.isFinite(started)) continue
+    const start = Math.floor(started / bucketMs) * bucketMs
+    const current = groups.get(start) || {
+      started_at: new Date(start).toISOString(),
+      ended_at: new Date(start + bucketMs).toISOString(),
+      count: 0,
+      bytes: 0,
+      errors: 0,
+      source: bucketMs === DAY_MS ? 'daily_summary' : 'hourly_summary',
+    }
+    current.count += safeNumber(item.count)
+    current.bytes += safeNumber(item.bytes)
+    current.errors += safeNumber(item.errors)
+    groups.set(start, current)
+  }
+  return [...groups.values()]
+    .sort((a, b) => a.started_at.localeCompare(b.started_at))
+    .map((row) => ({ ...row, mb: toMb(row.bytes) }))
 }
 
 function aggregateRows(minutes) {
@@ -246,6 +405,7 @@ function buildSnapshot(now = Date.now()) {
       })(),
       monitor: source.monitor,
       top_rows: aggregateRows(minutes),
+      summary_rows: summarizeUsageMinutes(minutes).rows,
       provider_reconciliation:
         cloneProviderState(),
     },
@@ -2072,13 +2232,33 @@ function buildPageRequestHistory(stored, fromMs, toMs) {
   }
 
   const rank = (a, b) => b.observed_supabase_rows - a.observed_supabase_rows || b.supabase_calls - a.supabase_calls || b.requests - a.requests
-  const finish = (map, limit) => [...map.values()]
+  const finish = (map, limit, label) => {
+    const ranked = [...map.values()]
     .map(({ duration_weight, ...row }) => ({
       ...row,
       average_duration_ms: row.requests ? Math.round(duration_weight / row.requests) : 0,
     }))
     .sort(rank)
-    .slice(0, limit)
+    const selected = ranked.slice(0, limit)
+    const listed = selected.reduce((sum, row) => {
+      for (const name of metrics) sum[name] += safeNumber(row[name])
+      return sum
+    }, Object.fromEntries(metrics.map((name) => [name, 0])))
+    const other = Object.fromEntries(
+      metrics.map((name) => [name, Math.max(0, totals[name] - listed[name])])
+    )
+    if (Object.values(other).some((value) => value > 0)) {
+      selected.push({
+        page: 'OTHER',
+        ...(label === 'routes' ? { route: 'OTHER ROUTES' } : {}),
+        ...other,
+        duration_max_ms: 0,
+        average_duration_ms: null,
+        last_seen_at: null,
+      })
+    }
+    return selected
+  }
 
   return {
     measurement: 'client_reported_page_and_supabase_content_range_rows',
@@ -2091,8 +2271,8 @@ function buildPageRequestHistory(stored, fromMs, toMs) {
     partial: storedWindows * SNAPSHOT_MS < toMs - fromMs,
     detail_capped_per_snapshot: true,
     totals,
-    pages: finish(pageMap, 80),
-    routes: finish(routeMap, 120),
+    pages: finish(pageMap, 80, 'pages'),
+    routes: finish(routeMap, 120, 'routes'),
   }
 }
 
@@ -2311,8 +2491,33 @@ export async function getSystemUsageHistory({
       ).getTime()
   )
 
-  const rows =
-    serializeRows(rowMap)
+  const rows = serializeRows(rowMap)
+  const listed = rows.reduce((sum, row) => ({
+    count: sum.count + safeNumber(row.count),
+    bytes: sum.bytes + safeNumber(row.bytes),
+    errors: sum.errors + safeNumber(row.errors),
+  }), { count: 0, bytes: 0, errors: 0 })
+  const unclassified = {
+    count: Math.max(0, totals.count - listed.count),
+    bytes: Math.max(0, totals.bytes - listed.bytes),
+    errors: Math.max(0, totals.errors - listed.errors),
+  }
+  if (unclassified.count || unclassified.bytes || unclassified.errors) {
+    rows.push({
+      kind: 'unclassified',
+      feature: 'OTHER',
+      source_route: 'OTHER / UNLISTED',
+      source_method: 'UNKNOWN',
+      source_path: 'OTHER',
+      dependency: 'UNKNOWN',
+      operation_method: 'UNKNOWN',
+      target_path: 'OTHER',
+      ...unclassified,
+      mb: toMb(unclassified.bytes),
+      avg_ms: 0,
+    })
+  }
+  const usageSummary = summarizeUsageHistory(persisted, liveMinutes, totals)
 
   const availableStart =
     series.length
@@ -2388,6 +2593,11 @@ export async function getSystemUsageHistory({
             MINUTE_MS
           ).toFixed(2)
         ),
+      series_granularity: toMs - fromMs > DAY_MS
+        ? 'day'
+        : toMs - fromMs > 6 * HOUR_MS
+          ? 'hour'
+          : 'original',
       stored_granularity_minutes:
         15,
       live_granularity_minutes:
@@ -2408,8 +2618,9 @@ export async function getSystemUsageHistory({
       mb: toMb(totals.bytes),
       errors: totals.errors,
     },
-        rows,
-    series,
+    rows,
+    series: compactHistorySeries(series, toMs - fromMs),
+    usage_summary: usageSummary,
     page_requests: buildPageRequestHistory(stored, fromMs, toMs),
   }
 }
