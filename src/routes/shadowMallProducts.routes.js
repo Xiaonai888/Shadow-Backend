@@ -6,6 +6,7 @@ import { unlink } from 'node:fs/promises'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireShadowMallPhysicalBookCountry } from '../middleware/shadowMallPhysicalBookGuard.middleware.js'
+import { isReaderClassificationCountryPolicyEnabled } from '../services/readerClassificationCountrySource.service.js'
 import {
   createShadowMallProduct,
   deleteShadowMallProduct,
@@ -400,7 +401,7 @@ router.post(
   '/orders/create-payment',
   requireUser,
   (req, res, next) =>
-    process.env.SHADOW_PHYSICAL_BOOKS_COUNTRY_ENFORCE === 'true'
+    isReaderClassificationCountryPolicyEnabled()
       ? requireShadowMallPhysicalBookCountry(req, res, next)
       : next(),
   createShadowMallOrderPayment
