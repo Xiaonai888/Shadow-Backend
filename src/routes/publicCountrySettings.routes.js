@@ -3,6 +3,7 @@ import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { createPaymentCountryTicket } from '../middleware/paymentCountryGate.middleware.js'
+import { isReaderClassificationCountryPolicyEnabled, readReaderClassificationCountry } from '../services/readerClassificationCountrySource.service.js'
 
 const router = express.Router()
 const TTL = 45000
@@ -94,16 +95,9 @@ function optionalReader(req, res, next) {
 }
 
 async function getSavedCountry(userId) {
-  if (!userId) return null
-  const { data, error } = await supabase.from('reader_presence')
-    .select('first_country_code,last_country_code,country_last_seen_at')
-    .eq('user_id', userId)
-    .not('last_country_code', 'is', null)
-    .order('country_last_seen_at', { ascending: false, nullsFirst: false })
-    .limit(1)
-    .maybeSingle()
-  if (error) throw error
-  return validCountry(data?.last_country_code) || validCountry(data?.first_country_code)
+  if (!userId || !isReaderClassificationCountryPolicyEnabled()) return null
+  const result = await readReaderClassificationCountry(userId)
+  return result?.verified === true ? validCountry(result.country) : null
 }
 
 async function getException(userId) {
@@ -115,23 +109,45 @@ async function getException(userId) {
   return data
 }
 
-function resolveRules(rules, region, countryAvailable, exception) {
+function resolveRules(rules, region, countryAvailable, exception, policyEnabled) {
+  if (!policyEnabled) {
+    return {
+      ...rules.kh,
+      app: true,
+      physicalBooks: true,
+      shadowMall: true,
+      readerMall: true,
+      payway: true,
+      binancePay: true,
+      shopTarget: 'shadow_mall',
+    }
+  }
+  if (!countryAvailable) {
+    return {
+      ...rules.international,
+      app: true,
+      physicalBooks: false,
+      shadowMall: false,
+      readerMall: false,
+      payway: false,
+      binancePay: false,
+      shopTarget: 'diamonds',
+    }
+  }
   const baseline = exception?.mode === 'cambodia_experience' ? 'kh' : region
   const effective = { ...rules[baseline === 'kh' ? 'kh' : 'international'] }
-  const regionRule = countryAvailable ? rules[region] : null
-  effective.app = true
-  effective.physicalBooks = true
-  effective.shadowMall = true
-  effective.readerMall = true
-  effective.shopTarget = 'shadow_mall'
-  effective.payway = Boolean(regionRule?.payway === true)
-  effective.binancePay = Boolean(regionRule?.binancePay === true)
+  if (exception?.mode === 'all_eligible') effective.app = true
   if (exception?.mode === 'custom' && exception.overrides && typeof exception.overrides === 'object') {
     for (const key of FLAGS) {
+      if (exception.overrides[key] === 'allow') effective[key] = true
       if (exception.overrides[key] === 'block') effective[key] = false
     }
     if (LANGUAGES.has(exception.overrides.storyLanguage)) effective.storyLanguage = exception.overrides.storyLanguage
+    if (TARGETS.has(exception.overrides.shopTarget)) effective.shopTarget = exception.overrides.shopTarget
   }
+  effective.physicalBooks = Boolean(region === 'kh' && rules.kh.physicalBooks && effective.physicalBooks)
+  effective.payway = Boolean(rules[region]?.payway && effective.payway)
+  effective.binancePay = Boolean(rules[region]?.binancePay && effective.binancePay)
   return effective
 }
 
@@ -146,10 +162,11 @@ router.get('/', optionalReader, async (req, res) => {
   res.set('Cache-Control', 'private, no-store')
   res.set('Vary', 'Authorization')
   const userId = req.user?.user_id || null
+  const sourceReady = isReaderClassificationCountryPolicyEnabled()
   const [savedCountry, settingsResult, exceptionResult] = await Promise.allSettled([
-    getSavedCountry(userId),
+    sourceReady ? getSavedCountry(userId) : Promise.resolve(null),
     getRules(),
-    getException(userId),
+    sourceReady ? getException(userId) : Promise.resolve(null),
   ])
   const country = savedCountry.status === 'fulfilled' ? savedCountry.value : null
   const region = country === null ? 'unknown' : country === 'KH' ? 'kh' : 'international'
@@ -157,8 +174,9 @@ router.get('/', optionalReader, async (req, res) => {
     ? settingsResult.value
     : { rules: FALLBACK_RULES, revision: 0, ready: false }
   const exception = exceptionResult.status === 'fulfilled' ? exceptionResult.value : null
-  const effective = resolveRules(settings.rules, region, Boolean(country) && settings.ready, exception)
-  const canCreateTicket = Boolean(country && settings.ready && userId && req.user?.session_id)
+  const policyEnabled = Boolean(sourceReady && settings.ready)
+  const effective = resolveRules(settings.rules, region, Boolean(country), exception, policyEnabled)
+  const canCreateTicket = Boolean(policyEnabled && country && userId && req.user?.session_id)
   if (settingsResult.status === 'rejected') {
     console.error('PUBLIC COUNTRY RULES ERROR:', settingsResult.reason)
   }
@@ -173,6 +191,8 @@ router.get('/', optionalReader, async (req, res) => {
     country: country || 'unknown',
     region,
     countryVerified: Boolean(country),
+    countryPolicyEnabled: policyEnabled,
+    countrySource: 'reader_classification',
     effective,
     hasException: Boolean(exception),
     revision: settings.revision,
