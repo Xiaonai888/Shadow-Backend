@@ -26,14 +26,14 @@ function uploadOne(req, res, next) {
   upload.single('proof')(req, res, (error) => {
     if (error) return res.status(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ ok: false, message: 'Invalid shipping proof image or file size' })
     if (!req.file) return res.status(400).json({ ok: false, message: 'JPEG, PNG or WebP shipping proof is required' })
+    const filename = String(req.file.filename || '')
     let removed = false
     const cleanup = () => {
-  if (removed) return
-  removed = true
-  const filename = String(req.file.filename || '')
-  if (!/^[0-9a-f]{32}$/i.test(filename)) return
-  unlink(path.join(os.tmpdir(), filename)).catch(() => {})
-}
+      if (removed) return
+      removed = true
+      if (!/^[0-9a-f]{32}$/i.test(filename)) return
+      unlink(path.join(os.tmpdir(), filename)).catch(() => {})
+    }
     res.once('finish', cleanup)
     res.once('close', cleanup)
     next()
