@@ -61,6 +61,7 @@ import {
 } from '../controllers/authorStoreSalesReports.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireAuthorStorePhysicalBookCountry } from '../middleware/authorStorePhysicalBookGuard.middleware.js'
+import { isReaderClassificationCountryPolicyEnabled } from '../services/readerClassificationCountrySource.service.js'
 import { createRateLimit as createIpLimiter } from '../middleware/rateLimit.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { getAdminAuthorStoreWithdrawalNotifications } from '../controllers/adminAuthorStoreWithdrawalNotifications.controller.js'
@@ -175,12 +176,12 @@ router.get('/admin/withdrawals/:withdrawalId/receipt', requireAdmin, getAdminAut
 router.patch('/admin/withdrawals/:withdrawalId/status', requireAdmin, updateAdminAuthorStoreWithdrawalStatus)
 
 const authorBookCountryGate = (req, res, next) =>
-  process.env.SHADOW_PHYSICAL_BOOKS_COUNTRY_ENFORCE === 'true'
+  isReaderClassificationCountryPolicyEnabled()
     ? requireAuthorStorePhysicalBookCountry(req, res, next)
     : next()
 
 const legacyAuthorBookCountryGate = (req, res, next) => {
-  if (process.env.SHADOW_PHYSICAL_BOOKS_COUNTRY_ENFORCE !== 'true') return next()
+  if (!isReaderClassificationCountryPolicyEnabled()) return next()
   if (!req.get('authorization')) return requireAuthorStorePhysicalBookCountry(req, res, next)
   return requireUser(req, res, () => requireAuthorStorePhysicalBookCountry(req, res, next))
 }
