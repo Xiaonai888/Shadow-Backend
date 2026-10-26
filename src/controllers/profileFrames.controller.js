@@ -11,6 +11,7 @@ const PURCHASES = 'reader_profile_frame_purchases'
 const PAGE_SIZE = 9
 const ADMIN_FIELDS = 'id, name, image_url, storage_key, folder_id, access_tier, coin_price, diamond_price, is_active, sort_order, created_at, updated_at'
 const READER_FIELDS = 'id, name, image_url, folder_id, access_tier, coin_price, diamond_price, sort_order'
+const READER_CATALOG_FIELDS = `${READER_FIELDS}, folder:profile_frame_folders!profile_frames_folder_id_fkey(id,name,sort_order)`
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 function invalid(message) {
@@ -296,7 +297,7 @@ export async function listReaderProfileFrames(req, res) {
     if (!['all', 'free', 'premium', 'coins', 'diamonds'].includes(access)) throw invalid('Invalid access filter')
     const offset = (page - 1) * PAGE_SIZE
     let query = supabase.from(TABLE)
-      .select(READER_FIELDS)
+      .select(READER_CATALOG_FIELDS)
       .eq('is_active', true)
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: false })
