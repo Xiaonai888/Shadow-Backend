@@ -130,6 +130,7 @@ BEGIN
       COALESCE(s.international_stories, 0) AS international_stories,
       COALESCE(s.khmer_episodes, 0) AS khmer_episodes,
       COALESCE(s.international_episodes, 0) AS international_episodes,
+      s.refreshed_at AS reading_snapshot_refreshed_at,
       CASE
         WHEN rc.admin_group_override IN ('kh', 'international') THEN rc.admin_group_override
         WHEN COALESCE(s.khmer_stories, 0) + COALESCE(s.international_stories, 0) < 3
@@ -148,7 +149,9 @@ BEGIN
       COUNT(*) FILTER (WHERE reader_group = 'international') AS international,
       COUNT(*) FILTER (WHERE reader_group = 'unknown') AS unknown,
       COALESCE(SUM(khmer_episodes), 0) AS khmer_episodes,
-      COALESCE(SUM(international_episodes), 0) AS international_episodes
+      COALESCE(SUM(international_episodes), 0) AS international_episodes,
+      MIN(reading_snapshot_refreshed_at) AS snapshot_refreshed_at,
+      COUNT(reading_snapshot_refreshed_at) AS snapshot_readers
     FROM classified
   ), filtered AS (
     SELECT * FROM classified
@@ -208,7 +211,9 @@ BEGIN
       'international', totals.international,
       'unknown', totals.unknown,
       'khmer_episodes', totals.khmer_episodes,
-      'international_episodes', totals.international_episodes
+      'international_episodes', totals.international_episodes,
+      'snapshot_refreshed_at', totals.snapshot_refreshed_at,
+      'snapshot_readers', totals.snapshot_readers
     )
   ) INTO v_result
   FROM totals CROSS JOIN page_data;
