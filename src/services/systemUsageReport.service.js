@@ -182,6 +182,8 @@ function buildRouteDiagnostics(rows = []) {
   const routes = new Map()
 
   for (const row of rows) {
+    if (row.kind !== 'http_response' && row.kind !== 'external_request') continue
+    if (row.source_route === 'OTHER / UNLISTED') continue
     const route = String(row.source_route || 'UNKNOWN')
     const current = routes.get(route) || {
       route,
@@ -340,15 +342,32 @@ function buildSummaryStats(history, incidents, requestEvidence = []) {
   ).length
 
   const routes = buildRouteDiagnostics(rows)
+  const summary = history?.usage_summary || null
+  const compact = Array.isArray(summary?.rows) ? summary.rows : []
+  const categoryProviders = compact.length
+    ? aggregateBy(compact.filter((row) => row.kind !== 'unclassified'), (row) => row.dependency)
+    : byProvider
+  const categoryFeatures = compact.length
+    ? aggregateBy(compact.filter((row) => row.kind !== 'unclassified'), (row) => row.feature)
+    : byFeature
+  const includedCategories = compact.reduce((total, row) => total + safeNumber(row.count), 0)
+  const summaryEvents = safeNumber(history?.totals?.requests)
+  const unclassified = Math.max(0, summaryEvents - includedCategories) +
+    compact.filter((row) => row.kind === 'unclassified').reduce((total, row) => total + safeNumber(row.count), 0)
 
   return {
-    providers: byProvider.slice(0, 10),
-    features: byFeature.slice(0, 10),
+    usage_summary: summary,
+    detail_note: 'Route and target rankings use bounded stored detail; their counts can be lower than complete totals. OTHER/UNKNOWN cannot be assigned to an exact route.',
+    data_coverage: history?.coverage || {},
+    total_events_observed: summaryEvents,
+    unclassified_events: compact.length ? Math.min(summaryEvents, unclassified) : null,
+    providers: categoryProviders.slice(0, 10),
+    features: categoryFeatures.slice(0, 10),
     routes: routes.slice(0, 30),
     route_targets: buildTargetDiagnostics(routes).slice(0, 100),
     recent_request_evidence: requestEvidence,
     diagnostics_note:
-      'DB fanout means many database calls per HTTP request. It is not proof of a loop or polling bug unless repeated-window evidence also supports repetition.',
+      'DB fanout means many database calls per HTTP request. It is not proof of a loop or polling bug unless repeated-window evidence also supports repetition.', 
     incidents: {
       total: incidents.length,
       active,
@@ -402,67 +421,39 @@ function summaryMarkdown(range, history, incidents, stats) {
   )
 
   const routeTable = markdownTable(
-    [
-      'Route',
-      'HTTP',
-      'Supabase',
-      'DB/HTTP',
-      'External',
-      'Errors',
-      'Diagnostic',
-      'Top target',
-    ],
+    ['Route', 'HTTP', 'Supabase', 'DB/HTTP', 'External', 'Errors', 'Diagnostic', 'Top target'],
     (stats.routes || []).map((item) => [
-      item.route,
-      item.http_requests,
-      item.supabase_calls,
-      item.supabase_per_http ?? '-',
-      item.external_calls,
-      item.errors,
-      item.diagnostic,
-      item.top_target || '-',
+      item.route, item.http_requests, item.supabase_calls,
+      item.supabase_per_http ?? '-', item.external_calls,
+      item.errors, item.diagnostic, item.top_target || '-',
     ])
   )
 
   const targetTable = markdownTable(
-    [
-      'Route',
-      'Target',
-      'Calls',
-      'Errors',
-      'Avg ms',
-      'DB/HTTP',
-    ],
+    ['Route', 'Target', 'Calls', 'Errors', 'Avg ms', 'DB/HTTP'],
     (stats.route_targets || []).slice(0, 40).map((item) => [
-      item.route,
-      item.target,
-      item.calls,
-      item.errors,
-      item.avg_ms,
-      item.supabase_per_http ?? '-',
+      item.route, item.target, item.calls, item.errors,
+      item.avg_ms, item.supabase_per_http ?? '-',
     ])
   )
 
   const requestEvidenceTable = markdownTable(
-    [
-      'Time',
-      'Route',
-      'Kind',
-      'HTTP',
-      'Supabase',
-      'Duration ms',
-      'Top request target',
-    ],
+    ['Time', 'Route', 'Kind', 'HTTP', 'Supabase', 'Duration ms', 'Top request target'],
     (stats.recent_request_evidence || []).slice(0, 40).map((item) => [
-      item.time,
-      item.route,
-      item.diagnostic_kind || '-',
-      item.http_status,
-      item.observed_supabase_calls ?? '-',
-      item.duration_ms,
-      item.targets?.[0]
-        ? `${item.targets[0].target} ×${item.targets[0].count}`
-        : '-',
+      item.time, item.route, item.diagnostic_kind || '-',
+      item.http_status, item.observed_supabase_calls ?? '-', item.duration_ms,
+      item.targets?.[0] ? `${item.targets[0].target} ×${item.targets[0].count}` : '-',
+    ])
+  )
+
+  const summary = stats.usage_summary || {}
+  const usageTotals = summary.totals || {}
+  const summaryRows = Array.isArray(summary.rows) ? summary.rows : []
+  const breakdownTable = markdownTable(
+    ['Kind', 'Feature', 'Dependency', 'Observed events', 'Usage', 'Errors'],
+    summaryRows.map((row) => [
+      row.kind, row.feature, row.dependency,
+      safeNumber(row.count), formatBytes(row.bytes), safeNumber(row.errors),
     ])
   )
 
@@ -476,12 +467,27 @@ function summaryMarkdown(range, history, incidents, stats) {
     '## Usage',
     '',
     `- Total data: ${formatBytes(totals.bytes)}`,
-    `- Requests: ${safeNumber(totals.requests).toLocaleString('en-US')}`,
+    `- Measured events (HTTP + external calls, not Render billable requests): ${safeNumber(totals.requests).toLocaleString('en-US')}`,
+    `- HTTP responses observed: ${safeNumber(usageTotals.http_responses_observed).toLocaleString('en-US')}`,
+    `- External calls observed: ${safeNumber(usageTotals.external_calls_observed).toLocaleString('en-US')}`,
+    `- Supabase calls observed: ${safeNumber(usageTotals.supabase_calls_observed).toLocaleString('en-US')}`,
+    `- Unclassified events: ${safeNumber(usageTotals.unclassified_events).toLocaleString('en-US')}`,
+    `- Summary details complete: ${summary.complete_detail === true ? 'Yes' : 'No'}`,
+    `- Legacy windows: ${safeNumber(summary.legacy_windows)}`,
+    `- Series granularity: ${coverage.series_granularity || 'original'}`,
     `- Errors: ${safeNumber(totals.errors).toLocaleString('en-US')}`,
     `- Partial coverage: ${coverage.partial === true ? 'Yes' : 'No'}`,
     `- Stored snapshots: ${safeNumber(coverage.stored_snapshots)}`,
     `- Archived rollups: ${safeNumber(coverage.archived_rollups)}`,
     `- Live minutes: ${safeNumber(coverage.live_minutes)}`,
+    `- Coverage gaps: ${safeNumber(coverage.gap_count)}; missing minutes: ${safeNumber(coverage.missing_minutes)}`,
+    `- Available range: ${coverage.available_from || 'unknown'} → ${coverage.available_to || 'unknown'}`,
+    '',
+    '## Observed Dependency Summary',
+    '',
+    breakdownTable,
+    '',
+    stats.detail_note,
     '',
     '## Incidents',
     '',
@@ -502,19 +508,17 @@ function summaryMarkdown(range, history, incidents, stats) {
     '',
     featureTable,
     '',
-    '## Route Diagnostics',
+    '## Route Diagnostics (bounded detail)',
     '',
     routeTable,
     '',
-    '## Route Target Breakdown',
+    '## Route Target Breakdown (bounded detail)',
     '',
     targetTable,
     '',
-    '## Recent Per-Request Evidence',
+    '## Recent Per-Request Evidence (in memory only)',
     '',
     requestEvidenceTable,
-    '',
-    'Recent per-request evidence is in-memory evidence from the diagnostic window. Historical route target totals remain available through stored usage history.',
     '',
   ].join('\n')
 }
@@ -587,18 +591,26 @@ function usageCsv(history) {
   ].join('\n')
 }
 
+function breakdownCsv(history) {
+  const rows = Array.isArray(history?.usage_summary?.rows) ? history.usage_summary.rows : []
+  const header = ['kind', 'feature', 'dependency', 'observed_events', 'bytes', 'errors']
+  return [
+    header.map(csvCell).join(','),
+    ...rows.map((row) => [row.kind, row.feature, row.dependency,
+      safeNumber(row.count), safeNumber(row.bytes), safeNumber(row.errors)]
+      .map(csvCell).join(',')),
+  ].join('\n')
+}
+
 function evidenceJson(range, history, incidents, stats) {
   return JSON.stringify(
     {
       generated_at: new Date().toISOString(),
       range,
       diagnostic_semantics: {
-        database_fanout:
-          'Many database calls were observed per HTTP request.',
-        loop_or_polling:
-          'A loop or polling conclusion requires repeated-window evidence and is not inferred from a single expensive request.',
-        recent_request_evidence:
-          'Per-request evidence is retained in memory for the active diagnostic retention window and may be unavailable after restart or after retention expiry.',
+        database_fanout: 'Many database calls per HTTP request do not prove an application loop.',
+        live_evidence: 'Per-request evidence may be missing after a restart or expiry.',
+        bounded_detail: 'Top routes and targets do not necessarily cover all observed requests.',
       },
       summary: stats,
       usage: history,
@@ -884,14 +896,8 @@ async function buildReportBundle(from, to) {
     ),
   ])
 
-  const requestEvidence =
-    filterRecentEvidence(range)
-
-  const stats = buildSummaryStats(
-    history,
-    incidents,
-    requestEvidence
-  )
+  const requestEvidence = filterRecentEvidence(range)
+  const stats = buildSummaryStats(history, incidents, requestEvidence)
   const summaryMd = summaryMarkdown(
     range,
     history,
@@ -912,6 +918,7 @@ async function buildReportBundle(from, to) {
     summaryMd,
     problemsMd,
     csv,
+    breakdownCsv: breakdownCsv(history),
     json,
   }
 }
@@ -1032,6 +1039,7 @@ export async function generateSystemUsageReport({
       { name: 'Summary.md', data: bundle.summaryMd },
       { name: 'Summary.pdf', data: summaryPdf },
       { name: 'Usage.csv', data: bundle.csv },
+      { name: 'Breakdown.csv', data: bundle.breakdownCsv },
       { name: 'Problems.md', data: bundle.problemsMd },
       { name: 'Problems.pdf', data: problemsPdf },
       { name: 'Evidence.json', data: bundle.json },
