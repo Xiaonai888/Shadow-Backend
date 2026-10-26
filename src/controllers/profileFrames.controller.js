@@ -5,11 +5,12 @@ import {
 } from '../services/mediaStoragePolicy.service.js'
 
 const TABLE = 'profile_frames'
+const FOLDERS = 'profile_frame_folders'
 const SELECTIONS = 'reader_profile_frame_selections'
 const PURCHASES = 'reader_profile_frame_purchases'
 const PAGE_SIZE = 9
-const ADMIN_FIELDS = 'id, name, image_url, storage_key, access_tier, coin_price, diamond_price, is_active, sort_order, created_at, updated_at'
-const READER_FIELDS = 'id, name, image_url, access_tier, coin_price, diamond_price, sort_order'
+const ADMIN_FIELDS = 'id, name, image_url, storage_key, folder_id, access_tier, coin_price, diamond_price, is_active, sort_order, created_at, updated_at'
+const READER_FIELDS = 'id, name, image_url, folder_id, access_tier, coin_price, diamond_price, sort_order'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 function invalid(message) {
@@ -30,6 +31,31 @@ function sendError(res, error, action) {
 function requiredId(value, field = 'Frame ID') {
   if (typeof value !== 'string' || !UUID.test(value)) throw invalid(`Invalid ${field}`)
   return value
+}
+
+function folderValue(value) {
+  if (value === null) return null
+  return requiredId(value, 'folder ID')
+}
+
+async function assertFolderExists(id) {
+  if (id === null) return
+  const { data, error } = await supabase.from(FOLDERS).select('id').eq('id', id).maybeSingle()
+  if (error) throw error
+  if (!data) throw invalid('Selected folder does not exist')
+}
+
+function folderFilter(req) {
+  const raw = req.query.folder_id
+  if (raw === undefined || raw === 'all') return { enabled: false, id: null }
+  if (raw === 'general') return { enabled: true, id: null }
+  if (Array.isArray(raw)) throw invalid('Invalid folder filter')
+  return { enabled: true, id: requiredId(raw, 'folder ID') }
+}
+
+function applyFolderFilter(query, folder) {
+  if (!folder.enabled) return query
+  return folder.id === null ? query.is('folder_id', null) : query.eq('folder_id', folder.id)
 }
 
 function pageNumber(value) {
@@ -94,6 +120,7 @@ function adminPatch(body, creating = false, existing = null) {
   if (creating || Object.hasOwn(body, 'access_tier')) patch.access_tier = accessValue(body.access_tier)
   if (creating || Object.hasOwn(body, 'is_active')) patch.is_active = activeValue(body.is_active)
   if (creating || Object.hasOwn(body, 'sort_order')) patch.sort_order = orderValue(body.sort_order)
+  if (Object.hasOwn(body, 'folder_id')) patch.folder_id = folderValue(body.folder_id)
   if (creating || Object.hasOwn(body, 'access_tier') || Object.hasOwn(body, 'coin_price') || Object.hasOwn(body, 'diamond_price')) {
     const tier = patch.access_tier || existing?.access_tier || 'free'
     const coinPrice = tier === 'coins' ? priceValue(body.coin_price ?? existing?.coin_price ?? 0, 'Coin price') : 0
@@ -157,6 +184,7 @@ export async function listAdminProfileFrames(req, res) {
     const access = typeof req.query.access === 'string' ? req.query.access : 'all'
     const status = typeof req.query.status === 'string' ? req.query.status : 'all'
     const search = typeof req.query.search === 'string' ? req.query.search.trim() : ''
+    const folder = folderFilter(req)
     if (!['all', 'free', 'premium', 'coins', 'diamonds'].includes(access)) throw invalid('Invalid access filter')
     if (!['all', 'active', 'hidden'].includes(status)) throw invalid('Invalid status filter')
     if (search.length > 80 || Array.isArray(req.query.search)) throw invalid('Search is too long')
@@ -170,6 +198,7 @@ export async function listAdminProfileFrames(req, res) {
     if (access !== 'all') query = query.eq('access_tier', access)
     if (status !== 'all') query = query.eq('is_active', status === 'active')
     if (search) query = query.ilike('name', `%${search.replace(/[%_\\]/g, '')}%`)
+    query = applyFolderFilter(query, folder)
     const { data, count, error } = await query
     if (error) throw error
     const total = Number(count || 0)
@@ -193,6 +222,7 @@ export async function createAdminProfileFrame(req, res) {
   try {
     res.set('Cache-Control', 'private, no-store')
     const payload = adminPatch(req.body, true)
+    if (Object.hasOwn(payload, 'folder_id')) await assertFolderExists(payload.folder_id)
     const { data: existing, error: lookupError } = await supabase
       .from(TABLE)
       .select(ADMIN_FIELDS)
@@ -225,6 +255,7 @@ export async function updateAdminProfileFrame(req, res) {
     if (lookupError) throw lookupError
     if (!existing) return res.status(404).json({ ok: false, message: 'Frame not found' })
     const payload = adminPatch(req.body, false, existing)
+    if (Object.hasOwn(payload, 'folder_id')) await assertFolderExists(payload.folder_id)
     const { data, error } = await supabase.from(TABLE)
       .update(payload)
       .eq('id', id)
@@ -261,6 +292,7 @@ export async function listReaderProfileFrames(req, res) {
     const page = pageNumber(req.query.page)
     if (!req.user && page > 1) return res.status(401).json({ ok: false, message: 'Sign in to view more frames' })
     const access = typeof req.query.access === 'string' ? req.query.access : 'all'
+    const folder = folderFilter(req)
     if (!['all', 'free', 'premium', 'coins', 'diamonds'].includes(access)) throw invalid('Invalid access filter')
     const offset = (page - 1) * PAGE_SIZE
     let query = supabase.from(TABLE)
@@ -271,6 +303,7 @@ export async function listReaderProfileFrames(req, res) {
       .order('id', { ascending: true })
       .range(offset, offset + PAGE_SIZE)
     if (access !== 'all') query = query.eq('access_tier', access)
+    query = applyFolderFilter(query, folder)
     const { data, error } = await query
     if (error) throw error
     const items = (data || []).slice(0, PAGE_SIZE)
