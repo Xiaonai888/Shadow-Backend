@@ -9,7 +9,9 @@ const router = express.Router()
 const TTL = 45000
 const LANGUAGES = new Set(['km', 'en', 'zh', 'ja', 'ko'])
 const TARGETS = new Set(['shadow_mall', 'diamonds'])
-const FLAGS = ['app', 'physicalBooks', 'binancePay', 'payway']
+const LEGACY_FLAGS = ['app', 'physicalBooks', 'binancePay', 'payway']
+const NEW_FLAGS = ['shadowMall', 'readerMall']
+const FLAGS = [...LEGACY_FLAGS, ...NEW_FLAGS]
 let cached = null
 let expiresAt = 0
 let pending = null
@@ -27,9 +29,18 @@ function readCountry(req) {
 
 function validRule(entry) {
   return entry && typeof entry === 'object' && !Array.isArray(entry)
-    && FLAGS.every(key => typeof entry[key] === 'boolean')
+    && LEGACY_FLAGS.every(key => typeof entry[key] === 'boolean')
+    && NEW_FLAGS.every(key => entry[key] === undefined || typeof entry[key] === 'boolean')
     && LANGUAGES.has(entry.storyLanguage)
     && TARGETS.has(entry.shopTarget)
+}
+
+function normalizeRegionRule(entry, region) {
+  return {
+    ...entry,
+    shadowMall: typeof entry.shadowMall === 'boolean' ? entry.shadowMall : region === 'kh',
+    readerMall: typeof entry.readerMall === 'boolean' ? entry.readerMall : region === 'kh',
+  }
 }
 
 async function getRules() {
@@ -42,7 +53,13 @@ async function getRules() {
     if (!validRule(data?.rules?.kh) || !validRule(data?.rules?.international)) {
       throw new Error('Invalid country rule configuration')
     }
-    cached = { rules: data.rules, revision: data.revision }
+    cached = {
+      rules: {
+        kh: normalizeRegionRule(data.rules.kh, 'kh'),
+        international: normalizeRegionRule(data.rules.international, 'international'),
+      },
+      revision: data.revision,
+    }
     expiresAt = Date.now() + TTL
     return cached
   })()
@@ -74,7 +91,11 @@ function resolveRules(rules, region, countryVerified, exception) {
   const effective = { ...rules[baseline === 'kh' ? 'kh' : 'international'] }
   effective.binancePay = countryVerified ? rules[region].binancePay : true
   effective.payway = countryVerified ? rules[region].payway : true
-  if (exception?.mode === 'all_eligible') effective.app = true
+  if (exception?.mode === 'all_eligible') {
+    effective.app = true
+    effective.shadowMall = true
+    effective.readerMall = true
+  }
   if (exception?.mode === 'custom' && exception.overrides && typeof exception.overrides === 'object') {
     for (const key of FLAGS) {
       const value = exception.overrides[key]
@@ -85,9 +106,9 @@ function resolveRules(rules, region, countryVerified, exception) {
     if (TARGETS.has(exception.overrides.shopTarget)) effective.shopTarget = exception.overrides.shopTarget
   }
   effective.payway = Boolean(countryVerified && rules[region]?.payway === true && effective.payway)
-effective.binancePay = Boolean(countryVerified && rules[region]?.binancePay === true && effective.binancePay)
-effective.physicalBooks = Boolean(countryVerified && region === 'kh' && rules.kh.physicalBooks === true && effective.physicalBooks)
-return effective
+  effective.binancePay = Boolean(countryVerified && rules[region]?.binancePay === true && effective.binancePay)
+  effective.physicalBooks = Boolean(countryVerified && region === 'kh' && rules.kh.physicalBooks === true && effective.physicalBooks)
+  return effective
 }
 
 router.use(createRateLimit({
@@ -115,13 +136,13 @@ router.get('/', optionalReader, async (req, res) => {
       hasException: Boolean(exception),
       revision: settings.revision,
       paymentCountryTicket: country && userId && req.user?.session_id
-  ? createPaymentCountryTicket({
-      userId,
-      sessionId: req.user.session_id,
-      country,
-      revision: settings.revision,
-    })
-  : null,
+        ? createPaymentCountryTicket({
+            userId,
+            sessionId: req.user.session_id,
+            country,
+            revision: settings.revision,
+          })
+        : null,
     })
   } catch (error) {
     console.error('PUBLIC COUNTRY SETTINGS ERROR:', error)
