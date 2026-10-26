@@ -3,7 +3,7 @@ import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { createPaymentCountryTicket } from '../middleware/paymentCountryGate.middleware.js'
-import { isReaderClassificationCountryPolicyEnabled, readReaderClassificationCountry } from '../services/readerClassificationCountrySource.service.js'
+import { isReaderClassificationCountryPolicyEnabled } from '../services/readerClassificationCountrySource.service.js'
 
 const router = express.Router()
 const TTL = 45000
@@ -95,9 +95,14 @@ function optionalReader(req, res, next) {
 }
 
 async function getSavedCountry(userId) {
-  if (!userId || !isReaderClassificationCountryPolicyEnabled()) return null
-  const result = await readReaderClassificationCountry(userId)
-  return result?.verified === true ? validCountry(result.country) : null
+  if (!userId) return null
+  const { data, error } = await supabase
+    .from('shadow_reader_classifications')
+    .select('detected_country,admin_country_override')
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (error) throw error
+  return validCountry(data?.admin_country_override) || validCountry(data?.detected_country)
 }
 
 async function getException(userId) {
@@ -112,7 +117,7 @@ async function getException(userId) {
 function resolveRules(rules, region, countryAvailable, exception, policyEnabled) {
   if (!policyEnabled) {
     return {
-      ...rules.kh,
+      ...rules[region === 'international' ? 'international' : 'kh'],
       app: true,
       physicalBooks: true,
       shadowMall: true,
@@ -164,7 +169,7 @@ router.get('/', optionalReader, async (req, res) => {
   const userId = req.user?.user_id || null
   const sourceReady = isReaderClassificationCountryPolicyEnabled()
   const [savedCountry, settingsResult, exceptionResult] = await Promise.allSettled([
-    sourceReady ? getSavedCountry(userId) : Promise.resolve(null),
+    getSavedCountry(userId),
     getRules(),
     sourceReady ? getException(userId) : Promise.resolve(null),
   ])
