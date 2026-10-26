@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
+import { isReaderClassificationCountryPolicyEnabled } from '../services/readerClassificationCountrySource.service.js'
 
 const ISSUER = 'shadow-country-settings'
 const AUDIENCE = 'shadow-payment-creation'
@@ -40,6 +41,7 @@ export function requirePaymentCountry(feature) {
   if (!PAYMENT_FEATURES.has(feature)) throw new Error('Unsupported payment feature')
 
   return async function paymentCountryGuard(req, res, next) {
+    if (!isReaderClassificationCountryPolicyEnabled()) return next()
     const secret = signingSecret()
     if (!secret) {
       return deny(res, 'COUNTRY_GATE_UNAVAILABLE', 'Payment country verification is not configured', 503)
