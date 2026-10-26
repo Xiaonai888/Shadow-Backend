@@ -2191,10 +2191,14 @@ export async function unlockEpisodePackageWithDiamonds(
         option.black_sunday_discount_amount,
       event_key: writerWednesday.active
   ? writerWednesday.key
-  : option.event?.key || '',
+  : option.black_sunday_active
+    ? option.event?.key || ''
+    : '',
 event_time_zone: writerWednesday.active
   ? writerWednesday.time_zone
-  : option.event?.time_zone || '',
+  : option.black_sunday_active
+    ? option.event?.time_zone || ''
+    : '',
 event_author_share_percent:
   writerWednesday.author_share_percent,
 writer_wednesday_active:
@@ -2500,9 +2504,12 @@ export async function unlockEpisodeWithGems(req, res) {
           coinCost.black_sunday_discount_percent,
         black_sunday_discount_amount:
           coinCost.black_sunday_discount_amount,
-        event_key: coinCost.event?.key || '',
-        event_time_zone:
-          coinCost.event?.time_zone || '',
+        event_key: coinCost.black_sunday_active
+  ? coinCost.event?.key || ''
+  : '',
+event_time_zone: coinCost.black_sunday_active
+  ? coinCost.event?.time_zone || ''
+  : '',
         daily_limit_status:
           payload.gemLimits.daily,
         monthly_story_limit_status:
