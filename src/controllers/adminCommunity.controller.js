@@ -407,7 +407,7 @@ export async function getAdminCommunityReaders(req, res) {
       ? requestedFilter
       : 'all'
 
-    const { data, error } = await supabase.rpc('get_admin_community_readers_v2', {
+    const { data, error } = await supabase.rpc('get_admin_community_readers_v3', {
       p_page: page,
       p_limit: limit,
       p_search: q,
