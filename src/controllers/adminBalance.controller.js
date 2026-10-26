@@ -18,6 +18,11 @@ function cleanSort(value) {
   return String(value || '').trim().toLowerCase() === 'asc' ? 'asc' : 'desc'
 }
 
+function cleanReaderTier(value) {
+  const tier = String(value || '').trim().toLowerCase()
+  return tier === 'premium' || tier === 'regular' ? tier : 'all'
+}
+
 function cleanBoolean(value) {
   const text = String(value || '').trim().toLowerCase()
   return text === '1' || text === 'true' || text === 'yes'
@@ -46,6 +51,7 @@ function cacheKey({
   limit,
   search,
   sort,
+  readerTier,
   dormantOnly,
   dormantDays,
 }) {
@@ -54,6 +60,7 @@ function cacheKey({
     limit,
     search.toLowerCase(),
     sort,
+    readerTier,
     dormantOnly,
     dormantDays,
   ])
@@ -99,6 +106,7 @@ export async function getAdminBalanceWallets(req, res) {
     const balanceType = ['diamond', 'coin', 'voucher', 'story_card'].includes(req.query.balance_type)
       ? req.query.balance_type
       : 'diamond'
+    const readerTier = cleanReaderTier(req.query.reader_tier)
     const dormantOnly = cleanBoolean(req.query.dormant)
     const dormantDays = toPositiveInt(req.query.dormant_days, 90, 3650)
     const refresh = String(req.query.refresh || '') === '1'
@@ -107,6 +115,7 @@ export async function getAdminBalanceWallets(req, res) {
       limit,
       search,
       sort: `${sort}:${balanceType}`,
+      readerTier,
       dormantOnly,
       dormantDays,
     })
@@ -121,10 +130,14 @@ export async function getAdminBalanceWallets(req, res) {
       if (
         payload?.balance_type !== balanceType ||
         payload?.sort !== sort ||
+        payload?.reader_tier !== readerTier ||
         !Array.isArray(payload?.items)
       ) return false
 
       return payload.items.every((item, index, rows) => {
+        if (typeof item?.is_premium !== 'boolean') return false
+        if (readerTier === 'premium' && !item.is_premium) return false
+        if (readerTier === 'regular' && item.is_premium) return false
         const current = Number(item?.[balanceField])
         if (!Number.isFinite(current)) return false
         if (index === 0) return true
@@ -142,12 +155,13 @@ export async function getAdminBalanceWallets(req, res) {
       if (cached) balanceCache.delete(key)
     }
 
-    const { data, error } = await supabase.rpc('get_admin_balance_wallets_v3', {
+    const { data, error } = await supabase.rpc('get_admin_balance_wallets_v4', {
       p_page: page,
       p_limit: limit,
       p_search: search,
       p_sort: sort,
       p_balance_type: balanceType,
+      p_reader_tier: readerTier,
       p_dormant_only: dormantOnly,
       p_dormant_days: dormantDays,
     })
@@ -156,7 +170,7 @@ export async function getAdminBalanceWallets(req, res) {
     if (!isCorrectRanking(data)) {
       return res.status(503).json({
         ok: false,
-        message: 'Balance API returned an incorrect ranking. Verify the active Backend and Balance SQL v3.',
+        message: 'Balance API returned an incorrect ranking or Premium filter. Verify the active Backend and Balance SQL v4.',
       })
     }
 
