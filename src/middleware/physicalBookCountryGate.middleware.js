@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
+import { isReaderClassificationCountryPolicyEnabled } from '../services/readerClassificationCountrySource.service.js'
 
 const ISSUER = 'shadow-country-settings'
 const AUDIENCE = 'shadow-payment-creation'
@@ -9,6 +10,7 @@ function fail(res, status, code, message) {
 }
 
 export async function requireCambodiaPhysicalBooks(req, res, next) {
+  if (!isReaderClassificationCountryPolicyEnabled()) return next()
   const userId = String(req.user?.user_id || req.user?.id || '')
   const sessionId = String(req.user?.session_id || '')
   if (!userId || !sessionId) {
