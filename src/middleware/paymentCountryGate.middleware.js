@@ -111,6 +111,7 @@ export function requirePaymentCountry(feature) {
         : null
       const effectiveRegion = activeException?.mode === 'cambodia_experience' ? 'kh' : region
       let permitted = settings.rules?.[effectiveRegion]?.[feature] === true
+if (activeException?.mode === 'all_eligible') permitted = true
 
       if (activeException?.mode === 'custom') {
         if (activeException.overrides?.[feature] === 'allow') permitted = true
