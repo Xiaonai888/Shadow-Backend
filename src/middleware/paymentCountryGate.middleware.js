@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
-import { isReaderClassificationCountryPolicyEnabled } from '../services/readerClassificationCountrySource.service.js'
+import { isReaderClassificationCountryPolicyEnabled, readReaderClassificationCountry } from '../services/readerClassificationCountrySource.service.js'
 
 const ISSUER = 'shadow-country-settings'
 const AUDIENCE = 'shadow-payment-creation'
@@ -76,6 +76,11 @@ export function requirePaymentCountry(feature) {
     const region = claim.country === 'KH' ? 'kh' : 'international'
 
     try {
+      const savedCountry = await readReaderClassificationCountry(req.user.user_id)
+      if (!savedCountry?.verified || !validCountry(savedCountry.country) || savedCountry.country !== claim.country) {
+        return deny(res, 'PAYMENT_COUNTRY_REFRESH_REQUIRED', 'Your saved country has changed or is unavailable. Refresh and retry.', 409)
+      }
+
       const { data: settings, error: settingsError } = await supabase
         .from('shadow_country_settings')
         .select('rules,revision')
