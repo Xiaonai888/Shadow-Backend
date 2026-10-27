@@ -3,6 +3,7 @@ import { supabase } from '../config/supabase.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { getAdminActor } from '../services/adminActivity.service.js'
+import { normalizeSmartSearch } from '../services/smartSearchCore.service.js'
 
 const router = express.Router()
 const LIMIT = 10
@@ -34,7 +35,11 @@ function validCountry(value) {
 }
 
 function cleanSearch(value) {
-  return String(value || '').trim().replace(/[%,()\\\u0000-\u001f\u007f]/g, '').slice(0, 90)
+  // Keep @username, partial UUIDs and Unicode names intact for the search RPC.
+  // The shared normalizer folds compatibility characters and removes zero-width marks.
+  return normalizeSmartSearch(value, 90)
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .trim()
 }
 
 function fail(res, error, label) {
@@ -50,12 +55,18 @@ router.get('/', readLimit, async (req, res) => {
     return res.status(400).json({ ok: false, message: 'Invalid list parameters' })
   }
 
-  const search = cleanSearch(req.query.q)
-  if (req.query.q !== undefined && search.length < 2) {
+  if (req.query.q !== undefined && typeof req.query.q !== 'string') {
+    return res.status(400).json({ ok: false, message: 'Invalid search query' })
+  }
+  const search = cleanSearch(req.query.q || '')
+  const meaningfulTerm = search.replace(/^@+/, '').trim()
+  if (req.query.q !== undefined && Array.from(meaningfulTerm).length < 2) {
     return res.status(400).json({ ok: false, message: 'Search requires at least two characters' })
   }
 
   try {
+    // Single RPC: database does exact, prefix, substring, nickname and fuzzy ranking
+    // BEFORE applying the 10-reader limit; do not rank only the returned page.
     const { data, error } = await supabase.rpc('get_admin_reader_classification_analytics', {
       p_search: search,
       p_group: group,
