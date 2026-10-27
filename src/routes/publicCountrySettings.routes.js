@@ -155,7 +155,11 @@ function resolveRules(rules, region, countryAvailable, exception, policyEnabled)
       effective[key] = rules.kh[key] === true && rules.international[key] === true
     }
   }
-  if (exception?.mode === 'all_eligible') effective.app = true
+ if (exception?.mode === 'all_eligible') {
+  for (const key of Object.keys(effective)) {
+    if (typeof effective[key] === 'boolean') effective[key] = true
+  }
+}
   if (exception?.mode === 'custom' && exception.overrides && typeof exception.overrides === 'object') {
     for (const [key, value] of Object.entries(exception.overrides)) {
       if (!Object.hasOwn(effective, key) || !Object.hasOwn(rules.kh, key) ||
