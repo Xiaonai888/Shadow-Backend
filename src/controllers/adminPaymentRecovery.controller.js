@@ -280,9 +280,15 @@ export async function confirmAdminManualTopUp(req, res) {
     const userId = String(req.body?.user_id || '').trim()
     const reference = String(req.body?.reference || '').trim()
     const diamonds = Number(req.body?.diamonds)
+    const rawCoins = req.body?.coins
+    const coins = rawCoins == null ? 0
+      : typeof rawCoins === 'number' ? rawCoins
+      : typeof rawCoins === 'string' && /^[0-9]{1,6}$/.test(rawCoins.trim()) ? Number(rawCoins.trim())
+      : NaN
     const reason = String(req.body?.reason || '').trim()
     if (!isUuid(userId)) return validationError(res, 'Select the recipient from the account search')
     if (!Number.isSafeInteger(diamonds) || diamonds < 1 || diamonds > 10000) return validationError(res, 'Diamonds must be 1 to 10,000')
+    if (!Number.isSafeInteger(coins) || coins < 0 || coins > 100000) return validationError(res, 'Coins must be between 0 and 100,000')
     if (!validReference(reference)) return validationError(res, 'Enter a unique ABA or adjustment reference (6-100 characters)')
     if (reason.length < 12 || reason.length > 500) return validationError(res, 'Enter a detailed reason between 12 and 500 characters')
     if (req.body?.confirmed !== true) return validationError(res, 'Confirm the recipient and the reason for this manual top-up')
@@ -290,19 +296,21 @@ export async function confirmAdminManualTopUp(req, res) {
     const verified = await ensureVerifiedPin(req, res, 'manual_topup:' + userId + ':' + reference)
     if (!verified) return
 
-    const { data, error } = await supabase.rpc('admin_payment_recovery_apply_v1', {
-      p_action: 'topup',
-      p_payment_id: null,
+    const { data, error } = await supabase.rpc('admin_bank_manual_topup_v2', {
       p_user_id: userId,
-      p_diamonds: diamonds,
       p_reference: reference,
-      p_verified_usd: null,
-      p_bank_paid_at: null,
+      p_diamonds: diamonds,
+      p_coins: coins,
       p_admin_id: admin.id,
       p_admin_email: admin.email,
       p_note: reason,
     })
-    if (error) return actionFailure(res, error)
+    if (error) {
+      if (['PGRST202', '42883', '42P01'].includes(String(error.code || ''))) {
+        return res.status(503).json({ ok: false, message: 'Bank Manual Coins SQL is not ready. Run admin_bank_manual_coins_7day_v2.sql in Supabase.' })
+      }
+      return actionFailure(res, error)
+    }
     res.set('Cache-Control', 'no-store')
     return res.status(200).json({ ok: true, result: data })
   } catch (error) {
