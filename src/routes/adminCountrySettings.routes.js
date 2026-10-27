@@ -100,6 +100,22 @@ function cleanSearch(value) {
   return String(value || '').trim().replace(/[%,()_\\]/g, ' ').slice(0, 90)
 }
 
+function verifiedExceptionActor(req) {
+  // Admin identity comes ONLY from the verified admin session, never HTTP headers/body.
+  const id = String(req.admin?.admin_id || '').trim()
+  const name = String(req.admin?.name || req.admin?.actor || req.admin?.email || '').trim()
+  if (!id || !name) throw new Error('Verified admin identity is required for exception history')
+  return { id: id.slice(0, 120), name: name.slice(0, 160) }
+}
+
+function rpcUnavailable(error) {
+  return ['PGRST202', '42883'].includes(String(error?.code || ''))
+}
+
+function rpcResultRow(data) {
+  return Array.isArray(data) ? (data[0] || null) : (data || null)
+}
+
 async function audit(req, action, itemId, title, details) {
   await logAdminActivity({
     action,
@@ -220,6 +236,75 @@ router.get('/exceptions', readLimit, async (req, res) => {
   }
 })
 
+// Durable, immutable history is separate from 90-day admin_activity_logs.
+// Fetch only when Admin opens the History section: 10 entries per page.
+router.get('/exceptions/history', readLimit, async (req, res) => {
+  const page = Math.min(10000, Math.max(1, Number.parseInt(req.query.page, 10) || 1))
+  const userId = String(req.query.userId || '').trim()
+  const action = String(req.query.action || '').trim().toUpperCase()
+  const actorId = String(req.query.actorId || '').trim()
+  const actorSearch = cleanSearch(req.query.actor || '')
+  const from = String(req.query.from || '').trim()
+  const to = String(req.query.to || '').trim()
+
+  if ((userId && !UUID.test(userId)) ||
+      (action && !['CREATE', 'UPDATE', 'REVOKE'].includes(action)) ||
+      actorId.length > 120 ||
+      (from && !/^\d{4}-\d{2}-\d{2}$/.test(from)) ||
+      (to && !/^\d{4}-\d{2}-\d{2}$/.test(to)) ||
+      (from && !Number.isFinite(Date.parse(from))) ||
+      (to && !Number.isFinite(Date.parse(to))) ||
+      (from && new Date(from).toISOString().slice(0, 10) !== from) ||
+      (to && new Date(to).toISOString().slice(0, 10) !== to) ||
+      (from && to && from > to)) {
+    return res.status(400).json({ ok: false, message: 'Invalid history filter' })
+  }
+
+  try {
+    let query = supabase
+      .from('shadow_country_exception_history')
+      .select('id,exception_id,user_id,user_name,action,actor_admin_id,actor_name,before_state,after_state,created_at', { count: 'exact' })
+    if (userId) query = query.eq('user_id', userId)
+    if (action) query = query.eq('action', action)
+    if (actorId) query = query.eq('actor_admin_id', actorId)
+    if (actorSearch) query = query.ilike('actor_name', `%${actorSearch}%`)
+    if (from) query = query.gte('created_at', `${from}T00:00:00.000Z`)
+    if (to) {
+      const nextDay = new Date(Date.parse(`${to}T00:00:00.000Z`) + 86400000).toISOString()
+      query = query.lt('created_at', nextDay)
+    }
+    const { data, count, error } = await query
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range((page - 1) * LIMIT, page * LIMIT - 1)
+    if (error) throw error
+
+    return res.json({
+      ok: true,
+      history: (data || []).map(row => ({
+        id: row.id,
+        exceptionId: row.exception_id,
+        userId: row.user_id,
+        userName: row.user_name,
+        action: row.action,
+        actorAdminId: row.actor_admin_id,
+        actorName: row.actor_name,
+        before: row.before_state,
+        after: row.after_state,
+        createdAt: row.created_at,
+      })),
+      total: count || 0,
+      page,
+      limit: LIMIT,
+    })
+  } catch (error) {
+    if (error?.code === '42P01' || error?.code === 'PGRST205') {
+      return res.status(503).json({ ok: false, message: 'Run country_exception_history_setup.sql first' })
+    }
+    return fail(res, error, 'EXCEPTION HISTORY')
+  }
+})
+
 router.post('/exceptions', writeLimit, async (req, res) => {
   const userId = String(req.body?.userId || '')
   const mode = String(req.body?.mode || '')
@@ -246,20 +331,32 @@ router.post('/exceptions', writeLimit, async (req, res) => {
       return res.status(400).json({ ok: false, message: 'Invalid user exception permissions' })
     }
 
-    const { data, error } = await supabase
-      .from('shadow_country_user_exceptions')
-      .upsert({ user_id: userId, mode, overrides, expires_at: null, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
-      .select('id,user_id,mode,overrides,updated_at')
-      .single()
+    const actor = verifiedExceptionActor(req)
+    // Database RPC sets verified actor fields transaction-locally.
+    // The SQL trigger captures the exact Before/After atomically with this Save.
+    const { data, error } = await supabase.rpc('shadow_save_country_exception', {
+      p_user_id: userId,
+      p_mode: mode,
+      p_overrides: overrides,
+      p_actor_id: actor.id,
+      p_actor_name: actor.name,
+    })
+    if (error && rpcUnavailable(error)) {
+      return res.status(503).json({ ok: false, message: 'Run country_exception_history_setup.sql first' })
+    }
     if (error) throw error
+    const saved = rpcResultRow(data)
+    if (!saved?.id || String(saved.user_id || '').toLowerCase() !== userId.toLowerCase()) throw new Error('Country exception RPC returned no saved record')
 
     const before = existingResult.data
       ? { mode: existingResult.data.mode, overrides: existingResult.data.overrides || {}, expiresAt: existingResult.data.expires_at }
       : null
-    const after = { mode: data.mode, overrides: data.overrides || {}, expiresAt: null }
-    await audit(req, before ? 'COUNTRY_EXCEPTION_UPDATE' : 'COUNTRY_EXCEPTION_CREATE', data.id,
+    const after = { mode: saved.mode, overrides: saved.overrides || {}, expiresAt: saved.expires_at }
+    // Legacy activity log is convenience-only (90-day retention); durable history
+    // was already committed atomically in shadow_country_exception_history.
+    await audit(req, before ? 'COUNTRY_EXCEPTION_UPDATE' : 'COUNTRY_EXCEPTION_CREATE', saved.id,
       'Country User Exception', JSON.stringify({ userId, before, after }))
-    return res.json({ ok: true, exception: data })
+    return res.json({ ok: true, exception: saved })
   } catch (error) {
     return fail(res, error, 'SAVE EXCEPTION')
   }
@@ -269,17 +366,22 @@ router.delete('/exceptions/:exceptionId', writeLimit, async (req, res) => {
   const id = String(req.params.exceptionId || '')
   if (!UUID.test(id)) return res.status(400).json({ ok: false, message: 'Invalid exception ID' })
   try {
-    const { data, error } = await supabase
-      .from('shadow_country_user_exceptions')
-      .delete()
-      .eq('id', id)
-      .select('id,user_id,mode,overrides,expires_at')
-      .maybeSingle()
+    const actor = verifiedExceptionActor(req)
+    // Deletion and immutable REVOKE history are in the same transaction.
+    const { data, error } = await supabase.rpc('shadow_revoke_country_exception', {
+      p_exception_id: id,
+      p_actor_id: actor.id,
+      p_actor_name: actor.name,
+    })
+    if (error && rpcUnavailable(error)) {
+      return res.status(503).json({ ok: false, message: 'Run country_exception_history_setup.sql first' })
+    }
     if (error) throw error
-    if (!data) return res.status(404).json({ ok: false, message: 'Exception not found' })
-    await audit(req, 'COUNTRY_EXCEPTION_REVOKE', data.id, 'Country User Exception', JSON.stringify({
-      userId: data.user_id,
-      before: { mode: data.mode, overrides: data.overrides || {}, expiresAt: data.expires_at },
+    const revoked = rpcResultRow(data)
+    if (!revoked?.id) return res.status(404).json({ ok: false, message: 'Exception not found' })
+    await audit(req, 'COUNTRY_EXCEPTION_REVOKE', revoked.id, 'Country User Exception', JSON.stringify({
+      userId: revoked.user_id,
+      before: { mode: revoked.mode, overrides: revoked.overrides || {}, expiresAt: revoked.expires_at },
       after: null,
     }))
     return res.json({ ok: true })
