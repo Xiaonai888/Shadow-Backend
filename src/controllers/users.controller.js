@@ -40,10 +40,13 @@ function isAllowedEmail(email) {
 }
 
 function calculateAge(dateOfBirth) {
-  const birthDate = new Date(dateOfBirth)
-  const today = new Date()
+  const value = String(dateOfBirth || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null
 
-  if (Number.isNaN(birthDate.getTime())) return null
+  const birthDate = new Date(`${value}T00:00:00Z`)
+  if (Number.isNaN(birthDate.getTime()) || birthDate.toISOString().slice(0, 10) !== value) return null
+
+  const today = new Date()
 
   let age = today.getFullYear() - birthDate.getFullYear()
   const monthDiff = today.getMonth() - birthDate.getMonth()
@@ -2489,3 +2492,4 @@ export async function getUserSuggestions(req, res) {
     })
   }
 }
+
