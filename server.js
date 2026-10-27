@@ -148,22 +148,95 @@ dotenv.config()
 const app = express()
 app.use(backendOriginAudit)
 app.use(trafficDiagnosticMiddleware)
+const FIVE_XX_LOG_LIMIT_PER_MINUTE = 120
+let fiveXXWindowStartedAt = Date.now()
+let fiveXXLogged = 0
+let fiveXXSuppressed = 0
+
+function safeDiagnosticText(value, maximum = 180) {
+  return String(value ?? '')
+    .replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
+    .replace(/\b(token|password|secret|authorization|api[_-]?key|cookie)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[EMAIL]')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, '[UUID]')
+    .slice(0, maximum)
+}
+
+function diagnosticRoute(req) {
+  const routePath = req.route?.path
+  if (typeof routePath === 'string') {
+    return `${req.baseUrl || ''}${routePath}`.slice(0, 200)
+  }
+  const parts = String(req.path || '/').split('/').filter(Boolean)
+  return `/${parts.slice(0, 2).join('/')}/:unknown`.slice(0, 200)
+}
+
 app.use((req, res, next) => {
   const started = Date.now()
+  const traceId = `${started.toString(36)}-${Math.random().toString(36).slice(2, 10)}`
   const progress = req.method === 'POST' && req.path === '/api/reading-progress'
   const view = req.method === 'POST' && /^\/api\/public\/stories\/[^/]+\/episodes\/[^/]+\/view\/?$/.test(req.path)
-  res.on('finish', () => {
-    if (res.statusCode >= 500) {
-      console.error('[API_5XX]', JSON.stringify({
-        time: new Date().toISOString(), method: req.method,
-        path: req.path, status: res.statusCode, durationMs: Date.now() - started
+  let responseCode = null
+  let responseDetail = null
+  let responseType = 'other'
+
+  req.shadowTraceId = traceId
+
+  const originalJson = res.json
+  res.json = function diagnosticJson(body) {
+    if (res.statusCode >= 500 && body && typeof body === 'object') {
+      responseType = 'json'
+      const rawError = body.error
+      const rawCode = body.code || (rawError && typeof rawError === 'object' ? rawError.code : null)
+      const rawDetail = typeof rawError === 'string'
+        ? rawError
+        : rawError?.message || body.message || null
+      responseCode = rawCode ? safeDiagnosticText(rawCode, 60) : null
+      responseDetail = rawDetail ? safeDiagnosticText(rawDetail) : null
+    }
+    return originalJson.call(this, body)
+  }
+
+  res.once('finish', () => {
+    const status = Number(res.statusCode || 0)
+    if (status >= 500) {
+      const now = Date.now()
+      if (now - fiveXXWindowStartedAt >= 60_000) {
+        if (fiveXXSuppressed) {
+          console.warn('[API_5XX_SUPPRESSED]', JSON.stringify({
+            previous_minute_suppressed: fiveXXSuppressed,
+          }))
+        }
+        fiveXXWindowStartedAt = now
+        fiveXXLogged = 0
+        fiveXXSuppressed = 0
+      }
+      if (fiveXXLogged >= FIVE_XX_LOG_LIMIT_PER_MINUTE) {
+        fiveXXSuppressed += 1
+        return
+      }
+      fiveXXLogged += 1
+      console.error('[API_5XX_DETAIL]', JSON.stringify({
+        time: new Date(now).toISOString(),
+        trace_id: traceId,
+        method: req.method,
+        route: diagnosticRoute(req),
+        sort: /^[a-z0-9_-]{1,40}$/i.test(String(req.query?.sort || ''))
+          ? req.query.sort : null,
+        status,
+        duration_ms: now - started,
+        response_type: responseType,
+        error_code: responseCode,
+        error_detail: responseDetail,
+        public_cache: String(res.getHeader('X-Shadow-Public-Stories-Cache') || 'NONE').slice(0, 20),
+        spam_guard: String(res.getHeader('X-Spam-Guard') || 'NONE').slice(0, 30),
       }))
-    } else if ((progress || view) && res.statusCode >= 400) {
+    } else if ((progress || view) && status >= 400) {
       console.warn('[READ_ACTIVITY_4XX]', JSON.stringify({
         time: new Date().toISOString(),
         route: progress ? 'reading-progress' : 'episode-view',
-        status: res.statusCode,
-        durationMs: Date.now() - started
+        status,
+        durationMs: Date.now() - started,
       }))
     }
   })
