@@ -12,7 +12,9 @@ const TARGETS = new Set(['shadow_mall', 'diamonds'])
 const LEGACY_FLAGS = ['app', 'physicalBooks', 'binancePay', 'payway']
 const PAYOUT_FLAGS = ['payoutBank', 'payoutBinance', 'payoutPhone']
 const NEW_FLAGS = ['shadowMall', 'readerMall', ...PAYOUT_FLAGS]
-const FLAGS = [...LEGACY_FLAGS, ...NEW_FLAGS]
+// Future Country Rules switches are automatically eligible for per-user overrides.
+const EXTRA_BOOLEAN_KEY = /^[a-z][a-zA-Z0-9_]{0,63}$/
+const MAX_RULE_KEYS = 64
 const FALLBACK_RULES = {
   kh: {
     app: true,
@@ -46,11 +48,16 @@ let expiresAt = 0
 let pending = null
 
 function validRule(entry) {
-  return entry && typeof entry === 'object' && !Array.isArray(entry)
-    && LEGACY_FLAGS.every(key => typeof entry[key] === 'boolean')
-    && NEW_FLAGS.every(key => entry[key] === undefined || typeof entry[key] === 'boolean')
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
+  if (Object.keys(entry).length > MAX_RULE_KEYS) return false
+  return LEGACY_FLAGS.every(key => typeof entry[key] === 'boolean')
     && LANGUAGES.has(entry.storyLanguage)
     && TARGETS.has(entry.shopTarget)
+    && Object.entries(entry).every(([key, value]) => {
+      if (key === 'storyLanguage') return LANGUAGES.has(value)
+      if (key === 'shopTarget') return TARGETS.has(value)
+      return EXTRA_BOOLEAN_KEY.test(key) && typeof value === 'boolean'
+    })
 }
 
 function normalizeRegionRule(entry, region) {
@@ -74,11 +81,17 @@ async function getRules() {
     if (!validRule(data?.rules?.kh) || !validRule(data?.rules?.international)) {
       throw new Error('Invalid country rule configuration')
     }
+    const normalized = {
+      kh: normalizeRegionRule(data.rules.kh, 'kh'),
+      international: normalizeRegionRule(data.rules.international, 'international'),
+    }
+    // Both regions must define every new boolean key; avoid silent fallback.
+    if (JSON.stringify(Object.keys(normalized.kh).sort()) !==
+        JSON.stringify(Object.keys(normalized.international).sort())) {
+      throw new Error('Country rule feature lists differ by region')
+    }
     cached = {
-      rules: {
-        kh: normalizeRegionRule(data.rules.kh, 'kh'),
-        international: normalizeRegionRule(data.rules.international, 'international'),
-      },
+      rules: normalized,
       revision: data.revision,
       ready: true,
     }
@@ -120,9 +133,12 @@ function resolveRules(rules, region, countryAvailable, exception, policyEnabled)
       shopTarget: 'shadow_mall',
     }
   }
-  if (!countryAvailable) {
-    return {
-      ...rules.international,
+  // Country Rules supply defaults; explicit User Exceptions take precedence.
+  const baseline = exception?.mode === 'cambodia_experience' ? 'kh' : region
+  const effective = { ...rules[baseline === 'kh' ? 'kh' : 'international'] }
+  if (!countryAvailable && exception?.mode !== 'cambodia_experience') {
+    // Preserve the existing cautious defaults when the saved country is unknown.
+    Object.assign(effective, {
       app: true,
       physicalBooks: false,
       shadowMall: false,
@@ -130,22 +146,29 @@ function resolveRules(rules, region, countryAvailable, exception, policyEnabled)
       payway: false,
       binancePay: false,
       shopTarget: 'diamonds',
+    })
+    // New features should not be enabled for unknown countries unless both
+    // regional rules enable them or a valid User Exception explicitly allows.
+    for (const key of Object.keys(effective)) {
+      if (typeof effective[key] !== 'boolean' || LEGACY_FLAGS.includes(key) ||
+          NEW_FLAGS.includes(key)) continue
+      effective[key] = rules.kh[key] === true && rules.international[key] === true
     }
   }
-  const baseline = exception?.mode === 'cambodia_experience' ? 'kh' : region
-  const effective = { ...rules[baseline === 'kh' ? 'kh' : 'international'] }
   if (exception?.mode === 'all_eligible') effective.app = true
   if (exception?.mode === 'custom' && exception.overrides && typeof exception.overrides === 'object') {
-    for (const key of FLAGS) {
-      if (exception.overrides[key] === 'allow') effective[key] = true
-      if (exception.overrides[key] === 'block') effective[key] = false
+    for (const [key, value] of Object.entries(exception.overrides)) {
+      if (!Object.hasOwn(effective, key) || !Object.hasOwn(rules.kh, key) ||
+          !Object.hasOwn(rules.international, key) ||
+          typeof effective[key] !== 'boolean') continue
+      if (value === 'allow') effective[key] = true
+      if (value === 'block') effective[key] = false
     }
     if (LANGUAGES.has(exception.overrides.storyLanguage)) effective.storyLanguage = exception.overrides.storyLanguage
     if (TARGETS.has(exception.overrides.shopTarget)) effective.shopTarget = exception.overrides.shopTarget
   }
-  effective.physicalBooks = Boolean(region === 'kh' && rules.kh.physicalBooks && effective.physicalBooks)
-  effective.payway = Boolean(rules[region]?.payway && effective.payway)
-  effective.binancePay = Boolean(rules[region]?.binancePay && effective.binancePay)
+  // Do not re-clamp by country here. Such clamping would cancel explicit
+  // per-user grants; any separate global safety kill switches remain elsewhere.
   return effective
 }
 
