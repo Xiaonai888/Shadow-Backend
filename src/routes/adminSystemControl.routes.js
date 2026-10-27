@@ -1,7 +1,7 @@
 import { getRuntimeMemoryInspector } from '../services/runtimeMemoryInspector.service.js'
 import express from 'express'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
-import { createRateLimit } from '../middleware/rateLimit.middleware.js'
+import { createRateLimit as rateLimit } from '../middleware/rateLimit.middleware.js'
 import { getSystemUsageCurrentSnapshot } from '../services/systemUsageMonitor.service.js'
 import { getSystemUsageAnomalySnapshot } from '../services/systemUsageAnomaly.service.js'
 import { getSystemUsageRegressionState } from '../services/systemUsageRegression.service.js'
@@ -25,7 +25,14 @@ const router = express.Router()
 const viewSystemControl = requireAdminPermission('system_control.view')
 const manageSystemControl = requireAdminPermission('system_control.manage')
 
-const snapshotGuard = createRateLimit({
+const systemControlGuard = rateLimit({
+  key: 'admin-system-control-routes',
+  windowMs: 60 * 1000,
+  max: 60,
+  message: 'Too many System Control requests. Please try again later.',
+})
+
+const snapshotGuard = rateLimit({
   key: 'admin-system-control-snapshot',
   windowMs: 60 * 1000,
   max: 30,
@@ -118,7 +125,7 @@ async function loadRenderMonthlySummary() {
   }
 }
 
-router.get('/render/bandwidth/monthly', viewSystemControl, async (req, res) => {
+router.get('/render/bandwidth/monthly', systemControlGuard, viewSystemControl, async (req, res) => {
   try {
     const monthly = await loadRenderMonthlySummary()
     return res.status(200).json({ ok: true, monthly })
@@ -201,7 +208,7 @@ router.get(
 
 router.post(
   '/providers/refresh',
-  manageSystemControl,
+  systemControlGuard, manageSystemControl,
   async (req, res) => {
     try {
       const providers =
@@ -228,7 +235,7 @@ router.post(
   }
 )
 
-router.get('/history', viewSystemControl, async (req, res) => {
+router.get('/history', systemControlGuard, viewSystemControl, async (req, res) => {
   try {
     const history = await getSystemUsageHistory({
       from: req.query?.from,
@@ -251,7 +258,7 @@ router.get('/history', viewSystemControl, async (req, res) => {
   }
 })
 
-router.get('/reports/download', viewSystemControl, async (req, res) => {
+router.get('/reports/download', systemControlGuard, viewSystemControl, async (req, res) => {
   try {
     const report = await generateSystemUsageReport({
       type: req.query?.type,
@@ -291,7 +298,7 @@ router.get('/reports/download', viewSystemControl, async (req, res) => {
   }
 })
 
-router.get('/diagnostics/recent-errors', viewSystemControl, (req, res) => {
+router.get('/diagnostics/recent-errors', systemControlGuard, viewSystemControl, (req, res) => {
   const now = Date.now()
   const requested = Number(req.query?.minutes)
   const minutes = Number.isFinite(requested) && requested >= 5
@@ -393,7 +400,7 @@ async function loadStoredErrorHistory(range) {
   }
 }
 
-router.get('/diagnostics/error-history', viewSystemControl, async (req, res) => {
+router.get('/diagnostics/error-history', systemControlGuard, viewSystemControl, async (req, res) => {
   const range = String(req.query?.range || '24h').toLowerCase()
   if (!['24h', '7d'].includes(range)) {
     return res.status(400).json({ ok: false, message: 'Range must be 24h or 7d.' })
@@ -413,7 +420,7 @@ router.get('/diagnostics/error-history', viewSystemControl, async (req, res) => 
   }
 })
 
-router.get('/incidents', viewSystemControl, async (req, res) => {
+router.get('/incidents', systemControlGuard, viewSystemControl, async (req, res) => {
   try {
     const incidents =
       await listSystemUsageIncidents({
@@ -453,7 +460,7 @@ router.get('/incidents', viewSystemControl, async (req, res) => {
   }
 })
 
-router.get('/incidents/:incidentId', viewSystemControl, async (req, res) => {
+router.get('/incidents/:incidentId', systemControlGuard, viewSystemControl, async (req, res) => {
   try {
     const incident = await getSystemUsageIncident(
       req.params.incidentId
@@ -474,7 +481,7 @@ router.get('/incidents/:incidentId', viewSystemControl, async (req, res) => {
 
 router.post(
   '/incidents/:incidentId/fix',
-  manageSystemControl,
+  systemControlGuard, manageSystemControl,
   async (req, res) => {
     try {
       const incident = await applySystemUsageIncidentFix({
@@ -506,7 +513,7 @@ router.post(
 
 router.post(
   '/incidents/:incidentId/verify',
-  manageSystemControl,
+  systemControlGuard, manageSystemControl,
   async (req, res) => {
     try {
       const incident = await verifySystemUsageIncident({
@@ -529,7 +536,7 @@ router.post(
 
 router.post(
   '/incidents/:incidentId/resolve',
-  manageSystemControl,
+  systemControlGuard, manageSystemControl,
   async (req, res) => {
     try {
       const incident = await resolveSystemUsageIncident({
@@ -556,7 +563,7 @@ router.post(
 
 router.post(
   '/incidents/:incidentId/archive',
-  manageSystemControl,
+  systemControlGuard, manageSystemControl,
   async (req, res) => {
     try {
       const incident = await archiveSystemUsageIncident({
