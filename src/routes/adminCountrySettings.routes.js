@@ -8,7 +8,8 @@ const router = express.Router()
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const REGIONS = ['kh', 'international']
 const LEGACY_BOOLEAN_KEYS = ['app', 'physicalBooks', 'binancePay', 'payway']
-const BOOLEAN_KEYS = [...LEGACY_BOOLEAN_KEYS, 'shadowMall', 'readerMall']
+const PAYOUT_BOOLEAN_KEYS = ['payoutBank', 'payoutBinance', 'payoutPhone']
+const BOOLEAN_KEYS = [...LEGACY_BOOLEAN_KEYS, 'shadowMall', 'readerMall', ...PAYOUT_BOOLEAN_KEYS]
 const RULE_KEYS = [...BOOLEAN_KEYS, 'storyLanguage', 'shopTarget']
 const LANGUAGES = ['km', 'en', 'zh', 'ja', 'ko']
 const SHOP_TARGETS = ['shadow_mall', 'diamonds']
@@ -37,11 +38,14 @@ function normalizeRules(value) {
     if (!isRecord(entry) || Object.keys(entry).some(key => !RULE_KEYS.includes(key))) return null
     if (!LEGACY_BOOLEAN_KEYS.every(key => typeof entry[key] === 'boolean')) return null
     if (!LANGUAGES.includes(entry.storyLanguage) || !SHOP_TARGETS.includes(entry.shopTarget)) return null
-    if (['shadowMall', 'readerMall'].some(key => entry[key] !== undefined && typeof entry[key] !== 'boolean')) return null
+    if (['shadowMall', 'readerMall', ...PAYOUT_BOOLEAN_KEYS].some(key => entry[key] !== undefined && typeof entry[key] !== 'boolean')) return null
     const next = {
       ...entry,
       shadowMall: typeof entry.shadowMall === 'boolean' ? entry.shadowMall : region === 'kh',
       readerMall: typeof entry.readerMall === 'boolean' ? entry.readerMall : region === 'kh',
+      payoutBank: typeof entry.payoutBank === 'boolean' ? entry.payoutBank : region === 'kh',
+      payoutBinance: typeof entry.payoutBinance === 'boolean' ? entry.payoutBinance : false,
+      payoutPhone: typeof entry.payoutPhone === 'boolean' ? entry.payoutPhone : true,
     }
     result[region] = Object.fromEntries(RULE_KEYS.map(key => [key, next[key]]))
   }
