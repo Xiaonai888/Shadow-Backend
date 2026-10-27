@@ -3,7 +3,7 @@ import { registerRuntimeInspectable } from './runtimeMemoryInspector.service.js'
 
 const MAX_CACHE_ENTRIES = 300
 const CACHE_TTL_MS = 60 * 1000
-const VIEW_SENSITIVE_INVALIDATION_MS = 20 * 1000
+const VIEW_SENSITIVE_INVALIDATION_MS = CACHE_TTL_MS
 
 const VIEW_SENSITIVE_SORTS = new Set([
   'views',
