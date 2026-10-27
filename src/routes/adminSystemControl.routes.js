@@ -304,12 +304,13 @@ router.get('/diagnostics/recent-errors', viewSystemControl, (req, res) => {
 
   for (const entry of samples) {
     const key = JSON.stringify([
-      entry.route, entry.http_status, entry.error_class,
-      entry.provider, entry.target,
+      entry.route, entry.http_status, entry.response_code || null,
+      entry.error_class, entry.provider, entry.target,
     ])
     const group = groups.get(key) || {
       route: entry.route,
       http_status: entry.http_status,
+      response_code: entry.response_code || null,
       error_class: entry.error_class,
       provider: entry.provider,
       target: entry.target,
@@ -319,6 +320,7 @@ router.get('/diagnostics/recent-errors', viewSystemControl, (req, res) => {
       last_seen_at: entry.last_seen_at,
       sample_request_id: entry.sample_request_id,
       sample_error: entry.sample_error,
+      sample_duration_ms: Number(entry.sample_duration_ms) || 0,
     }
     group.count += Math.max(0, Number(entry.count) || 0)
     group.external_error_count += Math.max(0, Number(entry.external_error_count) || 0)
@@ -329,6 +331,7 @@ router.get('/diagnostics/recent-errors', viewSystemControl, (req, res) => {
       group.last_seen_at = entry.last_seen_at
       group.sample_request_id = entry.sample_request_id
       group.sample_error = entry.sample_error
+      group.sample_duration_ms = Number(entry.sample_duration_ms) || 0
     }
     groups.set(key, group)
   }
