@@ -2,6 +2,8 @@ import { supabase } from '../config/supabase.js'
 
 const MAX_REWARD_SECONDS = 1800
 const MAX_SESSION_SECONDS = 30
+const RPC_MISSING_RECHECK_MS = 5 * 60 * 1000
+let rpcMissingUntil = 0
 
 function clampSeconds(value, limit) {
   const seconds = Math.floor(Number(value || 0))
@@ -44,6 +46,17 @@ export async function recordReadingRewardSession({
   getOrCreateReadingReward,
 }) {
   const secondsToAdd = clampSeconds(seconds, MAX_SESSION_SECONDS)
+
+  // Missing SQL function: avoid retrying the same failing RPC every heartbeat.
+  // Retry the atomic path after five minutes so new SQL deployments are detected.
+  if (Date.now() < rpcMissingUntil) {
+    return legacyReadingRewardProgress({
+      userId,
+      secondsToAdd,
+      getOrCreateReadingReward,
+    })
+  }
+
   const { data, error } = await supabase.rpc(
     'record_reader_reading_reward_session',
     {
@@ -58,6 +71,12 @@ export async function recordReadingRewardSession({
       throw error
     }
 
+    rpcMissingUntil = Date.now() + RPC_MISSING_RECHECK_MS
+    console.warn('READING_REWARD_ATOMIC_RPC_MISSING', JSON.stringify({
+      code: String(error.code || ''),
+      retry_in_seconds: RPC_MISSING_RECHECK_MS / 1000,
+    }))
+
     return legacyReadingRewardProgress({
       userId,
       secondsToAdd,
@@ -65,6 +84,7 @@ export async function recordReadingRewardSession({
     })
   }
 
+  rpcMissingUntil = 0
   const result = Array.isArray(data) ? data[0] : data
   const reward = result?.reward
   const secondsAdded = Number(result?.seconds_added)
