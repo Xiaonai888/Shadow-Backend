@@ -1,10 +1,11 @@
 import express from 'express'
 import { supabase } from '../config/supabase.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
-import { createRateLimit } from '../middleware/rateLimit.middleware.js'
+import { createRateLimit as rateLimit } from '../middleware/rateLimit.middleware.js'
 import { getAdminActor, logAdminActivity } from '../services/adminActivity.service.js'
 
 const router = express.Router()
+const manageCountrySettings = requireAdminPermission('system_control.manage')
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const REGIONS = ['kh', 'international']
 const LEGACY_BOOLEAN_KEYS = ['app', 'physicalBooks', 'binancePay', 'payway']
@@ -20,14 +21,20 @@ const EXTRA_BOOLEAN_KEY = /^[a-z][a-zA-Z0-9_]{0,63}$/
 const MAX_RULE_KEYS = 64
 const LIMIT = 10
 
-router.use(requireAdminPermission('system_control.manage'))
 router.use((req, res, next) => {
   res.set('Cache-Control', 'private, no-store')
   next()
 })
 
-const readLimit = createRateLimit({ key: 'country-settings-read', windowMs: 60000, max: 60, identity: req => req.admin?.admin_id })
-const writeLimit = createRateLimit({ key: 'country-settings-write', windowMs: 60000, max: 12, identity: req => req.admin?.admin_id })
+const countrySettingsIpGuard = rateLimit({
+  key: 'admin-country-settings-preauth-ip',
+  windowMs: 60 * 1000,
+  max: 120,
+  message: 'Too many country settings requests. Please try again later.',
+})
+
+const readLimit = rateLimit({ key: 'country-settings-read', windowMs: 60000, max: 60, identity: req => req.admin?.admin_id })
+const writeLimit = rateLimit({ key: 'country-settings-write', windowMs: 60000, max: 12, identity: req => req.admin?.admin_id })
 
 function isRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -127,7 +134,7 @@ async function audit(req, action, itemId, title, details) {
   })
 }
 
-router.get('/', readLimit, async (req, res) => {
+router.get('/', countrySettingsIpGuard, manageCountrySettings, readLimit, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('shadow_country_settings')
@@ -144,7 +151,7 @@ router.get('/', readLimit, async (req, res) => {
   }
 })
 
-router.put('/', writeLimit, async (req, res) => {
+router.put('/', countrySettingsIpGuard, manageCountrySettings, writeLimit, async (req, res) => {
   const rules = normalizeRules(req.body?.rules)
   if (!rules) return res.status(400).json({ ok: false, message: 'Invalid country rule settings' })
   try {
@@ -170,7 +177,7 @@ router.put('/', writeLimit, async (req, res) => {
   }
 })
 
-router.get('/users', readLimit, async (req, res) => {
+router.get('/users', countrySettingsIpGuard, manageCountrySettings, readLimit, async (req, res) => {
   const search = cleanSearch(req.query.search)
   if (search.length < 2) return res.json({ ok: true, users: [] })
   try {
@@ -198,7 +205,7 @@ router.get('/users', readLimit, async (req, res) => {
   }
 })
 
-router.get('/exceptions', readLimit, async (req, res) => {
+router.get('/exceptions', countrySettingsIpGuard, manageCountrySettings, readLimit, async (req, res) => {
   const page = Math.min(10000, Math.max(1, Number.parseInt(req.query.page, 10) || 1))
   const start = (page - 1) * LIMIT
   try {
@@ -238,7 +245,7 @@ router.get('/exceptions', readLimit, async (req, res) => {
 
 // Durable, immutable history is separate from 90-day admin_activity_logs.
 // Fetch only when Admin opens the History section: 10 entries per page.
-router.get('/exceptions/history', readLimit, async (req, res) => {
+router.get('/exceptions/history', countrySettingsIpGuard, manageCountrySettings, readLimit, async (req, res) => {
   const page = Math.min(10000, Math.max(1, Number.parseInt(req.query.page, 10) || 1))
   const userId = String(req.query.userId || '').trim()
   const action = String(req.query.action || '').trim().toUpperCase()
@@ -305,7 +312,7 @@ router.get('/exceptions/history', readLimit, async (req, res) => {
   }
 })
 
-router.post('/exceptions', writeLimit, async (req, res) => {
+router.post('/exceptions', countrySettingsIpGuard, manageCountrySettings, writeLimit, async (req, res) => {
   const userId = String(req.body?.userId || '')
   const mode = String(req.body?.mode || '')
   if (!UUID.test(userId) || !EXCEPTION_MODES.includes(mode)) {
@@ -362,7 +369,7 @@ router.post('/exceptions', writeLimit, async (req, res) => {
   }
 })
 
-router.delete('/exceptions/:exceptionId', writeLimit, async (req, res) => {
+router.delete('/exceptions/:exceptionId', countrySettingsIpGuard, manageCountrySettings, writeLimit, async (req, res) => {
   const id = String(req.params.exceptionId || '')
   if (!UUID.test(id)) return res.status(400).json({ ok: false, message: 'Invalid exception ID' })
   try {
