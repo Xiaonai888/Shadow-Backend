@@ -1089,6 +1089,10 @@ async function getAuthorPageById(authorId) {
   return data
 }
 
+function isValidStoryUuid(value) {
+  return /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(String(value || ''))
+}
+
 async function getPublishedReadableStory(storyId) {
   const { data, error } = await supabase
     .from('stories')
@@ -2524,6 +2528,14 @@ export async function getPublicStoryById(req, res) {
   try {
     const { storyId } = req.params
 
+    if (!isValidStoryUuid(storyId)) {
+      return res.status(400).json({
+        ok: false,
+        code: 'INVALID_STORY_ID',
+        message: 'Invalid story ID.',
+      })
+    }
+
     const story = await getPublishedReadableStory(storyId)
 
     if (!story) {
@@ -2626,6 +2638,14 @@ if (slidesError) throw slidesError
 export async function getPublicStoryEpisodes(req, res) {
   try {
     const { storyId } = req.params
+
+    if (!isValidStoryUuid(storyId)) {
+      return res.status(400).json({
+        ok: false,
+        code: 'INVALID_STORY_ID',
+        message: 'Invalid story ID.',
+      })
+    }
 
     const story = await getPublishedReadableStory(storyId)
 
