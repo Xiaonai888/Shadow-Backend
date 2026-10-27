@@ -4,7 +4,7 @@ const QR_SOURCE_URL = 'https://raw.githubusercontent.com/Xiaonai888/Web-React-2/
 const QR_MAX_BYTES = 512 * 1024
 const QR_CACHE_MS = 5 * 60 * 1000
 const OFFICIAL_RECEIVER_UID = '514018161'
-const OFFICIAL_RECEIVER_NAME = 'Reaper Of Soul'
+const OFFICIAL_RECEIVER_NAME = 'Shadow12226'
 
 let cache = null
 let pending = null
