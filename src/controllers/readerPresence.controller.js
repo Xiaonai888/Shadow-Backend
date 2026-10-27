@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { isIP } from 'node:net'
+import { BlockList, isIP } from 'node:net'
 import { supabase } from '../config/supabase.js'
 
 const GEO_CACHE_TTL_MS = 12 * 60 * 60 * 1000
@@ -13,6 +13,21 @@ const geoInFlight = new Map()
 const countryInitialized = new Map()
 const countryInFlight = new Map()
 const INVALID_COUNTRIES = new Set(['XX', 'ZZ', 'T1'])
+const CF_SUBNETS = [
+  '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22',
+  '103.31.4.0/22', '141.101.64.0/18', '108.162.192.0/18',
+  '190.93.240.0/20', '188.114.96.0/20', '197.234.240.0/22',
+  '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
+  '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22',
+  '2400:cb00::/32', '2606:4700::/32', '2803:f800::/32',
+  '2405:b500::/32', '2405:8100::/32', '2a06:98c0::/29',
+  '2c0f:f248::/32',
+]
+const cloudflarePeers = new BlockList()
+for (const subnet of CF_SUBNETS) {
+  const [address, length] = subnet.split('/')
+  cloudflarePeers.addSubnet(address, Number(length), isIP(address) === 6 ? 'ipv6' : 'ipv4')
+}
 
 function cleanSessionId(value) {
   return String(value || '').trim().slice(0, 120)
@@ -96,29 +111,28 @@ function isPublicIp(value) {
   return true
 }
 
-function getClientIp(req) {
-  const candidates = [
-    req.headers['cf-connecting-ip'],
-    req.headers['x-forwarded-for'],
-    req.headers['x-real-ip'],
-    req.ip,
-    req.socket?.remoteAddress,
-  ]
-
-  for (const candidate of candidates) {
-    const raw = Array.isArray(candidate) ? candidate[0] : candidate
-    const ip = normalizeIp(raw)
-
-    if (ip && isPublicIp(ip)) return ip
+function getVerifiedPeerIp(req) {
+  const forwarded = req.headers['x-forwarded-for']
+  const value = Array.isArray(forwarded) ? forwarded.join(',') : String(forwarded || '')
+  if (value) {
+    const addresses = value.split(',').map(item => item.trim())
+    if (addresses.length > 32) return ''
+    const last = normalizeIp(addresses[addresses.length - 1])
+    return isPublicIp(last) ? last : ''
   }
-
-  return ''
+  const direct = normalizeIp(req.socket?.remoteAddress)
+  return isPublicIp(direct) ? direct : ''
 }
 
-function getHeaderCountry(req) {
+function isVerifiedCloudflarePeer(peerIp) {
+  const type = isIP(peerIp)
+  return type > 0 && cloudflarePeers.check(peerIp, type === 6 ? 'ipv6' : 'ipv4')
+}
+
+function getHeaderCountry(req, verifiedCloudflare) {
+  if (!verifiedCloudflare) return { countryCode: '', countryName: '' }
   const raw = req.headers['cf-ipcountry'] || ''
   const countryCode = cleanCountryCode(Array.isArray(raw) ? raw[0] : raw)
-
   return {
     countryCode,
     countryName: countryCode ? countryNameFromCode(countryCode) : '',
@@ -224,19 +238,22 @@ async function lookupCountryByIp(ip) {
 }
 
 async function getRequestCountry(req) {
-  const headerCountry = getHeaderCountry(req)
+  const peerIp = getVerifiedPeerIp(req)
+  if (!peerIp) return { countryCode: '', countryName: '', source: '' }
 
+  const cloudflare = isVerifiedCloudflarePeer(peerIp)
+  const headerCountry = getHeaderCountry(req, cloudflare)
   if (headerCountry.countryCode) {
-    return headerCountry
+    return { ...headerCountry, source: 'cloudflare' }
   }
 
-  const ip = getClientIp(req)
+  const raw = cloudflare ? req.headers['cf-connecting-ip'] : null
+  const forwardedClient = normalizeIp(Array.isArray(raw) ? raw[0] : raw)
+  const clientIp = cloudflare ? (isPublicIp(forwardedClient) ? forwardedClient : '') : peerIp
+  if (!clientIp) return { countryCode: '', countryName: '', source: '' }
 
-  if (!ip) {
-    return { countryCode: '', countryName: '' }
-  }
-
-  return lookupCountryByIp(ip)
+  const resolved = await lookupCountryByIp(clientIp)
+  return { ...resolved, source: 'admin_ip_lookup' }
 }
 
 function rememberCountryStatus(userId, status) {
@@ -288,7 +305,7 @@ async function initializeSavedCountry(req, userId) {
         const resolved = await getRequestCountry(req)
         countryCode = cleanCountryCode(resolved.countryCode)
         countryName = resolved.countryName
-        source = getHeaderCountry(req).countryCode ? 'cloudflare' : 'admin_ip_lookup'
+        source = resolved.source || 'admin_ip_lookup'
       }
 
       if (!countryCode) {
