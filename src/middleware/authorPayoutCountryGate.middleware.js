@@ -1,5 +1,5 @@
 import { supabase } from '../config/supabase.js'
-import { readReaderClassificationCountry } from '../services/readerClassificationCountrySource.service.js'
+import { isReaderClassificationCountryPolicyEnabled, readReaderClassificationCountry } from '../services/readerClassificationCountrySource.service.js'
 
 const METHOD_FLAGS = Object.freeze({
   bank_qr: 'payoutBank',
@@ -49,6 +49,10 @@ export function requireAuthorPayoutMethod(fixedMethodType = null) {
     if (!userId) {
       return res.status(401).json({ ok: false, code: 'UNAUTHORIZED', message: 'Login required' })
     }
+
+    // Country-specific restrictions remain disabled until explicitly activated.
+    // Existing payout controller validation and fraud checks still run after next().
+    if (!isReaderClassificationCountryPolicyEnabled()) return next()
 
     try {
       const [settingsResult, country, exceptionResult] = await Promise.all([
