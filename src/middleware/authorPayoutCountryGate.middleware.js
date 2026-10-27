@@ -22,8 +22,12 @@ function activeException(item) {
 
 function resolvePayoutAccess(rules, region, exception, key) {
   const baseline = exception?.mode === 'cambodia_experience' ? 'kh' : region
-  let permitted = region === 'unknown'
-    ? key === 'payoutBank' || key === 'payoutPhone'
+  const cambodiaAllowed = allowedFromRule(rules?.kh, key, 'kh')
+  const internationalAllowed = allowedFromRule(rules?.international, key, 'international')
+  let permitted = baseline === 'unknown'
+    ? cambodiaAllowed === internationalAllowed
+      ? cambodiaAllowed
+      : key === 'payoutBank' || key === 'payoutPhone'
     : allowedFromRule(rules?.[baseline], key, baseline)
 
   if (exception?.mode === 'custom') {
