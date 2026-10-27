@@ -131,13 +131,14 @@ function normalizeMessages(input, characterIds, audioOwnerId = '') {
   for (let index = 0; index < input.length; index += 1) {
     const item = input[index] || {}
     const requestedType = cleanText(item.type).toLowerCase()
-const type = requestedType === 'voice' ? 'audio' : ['chat', 'aside', 'author_note', 'image', 'audio'].includes(requestedType)
+const type = requestedType === 'voice' ? 'audio' : ['chat', 'aside', 'author_note', 'image', 'audio', 'notification'].includes(requestedType)
   ? requestedType
   : 'aside'
 const text = cleanText(item.text)
 const imageUrl = cleanNullableText(item.image_url || item.imageUrl)
 const characterId = cleanNullableText(item.character_id || item.characterId)
 if (type === 'image' && !imageUrl) continue
+if (type === 'notification' && !text) return { error: 'Notification text is required', messages: [] }
 if (type !== 'image' && type !== 'audio' && !text) continue
 const audioUrl = type === 'audio' ? normalizeVoiceUrl(item.audio_url || item.audioUrl || item.voice_url || item.voiceUrl, audioOwnerId) : null
 const audioDuration = type === 'audio' ? Number(item.audio_duration ?? item.audioDuration ?? item.duration_seconds ?? item.duration) : null
@@ -169,12 +170,46 @@ if (type === 'image' && characterId && !characterIds.has(characterId)) {
   return { error: 'The selected image character is invalid', messages: [] }
 }
 
+let notification = null
+if (type === 'notification') {
+  if (!characterId || !characterIds.has(characterId)) {
+    return { error: 'Choose a valid character for the notification', messages: [] }
+  }
+  if (text.length > 500) {
+    return { error: 'Notification text must be 500 characters or less', messages: [] }
+  }
+  if (imageUrl && (!/^https:\/\/[^\s]+$/i.test(imageUrl) || imageUrl.length > 2048)) {
+    return { error: 'Notification image must be a valid HTTPS URL', messages: [] }
+  }
+  const options = item.notification && typeof item.notification === 'object' && !Array.isArray(item.notification)
+    ? item.notification
+    : {}
+  const dismissMode = cleanText(options.dismiss_mode ?? options.dismissMode ?? 'duration').toLowerCase()
+  if (!['duration', 'swipe', 'next'].includes(dismissMode)) {
+    return { error: 'Invalid notification dismissal mode', messages: [] }
+  }
+  const durationSeconds = Number(options.duration_seconds ?? options.durationSeconds ?? 4)
+  if (!Number.isInteger(durationSeconds) || durationSeconds < 1 || durationSeconds > 30) {
+    return { error: 'Notification duration must be between 1 and 30 seconds', messages: [] }
+  }
+  const rawSwipe = options.swipe_to_dismiss ?? options.swipeToDismiss
+  if (rawSwipe !== undefined && typeof rawSwipe !== 'boolean') {
+    return { error: 'Invalid notification swipe setting', messages: [] }
+  }
+  notification = {
+    dismiss_mode: dismissMode,
+    duration_seconds: durationSeconds,
+    swipe_to_dismiss: dismissMode === 'swipe' || rawSwipe !== false,
+  }
+}
+
     messages.push({
   id: cleanText(item.id) || `${Date.now()}-${index}`,
   type,
-  character_id: ['chat', 'image', 'audio'].includes(type) ? characterId : null,
+  character_id: ['chat', 'image', 'audio', 'notification'].includes(type) ? characterId : null,
   text: type === 'image' || type === 'audio' ? '' : text,
-  image_url: type === 'image' ? imageUrl : null,
+  image_url: ['image', 'notification'].includes(type) ? imageUrl : null,
+  ...(notification ? { notification } : {}),
   ...(type === 'audio' ? { audio_url: audioUrl, audio_duration: audioDuration } : {}),
   sort_order: messages.length,
   created_at: cleanNullableText(item.created_at || item.createdAt),
@@ -307,6 +342,20 @@ const normalized = normalizeMessages(
       return res.status(400).json({ ok: false, message: normalized.error })
     }
 
+    const hasNotifications = normalized.messages.some((message) => message.type === 'notification')
+    let notificationSettings = null
+    if (hasNotifications) {
+      const options = req.body.notification_settings ?? req.body.notificationSettings ?? {}
+      if (!options || typeof options !== 'object' || Array.isArray(options)) {
+        return res.status(400).json({ ok: false, message: 'Invalid notification settings' })
+      }
+      const maxVisible = Number(options.max_visible ?? options.maxVisible ?? 2)
+      if (!Number.isInteger(maxVisible) || maxVisible < 1 || maxVisible > 3) {
+        return res.status(400).json({ ok: false, message: 'Maximum visible notifications must be 1 to 3' })
+      }
+      notificationSettings = { max_visible: maxVisible }
+    }
+
     const plainText = normalized.messages
   .map((message) => message.text)
   .join('\n')
@@ -393,6 +442,7 @@ const content = JSON.stringify({
     })
   ),
   messages: normalized.messages,
+  ...(notificationSettings ? { notification_settings: notificationSettings } : {}),
 })
 
     const requestedEpisodeId = cleanNullableText(req.body.episode_id || req.body.episodeId)
