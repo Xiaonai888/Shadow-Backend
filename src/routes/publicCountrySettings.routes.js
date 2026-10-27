@@ -93,7 +93,6 @@ async function getRules() {
 }
 
 function optionalReader(req, res, next) {
-  if (!isReaderClassificationCountryPolicyEnabled()) return next()
   const authorization = String(req.get('authorization') || '')
   if (!authorization) return next()
   return requireUser(req, res, next)
@@ -208,8 +207,8 @@ router.get('/', optionalReader, async (req, res) => {
   const userId = req.user?.user_id || null
   const sourceReady = isReaderClassificationCountryPolicyEnabled()
   const [savedCountry, settingsResult, exceptionResult] = await Promise.allSettled([
-    sourceReady && userId ? readReaderClassificationCountry(userId) : Promise.resolve(null),
-    sourceReady ? getRules() : Promise.resolve({ rules: FALLBACK_RULES, revision: 0, ready: false }),
+    userId ? readReaderClassificationCountry(userId) : Promise.resolve(null),
+    getRules(),
     sourceReady ? getException(userId) : Promise.resolve(null),
   ])
   const country = savedCountry.status === 'fulfilled' ? savedCountry.value?.country || null : null
