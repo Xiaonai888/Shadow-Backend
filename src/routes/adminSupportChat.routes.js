@@ -224,12 +224,16 @@ router.get('/conversations/:conversationId/messages', preAuthLimit, viewChat, in
     if (!existing.data) return problem(res, 404, 'ADMIN_CHAT_NOT_FOUND', 'Conversation not found')
 
     let query = supabase.from('admin_support_messages')
-      .select('id, conversation_id, sender_kind, sender_admin_id, public_support_id, message_text, attachments, seen_at, created_at')
+      .select('id, conversation_id, sender_kind, sender_admin_id, public_support_id, message_text, attachments, seen_at, created_at, edited_at, deleted_at, reply_to_message_id')
       .eq('conversation_id', id).order('created_at', { ascending: false })
     if (before) query = query.lt('created_at', new Date(before).toISOString())
     const { data, error } = await query.limit(21)
     if (error) throw error
-    const page = (data || []).slice(0, 20)
+    const page = (data || []).slice(0, 20).map(message =>
+  message.deleted_at
+    ? { ...message, message_text: 'Message deleted', attachments: [] }
+    : message
+)
     const adminIds = [...new Set(page.filter((message) => message.sender_kind === 'admin').map((message) => message.sender_admin_id).filter(Boolean))]
     let admins = []
     if (adminIds.length) {
