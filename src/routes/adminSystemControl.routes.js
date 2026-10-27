@@ -355,6 +355,64 @@ router.get('/diagnostics/recent-errors', viewSystemControl, (req, res) => {
   })
 })
 
+const ERROR_HISTORY_CACHE_MS = 2 * 60 * 1000
+const errorHistoryCache = new Map()
+
+async function loadStoredErrorHistory(range) {
+  const cached = errorHistoryCache.get(range)
+  if (cached?.value && cached.expiresAt > Date.now()) return cached.value
+  if (cached?.pending) return cached.pending
+
+  const now = Date.now()
+  const duration = range === '7d' ? 7 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000
+  const pending = (async () => {
+    const { supabase } = await import('../config/supabase.js')
+    const { data, error } = await supabase.rpc('get_system_usage_error_history', {
+      p_from: new Date(now - duration).toISOString(),
+      p_to: new Date(now).toISOString(),
+      p_limit: 200,
+    })
+    if (error) throw error
+    if (!data || !Array.isArray(data.errors)) {
+      throw new Error('Stored error history returned an invalid response')
+    }
+    return { ...data, ok: true, range }
+  })()
+
+  errorHistoryCache.set(range, { pending })
+  try {
+    const value = await pending
+    errorHistoryCache.set(range, {
+      value,
+      expiresAt: Date.now() + ERROR_HISTORY_CACHE_MS,
+    })
+    return value
+  } catch (error) {
+    errorHistoryCache.delete(range)
+    throw error
+  }
+}
+
+router.get('/diagnostics/error-history', viewSystemControl, async (req, res) => {
+  const range = String(req.query?.range || '24h').toLowerCase()
+  if (!['24h', '7d'].includes(range)) {
+    return res.status(400).json({ ok: false, message: 'Range must be 24h or 7d.' })
+  }
+
+  try {
+    const history = await loadStoredErrorHistory(range)
+    return res.status(200).json(history)
+  } catch (error) {
+    console.error('ADMIN_SYSTEM_CONTROL_ERROR_HISTORY_ERROR:', error?.code || error?.message || error)
+    return res.status(error?.code === '42883' ? 503 : 500).json({
+      ok: false,
+      message: error?.code === '42883'
+        ? 'Stored error history SQL function is not installed.'
+        : 'Failed to load stored error history.',
+    })
+  }
+})
+
 router.get('/incidents', viewSystemControl, async (req, res) => {
   try {
     const incidents =
