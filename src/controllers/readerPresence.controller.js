@@ -229,9 +229,20 @@ async function lookupCountryByIp(ip) {
   }
 }
 
+function getRenderIngressIp(req) {
+  const raw = req.headers['x-forwarded-for']
+  const value = Array.isArray(raw) ? raw[0] : raw
+  if (typeof value !== 'string' || value.length > 2048) return ''
+  const lastHop = normalizeIp(value.slice(value.lastIndexOf(',') + 1))
+  return isPublicIp(lastHop) ? lastHop : ''
+}
+
 async function getRequestCountry(req) {
-  const peerIp = getVerifiedPeerIp(req)
-  const cloudflare = process.env.RENDER === 'true' || isVerifiedCloudflarePeer(peerIp)
+  const onRender = process.env.RENDER === 'true'
+  const ingressIp = onRender ? getRenderIngressIp(req) : getVerifiedPeerIp(req)
+  if (!ingressIp) return { countryCode: '', countryName: '', source: '' }
+
+  const cloudflare = isVerifiedCloudflarePeer(ingressIp)
   const raw = cloudflare ? req.headers['cf-connecting-ip'] : null
   const forwardedClient = normalizeIp(Array.isArray(raw) ? raw[0] : raw)
   const clientIp = isPublicIp(forwardedClient) ? forwardedClient : ''
@@ -242,8 +253,7 @@ async function getRequestCountry(req) {
     return { ...headerCountry, source: 'cloudflare' }
   }
 
-  const lookupIp = clientIp || peerIp
-  if (!lookupIp) return { countryCode: '', countryName: '', source: '' }
+  const lookupIp = clientIp || ingressIp
   const resolved = await lookupCountryByIp(lookupIp)
   return { ...resolved, source: 'admin_ip_lookup' }
 }
