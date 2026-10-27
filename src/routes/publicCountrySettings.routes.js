@@ -10,7 +10,8 @@ const TTL = 45000
 const LANGUAGES = new Set(['km', 'en', 'zh', 'ja', 'ko'])
 const TARGETS = new Set(['shadow_mall', 'diamonds'])
 const LEGACY_FLAGS = ['app', 'physicalBooks', 'binancePay', 'payway']
-const NEW_FLAGS = ['shadowMall', 'readerMall']
+const PAYOUT_FLAGS = ['payoutBank', 'payoutBinance', 'payoutPhone']
+const NEW_FLAGS = ['shadowMall', 'readerMall', ...PAYOUT_FLAGS]
 const FLAGS = [...LEGACY_FLAGS, ...NEW_FLAGS]
 const FALLBACK_RULES = {
   kh: {
@@ -20,6 +21,9 @@ const FALLBACK_RULES = {
     payway: false,
     shadowMall: true,
     readerMall: true,
+    payoutBank: true,
+    payoutBinance: false,
+    payoutPhone: true,
     storyLanguage: 'km',
     shopTarget: 'shadow_mall',
   },
@@ -30,6 +34,9 @@ const FALLBACK_RULES = {
     payway: false,
     shadowMall: true,
     readerMall: true,
+    payoutBank: false,
+    payoutBinance: false,
+    payoutPhone: true,
     storyLanguage: 'en',
     shopTarget: 'shadow_mall',
   },
@@ -51,6 +58,9 @@ function normalizeRegionRule(entry, region) {
     ...entry,
     shadowMall: typeof entry.shadowMall === 'boolean' ? entry.shadowMall : region === 'kh',
     readerMall: typeof entry.readerMall === 'boolean' ? entry.readerMall : region === 'kh',
+    payoutBank: typeof entry.payoutBank === 'boolean' ? entry.payoutBank : region === 'kh',
+    payoutBinance: typeof entry.payoutBinance === 'boolean' ? entry.payoutBinance : false,
+    payoutPhone: typeof entry.payoutPhone === 'boolean' ? entry.payoutPhone : true,
   }
 }
 
@@ -146,6 +156,51 @@ router.use(createRateLimit({
   max: 600,
   identity: req => req.ip,
 }))
+
+function resolvePayoutMethods(rules, region, exception) {
+  const baseline = exception?.mode === 'cambodia_experience' ? 'kh' : region
+  const effective = region === 'unknown'
+    ? { payoutBank: true, payoutBinance: false, payoutPhone: true }
+    : Object.fromEntries(PAYOUT_FLAGS.map(key => [key, rules[baseline][key]]))
+  if (exception?.mode === 'custom' && exception.overrides && typeof exception.overrides === 'object') {
+    for (const key of PAYOUT_FLAGS) {
+      if (exception.overrides[key] === 'allow') effective[key] = true
+      if (exception.overrides[key] === 'block') effective[key] = false
+    }
+  }
+  return {
+    bank_qr: effective.payoutBank === true,
+    binance: effective.payoutBinance === true,
+    phone: effective.payoutPhone === true,
+  }
+}
+
+router.get('/payout', requireUser, async (req, res) => {
+  res.set('Cache-Control', 'private, no-store')
+  res.set('Vary', 'Authorization')
+  try {
+    const userId = req.user?.user_id
+    const [settings, savedCountry, exception] = await Promise.all([
+      getRules(),
+      readReaderClassificationCountry(userId),
+      getException(userId),
+    ])
+    const country = savedCountry?.verified === true ? savedCountry.country : null
+    const region = country === null ? 'unknown' : country === 'KH' ? 'kh' : 'international'
+    return res.json({
+      ok: true,
+      country: country || 'unknown',
+      region,
+      countryVerified: Boolean(country),
+      payoutMethods: resolvePayoutMethods(settings.rules, region, exception),
+      hasException: Boolean(exception),
+      revision: settings.revision,
+    })
+  } catch (error) {
+    console.error('PUBLIC PAYOUT SETTINGS ERROR:', error?.message || error)
+    return res.status(503).json({ ok: false, message: 'Payout settings temporarily unavailable' })
+  }
+})
 
 router.get('/', optionalReader, async (req, res) => {
   res.set('Cache-Control', 'private, no-store')
