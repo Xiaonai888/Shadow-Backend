@@ -162,6 +162,30 @@ import {
 import { rateLimit } from 'express-rate-limit'
 
 const router = express.Router()
+
+
+const authorPayoutWriteIpLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'AUTHOR_PAYOUT_IP_RATE_LIMIT',
+    message: 'Too many payout changes. Please try again shortly.',
+  },
+})
+
+const authorPaymentMethodsWriteAccountLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 20,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) =>
+    String(req.user?.user_id || req.user?.id || 'unauthorized'),
+})
+
+
 const binancePayoutLimit = rateLimit({ windowMs: 3600000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, keyGenerator: (req) => String(req.user?.user_id || 'unauthorized') })
 
 const discoverBoostIpLimit = rateLimit({
@@ -316,8 +340,8 @@ router.post('/me/comment-protection/cleanup/run', requireUser, runMyAuthorCommen
 router.get('/me/comment-protection/moderation-history', requireUser, getMyAuthorModerationHistory)
 router.get('/me/payment-methods', requireUser, getMyAuthorPaymentMethods)
 router.get('/me/binance-payout', requireUser, getMyAuthorBinancePayout)
-router.post('/me/binance-payout', requireUser, binancePayoutLimit, requireAuthorPayoutMethod('binance'), saveMyAuthorBinancePayout)
-router.patch('/me/binance-payout/disable', requireUser, binancePayoutLimit, disableMyAuthorBinancePayout)
+router.post('/me/binance-payout', authorPayoutWriteIpLimit, requireUser, binancePayoutLimit, requireAuthorPayoutMethod('binance'), saveMyAuthorBinancePayout)
+router.patch('/me/binance-payout/disable', authorPayoutWriteIpLimit, requireUser, binancePayoutLimit, disableMyAuthorBinancePayout)
 router.get('/me/page-notifications', requireUser, getMyAuthorPageNotifications)
 router.get('/me/page-notifications/unread-count', requireUser, getMyAuthorPageNotificationUnreadCount)
 router.get('/me/page-notifications/stream', requireUser, streamMyAuthorPageNotifications)
@@ -385,7 +409,7 @@ router.delete(
   invalidatePublicStoriesAfterMutation,
   unfollowAuthorPage
 )
-router.post('/me/payment-methods', requireUser, requireAuthorPayoutMethod(), saveMyAuthorPaymentMethod)
+router.post('/me/payment-methods', authorPayoutWriteIpLimit, requireUser, authorPaymentMethodsWriteAccountLimit, requireAuthorPayoutMethod(), saveMyAuthorPaymentMethod)
 router.post(
   '/create',
   requireUser,
