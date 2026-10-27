@@ -112,14 +112,6 @@ function isPublicIp(value) {
 }
 
 function getVerifiedPeerIp(req) {
-  const forwarded = req.headers['x-forwarded-for']
-  const value = Array.isArray(forwarded) ? forwarded.join(',') : String(forwarded || '')
-  if (value) {
-    const addresses = value.split(',').map(item => item.trim())
-    if (addresses.length > 32) return ''
-    const last = normalizeIp(addresses[addresses.length - 1])
-    return isPublicIp(last) ? last : ''
-  }
   const direct = normalizeIp(req.socket?.remoteAddress)
   return isPublicIp(direct) ? direct : ''
 }
@@ -239,20 +231,20 @@ async function lookupCountryByIp(ip) {
 
 async function getRequestCountry(req) {
   const peerIp = getVerifiedPeerIp(req)
-  if (!peerIp) return { countryCode: '', countryName: '', source: '' }
+  const cloudflare = process.env.RENDER === 'true' || isVerifiedCloudflarePeer(peerIp)
+  const raw = cloudflare ? req.headers['cf-connecting-ip'] : null
+  const forwardedClient = normalizeIp(Array.isArray(raw) ? raw[0] : raw)
+  const clientIp = isPublicIp(forwardedClient) ? forwardedClient : ''
+  if (cloudflare && !clientIp) return { countryCode: '', countryName: '', source: '' }
 
-  const cloudflare = isVerifiedCloudflarePeer(peerIp)
   const headerCountry = getHeaderCountry(req, cloudflare)
   if (headerCountry.countryCode) {
     return { ...headerCountry, source: 'cloudflare' }
   }
 
-  const raw = cloudflare ? req.headers['cf-connecting-ip'] : null
-  const forwardedClient = normalizeIp(Array.isArray(raw) ? raw[0] : raw)
-  const clientIp = cloudflare ? (isPublicIp(forwardedClient) ? forwardedClient : '') : peerIp
-  if (!clientIp) return { countryCode: '', countryName: '', source: '' }
-
-  const resolved = await lookupCountryByIp(clientIp)
+  const lookupIp = clientIp || peerIp
+  if (!lookupIp) return { countryCode: '', countryName: '', source: '' }
+  const resolved = await lookupCountryByIp(lookupIp)
   return { ...resolved, source: 'admin_ip_lookup' }
 }
 
@@ -281,7 +273,7 @@ async function initializeSavedCountry(req, userId) {
         .maybeSingle()
 
       if (savedError) throw savedError
-      if (cleanCountryCode(saved?.detected_country) || cleanCountryCode(saved?.admin_country_override)) {
+      if (cleanCountryCode(saved?.detected_country)) {
         const result = { done: true, nextAttempt: 0, syncPresence: false }
         rememberCountryStatus(userId, result)
         return result
