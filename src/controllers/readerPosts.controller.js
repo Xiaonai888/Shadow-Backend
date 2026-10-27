@@ -2067,6 +2067,54 @@ async function readCombinedEchoRows({
     .slice(0, limit)
 }
 
+const ECHO_SHARED_FEED_TTL_MS = 10_000
+const ECHO_SHARED_FEED_MAX_KEYS = 8
+const echoSharedFeedCache = new Map()
+
+async function readSharedFeedEchoRows(options) {
+  if (
+    !options.feedOnly ||
+    options.ownerId ||
+    options.echoId ||
+    options.echoVersion
+  ) {
+    return readCombinedEchoRows(options)
+  }
+
+  const key = String(options.limit ?? FEED_SCAN_LIMIT)
+  const now = Date.now()
+  const existing = echoSharedFeedCache.get(key)
+
+  if (existing && existing.expiresAt > now) {
+    return existing.value
+  }
+  if (existing) echoSharedFeedCache.delete(key)
+
+  const entry = {
+    value: readCombinedEchoRows(options),
+    expiresAt: now + ECHO_SHARED_FEED_TTL_MS,
+  }
+  echoSharedFeedCache.set(key, entry)
+
+  while (echoSharedFeedCache.size > ECHO_SHARED_FEED_MAX_KEYS) {
+    echoSharedFeedCache.delete(echoSharedFeedCache.keys().next().value)
+  }
+
+  try {
+    const rows = await entry.value
+    if (echoSharedFeedCache.get(key) === entry) {
+      entry.value = rows
+      entry.expiresAt = Date.now() + ECHO_SHARED_FEED_TTL_MS
+    }
+    return rows
+  } catch (error) {
+    if (echoSharedFeedCache.get(key) === entry) {
+      echoSharedFeedCache.delete(key)
+    }
+    throw error
+  }
+}
+
 async function readSocialEchoPosts({
   viewerId,
   ownerId = '',
@@ -2075,14 +2123,13 @@ async function readSocialEchoPosts({
   feedOnly = false,
   limit = FEED_SCAN_LIMIT,
 }) {
-  const echoes =
-    await readCombinedEchoRows({
-      ownerId,
-      echoId,
-      echoVersion,
-      feedOnly,
-      limit,
-    })
+  const echoes = await readSharedFeedEchoRows({
+    ownerId,
+    echoId,
+    echoVersion,
+    feedOnly,
+    limit,
+  })
 
   if (!echoes.length) return []
 
