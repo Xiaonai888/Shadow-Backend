@@ -3,7 +3,7 @@ import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { createPaymentCountryTicket } from '../middleware/paymentCountryGate.middleware.js'
-import { isReaderClassificationCountryPolicyEnabled } from '../services/readerClassificationCountrySource.service.js'
+import { isReaderClassificationCountryPolicyEnabled, readReaderClassificationCountry } from '../services/readerClassificationCountrySource.service.js'
 
 const router = express.Router()
 const TTL = 45000
@@ -12,7 +12,6 @@ const TARGETS = new Set(['shadow_mall', 'diamonds'])
 const LEGACY_FLAGS = ['app', 'physicalBooks', 'binancePay', 'payway']
 const NEW_FLAGS = ['shadowMall', 'readerMall']
 const FLAGS = [...LEGACY_FLAGS, ...NEW_FLAGS]
-const INVALID_COUNTRIES = new Set(['XX', 'ZZ', 'T1'])
 const FALLBACK_RULES = {
   kh: {
     app: true,
@@ -38,11 +37,6 @@ const FALLBACK_RULES = {
 let cached = null
 let expiresAt = 0
 let pending = null
-
-function validCountry(value) {
-  const code = String(value || '').trim().toUpperCase()
-  return /^[A-Z]{2}$/.test(code) && !INVALID_COUNTRIES.has(code) ? code : null
-}
 
 function validRule(entry) {
   return entry && typeof entry === 'object' && !Array.isArray(entry)
@@ -92,17 +86,6 @@ function optionalReader(req, res, next) {
   const authorization = String(req.get('authorization') || '')
   if (!authorization) return next()
   return requireUser(req, res, next)
-}
-
-async function getSavedCountry(userId) {
-  if (!userId) return null
-  const { data, error } = await supabase
-    .from('shadow_reader_classifications')
-    .select('detected_country,admin_country_override')
-    .eq('user_id', userId)
-    .maybeSingle()
-  if (error) throw error
-  return validCountry(data?.admin_country_override) || validCountry(data?.detected_country)
 }
 
 async function getException(userId) {
@@ -169,11 +152,11 @@ router.get('/', optionalReader, async (req, res) => {
   const userId = req.user?.user_id || null
   const sourceReady = isReaderClassificationCountryPolicyEnabled()
   const [savedCountry, settingsResult, exceptionResult] = await Promise.allSettled([
-    getSavedCountry(userId),
+    userId ? readReaderClassificationCountry(userId) : Promise.resolve(null),
     getRules(),
     sourceReady ? getException(userId) : Promise.resolve(null),
   ])
-  const country = savedCountry.status === 'fulfilled' ? savedCountry.value : null
+  const country = savedCountry.status === 'fulfilled' ? savedCountry.value?.country || null : null
   const region = country === null ? 'unknown' : country === 'KH' ? 'kh' : 'international'
   const settings = settingsResult.status === 'fulfilled'
     ? settingsResult.value
