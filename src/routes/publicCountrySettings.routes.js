@@ -158,16 +158,9 @@ router.use(createRateLimit({
 
 function resolvePayoutMethods(rules, region, exception) {
   const baseline = exception?.mode === 'cambodia_experience' ? 'kh' : region
-  const effective = Object.fromEntries(PAYOUT_FLAGS.map(key => {
-    const cambodiaAllowed = rules.kh[key] === true
-    const internationalAllowed = rules.international[key] === true
-    const permitted = baseline === 'unknown'
-      ? cambodiaAllowed === internationalAllowed
-        ? cambodiaAllowed
-        : key === 'payoutBank' || key === 'payoutPhone'
-      : rules[baseline][key] === true
-    return [key, permitted]
-  }))
+  const effective = region === 'unknown'
+    ? { payoutBank: true, payoutBinance: false, payoutPhone: true }
+    : Object.fromEntries(PAYOUT_FLAGS.map(key => [key, rules[baseline][key]]))
   if (exception?.mode === 'custom' && exception.overrides && typeof exception.overrides === 'object') {
     for (const key of PAYOUT_FLAGS) {
       if (exception.overrides[key] === 'allow') effective[key] = true
@@ -186,10 +179,11 @@ router.get('/payout', requireUser, async (req, res) => {
   res.set('Vary', 'Authorization')
   try {
     const userId = req.user?.user_id
+    const policyEnabled = isReaderClassificationCountryPolicyEnabled()
     const [settings, savedCountry, exception] = await Promise.all([
-      getRules(),
+      policyEnabled ? getRules() : Promise.resolve(null),
       readReaderClassificationCountry(userId),
-      getException(userId),
+      policyEnabled ? getException(userId) : Promise.resolve(null),
     ])
     const country = savedCountry?.verified === true ? savedCountry.country : null
     const region = country === null ? 'unknown' : country === 'KH' ? 'kh' : 'international'
@@ -198,9 +192,13 @@ router.get('/payout', requireUser, async (req, res) => {
       country: country || 'unknown',
       region,
       countryVerified: Boolean(country),
-      payoutMethods: resolvePayoutMethods(settings.rules, region, exception),
+      // No country restrictions until the shared policy switch is enabled.
+      // Keep the not-yet-launched Binance payout option hidden.
+      payoutMethods: policyEnabled
+        ? resolvePayoutMethods(settings.rules, region, exception)
+        : { bank_qr: true, binance: false, phone: true },
       hasException: Boolean(exception),
-      revision: settings.revision,
+      revision: settings?.revision || 0,
     })
   } catch (error) {
     console.error('PUBLIC PAYOUT SETTINGS ERROR:', error?.message || error)
