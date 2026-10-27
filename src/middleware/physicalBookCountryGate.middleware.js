@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
-import { isReaderClassificationCountryPolicyEnabled } from '../services/readerClassificationCountrySource.service.js'
+import { isReaderClassificationCountryPolicyEnabled, readReaderClassificationCountry } from '../services/readerClassificationCountrySource.service.js'
 
 const ISSUER = 'shadow-country-settings'
 const AUDIENCE = 'shadow-payment-creation'
@@ -50,7 +50,7 @@ export async function requireCambodiaPhysicalBooks(req, res, next) {
   }
 
   try {
-    const [settingsResult, exceptionResult] = await Promise.all([
+    const [settingsResult, exceptionResult, currentCountry] = await Promise.all([
       supabase
         .from('shadow_country_settings')
         .select('rules,revision')
@@ -61,7 +61,13 @@ export async function requireCambodiaPhysicalBooks(req, res, next) {
         .select('mode,overrides,expires_at')
         .eq('user_id', userId)
         .maybeSingle(),
+      readReaderClassificationCountry(userId),
     ])
+
+    // A previously signed KH ticket must not bypass a later Admin country override.
+    if (currentCountry?.verified !== true || currentCountry.country !== 'KH') {
+      return fail(res, 409, 'BOOK_COUNTRY_REFRESH_REQUIRED', 'Your saved country has changed. Refresh and try again')
+    }
 
     if (settingsResult.error || !settingsResult.data || !Number.isSafeInteger(Number(settingsResult.data.revision))) {
       throw settingsResult.error || new Error('Country rules unavailable')
