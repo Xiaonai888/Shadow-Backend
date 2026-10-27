@@ -10,7 +10,7 @@ const MAX_PAGE_SIZE = 30
 const DEFAULT_REPLY_PAGE_SIZE = 5
 const MAX_REPLY_PAGE_SIZE = 20
 const COMMENT_SELECT =
-  'id, post_id, user_id, parent_id, text, likes, is_hidden, created_at, updated_at, user:users(id, name, username, avatar_url, role)'
+  'id, post_id, user_id, parent_id, text, likes, is_hidden, created_at, updated_at, user:users!user_id(id, name, username, avatar_url, role)'
 
 const COMMENT_REACTION_TYPES = new Set([
   'love',
