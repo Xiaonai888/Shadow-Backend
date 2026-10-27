@@ -108,7 +108,7 @@ function mediaValue(imageUrl, storageKey) {
   const key = assertR2StorageKey(storageKey, { allowEmpty: false })
   const url = assertR2MediaReference(imageUrl, { allowEmpty: false })
   const base = String(process.env.R2_PUBLIC_URL || '').trim().replace(/\/+$/, '')
-  if (!key.startsWith('admin-media-library/images/') || !base || url !== `${base}/${key}`) {
+  if (!(key.startsWith('admin-media-library/images/') || key.startsWith('media-library/images/')) || !base || url !== `${base}/${key}`) {
     throw invalid('Frame must use a finalized Admin Cloudflare image')
   }
   return { image_url: url, storage_key: key }
