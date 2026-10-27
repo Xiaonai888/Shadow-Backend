@@ -1,4 +1,4 @@
--- NEW: run once in Supabase SQL Editor after the initial reader analytics setup.
+-- REPLACE: safe to rerun in Supabase SQL Editor after the initial reader analytics setup.
 -- Replaces only the list RPC; does NOT refresh historical snapshots or schedule jobs.
 BEGIN;
 
@@ -15,7 +15,7 @@ AS $$
 DECLARE
   v_search text := pg_catalog.left(pg_catalog.btrim(COALESCE(p_search, '')), 90);
   v_group text := pg_catalog.lower(pg_catalog.btrim(COALESCE(p_group, 'all')));
-  v_limit integer := pg_catalog.least(pg_catalog.greatest(COALESCE(p_limit, 10), 1), 10);
+  v_limit integer := LEAST(GREATEST(COALESCE(p_limit, 10), 1), 10);
   v_result jsonb;
 BEGIN
   IF v_group NOT IN ('all', 'kh', 'international', 'unknown') THEN
