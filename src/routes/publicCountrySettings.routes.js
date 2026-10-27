@@ -158,9 +158,16 @@ router.use(createRateLimit({
 
 function resolvePayoutMethods(rules, region, exception) {
   const baseline = exception?.mode === 'cambodia_experience' ? 'kh' : region
-  const effective = region === 'unknown'
-    ? { payoutBank: true, payoutBinance: false, payoutPhone: true }
-    : Object.fromEntries(PAYOUT_FLAGS.map(key => [key, rules[baseline][key]]))
+  const effective = Object.fromEntries(PAYOUT_FLAGS.map(key => {
+    const cambodiaAllowed = rules.kh[key] === true
+    const internationalAllowed = rules.international[key] === true
+    const permitted = baseline === 'unknown'
+      ? cambodiaAllowed === internationalAllowed
+        ? cambodiaAllowed
+        : key === 'payoutBank' || key === 'payoutPhone'
+      : rules[baseline][key] === true
+    return [key, permitted]
+  }))
   if (exception?.mode === 'custom' && exception.overrides && typeof exception.overrides === 'object') {
     for (const key of PAYOUT_FLAGS) {
       if (exception.overrides[key] === 'allow') effective[key] = true
