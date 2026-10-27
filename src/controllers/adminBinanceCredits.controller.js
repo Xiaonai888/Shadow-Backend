@@ -347,38 +347,66 @@ export async function confirmAdminBinanceReceiptCredit(req, res) {
 export async function confirmAdminBinanceManualTopUp(req, res) {
   const admin = authorize(req, res)
   if (!admin) return
+
   const userId = String(req.body?.user_id || '').trim()
   const reference = String(req.body?.reference || '').trim().toUpperCase()
   const diamonds = readDiamonds(req.body?.diamonds)
+  const rawVouchers = req.body?.vouchers ?? 0
+  const vouchers = typeof rawVouchers === 'number'
+    ? rawVouchers
+    : typeof rawVouchers === 'string' && /^\d{1,6}$/.test(rawVouchers.trim())
+      ? Number(rawVouchers.trim())
+      : NaN
   const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : ''
+
   if (!UUID_RE.test(userId)) return bad(res, 'Select a valid Shadow recipient account')
   if (!TOPUP_REFERENCE_RE.test(reference)) return bad(res, 'Reference must contain 6 to 100 allowed characters')
   if (!Number.isSafeInteger(diamonds) || diamonds < 1 || diamonds > 10000) {
     return bad(res, 'Diamonds must be between 1 and 10000')
   }
-  if (reason.length < 12 || reason.length > 500) return bad(res, 'Enter a reason between 12 and 500 characters')
-  if (req.body?.confirmed !== true) return bad(res, 'Confirm recipient and reason for the manual adjustment')
+  if (!Number.isSafeInteger(vouchers) || vouchers < 0 || vouchers > 100000) {
+    return bad(res, 'Manual Vouchers must be between 0 and 100000')
+  }
+  if (reason.length < 12 || reason.length > 500) {
+    return bad(res, 'Enter a reason between 12 and 500 characters')
+  }
+  if (req.body?.confirmed !== true) {
+    return bad(res, 'Confirm recipient and reason for the manual adjustment')
+  }
+
   try {
     if (!(await requirePasskey(req, res, 'binance_manual_topup:' + userId + ':' + reference))) return
-    const { data, error } = await supabase.rpc('admin_binance_usdt_credit_apply_v1', {
-      p_action: 'topup',
+
+    const { data, error } = await supabase.rpc('admin_binance_manual_topup_v2', {
       p_user_id: userId,
-      p_transaction_id: null,
       p_reference: reference,
-      p_verified_usdt: null,
       p_diamonds: diamonds,
+      p_vouchers: vouchers,
       p_admin_id: admin.id,
       p_admin_email: admin.email,
       p_note: reason,
-      p_binance_verified: false,
-      p_recipient_verified: true,
     })
-    if (error) return fail(res, error, 'manual_topup')
-    return res.status(200).json({ ok: true, result: data, voucher_bonus: 0 })
+
+    if (error) {
+      if (['PGRST202', '42883'].includes(String(error.code || ''))) {
+        return res.status(503).json({
+          ok: false,
+          message: 'Run admin_binance_manual_vouchers_v2.sql in Supabase before manual top-up',
+        })
+      }
+      return fail(res, error, 'manual_topup')
+    }
+
+    return res.status(200).json({
+      ok: true,
+      result: data,
+      voucher_bonus: Number(data?.bonus_vouchers ?? vouchers),
+    })
   } catch (error) {
     return fail(res, error, 'manual_topup')
   }
 }
+
 
 export async function updateAdminBinanceCreditActionMetadata(req, res) {
   const admin = authorize(req, res)
