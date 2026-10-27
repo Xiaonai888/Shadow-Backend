@@ -95,10 +95,6 @@ export function requirePaymentCountry(feature) {
         return deny(res, 'PAYMENT_COUNTRY_REFRESH_REQUIRED', 'Country settings have changed. Please retry.', 409)
       }
 
-      if (settings.rules?.[region]?.[feature] !== true) {
-        return deny(res, 'PAYMENT_METHOD_UNAVAILABLE', 'This payment method is not available in your country')
-      }
-
       const { data: exception, error: exceptionError } = await supabase
         .from('shadow_country_user_exceptions')
         .select('mode,overrides,expires_at')
@@ -107,9 +103,22 @@ export function requirePaymentCountry(feature) {
 
       if (exceptionError) throw exceptionError
 
-      const isActive = exception && (!exception.expires_at || Date.parse(exception.expires_at) > Date.now())
-      if (isActive && exception.mode === 'custom' && exception.overrides?.[feature] === 'block') {
-        return deny(res, 'PAYMENT_METHOD_UNAVAILABLE', 'This payment method is disabled for your account')
+      // Match the Public Country Settings effective rules: only active user
+      // exceptions may change the regional defaults.
+      const activeException = exception &&
+        (!exception.expires_at || Date.parse(exception.expires_at) > Date.now())
+        ? exception
+        : null
+      const effectiveRegion = activeException?.mode === 'cambodia_experience' ? 'kh' : region
+      let permitted = settings.rules?.[effectiveRegion]?.[feature] === true
+
+      if (activeException?.mode === 'custom') {
+        if (activeException.overrides?.[feature] === 'allow') permitted = true
+        if (activeException.overrides?.[feature] === 'block') permitted = false
+      }
+
+      if (!permitted) {
+        return deny(res, 'PAYMENT_METHOD_UNAVAILABLE', 'This payment method is not available for your account')
       }
 
       return next()
