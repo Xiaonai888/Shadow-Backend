@@ -71,7 +71,7 @@ begin
     v_now
   from public.users u
   where u.id::text = p_user_id
-  on conflict (user_id, hashtag_id)
+  on conflict on constraint user_hashtag_interests_pkey
   do update set
     interest_score = least(
       100::numeric,
