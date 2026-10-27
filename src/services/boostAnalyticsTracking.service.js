@@ -6,6 +6,10 @@ const READER_EVENTS = new Set(['impression', 'open', 'read', 'save', 'follow', '
 const PURCHASE_KINDS = new Set(['episode', 'book', 'pdf'])
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const DAY_MS = 86400000
+const READER_INTEREST_CACHE_TTL_MS = 60 * 60 * 1000
+const READER_INTEREST_CACHE_MAX_ENTRIES = 5000
+const readerInterestRecent = new Map()
+const readerInterestInFlight = new Map()
 let cleanupStarted = false
 
 function hash(namespace, value) {
@@ -26,21 +30,56 @@ function countCents(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null
 }
 
+function rememberReaderInterest(eventKey) {
+  const now = Date.now()
+  if (readerInterestRecent.size >= READER_INTEREST_CACHE_MAX_ENTRIES) {
+    for (const [key, expiresAt] of readerInterestRecent) {
+      if (expiresAt <= now) readerInterestRecent.delete(key)
+    }
+    if (readerInterestRecent.size >= READER_INTEREST_CACHE_MAX_ENTRIES) {
+      readerInterestRecent.delete(readerInterestRecent.keys().next().value)
+    }
+  }
+  readerInterestRecent.set(eventKey, now + READER_INTEREST_CACHE_TTL_MS)
+}
+
 export async function recordReaderBoostInterest({ readerId, eventType, sourceId, actionId, genre, tags }) {
   if (!readerId || !sourceId || !actionId || !READER_EVENTS.has(eventType)) return { recorded: false }
   const visitorKey = hash('shadow-reader-v1', readerId)
   const eventKey = hash('shadow-reader-interest-v1', `${visitorKey}:${eventType}:${sourceId}:${actionId}`)
-  const { error } = await supabase.from('shadow_reader_interest_events').upsert({
-    event_key: eventKey,
-    visitor_key: visitorKey,
-    event_kind: eventType,
-    source_key: hash('shadow-content-v1', sourceId),
-    genre: typeof genre === 'string' ? genre.trim().slice(0, 80) : null,
-    tags: normalizedTags(tags),
-    event_day: todayKh(),
-  }, { onConflict: 'event_key', ignoreDuplicates: true })
-  if (error) throw error
-  return { recorded: true }
+
+  const cachedUntil = readerInterestRecent.get(eventKey)
+  if (cachedUntil && cachedUntil > Date.now()) {
+    return { recorded: true }
+  }
+  if (cachedUntil) readerInterestRecent.delete(eventKey)
+
+  const pending = readerInterestInFlight.get(eventKey)
+  if (pending) return pending
+
+  const request = (async () => {
+    const { error } = await supabase.from('shadow_reader_interest_events').upsert({
+      event_key: eventKey,
+      visitor_key: visitorKey,
+      event_kind: eventType,
+      source_key: hash('shadow-content-v1', sourceId),
+      genre: typeof genre === 'string' ? genre.trim().slice(0, 80) : null,
+      tags: normalizedTags(tags),
+      event_day: todayKh(),
+    }, { onConflict: 'event_key', ignoreDuplicates: true })
+    if (error) throw error
+    rememberReaderInterest(eventKey)
+    return { recorded: true }
+  })()
+
+  readerInterestInFlight.set(eventKey, request)
+  try {
+    return await request
+  } finally {
+    if (readerInterestInFlight.get(eventKey) === request) {
+      readerInterestInFlight.delete(eventKey)
+    }
+  }
 }
 
 export async function recordBoostCampaignEvent({ campaignId, readerId, verifiedVisitorId, eventType, actionId }) {
