@@ -19,6 +19,12 @@ import {
   runTaskCenterAutoRotation,
   getAdminReaderActivity,
 } from '../controllers/adminTaskCenter.controller.js'
+import {
+  getAdminInternationalReadingMissions,
+  createAdminInternationalReadingMission,
+  updateAdminInternationalReadingMission,
+  deleteAdminInternationalReadingMission,
+} from '../controllers/adminTaskCenterInternational.controller.js'
 import path from 'node:path'
 
 const router = express.Router()
@@ -144,6 +150,10 @@ router.get('/admin/reading-missions', requireAdmin, adminTaskCenterReadLimit, ge
 router.post('/admin/reading-missions', requireAdmin, adminTaskCenterWriteLimit, createAdminReadingMission)
 router.put('/admin/reading-missions/:missionId', requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingMission)
 router.delete('/admin/reading-missions/:missionId', requireAdmin, adminTaskCenterWriteLimit, deleteAdminReadingMission)
+router.get('/admin/international/reading-missions', requireAdmin, adminTaskCenterReadLimit, getAdminInternationalReadingMissions)
+router.post('/admin/international/reading-missions', requireAdmin, adminTaskCenterWriteLimit, createAdminInternationalReadingMission)
+router.put('/admin/international/reading-missions/:missionId', requireAdmin, adminTaskCenterWriteLimit, updateAdminInternationalReadingMission)
+router.delete('/admin/international/reading-missions/:missionId', requireAdmin, adminTaskCenterWriteLimit, deleteAdminInternationalReadingMission)
 router.put('/admin/reading-task', requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingTask)
 router.put('/admin/reading-mode', requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingMissionMode)
 router.post('/admin/auto-rotate', requireAdmin, adminTaskCenterWriteLimit, rotateAdminTaskCenterAutoStories)
