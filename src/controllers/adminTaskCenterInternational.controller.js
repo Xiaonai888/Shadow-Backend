@@ -1,5 +1,8 @@
 import { supabase } from '../config/supabase.js'
 import { invalidateActiveSessionMissionsCache } from '../services/taskCenterMissionCache.service.js'
+import {
+  rotateTaskCenterInternationalAutoStories,
+} from '../services/taskCenterInternationalAuto.service.js'
 
 const AUDIENCE = 'international'
 const SETTING_KEY = 'main'
@@ -233,5 +236,100 @@ export async function deleteAdminInternationalReadingMission(req, res) {
     })
   } catch (error) {
     return sendError(res, 'DELETE', error)
+  }
+}
+
+export async function updateAdminInternationalReadingMissionMode(req, res) {
+  const mode = String(req.body?.mode || '').trim().toLowerCase()
+
+  if (!['manual', 'auto'].includes(mode)) {
+    return res.status(400).json({
+      ok: false,
+      code: 'INVALID_INTERNATIONAL_MODE',
+    })
+  }
+
+  try {
+    const previous = await getSettings()
+    const previousMode =
+      previous.international_reading_mission_mode || 'manual'
+
+    if (mode === 'auto') {
+      const missions = await getRows()
+
+      if (missions.length !== MAX_MISSIONS) {
+        return res.status(400).json({
+          ok: false,
+          code: 'INTERNATIONAL_TWO_MISSIONS_REQUIRED',
+          message: 'Auto mode requires exactly 2 International missions.',
+        })
+      }
+    }
+
+    const changed = previousMode !== mode
+
+    if (changed) {
+      const { error } = await supabase
+        .from('task_center_settings')
+        .update({
+          international_reading_mission_mode: mode,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('setting_key', SETTING_KEY)
+
+      if (error) throw error
+    }
+
+    let rotation = null
+
+    try {
+      if (mode === 'auto') {
+        rotation = await rotateTaskCenterInternationalAutoStories()
+      }
+    } catch (error) {
+      if (changed) {
+        const { error: rollbackError } = await supabase
+          .from('task_center_settings')
+          .update({
+            international_reading_mission_mode: previousMode,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('setting_key', SETTING_KEY)
+          .eq('international_reading_mission_mode', mode)
+
+        if (rollbackError) {
+          console.error('INTERNATIONAL MODE ROLLBACK ERROR:', rollbackError)
+        }
+      }
+
+      throw error
+    }
+
+    const settings = await getSettings()
+    const rows = await getRows()
+
+    return res.status(200).json({
+      ...responseData(settings, rows),
+      mode,
+      rotation,
+    })
+  } catch (error) {
+    return sendError(res, 'UPDATE MODE', error)
+  }
+}
+
+export async function rotateAdminInternationalReadingMissions(req, res) {
+  try {
+    const result = await rotateTaskCenterInternationalAutoStories({
+      force: req.body?.force === true,
+    })
+
+    return res.status(200).json({
+      ok: true,
+      audience: AUDIENCE,
+      ...result,
+    })
+  } catch (error) {
+    return sendError(res, 'AUTO ROTATE', error)
   }
 }
