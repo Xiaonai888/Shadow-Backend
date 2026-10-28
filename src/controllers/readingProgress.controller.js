@@ -189,9 +189,29 @@ async function publishedEpisodeCount(storyId) {
   }
 }
 
-let embeddedProgressListJoinAvailable = true
+// This database has no PostgREST FK relationship for reading_progress -> stories/episodes.
+// Keep the existing validated three-query path instead of generating PGRST200 on cold starts.
+const embeddedProgressListJoinAvailable = false
+
+function reportReadingProgressFailure(operation, stage, error) {
+  const code = String(error?.code || error?.name || 'UNKNOWN').slice(0, 60)
+  markRequestDiagnostic({
+    feature: `reading_progress_${operation}`,
+    progress_stage: stage,
+    error_code: code,
+    error_source: error?.code ? 'supabase' : 'backend',
+  })
+  console.error(`READING_PROGRESS_${operation.toUpperCase()}_FAILED`, {
+    stage,
+    code,
+    message: String(error?.message || 'Unknown failure').slice(0, 240),
+    details: String(error?.details || '').slice(0, 160),
+    hint: String(error?.hint || '').slice(0, 160),
+  })
+}
 
 export async function getReadingProgress(req, res) {
+  let stage = 'initializing'
   try {
     const userId = String(req.user?.user_id || '').trim()
     const parsedLimit = Number(req.query.limit || 12)
@@ -199,11 +219,18 @@ export async function getReadingProgress(req, res) {
       ? Math.min(30, Math.max(1, Math.floor(parsedLimit)))
       : 12
 
+    markRequestDiagnostic({
+      feature: 'reading_progress_get',
+      progress_stage: 'loading',
+      progress_lookup: 'separate_queries',
+    })
+
     let progressRows = null
     let stories = []
     let episodes = []
 
     if (embeddedProgressListJoinAvailable) {
+      stage = 'embedded_progress_join'
       const { data, error } = await supabase
         .from('reading_progress')
         .select('id, story_id, episode_id, episode_number, total_episodes, reading_percent, last_read_at, story:stories(id, title, cover_url, landscape_thumbnail_url, total_episodes, story_status, story_type, is_adult, status, deleted_at), episode:episodes(id, story_id, title, episode_number, status, deleted_at)')
@@ -213,7 +240,6 @@ export async function getReadingProgress(req, res) {
 
       if (error) {
         if (!['PGRST200', 'PGRST201'].includes(String(error.code || ''))) throw error
-        embeddedProgressListJoinAvailable = false
       } else {
         const joined = Array.isArray(data) ? data : []
         progressRows = joined.map(({ story, episode, ...progress }) => progress)
@@ -243,6 +269,7 @@ export async function getReadingProgress(req, res) {
     }
 
     if (progressRows === null) {
+      stage = 'load_user_progress'
       const { data: rows, error } = await supabase
         .from('reading_progress')
         .select('id, story_id, episode_id, episode_number, total_episodes, reading_percent, last_read_at')
@@ -256,6 +283,7 @@ export async function getReadingProgress(req, res) {
 
       const storyIds = [...new Set(progressRows.map((item) => item.story_id).filter(Boolean))]
       const episodeIds = [...new Set(progressRows.map((item) => item.episode_id).filter(Boolean))]
+      stage = 'load_story_episode_metadata'
       const [storyResult, episodeResult] = await Promise.all([
         supabase
           .from('stories')
@@ -279,6 +307,7 @@ export async function getReadingProgress(req, res) {
 
     if (!progressRows.length) return res.json({ ok: true, items: [] })
 
+    stage = 'check_age_access'
     const ageAccess = stories.some((story) => story.is_adult)
       ? await getReaderAgeAccess(req)
       : null
@@ -289,6 +318,7 @@ export async function getReadingProgress(req, res) {
     )
     const episodeMap = new Map(episodes.map((episode) => [String(episode.id), episode]))
 
+    stage = 'format_progress'
     const items = progressRows
       .map((row) => {
         const story = storyMap.get(String(row.story_id))
@@ -305,7 +335,7 @@ export async function getReadingProgress(req, res) {
 
     return res.json({ ok: true, items })
   } catch (error) {
-    console.error('GET_READING_PROGRESS_ERROR', error)
+    reportReadingProgressFailure('get', stage, error)
     return res.status(500).json({
       ok: false,
       message: 'Failed to load reading progress',
@@ -315,6 +345,7 @@ export async function getReadingProgress(req, res) {
 
 
 export async function saveReadingProgress(req, res) {
+  let stage = 'initializing'
   try {
     const userId = String(req.user?.user_id || '').trim()
     const storyId = String(req.body.story_id || '').trim()
@@ -339,6 +370,7 @@ export async function saveReadingProgress(req, res) {
       })
     }
 
+    stage = 'validate_story_and_episode'
     const target = await loadProgressTarget(storyId, episodeId)
     const story = target.story
     const episode = target.episode
@@ -360,6 +392,7 @@ export async function saveReadingProgress(req, res) {
       })
     }
 
+    stage = 'check_age_access'
     if (
       story.is_adult &&
       !isStoryVisibleToReader(
@@ -373,6 +406,7 @@ export async function saveReadingProgress(req, res) {
       })
     }
 
+    stage = 'count_published_episodes'
     const count = await publishedEpisodeCount(storyId)
     const now = new Date().toISOString()
     const totalEpisodes = Math.max(
@@ -380,6 +414,7 @@ export async function saveReadingProgress(req, res) {
       Number(count || story.total_episodes || 1)
     )
 
+    stage = 'save_progress_upsert'
     const { data, error } = await supabase
       .from('reading_progress')
       .upsert(
@@ -412,7 +447,10 @@ export async function saveReadingProgress(req, res) {
         sourceId: `story:${storyId}`,
         actionId: `${episodeId}:${dayKh}`,
       }).catch((trackingError) => {
-        console.error('BOOST_READING_INTEREST_ERROR', trackingError)
+        console.error('BOOST_READING_INTEREST_ERROR', {
+          code: trackingError?.code || trackingError?.name || 'unknown',
+          message: String(trackingError?.message || '').slice(0, 200),
+        })
       })
     }
 
@@ -421,7 +459,7 @@ export async function saveReadingProgress(req, res) {
       progress: data,
     })
   } catch (error) {
-    console.error('SAVE_READING_PROGRESS_ERROR', error)
+    reportReadingProgressFailure('save', stage, error)
     return res.status(500).json({
       ok: false,
       message: 'Failed to save reading progress',
