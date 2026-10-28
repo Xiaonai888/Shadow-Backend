@@ -197,8 +197,13 @@ export async function confirmMyAuthorStoreBookReceived(req, res) {
       return res.status(500).json({ ok: false, message: 'Could not confirm book receipt' })
     }
 
-    if (!data || data.ok !== true || data.status !== 'released') {
-      console.error('CONFIRM AUTHOR STORE BOOK RECEIVED INVALID RESULT')
+    // During migration, older SQL may still return "released". New SQL returns
+    // "under_review" and keeps funds held until Owner Passkey approval.
+    const validStatus = data?.status === 'under_review' || data?.status === 'released'
+    if (!data || data.ok !== true || !validStatus || !data.hold_id || !data.order_id) {
+      console.error('CONFIRM AUTHOR STORE BOOK RECEIVED INVALID RESULT', {
+        status: data?.status || null,
+      })
       return res.status(500).json({ ok: false, message: 'Could not verify receipt confirmation' })
     }
 
@@ -208,7 +213,9 @@ export async function confirmMyAuthorStoreBookReceived(req, res) {
       order_id: data.order_id,
       hold_id: data.hold_id,
       status: data.status,
-      released_at: data.released_at,
+      reader_confirmed_at: data.reader_confirmed_at || null,
+      awaiting_owner_passkey: data.status === 'under_review',
+      released_at: data.status === 'released' ? (data.released_at || null) : null,
     })
   } catch (error) {
     console.error('CONFIRM AUTHOR STORE BOOK RECEIVED ERROR:', error)
