@@ -4,11 +4,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { unlink } from 'node:fs/promises'
 import { requireUser } from '../middleware/user.middleware.js'
+import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
   createRateLimit as createIpLimiter,
   createRateLimit as createRateLimiter,
 } from '../middleware/rateLimit.middleware.js'
-import { uploadAuthorBookProof, viewBookShippingProof } from '../controllers/authorStoreBookProof.controller.js'
+import { uploadAuthorBookProof, viewBookShippingProof, viewAdminBookShippingProof } from '../controllers/authorStoreBookProof.controller.js'
 
 const router = express.Router()
 const allowed = new Set(['image/jpeg', 'image/png', 'image/webp'])
@@ -21,6 +22,13 @@ const writeIpLimit = createIpLimiter({ key: 'book-private-shipping-proof-write-i
 const readIpLimit = createIpLimiter({ key: 'book-private-shipping-proof-read-ip', windowMs: 60 * 1000, max: 90 })
 const writeLimit = createRateLimiter({ key: 'book-private-shipping-proof', windowMs: 60 * 60 * 1000, max: 12, identity: (req) => req.user?.user_id })
 const readLimit = createRateLimiter({ key: 'book-private-shipping-proof-read', windowMs: 60 * 1000, max: 60, identity: (req) => req.user?.user_id })
+const adminReadIpLimit = createIpLimiter({ key: 'book-private-shipping-proof-admin-read-ip', windowMs: 60 * 1000, max: 60 })
+const adminReadLimit = createRateLimiter({
+  key: 'book-private-shipping-proof-admin-read',
+  windowMs: 60 * 1000,
+  max: 30,
+  identity: (req) => req.admin?.admin_id || req.admin?.id || req.admin?.email,
+})
 
 function uploadOne(req, res, next) {
   upload.single('proof')(req, res, (error) => {
@@ -42,5 +50,6 @@ function uploadOne(req, res, next) {
 
 router.post('/book-holds/:holdId/proof-upload', writeIpLimit, requireUser, writeLimit, uploadOne, uploadAuthorBookProof)
 router.get('/book-holds/:holdId/proofs/:proofId', readIpLimit, requireUser, readLimit, viewBookShippingProof)
+router.get('/admin/books/holds/:holdId/proofs/:proofId', adminReadIpLimit, requireAdmin, adminReadLimit, viewAdminBookShippingProof)
 
 export default router
