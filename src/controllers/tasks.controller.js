@@ -1999,8 +1999,11 @@ export async function trackReadingSessionProgress(req, res) {
           const missionsStartedAt =
             Date.now()
 
-          const missions =
-            await getActiveSessionMissions()
+          const audience =
+  await getReaderMissionAudience(userId)
+
+const missions =
+  await getActiveSessionMissions(audience)
 
           const matchingMissions =
             (missions || []).filter(
