@@ -40,6 +40,12 @@ function publicPayment(payment, userMap = {}) {
     payment_currency: payment.payment_currency || payment.currency || 'USD',
     diamonds: Number(payment.diamonds || 0),
     bonus_gems: Number(payment.bonus_gems || 0),
+
+    purchase_type: payment.purchase_type || 'diamonds',
+    premium_plan_months: Number(payment.premium_plan_months || 0),
+    premium_base_diamonds: Number(payment.premium_base_diamonds || 0),
+    premium_bonus_diamonds: Number(payment.premium_bonus_diamonds || 0),
+
     payment_method: payment.payment_method || 'aba_khqr',
     status: normalizeStatus(payment.status),
     created_at: payment.created_at,
