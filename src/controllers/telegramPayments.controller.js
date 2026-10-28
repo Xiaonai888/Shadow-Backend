@@ -151,6 +151,18 @@ function money(value) {
   return `$${Number(value || 0).toFixed(2)}`
 }
 
+// Text-only attribution for Telegram reports. No purchase, wallet, or match logic is changed.
+function paymentSourceLabel(payment) {
+  const isPremium =
+    String(payment?.purchase_type || '').trim().toLowerCase() === 'premium' ||
+    String(payment?.payment_method || '').trim().toLowerCase() === 'premium_aba_payment_link'
+
+  if (!isPremium) return 'Shadow Diamond Store · ABA / PayWay'
+
+  const months = Number(payment?.premium_plan_months || 0)
+  return `Shadow Premium${months > 0 ? ` · ${months} Month${months === 1 ? '' : 's'}` : ''} · ABA / PayWay`
+}
+
 function emitShadowMallIncomeChange(
   order,
   action
@@ -482,6 +494,7 @@ function authorStoreOrderUnderReviewMessage(order, authorPage) {
   return [
     '✍️ <b>AUTHOR STORE PAYMENT UNDER REVIEW</b>',
     '',
+    '💰 Payment Source: <b>Author Store · ABA / PayWay</b>',
     `📄 Page: <b>${html(authorPage?.page_name || 'Author Page')}</b>`,
     authorPage?.page_username ? `🔗 Username: @${html(authorPage.page_username)}` : '',
     ...buildAuthorStoreAttributionReportLines(order),
@@ -540,6 +553,7 @@ function authorPdfCompletedMessage(order, authorPage) {
   return [
     '📄 <b>AUTHOR PDF SOLD</b>',
     '',
+    '💰 Payment Source: <b>Author PDF Store · ABA / PayWay</b>',
     `📄 Page: <b>${html(authorPage?.page_name || 'Author Page')}</b>`,
     authorPage?.page_username ? `🔗 Username: @${html(authorPage.page_username)}` : '',
     ...buildAuthorStoreAttributionReportLines(order),
@@ -743,27 +757,25 @@ async function getTelegramPaymentForAction(payment) {
 }
 
 function releasedMessage(payment, user, title = '✅ APPROVED') {
+  const alreadyApproved = String(title).includes('ALREADY')
+  const isPremium =
+    String(payment?.purchase_type || '').trim().toLowerCase() === 'premium' ||
+    String(payment?.payment_method || '').trim().toLowerCase() === 'premium_aba_payment_link'
+
   return [
     `<b>${title}</b>`,
     '',
-    `💎 Released: <b>${html(Number(payment.diamonds || 0).toLocaleString())} Diamonds</b>`,
+    `💰 Payment Source: <b>${html(paymentSourceLabel(payment))}</b>`,
+    `💵 Amount: <b>${html(money(payment.amount_usd))}</b>`,
+    `💎 ${alreadyApproved ? 'Previously released' : 'Released'}: <b>${html(Number(payment.diamonds || 0).toLocaleString())} Diamonds</b>`,
+    isPremium ? '⭐ Premium: <b>Included in the released purchase</b>' : '',
     `👤 User: <b>${html(user?.username ? '@' + user.username : user?.name || payment.user_id)}</b>`,
-        `💵 Amount: <b>${html(money(payment.amount_usd))}</b>`,
-    `💰 Payment Source: <b>${html(
-      payment.purchase_type === 'premium' ||
-      payment.payment_method === 'premium_aba_payment_link'
-        ? `Shadow Premium · ${payment.premium_plan_months || '?'} Months · ABA/PayWay`
-        : 'Diamond Store · ABA/PayWay'
-    )}</b>`,
-    `🛒 Purchase Type: <b>${html(
-  String(payment.purchase_type || '').toLowerCase() === 'premium'
-    ? `Premium — ${Number(payment.premium_plan_months || 0)} Month${Number(payment.premium_plan_months || 0) === 1 ? '' : 's'}`
-    : 'Diamond Store'
-)}</b>`,
-`📦 Order ID: <code>${html(payment.order_id)}</code>`,
+    `📦 Order ID: <code>${html(payment.order_id)}</code>`,
     payment.aba_trx_id ? `🧾 Trx ID: <code>${html(payment.aba_trx_id)}</code>` : '',
     '',
-    'No extra Diamonds were added if this was already approved.',
+    alreadyApproved
+      ? 'ℹ️ Already approved. No additional Diamonds were credited by this action.'
+      : '✅ Payment approved. Wallet credit was released for this order.',
   ].filter(Boolean).join('\n')
 }
 
@@ -771,13 +783,15 @@ function needApprovalMessage(payment, user, reason) {
   return [
     '🟠 <b>NEED APPROVAL</b>',
     '',
+    `💰 Payment Source: <b>${html(paymentSourceLabel(payment))}</b>`,
     `💵 Amount: <b>${html(money(payment.amount_usd))}</b>`,
     `👤 User: <b>${html(user?.username ? '@' + user.username : user?.name || payment.user_id)}</b>`,
-    `💎 Diamonds: <b>${html(Number(payment.diamonds || 0).toLocaleString())}</b>`,
+    `💎 Diamonds if approved: <b>${html(Number(payment.diamonds || 0).toLocaleString())}</b>`,
     `📦 Order ID: <code>${html(payment.order_id)}</code>`,
     payment.aba_trx_id ? `🧾 Trx ID: <code>${html(payment.aba_trx_id)}</code>` : '',
     '',
     `⚠️ Reason: ${html(reason || payment.match_reason || 'Needs admin approval.')}`,
+    '⏳ Pending admin review. Wallet credit is not yet confirmed.',
   ].filter(Boolean).join('\n')
 }
 
@@ -793,6 +807,7 @@ function mallOrderUnderReviewMessage(order) {
   return [
     '📚 <b>SHADOW MALL PAYMENT UNDER REVIEW</b>',
     '',
+    '💰 Payment Source: <b>Shadow Mall · ABA / PayWay</b>',
     `📦 Order ID: <code>${html(order.order_id)}</code>`,
     `💵 Amount: <b>${html(money(order.total_usd))}</b>`,
     order.aba_transaction_id ? `🧾 Trx ID: <code>${html(order.aba_transaction_id)}</code>` : '',
@@ -911,9 +926,11 @@ async function rejectPaymentFromTelegram(paymentId) {
     text: [
       '❌ <b>REJECTED</b>',
       '',
+      `💰 Payment Source: <b>${html(paymentSourceLabel(data))}</b>`,
       `💵 Amount: <b>${html(money(data.amount_usd))}</b>`,
       `📦 Order ID: <code>${html(data.order_id)}</code>`,
       data.aba_trx_id ? `🧾 Trx ID: <code>${html(data.aba_trx_id)}</code>` : '',
+      'Status: <b>Rejected — no Diamonds released by this action.</b>',
     ].filter(Boolean).join('\n'),
   }
 }
@@ -1034,6 +1051,7 @@ async function processAbaMessage(parsed, message) {
     await replyTelegram(chatId, messageId, [
       '🔁 <b>DUPLICATE IGNORED</b>',
       '',
+      '💰 Receipt Source: <b>ABA / PayWay (previously recorded)</b>',
       `🧾 Trx ID: <code>${html(parsed.trx_id)}</code>`,
       'This transaction was already received.',
     ].join('\n'))
@@ -1050,6 +1068,7 @@ async function processAbaMessage(parsed, message) {
     await replyTelegram(chatId, messageId, [
       '❌ <b>PAYMENT BLOCKED</b>',
       '',
+      '💰 Receipt Source: <b>ABA / PayWay · Shadow order not verified</b>',
       `💵 Amount: <b>${html(money(parsed.amount))}</b>`,
       `🧾 Trx ID: <code>${html(parsed.trx_id)}</code>`,
       `🏦 Outlet: ${html(parsed.outlet_name)}`,
@@ -1138,6 +1157,7 @@ async function processAbaMessage(parsed, message) {
       await replyTelegram(chatId, messageId, [
         '📚 <b>SHADOW MALL MATCHED</b>',
         '',
+        '💰 Payment Source: <b>Shadow Mall · ABA / PayWay</b>',
         `📦 Order ID: <code>${html(updatedMallOrder.order_id)}</code>`,
         `💵 Amount: <b>${html(money(updatedMallOrder.total_usd))}</b>`,
         `🧾 Trx ID: <code>${html(updatedMallOrder.aba_transaction_id)}</code>`,
@@ -1187,6 +1207,7 @@ async function processAbaMessage(parsed, message) {
       })
       await replyTelegram(chatId, messageId, [
         '⚠️ <b>AUTHOR PDF PAYMENT MATCHED — ACCESS PENDING</b>',
+        '💰 Payment Source: <b>Author PDF Store · ABA / PayWay</b>',
         `📦 Order ID: <code>${html(paidOrder.order_id || paidOrder.order_number)}</code>`,
         `🧾 Trx ID: <code>${html(paidOrder.aba_transaction_id)}</code>`,
         'Payment has been recorded, but PDF access requires admin review.',
@@ -1212,6 +1233,7 @@ async function processAbaMessage(parsed, message) {
     try {
       await replyTelegram(chatId, messageId, [
         '📄 <b>AUTHOR PDF MATCHED</b>',
+        '💰 Payment Source: <b>Author PDF Store · ABA / PayWay</b>',
         ...buildAuthorStoreAttributionReportLines(completedOrder, 'pdf'),
         `📦 Order ID: <code>${html(completedOrder.order_id || completedOrder.order_number)}</code>`,
         `💵 Amount: <b>${html(money(completedOrder.total_usd || completedOrder.total_amount))}</b>`,
@@ -1255,6 +1277,7 @@ async function processAbaMessage(parsed, message) {
     await replyTelegram(chatId, messageId, [
         '✍️ <b>AUTHOR STORE MATCHED</b>',
         '',
+        '💰 Payment Source: <b>Author Store · ABA / PayWay</b>',
         ...buildAuthorStoreAttributionReportLines(updatedAuthorOrder),
         `📦 Order ID: <code>${html(updatedAuthorOrder.order_id || updatedAuthorOrder.order_number)}</code>`,
       `💵 Amount: <b>${html(money(updatedAuthorOrder.total_usd || updatedAuthorOrder.total_amount))}</b>`,
@@ -1306,6 +1329,7 @@ async function processAbaMessage(parsed, message) {
     const needReviewText = [
       '🟠 <b>SHADOW MALL NEED REVIEW</b>',
       '',
+      '💰 Payment Source: <b>Shadow Mall · ABA / PayWay</b>',
       `💵 Amount: <b>${html(money(parsed.amount))}</b>`,
       `🧾 Trx ID: <code>${html(parsed.trx_id)}</code>`,
       '',
@@ -1345,6 +1369,7 @@ async function processAbaMessage(parsed, message) {
     const needReviewText = [
       '🟠 <b>AUTHOR STORE NEED REVIEW</b>',
       '',
+      '💰 Payment Source: <b>Author Store · ABA / PayWay</b>',
       `💵 Amount: <b>${html(money(parsed.amount))}</b>`,
       `🧾 Trx ID: <code>${html(parsed.trx_id)}</code>`,
       '',
@@ -1383,10 +1408,12 @@ async function processAbaMessage(parsed, message) {
     await replyTelegram(chatId, messageId, [
       '🟠 <b>PAYMENT NEED REVIEW</b>',
       '',
+      '💰 Payment Source: <b>Multiple Shadow order categories · not confirmed</b>',
       `💵 Amount: <b>${html(money(parsed.amount))}</b>`,
       `🧾 Trx ID: <code>${html(parsed.trx_id)}</code>`,
       '',
       `Diamond matches: <b>${html(diamondMatches.length)}</b>`,
+      `Premium matches: <b>${html(diamondMatches.filter((order) => String(order.purchase_type || '').toLowerCase() === 'premium' || order.payment_method === 'premium_aba_payment_link').length)}</b>`,
       `Shadow Mall matches: <b>${html(mallMatches.length)}</b>`,
       `Author Store matches: <b>${html(authorStoreMatches.length)}</b>`,
       '',
@@ -1405,11 +1432,12 @@ async function processAbaMessage(parsed, message) {
   await replyTelegram(chatId, messageId, [
     '🟡 <b>PAYMENT RECEIVED — NO ORDER FOUND</b>',
     '',
+    '💰 Receipt Source: <b>ABA / PayWay · Shadow purchase type unknown</b>',
     `💵 Amount: <b>${html(money(parsed.amount))}</b>`,
     `👤 Payer: ${html(parsed.payer_name)} (*${html(parsed.payer_phone_last)})`,
     `🧾 Trx ID: <code>${html(parsed.trx_id)}</code>`,
     '',
-    '⚠️ No active website order matched this payment.',
+    '⚠️ No active website order matched this payment. No wallet credit is confirmed.',
     `🔎 Admin: ${html(process.env.ADMIN_PAYMENT_URL || 'https://admin.shadowerabook.site/payment')}`,
   ].join('\n'))
 }
