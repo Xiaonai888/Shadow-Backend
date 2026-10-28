@@ -1,7 +1,7 @@
 import express from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
-import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'ា
+import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { normalizeSmartSearch, scoreSmartSearchResult } from '../services/smartSearchCore.service.js'
 
 const router = express.Router()
