@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { sendChatPush } from './chatPush.service.js'
 import {
   ChatServiceError,
 } from './chat.service.js'
@@ -120,7 +121,7 @@ async function getConversationAccess({
     supabase
       .from('chat_conversations')
       .select(
-        'id, request_status, cleared_for_all_at'
+        'id, request_status, cleared_for_all_at, is_group'
       )
       .eq('id', safeConversationId)
       .maybeSingle(),
@@ -304,6 +305,58 @@ async function restoreParticipants({
   }
 }
 
+// External OneSignal Push for Reader/Author direct chats only.
+// Never query for Admin Chat, groups, or when OneSignal is not configured.
+// This side effect must not block successful message saving.
+function notifyMessageActionRecipient({
+  conversation,
+  senderUserId,
+  message,
+  forwardedCount = 0,
+}) {
+  if (!conversation?.id || conversation.is_group === true) return
+  if (!process.env.ONESIGNAL_APP_ID ||
+      !(process.env.ONESIGNAL_REST_API_KEY || process.env.ONESIGNAL_API_KEY)) return
+
+  void (async () => {
+    const { data: recipient, error } = await supabase
+      .from('chat_participants')
+      .select('user_id, participant_role, muted_at')
+      .eq('conversation_id', conversation.id)
+      .neq('user_id', senderUserId)
+      .limit(1)
+      .maybeSingle()
+
+    if (error) {
+      console.warn('CHAT_ACTION_PUSH_TARGET_ERROR', error.code || 'UNKNOWN')
+      return
+    }
+    if (!recipient || recipient.muted_at) return
+
+    const role = String(recipient.participant_role || '').trim().toLowerCase()
+    if (role !== 'reader' && role !== 'author') return
+
+    const messageText = forwardedCount > 1
+      ? `Forwarded ${forwardedCount} messages`
+      : String(message?.body || 'Sent a message')
+
+    const result = await sendChatPush({
+      recipientUserId: recipient.user_id,
+      recipientRole: role,
+      senderUserId,
+      conversationId: conversation.id,
+      messageId: message?.id,
+      messageText,
+    })
+
+    if (!result?.sent && !['no_subscribed_target', 'not_configured'].includes(result?.reason)) {
+      console.warn('CHAT_ACTION_PUSH_SKIPPED', result?.reason || 'UNKNOWN')
+    }
+  })().catch((error) => {
+    console.warn('CHAT_ACTION_PUSH_FAILED', error?.name || 'UNKNOWN')
+  })
+}
+
 export async function replyToMessage({
   userId,
   conversationId,
@@ -361,6 +414,12 @@ export async function replyToMessage({
       conversation.id,
     senderParticipantId:
       participant.id,
+  })
+
+  notifyMessageActionRecipient({
+    conversation,
+    senderUserId: safeUserId,
+    message: data,
   })
 
   return data
@@ -795,6 +854,15 @@ export async function forwardMessages({
     senderParticipantId:
       targetAccess.participant.id,
   })
+
+  if (data?.length) {
+    notifyMessageActionRecipient({
+      conversation: targetAccess.conversation,
+      senderUserId: targetAccess.userId,
+      message: data[data.length - 1],
+      forwardedCount: data.length,
+    })
+  }
 
   return {
     source_conversation_id:
