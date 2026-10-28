@@ -9,7 +9,8 @@ const ORDER_FIELDS = 'id,user_id,package_usd,diamonds,amount_usdt,bonus_vouchers
 const RECEIPT_FIELDS = 'transaction_id,transaction_time_ms,amount,currency,order_type,payer_name,created_at'
 const CREDIT_FIELDS = 'id,transaction_id,user_id,amount_usdt,diamonds,created_at'
 const USER_FIELDS = 'id,name,username'
-const STATUS_SET = new Set(['submitted', 'approved', 'rejected', 'all'])
+const STATUS_SET = new Set(['awaiting_receipt', 'submitted', 'approved', 'rejected', 'all'])
+const CLAIM_WINDOW_MS = 24 * 60 * 60 * 1000
 
 export class BinanceAdminReviewError extends Error {
   constructor(code, status = 400) {
@@ -38,20 +39,21 @@ function unwrap(result) {
   return result.data
 }
 
-async function getRelated(rows) {
+async function getRelated(rows, suppliedOrders = []) {
   if (!rows.length) return { orders: new Map(), receipts: new Map(), users: new Map(), credits: new Map(), creditedOrders: new Map() }
-
   const orderIds = [...new Set(rows.map(item => item.order_id))]
-  const receiptIds = [...new Set(rows.map(item => item.transaction_id))]
+  const receiptIds = [...new Set(rows.map(item => item.transaction_id).filter(Boolean))]
   const userIds = [...new Set(rows.map(item => item.user_id))]
+  const ordersPromise = suppliedOrders.length
+    ? Promise.resolve({ data: suppliedOrders, error: null })
+    : supabase.from('binance_checkout_orders').select(ORDER_FIELDS).in('id', orderIds).limit(PAGE_SIZE)
   const results = await Promise.all([
-    supabase.from('binance_checkout_orders').select(ORDER_FIELDS).in('id', orderIds).limit(PAGE_SIZE),
-    supabase.from('binance_usdt_alert_transactions').select(RECEIPT_FIELDS).in('transaction_id', receiptIds).limit(PAGE_SIZE),
+    ordersPromise,
+    receiptIds.length ? supabase.from('binance_usdt_alert_transactions').select(RECEIPT_FIELDS).in('transaction_id', receiptIds).limit(PAGE_SIZE) : Promise.resolve({ data: [], error: null }),
     supabase.from('users').select(USER_FIELDS).in('id', userIds).limit(PAGE_SIZE),
-    supabase.from('admin_binance_usdt_credit_actions').select(CREDIT_FIELDS).in('transaction_id', receiptIds).limit(PAGE_SIZE),
-    supabase.from('binance_checkout_orders').select('id,verified_transaction_id').in('verified_transaction_id', receiptIds).limit(PAGE_SIZE),
+    receiptIds.length ? supabase.from('admin_binance_usdt_credit_actions').select(CREDIT_FIELDS).in('transaction_id', receiptIds).limit(PAGE_SIZE) : Promise.resolve({ data: [], error: null }),
+    receiptIds.length ? supabase.from('binance_checkout_orders').select('id,verified_transaction_id').in('verified_transaction_id', receiptIds).limit(PAGE_SIZE) : Promise.resolve({ data: [], error: null }),
   ])
-
   const [orders, receipts, users, credits, creditedOrders] = results.map(unwrap)
   return {
     orders: new Map(orders.map(row => [row.id, row])),
@@ -94,14 +96,53 @@ function present(claim, related) {
       order_type: receipt.order_type,
       transaction_time_ms: receipt.transaction_time_ms,
     } : null,
-    evidence: evaluateBinanceCheckoutEvidence({ claim, order, receipt, creditedAction, creditedOrder }),
+    evidence: evaluateBinanceCheckoutEvidence({ claim: claim.transaction_id ? claim : null, order, receipt, creditedAction, creditedOrder }),
     read_only: true,
+  }
+}
+
+function unlinkedClaim(order) {
+  return {
+    order_id: order.id,
+    user_id: order.user_id,
+    transaction_id: null,
+    review_status: 'awaiting_receipt',
+    submitted_at: null,
+    reviewed_at: null,
+  }
+}
+
+// Unclaimed reader orders require Admin to independently identify the official
+// transfer before linking. Never guess the payer from the amount or name.
+async function listUnlinkedOrders(page) {
+  const offset = (page - 1) * PAGE_SIZE
+  const since = new Date(Date.now() - CLAIM_WINDOW_MS).toISOString()
+  const orders = unwrap(await supabase.from('binance_checkout_orders')
+    .select(ORDER_FIELDS)
+    .eq('status', 'waiting_payment')
+    .gte('created_at', since)
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .range(offset, offset + PAGE_SIZE)) || []
+  const current = orders.slice(0, PAGE_SIZE)
+  const claims = current.map(unlinkedClaim)
+  const related = await getRelated(claims, current)
+  return {
+    items: claims.map(row => present(row, related)),
+    page,
+    limit: PAGE_SIZE,
+    status: 'awaiting_receipt',
+    has_next: orders.length > PAGE_SIZE,
+    has_prev: page > 1,
+    read_only: true,
+    automatic_credit_enabled: false,
   }
 }
 
 export async function listBinanceCheckoutReviews({ page: pageInput, status: statusInput } = {}) {
   const page = readPage(pageInput)
   const status = readStatus(statusInput)
+  if (status === 'awaiting_receipt') return listUnlinkedOrders(page)
   let query = supabase.from('binance_checkout_claims').select(CLAIM_FIELDS)
   if (status !== 'all') query = query.eq('review_status', status)
   const offset = (page - 1) * PAGE_SIZE
@@ -124,7 +165,15 @@ export async function getBinanceCheckoutReview(orderId) {
   const id = String(orderId || '').trim()
   if (!UUID_RE.test(id)) throw new BinanceAdminReviewError('INVALID_ORDER_ID')
   const claim = unwrap(await supabase.from('binance_checkout_claims').select(CLAIM_FIELDS).eq('order_id', id).maybeSingle())
-  if (!claim) throw new BinanceAdminReviewError('CLAIM_NOT_FOUND', 404)
-  const related = await getRelated([claim])
-  return present(claim, related)
+  if (claim) {
+    const related = await getRelated([claim])
+    return present(claim, related)
+  }
+  const order = unwrap(await supabase.from('binance_checkout_orders').select(ORDER_FIELDS).eq('id', id).maybeSingle())
+  if (!order || order.status !== 'waiting_payment' || Date.parse(order.created_at) + CLAIM_WINDOW_MS <= Date.now()) {
+    throw new BinanceAdminReviewError('CLAIM_NOT_FOUND', 404)
+  }
+  const pending = unlinkedClaim(order)
+  const related = await getRelated([pending], [order])
+  return present(pending, related)
 }
