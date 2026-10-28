@@ -15,6 +15,7 @@ function buildTaskCenterVersion(settingsRow, missionRows = []) {
     settings_updated_at: settingsRow?.updated_at || null,
     reading_task_updated_at: settingsRow?.reading_task_updated_at || null,
     missions: (missionRows || []).map((row) => ({
+      audience: row.audience || 'khmer',
       id: row.id,
       is_active: Boolean(row.is_active),
       title: row.title || '',
@@ -88,11 +89,11 @@ export async function getPublicTaskCenterVersion(req, res) {
 
       supabase
         .from('task_center_reading_missions')
-        .select('id, is_active, title, subtitle, reward_coins, target_minutes, story_link, button_text, sort_order, created_at, updated_at')
-        .eq('audience', 'khmer')
+        .select('id, audience, is_active, title, subtitle, reward_coins, target_minutes, story_link, button_text, sort_order, created_at, updated_at')
+        .in('audience', ['khmer', 'international'])
         .order('sort_order', { ascending: true })
         .order('created_at', { ascending: false })
-        .limit(2),
+        .limit(4),
     ])
 
     if (settingsResult.error) throw settingsResult.error
@@ -103,7 +104,7 @@ export async function getPublicTaskCenterVersion(req, res) {
     return res.status(200).json({
       ok: true,
       version,
-      mission_count: Array.isArray(missionsResult.data) ? missionsResult.data.length : 0,
+      mission_count: (missionsResult.data || []).filter((row) => row.audience === 'khmer').length,
     })
   } catch (error) {
     console.error('GET PUBLIC TASK CENTER VERSION ERROR:', error)
@@ -666,6 +667,7 @@ export async function runTaskCenterAutoRotation(req, res) {
     ...khmer.value,
     international: international.value,
   })
+}
 
 
 function getTaskCenterActivityDateKey(date = new Date()) {
