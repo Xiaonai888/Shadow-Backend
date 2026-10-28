@@ -10,6 +10,7 @@ import {
   updateStoryAdminVisibility,
   downloadAdminStoryMedia
 } from '../controllers/adminStories.controller.js'
+import { getAdminStoryGrowthDaily } from '../controllers/adminStoryGrowth.controller.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
 
@@ -37,6 +38,7 @@ function invalidatePublicStoriesAfterMutation(
 
 router.get('/overview', viewStories, getAdminStoriesOverview)
 router.get('/update-activity', viewStories, getAdminStoryUpdateActivity)
+router.get('/growth/daily', viewStories, getAdminStoryGrowthDaily)
 router.get('/picker', viewStories, getAdminStoryPicker)
 router.get('/', viewStories, getAdminStories)
 router.get('/:storyId', viewStories, getAdminStoryById)
