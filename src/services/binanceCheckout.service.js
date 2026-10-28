@@ -6,6 +6,7 @@ const PRICES = new Map([[1, 100], [5, 500], [10, 1000], [20, 2000], [50, 5000], 
 const COLUMNS = 'id,user_id,package_usd,diamonds,amount_usdt,bonus_vouchers,receiver_uid,receiver_name,receiver_qr_sha256,status,created_at,expires_at,credited_at'
 const ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i
 const RECEIVER_QR_PATH = '/api/purchase/binance/receiver/qr'
+const CHECKOUT_TTL_MS = 15 * 60 * 1000
 
 export class BinanceCheckoutError extends Error {
   constructor(code, status = 400) {
@@ -51,13 +52,26 @@ function matchesReceiver(row, receiver) {
     && row.receiver_qr_sha256 === receiver.qrHash
 }
 
+// Reconcile older 30-minute orders with the new 15-minute checkout lifetime.
+// This does not terminate a payment already submitted for Admin review.
+function checkoutDeadline(row) {
+  const stored = Date.parse(String(row?.expires_at || ''))
+  const created = Date.parse(String(row?.created_at || ''))
+  const fifteenMinutes = Number.isFinite(created) ? created + CHECKOUT_TTL_MS : NaN
+  if (!Number.isFinite(stored)) return fifteenMinutes
+  if (!Number.isFinite(fifteenMinutes)) return stored
+  return Math.min(stored, fifteenMinutes)
+}
+
 function isExpired(row) {
-  return new Date(row.expires_at).getTime() <= Date.now()
+  const deadline = checkoutDeadline(row)
+  return !Number.isFinite(deadline) || deadline <= Date.now()
 }
 
 function present(row, receiverVerified = false) {
   const status = row.status === 'waiting_payment' && isExpired(row) ? 'expired' : row.status
   const payable = status === 'waiting_payment' && receiverVerified
+  const deadline = checkoutDeadline(row)
   return {
     id: row.id,
     package_usd: row.package_usd,
@@ -68,7 +82,7 @@ function present(row, receiverVerified = false) {
     qr_path: payable ? RECEIVER_QR_PATH : null,
     checkout_ready: payable,
     status,
-    expires_at: row.expires_at,
+    expires_at: Number.isFinite(deadline) ? new Date(deadline).toISOString() : row.expires_at,
     created_at: row.created_at,
     credited_at: row.credited_at || null,
     automatic_credit_enabled: false,
@@ -89,14 +103,19 @@ async function activeOrder(userId) {
 }
 
 async function expireActiveOrder(row, userId) {
-  const { error } = await supabase
+  if (row.status !== 'waiting_payment' || !isExpired(row)) return
+  // Compare the precise row state to avoid expiring an order claimed in parallel.
+  const { data, error } = await supabase
     .from('binance_checkout_orders')
     .update({ status: 'expired', updated_at: new Date().toISOString() })
     .eq('id', row.id)
     .eq('user_id', userId)
     .eq('status', 'waiting_payment')
-    .lte('expires_at', new Date().toISOString())
+    .eq('created_at', row.created_at)
+    .select('id')
+    .maybeSingle()
   if (error) throw error
+  if (!data) throw new BinanceCheckoutError('ACTIVE_CHECKOUT_EXISTS', 409)
 }
 
 export async function createBinanceCheckoutOrder({ userId, packageUsd }) {
@@ -128,6 +147,7 @@ export async function createBinanceCheckoutOrder({ userId, packageUsd }) {
       receiver_uid: receiver.uid,
       receiver_name: receiver.name,
       receiver_qr_sha256: receiver.qrHash,
+      expires_at: new Date(Date.now() + CHECKOUT_TTL_MS).toISOString(),
     })
     .select(COLUMNS)
     .single()
