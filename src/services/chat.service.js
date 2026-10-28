@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { canStartReaderMessageRequest } from './readerMessagesRepliesSettings.service.js'
+import { sendChatPush } from './chatPush.service.js'
 import {
   deleteR2ObjectByUrl,
   uploadFileToR2,
@@ -270,6 +271,39 @@ async function getOtherParticipant(conversationId, userId) {
   }
 
   return data || null
+}
+
+
+// Best-effort external push only. Never create duplicate in-app notifications.
+// The participant role and mute setting come from the authenticated chat data.
+function notifyDirectChatRecipient({
+  recipient,
+  senderId,
+  sender,
+  conversationId,
+  message,
+  attachmentKind,
+}) {
+  if (!recipient || recipient.muted_at) return
+
+  const recipientRole = String(recipient.participant_role || '')
+    .trim()
+    .toLowerCase()
+  if (recipientRole !== 'reader' && recipientRole !== 'author') return
+
+  // Fire-and-forget: OneSignal outages must not delay or fail a chat message.
+  void sendChatPush({
+    recipientUserId: recipient.user_id,
+    recipientRole,
+    senderUserId: senderId,
+    senderName: sender?.name || sender?.username || 'Shadow',
+    conversationId,
+    messageId: message?.id,
+    messageText: message?.body || '',
+    attachmentKind,
+  }).catch((error) => {
+    console.warn('CHAT_PUSH_DISPATCH_FAILED', error?.name || 'UnknownError')
+  })
 }
 
 async function getConversationParticipantCount(
@@ -755,6 +789,14 @@ export async function createReaderAuthorRequest({
   const safeMessage = requireMessage(message)
   const authorPage = await getAuthorPage(safeAuthorPageId)
 
+  // Push only after an initial Reader -> Author message is saved.
+  const notifyAuthor = (id) => notifyDirectChatRecipient({
+    recipient: { user_id: authorPage.user_id, participant_role: 'author' },
+    senderId: safeReaderUserId,
+    conversationId: id,
+    message: { body: safeMessage },
+  })
+
   if (String(authorPage.user_id) === safeReaderUserId) {
     fail(
       400,
@@ -815,6 +857,8 @@ export async function createReaderAuthorRequest({
         'Failed to send author message'
       )
     }
+
+    notifyAuthor(existing.id)
 
     return {
       created: false,
@@ -890,6 +934,8 @@ export async function createReaderAuthorRequest({
           )
         }
 
+        notifyAuthor(racedConversation.id)
+
         return {
           created: false,
           conversation:
@@ -952,6 +998,8 @@ export async function createReaderAuthorRequest({
       'Failed to save author conversation'
     )
   }
+
+  notifyAuthor(conversation.id)
 
   return {
     created: true,
@@ -1117,6 +1165,13 @@ export async function createReaderReaderRequest({
       'Failed to save reader message request'
     )
   }
+
+  notifyDirectChatRecipient({
+    recipient: { user_id: targetUser.id, participant_role: 'reader' },
+    senderId: safeSenderUserId,
+    conversationId: conversation.id,
+    message: { body: safeMessage },
+  })
 
   return {
     created: true,
@@ -1911,6 +1966,17 @@ export async function sendConversationMessage({
 
   const sender = await getPublicUser(safeUserId)
 
+  if (!isGroup) {
+    notifyDirectChatRecipient({
+      recipient: otherParticipant,
+      senderId: safeUserId,
+      sender,
+      conversationId: conversation.id,
+      message: data,
+      attachmentKind: data.attachment_kind || null,
+    })
+  }
+
   return {
     ...data,
     sender: sender
@@ -2099,6 +2165,17 @@ export async function sendConversationAttachment({
   const sender = await getPublicUser(
     safeUserId
   )
+
+  if (!isGroup) {
+    notifyDirectChatRecipient({
+      recipient: otherParticipant,
+      senderId: safeUserId,
+      sender,
+      conversationId: conversation.id,
+      message: data,
+      attachmentKind: data.attachment_kind || null,
+    })
+  }
 
   return {
     ...data,
