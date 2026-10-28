@@ -37,11 +37,62 @@ function deny(res, code, message, status = 403) {
   return res.status(status).json({ ok: false, code, message })
 }
 
+// Binance purchases obey saved Admin Country Rules even while the broader
+// reader-country policy is temporarily paused. Do not change ABA/PayWay.
+// The authenticated user's saved classification is the sole country source.
+async function requireBinanceSavedCountry(req, res, next) {
+  const userId = req.user?.user_id
+  if (!userId) return deny(res, 'UNAUTHORIZED', 'Sign in to continue', 401)
+
+  try {
+    const savedCountry = await readReaderClassificationCountry(userId)
+    if (!savedCountry?.verified || !validCountry(savedCountry.country)) {
+      return deny(res, 'PAYMENT_COUNTRY_REQUIRED', 'Set a verified country before using Binance Pay')
+    }
+
+    const [{ data: settings, error: settingsError }, { data: exception, error: exceptionError }] = await Promise.all([
+      supabase.from('shadow_country_settings')
+        .select('rules').eq('settings_key', 'default').single(),
+      supabase.from('shadow_country_user_exceptions')
+        .select('mode,overrides,expires_at').eq('user_id', userId).maybeSingle(),
+    ])
+    if (settingsError || exceptionError || !settings?.rules ||
+        typeof settings.rules.kh?.binancePay !== 'boolean' ||
+        typeof settings.rules.international?.binancePay !== 'boolean') {
+      throw settingsError || exceptionError || new Error('Binance country rules missing')
+    }
+
+    const region = savedCountry.country === 'KH' ? 'kh' : 'international'
+    const activeException = exception &&
+      (!exception.expires_at || Date.parse(exception.expires_at) > Date.now())
+      ? exception : null
+    const selectedRegion = activeException?.mode === 'cambodia_experience' ? 'kh' : region
+    let allowed = settings.rules[selectedRegion].binancePay === true
+    if (activeException?.mode === 'all_eligible') allowed = true
+    if (activeException?.mode === 'custom') {
+      if (activeException.overrides?.binancePay === 'allow') allowed = true
+      if (activeException.overrides?.binancePay === 'block') allowed = false
+    }
+
+    if (!allowed) {
+      return deny(res, 'PAYMENT_METHOD_UNAVAILABLE', 'Binance Pay is not available for your account')
+    }
+    return next()
+  } catch (error) {
+    console.error('BINANCE COUNTRY GATE ERROR:', String(error?.message || error).slice(0, 180))
+    return deny(res, 'COUNTRY_GATE_UNAVAILABLE', 'Could not verify Binance country permission', 503)
+  }
+}
+
 export function requirePaymentCountry(feature) {
   if (!PAYMENT_FEATURES.has(feature)) throw new Error('Unsupported payment feature')
 
   return async function paymentCountryGuard(req, res, next) {
-    if (!isReaderClassificationCountryPolicyEnabled()) return next()
+    if (!isReaderClassificationCountryPolicyEnabled()) {
+      // Enforce only Binance; the existing temporary pause stays in place for ABA.
+      return feature === 'binancePay' ? requireBinanceSavedCountry(req, res, next) : next()
+    }
+
     const secret = signingSecret()
     if (!secret) {
       return deny(res, 'COUNTRY_GATE_UNAVAILABLE', 'Payment country verification is not configured', 503)
@@ -103,15 +154,13 @@ export function requirePaymentCountry(feature) {
 
       if (exceptionError) throw exceptionError
 
-      // Match the Public Country Settings effective rules: only active user
-      // exceptions may change the regional defaults.
+      // Match Public Country Settings: only active user exceptions can override.
       const activeException = exception &&
         (!exception.expires_at || Date.parse(exception.expires_at) > Date.now())
-        ? exception
-        : null
+        ? exception : null
       const effectiveRegion = activeException?.mode === 'cambodia_experience' ? 'kh' : region
       let permitted = settings.rules?.[effectiveRegion]?.[feature] === true
-if (activeException?.mode === 'all_eligible') permitted = true
+      if (activeException?.mode === 'all_eligible') permitted = true
 
       if (activeException?.mode === 'custom') {
         if (activeException.overrides?.[feature] === 'allow') permitted = true
