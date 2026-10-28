@@ -66,6 +66,42 @@ function getUserId(req) {
   return req.user?.user_id || req.user?.id || null
 }
 
+const readerMissionAudienceCache = new Map()
+const READER_AUDIENCE_TTL = 60 * 1000
+
+async function getReaderMissionAudience(userId, fresh = false) {
+  const cached = readerMissionAudienceCache.get(userId)
+
+  if (!fresh && cached && cached.expiresAt > Date.now()) {
+    return cached.audience
+  }
+
+  const { data, error } = await supabase
+    .from('users')
+    .select('story_language')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) throw new Error('Reader not found')
+
+  const audience =
+    !data.story_language || data.story_language === 'km'
+      ? 'khmer'
+      : 'international'
+
+  if (readerMissionAudienceCache.size >= 1000) {
+    readerMissionAudienceCache.clear()
+  }
+
+  readerMissionAudienceCache.set(userId, {
+    audience,
+    expiresAt: Date.now() + READER_AUDIENCE_TTL,
+  })
+
+  return audience
+}
+
 function getPhnomPenhDateKey(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Phnom_Penh',
@@ -404,11 +440,12 @@ async function getOrCreateReadingReward(userId) {
   return data
 }
 
-async function getActiveReadingMission(missionId) {
+async function getActiveReadingMission(missionId, audience) {
   const { data, error } = await supabase
     .from('task_center_reading_missions')
     .select('*')
     .eq('id', missionId)
+    .eq('audience', audience)
     .eq('is_active', true)
     .maybeSingle()
 
@@ -494,7 +531,8 @@ async function getOrCreateReadingMissionProgress(
 }
 
 async function getReaderReadingMissions(userId) {
-  const missions = await getActiveSessionMissions()
+  const audience = await getReaderMissionAudience(userId)
+  const missions = await getActiveSessionMissions(audience)
   const missionList = missions || []
 
   if (missionList.length === 0) return []
@@ -1253,7 +1291,8 @@ export async function getReadingMission(req, res) {
       return res.status(401).json({ ok: false, message: 'User is required' })
     }
 
-    const mission = await getActiveReadingMission(missionId)
+    const audience = await getReaderMissionAudience(userId, true)
+    const mission = await getActiveReadingMission(missionId, audience)
 
     if (!mission) {
       return res.status(404).json({ ok: false, message: 'Reading mission not found' })
@@ -1288,7 +1327,8 @@ export async function trackReadingMissionProgress(req, res) {
       return res.status(401).json({ ok: false, message: 'User is required' })
     }
 
-    const mission = await getActiveReadingMission(missionId)
+    const audience = await getReaderMissionAudience(userId, true)
+    const mission = await getActiveReadingMission(missionId, audience)
 
     if (!mission) {
       return res.status(404).json({ ok: false, message: 'Reading mission not found' })
@@ -1353,7 +1393,8 @@ export async function claimReadingMissionReward(req, res) {
       return res.status(401).json({ ok: false, message: 'User is required' })
     }
 
-    const mission = await getActiveReadingMission(missionId)
+    const audience = await getReaderMissionAudience(userId, true)
+    const mission = await getActiveReadingMission(missionId, audience)
 
     if (!mission) {
       return res.status(404).json({ ok: false, message: 'Reading mission not found' })
