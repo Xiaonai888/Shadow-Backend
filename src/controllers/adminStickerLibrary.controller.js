@@ -1,5 +1,5 @@
 import { supabase } from '../config/supabase.js'
-import { assertR2MediaReference, assertR2StorageKey } from '../services/mediaStoragePolicy.service.js'
+import { assertR2StorageKey } from '../services/mediaStoragePolicy.service.js'
 import {
   uploadMediaLibraryObject,
   deleteMediaLibraryObject,
@@ -87,14 +87,18 @@ async function requireFolder(id) {
   return folder
 }
 async function validateImageReference(rawUrl, rawKey) {
-  const image_url = assertR2MediaReference(rawUrl, { field: 'sticker_library.image_url', allowEmpty: false })
   const storage_key = assertR2StorageKey(rawKey, { field: 'sticker_library.storage_key', allowEmpty: false })
-  // Shared Character uploader stores direct images under the first prefix, fallback under the second.
+  // Accept images from the existing direct and fallback upload pipelines.
   if (!['admin-media-library/images/', 'media-library/images/'].some((prefix) => storage_key.startsWith(prefix))) {
     throw fail(400, 'Sticker image must come from the existing Admin Media Library uploader')
   }
-  const baseUrl = String(process.env.R2_PUBLIC_URL || process.env.CLOUDFLARE_R2_PUBLIC_URL || '').replace(/\/+$/, '')
-  if (!baseUrl || image_url !== `${baseUrl}/${storage_key}`) {
+  // Direct upload uses R2_PUBLIC_URL; fallback R2 may prefer CLOUDFLARE_R2_PUBLIC_URL.
+  // Match the complete configured URL + key, never an arbitrary external URL.
+  const image_url = String(rawUrl || '').trim()
+  const publicBases = [process.env.R2_PUBLIC_URL, process.env.CLOUDFLARE_R2_PUBLIC_URL]
+    .map((url) => String(url || '').trim().replace(/\/+$/, ''))
+    .filter((url) => /^https:\/\/[^/?#]+(?:\/[^?#]*)?$/.test(url))
+  if (!publicBases.some((base) => image_url === `${base}/${storage_key}`)) {
     throw fail(400, 'Image URL and storage key do not match the same Cloudflare object')
   }
   // Never allow one stored R2 object to be owned by both Character and Sticker;
