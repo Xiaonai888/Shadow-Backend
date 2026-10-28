@@ -1,4 +1,5 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import {
   getAdminStories,
   getAdminStoriesOverview,
@@ -19,6 +20,19 @@ const router = express.Router()
 const viewStories = requireAdminPermission('stories.view')
 const manageStories = requireAdminPermission('stories.manage')
 
+// Limit the new growth endpoint by IP before checking the admin session.
+const storyGrowthDailyLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_STORY_GROWTH_RATE_LIMIT',
+    message: 'Too many Story Growth requests. Please retry shortly.',
+  },
+})
+
 function invalidatePublicStoriesAfterMutation(
   _req,
   res,
@@ -38,7 +52,7 @@ function invalidatePublicStoriesAfterMutation(
 
 router.get('/overview', viewStories, getAdminStoriesOverview)
 router.get('/update-activity', viewStories, getAdminStoryUpdateActivity)
-router.get('/growth/daily', viewStories, getAdminStoryGrowthDaily)
+router.get('/growth/daily', storyGrowthDailyLimit, viewStories, getAdminStoryGrowthDaily)
 router.get('/picker', viewStories, getAdminStoryPicker)
 router.get('/', viewStories, getAdminStories)
 router.get('/:storyId', viewStories, getAdminStoryById)
