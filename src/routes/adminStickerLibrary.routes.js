@@ -2,6 +2,7 @@ import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { guardDiskBackedUploads } from '../middleware/globalMediaUploadGuard.middleware.js'
 import {
@@ -41,7 +42,13 @@ const coverUpload = multer({
 })
 
 async function removeTemporaryCover(req) {
-  if (req.file?.path) await unlink(req.file.path).catch(() => {})
+  // Multer generates a random 32-character hex filename in os.tmpdir().
+  // Never delete a path taken directly from the request object.
+  const filename = req.file?.filename
+  if (typeof filename !== 'string') return
+  const safeFilename = basename(filename)
+  if (safeFilename !== filename || !/^[0-9a-f]{32}$/.test(safeFilename)) return
+  await unlink(join(os.tmpdir(), safeFilename)).catch(() => {})
 }
 
 function acceptCover(req, res, next) {
