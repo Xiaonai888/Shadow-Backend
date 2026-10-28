@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import { supabase } from '../config/supabase.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 import { rotateTaskCenterAutoStories } from '../services/taskCenterAuto.service.js'
+import { rotateTaskCenterInternationalAutoStories } from '../services/taskCenterInternationalAuto.service.js'
 import { invalidateActiveSessionMissionsCache } from '../services/taskCenterMissionCache.service.js'
 
 const SETTING_KEY = 'main'
@@ -634,23 +635,37 @@ export async function runTaskCenterAutoRotation(req, res) {
     })
   }
 
-  try {
-    const result = await rotateTaskCenterAutoStories()
+    const [khmer, international] = await Promise.allSettled([
+    rotateTaskCenterAutoStories(),
+    rotateTaskCenterInternationalAutoStories(),
+  ])
 
-    return res.status(200).json({
-      ok: true,
-      ...result,
-    })
-  } catch (error) {
-    console.error('TASK CENTER AUTO ROTATION RUN ERROR:', error)
+  if (khmer.status === 'rejected') {
+    console.error('KHMER AUTO ROTATION ERROR:', khmer.reason)
+  }
 
+  if (international.status === 'rejected') {
+    console.error('INTERNATIONAL AUTO ROTATION ERROR:', international.reason)
+  }
+
+  if (khmer.status === 'rejected' || international.status === 'rejected') {
     return res.status(500).json({
       ok: false,
-      message: 'Failed to run Task Center auto rotation',
-      error: error.message,
+      code: 'TASK_CENTER_AUTO_ROTATION_FAILED',
+      khmer: khmer.status === 'fulfilled'
+        ? khmer.value
+        : { rotated: false, reason: 'error' },
+      international: international.status === 'fulfilled'
+        ? international.value
+        : { rotated: false, reason: 'error' },
     })
   }
-}
+
+  return res.status(200).json({
+    ok: true,
+    ...khmer.value,
+    international: international.value,
+  })
 
 
 function getTaskCenterActivityDateKey(date = new Date()) {
