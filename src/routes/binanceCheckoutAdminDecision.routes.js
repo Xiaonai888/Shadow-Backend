@@ -4,6 +4,7 @@ import { requireAdmin } from '../middleware/auth.middleware.js'
 import {
   approveAdminBinanceCheckout,
   rejectAdminBinanceCheckout,
+  linkAdminBinanceCheckoutReceipt,
 } from '../controllers/binanceCheckoutAdminDecision.controller.js'
 
 const router = express.Router()
@@ -21,6 +22,7 @@ const adminLimit = rateLimit({
   keyGenerator: req => String(req.admin?.admin_id || req.admin?.id || ipKeyGenerator(req.ip)),
 })
 
+router.post('/checkout-reviews/:orderId/link-receipt', ipLimit, requireAdmin, adminLimit, linkAdminBinanceCheckoutReceipt)
 router.post('/checkout-reviews/:orderId/approve', ipLimit, requireAdmin, adminLimit, approveAdminBinanceCheckout)
 router.post('/checkout-reviews/:orderId/reject', ipLimit, requireAdmin, adminLimit, rejectAdminBinanceCheckout)
 
