@@ -4,6 +4,7 @@ import { invalidateActiveSessionMissionsCache } from './taskCenterMissionCache.s
 const SETTING_KEY = 'main'
 const AUTO_MODE = 'auto'
 const MISSION_LIMIT = 2
+const KHMER_AUDIENCE = 'khmer'
 const RECENT_COOLDOWN_DAYS = 7
 const MIN_EPISODES = 5
 
@@ -57,6 +58,7 @@ async function getMissionRows() {
   const { data, error } = await supabase
     .from('task_center_reading_missions')
     .select('*')
+    .eq('audience', KHMER_AUDIENCE)
     .order('sort_order', { ascending: true })
     .order('created_at', { ascending: false })
     .limit(MISSION_LIMIT)
@@ -124,10 +126,11 @@ async function getRecentUpdateMap() {
   return map
 }
 
-async function getHistoryRows() {
+async function getHistoryRows(missionIds) {
   const { data, error } = await supabase
     .from('task_center_auto_story_history')
     .select('id, featured_date, slot, story_id, mission_id, selection_source, story_status, story_updated_at, selected_at')
+    .in('mission_id', missionIds)
     .order('selected_at', { ascending: false })
     .limit(10000)
 
@@ -242,6 +245,7 @@ async function applySelectionsToMissions(selections, missions, nowIso) {
         updated_at: nowIso,
       })
       .eq('id', mission.id)
+      .eq('audience', KHMER_AUDIENCE)
       .select('*')
       .single()
 
@@ -325,11 +329,12 @@ export async function rotateTaskCenterAutoStories({ force = false } = {}) {
     }
   }
 
-  const [missions, stories, recentUpdateMap, historyRows] = await Promise.all([
-    getMissionRows(),
+  const missions = await getMissionRows()
+  const missionIds = missions.map((mission) => mission.id)
+  const [stories, recentUpdateMap, historyRows] = await Promise.all([
     getEligibleStories(),
     getRecentUpdateMap(),
-    getHistoryRows(),
+    getHistoryRows(missionIds),
   ])
 
   const recommendationStories = stories.filter(
@@ -439,6 +444,7 @@ export async function rotateTaskCenterAutoStories({ force = false } = {}) {
         .from('task_center_auto_story_history')
         .select('*')
         .eq('featured_date', dateKey)
+        .in('mission_id', missionIds)
         .order('slot', { ascending: true })
 
       if (concurrentError) throw concurrentError
