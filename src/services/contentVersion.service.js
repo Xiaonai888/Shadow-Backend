@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { markRequestDiagnostic } from './trafficDiagnostic.service.js'
 
 const DEFAULT_KEYS = [
   'home',
@@ -13,9 +14,52 @@ const DEFAULT_KEYS = [
 ]
 
 const VERSION_CACHE_TTL_MS = 60 * 1000
+const VERSION_ERROR_LOG_INTERVAL_MS = 60 * 1000
 const versionCache = new Map()
 const versionCacheFetchedAt = new Map()
 const keyLoadPromises = new Map()
+const lastVersionErrorLog = new Map()
+
+function logContentVersionError(stage, error, keyCount) {
+  const code = String(error?.code || 'UNKNOWN').slice(0, 40)
+  const message = String(error?.message || error || 'Unknown error')
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .slice(0, 180)
+  const details = String(error?.details || '').slice(0, 160)
+  const hint = String(error?.hint || '').slice(0, 160)
+  const status = Number(error?.status || error?.statusCode || 0)
+  const diagnostic = {
+    feature: 'content_versions',
+    error_stage: stage,
+    error_code: code,
+    error_message: message,
+    error_status: status || 'unknown',
+    requested_key_count: keyCount,
+  }
+
+  // This is attached to the existing request trace; no extra Supabase calls.
+  markRequestDiagnostic(diagnostic)
+
+  const logKey = `${stage}:${code}`
+  const now = Date.now()
+  const last = Number(lastVersionErrorLog.get(logKey) || 0)
+  if (now - last < VERSION_ERROR_LOG_INTERVAL_MS) return
+  lastVersionErrorLog.set(logKey, now)
+  if (lastVersionErrorLog.size > 20) {
+    lastVersionErrorLog.delete(lastVersionErrorLog.keys().next().value)
+  }
+
+  console.warn('CONTENT_VERSIONS_DB_ERROR', JSON.stringify({
+    stage,
+    code,
+    status: status || null,
+    message,
+    details,
+    hint,
+    requested_key_count: keyCount,
+    fallback: 'cached_or_default_version',
+  }))
+}
 
 function cleanKey(value) {
   return String(value || '')
@@ -160,10 +204,7 @@ export async function getContentVersions(
   try {
     await loadMissingKeys(cleanKeys)
   } catch (error) {
-    console.warn(
-      'GET CONTENT VERSIONS WARNING:',
-      error.message
-    )
+    logContentVersionError('read_content_versions', error, cleanKeys.length)
   }
 
   return cleanKeys.reduce(
@@ -245,10 +286,7 @@ export async function bumpContentVersions(
 
     return result
   } catch (error) {
-    console.warn(
-      'BUMP CONTENT VERSIONS WARNING:',
-      error.message
-    )
+    logContentVersionError('write_content_versions', error, cleanKeys.length)
 
     return cleanKeys.reduce(
       (acc, key) => {
