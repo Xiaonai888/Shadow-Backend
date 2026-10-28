@@ -24,6 +24,8 @@ import {
   createAdminInternationalReadingMission,
   updateAdminInternationalReadingMission,
   deleteAdminInternationalReadingMission,
+  updateAdminInternationalReadingMissionMode,
+  rotateAdminInternationalReadingMissions,
 } from '../controllers/adminTaskCenterInternational.controller.js'
 import path from 'node:path'
 
@@ -154,6 +156,8 @@ router.get('/admin/international/reading-missions', requireAdmin, adminTaskCente
 router.post('/admin/international/reading-missions', requireAdmin, adminTaskCenterWriteLimit, createAdminInternationalReadingMission)
 router.put('/admin/international/reading-missions/:missionId', requireAdmin, adminTaskCenterWriteLimit, updateAdminInternationalReadingMission)
 router.delete('/admin/international/reading-missions/:missionId', requireAdmin, adminTaskCenterWriteLimit, deleteAdminInternationalReadingMission)
+router.put('/admin/international/reading-mode', requireAdmin, adminTaskCenterWriteLimit, updateAdminInternationalReadingMissionMode)
+router.post('/admin/international/auto-rotate', requireAdmin, adminTaskCenterWriteLimit, rotateAdminInternationalReadingMissions)
 router.put('/admin/reading-task', requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingTask)
 router.put('/admin/reading-mode', requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingMissionMode)
 router.post('/admin/auto-rotate', requireAdmin, adminTaskCenterWriteLimit, rotateAdminTaskCenterAutoStories)
