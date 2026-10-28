@@ -1,60 +1,74 @@
 import { supabase } from '../config/supabase.js'
 
 const ACTIVE_SESSION_MISSIONS_TTL_MS = 60 * 1000
+const MISSION_LIMIT = 2
+const VALID_AUDIENCES = new Set(['khmer', 'international'])
 
-let activeSessionMissionsCache = null
-let activeSessionMissionsPending = null
-let activeSessionMissionsGeneration = 0
+const missionCaches = new Map()
+const pendingFetches = new Map()
+let cacheGeneration = 0
 
-export function invalidateActiveSessionMissionsCache() {
-  activeSessionMissionsGeneration += 1
-  activeSessionMissionsCache = null
-  activeSessionMissionsPending = null
+function checkedAudience(audience) {
+  if (!VALID_AUDIENCES.has(audience)) {
+    throw new Error('Invalid reading mission audience')
+  }
+  return audience
 }
 
-export async function getActiveSessionMissions() {
-  if (activeSessionMissionsCache && Date.now() < activeSessionMissionsCache.expiresAt) {
-    return activeSessionMissionsCache.value
+// Existing callers without an audience still receive Khmer missions.
+// Omitting audience on invalidation clears both groups.
+export function invalidateActiveSessionMissionsCache(audience = null) {
+  cacheGeneration += 1
+  if (audience === null || audience === undefined) {
+    missionCaches.clear()
+    pendingFetches.clear()
+    return
   }
+  const group = checkedAudience(audience)
+  missionCaches.delete(group)
+  pendingFetches.delete(group)
+}
 
-  const generation = activeSessionMissionsGeneration
+export async function getActiveSessionMissions(audience = 'khmer') {
+  const group = checkedAudience(audience)
+  const cached = missionCaches.get(group)
 
-  if (activeSessionMissionsPending?.generation === generation) {
-    return activeSessionMissionsPending.promise
-  }
+  if (cached && Date.now() < cached.expiresAt) return cached.value
+
+  const generation = cacheGeneration
+  const existing = pendingFetches.get(group)
+  if (existing?.generation === generation) return existing.promise
 
   const promise = (async () => {
     const { data, error } = await supabase
       .from('task_center_reading_missions')
       .select('*')
+      .eq('audience', group)
       .eq('is_active', true)
       .order('sort_order', { ascending: true })
       .order('created_at', { ascending: false })
-      .limit(20)
+      .limit(MISSION_LIMIT)
 
     if (error) throw error
-
-    if (generation !== activeSessionMissionsGeneration) {
-      return getActiveSessionMissions()
+    if (generation !== cacheGeneration) {
+      return getActiveSessionMissions(group)
     }
 
     const value = data || []
-
-    activeSessionMissionsCache = {
+    missionCaches.set(group, {
       value,
       expiresAt: Date.now() + ACTIVE_SESSION_MISSIONS_TTL_MS,
-    }
-
+    })
     return value
   })()
 
-  activeSessionMissionsPending = { generation, promise }
+  pendingFetches.set(group, { generation, promise })
 
   try {
     return await promise
   } finally {
-    if (activeSessionMissionsPending?.promise === promise) {
-      activeSessionMissionsPending = null
+    if (pendingFetches.get(group)?.promise === promise) {
+      pendingFetches.delete(group)
     }
   }
 }
