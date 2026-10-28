@@ -525,7 +525,8 @@ async function getUnreadCount(
 
 export async function buildConversationSummary(
   conversation,
-  viewerParticipant
+  viewerParticipant,
+  preloaded = null
 ) {
   const isGroup =
     conversation.is_group === true
@@ -539,35 +540,26 @@ export async function buildConversationSummary(
   ] = await Promise.all([
     isGroup
       ? Promise.resolve(null)
-      : getOtherParticipant(
-          conversation.id,
-          viewerParticipant.user_id
-        ),
+      : preloaded
+        ? Promise.resolve(preloaded.otherParticipants.get(String(conversation.id)) || null)
+        : getOtherParticipant(conversation.id, viewerParticipant.user_id),
     !isGroup && conversation.author_page_id
-      ? getAuthorPage(
-          conversation.author_page_id
-        )
+      ? preloaded
+        ? Promise.resolve(preloaded.authorPages.get(String(conversation.author_page_id)) || null)
+        : getAuthorPage(conversation.author_page_id)
       : Promise.resolve(null),
-    getLatestMessage(
-      conversation,
-      viewerParticipant
-    ),
-    getUnreadCount(
-      conversation,
-      viewerParticipant
-    ),
+    getLatestMessage(conversation, viewerParticipant),
+    getUnreadCount(conversation, viewerParticipant),
     isGroup
-      ? getConversationParticipantCount(
-          conversation.id
-        )
+      ? getConversationParticipantCount(conversation.id)
       : Promise.resolve(2),
   ])
 
   const otherUser = isGroup
     ? null
-    : await getPublicUser(
-        otherParticipant?.user_id
-      )
+    : preloaded
+      ? preloaded.users.get(String(otherParticipant?.user_id)) || null
+      : await getPublicUser(otherParticipant?.user_id)
 
   const counterpart = isGroup
     ? {
@@ -1377,11 +1369,92 @@ export async function listMyConversations({
     ])
   )
 
+  const visibleConversations = conversations || []
+  if (!visibleConversations.length) return []
+
+  const directConversations = visibleConversations.filter(
+    (conversation) => conversation.is_group !== true
+  )
+  const directConversationIds = [
+    ...new Set(directConversations.map((conversation) => String(conversation.id))),
+  ]
+  const authorPageIds = [
+    ...new Set(
+      directConversations
+        .map((conversation) => String(conversation.author_page_id || ''))
+        .filter(Boolean)
+    ),
+  ]
+
+  const [otherParticipantsResult, authorPagesResult] = await Promise.all([
+    directConversationIds.length
+      ? supabase
+          .from('chat_participants')
+          .select('id, conversation_id, user_id, participant_role, last_read_at, muted_at, archived_at, deleted_at, cleared_at, created_at')
+          .in('conversation_id', directConversationIds)
+          .neq('user_id', safeUserId)
+          .limit(100)
+      : Promise.resolve({ data: [], error: null }),
+    authorPageIds.length
+      ? supabase
+          .from('author_pages')
+          .select('id, user_id, page_name, page_username, page_slug, avatar_url, status')
+          .in('id', authorPageIds)
+          .eq('status', 'active')
+      : Promise.resolve({ data: [], error: null }),
+  ])
+
+  if (otherParticipantsResult.error) {
+    throw databaseFailure(otherParticipantsResult.error, 'Failed to load chat participant')
+  }
+  if (authorPagesResult.error) {
+    throw databaseFailure(authorPagesResult.error, 'Failed to load author page')
+  }
+
+  const otherParticipants = new Map()
+  for (const participant of otherParticipantsResult.data || []) {
+    const id = String(participant.conversation_id)
+    if (!otherParticipants.has(id)) otherParticipants.set(id, participant)
+  }
+  const authorPages = new Map(
+    (authorPagesResult.data || []).map((page) => [String(page.id), page])
+  )
+  for (const id of authorPageIds) {
+    if (!authorPages.has(id)) {
+      fail(404, 'AUTHOR_PAGE_NOT_FOUND', 'Author page not found')
+    }
+  }
+
+  const counterpartUserIds = [
+    ...new Set(
+      [...otherParticipants.values()]
+        .map((participant) => String(participant.user_id || ''))
+        .filter(Boolean)
+    ),
+  ]
+  const usersResult = counterpartUserIds.length
+    ? await supabase
+        .from('users')
+        .select('id, name, username, avatar_url, is_author, is_active')
+        .in('id', counterpartUserIds)
+    : { data: [], error: null }
+
+  if (usersResult.error) {
+    throw databaseFailure(usersResult.error, 'Failed to load user profile')
+  }
+
+  const preloaded = {
+    otherParticipants,
+    authorPages,
+    users: new Map((usersResult.data || []).map((user) => [String(user.id), user])),
+  }
+
   return Promise.all(
-    (conversations || []).map((conversation) =>
+    visibleConversations.map((conversation) =>
       buildConversationSummary(
         conversation,
-        participantMap.get(conversation.id)
+        participantMap.get(conversation.id),
+        preloaded
       )
     )
   )
