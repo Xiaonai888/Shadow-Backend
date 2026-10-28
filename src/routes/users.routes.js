@@ -1,4 +1,5 @@
 import express from 'express'
+import { supabase } from '../config/supabase.js'
 import readerSecurityRoutes from './readerSecurity.routes.js'
 import readerHiddenWordsRoutes from './readerHiddenWords.routes.js'
 import readerTagsMentionsRoutes from './readerTagsMentions.routes.js'
@@ -156,6 +157,80 @@ router.use('/me/restriction-settings', readerRestrictionSettingsRoutes)
 router.use('/me/restricted-readers', readerRestrictionsRoutes)
 router.use(readerAuthSafetyLimit)
 router.get('/me', requireUser, readerProfileRouteLimit, getCurrentUser)
+// Story Language is an account preference, not an IP/country restriction.
+const ALLOWED_STORY_LANGUAGES = new Set(['km', 'en', 'zh', 'ja', 'ko'])
+
+function publicStoryLanguage(row) {
+  const language = row?.story_language || 'km'
+  return {
+    story_language: language,
+    story_language_updated_at: row?.story_language_updated_at || null,
+    synced: Boolean(row?.story_language_updated_at),
+    mission_audience: language === 'km' ? 'khmer' : 'international',
+  }
+}
+
+router.get('/me/story-language', requireUser, readerProfileRouteLimit, async (req, res) => {
+  res.set('Cache-Control', 'private, no-store')
+  try {
+    const userId = req.user.user_id || req.user.id
+    const { data, error } = await supabase
+      .from('users')
+      .select('story_language, story_language_updated_at')
+      .eq('id', userId)
+      .maybeSingle()
+
+    if (error) throw error
+    if (!data) return res.status(404).json({ ok: false, code: 'READER_NOT_FOUND' })
+    return res.json({ ok: true, ...publicStoryLanguage(data) })
+  } catch (error) {
+    console.error('GET STORY LANGUAGE ERROR:', error?.code || error?.message)
+    return res.status(500).json({ ok: false, code: 'STORY_LANGUAGE_READ_FAILED' })
+  }
+})
+
+router.put('/me/story-language', requireUser, readerProfileRouteLimit, async (req, res) => {
+  res.set('Cache-Control', 'private, no-store')
+  const language = typeof req.body?.story_language === 'string'
+    ? req.body.story_language.trim().toLowerCase()
+    : ''
+
+  if (!ALLOWED_STORY_LANGUAGES.has(language)) {
+    return res.status(400).json({ ok: false, code: 'INVALID_STORY_LANGUAGE' })
+  }
+
+  try {
+    const userId = req.user.user_id || req.user.id
+    const { data: current, error: readError } = await supabase
+      .from('users')
+      .select('story_language, story_language_updated_at')
+      .eq('id', userId)
+      .maybeSingle()
+
+    if (readError) throw readError
+    if (!current) return res.status(404).json({ ok: false, code: 'READER_NOT_FOUND' })
+
+    // No redundant writes on refresh. First explicit sync is timestamped even for km.
+    if (current.story_language === language && current.story_language_updated_at) {
+      return res.json({ ok: true, unchanged: true, ...publicStoryLanguage(current) })
+    }
+
+    const { data, error } = await supabase
+      .from('users')
+      .update({ story_language: language, story_language_updated_at: new Date().toISOString() })
+      .eq('id', userId)
+      .select('story_language, story_language_updated_at')
+      .maybeSingle()
+
+    if (error) throw error
+    if (!data) return res.status(404).json({ ok: false, code: 'READER_NOT_FOUND' })
+    return res.json({ ok: true, unchanged: false, ...publicStoryLanguage(data) })
+  } catch (error) {
+    console.error('SAVE STORY LANGUAGE ERROR:', error?.code || error?.message)
+    return res.status(500).json({ ok: false, code: 'STORY_LANGUAGE_SAVE_FAILED' })
+  }
+})
+
 router.get('/me/privacy', requireUser, readerProfileRouteLimit, getReaderAccountPrivacy)
 router.put('/me/privacy', requireUser, readerProfileRouteLimit, updateReaderAccountPrivacy)
 router.get('/me/summary', requireUser, readerProfileRouteLimit, getMeSummary)
