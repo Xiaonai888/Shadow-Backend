@@ -120,6 +120,20 @@ async function getException(userId) {
   return data
 }
 
+// Binance alone uses the saved-country rules during the general policy pause.
+// Match requireBinanceSavedCountry in paymentCountryGate.middleware.js.
+function resolveBinanceDuringPause(rules, region, countryAvailable, exception) {
+  if (!countryAvailable || !['kh', 'international'].includes(region)) return false
+  const baseline = exception?.mode === 'cambodia_experience' ? 'kh' : region
+  let allowed = rules?.[baseline]?.binancePay === true
+  if (exception?.mode === 'all_eligible') allowed = true
+  if (exception?.mode === 'custom') {
+    if (exception.overrides?.binancePay === 'allow') allowed = true
+    if (exception.overrides?.binancePay === 'block') allowed = false
+  }
+  return allowed
+}
+
 function resolveRules(rules, region, countryAvailable, exception, policyEnabled) {
   if (!policyEnabled) {
     return {
@@ -129,7 +143,7 @@ function resolveRules(rules, region, countryAvailable, exception, policyEnabled)
       shadowMall: true,
       readerMall: true,
       payway: true,
-      binancePay: true,
+      binancePay: resolveBinanceDuringPause(rules, region, countryAvailable, exception),
       shopTarget: 'shadow_mall',
     }
   }
@@ -241,7 +255,8 @@ router.get('/', optionalReader, async (req, res) => {
   const [savedCountry, settingsResult, exceptionResult] = await Promise.allSettled([
     userId ? readReaderClassificationCountry(userId) : Promise.resolve(null),
     getRules(),
-    sourceReady ? getException(userId) : Promise.resolve(null),
+    // Binance remains country-controlled while all other features are paused.
+    userId ? getException(userId) : Promise.resolve(null),
   ])
   const country = savedCountry.status === 'fulfilled' ? savedCountry.value?.country || null : null
   const region = country === null ? 'unknown' : country === 'KH' ? 'kh' : 'international'
@@ -251,6 +266,10 @@ router.get('/', optionalReader, async (req, res) => {
   const exception = exceptionResult.status === 'fulfilled' ? exceptionResult.value : null
   const policyEnabled = Boolean(sourceReady && settings.ready)
   const effective = resolveRules(settings.rules, region, Boolean(country), exception, policyEnabled)
+  // If the saved rule/exception could not be checked, do not advertise Binance.
+  if (!settings.ready || (userId && exceptionResult.status !== 'fulfilled')) {
+    effective.binancePay = false
+  }
   const canCreateTicket = Boolean(policyEnabled && country && userId && req.user?.session_id)
   if (settingsResult.status === 'rejected') {
     console.error('PUBLIC COUNTRY RULES ERROR:', settingsResult.reason)
