@@ -2,6 +2,7 @@ import { supabase } from '../config/supabase.js'
 
 const UUID_RE = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i
 const TRANSACTION_RE = /^[A-Za-z0-9_-]{6,128}$/
+const DECIMAL_RE = /^(?:0|[1-9]\d{0,17})(?:\.\d{1,8})?$/
 const FIELDS = 'order_id,user_id,review_status,submitted_at,reviewed_at'
 
 export class BinanceClaimError extends Error {
@@ -83,4 +84,76 @@ export async function getBinanceCheckoutClaim({ userId, orderId }) {
   if (error) throw error
   if (!data) throw new BinanceClaimError('CLAIM_NOT_FOUND', 404)
   return present(data)
+}
+
+// ADMIN-ONLY SERVICE ENTRYPOINT. A future authenticated, passkey-verified Admin
+// handler may call this after the Admin independently verifies the exact reader
+// and official Binance receipt. Never call it from a reader-facing endpoint.
+// It reuses the existing atomic claim RPC and DOES NOT award any wallet credit.
+function usdtUnits(value) {
+  const text = String(value ?? '').trim()
+  if (!DECIMAL_RE.test(text)) return null
+  const [whole, fraction = ''] = text.split('.')
+  return BigInt(whole) * 100000000n + BigInt(fraction.padEnd(8, '0'))
+}
+
+export async function linkBinanceReceiptToCheckoutForAdmin({ orderId, transactionId }) {
+  const id = String(orderId || '').trim()
+  const transaction = String(transactionId || '').trim()
+  if (!UUID_RE.test(id)) throw new BinanceClaimError('INVALID_ORDER_ID', 400)
+  if (!TRANSACTION_RE.test(transaction)) throw new BinanceClaimError('INVALID_TRANSACTION_ID', 400)
+
+  const { data: order, error: orderError } = await supabase
+    .from('binance_checkout_orders')
+    .select('id,user_id,status,amount_usdt,created_at,expires_at,credited_at')
+    .eq('id', id)
+    .maybeSingle()
+  if (orderError) throw orderError
+  if (!order) throw new BinanceClaimError('CHECKOUT_NOT_FOUND', 404)
+  if (!['waiting_payment', 'pending_review'].includes(order.status) || order.credited_at) {
+    throw new BinanceClaimError('ORDER_NOT_CLAIMABLE', 409)
+  }
+
+  const [receiptResult, creditResult, linkedResult] = await Promise.all([
+    supabase.from('binance_usdt_alert_transactions')
+      .select('transaction_id,currency,amount,transaction_time_ms')
+      .eq('transaction_id', transaction).maybeSingle(),
+    supabase.from('admin_binance_usdt_credit_actions')
+      .select('id').eq('transaction_id', transaction).limit(1).maybeSingle(),
+    supabase.from('binance_checkout_orders')
+      .select('id').eq('verified_transaction_id', transaction).limit(1).maybeSingle(),
+  ])
+  if (receiptResult.error) throw receiptResult.error
+  if (creditResult.error) throw creditResult.error
+  if (linkedResult.error) throw linkedResult.error
+  if (!receiptResult.data) throw new BinanceClaimError('RECEIPT_NOT_FOUND', 404)
+  if (creditResult.data || linkedResult.data) throw new BinanceClaimError('TRANSACTION_ALREADY_CREDITED', 409)
+
+  const receipt = receiptResult.data
+  const expected = usdtUnits(order.amount_usdt)
+  const paid = usdtUnits(receipt.amount)
+  if (receipt.currency !== 'USDT' || expected === null || paid === null || expected <= 0n || paid !== expected) {
+    throw new BinanceClaimError('RECEIPT_AMOUNT_MISMATCH', 409)
+  }
+  const received = Number(receipt.transaction_time_ms)
+  const created = Date.parse(order.created_at)
+  const expires = Date.parse(order.expires_at)
+  if (!Number.isSafeInteger(received) || !Number.isFinite(created) || !Number.isFinite(expires)
+    || received < created - 60000 || received > expires + 600000) {
+    throw new BinanceClaimError('RECEIPT_TIME_MISMATCH', 409)
+  }
+
+  // SQL serializes order changes and prevents one transaction from being
+  // claimed against multiple orders. Admin approval and passkey are separate.
+  const claim = await submitBinanceCheckoutClaim({
+    userId: order.user_id,
+    orderId: id,
+    transactionId: transaction,
+  })
+  return {
+    ...claim,
+    receipt_linked: true,
+    approval_required: true,
+    automatic_credit_enabled: false,
+  }
 }
