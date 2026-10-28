@@ -88,6 +88,7 @@ export async function getPublicTaskCenterVersion(req, res) {
       supabase
         .from('task_center_reading_missions')
         .select('id, is_active, title, subtitle, reward_coins, target_minutes, story_link, button_text, sort_order, created_at, updated_at')
+        .eq('audience', 'khmer')
         .order('sort_order', { ascending: true })
         .order('created_at', { ascending: false })
         .limit(2),
@@ -196,6 +197,7 @@ async function getReadingMissionRows() {
   const { data, error } = await supabase
     .from('task_center_reading_missions')
     .select('*')
+    .eq('audience', 'khmer')
     .order('sort_order', { ascending: true })
     .order('created_at', { ascending: false })
     .limit(2)
@@ -370,6 +372,7 @@ if (String(settingsRow?.reading_mission_mode || 'manual') === 'auto') {
       .from('task_center_reading_missions')
       .insert({
         ...payload,
+        audience: 'khmer',
         created_at: now,
         updated_at: now,
       })
@@ -419,9 +422,11 @@ export async function updateAdminReadingMission(req, res) {
         .from('task_center_reading_missions')
         .select('*')
         .eq('id', missionId)
-        .single()
+        .eq('audience', 'khmer')
+        .maybeSingle()
 
       if (existingError) throw existingError
+      if (!existingMission) return res.status(404).json({ ok: false, message: 'Khmer reading mission not found' })
 
       payload = {
         is_active: Boolean(existingMission.is_active),
@@ -440,10 +445,12 @@ export async function updateAdminReadingMission(req, res) {
       .from('task_center_reading_missions')
       .update(payload)
       .eq('id', missionId)
+      .eq('audience', 'khmer')
       .select('*')
-      .single()
+      .maybeSingle()
 
     if (error) throw error
+    if (!data) return res.status(404).json({ ok: false, message: 'Khmer reading mission not found' })
 
     invalidateActiveSessionMissionsCache()
     const readingMissions = await getPublicReadingMissions()
@@ -488,12 +495,16 @@ if (String(settingsRow?.reading_mission_mode || 'manual') === 'auto') {
       })
     }
 
-    const { error } = await supabase
+    const { data: deletedMission, error } = await supabase
       .from('task_center_reading_missions')
       .delete()
       .eq('id', missionId)
+      .eq('audience', 'khmer')
+      .select('id')
+      .maybeSingle()
 
     if (error) throw error
+    if (!deletedMission) return res.status(404).json({ ok: false, message: 'Khmer reading mission not found' })
 
     invalidateActiveSessionMissionsCache()
     const readingMissions = await getPublicReadingMissions()
