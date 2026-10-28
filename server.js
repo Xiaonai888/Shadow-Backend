@@ -90,6 +90,7 @@ import readerPresenceRoutes from './src/routes/readerPresence.routes.js'
 import shareProfileRoutes from './src/routes/shareProfile.routes.js'
 import adminChatStoryGalleryRoutes from './src/routes/adminChatStoryGallery.routes.js'
 import adminMediaLibraryRoutes from './src/routes/adminMediaLibrary.routes.js'
+import adminStickerLibraryRoutes from './src/routes/adminStickerLibrary.routes.js'
 import { adminProfileFramesRouter, readerProfileFramesRouter } from './src/routes/profileFrames.routes.js'
 import adminChatStoryLibraryRoutes from './src/routes/adminChatStoryLibrary.routes.js'
 import adminChatEvidenceRoutes from './src/routes/adminChatEvidence.routes.js'
@@ -968,6 +969,7 @@ app.use('/api/chat', chatRoutes)
 app.use('/api/admin/stories', adminStoriesRoutes)
 app.use('/api/admin/chat-story-gallery', adminChatStoryGalleryRoutes)
 app.use('/api/admin/media-library', adminMediaLibraryRoutes)
+app.use('/api/admin/sticker-library', adminStickerLibraryRoutes)
 app.use('/api/admin/profile-frames', adminProfileFramesRouter)
 app.use('/api/profile-frames', readerProfileFramesRouter)
 app.use('/api/admin/chat-story-library', adminChatStoryLibraryRoutes)
