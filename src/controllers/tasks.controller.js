@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { ensureTaskCenterAutoRotation } from '../services/taskCenterAuto.service.js'
+import { ensureTaskCenterInternationalAutoRotation } from '../services/taskCenterInternationalAuto.service.js'
 import { recordWeeklyReadingEpisode } from './weeklyReading.controller.js'
 import { getActiveSessionMissions } from '../services/taskCenterMissionCache.service.js'
 import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
@@ -665,8 +666,14 @@ export async function getTaskOverview(req, res) {
       })
     }
 
-    try {
-      await ensureTaskCenterAutoRotation()
+      try {
+      const audience = await getReaderMissionAudience(userId)
+
+      if (audience === 'international') {
+        await ensureTaskCenterInternationalAutoRotation()
+      } else {
+        await ensureTaskCenterAutoRotation()
+      }
     } catch (error) {
       console.error('TASK CENTER AUTO CATCH-UP ERROR:', error)
     }
@@ -1259,8 +1266,14 @@ export async function getReadingMissions(req, res) {
       return res.status(401).json({ ok: false, message: 'User is required' })
     }
 
-    try {
-      await ensureTaskCenterAutoRotation()
+        try {
+      const audience = await getReaderMissionAudience(userId)
+
+      if (audience === 'international') {
+        await ensureTaskCenterInternationalAutoRotation()
+      } else {
+        await ensureTaskCenterAutoRotation()
+      }
     } catch (error) {
       console.error('TASK CENTER AUTO CATCH-UP ERROR:', error)
     }
