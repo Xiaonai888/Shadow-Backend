@@ -1,7 +1,8 @@
 import express from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
-import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
+import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'ា
+import { normalizeSmartSearch, scoreSmartSearchResult } from '../services/smartSearchCore.service.js'
 
 const router = express.Router()
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -65,21 +66,27 @@ function normalizeLookup(raw) {
       return null
     }
   }
-  value = value.replace(/^@+/, '').normalize('NFKC').trim()
+  value = normalizeSmartSearch(value.replace(/^@+/, ''), 80)
   if (UUID.test(value)) return { id: value.toLowerCase(), term: '' }
-  if (value.length < 2 || value.length > 80 || !/^[\p{L}\p{M}\p{N}._\-\s]+$/u.test(value)) return null
-  return { id: '', term: value.replace(/\s+/g, ' ') }
+  if (Array.from(value).length < 2 || value.length > 80 || !/^[\p{L}\p{M}\p{N}._\-\s]+$/u.test(value)) return null
+  return { id: '', term: value }
 }
 
 function rankPerson(person, term) {
-  const q = term.toLocaleLowerCase()
-  const username = String(person.username || '').toLocaleLowerCase()
-  const name = String(person.name || '').toLocaleLowerCase()
-  if (username === q) return 4
-  if (name === q) return 3
-  if (username.startsWith(q)) return 2
-  if (name.startsWith(q)) return 1
-  return 0
+  if (!term) return 0
+  const q = normalizeSmartSearch(term)
+  const username = normalizeSmartSearch(person.username)
+  const name = normalizeSmartSearch(person.name)
+  const authorName = normalizeSmartSearch(person.author_page?.name)
+  const authorUsername = normalizeSmartSearch(person.author_page?.username)
+  if (username === q) return 1500
+  if (name === q) return 1450
+  if (authorUsername === q) return 1400
+  if (authorName === q) return 1350
+  return Math.max(
+    scoreSmartSearchResult(q, [person.username, person.name]),
+    scoreSmartSearchResult(q, [person.author_page?.name, person.author_page?.username]),
+  )
 }
 
 router.get('/conversations', preAuthLimit, viewChat, inboxLimit, async (req, res) => {
@@ -151,6 +158,7 @@ router.get('/conversations', preAuthLimit, viewChat, inboxLimit, async (req, res
   }
 })
 
+// Pilot: shared fuzzy search is limited to this single Admin Chat account-search endpoint.
 router.get('/users/search', preAuthLimit, viewChat, searchLimit, async (req, res) => {
   const lookup = normalizeLookup(req.query.q)
   if (!lookup) return problem(res, 400, 'ADMIN_CHAT_INVALID_SEARCH', 'Enter a name, username, account link or user ID')
@@ -167,7 +175,7 @@ router.get('/users/search', preAuthLimit, viewChat, searchLimit, async (req, res
       userQuery = userQuery.eq('id', lookup.id)
       pagesQuery = pagesQuery.eq('id', lookup.id)
     } else {
-      const token = lookup.term.replace(/\s+/g, ' ')
+      const token = lookup.term
       userQuery = userQuery.or(`name.ilike.%${token}%,username.ilike.%${token}%`)
       pagesQuery = pagesQuery.or(`page_name.ilike.%${token}%,page_username.ilike.%${token}%,page_slug.ilike.%${token}%`)
     }
@@ -195,11 +203,41 @@ router.get('/users/search', preAuthLimit, viewChat, searchLimit, async (req, res
       }
     }
 
+    // Only attempt a database-wide fuzzy lookup after direct search found nothing.
+    // This reuses the already tested, service-role-only Reader Classification RPC.
+    // It does not run on page entry, in the background, or on every keystroke.
+    if (!lookup.id && Array.from(lookup.term).length >= 3 && people.size === 0) {
+      const { data: fuzzy, error: fuzzyError } = await supabase.rpc('get_admin_reader_classification_analytics', {
+        p_search: lookup.term,
+        p_group: 'all',
+        p_limit: PAGE_SIZE,
+      })
+      if (fuzzyError) {
+        // Preserve existing exact search if the optional fuzzy RPC is unavailable.
+        console.error('ADMIN_CHAT_FUZZY_SEARCH_UNAVAILABLE', fuzzyError.code || 'UNKNOWN')
+      } else if (fuzzy?.ok === true && Array.isArray(fuzzy.items) && fuzzy.items.length) {
+        const candidateIds = [...new Set(fuzzy.items.map((item) => item.id).filter((id) => UUID.test(String(id))))].slice(0, PAGE_SIZE)
+        if (candidateIds.length) {
+          const candidates = await supabase.from('users')
+            .select('id, name, username, avatar_url, is_author')
+            .eq('is_active', true).in('id', candidateIds).limit(PAGE_SIZE)
+          if (candidates.error) throw candidates.error
+          const byId = new Map((candidates.data || []).map((user) => [user.id, user]))
+          // Keep SQL's global exact/prefix/fuzzy ranking; never rank only the latest page.
+          for (const id of candidateIds) {
+            const user = byId.get(id)
+            if (user) people.set(id, { ...user, author_page: null })
+          }
+        }
+      }
+    }
+
     const users = [...people.values()]
-      .sort((a, b) => rankPerson(b, lookup.term) - rankPerson(a, lookup.term))
-      .slice(0, PAGE_SIZE)
+    if (lookup.term && ((userResult.data || []).length || (pageResult.data || []).length)) {
+      users.sort((a, b) => rankPerson(b, lookup.term) - rankPerson(a, lookup.term))
+    }
     res.set('Cache-Control', 'no-store')
-    return res.json({ ok: true, users, limit: PAGE_SIZE })
+    return res.json({ ok: true, users: users.slice(0, PAGE_SIZE), limit: PAGE_SIZE })
   } catch (error) {
     return failed(res, error, 'search')
   }
