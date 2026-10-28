@@ -5,6 +5,7 @@ import {
 import { isCriticalRouteCircuitOpen } from './workDetector.middleware.js'
 import { isKillSwitchBootstrapVerified, ensureKillSwitchBootstrapVerified } from '../services/workKillSwitchBootstrap.service.js'
 import { tryCriticalCanaryRequest } from '../services/criticalCircuitCanary.service.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 import jwt from 'jsonwebtoken'
 import { validateAdminSession } from '../services/adminDeviceAccess.service.js'
 
@@ -18,6 +19,45 @@ const AUTO_BYPASS_PREFIXES = [
   '/api/purchase/aba/callback',
   '/api/telegram/webhook/',
 ]
+
+// Give the initial security-control fetch a brief chance to finish before
+// returning a fail-closed 503. One shared wait covers concurrent requests.
+const BOOTSTRAP_GRACE_MS = 2000
+const BOOTSTRAP_POLL_MS = 50
+const BOOTSTRAP_GRACE_COOLDOWN_MS = 30 * 1000
+let bootstrapWaitPromise = null
+let lastBootstrapGraceAt = 0
+let lastBootstrapWarningAt = 0
+
+function awaitBootstrapGrace() {
+  if (isKillSwitchBootstrapVerified()) return Promise.resolve(true)
+  if (bootstrapWaitPromise) return bootstrapWaitPromise
+
+  const now = Date.now()
+  if (now - lastBootstrapGraceAt < BOOTSTRAP_GRACE_COOLDOWN_MS) {
+    return Promise.resolve(false)
+  }
+
+  lastBootstrapGraceAt = now
+  const deadline = now + BOOTSTRAP_GRACE_MS
+  const wait = new Promise((resolve) => {
+    const check = () => {
+      if (isKillSwitchBootstrapVerified()) {
+        resolve(true)
+      } else if (Date.now() >= deadline) {
+        resolve(false)
+      } else {
+        setTimeout(check, BOOTSTRAP_POLL_MS)
+      }
+    }
+    check()
+  })
+
+  bootstrapWaitPromise = wait.finally(() => {
+    bootstrapWaitPromise = null
+  })
+  return bootstrapWaitPromise
+}
 
 function normalizePath(req) {
   const raw = String(
@@ -131,14 +171,38 @@ export async function workKillSwitch(req, res, next) {
 
     if (!isKillSwitchBootstrapVerified()) {
       ensureKillSwitchBootstrapVerified()
-      res.set('Retry-After', '30')
-      res.set('X-Shadow-Work-Switch', 'bootstrap-pending')
-      return res.status(503).json({
-        ok: false,
-        code: 'WORK_GUARD_BOOTSTRAP_PENDING',
-        maintenance: true,
-        message: 'Security controls are loading. Please try again shortly.',
+      const waitingSince = Date.now()
+      const verified = await awaitBootstrapGrace()
+      const waitedMs = Date.now() - waitingSince
+
+      markRequestDiagnostic({
+        feature: 'work_kill_switch',
+        guard_stage: verified ? 'bootstrap_verified_after_wait' : 'bootstrap_pending',
+        bootstrap_wait_ms: waitedMs,
+        bootstrap_verified: verified,
       })
+
+      if (!verified) {
+        if (Date.now() - lastBootstrapWarningAt >= BOOTSTRAP_GRACE_COOLDOWN_MS) {
+          lastBootstrapWarningAt = Date.now()
+          console.warn('WORK_GUARD_BOOTSTRAP_PENDING_DIAGNOSTIC', {
+            code: 'WORK_GUARD_BOOTSTRAP_PENDING',
+            bootstrap_verified: false,
+            waited_ms: waitedMs,
+            retry_after_seconds: 30,
+            method,
+            path,
+          })
+        }
+        res.set('Retry-After', '30')
+        res.set('X-Shadow-Work-Switch', 'bootstrap-pending')
+        return res.status(503).json({
+          ok: false,
+          code: 'WORK_GUARD_BOOTSTRAP_PENDING',
+          maintenance: true,
+          message: 'Security controls are loading. Please try again shortly.',
+        })
+      }
     }
 
     const source = requestSource(req, path)
@@ -216,6 +280,12 @@ export async function workKillSwitch(req, res, next) {
       retry_after_seconds: retryAfter,
     })
   } catch (error) {
+    markRequestDiagnostic({
+      feature: 'work_kill_switch',
+      guard_stage: 'middleware_exception',
+      guard_error_code: String(error?.code || error?.name || 'UNKNOWN').slice(0, 60),
+      guard_error_message: String(error?.message || 'Unknown error').slice(0, 160),
+    })
     console.error(
       'WORK_KILL_SWITCH_MIDDLEWARE_ERROR:',
       error?.message || error
