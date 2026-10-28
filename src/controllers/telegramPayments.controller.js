@@ -748,7 +748,13 @@ function releasedMessage(payment, user, title = '✅ APPROVED') {
     '',
     `💎 Released: <b>${html(Number(payment.diamonds || 0).toLocaleString())} Diamonds</b>`,
     `👤 User: <b>${html(user?.username ? '@' + user.username : user?.name || payment.user_id)}</b>`,
-    `💵 Amount: <b>${html(money(payment.amount_usd))}</b>`,
+        `💵 Amount: <b>${html(money(payment.amount_usd))}</b>`,
+    `💰 Payment Source: <b>${html(
+      payment.purchase_type === 'premium' ||
+      payment.payment_method === 'premium_aba_payment_link'
+        ? `Shadow Premium · ${payment.premium_plan_months || '?'} Months · ABA/PayWay`
+        : 'Diamond Store · ABA/PayWay'
+    )}</b>`,
     `🛒 Purchase Type: <b>${html(
   String(payment.purchase_type || '').toLowerCase() === 'premium'
     ? `Premium — ${Number(payment.premium_plan_months || 0)} Month${Number(payment.premium_plan_months || 0) === 1 ? '' : 's'}`
