@@ -147,7 +147,7 @@ router.post('/register', readerRegisterLimit, readerAuthSafetyLimit, verifyTurns
 router.post('/login', readerLoginLimit, readerAuthSafetyLimit, loginUser)
 router.post('/login/verify', readerLoginLimit, readerAuthSafetyLimit, verifyReaderLogin)
 router.post('/forgot-password', readerPasswordRequestLimit, readerAuthSafetyLimit, requestPasswordReset)
-router.post('/verify-reset-code', readerPasswordResetLimit, readerAuthSafetyLimit, verifyPasswordResetCode)
+router.post('/verify-reset-code', readerAuthSafetyLimit, readerPasswordResetLimit, verifyPasswordResetCode)
 router.post('/reset-password', readerPasswordResetLimit, readerAuthSafetyLimit, resetPassword)
 router.use('/devices', readerDeviceAccessRoutes)
 router.use('/security', readerSecurityRoutes)
