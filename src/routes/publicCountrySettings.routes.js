@@ -136,9 +136,23 @@ function resolveBinanceDuringPause(rules, region, countryAvailable, exception) {
 
 function resolveRules(rules, region, countryAvailable, exception, policyEnabled) {
   if (!policyEnabled) {
+    const baseline = exception?.mode === 'cambodia_experience' ? 'kh' : region
+    const regionGame = rules[baseline === 'international' ? 'international' : 'kh']?.game
+    let gameAllowed = countryAvailable && typeof regionGame === 'boolean' ? regionGame : true
+
+    if (countryAvailable && exception?.mode === 'all_eligible') {
+      gameAllowed = true
+    }
+
+    if (countryAvailable && exception?.mode === 'custom') {
+      if (exception.overrides?.game === 'allow') gameAllowed = true
+      if (exception.overrides?.game === 'block') gameAllowed = false
+    }
+
     return {
       ...rules[region === 'international' ? 'international' : 'kh'],
       app: true,
+      game: gameAllowed,
       physicalBooks: true,
       shadowMall: true,
       readerMall: true,
