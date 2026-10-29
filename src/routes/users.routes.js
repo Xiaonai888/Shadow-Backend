@@ -39,6 +39,7 @@ import { verifyTurnstile } from '../middleware/turnstile.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { rateLimit } from 'express-rate-limit'
 import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
+import { verifyPasswordResetCode } from '../controllers/readerPasswordResetVerify.controller.js'
 
 const router = express.Router()
 
@@ -146,6 +147,7 @@ router.post('/register', readerRegisterLimit, readerAuthSafetyLimit, verifyTurns
 router.post('/login', readerLoginLimit, readerAuthSafetyLimit, loginUser)
 router.post('/login/verify', readerLoginLimit, readerAuthSafetyLimit, verifyReaderLogin)
 router.post('/forgot-password', readerPasswordRequestLimit, readerAuthSafetyLimit, requestPasswordReset)
+router.post('/verify-reset-code', readerPasswordResetLimit, readerAuthSafetyLimit, verifyPasswordResetCode)
 router.post('/reset-password', readerPasswordResetLimit, readerAuthSafetyLimit, resetPassword)
 router.use('/devices', readerDeviceAccessRoutes)
 router.use('/security', readerSecurityRoutes)
