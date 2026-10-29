@@ -13,6 +13,13 @@ export const GAME_REGISTRY = Object.freeze([
     hidden: false,
     disabled: true,
   }),
+  Object.freeze({
+    gameKey: 'shadow-realms',
+    name: 'Shadow Realms',
+    profile: null,
+    hidden: true,
+    disabled: true,
+  }),
 ])
 
 export function getGameDefinition(gameKey) {
