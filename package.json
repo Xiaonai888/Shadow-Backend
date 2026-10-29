@@ -27,7 +27,7 @@
     "nodemon": "^3.1.9"
   },
   "overrides": {
-  "body-parser": "1.20.8",
+  "body-parser": "1.20.9",
   "ws": "8.21.3",
   "proxy-addr": "2.0.8"
 }
