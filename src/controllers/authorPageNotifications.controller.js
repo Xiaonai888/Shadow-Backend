@@ -2,6 +2,7 @@ import { supabase } from '../config/supabase.js'
 import {
   subscribeAuthorPageNotificationSse,
 } from '../services/authorPageNotificationSse.service.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 
 const NOTIFICATION_TYPES = new Set([
   'comment',
@@ -252,16 +253,25 @@ export async function getMyAuthorPageNotificationUnreadCount(
   req,
   res
 ) {
+  let stage = 'authorize'
+  const startedAt = Date.now()
+
   try {
     const userId = req.user?.user_id
 
     if (!userId) {
+      markRequestDiagnostic({
+        feature: 'author_page_notifications_unread_count',
+        unread_stage: 'unauthorized',
+      })
+
       return res.status(401).json({
         ok: false,
         message: 'Unauthorized',
       })
     }
 
+    stage = 'load_author_page'
     const authorPage =
       await getMyAuthorPageByUserId(userId)
 
@@ -278,6 +288,7 @@ export async function getMyAuthorPageNotificationUnreadCount(
       })
     }
 
+    stage = 'count_unread'
     const { count, error } = await supabase
       .from('author_page_notifications')
       .select('id', {
@@ -301,19 +312,35 @@ export async function getMyAuthorPageNotificationUnreadCount(
       unread_count: Number(count || 0),
     })
   } catch (error) {
-    console.error(
-      'GET AUTHOR PAGE NOTIFICATION UNREAD COUNT ERROR:',
-      error
-    )
+    const code = String(
+      error?.code || error?.name || 'unknown'
+    ).slice(0, 60)
+
+    markRequestDiagnostic({
+      feature: 'author_page_notifications_unread_count',
+      unread_stage: stage,
+      error_code: code,
+      error_source: error?.code ? 'supabase' : 'backend',
+      elapsed_ms: Date.now() - startedAt,
+    })
+
+    console.error('AUTHOR_PAGE_NOTIFICATIONS_UNREAD_COUNT_ERROR', {
+      stage,
+      code,
+      message: String(error?.message || 'Unknown error').slice(0, 240),
+      details: String(error?.details || '').slice(0, 160),
+      hint: String(error?.hint || '').slice(0, 160),
+    })
 
     return res.status(500).json({
       ok: false,
       message:
         'Failed to load notification unread count',
-      error: error.message,
+      error: error?.message,
     })
   }
 }
+
 
 export async function getMyAuthorPageNotifications(req, res) {
   try {
