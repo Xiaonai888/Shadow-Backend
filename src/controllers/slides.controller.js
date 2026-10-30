@@ -192,8 +192,24 @@ function getDirectSlideImageUrl(value) {
 }
 
 async function deleteImageFromStorage(publicUrl) {
+  if (!publicUrl) return
+
   try {
     const r2ObjectKey = extractR2ObjectKeyFromPublicUrl(publicUrl)
+    const storagePath = r2ObjectKey ? null : extractStoragePathFromPublicUrl(publicUrl)
+    if (!r2ObjectKey && !storagePath) return
+
+    const { count, error: referenceError } = await supabase
+      .from('slides')
+      .select('id', { count: 'exact', head: true })
+      .eq('image_url', publicUrl)
+
+    if (referenceError) {
+      console.warn('SKIP SLIDE IMAGE DELETE: Reference lookup failed:', referenceError.message)
+      return
+    }
+
+    if (count !== 0) return
 
     if (r2ObjectKey) {
       await getR2Client().send(
@@ -205,15 +221,13 @@ async function deleteImageFromStorage(publicUrl) {
       return
     }
 
-    const storagePath = extractStoragePathFromPublicUrl(publicUrl)
-    if (!storagePath) return
-
     const { error } = await supabase.storage.from(BUCKET).remove([storagePath])
     if (error) throw error
   } catch (error) {
     console.warn('DELETE IMAGE WARNING:', error.message)
   }
 }
+
 async function uploadImage(file) {
   if (!file) return null
   if (!Buffer.isBuffer(file.buffer) || file.buffer.length === 0 || file.buffer.length > 5 * 1024 * 1024) {
