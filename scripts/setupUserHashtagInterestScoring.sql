@@ -15,6 +15,7 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+#variable_conflict use_column
 declare
   v_signal text;
   v_weight numeric(12,4);
