@@ -143,6 +143,7 @@ import readerActivityHistoryRoutes from './src/routes/readerActivityHistory.rout
 import readerReadingSummaryRoutes from './src/routes/readerReadingSummary.routes.js'
 import readerChatThemesRoutes from './src/routes/readerChatThemes.routes.js'
 import readerChatIndicatorRoutes from './src/routes/readerChatIndicator.routes.js'
+import { requireAdmin } from './src/middleware/auth.middleware.js'
 
 dotenv.config()
 
@@ -693,7 +694,9 @@ const mediaUploadRouteSpamGuard = (req, res, next) => {
   if (req.method === 'GET') {
     return readerReadSpamGuard(req, res, next)
   }
-
+  if (/^\/api\/media-direct\/admin\/(?:init|finalize)(?:\?|$)/.test(req.originalUrl || '')) {
+    return requireAdmin(req, res, next)
+  }
   return mediaUploadSpamGuard(req, res, next)
 }
 
