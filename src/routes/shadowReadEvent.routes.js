@@ -36,6 +36,19 @@ const readerLimit = rateLimit({
   },
 })
 
+const joinLimit = rateLimit({
+  windowMs: 60000,
+  limit: 6,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user.user_id || req.user.id),
+  message: {
+    ok: false,
+    code: 'READ_EVENT_JOIN_RATE_LIMIT',
+    message: 'Too many Read Event join requests',
+  },
+})
+
 function khmerDateKey(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Phnom_Penh',
@@ -119,6 +132,16 @@ function visibleStory(row) {
   }
 }
 
+async function readEnabledWeek(startsOn) {
+  const { data: week, error } = await supabase
+    .from('shadow_read_event_weeks')
+    .select('id,starts_on,featured_story_id,audience_group,is_enabled')
+    .eq('starts_on', startsOn)
+    .maybeSingle()
+  if (error) throw error
+  return week?.is_enabled === true && week.audience_group === 'kh' ? week : null
+}
+
 async function getReadEvent(req, res) {
   res.set('Cache-Control', 'private, no-store')
   const userId = String(req.user?.user_id || req.user?.id || '')
@@ -134,17 +157,12 @@ async function getReadEvent(req, res) {
     const window = currentEventWindow()
     if (!window.active) return res.json({ ok: true, active: false, next_start: window.next_start })
 
-    const { data: week, error: weekError } = await supabase
-      .from('shadow_read_event_weeks')
-      .select('id,starts_on,featured_story_id,audience_group,is_enabled')
-      .eq('starts_on', window.starts_on)
-      .maybeSingle()
-    if (weekError) throw weekError
-    if (!week || week.is_enabled !== true || week.audience_group !== 'kh') {
+    const week = await readEnabledWeek(window.starts_on)
+    if (!week) {
       return res.json({ ok: true, active: false, scheduled_for: window.starts_on })
     }
 
-    const [missionResult, milestoneResult] = await Promise.all([
+    const [missionResult, milestoneResult, participantResult] = await Promise.all([
       supabase.from('shadow_read_event_missions')
         .select('id,day_number,slot,mission_type,story_id,mission_params,target_amount,max_points')
         .eq('event_id', week.id)
@@ -157,9 +175,15 @@ async function getReadEvent(req, res) {
         .eq('day_number', window.day_number)
         .order('tier', { ascending: true })
         .limit(5),
+      supabase.from('shadow_read_event_participants')
+        .select('joined_at')
+        .eq('event_id', week.id)
+        .eq('user_id', userId)
+        .maybeSingle(),
     ])
     if (missionResult.error) throw missionResult.error
     if (milestoneResult.error) throw milestoneResult.error
+    if (participantResult.error) throw participantResult.error
 
     const missions = missionResult.data || []
     const milestones = milestoneResult.data || []
@@ -198,6 +222,10 @@ async function getReadEvent(req, res) {
         featured_story: found.get(storyIds[0]) || null,
         daily_story: validDailyStory || null,
       },
+      participation: {
+        joined: Boolean(participantResult.data),
+        joined_at: participantResult.data?.joined_at || null,
+      },
       missions,
       milestones,
       prize_rules: SHADOW_READ_EVENT_PRIZES,
@@ -212,6 +240,88 @@ async function getReadEvent(req, res) {
   }
 }
 
+async function joinReadEvent(req, res) {
+  res.set('Cache-Control', 'private, no-store')
+  const userId = String(req.user?.user_id || req.user?.id || '')
+  if (!USER_ID_PATTERN.test(userId)) {
+    return res.status(401).json({ ok: false, code: 'READER_ID_INVALID' })
+  }
+
+  try {
+    if (!(await isKhmerReader(userId))) {
+      return res.status(403).json({ ok: false, code: 'KHMER_READER_ONLY' })
+    }
+
+    const window = currentEventWindow()
+    if (!window.active) {
+      return res.status(409).json({ ok: false, code: 'READ_EVENT_NOT_RUNNING' })
+    }
+
+    const week = await readEnabledWeek(window.starts_on)
+    if (!week) {
+      return res.status(409).json({ ok: false, code: 'READ_EVENT_NOT_ENABLED' })
+    }
+
+    const [missionCount, milestoneCount, participantResult] = await Promise.all([
+      supabase.from('shadow_read_event_missions')
+        .select('id', { count: 'exact', head: true })
+        .eq('event_id', week.id),
+      supabase.from('shadow_read_event_milestones')
+        .select('tier', { count: 'exact', head: true })
+        .eq('event_id', week.id),
+      supabase.from('shadow_read_event_participants')
+        .select('joined_at')
+        .eq('event_id', week.id)
+        .eq('user_id', userId)
+        .maybeSingle(),
+    ])
+
+    if (missionCount.error) throw missionCount.error
+    if (milestoneCount.error) throw milestoneCount.error
+    if (participantResult.error) throw participantResult.error
+
+    if (missionCount.count !== 35 || milestoneCount.count !== 35) {
+      return res.status(409).json({ ok: false, code: 'READ_EVENT_PLAN_INCOMPLETE' })
+    }
+
+    if (participantResult.data) {
+      return res.json({
+        ok: true,
+        joined: true,
+        already_joined: true,
+        event_id: week.id,
+        starts_on: window.starts_on,
+      })
+    }
+
+    const { error: insertError } = await supabase
+      .from('shadow_read_event_participants')
+      .insert({
+        event_id: week.id,
+        user_id: userId,
+        reader_group_snapshot: 'kh',
+      })
+
+    if (insertError && String(insertError.code) !== '23505') throw insertError
+
+    return res.json({
+      ok: true,
+      joined: true,
+      already_joined: Boolean(insertError),
+      event_id: week.id,
+      starts_on: window.starts_on,
+    })
+  } catch (error) {
+    console.error('SHADOW_READ_EVENT_JOIN_ERROR', error)
+    return res.status(503).json({
+      ok: false,
+      code: 'READ_EVENT_JOIN_UNAVAILABLE',
+      message: 'Unable to join Read Event',
+    })
+  }
+}
+
 router.get('/', ipLimit, requireUser, readerLimit, getReadEvent)
+router.post('/join', ipLimit, requireUser, readerLimit, joinLimit, joinReadEvent)
 
 export default router
