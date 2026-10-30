@@ -57,6 +57,21 @@ function isSoldOutSystemCategory(value) {
   return cleanText(value).toLowerCase() === 'sold out'
 }
 
+function cleanStorySettings(value) {
+  if (!Array.isArray(value)) return []
+  const selected = []
+  const seen = new Set()
+  for (const candidate of value) {
+    if (typeof candidate !== 'string') continue
+    const item = candidate.trim().slice(0, 80)
+    if (!item || seen.has(item.toLowerCase())) continue
+    seen.add(item.toLowerCase())
+    selected.push(item)
+    if (selected.length === 6) break
+  }
+  return selected
+}
+
 function cleanGalleryImages(value) {
   const images = Array.isArray(value) ? value : []
 
@@ -131,6 +146,7 @@ function publicProduct(product) {
     author_name: product.author_name || '',
     publisher: product.publisher || '',
     novel_type: product.novel_type || '',
+    story_settings: cleanStorySettings(product.story_settings),
     category: product.category || 'New Release',
     genre: product.genre || '',
     description: product.description || '',
@@ -2008,6 +2024,7 @@ export async function createMyAuthorStoreProduct(req, res) {
       author_name: cleanText(req.body.author_name ?? req.body.authorName),
       publisher: cleanText(req.body.publisher),
       novel_type: cleanText(req.body.novel_type ?? req.body.novelType),
+      story_settings: cleanStorySettings(req.body.story_settings ?? req.body.storySettings),
       category,
       genre: cleanText(req.body.genre),
       description: cleanText(req.body.description),
@@ -2116,6 +2133,9 @@ export async function updateMyAuthorStoreProduct(req, res) {
       author_name: cleanText(req.body.author_name ?? req.body.authorName),
       publisher: cleanText(req.body.publisher),
       novel_type: cleanText(req.body.novel_type ?? req.body.novelType),
+      ...(req.body.story_settings !== undefined || req.body.storySettings !== undefined
+        ? { story_settings: cleanStorySettings(req.body.story_settings ?? req.body.storySettings) }
+        : {}),
       category,
       genre: cleanText(req.body.genre),
       description: cleanText(req.body.description),
