@@ -36,6 +36,19 @@ const readerLimit = rateLimit({
   },
 })
 
+const leaderboardLimit = rateLimit({
+  windowMs: 60000,
+  limit: 12,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user.user_id || req.user.id),
+  message: {
+    ok: false,
+    code: 'READ_EVENT_LEADERBOARD_RATE_LIMIT',
+    message: 'Too many leaderboard requests',
+  },
+})
+
 const joinLimit = rateLimit({
   windowMs: 60000,
   limit: 6,
@@ -90,6 +103,23 @@ function currentEventWindow(now = new Date()) {
     starts_on: dateKey(currentStart),
     ends_on: dateKey(currentStart + (EVENT_DAYS - 1) * DAY_MS),
     day_number: cycleDay + 1,
+  }
+}
+
+function leaderboardEventWindow(now = new Date()) {
+  const current = currentEventWindow(now)
+  if (current.active) return { ...current, event_active: true }
+
+  const elapsed = Math.round((utcDate(khmerDateKey(now)) - FIRST_START) / DAY_MS)
+  if (elapsed < 0) return null
+
+  const cycleDay = elapsed % CYCLE_DAYS
+  const startsOn = FIRST_START + (elapsed - cycleDay) * DAY_MS
+  return {
+    starts_on: dateKey(startsOn),
+    ends_on: dateKey(startsOn + (EVENT_DAYS - 1) * DAY_MS),
+    day_number: EVENT_DAYS,
+    event_active: false,
   }
 }
 
@@ -366,7 +396,93 @@ async function joinReadEvent(req, res) {
   }
 }
 
+async function getReadEventLeaderboard(req, res, type) {
+  res.set('Cache-Control', 'private, no-store')
+  const userId = String(req.user?.user_id || req.user?.id || '')
+  if (!USER_ID_PATTERN.test(userId)) {
+    return res.status(401).json({ ok: false, code: 'READER_ID_INVALID' })
+  }
+
+  const window = leaderboardEventWindow()
+  if (type === 'daily') {
+    const requested = req.query?.day
+    if (requested !== undefined &&
+      (typeof requested !== 'string' || !/^[1-7]$/.test(requested) ||
+        !window || Number(requested) > window.day_number)) {
+      return res.status(400).json({ ok: false, code: 'READ_EVENT_DAY_INVALID' })
+    }
+  }
+
+  try {
+    if (!(await isKhmerReader(userId))) {
+      return res.status(403).json({ ok: false, code: 'KHMER_READER_ONLY' })
+    }
+
+    if (!window) {
+      return res.json({ ok: true, available: false, next_start: dateKey(FIRST_START) })
+    }
+
+    const week = await readEnabledWeek(window.starts_on)
+    if (!week) {
+      return res.json({ ok: true, available: false, scheduled_for: window.starts_on })
+    }
+
+    const dayNumber = type === 'daily'
+      ? Number(req.query?.day || window.day_number)
+      : null
+    const functionName = type === 'daily'
+      ? 'shadow_read_event_daily_leaderboard'
+      : 'shadow_read_event_overall_leaderboard'
+    const params = {
+      p_event_id: week.id,
+      p_viewer_id: userId,
+      ...(type === 'daily' ? { p_day_number: dayNumber } : {}),
+    }
+
+    const { data, error } = await supabase.rpc(functionName, params)
+    if (error) throw error
+    const board = Array.isArray(data) ? data[0] : data
+    if (!board || board.ok !== true || String(board.event_id) !== String(week.id) ||
+      (type === 'daily' && Number(board.day_number) !== dayNumber) ||
+      !Array.isArray(board.top_three) || board.top_three.length > 3 ||
+      !Number.isSafeInteger(Number(board.scored_readers)) ||
+      Number(board.scored_readers) < 0 ||
+      !Number.isSafeInteger(Number(board.my_points)) ||
+      Number(board.my_points) < 0 ||
+      (board.my_rank !== null &&
+        (!Number.isSafeInteger(Number(board.my_rank)) || Number(board.my_rank) < 1))) {
+      throw new Error('Invalid Read Event leaderboard response')
+    }
+
+    return res.json({
+      ok: true,
+      available: true,
+      event: {
+        id: week.id,
+        starts_on: window.starts_on,
+        ends_on: window.ends_on,
+        active: window.event_active,
+      },
+      leaderboard: board,
+    })
+  } catch (error) {
+    console.error('SHADOW_READ_EVENT_LEADERBOARD_ERROR', {
+      type,
+      code: error?.code || error?.name || 'unknown',
+    })
+    return res.status(503).json({
+      ok: false,
+      code: 'READ_EVENT_LEADERBOARD_UNAVAILABLE',
+      message: 'Read Event leaderboard is temporarily unavailable',
+    })
+  }
+}
+
 router.get('/', ipLimit, requireUser, readerLimit, getReadEvent)
 router.post('/join', ipLimit, requireUser, readerLimit, joinLimit, joinReadEvent)
+router.get('/leaderboard/daily', ipLimit, requireUser, readerLimit, leaderboardLimit,
+  (req, res) => getReadEventLeaderboard(req, res, 'daily'))
+router.get('/leaderboard/overall', ipLimit, requireUser, readerLimit, leaderboardLimit,
+  (req, res) => getReadEventLeaderboard(req, res, 'overall'))
 
 export default router
