@@ -162,19 +162,17 @@ async function getReadEvent(req, res) {
       return res.json({ ok: true, active: false, scheduled_for: window.starts_on })
     }
 
-    const [missionResult, milestoneResult, participantResult] = await Promise.all([
+    const [missionResult, progressResult, participantResult] = await Promise.all([
       supabase.from('shadow_read_event_missions')
         .select('id,day_number,slot,mission_type,story_id,mission_params,target_amount,max_points')
         .eq('event_id', week.id)
         .eq('day_number', window.day_number)
         .order('slot', { ascending: true })
         .limit(5),
-      supabase.from('shadow_read_event_milestones')
-        .select('tier,required_points,coin_reward')
-        .eq('event_id', week.id)
-        .eq('day_number', window.day_number)
-        .order('tier', { ascending: true })
-        .limit(5),
+      supabase.rpc('shadow_read_event_reader_progress', {
+        p_event_id: week.id,
+        p_user_id: userId,
+      }),
       supabase.from('shadow_read_event_participants')
         .select('joined_at')
         .eq('event_id', week.id)
@@ -182,19 +180,61 @@ async function getReadEvent(req, res) {
         .maybeSingle(),
     ])
     if (missionResult.error) throw missionResult.error
-    if (milestoneResult.error) throw milestoneResult.error
+    if (progressResult.error) throw progressResult.error
     if (participantResult.error) throw participantResult.error
 
+    const progress = Array.isArray(progressResult.data)
+      ? progressResult.data[0]
+      : progressResult.data
+    const missionProgress = progress?.missions
+    const milestones = progress?.milestones
     const missions = missionResult.data || []
-    const milestones = milestoneResult.data || []
-    if (missions.length !== 5 || milestones.length !== 5 ||
+
+    if (!progress || progress.ok !== true ||
+      String(progress.event_id) !== String(week.id) ||
+      Number(progress.day_number) !== window.day_number ||
+      typeof progress.joined !== 'boolean' ||
+      progress.joined !== Boolean(participantResult.data) ||
+      !Array.isArray(missionProgress) || missionProgress.length !== 5 ||
+      !Array.isArray(milestones) || milestones.length !== 5 ||
+      missions.length !== 5 ||
       missions.some((item, index) => item.slot !== index + 1) ||
-      milestones.some((item, index) => item.tier !== index + 1) ||
+      milestones.some((item, index) => Number(item.tier) !== index + 1) ||
       missions[0].mission_type !== 'daily_story' || !missions[0].story_id) {
-      throw new Error('Incomplete Read Event daily plan')
+      throw new Error('Incomplete Read Event daily progress')
     }
 
-    const storyIds = [String(week.featured_story_id), String(missions[0].story_id)]
+    const dailyPoints = Number(progress.daily_points)
+    const overallPoints = Number(progress.overall_points)
+    if (![dailyPoints, overallPoints].every((value) =>
+      Number.isSafeInteger(value) && value >= 0) || overallPoints < dailyPoints) {
+      throw new Error('Invalid Read Event score totals')
+    }
+
+    const scoreByMissionId = new Map(missionProgress.map((item) => [String(item.mission_id), item]))
+    if (scoreByMissionId.size !== 5) throw new Error('Invalid Read Event mission score rows')
+
+    const scoredMissions = missions.map((mission) => {
+      const score = scoreByMissionId.get(String(mission.id))
+      const earned = Number(score?.earned_points)
+      const maximum = Number(mission.max_points)
+      if (!score || Number(score.slot) !== mission.slot ||
+        String(score.mission_type) !== String(mission.mission_type) ||
+        Number(score.max_points) !== maximum ||
+        !Number.isSafeInteger(earned) || earned < 0 || earned > maximum ||
+        typeof score.completed !== 'boolean' ||
+        score.completed !== (earned >= maximum)) {
+        throw new Error('Read Event mission score does not match saved plan')
+      }
+      return {
+        ...mission,
+        earned_points: earned,
+        remaining_points: maximum - earned,
+        completed: score.completed,
+      }
+    })
+
+    const storyIds = [String(week.featured_story_id), String(scoredMissions[0].story_id)]
     if (storyIds[0] === storyIds[1]) throw new Error('Invalid Read Event story selection')
     const { data: stories, error: storiesError } = await supabase
       .from('stories')
@@ -223,11 +263,16 @@ async function getReadEvent(req, res) {
         daily_story: validDailyStory || null,
       },
       participation: {
-        joined: Boolean(participantResult.data),
+        joined: progress.joined,
         joined_at: participantResult.data?.joined_at || null,
       },
-      missions,
+      missions: scoredMissions,
       milestones,
+      progress: {
+        day_number: window.day_number,
+        daily_points: dailyPoints,
+        overall_points: overallPoints,
+      },
       prize_rules: SHADOW_READ_EVENT_PRIZES,
     })
   } catch (error) {
