@@ -27,6 +27,7 @@ import { cachePublicStoryRecommendations } from '../services/publicStoryRecommen
 import { cachePublicStoryDataResponse } from '../services/publicStoryDataCache.service.js'
 import { APP_REGISTRY } from '../config/appRegistry.js'
 import { getSupabaseClient } from '../config/supabase.js'
+import { traceEpisodeView } from '../middleware/episodeViewDiagnostics.middleware.js'
 
 const router = express.Router()
 router.get('/discover-special-promotion/active', getActiveDiscoverSpecialPromotion)
@@ -441,6 +442,7 @@ function personalizeStoryEpisodeList(req, res, next) {
 router.get('/stories/:storyId/episodes/:episodeId', coalesceEpisodeRead, getPublicEpisodeById)
 router.post(
   '/stories/:storyId/episodes/:episodeId/view',
+  traceEpisodeView,
   coalesceEpisodeView,
   invalidatePublicStoriesAfterCountedView,
   countQualifiedEpisodeView
