@@ -31,6 +31,7 @@ const mediaDirectRateLimit = rateLimit({
   limit: 300,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
+  skip: (req) => Boolean(req.admin?.admin_id),
   keyGenerator: (req) => req.admin?.admin_id
     ? `admin:${req.admin.admin_id}`
     : `user:${req.user?.user_id || req.user?.id}`,
@@ -222,7 +223,7 @@ async function verifyAudioHeader(key, mime, size, etag) {
 function enforceRate(owner, role, category) {
   const key = `${role}:${owner}`
   const now = Date.now()
-  const limit = role === 'admin' ? 100 : CATEGORIES[category]?.scope === 'author' ? 150 : 30
+  const limit = role === 'admin' ? 1000 : CATEGORIES[category]?.scope === 'author' ? 150 : 30
   if (initWindows.size > 5000) initWindows.clear()
   const state = initWindows.get(key)
   if (!state || now - state.started >= 600000) {
