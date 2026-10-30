@@ -7,6 +7,7 @@ import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 import { queueReadingRewardEvent } from '../services/readingRewardEventQueue.service.js'
 import { getTaskCenterDailyStoryAssignment } from '../services/taskCenterDailyStoryAssignment.service.js'
 import { recordReadingRewardSession } from '../services/readingRewardSessionAtomic.service.js'
+import { getShadowReadEventReadingWindow, recordShadowReadEventReadingScore } from '../services/shadowReadEventReadingScore.service.js'
 
 
 const DAILY_REWARDS = [
@@ -35,6 +36,7 @@ const MAX_READING_EVENT_SECONDS = 60
 const MAX_MISSION_EVENT_SECONDS = 30
 
 const readingSessionLocks = new Map()
+const shadowReadEventScoreCache = new Map()
 
 async function withReadingSessionLock(userId, callback) {
   const previous = readingSessionLocks.get(userId) || Promise.resolve()
@@ -2137,6 +2139,48 @@ const missions =
                 Boolean(
                   weeklyReading?.tracked
                 )
+
+              const eventWindow = getShadowReadEventReadingWindow()
+              if (weeklyReading && eventWindow) {
+                const cacheKey = [
+                  userId,
+                  eventWindow.startsOn,
+                  eventWindow.dayNumber,
+                  episodeId,
+                ].join(':')
+                const checkedAt = Date.now()
+                if ((shadowReadEventScoreCache.get(cacheKey) || 0) <= checkedAt) {
+                  shadowReadEventScoreCache.set(cacheKey, checkedAt + 120000)
+                  if (shadowReadEventScoreCache.size > 3000) {
+                    shadowReadEventScoreCache.delete(
+                      shadowReadEventScoreCache.keys().next().value
+                    )
+                  }
+                  try {
+                    const score = await recordShadowReadEventReadingScore({
+                      userId,
+                      storyId,
+                      episodeId,
+                    })
+                    const resolved = score?.awarded === true ||
+                      score?.reason === 'no_matching_mission' ||
+                      (Array.isArray(score?.missions) && score.missions.length > 0 &&
+                        score.missions.every((mission) =>
+                          mission.awarded === true ||
+                          ['duplicate_evidence', 'mission_points_complete'].includes(mission.reason)
+                        ))
+                    if (resolved) {
+                      shadowReadEventScoreCache.set(cacheKey, Date.now() + 86400000)
+                    }
+                  } catch (scoreError) {
+                    shadowReadEventScoreCache.delete(cacheKey)
+                    console.error('SHADOW_READ_EVENT_SCORE_ERROR', {
+                      code: scoreError?.code || scoreError?.name || 'unknown',
+                    })
+                  }
+                }
+              }
+
             } catch (error) {
               diagnostic.weekly_error =
                 error?.code ||
