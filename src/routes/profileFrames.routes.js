@@ -58,7 +58,7 @@ const adminReadIp = createIpLimiter({
 })
 
 const adminWriteIp = createIpLimiter({
-  limit: 90,
+  limit: 600,
   code: 'PROFILE_FRAMES_ADMIN_WRITE_IP_LIMIT',
   message: 'Too many frame changes. Please retry shortly.',
 })
@@ -71,7 +71,7 @@ const adminReadAccount = limiter({
 })
 
 const adminWriteAccount = limiter({
-  limit: 60,
+  limit: 300,
   code: 'PROFILE_FRAMES_ADMIN_WRITE_LIMIT',
   message: 'Frame change limit reached. Please retry shortly.',
   keyGenerator: adminKey,
