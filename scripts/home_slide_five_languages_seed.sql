@@ -38,7 +38,7 @@ BEGIN
   FROM public.slides WHERE section_key = 'home_top_slider';
 
   SELECT COUNT(*) INTO source_log_count
-  FROM public.admin_activity_logs WHERE section_key = 'home_top_slider';
+  FROM public.admin_activity_logs WHERE section_key = 'home_top_slider' AND created_at >= now() - interval '90 days';
 
   CREATE TEMP TABLE _home_slide_seed_map ON COMMIT DROP AS
   SELECT id AS source_slide_id,
@@ -65,7 +65,7 @@ BEGIN
   SELECT string_agg(format('%I', attname), ', ' ORDER BY attnum),
          string_agg(
            CASE WHEN attname = 'section_key' THEN '$1'
-                WHEN attname = 'slide_id' THEN 'm.copied_slide_id'
+                WHEN attname = 'slide_id' THEN 'COALESCE(m.copied_slide_id, a.slide_id)'
                 ELSE format('a.%I', attname)
            END,
            ', ' ORDER BY attnum
@@ -96,7 +96,7 @@ BEGIN
     || 'LEFT JOIN _home_slide_seed_map m '
     || 'ON m.source_slide_id = a.slide_id '
     || 'AND m.destination_section_key = $1 '
-    || 'WHERE a.section_key = $2',
+    || 'WHERE a.section_key = $2 AND a.created_at >= now() - interval ''90 days''',
     log_columns,
     log_expressions
   );
