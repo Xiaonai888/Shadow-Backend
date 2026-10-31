@@ -5,6 +5,7 @@ import {
   publishSecurityEvent,
   reportGuardState,
 } from '../services/securityControlPlane.service.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 
 const MAX_RESTRICTION_SECONDS = 7 * 24 * 60 * 60
 const DEFAULT_IP_FALLBACK_MULTIPLIER = 5
@@ -387,7 +388,24 @@ function readCachedRestriction(scope, identity) {
   return null
 }
 
-function sendRestrictionResponse(res, scope, result, resolved) {
+function sendRestrictionResponse(res, scope, result, resolved, decisionSource = 'evaluated') {
+  const snapshot = res.req?.spamGuard || {}
+
+  markRequestDiagnostic({
+    feature: 'spam_guard_cooldown',
+    guard_stage: 'blocked',
+    guard_code: resolved.code || 'UNKNOWN',
+    guard_decision_source: decisionSource,
+    guard_scope: scope,
+    guard_identity_type: snapshot.identity_type || 'unknown',
+    guard_request_count: Number(result.request_count || 0),
+    guard_offense_count: Number(result.offense_count || 0),
+    guard_spam_score: Number(result.spam_score || 0),
+    guard_block_status: result.block_status || resolved.status || 'unknown',
+    guard_retry_seconds: Number(resolved.retryAfter || 0),
+    guard_reason: String(result.reason || 'Request limit exceeded').slice(0, 120),
+  })
+
   res.setHeader('Retry-After', String(resolved.retryAfter))
   res.setHeader('X-Spam-Guard', resolved.header)
   res.setHeader('X-Spam-Guard-Scope', scope)
@@ -677,9 +695,9 @@ export function createSpamGuard({
       })
 
       return sendRestrictionResponse(res, effectiveScope, result, {
-        ...resolved,
-        retryAfter,
-      })
+  ...resolved,
+  retryAfter,
+}, 'cached')
     }
 
     if (canUseReaderCache(safeScope, req, identity)) return next()
