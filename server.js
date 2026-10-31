@@ -116,6 +116,7 @@ import { startHeavyMediaWorkerCoordinator } from './src/services/heavyMediaWorke
 import { startAuthorStoryPushQueue } from './src/services/authorStoryPushQueue.service.js'
 import { startStoryEpisodePushScheduler } from './src/services/storyEpisodePushScheduler.js'
 import { startBinanceUsdtAlertWorker } from './src/services/binanceUsdtAlertWorker.service.js'
+import { startTelegramMissingReportRecovery } from './src/services/telegramMissingReportRecovery.service.js'
 import {
   memoryIncidentTracer,
   startMemoryIncidentMonitor,
@@ -1066,6 +1067,7 @@ app.listen(PORT, () => {
   startAuthorStoryPushQueue()
   startStoryEpisodePushScheduler()
   startBinanceUsdtAlertWorker()
+  startTelegramMissingReportRecovery()
   startMemoryIncidentMonitor()
   startWorkDetectorMonitor()
   startSystemUsagePersistence()
