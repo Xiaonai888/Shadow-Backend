@@ -117,6 +117,7 @@ import { startAuthorStoryPushQueue } from './src/services/authorStoryPushQueue.s
 import { startStoryEpisodePushScheduler } from './src/services/storyEpisodePushScheduler.js'
 import { startBinanceUsdtAlertWorker } from './src/services/binanceUsdtAlertWorker.service.js'
 import { startTelegramMissingReportRecovery } from './src/services/telegramMissingReportRecovery.service.js'
+import { startShadowReadEventDailySettlement } from './src/services/shadowReadEventDailySettlement.service.js'
 import {
   memoryIncidentTracer,
   startMemoryIncidentMonitor,
@@ -1068,6 +1069,7 @@ app.listen(PORT, () => {
   startStoryEpisodePushScheduler()
   startBinanceUsdtAlertWorker()
   startTelegramMissingReportRecovery()
+  startShadowReadEventDailySettlement()
   startMemoryIncidentMonitor()
   startWorkDetectorMonitor()
   startSystemUsagePersistence()
