@@ -62,6 +62,19 @@ const joinLimit = rateLimit({
   },
 })
 
+const milestoneClaimLimit = rateLimit({
+  windowMs: 60000,
+  limit: 8,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user.user_id || req.user.id),
+  message: {
+    ok: false,
+    code: 'READ_EVENT_MILESTONE_CLAIM_RATE_LIMIT',
+    message: 'Too many Read Event milestone claims',
+  },
+})
+
 function khmerDateKey(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Phnom_Penh',
@@ -478,8 +491,124 @@ async function getReadEventLeaderboard(req, res, type) {
   }
 }
 
+async function claimReadEventMilestones(req, res) {
+  res.set('Cache-Control', 'private, no-store')
+  const userId = String(req.user?.user_id || req.user?.id || '')
+  if (!USER_ID_PATTERN.test(userId)) {
+    return res.status(401).json({ ok: false, code: 'READER_ID_INVALID' })
+  }
+
+  const requestedDay = req.body?.day_number
+  if (requestedDay !== undefined &&
+    (!Number.isInteger(requestedDay) || requestedDay < 1 || requestedDay > 7)) {
+    return res.status(400).json({ ok: false, code: 'READ_EVENT_DAY_INVALID' })
+  }
+
+  const window = currentEventWindow()
+  if (!window.active) {
+    return res.status(409).json({ ok: false, code: 'READ_EVENT_NOT_RUNNING' })
+  }
+
+  const dayNumber = requestedDay ?? window.day_number
+  if (dayNumber > window.day_number) {
+    return res.status(400).json({ ok: false, code: 'READ_EVENT_FUTURE_DAY' })
+  }
+
+  try {
+    if (!(await isKhmerReader(userId))) {
+      return res.status(403).json({ ok: false, code: 'KHMER_READER_ONLY' })
+    }
+
+    const week = await readEnabledWeek(window.starts_on)
+    if (!week) {
+      return res.status(409).json({ ok: false, code: 'READ_EVENT_NOT_ENABLED' })
+    }
+
+    const { data: participant, error: participantError } = await supabase
+      .from('shadow_read_event_participants')
+      .select('user_id')
+      .eq('event_id', week.id)
+      .eq('user_id', userId)
+      .eq('reader_group_snapshot', 'kh')
+      .maybeSingle()
+    if (participantError) throw participantError
+    if (!participant) {
+      return res.status(409).json({ ok: false, code: 'READ_EVENT_NOT_JOINED' })
+    }
+
+    const { data, error } = await supabase.rpc('shadow_read_event_claim_daily_milestones', {
+      p_event_id: week.id,
+      p_user_id: userId,
+      p_day_number: dayNumber,
+    })
+    if (error) throw error
+
+    const claim = Array.isArray(data) ? data[0] : data
+    const dailyPoints = Number(claim?.daily_points)
+    const unlocked = Number(claim?.unlocked_milestones)
+    const count = Number(claim?.new_claims)
+    const coins = Number(claim?.coins_added)
+    const awards = claim?.awards
+    const coinBalance = claim?.coin_balance == null ? null : Number(claim.coin_balance)
+    const expectedCoins = [25, 50, 75, 100, 150]
+    const tiers = new Set()
+    let awardCoins = 0
+
+    if (Array.isArray(awards)) {
+      for (const award of awards) {
+        const tier = Number(award?.tier)
+        const amount = Number(award?.coins)
+        if (!Number.isInteger(tier) || tier < 1 || tier > 5 ||
+          amount !== expectedCoins[tier - 1] || tiers.has(tier) ||
+          typeof award?.claim_id !== 'string' || !USER_ID_PATTERN.test(award.claim_id)) {
+          throw new Error('Invalid Read Event milestone award')
+        }
+        tiers.add(tier)
+        awardCoins += amount
+      }
+    }
+
+    if (!claim || claim.ok !== true || String(claim.event_id) !== String(week.id) ||
+      Number(claim.day_number) !== dayNumber ||
+      ![dailyPoints, unlocked, count, coins].every((value) =>
+        Number.isSafeInteger(value) && value >= 0) ||
+      unlocked > 5 || count > unlocked || count > 5 || coins > 400 ||
+      !Array.isArray(awards) || awards.length !== count || awardCoins !== coins ||
+      (coinBalance !== null && (!Number.isSafeInteger(coinBalance) || coinBalance < 0)) ||
+      !['granted', 'already_claimed', 'no_milestone_unlocked'].includes(claim.reason) ||
+      ((count > 0) !== (claim.reason === 'granted')) ||
+      (claim.reason === 'already_claimed' && unlocked === 0) ||
+      (claim.reason === 'no_milestone_unlocked' && unlocked !== 0)) {
+      throw new Error('Invalid Read Event milestone claim response')
+    }
+
+    return res.json({
+      ok: true,
+      event_id: week.id,
+      day_number: dayNumber,
+      daily_points: dailyPoints,
+      unlocked_milestones: unlocked,
+      new_claims: count,
+      coins_added: coins,
+      coin_balance: coinBalance,
+      awards,
+      reason: claim.reason,
+    })
+  } catch (error) {
+    console.error('SHADOW_READ_EVENT_MILESTONE_CLAIM_ERROR', {
+      code: error?.code || error?.name || 'unknown',
+    })
+    return res.status(503).json({
+      ok: false,
+      code: 'READ_EVENT_MILESTONE_CLAIM_UNAVAILABLE',
+      message: 'Read Event milestone claim is temporarily unavailable',
+    })
+  }
+}
+
 router.get('/', ipLimit, requireUser, readerLimit, getReadEvent)
 router.post('/join', ipLimit, requireUser, readerLimit, joinLimit, joinReadEvent)
+router.post('/milestones/claim', ipLimit, requireUser, readerLimit, milestoneClaimLimit, claimReadEventMilestones)
 router.get('/leaderboard/daily', ipLimit, requireUser, readerLimit, leaderboardLimit,
   (req, res) => getReadEventLeaderboard(req, res, 'daily'))
 router.get('/leaderboard/overall', ipLimit, requireUser, readerLimit, leaderboardLimit,
