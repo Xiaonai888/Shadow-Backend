@@ -152,7 +152,9 @@ BEGIN
     v_claim_id := NULL;
 
     IF v_rank NOT BETWEEN 1 AND 3
-       OR v_cards <> CASE v_rank WHEN 1 THEN 100 WHEN 2 THEN 70 ELSE 50 END
+       OR (v_rank = 1 AND v_cards IS DISTINCT FROM 100)
+       OR (v_rank = 2 AND v_cards IS DISTINCT FROM 70)
+       OR (v_rank = 3 AND v_cards IS DISTINCT FROM 50)
        OR v_coins NOT BETWEEN 1000 AND 10000
        OR v_vouchers NOT BETWEEN 10 AND 100 THEN
       RAISE EXCEPTION 'Invalid Read Event overall gift allocation';
