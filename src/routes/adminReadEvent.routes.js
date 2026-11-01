@@ -163,4 +163,47 @@ router.post('/prepare', ensureEventManager, writeLimit, async (req, res) => {
   }
 })
 
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+router.patch('/status', ensureEventManager, writeLimit, async (req, res) => {
+  res.set('Cache-Control', 'private, no-store')
+  const eventId = req.body?.event_id
+  const enabled = req.body?.enabled
+  const adminId = req.admin?.admin_id
+
+  if (typeof eventId !== 'string' || !UUID_PATTERN.test(eventId) ||
+      typeof enabled !== 'boolean' ||
+      typeof adminId !== 'string' || !UUID_PATTERN.test(adminId)) {
+    return res.status(400).json({ ok: false, code: 'READ_EVENT_STATUS_INVALID' })
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('shadow_read_event_set_enabled', {
+      p_event_id: eventId,
+      p_enabled: enabled,
+      p_admin_id: adminId,
+    })
+    if (error) throw error
+    const result = Array.isArray(data) ? data[0] : data
+    if (!result || result.ok !== true ||
+        typeof result.changed !== 'boolean' ||
+        String(result.event_id) !== eventId ||
+        result.is_enabled !== enabled) {
+      throw new Error('Invalid Read Event status response')
+    }
+    return res.json(result)
+  } catch (error) {
+    console.error('ADMIN_READ_EVENT_STATUS_ERROR', {
+      code: error?.code || error?.name || 'unknown',
+    })
+    return res.status(error?.code === '22023' ? 409 : 503).json({
+      ok: false,
+      code: error?.code === '22023'
+        ? 'READ_EVENT_STATUS_NOT_ALLOWED'
+        : 'READ_EVENT_STATUS_UNAVAILABLE',
+    })
+  }
+})
+
 export default router
