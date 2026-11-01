@@ -99,6 +99,8 @@ import monthlyVoteRoutes from './src/routes/monthlyVote.routes.js'
 import adminMonthlyVoteRoutes from './src/routes/adminMonthlyVote.routes.js'
 import eventsRoutes from './src/routes/events.routes.js'
 import adminEventsRoutes from './src/routes/adminEvents.routes.js'
+import adminReadEventPreflightRoutes from './src/routes/adminReadEventPreflight.routes.js'
+import shadowReadEventRewardsRoutes from './src/routes/shadowReadEventRewards.routes.js'
 import shadowReadEventRoutes from './src/routes/shadowReadEvent.routes.js'
 import adminRolesRoutes from './src/routes/adminRoles.routes.js'
 import adminAccountsRoutes from './src/routes/adminAccounts.routes.js'
@@ -1017,7 +1019,9 @@ app.use('/api/share-profile', mediaUploadRouteSpamGuard, shareProfileRoutes)
 app.use('/api/monthly-vote', taskSpamGuard, monthlyVoteRoutes)
 app.use('/api/admin/monthly-vote', adminMonthlyVoteRoutes)
 app.use('/api/events', eventsRoutes)
+app.use('/api/admin/events/read-event/preflight', adminReadEventPreflightRoutes)
 app.use('/api/admin/events', adminEventsRoutes)
+app.use('/api/read-event/rewards', shadowReadEventRewardsRoutes)
 app.use('/api/read-event', shadowReadEventRoutes)
 app.use('/api/admin/roles', adminRolesRoutes)
 app.use('/api/admin/accounts', adminAccountsRoutes)
