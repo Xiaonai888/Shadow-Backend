@@ -33,14 +33,13 @@ const redeemLimit = rateLimit({
   message: { ok: false, code: 'READ_EVENT_CARDS_REDEEM_LIMIT' },
 })
 
-router.use(rateLimit({
+const ipLimit = rateLimit({
   windowMs: 60_000,
   limit: 90,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   message: { ok: false, code: 'READ_EVENT_REWARDS_IP_LIMIT' },
-}))
-router.use(requireUser)
+})
 
 async function readOwnership(eventId, userId) {
   const [eventResult, participantResult] = await Promise.all([
@@ -60,7 +59,7 @@ async function readOwnership(eventId, userId) {
   }
 }
 
-router.get('/:eventId', readLimit, async (req, res) => {
+router.get('/:eventId', ipLimit, requireUser, readLimit, async (req, res) => {
   res.set('Cache-Control', 'private, no-store')
   const eventId = req.params.eventId
   const userId = String(req.user?.user_id || req.user?.id || '')
@@ -124,7 +123,7 @@ router.get('/:eventId', readLimit, async (req, res) => {
   }
 })
 
-router.post('/:eventId/redeem', redeemLimit, async (req, res) => {
+router.post('/:eventId/redeem', ipLimit, requireUser, redeemLimit, async (req, res) => {
   res.set('Cache-Control', 'private, no-store')
   if (process.env.SHADOW_READ_EVENT_FEATURED_CARDS_ENABLED !== 'true') {
     return res.status(409).json({ ok: false, code: 'READ_EVENT_CARD_REDEMPTION_DISABLED' })
