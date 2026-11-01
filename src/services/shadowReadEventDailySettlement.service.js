@@ -10,6 +10,7 @@ const POLL_MS = 15 * 60 * 1000
 let started = false
 let running = false
 let timer = null
+let overallSettledEventId = null
 
 function isEnabled() {
   return process.env.SHADOW_READ_EVENT_SETTLEMENT_ENABLED !== 'false'
@@ -33,6 +34,53 @@ export function getShadowReadEventSettlementWindow(now = new Date()) {
   return {
     startsOn,
     lastClosedDay: Math.min(cycleDay, EVENT_DAYS),
+  }
+}
+
+async function settleOverallTop3(eventId, startsOn) {
+  if (overallSettledEventId === eventId) {
+    return { settled: false, awarded: 0, already_settled: true }
+  }
+
+  const { data: existing, error: existingError } = await supabase
+    .from('shadow_read_event_overall_settlements')
+    .select('event_id')
+    .eq('event_id', eventId)
+    .maybeSingle()
+
+  if (existingError) throw existingError
+  if (existing) {
+    overallSettledEventId = eventId
+    return { settled: false, awarded: 0, already_settled: true }
+  }
+
+  const { data, error } = await supabase.rpc('shadow_read_event_settle_overall_top3', {
+    p_event_id: eventId,
+  })
+  if (error) throw error
+
+  const result = Array.isArray(data) ? data[0] : data
+  const awardedCount = Number(result?.awarded_count)
+  if (!result || result.ok !== true || result.settled !== true ||
+      typeof result.already_settled !== 'boolean' ||
+      String(result.event_id) !== String(eventId) ||
+      !Number.isInteger(awardedCount) || awardedCount < 0 || awardedCount > 3 ||
+      !Array.isArray(result.winners) || result.winners.length !== awardedCount) {
+    throw new Error('Invalid Read Event Overall Top 3 settlement result')
+  }
+
+  overallSettledEventId = eventId
+  if (result.already_settled !== true) {
+    console.info('SHADOW_READ_EVENT_OVERALL_SETTLED', {
+      starts_on: startsOn,
+      awarded_count: awardedCount,
+    })
+  }
+
+  return {
+    settled: result.already_settled !== true,
+    awarded: result.already_settled ? 0 : awardedCount,
+    already_settled: result.already_settled,
   }
 }
 
@@ -87,6 +135,7 @@ export async function settleShadowReadEventDailyTop3Once() {
         throw new Error('Invalid Read Event Daily Top 3 settlement result')
       }
 
+      settledDays.add(day)
       if (result.already_settled !== true) {
         settled += 1
         awarded += awardedCount
@@ -98,7 +147,19 @@ export async function settleShadowReadEventDailyTop3Once() {
       }
     }
 
-    return { ok: true, settled_days: settled, awarded_readers: awarded }
+    let overall = { settled: false, awarded: 0, already_settled: false }
+    if (window.lastClosedDay === EVENT_DAYS &&
+        settledDays.size === EVENT_DAYS) {
+      overall = await settleOverallTop3(event.id, window.startsOn)
+    }
+
+    return {
+      ok: true,
+      settled_days: settled,
+      awarded_readers: awarded,
+      overall_settled: overall.settled,
+      overall_awarded_readers: overall.awarded,
+    }
   } finally {
     running = false
   }
@@ -112,7 +173,7 @@ export function startShadowReadEventDailySettlement() {
     try {
       await settleShadowReadEventDailyTop3Once()
     } catch (error) {
-      console.error('SHADOW_READ_EVENT_DAILY_SETTLEMENT_ERROR', {
+      console.error('SHADOW_READ_EVENT_SETTLEMENT_ERROR', {
         code: error?.code || error?.name || 'unknown',
       })
     }
