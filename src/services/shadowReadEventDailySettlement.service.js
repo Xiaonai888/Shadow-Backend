@@ -11,6 +11,7 @@ let started = false
 let running = false
 let timer = null
 let overallSettledEventId = null
+let participationCompletedEventId = null
 
 function isEnabled() {
   return process.env.SHADOW_READ_EVENT_SETTLEMENT_ENABLED !== 'false'
@@ -84,6 +85,48 @@ async function settleOverallTop3(eventId, startsOn) {
   }
 }
 
+async function settleParticipationRewards(eventId, startsOn) {
+  if (participationCompletedEventId === eventId) {
+    return { awarded: 0, complete: true }
+  }
+
+  const { data, error } = await supabase.rpc('shadow_read_event_settle_participation', {
+    p_event_id: eventId,
+    p_limit: 30,
+  })
+  if (error) throw error
+
+  const result = Array.isArray(data) ? data[0] : data
+  const awarded = Number(result?.awarded_count)
+  const coins = Number(result?.coins_added)
+  const vouchers = Number(result?.vouchers_added)
+  const cards = Number(result?.story_cards_added)
+
+  if (!result || result.ok !== true || String(result.event_id) !== String(eventId) ||
+      !Number.isSafeInteger(awarded) || awarded < 0 || awarded > 30 ||
+      !Number.isSafeInteger(coins) || coins < awarded * 100 || coins > awarded * 1000 ||
+      vouchers !== awarded * 10 || cards !== awarded * 10 ||
+      typeof result.has_more !== 'boolean' || typeof result.complete !== 'boolean' ||
+      result.complete === result.has_more || (awarded === 0 && !result.complete)) {
+    throw new Error('Invalid Read Event participation settlement result')
+  }
+
+  if (awarded > 0) {
+    console.info('SHADOW_READ_EVENT_PARTICIPATION_BATCH', {
+      starts_on: startsOn,
+      awarded_count: awarded,
+      complete: result.complete,
+    })
+  }
+
+  if (result.complete) {
+    participationCompletedEventId = eventId
+    console.info('SHADOW_READ_EVENT_PARTICIPATION_COMPLETE', { starts_on: startsOn })
+  }
+
+  return { awarded, complete: result.complete }
+}
+
 export async function settleShadowReadEventDailyTop3Once() {
   if (!isEnabled()) return { skipped: true, reason: 'worker_disabled' }
   if (running) return { skipped: true, reason: 'already_running' }
@@ -103,6 +146,19 @@ export async function settleShadowReadEventDailyTop3Once() {
 
     if (eventError) throw eventError
     if (!event) return { skipped: true, reason: 'event_not_enabled' }
+
+    if (window.lastClosedDay === EVENT_DAYS &&
+        participationCompletedEventId === event.id) {
+      return {
+        ok: true,
+        settled_days: 0,
+        awarded_readers: 0,
+        overall_settled: false,
+        overall_awarded_readers: 0,
+        participation_awarded_readers: 0,
+        participation_complete: true,
+      }
+    }
 
     const { data: existing, error: existingError } = await supabase
       .from('shadow_read_event_daily_settlements')
@@ -148,9 +204,11 @@ export async function settleShadowReadEventDailyTop3Once() {
     }
 
     let overall = { settled: false, awarded: 0, already_settled: false }
+    let participation = { awarded: 0, complete: false }
     if (window.lastClosedDay === EVENT_DAYS &&
         settledDays.size === EVENT_DAYS) {
       overall = await settleOverallTop3(event.id, window.startsOn)
+      participation = await settleParticipationRewards(event.id, window.startsOn)
     }
 
     return {
@@ -159,6 +217,8 @@ export async function settleShadowReadEventDailyTop3Once() {
       awarded_readers: awarded,
       overall_settled: overall.settled,
       overall_awarded_readers: overall.awarded,
+      participation_awarded_readers: participation.awarded,
+      participation_complete: participation.complete,
     }
   } finally {
     running = false
