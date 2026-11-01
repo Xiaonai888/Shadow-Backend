@@ -1025,15 +1025,36 @@ export async function updateStory(req, res) {
       updatePayload.story_settings = storySettings
     }
 
-    const { data: story, error: storyError } = await supabase
+    const expectedUpdatedAt = cleanText(req.body.expected_updated_at)
+    if (expectedUpdatedAt && Number.isNaN(Date.parse(expectedUpdatedAt))) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Invalid expected story version',
+      })
+    }
+
+    let storyUpdateQuery = supabase
       .from('stories')
       .update(updatePayload)
       .eq('id', storyId)
       .eq('user_id', userId)
+
+    if (expectedUpdatedAt) {
+      storyUpdateQuery = storyUpdateQuery.eq('updated_at', expectedUpdatedAt)
+    }
+
+    const { data: story, error: storyError } = await storyUpdateQuery
       .select()
-      .single()
+      .maybeSingle()
 
     if (storyError) throw storyError
+    if (!story) {
+      return res.status(409).json({
+        ok: false,
+        code: 'STORY_VERSION_CONFLICT',
+        message: 'Story changed on the server. Reload and review before saving.',
+      })
+    }
 
     const updatedSlides = await replaceStorySlides(storyId, slides)
 
