@@ -18,6 +18,18 @@ const adminEventIdentity = (req) => String(
   req.admin?.admin_id || req.admin?.email || ipKeyGenerator(req.ip)
 )
 
+const adminEventIpLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 300,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_EVENT_IP_RATE_LIMIT',
+    message: 'Too many event requests. Please try again shortly.',
+  },
+})
+
 const adminEventReadLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 240,
@@ -49,11 +61,11 @@ function limitAuthor100Percent(req, res, next) {
   return limiter(req, res, next)
 }
 
-router.get('/', eventPermission, adminEventReadLimit, listAdminEvents)
-router.use('/100-percent', eventPermission, limitAuthor100Percent, author100PercentRoutes)
+router.get('/', adminEventIpLimit, eventPermission, adminEventReadLimit, listAdminEvents)
+router.use('/100-percent', adminEventIpLimit, eventPermission, limitAuthor100Percent, author100PercentRoutes)
 router.use('/read-event', adminReadEventRoutes)
-router.post('/', eventPermission, adminEventWriteLimit, createEvent)
-router.patch('/:eventId', eventPermission, adminEventWriteLimit, updateEvent)
-router.delete('/:eventId', eventPermission, adminEventWriteLimit, deleteEvent)
+router.post('/', adminEventIpLimit, eventPermission, adminEventWriteLimit, createEvent)
+router.patch('/:eventId', adminEventIpLimit, eventPermission, adminEventWriteLimit, updateEvent)
+router.delete('/:eventId', adminEventIpLimit, eventPermission, adminEventWriteLimit, deleteEvent)
 
 export default router
