@@ -53,12 +53,13 @@ as $$
     select transaction_id
     from public.binance_usdt_alert_transactions
     where attempt_count < 20
+      and delivery_status in ('pending', 'failed')
+      and telegram_message_id is null
+      and telegram_sent_at is null
+      and next_attempt_at <= now()
       and (
-        (delivery_status in ('pending', 'failed') and next_attempt_at <= now())
-        or (
-          delivery_status = 'sending'
-          and coalesce(claimed_at, created_at) <= now() - interval '10 minutes'
-        )
+        claimed_at is null
+        or claimed_at <= now() - interval '15 minutes'
       )
     order by transaction_time_ms, transaction_id
     limit greatest(1, least(coalesce(p_limit, 10), 20))
