@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { fetchBinanceUsdtIncome } from './binanceUsdtPay.service.js'
 import { html, sendTelegramMessage } from './telegram.service.js'
+import { publishPaymentStatus } from './paymentEvents.service.js'
 
 const POLL_INTERVAL_MS = 10 * 60 * 1000
 const MAX_RETRY_INTERVAL_MS = 60 * 60 * 1000
@@ -239,6 +240,20 @@ export async function processBinanceUsdtAlertsOnce() {
       matching = data
       if (Number(data?.credited || 0) > 0) {
         console.info('BINANCE AUTO CREDITED ORDERS:', data.credited)
+      }
+      // A committed wallet credit notifies only this reader's payment stream.
+      // The Order ID and User ID are returned by the atomic credit RPC.
+      for (const creditedOrder of Array.isArray(data?.credited_orders) ? data.credited_orders : []) {
+        if (!creditedOrder?.order_id || !creditedOrder?.user_id) continue
+        publishPaymentStatus({
+          user_id: creditedOrder.user_id,
+          order_id: creditedOrder.order_id,
+          status: 'success',
+          diamonds: creditedOrder.diamonds,
+          bonus_gems: 0,
+          released_at: creditedOrder.credited_at || null,
+          updated_at: creditedOrder.credited_at || null,
+        })
       }
     } catch (error) {
       matchError = error
