@@ -21,6 +21,7 @@ import {
 } from '../services/systemUsagePersistence.service.js'
 import { generateSystemUsageReport } from '../services/systemUsageReport.service.js'
 import { getAdminPerformanceDiagnostics } from '../services/adminPerformanceDiagnostics.service.js'
+import { getImageLoadDiagnosticsSnapshot } from './imageLoadDiagnostics.routes.js'
 
 const router = express.Router()
 const viewSystemControl = requireAdminPermission('system_control.view')
@@ -206,6 +207,7 @@ router.get(
         evidence,
         pageRequests,
       }),
+      image_diagnostics: getImageLoadDiagnosticsSnapshot(),
       anomaly: getSystemUsageAnomalySnapshot(),
       regression: getSystemUsageRegressionState(),
       providers: getSystemUsageProviderState(),
