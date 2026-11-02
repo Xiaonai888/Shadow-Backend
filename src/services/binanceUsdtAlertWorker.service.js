@@ -20,16 +20,23 @@ function getAlertChatId() {
   return /^-100\d{6,18}$/.test(chatId) ? chatId : ''
 }
 
-function isEnabled() {
-  return process.env.BINANCE_USDT_ALERT_ENABLED === 'true'
-    && Boolean(String(process.env.BINANCE_USDT_API_KEY || '').trim())
+function hasBinanceApiCredentials() {
+  return Boolean(String(process.env.BINANCE_USDT_API_KEY || '').trim())
     && Boolean(String(process.env.BINANCE_USDT_API_SECRET || '').trim())
-    && Boolean(String(process.env.TELEGRAM_BOT_TOKEN || '').trim())
+}
+
+function isIngestionEnabled() {
+  return process.env.BINANCE_USDT_ALERT_ENABLED === 'true'
+    && hasBinanceApiCredentials()
+}
+
+function isTelegramDeliveryEnabled() {
+  return Boolean(String(process.env.TELEGRAM_BOT_TOKEN || '').trim())
     && Boolean(getAlertChatId())
 }
 
 function safeError(error) {
-  const message = String(error?.message || 'Unknown error')
+  const message = String(error?.message || error || 'Unknown error')
   return message.replace(/[\r\n\t]/g, ' ').slice(0, 300)
 }
 
@@ -141,6 +148,13 @@ async function markAlertFailed(alert, reason) {
 }
 
 async function deliverPendingAlerts() {
+  // Do not claim records without a usable Telegram destination. Pending
+  // receipts remain available to deliver when Telegram is configured.
+  if (!isTelegramDeliveryEnabled()) {
+    return { skipped: true, reason: 'telegram_not_configured', sent: 0, claimed: 0 }
+  }
+
+  const chatId = getAlertChatId()
   const { data: alerts, error: claimError } = await supabase
     .rpc('claim_binance_usdt_alerts', { p_limit: MAX_DELIVERY_BATCH })
 
@@ -156,7 +170,7 @@ async function deliverPendingAlerts() {
 
     try {
       const delivered = await sendTelegramMessage(formatBinanceUsdtAlertMessage(alert), {
-        chat_id: getAlertChatId(),
+        chat_id: chatId,
       })
       messageId = Number(delivered?.result?.message_id)
       if (delivered?.ok !== true || !Number.isSafeInteger(messageId) || messageId <= 0) {
@@ -190,7 +204,9 @@ async function deliverPendingAlerts() {
 }
 
 export async function processBinanceUsdtAlertsOnce() {
-  if (!isEnabled()) return { skipped: true }
+  if (!isIngestionEnabled()) {
+    return { skipped: true, reason: 'binance_history_not_configured' }
+  }
   if (running) return { skipped: true, running: true }
 
   running = true
@@ -202,10 +218,15 @@ export async function processBinanceUsdtAlertsOnce() {
   try {
     try {
       ingest = await ingestBinanceReceipts()
+      if (ingest?.ingested > 0) {
+        console.info('BINANCE USDT RECEIPTS RECORDED:', ingest.ingested)
+      }
     } catch (error) {
       ingestError = error
     }
 
+    // Delivery is independent of ingestion: previous receipts can still be
+    // reported when the history API is temporarily unavailable.
     try {
       delivery = await deliverPendingAlerts()
     } catch (error) {
@@ -213,11 +234,11 @@ export async function processBinanceUsdtAlertsOnce() {
     }
 
     if (ingestError || deliveryError) {
-      const failures = [
+      const errors = [
         ingestError ? `history: ${safeError(ingestError)}` : null,
         deliveryError ? `telegram: ${safeError(deliveryError)}` : null,
       ].filter(Boolean)
-      throw new Error(failures.join('; '))
+      throw new Error(errors.join('; '))
     }
 
     return { ingest, delivery }
@@ -227,7 +248,7 @@ export async function processBinanceUsdtAlertsOnce() {
 }
 
 function schedule(delayMs) {
-  if (!started || !isEnabled()) return
+  if (!started || !isIngestionEnabled()) return
   if (timer) clearTimeout(timer)
 
   timer = setTimeout(async () => {
@@ -250,8 +271,20 @@ function schedule(delayMs) {
 }
 
 export function startBinanceUsdtAlertWorker() {
-  if (started || !isEnabled()) return false
+  if (started) return false
+  if (process.env.BINANCE_USDT_ALERT_ENABLED !== 'true') {
+    console.info('BINANCE USDT HISTORY WORKER DISABLED: BINANCE_USDT_ALERT_ENABLED is not true')
+    return false
+  }
+  if (!hasBinanceApiCredentials()) {
+    console.error('BINANCE USDT HISTORY WORKER DISABLED: Binance API credentials are missing')
+    return false
+  }
+
   started = true
+  if (!isTelegramDeliveryEnabled()) {
+    console.warn('BINANCE USDT TELEGRAM ALERTS DISABLED: history receipts will still be recorded')
+  }
   schedule(3000)
   return true
 }
