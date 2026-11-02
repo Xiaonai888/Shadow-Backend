@@ -1,4 +1,6 @@
 import { verifyAdminPasskeyPin } from '../services/adminPasskeyPin.service.js'
+import { supabase } from '../config/supabase.js'
+import { publishPaymentStatus } from '../services/paymentEvents.service.js'
 import {
   BinanceAdminDecisionError,
   approveBinanceCheckoutReview,
@@ -96,6 +98,30 @@ async function handleDecision(req, res, type) {
     const result = type === 'approve'
       ? await approveBinanceCheckoutReview(payload)
       : await rejectBinanceCheckoutReview(payload)
+
+    if (result?.status === 'credited' || result?.status === 'rejected') {
+      try {
+        const { data: order, error: orderError } = await supabase
+          .from('binance_checkout_orders')
+          .select('id,user_id,diamonds,credited_at,updated_at,status')
+          .eq('id', payload.orderId)
+          .maybeSingle()
+        if (orderError) throw orderError
+        if (order && (order.status === 'credited' || order.status === 'cancelled')) {
+          publishPaymentStatus({
+            user_id: order.user_id,
+            order_id: order.id,
+            status: order.status === 'credited' ? 'success' : 'cancelled',
+            diamonds: order.diamonds,
+            bonus_gems: 0,
+            released_at: order.credited_at,
+            updated_at: order.updated_at,
+          })
+        }
+      } catch (notificationError) {
+        console.error('BINANCE PAYMENT STATUS NOTIFICATION ERROR:', String(notificationError?.message || notificationError))
+      }
+    }
     return res.status(200).json({ ok: true, result })
   } catch (error) {
     return failure(res, error)
