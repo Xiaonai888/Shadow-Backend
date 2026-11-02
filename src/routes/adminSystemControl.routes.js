@@ -20,6 +20,7 @@ import {
   refreshSystemUsageProviders,
 } from '../services/systemUsagePersistence.service.js'
 import { generateSystemUsageReport } from '../services/systemUsageReport.service.js'
+import { getAdminPerformanceDiagnostics } from '../services/adminPerformanceDiagnostics.service.js'
 
 const router = express.Router()
 const viewSystemControl = requireAdminPermission('system_control.view')
@@ -192,12 +193,19 @@ router.get(
       )
     }
 
-        return res.status(200).json({
+    const evidence = getRecentRequestEvidence()
+    const pageRequests = getPageRequestSnapshot()
+
+    return res.status(200).json({
       ok: true,
       usage: getSystemUsageCurrentSnapshot(),
-      evidence: getRecentRequestEvidence(),
+      evidence,
       guest_requests: getGuestRequestSnapshot(),
-      page_requests: getPageRequestSnapshot(),
+      page_requests: pageRequests,
+      performance_diagnostics: getAdminPerformanceDiagnostics({
+        evidence,
+        pageRequests,
+      }),
       anomaly: getSystemUsageAnomalySnapshot(),
       regression: getSystemUsageRegressionState(),
       providers: getSystemUsageProviderState(),
