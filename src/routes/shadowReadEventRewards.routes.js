@@ -2,6 +2,8 @@ import express from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
+import { invalidateReadGateUnlockCache } from '../controllers/unlocks.controller.js'
+import { invalidateEpisodeReadGateUnlockCache } from '../services/unlockRuntimeCache.service.js'
 import {
   readFeaturedStoryCards,
   redeemFeaturedStoryCards,
@@ -225,6 +227,21 @@ router.post('/:eventId/redeem', ipLimit, requireUser, redeemLimit, async (req, r
     if (!event) return res.status(404).json({ ok: false, code: 'READ_EVENT_NOT_FOUND' })
     if (!participant) return res.status(403).json({ ok: false, code: 'READ_EVENT_NOT_JOINED' })
     const result = await redeemFeaturedStoryCards({ eventId, userId, episodeId })
+    if (result?.unlocked === true && validUuid(result.story_id)) {
+      const cacheTarget = {
+        userId,
+        storyId: result.story_id,
+        episodeIds: [episodeId],
+      }
+      try {
+        invalidateReadGateUnlockCache(cacheTarget)
+        invalidateEpisodeReadGateUnlockCache(cacheTarget)
+      } catch (cacheError) {
+        console.error('READ_EVENT_CARDS_CACHE_INVALIDATE_ERROR', {
+          code: cacheError?.code || cacheError?.name || 'unknown',
+        })
+      }
+    }
     return res.json(result)
   } catch (error) {
     console.error('READ_EVENT_CARDS_REDEEM_ERROR', {
