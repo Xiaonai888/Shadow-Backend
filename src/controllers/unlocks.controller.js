@@ -652,7 +652,7 @@ function writeCachedReadGateUnlock(
   })
 }
 
-function invalidateReadGateUnlockCache({
+export function invalidateReadGateUnlockCache({
   userId,
   storyId,
   episodeIds = [],
