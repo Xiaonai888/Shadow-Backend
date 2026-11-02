@@ -30,6 +30,7 @@ declare
   v_attempted integer := 0;
   v_credited integer := 0;
   v_result jsonb;
+  v_credited_orders jsonb := '[]'::jsonb;
   v_now_ms bigint := (extract(epoch from clock_timestamp()) * 1000)::bigint;
 begin
   for v_receipt in
@@ -158,10 +159,18 @@ begin
     end if;
     if v_result->>'credit_applied' = 'true' then
       v_credited := v_credited + 1;
+      v_credited_orders := v_credited_orders || pg_catalog.jsonb_build_array(
+        pg_catalog.jsonb_build_object(
+          'order_id', v_order.id,
+          'user_id', v_order.user_id,
+          'diamonds', v_order.diamonds,
+          'credited_at', clock_timestamp()
+        )
+      );
     end if;
   end loop;
 
-  return jsonb_build_object('ok', true, 'checked', v_attempted, 'credited', v_credited);
+  return jsonb_build_object('ok', true, 'checked', v_attempted, 'credited', v_credited, 'credited_orders', v_credited_orders);
 end;
 $$;
 
