@@ -41,6 +41,11 @@ function readLimit(value) {
   return Math.max(1, Math.min(MAX_PAGE_SIZE, limit))
 }
 
+function validBinanceUid(value) {
+  const uid = String(value ?? '').trim()
+  return /^[0-9]{5,20}$/.test(uid) ? uid : ''
+}
+
 export function normalizeBinanceUsdtIncome(transaction) {
   if (!transaction || typeof transaction !== 'object' || Array.isArray(transaction)) {
     return null
@@ -58,6 +63,8 @@ export function normalizeBinanceUsdtIncome(transaction) {
   if (!Number.isSafeInteger(transactionTime) || transactionTime <= 0) return null
 
   const payerName = String(transaction.payerInfo?.name || '').trim().slice(0, 120)
+  const payerUid = validBinanceUid(transaction.payerInfo?.binanceId)
+  const receiverUid = validBinanceUid(transaction.receiverInfo?.binanceId)
   const orderType = String(transaction.orderType || '').trim().slice(0, 40)
 
   return {
@@ -67,6 +74,8 @@ export function normalizeBinanceUsdtIncome(transaction) {
     currency: 'USDT',
     orderType,
     payerName,
+    payerUid,
+    receiverUid,
   }
 }
 
