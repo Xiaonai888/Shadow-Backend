@@ -1,0 +1,115 @@
+name: Shadow Read Event pre-deploy verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Backend
+        uses: actions/checkout@v4
+        with:
+          path: Shadow-Backend
+
+      - name: Checkout Reader
+        uses: actions/checkout@v4
+        with:
+          repository: Xiaonai888/Web-React-2
+          ref: main
+          path: Web-React-2
+
+      - name: Checkout Admin
+        uses: actions/checkout@v4
+        with:
+          repository: Xiaonai888/AdminDashboard
+          ref: main
+          path: AdminDashboard
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Record checked commits
+        run: |
+          git -C Shadow-Backend rev-parse HEAD
+          git -C Web-React-2 rev-parse HEAD
+          git -C AdminDashboard rev-parse HEAD
+
+      - name: Check Backend syntax
+        working-directory: Shadow-Backend
+        run: |
+          node --check server.js
+          node --check src/controllers/unlocks.controller.js
+          node --check src/routes/shadowReadEvent.routes.js
+          node --check src/routes/shadowReadEventRewards.routes.js
+          node --check src/routes/adminReadEvent.routes.js
+          node --check src/services/shadowReadEventFeaturedCards.service.js
+          node --check src/services/shadowReadEventDailySettlement.service.js
+
+      - name: Run Shadow Read Event tests
+        working-directory: Shadow-Backend
+        run: node --test src/tests/shadowReadEvent*.test.js
+
+      - name: Verify Reader, Admin, Backend and SQL integration
+        working-directory: Shadow-Backend
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { readFileSync } from 'node:fs'
+
+          const read = (path) => readFileSync(path, 'utf8')
+          const reader = read('../Web-React-2/src/pages/ReaderPage.jsx')
+          const admin = read('../AdminDashboard/src/components/events/AdminReadEventTab.jsx')
+          const server = read('server.js')
+          const route = read('src/routes/shadowReadEventRewards.routes.js')
+          const redeem = read('src/sql/shadow_read_event_featured_card_redeem_v2.sql')
+
+          assert.match(reader, /VITE_SHADOW_READ_EVENT_CARDS_UI_ENABLED === 'true'/)
+          assert.equal((reader.match(/<FeaturedReadEventCardOption\b/g) || []).length, 2)
+          assert.equal((reader.match(/onFeaturedCardUnlocked=\{finishUnlock\}/g) || []).length, 2)
+          assert.match(reader, /function UnlockPackageButton\(/)
+          const start = reader.indexOf('function FeaturedReadEventCardOption(')
+          const end = reader.indexOf('function UnlockPackageButton(', start)
+          assert.ok(start >= 0 && end > start)
+          const component = reader.slice(start, end)
+          assert.doesNotMatch(component, /<FeaturedReadEventCardOption\b/)
+          assert.match(component, /if \(!SHADOW_READ_EVENT_CARDS_UI_ENABLED\)/)
+          for (const key of ['eventCardCheck', 'eventCardChecking', 'eventCardAvailable', 'eventCardUse', 'eventCardNeedTen', 'eventCardFailed', 'eventCardRetry', 'eventCardNotEnough']) {
+            const count = reader.split(`"${key}":`).length - 1
+            assert.equal(count, 5, `Translation missing for ${key}`)
+          }
+
+          assert.match(admin, /Prepare Event/)
+          assert.match(server, /app\.use\('\/api\/read-event\/rewards'/)
+          assert.match(route, /SHADOW_READ_EVENT_FEATURED_CARDS_ENABLED !== 'true'/)
+          assert.match(route, /invalidateReadGateUnlockCache\(cacheTarget\)/)
+          assert.match(route, /invalidateEpisodeReadGateUnlockCache\(cacheTarget\)/)
+          assert.match(route, /router\.get\('\/available'/)
+          assert.match(route, /router\.post\('\/:eventId\/redeem'/)
+          assert.match(redeem, /u\.unlock_status = 'expired'/)
+          assert.match(redeem, /v_remaining < 10/)
+          assert.match(redeem, /FOR UPDATE/)
+          console.log('SHADOW READ EVENT INTEGRATION CHECK PASSED')
+          NODE
+
+      - name: Install Reader dependencies
+        working-directory: Web-React-2
+        run: npm ci --no-audit --no-fund
+
+      - name: Build Reader
+        working-directory: Web-React-2
+        run: npm run build
+
+      - name: Install Admin dependencies
+        working-directory: AdminDashboard
+        run: npm ci --no-audit --no-fund
+
+      - name: Build Admin
+        working-directory: AdminDashboard
+        run: npm run build
