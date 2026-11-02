@@ -106,6 +106,8 @@ async function ingestBinanceReceipts() {
       currency: 'USDT',
       order_type: item.orderType,
       payer_name: item.payerName,
+      payer_uid: item.payerUid,
+      receiver_uid: item.receiverUid,
     }))
 
     const { error: insertError } = await supabase
@@ -212,8 +214,10 @@ export async function processBinanceUsdtAlertsOnce() {
   running = true
   let ingestError = null
   let deliveryError = null
+  let matchError = null
   let ingest = null
   let delivery = null
+  let matching = null
 
   try {
     try {
@@ -225,23 +229,39 @@ export async function processBinanceUsdtAlertsOnce() {
       ingestError = error
     }
 
-    // Delivery is independent of ingestion: previous receipts can still be
-    // reported when the history API is temporarily unavailable.
+    // Payment credit requires a verified sender UID in the official receipt.
+    // The SQL function atomically checks identity, uniqueness, and credit history.
+    try {
+      const { data, error } = await supabase.rpc('auto_credit_binance_checkout_v1', {
+        p_limit: 10,
+      })
+      if (error) throw error
+      matching = data
+      if (Number(data?.credited || 0) > 0) {
+        console.info('BINANCE AUTO CREDITED ORDERS:', data.credited)
+      }
+    } catch (error) {
+      matchError = error
+    }
+
+    // Delivery is independent of ingestion and checkout matching: payment
+    // receipts still generate a Telegram alert even when identity is unknown.
     try {
       delivery = await deliverPendingAlerts()
     } catch (error) {
       deliveryError = error
     }
 
-    if (ingestError || deliveryError) {
+    if (ingestError || matchError || deliveryError) {
       const errors = [
         ingestError ? `history: ${safeError(ingestError)}` : null,
+        matchError ? `checkout: ${safeError(matchError)}` : null,
         deliveryError ? `telegram: ${safeError(deliveryError)}` : null,
       ].filter(Boolean)
       throw new Error(errors.join('; '))
     }
 
-    return { ingest, delivery }
+    return { ingest, matching, delivery }
   } finally {
     running = false
   }
