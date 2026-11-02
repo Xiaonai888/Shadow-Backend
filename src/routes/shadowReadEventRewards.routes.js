@@ -10,9 +10,18 @@ import {
 const router = express.Router()
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const PAGE_SIZE = 20
+const AVAILABILITY_LIMIT = 60
 
 function validUuid(value) {
   return typeof value === 'string' && UUID.test(value)
+}
+
+function safeCount(value) {
+  const number = Number(value)
+  if (!Number.isSafeInteger(number) || number < 0) {
+    throw new Error('Invalid Read Event card balance')
+  }
+  return number
 }
 
 const readLimit = rateLimit({
@@ -58,6 +67,82 @@ async function readOwnership(eventId, userId) {
       ? participantResult.data : null,
   }
 }
+
+router.get('/available', ipLimit, requireUser, readLimit, async (req, res) => {
+  res.set('Cache-Control', 'private, no-store')
+  const storyId = req.query?.story_id
+  const userId = String(req.user?.user_id || req.user?.id || '')
+  if (!validUuid(storyId) || !validUuid(userId)) {
+    return res.status(400).json({ ok: false, code: 'READ_EVENT_CARDS_INPUT_INVALID' })
+  }
+
+  try {
+    const balanceResult = await supabase
+      .from('shadow_read_event_featured_card_balances')
+      .select('event_id,story_id,granted_cards,spent_cards,updated_at')
+      .eq('user_id', userId)
+      .eq('story_id', storyId)
+      .gt('granted_cards', 0)
+      .order('updated_at', { ascending: false })
+      .limit(AVAILABILITY_LIMIT + 1)
+
+    if (balanceResult.error) throw balanceResult.error
+    const balances = balanceResult.data || []
+    if (!balances.length) {
+      return res.json({ ok: true, story_id: storyId, events: [], has_more: false })
+    }
+
+    const ids = balances.map((row) => row.event_id)
+    const [weeksResult, participantsResult] = await Promise.all([
+      supabase.from('shadow_read_event_weeks')
+        .select('id,starts_on,featured_story_id,audience_group')
+        .in('id', ids),
+      supabase.from('shadow_read_event_participants')
+        .select('event_id,reader_group_snapshot')
+        .eq('user_id', userId)
+        .in('event_id', ids),
+    ])
+    if (weeksResult.error) throw weeksResult.error
+    if (participantsResult.error) throw participantsResult.error
+
+    const validWeeks = new Map((weeksResult.data || [])
+      .filter((week) => week.audience_group === 'kh' && week.featured_story_id === storyId)
+      .map((week) => [week.id, week]))
+    const eligibleIds = new Set((participantsResult.data || [])
+      .filter((participant) => participant.reader_group_snapshot === 'kh')
+      .map((participant) => participant.event_id))
+
+    const events = balances.slice(0, AVAILABILITY_LIMIT).flatMap((balance) => {
+      const week = validWeeks.get(balance.event_id)
+      if (!week || !eligibleIds.has(balance.event_id)) return []
+      const granted = safeCount(balance.granted_cards)
+      const spent = safeCount(balance.spent_cards)
+      if (spent > granted) throw new Error('Inconsistent Read Event card ledger')
+      const available = granted - spent
+      if (available === 0) return []
+      return [{
+        event_id: balance.event_id,
+        story_id: storyId,
+        starts_on: week.starts_on,
+        available_cards: available,
+        granted_cards: granted,
+        spent_cards: spent,
+      }]
+    })
+
+    return res.json({
+      ok: true,
+      story_id: storyId,
+      events,
+      has_more: balances.length > AVAILABILITY_LIMIT,
+    })
+  } catch (error) {
+    console.error('READ_EVENT_CARDS_AVAILABLE_ERROR', {
+      code: error?.code || error?.name || 'unknown',
+    })
+    return res.status(503).json({ ok: false, code: 'READ_EVENT_CARDS_UNAVAILABLE' })
+  }
+})
 
 router.get('/:eventId', ipLimit, requireUser, readLimit, async (req, res) => {
   res.set('Cache-Control', 'private, no-store')
