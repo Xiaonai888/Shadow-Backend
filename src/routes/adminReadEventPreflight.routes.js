@@ -1,23 +1,29 @@
 import express from 'express'
-import { rateLimit } from 'express-rate-limit'
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { readShadowReadEventReleaseReadiness } from '../services/shadowReadEventReleaseReadiness.service.js'
 
 const router = express.Router()
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+const ipLimit = rateLimit({
+  windowMs: 60_000,
+  limit: 60,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { ok: false, code: 'READ_EVENT_PREFLIGHT_IP_RATE_LIMIT' },
+})
+
 const manualOnly = rateLimit({
   windowMs: 60_000,
   limit: 6,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
-  keyGenerator: (req) => String(req.admin?.admin_id || req.admin?.email || req.ip),
+  keyGenerator: (req) => String(req.admin?.admin_id || req.admin?.email || ipKeyGenerator(req.ip)),
   message: { ok: false, code: 'READ_EVENT_PREFLIGHT_RATE_LIMIT' },
 })
 
-router.use(requireAdminPermission('monthly_vote.view'), manualOnly)
-
-router.get('/:eventId', async (req, res) => {
+router.get('/:eventId', ipLimit, requireAdminPermission('monthly_vote.view'), manualOnly, async (req, res) => {
   res.set('Cache-Control', 'private, no-store')
   const eventId = req.params.eventId
   if (req.admin?.role !== 'owner' && req.admin?.role !== 'admin') {
