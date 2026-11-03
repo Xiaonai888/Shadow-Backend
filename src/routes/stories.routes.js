@@ -72,9 +72,6 @@ router.use(rateLimit({
   legacyHeaders: false,
 }))
 
-router.use(requireUser)
-router.use(storyRateLimit)
-
 router.post(
   '/:storyId/episodes/:episodeId/restore',
   restoreEpisodeIpRateLimit,
@@ -83,6 +80,9 @@ router.post(
   invalidateMyStoriesAfterMutation,
   restoreAuthorEpisodeFromTrash
 )
+
+router.use(requireUser)
+router.use(storyRateLimit)
 
 function invalidateMyStoriesAfterMutation(req, res, next) {
   const userId = req.user?.user_id
