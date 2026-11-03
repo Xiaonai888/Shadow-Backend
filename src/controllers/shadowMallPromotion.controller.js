@@ -1276,6 +1276,208 @@ export async function updateAdminShadowMallPromotion(
   }
 }
 
-export async function getAdminShadowMallAutoAds(req, res)
-export async function updateAdminShadowMallAutoAdMode(req, res)
-export async function getPublicShadowMallAdControl(req, res)
+const AUTO_AD_CONTROL_TABLE = 'shadow_mall_ad_control'
+const AUTO_AD_STORY_SELECT = [
+  'id', 'author_id', 'title', 'description', 'story_status',
+  'cover_url', 'total_episodes', 'total_views', 'total_likes',
+  'tags', 'created_at', 'updated_at',
+].join(', ')
+let autoAdGenerationPromise = null
+
+function cambodiaAutoAdDay() {
+  return new Date(Date.now() + 7 * 60 * 60 * 1000)
+    .toISOString().slice(0, 10)
+}
+
+function autoAdDailyScore(day, id) {
+  const value = `${day}:${id}`
+  let hash = 2166136261
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+async function readAutoAdControl() {
+  const { data, error } = await supabase
+    .from(AUTO_AD_CONTROL_TABLE)
+    .select('id, mode, day, ads, generated_at, updated_at')
+    .eq('id', 1)
+    .maybeSingle()
+  if (error) throw error
+  return data || {
+    id: 1, mode: 'manual', day: null, ads: [],
+    generated_at: null, updated_at: null,
+  }
+}
+
+function autoAdPublicResponse(row) {
+  return {
+    ok: true,
+    mode: row.mode === 'auto' ? 'auto' : 'manual',
+    day: row.day || null,
+    generated_at: row.generated_at || null,
+    ads: row.mode === 'auto' && Array.isArray(row.ads) ? row.ads : [],
+  }
+}
+
+function autoAdStoryQuery() {
+  return supabase
+    .from('stories')
+    .select(AUTO_AD_STORY_SELECT)
+    .eq('status', 'published')
+    .is('deleted_at', null)
+    .or('admin_visibility_status.is.null,admin_visibility_status.eq.active')
+    .or('is_adult.is.null,is_adult.eq.false')
+    .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false,exclusive_status.eq.approved')
+    .or('total_episodes.gte.6,story_status.ilike.completed')
+}
+
+async function selectDailyAutoAdStories(day) {
+  const [lowViews, newest] = await Promise.all([
+    autoAdStoryQuery()
+      .order('total_views', { ascending: true })
+      .order('created_at', { ascending: false })
+      .limit(60),
+    autoAdStoryQuery()
+      .order('created_at', { ascending: false })
+      .limit(60),
+  ])
+  if (lowViews.error) throw lowViews.error
+  if (newest.error) throw newest.error
+
+  const randomized = (rows) => [...(rows || [])].sort(
+    (a, b) => autoAdDailyScore(day, a.id) - autoAdDailyScore(day, b.id)
+  )
+  const groups = [randomized(lowViews.data), randomized(newest.data)]
+  const selected = []
+  const seen = new Set()
+  const add = (story) => {
+    if (!story?.id || seen.has(story.id) || selected.length >= 10) return
+    seen.add(story.id)
+    selected.push(story)
+  }
+  for (let i = 0; selected.length < 10 && i < 60; i += 1) {
+    add(groups[0][i])
+    add(groups[1][i])
+  }
+  if (!selected.length) return []
+
+  const ids = selected.map((story) => story.id)
+  const authorIds = [...new Set(selected.map((story) => story.author_id).filter(Boolean))]
+  const [slidesResult, authorsResult] = await Promise.all([
+    supabase.from('story_carousel_slides')
+      .select('story_id, image_url, sort_order')
+      .in('story_id', ids)
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true }),
+    authorIds.length
+      ? supabase.from('author_pages')
+        .select('id, page_name, avatar_url')
+        .in('id', authorIds)
+      : Promise.resolve({ data: [], error: null }),
+  ])
+  if (slidesResult.error) throw slidesResult.error
+  if (authorsResult.error) throw authorsResult.error
+
+  const firstSlide = new Map()
+  for (const slide of slidesResult.data || []) {
+    if (slide.image_url && !firstSlide.has(slide.story_id)) {
+      firstSlide.set(slide.story_id, slide.image_url)
+    }
+  }
+  const authorMap = new Map(
+    (authorsResult.data || []).map((page) => [page.id, page])
+  )
+  return selected.map((story) => {
+    const author = authorMap.get(story.author_id)
+    return {
+      story_id: story.id,
+      title: story.title,
+      description: story.description || '',
+      preview_image_url: firstSlide.get(story.id) || story.cover_url || '',
+      cover_url: story.cover_url || '',
+      story_status: story.story_status || 'New',
+      episode_count: Number(story.total_episodes || 0),
+      total_views: Number(story.total_views || 0),
+      total_likes: Number(story.total_likes || 0),
+      tags: Array.isArray(story.tags) ? story.tags : [],
+      author_id: story.author_id,
+      author_name: author?.page_name || '',
+      author_avatar_url: author?.avatar_url || '',
+      last_update_at: story.updated_at || story.created_at || null,
+    }
+  })
+}
+
+async function ensureDailyAutoAdControl() {
+  const row = await readAutoAdControl()
+  const day = cambodiaAutoAdDay()
+  if (row.mode !== 'auto' || (row.day === day && Array.isArray(row.ads))) {
+    return row
+  }
+  if (!autoAdGenerationPromise) {
+    autoAdGenerationPromise = (async () => {
+      const ads = await selectDailyAutoAdStories(day)
+      const { data, error } = await supabase
+        .from(AUTO_AD_CONTROL_TABLE)
+        .update({ day, ads, generated_at: new Date().toISOString() })
+        .eq('id', 1)
+        .eq('mode', 'auto')
+        .select('id, mode, day, ads, generated_at, updated_at')
+        .maybeSingle()
+      if (error) throw error
+      return data || readAutoAdControl()
+    })().finally(() => { autoAdGenerationPromise = null })
+  }
+  return autoAdGenerationPromise
+}
+
+export async function getAdminShadowMallAutoAds(req, res) {
+  try {
+    res.setHeader('Cache-Control', 'private, no-store')
+    const row = await ensureDailyAutoAdControl()
+    return res.status(200).json(autoAdPublicResponse(row))
+  } catch (error) {
+    console.error('GET ADMIN AUTO ADS ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load Auto Ad settings' })
+  }
+}
+
+export async function updateAdminShadowMallAutoAdMode(req, res) {
+  const mode = String(req.body?.mode || '')
+  if (mode !== 'manual' && mode !== 'auto') {
+    return res.status(400).json({ ok: false, message: 'Invalid Ad mode' })
+  }
+  try {
+    const previous = await readAutoAdControl()
+    const { error } = await supabase.from(AUTO_AD_CONTROL_TABLE).upsert({
+      id: 1,
+      mode,
+      day: previous.day,
+      ads: Array.isArray(previous.ads) ? previous.ads : [],
+      generated_at: previous.generated_at,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'id' })
+    if (error) throw error
+    invalidateShadowMallPromotionsCache()
+    const row = await ensureDailyAutoAdControl()
+    return res.status(200).json(autoAdPublicResponse(row))
+  } catch (error) {
+    console.error('UPDATE AUTO AD MODE ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to update Ad mode' })
+  }
+}
+
+export async function getPublicShadowMallAdControl(req, res) {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    const row = await ensureDailyAutoAdControl()
+    return res.status(200).json(autoAdPublicResponse(row))
+  } catch (error) {
+    console.error('GET PUBLIC AUTO ADS ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load Ad control' })
+  }
+}
+
