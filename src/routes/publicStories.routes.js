@@ -17,7 +17,7 @@ import {
 import { getPublicWeeklyUpdates } from '../controllers/weeklyUpdates.controller.js'
 import { getPublicStoryUpdates } from '../controllers/storyUpdates.controller.js'
 import { createSpamGuard } from '../middleware/spamGuard.middleware.js'
-import { createRateLimit } from '../middleware/rateLimit.middleware.js'
+import { createRateLimit, createRateLimit as rateLimit } from '../middleware/rateLimit.middleware.js'
 import { limitGenreReadBudget } from '../middleware/genreReadBudget.middleware.js'
 import {
   cachePublicStoriesResponse,
@@ -42,6 +42,13 @@ const publicStoriesListCacheHitLimit = createRateLimit({
   windowMs: 60 * 1000,
   max: 1500,
   message: 'Too many requests. Please wait before trying again.',
+})
+
+const publicEpisodeDetailIpLimit = rateLimit({
+  key: 'public-episode-detail-ip',
+  windowMs: 60 * 1000,
+  max: 120,
+  message: 'Too many episode requests. Please try again shortly.',
 })
 
 const publicStoriesListReadSpamGuard = createSpamGuard({
@@ -444,7 +451,13 @@ function personalizeStoryEpisodeList(req, res, next) {
   return next()
 }
 
-router.get('/stories/:storyId/episodes/:episodeId', traceReaderEpisodeDetail, coalesceEpisodeRead, getPublicEpisodeById)
+router.get(
+  '/stories/:storyId/episodes/:episodeId',
+  publicEpisodeDetailIpLimit,
+  traceReaderEpisodeDetail,
+  coalesceEpisodeRead,
+  getPublicEpisodeById
+)
 router.post(
   '/stories/:storyId/episodes/:episodeId/view',
   traceEpisodeView,
