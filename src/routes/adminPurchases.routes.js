@@ -2,6 +2,7 @@ import { streamAdminPaymentEvents } from '../services/adminPaymentSse.service.js
 import binanceCheckoutAdminReviewRoutes from './binanceCheckoutAdminReview.routes.js'
 import binanceCheckoutAdminDecisionRoutes from './binanceCheckoutAdminDecision.routes.js'
 import adminBinanceTelegramReconcileRoutes from './adminBinanceTelegramReconcile.routes.js'
+import adminBinanceTelegramEditQueueRoutes from './adminBinanceTelegramEditQueue.routes.js'
 import {
   getAdminPaymentRecovery,
   getAdminPaymentRecoveryRecipient,
@@ -80,7 +81,7 @@ router.use('/binance', binanceCheckoutAdminReviewRoutes)
 router.use('/binance', binanceCheckoutAdminDecisionRoutes)
 // NEW: manual reconciliation only. Edits an existing Telegram message; never resends it.
 router.use('/binance/telegram', adminBinanceTelegramReconcileRoutes)
-
+router.use('/binance/telegram-edit-queue', adminBinanceTelegramEditQueueRoutes)
 router.get('/', requireAdmin, adminPaymentReadLimit, getAdminPayments)
 router.get('/manual', requireAdmin, adminPaymentReadLimit, getAdminManualPayments)
 router.get('/recovery', requireAdmin, adminPaymentReadLimit, recoveryReadGuard, getAdminPaymentRecovery)
