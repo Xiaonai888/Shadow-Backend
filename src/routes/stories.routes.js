@@ -28,7 +28,10 @@ import {
   updateEpisodeStatusByStoryType,
 } from '../controllers/chatStoryEpisodes.controller.js'
 import { getStoryManagerEpisodes } from '../controllers/storyManager.controller.js'
-import { restoreAuthorEpisodeFromTrash } from '../controllers/episodeTrash.controller.js'
+import {
+  getAuthorDeletedEpisodes,
+  restoreAuthorEpisodeFromTrash,
+} from '../controllers/episodeTrash.controller.js'
 import { getStoryPerformance } from '../controllers/storyPerformance.controller.js'
 import {
   acceptStoryPublishAgreement,
@@ -123,6 +126,7 @@ function invalidateMyStoriesAfterMutation(req, res, next) {
 router.post('/create', invalidateMyStoriesAfterMutation, createStory)
 router.get('/my', getMyStories)
 router.get('/trash', getStoryTrash)
+router.get('/trash/episodes', getAuthorDeletedEpisodes)
 router.get('/chat/avatar-gallery', getChatStoryAvatarGallery)
 router.get('/:storyId/chat/characters', getChatStoryCharacters)
 router.put('/:storyId/chat/characters', saveChatStoryCharacters)
