@@ -60,20 +60,31 @@ async function getOwnedChatStory(storyId, userId) {
   return data
 }
 
-async function getOwnedEpisode(storyId, episodeId, userId) {
+async function getOwnedEpisode(storyId, episodeId, userId, { includeDeleted = false } = {}) {
   if (!episodeId) return null
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('episodes')
     .select('*')
     .eq('id', episodeId)
     .eq('story_id', storyId)
     .eq('user_id', userId)
-    .is('deleted_at', null)
-    .maybeSingle()
 
+  if (!includeDeleted) {
+    query = query.is('deleted_at', null)
+  }
+
+  const { data, error } = await query.maybeSingle()
   if (error) throw error
   return data
+}
+
+function deletedEpisodeResponse(res, code = 'EPISODE_DELETED') {
+  return res.status(409).json({
+    ok: false,
+    code,
+    message: 'This episode was deleted. Start a new episode instead. Your local draft has not been restored or published.',
+  })
 }
 
 async function getNextEpisodeNumber(storyId) {
@@ -81,7 +92,7 @@ async function getNextEpisodeNumber(storyId) {
     .from('episodes')
     .select('episode_number')
     .eq('story_id', storyId)
-    .is('deleted_at', null)
+    // Include deleted episode numbers so a new episode never reuses a deleted row's number.
     .order('episode_number', { ascending: false })
     .limit(1)
 
@@ -451,6 +462,8 @@ const content = JSON.stringify({
     const expectedUpdatedAt = cleanNullableText(req.body.expected_updated_at)
     const clientEpisodeId = cleanNullableText(req.body.client_episode_id)
     if (requestedEpisodeId && !existingEpisode) {
+      const prior = await getOwnedEpisode(storyId, requestedEpisodeId, userId, { includeDeleted: true })
+      if (prior?.deleted_at) return deletedEpisodeResponse(res)
       return res.status(404).json({ ok: false, message: 'Episode not found' })
     }
     if (checkpoint && !existingEpisode) {
@@ -460,8 +473,17 @@ const content = JSON.stringify({
       return res.status(400).json({ ok: false, message: 'Invalid draft identifier' })
     }
     if (!requestedEpisodeId && clientEpisodeId) {
-      const previous = await getOwnedEpisode(storyId, clientEpisodeId, userId)
+      const previous = await getOwnedEpisode(storyId, clientEpisodeId, userId, { includeDeleted: true })
+      if (previous?.deleted_at) return deletedEpisodeResponse(res, 'EPISODE_CREATE_ID_DELETED')
       if (previous) {
+        // Idempotent retry is safe only for the same payload, not a newly written draft.
+        if (previous.content !== content || previous.title !== title) {
+          return res.status(409).json({
+            ok: false,
+            code: 'EPISODE_CREATE_ID_REUSED',
+            message: 'This draft identifier belongs to another episode. Start a new episode with a new draft identifier.',
+          })
+        }
         return res.status(200).json({ ok: true, episode: previous, is_first_episode: Number(previous.episode_number || 0) === 1 })
       }
     }
@@ -496,6 +518,7 @@ const content = JSON.stringify({
         .eq('id', existingEpisode.id)
         .eq('story_id', storyId)
         .eq('user_id', userId)
+        .is('deleted_at', null)
       updateQuery = existingEpisode.updated_at
         ? updateQuery.eq('updated_at', existingEpisode.updated_at)
         : updateQuery.is('updated_at', null)
@@ -523,8 +546,16 @@ const content = JSON.stringify({
         .single()
 
       if (error?.code === '23505' && clientEpisodeId) {
-        const previous = await getOwnedEpisode(storyId, clientEpisodeId, userId)
+        const previous = await getOwnedEpisode(storyId, clientEpisodeId, userId, { includeDeleted: true })
+        if (previous?.deleted_at) return deletedEpisodeResponse(res, 'EPISODE_CREATE_ID_DELETED')
         if (previous) {
+          if (previous.content !== content || previous.title !== title) {
+            return res.status(409).json({
+              ok: false,
+              code: 'EPISODE_CREATE_ID_REUSED',
+              message: 'This draft identifier belongs to another episode. Start a new episode with a new draft identifier.',
+            })
+          }
           return res.status(200).json({ ok: true, episode: previous, is_first_episode: Number(previous.episode_number || 0) === 1 })
         }
       }
@@ -576,9 +607,13 @@ export async function updateChatStoryEpisodeStatus(req, res) {
     }
 
     const story = await getOwnedChatStory(storyId, userId)
+    if (!story) {
+      return res.status(404).json({ ok: false, message: 'Chat Story not found' })
+    }
     const episode = await getOwnedEpisode(storyId, episodeId, userId)
-
-    if (!story || !episode) {
+    if (!episode) {
+      const prior = await getOwnedEpisode(storyId, episodeId, userId, { includeDeleted: true })
+      if (prior?.deleted_at) return deletedEpisodeResponse(res)
       return res.status(404).json({ ok: false, message: 'Chat Story episode not found' })
     }
 
@@ -673,16 +708,28 @@ updatePayload.scheduled_at = null
       updatePayload.published_at = episode.published_at || null
     }
 
-    const { data: updatedEpisode, error } = await supabase
+    let statusQuery = supabase
       .from('episodes')
       .update(updatePayload)
       .eq('id', episodeId)
       .eq('story_id', storyId)
       .eq('user_id', userId)
-      .select()
-      .single()
+      .is('deleted_at', null)
+    statusQuery = episode.updated_at
+      ? statusQuery.eq('updated_at', episode.updated_at)
+      : statusQuery.is('updated_at', null)
 
+    const { data: updatedEpisode, error } = await statusQuery.select().maybeSingle()
     if (error) throw error
+    if (!updatedEpisode) {
+      const latest = await getOwnedEpisode(storyId, episodeId, userId, { includeDeleted: true })
+      if (latest?.deleted_at) return deletedEpisodeResponse(res)
+      return res.status(409).json({
+        ok: false,
+        code: 'DRAFT_VERSION_CONFLICT',
+        message: 'Episode changed during publishing. Review the latest version before retrying.',
+      })
+    }
 
     if (status === 'published') {
       const { error: storyError } = await supabase
