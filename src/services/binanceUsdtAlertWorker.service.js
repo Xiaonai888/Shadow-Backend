@@ -4,6 +4,9 @@ import { html, sendTelegramMessage } from './telegram.service.js'
 import { publishPaymentStatus } from './paymentEvents.service.js'
 
 const POLL_INTERVAL_MS = 10 * 60 * 1000
+const CATCH_UP_INTERVAL_MS = 15 * 1000
+const CATCH_UP_THRESHOLD_MS = 10 * 60 * 1000
+const ANCILLARY_ERROR_LOG_INTERVAL_MS = 10 * 60 * 1000
 const MAX_RETRY_INTERVAL_MS = 60 * 60 * 1000
 const MAX_QUERY_WINDOW_MS = 6 * 60 * 60 * 1000
 const MIN_QUERY_WINDOW_MS = 60 * 1000
@@ -15,6 +18,9 @@ let running = false
 let timer = null
 let failures = 0
 let queryWindowMs = MAX_QUERY_WINDOW_MS
+let wasCatchingUp = false
+let lastMatchErrorLogAt = 0
+let lastTelegramErrorLogAt = 0
 
 function getAlertChatId() {
   const chatId = String(process.env.TELEGRAM_BINANCE_ALERT_CHAT_ID || '').trim()
@@ -151,8 +157,7 @@ async function markAlertFailed(alert, reason) {
 }
 
 async function deliverPendingAlerts() {
-  // Do not claim records without a usable Telegram destination. Pending
-  // receipts remain available to deliver when Telegram is configured.
+  // Keep pending receipts unclaimed until a Telegram destination is available.
   if (!isTelegramDeliveryEnabled()) {
     return { skipped: true, reason: 'telegram_not_configured', sent: 0, claimed: 0 }
   }
@@ -230,8 +235,7 @@ export async function processBinanceUsdtAlertsOnce() {
       ingestError = error
     }
 
-    // Payment credit requires a verified sender UID in the official receipt.
-    // The SQL function atomically checks identity, uniqueness, and credit history.
+    // Only an independently verified payer UID permits automatic credit.
     try {
       const { data, error } = await supabase.rpc('auto_credit_binance_checkout_v1', {
         p_limit: 10,
@@ -241,8 +245,6 @@ export async function processBinanceUsdtAlertsOnce() {
       if (Number(data?.credited || 0) > 0) {
         console.info('BINANCE AUTO CREDITED ORDERS:', data.credited)
       }
-      // A committed wallet credit notifies only this reader's payment stream.
-      // The Order ID and User ID are returned by the atomic credit RPC.
       for (const creditedOrder of Array.isArray(data?.credited_orders) ? data.credited_orders : []) {
         if (!creditedOrder?.order_id || !creditedOrder?.user_id) continue
         publishPaymentStatus({
@@ -259,21 +261,25 @@ export async function processBinanceUsdtAlertsOnce() {
       matchError = error
     }
 
-    // Delivery is independent of ingestion and checkout matching: payment
-    // receipts still generate a Telegram alert even when identity is unknown.
+    // Always attempt Telegram delivery even if an unrelated order match fails.
     try {
       delivery = await deliverPendingAlerts()
     } catch (error) {
       deliveryError = error
     }
 
-    if (ingestError || matchError || deliveryError) {
-      const errors = [
-        ingestError ? `history: ${safeError(ingestError)}` : null,
-        matchError ? `checkout: ${safeError(matchError)}` : null,
-        deliveryError ? `telegram: ${safeError(deliveryError)}` : null,
-      ].filter(Boolean)
-      throw new Error(errors.join('; '))
+    // Checkout and Telegram are independent of history ingestion. An RPC
+    // failure must never slow down receipt catch-up or hide the Admin ledger.
+    if (matchError && Date.now() - lastMatchErrorLogAt >= ANCILLARY_ERROR_LOG_INTERVAL_MS) {
+      lastMatchErrorLogAt = Date.now()
+      console.error('BINANCE USDT CHECKOUT MATCH ERROR:', safeError(matchError))
+    }
+    if (deliveryError && Date.now() - lastTelegramErrorLogAt >= ANCILLARY_ERROR_LOG_INTERVAL_MS) {
+      lastTelegramErrorLogAt = Date.now()
+      console.error('BINANCE USDT TELEGRAM ERROR:', safeError(deliveryError))
+    }
+    if (ingestError) {
+      throw new Error(`history: ${safeError(ingestError)}`)
     }
 
     return { ingest, matching, delivery }
@@ -291,8 +297,27 @@ function schedule(delayMs) {
     let nextDelay = POLL_INTERVAL_MS
 
     try {
-      await processBinanceUsdtAlertsOnce()
+      const result = await processBinanceUsdtAlertsOnce()
       failures = 0
+
+      // Preserve the cursor: each successful bounded window advances it.
+      // Catch-up runs at no more than four history requests per minute.
+      const cursorMs = Number(result?.ingest?.cursorMs)
+      if (Number.isSafeInteger(cursorMs) && cursorMs > 0) {
+        const lagMs = Math.max(0, Date.now() - cursorMs)
+        if (lagMs > CATCH_UP_THRESHOLD_MS) {
+          nextDelay = CATCH_UP_INTERVAL_MS
+          wasCatchingUp = true
+          console.info('BINANCE USDT CATCHUP:', {
+            cursor_kh: new Date(cursorMs).toLocaleString('en-GB', { timeZone: 'Asia/Bangkok', hour12: false }),
+            minutes_behind: Math.ceil(lagMs / 60000),
+            next_check_seconds: CATCH_UP_INTERVAL_MS / 1000,
+          })
+        } else if (wasCatchingUp) {
+          wasCatchingUp = false
+          console.info('BINANCE USDT CATCHUP COMPLETE: returning to the 10-minute interval')
+        }
+      }
     } catch (error) {
       failures = Math.min(failures + 1, 4)
       nextDelay = Math.min(MAX_RETRY_INTERVAL_MS, POLL_INTERVAL_MS * 2 ** (failures - 1))
@@ -317,6 +342,7 @@ export function startBinanceUsdtAlertWorker() {
   }
 
   started = true
+  console.info('BINANCE USDT HISTORY WORKER STARTED: receipt ingestion enabled')
   if (!isTelegramDeliveryEnabled()) {
     console.warn('BINANCE USDT TELEGRAM ALERTS DISABLED: history receipts will still be recorded')
   }
@@ -329,5 +355,6 @@ export function stopBinanceUsdtAlertWorker() {
   started = false
   if (timer) clearTimeout(timer)
   timer = null
+  wasCatchingUp = false
   return true
 }
