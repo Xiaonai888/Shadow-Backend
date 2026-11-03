@@ -7,6 +7,11 @@ import { requireUser } from '../middleware/user.middleware.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 import { createFastVideo } from '../controllers/fastVideos.controller.js'
 import { listPublicFastVideos } from '../controllers/fastFeed.controller.js'
+import {
+  listMyFastReels,
+  updateMyFastReel,
+  deleteMyFastReel,
+} from '../controllers/fastReelManagement.controller.js'
 import path from 'node:path'
 
 const router = express.Router()
@@ -128,6 +133,10 @@ router.post(
     }
   }
 )
+
+router.get('/videos/mine', requireUser, listMyFastReels)
+router.patch('/videos/:id', requireUser, updateMyFastReel)
+router.delete('/videos/:id', requireUser, deleteMyFastReel)
 
 router.get('/videos', fastVideoFeedLimit, listPublicFastVideos)
 router.post('/videos', requireUser, createFastVideo)
