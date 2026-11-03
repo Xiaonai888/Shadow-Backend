@@ -3395,12 +3395,18 @@ export async function countQualifiedEpisodeView(
         console.error('READER DAILY ACTIVITY ERROR:', error)
       }),
     ])
-    await recordReaderStoryEpisodeDaily({
-      userId: user.user_id,
-      storyId,
-      episodeId,
-      counted: viewResult.counted === true,
-    })
+    try {
+  await recordReaderStoryEpisodeDaily({
+    userId: user.user_id,
+    storyId,
+    episodeId,
+    counted: viewResult.counted === true,
+  })
+} catch (sideEffectError) {
+  console.error('READER_EPISODE_DAILY_AFTER_VIEW_FAILED', {
+    code: sideEffectError?.code || sideEffectError?.name || 'unknown',
+  })
+}
 
 
     if (viewResult.counted === true) {
