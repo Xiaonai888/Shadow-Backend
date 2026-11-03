@@ -5,6 +5,10 @@ import {
   saveReadingProgress,
 } from '../controllers/readingProgress.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
+import {
+  traceReadingProgressRead,
+  traceReadingProgressSave,
+} from '../middleware/episodeViewDiagnostics.middleware.js'
 
 const router = express.Router()
 router.use(rateLimit({
@@ -26,7 +30,7 @@ const progressRateLimit = rateLimit({
   },
 })
 
-router.get('/', requireUser, progressRateLimit, getReadingProgress)
-router.post('/', requireUser, progressRateLimit, saveReadingProgress)
+router.get('/', traceReadingProgressRead, requireUser, progressRateLimit, getReadingProgress)
+router.post('/', traceReadingProgressSave, requireUser, progressRateLimit, saveReadingProgress)
 
 export default router
