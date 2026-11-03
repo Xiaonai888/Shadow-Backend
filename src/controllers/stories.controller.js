@@ -765,6 +765,15 @@ async function respondWithCreatedStory(res, story) {
 }
 
 async function respondWithCreatedEpisode(res, story, episode) {
+  // Idempotency retries must never return a deleted episode as a successful new episode.
+  if (episode.deleted_at) {
+    return res.status(409).json({
+      ok: false,
+      code: 'EPISODE_CREATE_REQUEST_DELETED',
+      message: 'This episode was deleted. Start a new episode with a new create request ID.',
+    })
+  }
+
   const pages = story.story_type === 'manga' ? await getEpisodePages(episode.id) : []
   const access = await getStoryEpisodeAccess(story.id)
   return res.status(200).json({
@@ -1518,12 +1527,25 @@ export async function updateEpisode(req, res) {
       })
     }
 
-    const episode = await getOwnedEpisode({ storyId, episodeId, userId })
+    const episode = await getOwnedEpisode({
+      storyId,
+      episodeId,
+      userId,
+      includeDeleted: true,
+    })
 
     if (!episode) {
       return res.status(404).json({
         ok: false,
         message: 'Episode not found',
+      })
+    }
+
+    if (episode.deleted_at) {
+      return res.status(409).json({
+        ok: false,
+        code: 'EPISODE_DELETED',
+        message: 'This episode was deleted. Start a new episode instead of overwriting it.',
       })
     }
 
@@ -1719,10 +1741,18 @@ const status = cleanText(req.body.status || episode.status || 'draft')
       .eq('id', episodeId)
       .eq('story_id', storyId)
       .eq('user_id', userId)
+      .is('deleted_at', null)
       .select()
-      .single()
+      .maybeSingle()
 
     if (updateError) throw updateError
+    if (!updatedEpisode) {
+      return res.status(409).json({
+        ok: false,
+        code: 'EPISODE_DELETED_OR_CHANGED',
+        message: 'This episode is no longer available for saving. Your editor content was not saved.',
+      })
+    }
 
     await supabase
   .from('stories')
@@ -1772,12 +1802,25 @@ export async function updateEpisodeStatus(req, res) {
       })
     }
 
-    const episode = await getOwnedEpisode({ storyId, episodeId, userId })
+    const episode = await getOwnedEpisode({
+      storyId,
+      episodeId,
+      userId,
+      includeDeleted: true,
+    })
 
     if (!episode) {
       return res.status(404).json({
         ok: false,
         message: 'Episode not found',
+      })
+    }
+
+    if (episode.deleted_at) {
+      return res.status(409).json({
+        ok: false,
+        code: 'EPISODE_DELETED',
+        message: 'This episode was deleted. Start a new episode instead of overwriting it.',
       })
     }
 
@@ -1911,10 +1954,18 @@ export async function updateEpisodeStatus(req, res) {
       .eq('id', episodeId)
       .eq('story_id', storyId)
       .eq('user_id', userId)
+      .is('deleted_at', null)
       .select()
-      .single()
+      .maybeSingle()
 
     if (updateError) throw updateError
+    if (!updatedEpisode) {
+      return res.status(409).json({
+        ok: false,
+        code: 'EPISODE_DELETED_OR_CHANGED',
+        message: 'This episode is no longer available for publishing. Your editor content was not published.',
+      })
+    }
 
     if (status === 'published') {
   await updateStoryStatusAfterEpisodeChange(storyId)
@@ -2177,6 +2228,9 @@ export async function restoreStoryFromTrash(req, res) {
       })
       .eq('story_id', storyId)
       .eq('user_id', userId)
+      // moveStoryToTrash assigns this exact timestamp to episodes deleted with the story.
+      // Do NOT restore episodes the author deleted earlier or separately.
+      .eq('deleted_at', story.deleted_at)
 
     if (episodeError) throw episodeError
 
