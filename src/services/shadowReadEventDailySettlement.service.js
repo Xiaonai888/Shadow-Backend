@@ -2,7 +2,7 @@ import { supabase } from '../config/supabase.js'
 
 const DAY_MS = 86400000
 const FIRST_EVENT_MS = Date.UTC(2026, 10, 2)
-const CYCLE_DAYS = 28
+const CYCLE_DAYS = 14
 const EVENT_DAYS = 7
 const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
 const POLL_MS = 15 * 60 * 1000
