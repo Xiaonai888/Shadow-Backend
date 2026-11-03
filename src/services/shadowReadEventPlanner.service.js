@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
 
 const FIRST_EVENT = '2026-11-02'
-const EVENT_INTERVAL_DAYS = 28
+const EVENT_INTERVAL_DAYS = 14
 const MAX_DAILY_CANDIDATES = 500
 const MAX_FEATURED_CANDIDATES = 250
 const DAYS = 7
@@ -95,7 +95,7 @@ function dateNumber(value) {
 export function validateShadowReadEventStart(startsOn) {
   const daysFromFirst = (dateNumber(startsOn) - dateNumber(FIRST_EVENT)) / 86400000
   if (!Number.isInteger(daysFromFirst) || daysFromFirst < 0 || daysFromFirst % EVENT_INTERVAL_DAYS !== 0) {
-    throw new Error('Shadow Read Event must start on the 28-day Monday cycle')
+    throw new Error('Shadow Read Event must start on the 14-day Monday cycle')
   }
   return startsOn
 }
