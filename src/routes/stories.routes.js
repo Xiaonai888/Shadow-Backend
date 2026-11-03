@@ -28,6 +28,7 @@ import {
   updateEpisodeStatusByStoryType,
 } from '../controllers/chatStoryEpisodes.controller.js'
 import { getStoryManagerEpisodes } from '../controllers/storyManager.controller.js'
+import { restoreAuthorEpisodeFromTrash } from '../controllers/episodeTrash.controller.js'
 import { getStoryPerformance } from '../controllers/storyPerformance.controller.js'
 import {
   acceptStoryPublishAgreement,
@@ -136,5 +137,10 @@ router.patch(
   updateEpisodeStatusByStoryType
 )
 router.delete('/:storyId/episodes/:episodeId', invalidateMyStoriesAfterMutation, moveEpisodeToTrash)
+router.post(
+  '/:storyId/episodes/:episodeId/restore',
+  invalidateMyStoriesAfterMutation,
+  restoreAuthorEpisodeFromTrash
+)
 
 export default router
