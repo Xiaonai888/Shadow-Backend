@@ -1275,3 +1275,7 @@ export async function updateAdminShadowMallPromotion(
       })
   }
 }
+
+export async function getAdminShadowMallAutoAds(req, res)
+export async function updateAdminShadowMallAutoAdMode(req, res)
+export async function getPublicShadowMallAdControl(req, res)
