@@ -1,139 +1,168 @@
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
+
 const WINDOW_MS = 5 * 60 * 1000
-const SAMPLE_LIMIT = 24
-const SLOW_MS = 8000
+const SAMPLE_LIMIT = 16
+const SLOW_MS = 2000
 const MAX_REASONS = 24
-const EXPECTED_REASONS = new Set([
-  'fast_cooldown',
-  'cooldown',
-  'qualified_view_required',
+const EXPECTED_VIEW_REASONS = new Set([
+  'fast_cooldown', 'cooldown', 'qualified_view_required',
 ])
 
-let windowStartedAt = Date.now()
-let requests = 0
-let countedResponses = 0
-let notCountedResponses = 0
-let httpErrors = 0
-let aborted = 0
-let slowResponses = 0
-let sampledIssues = 0
-let suppressedIssues = 0
-let reasons = new Map()
-let statuses = new Map()
+const windows = new Map()
 
-function label(value, fallback = 'unknown') {
-  const text = String(value || '').slice(0, 64)
+function safeLabel(value, fallback = 'unknown') {
+  const text = String(value ?? '').trim().slice(0, 64)
   return /^[a-zA-Z0-9_-]{1,64}$/.test(text) ? text : fallback
 }
 
-function uuid(value) {
-  const text = String(value || '')
+function safeUuid(value) {
+  const text = String(value ?? '')
   return /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(text)
     ? text
     : 'invalid_uuid'
 }
 
-function increase(map, key) {
-  const safeKey = label(key)
-  if (!map.has(safeKey) && map.size >= MAX_REASONS) {
-    map.set('other', (map.get('other') || 0) + 1)
-    return
+function bump(target, key) {
+  const name = safeLabel(key)
+  if (!target.has(name) && target.size >= MAX_REASONS) {
+    target.set('other', (target.get('other') || 0) + 1)
+  } else {
+    target.set(name, (target.get(name) || 0) + 1)
   }
-  map.set(safeKey, (map.get(safeKey) || 0) + 1)
 }
 
-function rotateWindow(now) {
-  if (now - windowStartedAt < WINDOW_MS) return
-  if (requests > 0) {
-    console.info('SHADOW_VIEW_DIAG_SUMMARY', JSON.stringify({
-      from: new Date(windowStartedAt).toISOString(),
+function newWindow(now) {
+  return {
+    startedAt: now, requests: 0, counted: 0, notCounted: 0,
+    errors: 0, expected4xx: 0, serverErrors: 0, aborted: 0,
+    slow: 0, sampled: 0, suppressed: 0, totalMs: 0,
+    statuses: new Map(), reasons: new Map(),
+  }
+}
+
+function rotate(operation, now) {
+  let state = windows.get(operation)
+  if (state && now - state.startedAt < WINDOW_MS) return state
+  if (state && state.requests) {
+    console.info('SHADOW_READER_API_DIAG_SUMMARY', JSON.stringify({
+      operation,
+      from: new Date(state.startedAt).toISOString(),
       to: new Date(now).toISOString(),
-      requests,
-      counted_responses: countedResponses,
-      not_counted_responses: notCountedResponses,
-      http_errors: httpErrors,
-      aborted,
-      slow_responses: slowResponses,
-      reasons: Object.fromEntries(reasons),
-      statuses: Object.fromEntries(statuses),
-      sampled_issues: sampledIssues,
-      suppressed_issues: suppressedIssues,
+      requests: state.requests,
+      counted_responses: state.counted,
+      not_counted_responses: state.notCounted,
+      errors: state.errors,
+      expected_4xx: state.expected4xx,
+      server_errors: state.serverErrors,
+      aborted: state.aborted,
+      slow_responses: state.slow,
+      avg_ms: Math.round(state.totalMs / state.requests),
+      statuses: Object.fromEntries(state.statuses),
+      reasons: Object.fromEntries(state.reasons),
+      sampled_issues: state.sampled,
+      suppressed_issues: state.suppressed,
     }))
   }
-  windowStartedAt = now
-  requests = 0
-  countedResponses = 0
-  notCountedResponses = 0
-  httpErrors = 0
-  aborted = 0
-  slowResponses = 0
-  sampledIssues = 0
-  suppressedIssues = 0
-  reasons = new Map()
-  statuses = new Map()
+  state = newWindow(now)
+  windows.set(operation, state)
+  return state
 }
 
-export function traceEpisodeView(req, res, next) {
-  try {
+function classify(status, body, aborted, operation) {
+  if (aborted) return 'connection_closed'
+  if (status === 401) return 'unauthorized'
+  if (status === 403) return 'forbidden'
+  if (status === 404) return 'not_found'
+  if (status === 423) return 'episode_locked'
+  if (status === 429) return 'rate_limited'
+  if (status >= 500) return 'server_error'
+  if (status >= 400) return 'client_error'
+  if (body?.ok === false) return 'application_rejected'
+  if (operation === 'episode_view') {
+    if (body?.view?.counted === true) return 'counted'
+    return safeLabel(body?.view?.reason || body?.code || 'missing_view_result')
+  }
+  return 'ok'
+}
+
+function traceOperation(operation) {
+  return (req, res, next) => {
     const startedAt = Date.now()
-    rotateWindow(startedAt)
-    requests += 1
+    const state = rotate(operation, startedAt)
+    state.requests += 1
+    let captured = false
 
-    const mode = req.body?.mode === 'qualified' ? 'qualified' : 'fast'
-    let recorded = false
-    const capture = (body, completedByJson = true) => {
-      if (recorded) return
-      recorded = true
-      try {
-        const status = Number(res.statusCode || 0)
-        const elapsed = Date.now() - startedAt
-        const counted = body?.view?.counted === true
-        const reason = completedByJson
-          ? label(body?.view?.reason || body?.code || (counted ? 'counted' : 'missing_view_result'))
-          : label(status ? 'non_json_response' : 'connection_closed')
-        const failed = status >= 400 || body?.ok === false
-        const isAborted = !completedByJson && !res.writableEnded
-        const unexpected = !counted && !failed && !isAborted && !EXPECTED_REASONS.has(reason)
-        const isSlow = elapsed >= SLOW_MS
+    function capture(body, fromJson) {
+      if (captured) return
+      captured = true
+      const status = Number(res.statusCode || 0)
+      const elapsed = Math.max(0, Date.now() - startedAt)
+      const aborted = !fromJson && !res.writableEnded && res.destroyed
+      const reason = classify(status, body, aborted, operation)
+      const counted = body?.view?.counted === true
+      const isSlow = elapsed >= SLOW_MS
+      const errorCode = safeLabel(body?.code || (status >= 500 ? 'HTTP_5XX' : 'none'))
+      const expected4xx = [401, 403, 404, 423, 429].includes(status)
+      const isError = status >= 400 || body?.ok === false
 
-        if (counted) countedResponses += 1
-        else notCountedResponses += 1
-        if (failed) httpErrors += 1
-        if (isAborted) aborted += 1
-        if (isSlow) slowResponses += 1
-        increase(statuses, status || 'no_status')
-        increase(reasons, reason)
+      state.totalMs += elapsed
+      if (operation === 'episode_view') {
+        if (counted) state.counted += 1
+        else state.notCounted += 1
+      }
+      if (isError) state.errors += 1
+      if (expected4xx) state.expected4xx += 1
+      if (status >= 500) state.serverErrors += 1
+      if (aborted) state.aborted += 1
+      if (isSlow) state.slow += 1
+      bump(state.statuses, String(status || 0))
+      bump(state.reasons, reason)
 
-        if (failed || isAborted || unexpected || isSlow) {
-          if (sampledIssues < SAMPLE_LIMIT) {
-            sampledIssues += 1
-            console.warn('SHADOW_VIEW_DIAG_ISSUE', JSON.stringify({
-              time: new Date().toISOString(),
-              story_id: uuid(req.params?.storyId),
-              episode_id: uuid(req.params?.episodeId),
-              mode,
-              status,
-              counted,
-              reason,
-              elapsed_ms: elapsed,
-              aborted: isAborted,
-              slow: isSlow,
-            }))
-          } else {
-            suppressedIssues += 1
-          }
+      markRequestDiagnostic({
+        read_operation: operation,
+        read_result: reason,
+        read_http_status: status,
+        read_duration_ms: elapsed,
+        read_error_code: errorCode,
+        ...(operation === 'episode_view'
+          ? { read_view_counted: counted, read_mode: req.body?.mode === 'qualified' ? 'qualified' : 'fast' }
+          : {}),
+      })
+
+      const unexpectedView = operation === 'episode_view' && status < 400 &&
+        !counted && !EXPECTED_VIEW_REASONS.has(reason)
+      if (status >= 500 || aborted || isSlow || unexpectedView ||
+          (status >= 400 && !expected4xx)) {
+        if (state.sampled >= SAMPLE_LIMIT) {
+          state.suppressed += 1
+        } else {
+          state.sampled += 1
+          console.warn('SHADOW_READER_API_DIAG_ISSUE', JSON.stringify({
+            operation, time: new Date().toISOString(), status,
+            elapsed_ms: elapsed, reason, error_code: errorCode,
+            aborted, slow: isSlow,
+            story_id: safeUuid(req.params?.storyId),
+            episode_id: safeUuid(req.params?.episodeId),
+          }))
         }
-      } catch {}
+      }
     }
 
     const originalJson = res.json.bind(res)
     res.json = (body) => {
-      capture(body)
+      capture(body, true)
       return originalJson(body)
     }
     res.once('finish', () => capture(null, false))
     res.once('close', () => {
       if (!res.writableEnded) capture(null, false)
     })
-  } catch {}
-  next()
+    next()
+  }
 }
+
+export const traceEpisodeView = traceOperation('episode_view')
+export const traceReaderEpisodeList = traceOperation('episode_list')
+export const traceReaderEpisodeDetail = traceOperation('episode_detail')
+export const traceReadingProgressRead = traceOperation('reading_progress_get')
+export const traceReadingProgressSave = traceOperation('reading_progress_post')
