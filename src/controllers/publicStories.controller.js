@@ -3410,27 +3410,33 @@ export async function countQualifiedEpisodeView(
 
 
     if (viewResult.counted === true) {
-      invalidatePublicStoryDataCache(storyId)
-      if (story.user_id) {
-        invalidateMyStoriesCache(story.user_id)
-        publishAuthorStoryStatsChanged({
-          userId: story.user_id,
-          storyId,
-          stat: 'views',
-          delta: 1,
-        })
-      }
+  try {
+    invalidatePublicStoryDataCache(storyId)
+    if (story.user_id) {
+      invalidateMyStoriesCache(story.user_id)
+      publishAuthorStoryStatsChanged({
+        userId: story.user_id,
+        storyId,
+        stat: 'views',
+        delta: 1,
+      })
     }
+  } catch (sideEffectError) {
+    console.error('VIEW_CACHE_NOTIFICATION_FAILED', {
+      code: sideEffectError?.code || sideEffectError?.name || 'unknown',
+    })
+  }
+}
 
-    if (
-      viewResult.counted &&
-      story.author_id
-    ) {
-      await incrementAuthorPageAnalytics(
-        story.author_id,
-        'story_reads'
-      )
-    }
+    if (viewResult.counted && story.author_id) {
+  try {
+    await incrementAuthorPageAnalytics(story.author_id, 'story_reads')
+  } catch (sideEffectError) {
+    console.error('VIEW_AUTHOR_ANALYTICS_FAILED', {
+      code: sideEffectError?.code || sideEffectError?.name || 'unknown',
+    })
+  }
+}
 
     return res.status(200).json({
       ok: true,
