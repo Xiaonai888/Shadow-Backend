@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS public.shadow_read_event_weeks (
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT shadow_read_event_week_cycle_check CHECK (
     starts_on >= DATE '2026-11-02' AND
-    (starts_on - DATE '2026-11-02') % 28 = 0 AND
+    (starts_on - DATE '2026-11-02') % 14 = 0 AND
     EXTRACT(ISODOW FROM starts_on) = 1
   )
 );
