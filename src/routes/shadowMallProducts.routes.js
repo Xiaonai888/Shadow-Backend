@@ -21,12 +21,15 @@ import {
   getAdminShadowMallPromotion,
   getAdminShadowMallPromotionById,
   getAdminShadowMallPromotions,
+  getAdminShadowMallAutoAds,
   getPublicShadowMallPromotion,
   getPublicShadowMallPromotions,
+  getPublicShadowMallAdControl,
   reorderAdminShadowMallPromotions,
   updateAdminShadowMallPromotion,
   updateAdminShadowMallPromotionById,
   updateAdminShadowMallPromotionStatus,
+  updateAdminShadowMallAutoAdMode,
 } from '../controllers/shadowMallPromotion.controller.js'
 import {
   createShadowMallPromotionComment,
@@ -190,6 +193,12 @@ function runUpload(handler) {
 router.get('/home', getShadowMallHome)
 router.get('/promotion', publicPromotionRateLimit, cacheShadowMallPromotionsResponse, getPublicShadowMallPromotion)
 router.get('/promotions', publicPromotionRateLimit, cacheShadowMallPromotionsResponse, getPublicShadowMallPromotions)
+router.get(
+  '/ad-control',
+  publicPromotionRateLimit,
+  getPublicShadowMallAdControl
+)
+
 router.get('/products', getShadowMallProducts)
 
 router.get(
@@ -261,9 +270,15 @@ router.post(
 )
 
 router.get(
-  '/admin/promotion',
+  '/admin/auto-ads',
   requireAdmin,
-  getAdminShadowMallPromotion
+  getAdminShadowMallAutoAds
+)
+
+router.patch(
+  '/admin/auto-ads',
+  requireAdmin,
+  updateAdminShadowMallAutoAdMode
 )
 router.put(
   '/admin/promotion',
