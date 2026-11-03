@@ -35,7 +35,37 @@ export async function listPublicFastVideos(req, res) {
 
     if (error) throw error
     const rows = Array.isArray(data) ? data : []
-    const videos = rows.slice(0, limit)
+    const pageVideos = rows.slice(0, limit)
+    const creatorIds = [...new Set(pageVideos.map(video => video.user_id).filter(Boolean))]
+    const creatorsById = new Map()
+
+    if (creatorIds.length) {
+      const { data: pages, error: pagesError } = await supabase
+        .from('author_pages')
+        .select('user_id,page_username,page_name,avatar_url')
+        .in('user_id', creatorIds)
+        .eq('status', 'active')
+        .limit(creatorIds.length)
+
+      if (pagesError) {
+        console.error('FAST CREATOR LOOKUP ERROR:', pagesError)
+      } else {
+        for (const page of pages || []) {
+          if (page.user_id && page.page_username) {
+            creatorsById.set(String(page.user_id), {
+              page_username: page.page_username,
+              page_name: page.page_name || page.page_username,
+              avatar_url: page.avatar_url || '',
+            })
+          }
+        }
+      }
+    }
+
+    const videos = pageVideos.map(video => ({
+      ...video,
+      creator: creatorsById.get(String(video.user_id)) || null,
+    }))
 
     res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=45')
     return res.json({
