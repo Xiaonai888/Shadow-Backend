@@ -47,7 +47,51 @@ function safeError(error) {
   return message.replace(/[\r\n\t]/g, ' ').slice(0, 300)
 }
 
-export function formatBinanceUsdtAlertMessage(row) {
+// Use the same transaction's committed global fulfillment claim for a
+// purchase label. Never infer Diamond / Premium / PDF from amount or payer name.
+async function findVerifiedReportContext(transactionId) {
+  try {
+    const { data, error } = await supabase
+      .from('shadow_binance_payment_claims')
+      .select('purchase_kind,fulfillment_key,user_id')
+      .eq('transaction_id', transactionId)
+      .maybeSingle()
+    if (error) throw error
+    if (!data) return null
+
+    let buyer = ''
+    if (data.user_id) {
+      const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('name,username')
+        .eq('id', data.user_id)
+        .maybeSingle()
+      if (userError) throw userError
+      buyer = user?.username ? '@' + user.username : String(user?.name || '')
+    }
+    return {
+      purchaseKind: String(data.purchase_kind || '').toLowerCase(),
+      fulfillmentKey: String(data.fulfillment_key || ''),
+      buyer,
+    }
+  } catch (error) {
+    // Report receipt independently of purchase matching.
+    console.warn('BINANCE REPORT CONTEXT UNAVAILABLE:', safeError(error))
+    return null
+  }
+}
+
+function purchaseLabel(kind) {
+  const names = {
+    diamonds: 'Shadow Diamond Store',
+    premium: 'Shadow Premium',
+    pdf: 'Author PDF Store',
+    manual_adjustment: 'Admin Manual Credit',
+  }
+  return names[kind] || (kind ? kind.replaceAll('_', ' ') : 'Unmatched / not verified')
+}
+
+export function formatBinanceUsdtAlertMessage(row, verifiedContext = null) {
   const timestamp = Number(row?.transaction_time_ms)
   const when = Number.isSafeInteger(timestamp) && timestamp > 0
     ? new Date(timestamp).toLocaleString('en-GB', {
@@ -63,15 +107,24 @@ export function formatBinanceUsdtAlertMessage(row) {
     : 'Unknown'
   const payer = String(row?.payer_name || '').trim()
   const orderType = String(row?.order_type || '').trim()
+  const purchase = verifiedContext ? purchaseLabel(verifiedContext.purchaseKind) : 'Unmatched / not verified'
 
   return [
-    '💰 <b>Binance USDT Received</b>',
-    `Amount: <b>${html(row?.amount)} USDT</b>`,
-    payer ? `From: ${html(payer)}` : null,
-    orderType ? `Type: ${html(orderType)}` : null,
-    `Transaction: <code>${html(row?.transaction_id)}</code>`,
-    `Time: ${html(when)} (Cambodia)`,
-  ].filter(Boolean).join('\n')
+    '💰 <b>SHADOW BINANCE USDT RECEIVED</b>',
+    '',
+    '💳 Payment Source: <b>Binance Personal Pay · USDT</b>',
+    orderType ? `🔁 Transfer Type: <b>${html(orderType)}</b>` : null,
+    `💵 Amount Received: <b>${html(row?.amount)} USDT</b>`,
+    payer ? `👤 From: <b>${html(payer)}</b>` : '👤 From: Unknown',
+    `🏷️ Purchase Source: <b>${html(purchase)}</b>`,
+    verifiedContext?.buyer ? `👤 Shadow Buyer: <b>${html(verifiedContext.buyer)}</b>` : null,
+    verifiedContext?.fulfillmentKey ? `📦 Order Reference: <code>${html(verifiedContext.fulfillmentKey)}</code>` : null,
+    `📋 Status: <b>${verifiedContext ? 'Fulfillment recorded' : 'Received · Awaiting order verification'}</b>`,
+    `🧾 Transaction ID: <code>${html(row?.transaction_id)}</code>`,
+    `🕒 Time: ${html(when)} (Cambodia)`,
+    '',
+    'ℹ️ A received transfer alone does not confirm a Shadow purchase.',
+  ].filter((value) => value !== null).join('\n')
 }
 
 async function ingestBinanceReceipts() {
@@ -139,21 +192,46 @@ async function ingestBinanceReceipts() {
   return { ingested: page.receipts.length, cursorMs: endTime }
 }
 
-async function markAlertFailed(alert, reason) {
-  const attempts = Math.max(1, Math.min(20, Number(alert.attempt_count) || 1))
-  const retryAfterMs = Math.min(MAX_RETRY_INTERVAL_MS, 60_000 * 2 ** Math.min(attempts, 6))
+// Telegram sendMessage has no idempotency key. A timeout or lost response can
+// mean the message was delivered while the Backend did not learn its ID.
+// Keep the durable claim in "sending" (excluded by claim_binance_usdt_alerts)
+// until an Admin checks Telegram. Never turn an uncertain send into a retry.
+async function markDeliveryUnknown(alert, reason, knownMessageId = null) {
+  const updates = {
+    last_error: `DELIVERY_UNKNOWN / VERIFY_IN_TELEGRAM: ${safeError(reason)}`.slice(0, 500),
+    updated_at: new Date().toISOString(),
+  }
+
+  // Recover a known Telegram message ID if the first "sent" database write
+  // failed. The row stays unclaimable even if this second write fails.
+  if (Number.isSafeInteger(knownMessageId) && knownMessageId > 0) {
+    updates.telegram_message_id = knownMessageId
+  }
+
   const { error } = await supabase
     .from('binance_usdt_alert_transactions')
-    .update({
-      delivery_status: 'failed',
-      last_error: safeError(reason),
-      next_attempt_at: new Date(Date.now() + retryAfterMs).toISOString(),
-      updated_at: new Date().toISOString(),
-    })
+    .update(updates)
     .eq('transaction_id', alert.transaction_id)
     .eq('delivery_status', 'sending')
-
   if (error) throw error
+}
+
+async function quarantineUncertainDelivery(alert, reason, knownMessageId = null) {
+  try {
+    await markDeliveryUnknown(alert, reason, knownMessageId)
+  } catch (error) {
+    // The durable claim is already "sending" even if diagnostics cannot save.
+    console.error('BINANCE TELEGRAM DELIVERY UNKNOWN (DB UPDATE FAILED):', {
+      transaction_id: alert.transaction_id,
+      reason: safeError(reason),
+      database_error: safeError(error),
+    })
+    return
+  }
+  console.warn('BINANCE TELEGRAM DELIVERY UNKNOWN / MANUAL REVIEW:', {
+    transaction_id: alert.transaction_id,
+    reason: safeError(reason),
+  })
 }
 
 async function deliverPendingAlerts() {
@@ -172,43 +250,73 @@ async function deliverPendingAlerts() {
   }
 
   let sent = 0
+  let uncertain = 0
 
   for (const alert of alerts) {
-    let messageId
+    // First-time delivery MUST be attempt 1. Existing failed deliveries
+    // may already have reached Telegram before an earlier DB error.
+    if (Number(alert.attempt_count) !== 1) {
+      uncertain += 1
+      await quarantineUncertainDelivery(
+        alert,
+        'An earlier delivery attempt exists; verify the previous message before any resend.'
+      )
+      continue
+    }
 
+    // Defence in depth: the claim RPC already excludes sent message metadata.
+    if (alert.telegram_message_id || alert.telegram_sent_at) {
+      uncertain += 1
+      await quarantineUncertainDelivery(alert, 'Telegram message metadata already exists.')
+      continue
+    }
+
+    let messageId = null
     try {
-      const delivered = await sendTelegramMessage(formatBinanceUsdtAlertMessage(alert), {
+      const verifiedContext = await findVerifiedReportContext(alert.transaction_id)
+      const delivered = await sendTelegramMessage(formatBinanceUsdtAlertMessage(alert, verifiedContext), {
         chat_id: chatId,
       })
       messageId = Number(delivered?.result?.message_id)
       if (delivered?.ok !== true || !Number.isSafeInteger(messageId) || messageId <= 0) {
-        throw new Error('Binance USDT Telegram message was not accepted')
+        // Even an incomplete response may follow successful delivery.
+        throw new Error('Telegram result missing confirmed message ID.')
       }
     } catch (error) {
-      await markAlertFailed(alert, error)
+      uncertain += 1
+      await quarantineUncertainDelivery(alert, error)
       continue
     }
 
-    const { data: saved, error: saveError } = await supabase
-      .from('binance_usdt_alert_transactions')
-      .update({
-        delivery_status: 'sent',
-        telegram_message_id: messageId,
-        telegram_sent_at: new Date().toISOString(),
-        last_error: null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('transaction_id', alert.transaction_id)
-      .eq('delivery_status', 'sending')
-      .select('transaction_id')
-      .maybeSingle()
+    try {
+      const { data: saved, error: saveError } = await supabase
+        .from('binance_usdt_alert_transactions')
+        .update({
+          delivery_status: 'sent',
+          telegram_message_id: messageId,
+          telegram_sent_at: new Date().toISOString(),
+          last_error: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('transaction_id', alert.transaction_id)
+        .eq('delivery_status', 'sending')
+        .select('transaction_id')
+        .maybeSingle()
 
-    if (saveError) throw saveError
-    if (!saved) throw new Error('Binance USDT Telegram delivery was not recorded')
-    sent += 1
+      if (saveError) throw saveError
+      if (!saved) throw new Error('The message state changed or DB confirmation is missing.')
+      sent += 1
+    } catch (error) {
+      uncertain += 1
+      await quarantineUncertainDelivery(
+        alert,
+        `Telegram accepted message ${messageId}, DB confirmation failed: ${safeError(error)}`,
+        messageId
+      )
+    }
   }
 
-  return { sent, claimed: alerts.length }
+  return { sent, uncertain, claimed: alerts.length }
 }
 
 export async function processBinanceUsdtAlertsOnce() {
