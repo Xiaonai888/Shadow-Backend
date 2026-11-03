@@ -276,6 +276,17 @@ router.get(
   requireUser,
   getShadowMallPromotionEchoes
 )
+router.post(
+  '/promotions/:promotionId/echoes',
+  requireUser,
+  createShadowMallPromotionEcho
+)
+router.get(
+  '/admin/promotion',
+  requireAdmin,
+  getAdminShadowMallPromotion
+)
+
 router.patch(
   '/admin/auto-ads',
   adminAutoAdsIpLimit,
