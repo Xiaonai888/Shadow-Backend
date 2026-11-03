@@ -190,6 +190,19 @@ function runUpload(handler) {
   }
 }
 
+const adminAutoAdsIpLimit = createRateLimit({
+  key: 'shadow_mall_auto_ads_ip',
+  windowMs: 60000,
+  max: 300,
+})
+
+const adminAutoAdsAdminLimit = createRateLimit({
+  key: 'shadow_mall_auto_ads_admin',
+  windowMs: 60000,
+  max: 120,
+  identity: (req) => req.admin?.id || req.admin?.sub || req.ip,
+})
+
 router.get('/home', getShadowMallHome)
 router.get('/promotion', publicPromotionRateLimit, cacheShadowMallPromotionsResponse, getPublicShadowMallPromotion)
 router.get('/promotions', publicPromotionRateLimit, cacheShadowMallPromotionsResponse, getPublicShadowMallPromotions)
@@ -263,12 +276,13 @@ router.get(
   requireUser,
   getShadowMallPromotionEchoes
 )
-router.post(
-  '/promotions/:promotionId/echoes',
-  requireUser,
-  createShadowMallPromotionEcho
+router.patch(
+  '/admin/auto-ads',
+  adminAutoAdsIpLimit,
+  requireAdmin,
+  adminAutoAdsAdminLimit,
+  updateAdminShadowMallAutoAdMode
 )
-
 router.get(
   '/admin/auto-ads',
   requireAdmin,
