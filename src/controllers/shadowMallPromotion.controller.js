@@ -1278,7 +1278,7 @@ export async function updateAdminShadowMallPromotion(
 
 const AUTO_AD_CONTROL_TABLE = 'shadow_mall_ad_control'
 const AUTO_AD_STORY_SELECT = [
-  'id', 'author_id', 'title', 'description', 'story_status',
+  'id', 'author_id', 'title', 'description', 'main_genre', 'story_status',
   'cover_url', 'total_episodes', 'total_views', 'total_likes',
   'tags', 'created_at', 'updated_at',
 ].join(', ')
@@ -1374,7 +1374,7 @@ async function selectDailyAutoAdStories(day) {
       .order('sort_order', { ascending: true }),
     authorIds.length
       ? supabase.from('author_pages')
-        .select('id, page_name, avatar_url')
+        .select('id, page_name, page_username, avatar_url')
         .in('id', authorIds)
       : Promise.resolve({ data: [], error: null }),
   ])
@@ -1399,12 +1399,14 @@ async function selectDailyAutoAdStories(day) {
       preview_image_url: firstSlide.get(story.id) || story.cover_url || '',
       cover_url: story.cover_url || '',
       story_status: story.story_status || 'New',
+      main_genre: story.main_genre || '',
       episode_count: Number(story.total_episodes || 0),
       total_views: Number(story.total_views || 0),
       total_likes: Number(story.total_likes || 0),
       tags: Array.isArray(story.tags) ? story.tags : [],
       author_id: story.author_id,
       author_name: author?.page_name || '',
+      author_username: author?.page_username || '',
       author_avatar_url: author?.avatar_url || '',
       last_update_at: story.updated_at || story.created_at || null,
     }
