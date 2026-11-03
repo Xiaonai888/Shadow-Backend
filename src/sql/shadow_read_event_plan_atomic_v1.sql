@@ -38,10 +38,10 @@ BEGIN
 
   IF pg_catalog.to_char(v_start, 'YYYY-MM-DD') <> v_start_text
      OR v_start < DATE '2026-11-02'
-     OR (v_start - DATE '2026-11-02') % 28 <> 0
+     OR (v_start - DATE '2026-11-02') % 14 <> 0
      OR EXTRACT(ISODOW FROM v_start) <> 1
   THEN
-    RAISE EXCEPTION 'Event must start on its 28-day Monday cycle' USING ERRCODE = '22023';
+    RAISE EXCEPTION 'Event must start on its 14-day Monday cycle' USING ERRCODE = '22023';
   END IF;
 
   IF pg_catalog.jsonb_array_length(p_plan -> 'missions') <> 35
