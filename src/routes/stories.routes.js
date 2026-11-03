@@ -42,6 +42,17 @@ import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseC
 import { invalidatePublicStoryDataCache } from '../services/publicStoryDataCache.service.js'
 
 const router = express.Router()
+const restoreEpisodeIpRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'EPISODE_RESTORE_RATE_LIMIT',
+    message: 'Too many restore requests. Please try again shortly.',
+  },
+})
 const storyRateLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 300,
@@ -63,6 +74,15 @@ router.use(rateLimit({
 
 router.use(requireUser)
 router.use(storyRateLimit)
+
+router.post(
+  '/:storyId/episodes/:episodeId/restore',
+  restoreEpisodeIpRateLimit,
+  requireUser,
+  storyRateLimit,
+  invalidateMyStoriesAfterMutation,
+  restoreAuthorEpisodeFromTrash
+)
 
 function invalidateMyStoriesAfterMutation(req, res, next) {
   const userId = req.user?.user_id
@@ -137,10 +157,5 @@ router.patch(
   updateEpisodeStatusByStoryType
 )
 router.delete('/:storyId/episodes/:episodeId', invalidateMyStoriesAfterMutation, moveEpisodeToTrash)
-router.post(
-  '/:storyId/episodes/:episodeId/restore',
-  invalidateMyStoriesAfterMutation,
-  restoreAuthorEpisodeFromTrash
-)
 
 export default router
