@@ -76,7 +76,7 @@ function locateLine(source, offset) {
 export function inspectSource(source, changedLines, filename) {
   const masked = maskNonCode(source)
   const limiterNames = new Map()
-  const definition = /\b(?:const|let|var)\s+([\w$]+)\s*=\s*(?:await\s+)?(?:rateLimit|createRateLimiter|createIpLimiter|ipRateLimit)\s*\(/g
+  const definition = /\b(?:const|let|var)\s+([\w$]+)\s*=\s*(?:await\s+)?(?:rateLimit|createRateLimit|createRateLimiter|createIpLimiter|ipRateLimit)\s*\(/g
   for (const match of masked.matchAll(definition)) {
     const opening = masked.indexOf('(', match.index + match[0].length - 1)
     const call = callArguments(source, masked, opening)
