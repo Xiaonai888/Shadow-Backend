@@ -288,12 +288,6 @@ router.get(
   requireAdmin,
   getAdminShadowMallAutoAds
 )
-
-router.patch(
-  '/admin/auto-ads',
-  requireAdmin,
-  updateAdminShadowMallAutoAdMode
-)
 router.put(
   '/admin/promotion',
   requireAdmin,
