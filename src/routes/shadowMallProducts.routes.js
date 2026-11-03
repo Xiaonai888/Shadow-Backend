@@ -190,6 +190,18 @@ function runUpload(handler) {
   }
 }
 
+const promotionEchoIpLimit = createRateLimit({
+  key: 'shadow_mall_promotion_echo_ip',
+  windowMs: 60000,
+  max: 120,
+})
+
+const adminPromotionIpLimit = createRateLimit({
+  key: 'shadow_mall_admin_promotion_ip',
+  windowMs: 60000,
+  max: 300,
+})
+
 const adminAutoAdsIpLimit = createRateLimit({
   key: 'shadow_mall_auto_ads_ip',
   windowMs: 60000,
@@ -278,11 +290,13 @@ router.get(
 )
 router.post(
   '/promotions/:promotionId/echoes',
+  promotionEchoIpLimit,
   requireUser,
   createShadowMallPromotionEcho
 )
 router.get(
   '/admin/promotion',
+  adminPromotionIpLimit,
   requireAdmin,
   getAdminShadowMallPromotion
 )
