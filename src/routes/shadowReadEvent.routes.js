@@ -7,7 +7,7 @@ import { SHADOW_READ_EVENT_PRIZES } from '../services/shadowReadEventPlanner.ser
 const router = express.Router()
 const DAY_MS = 86400000
 const FIRST_START = Date.UTC(2026, 10, 2)
-const CYCLE_DAYS = 28
+const CYCLE_DAYS = 14
 const EVENT_DAYS = 7
 const USER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
