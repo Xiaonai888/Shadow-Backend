@@ -2,6 +2,7 @@ import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
+import { rateLimit } from 'express-rate-limit'
 import { requireUser } from '../middleware/user.middleware.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 import { createFastVideo } from '../controllers/fastVideos.controller.js'
@@ -9,6 +10,18 @@ import { listPublicFastVideos } from '../controllers/fastFeed.controller.js'
 import path from 'node:path'
 
 const router = express.Router()
+
+const fastVideoFeedLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'FAST_FEED_RATE_LIMITED',
+    message: 'Too many video requests. Please try again shortly.',
+  },
+})
 
 const upload = multer({
   dest: os.tmpdir(),
@@ -116,7 +129,7 @@ router.post(
   }
 )
 
-router.get('/videos', listPublicFastVideos)
+router.get('/videos', fastVideoFeedLimit, listPublicFastVideos)
 router.post('/videos', requireUser, createFastVideo)
 router.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
