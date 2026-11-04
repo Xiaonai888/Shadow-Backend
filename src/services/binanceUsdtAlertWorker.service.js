@@ -15,6 +15,8 @@ const MAX_DELIVERY_BATCH = 10
 const MAX_TELEGRAM_EDIT_BATCH = 5
 const TELEGRAM_EDIT_SCAN_INTERVAL_MS = 60 * 1000
 const MAX_TELEGRAM_EDIT_RETRIES = 6
+// Limit database checks while Binance receipt history catches up every 15s.
+const PREMIUM_MATCH_SCAN_INTERVAL_MS = 60 * 1000
 
 let started = false
 let running = false
@@ -23,6 +25,8 @@ let failures = 0
 let queryWindowMs = MAX_QUERY_WINDOW_MS
 let wasCatchingUp = false
 let lastMatchErrorLogAt = 0
+let lastPremiumMatchErrorLogAt = 0
+let lastPremiumMatchScanAt = 0
 let lastTelegramErrorLogAt = 0
 let lastEditErrorLogAt = 0
 let lastEditQueueScanAt = 0
@@ -480,10 +484,12 @@ export async function processBinanceUsdtAlertsOnce() {
   let deliveryError = null
   let editError = null
   let matchError = null
+  let premiumMatchError = null
   let ingest = null
   let delivery = null
   let edits = null
   let matching = null
+  let premiumMatching = null
 
   try {
     try {
@@ -521,6 +527,45 @@ export async function processBinanceUsdtAlertsOnce() {
       matchError = error
     }
 
+    // Premium is matched ONLY by the database RPC from Step 9. It atomically
+    // reserves one verified Binance transaction, credits Diamonds + 100
+    // Vouchers, activates Premium, and marks the order fulfilled. This JS
+    // worker does not touch any wallet, reward, Premium flag or receipt claim.
+    // Unlike the receipt importer, this additional scan runs at most once/min.
+    if (Date.now() - lastPremiumMatchScanAt >= PREMIUM_MATCH_SCAN_INTERVAL_MS) {
+      lastPremiumMatchScanAt = Date.now()
+      try {
+        const { data, error } = await supabase.rpc('auto_fulfill_shadow_binance_premium_v1', {
+          p_limit: 10,
+        })
+        if (error) throw error
+        if (data?.ok !== true || !Number.isSafeInteger(Number(data?.fulfilled || 0))) {
+          throw new Error('Invalid Premium fulfillment RPC result')
+        }
+        premiumMatching = data
+        const fulfilled = Number(data.fulfilled || 0)
+        if (fulfilled > 0) {
+          console.info('BINANCE PREMIUM AUTO FULFILLED ORDERS:', fulfilled)
+        }
+        // Notification ONLY. The financial credit is already committed in SQL.
+        for (const order of Array.isArray(data?.fulfilled_orders) ? data.fulfilled_orders : []) {
+          if (!order?.order_id || !order?.user_id) continue
+          publishPaymentStatus({
+            user_id: order.user_id,
+            order_id: order.order_id,
+            status: 'success',
+            amount_usd: Math.max(0, Number(order.amount_usdt || 0) - 1),
+            diamonds: Number(order.diamonds || 0),
+            bonus_gems: 0,
+            released_at: order.fulfilled_at || null,
+            updated_at: order.fulfilled_at || null,
+          })
+        }
+      } catch (error) {
+        premiumMatchError = error
+      }
+    }
+
     // Always attempt Telegram delivery even if an unrelated order match fails.
     try {
       delivery = await deliverPendingAlerts()
@@ -545,6 +590,10 @@ export async function processBinanceUsdtAlertsOnce() {
       lastMatchErrorLogAt = Date.now()
       console.error('BINANCE USDT CHECKOUT MATCH ERROR:', safeError(matchError))
     }
+    if (premiumMatchError && Date.now() - lastPremiumMatchErrorLogAt >= ANCILLARY_ERROR_LOG_INTERVAL_MS) {
+      lastPremiumMatchErrorLogAt = Date.now()
+      console.error('BINANCE PREMIUM AUTO FULFILL ERROR:', safeError(premiumMatchError))
+    }
     if (deliveryError && Date.now() - lastTelegramErrorLogAt >= ANCILLARY_ERROR_LOG_INTERVAL_MS) {
       lastTelegramErrorLogAt = Date.now()
       console.error('BINANCE USDT TELEGRAM ERROR:', safeError(deliveryError))
@@ -557,7 +606,7 @@ export async function processBinanceUsdtAlertsOnce() {
       throw new Error(`history: ${safeError(ingestError)}`)
     }
 
-    return { ingest, matching, delivery, edits }
+    return { ingest, matching, premiumMatching, delivery, edits }
   } finally {
     running = false
   }
