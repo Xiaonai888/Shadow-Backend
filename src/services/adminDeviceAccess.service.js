@@ -736,15 +736,20 @@ export async function logoutCurrentAdminDevice({ admin, req }) {
     }
   }
 
-  await supabase
+  // One device can have several sessions after repeated logins. Logging out
+  // must invalidate ALL of them so an older token cannot regain access.
+  const { error: sessionLogoutError } = await supabase
     .from('admin_sessions')
     .update({
       status: 'logged_out',
       logged_out_at: now,
     })
-    .eq('id', sessionId)
+    .eq('device_id', deviceId)
+    .eq('status', 'active')
 
-  await supabase
+  if (sessionLogoutError) throw sessionLogoutError
+
+  const { error: deviceLogoutError } = await supabase
     .from('admin_devices')
     .update({
       status: 'logged_out',
@@ -753,6 +758,9 @@ export async function logoutCurrentAdminDevice({ admin, req }) {
       updated_at: now,
     })
     .eq('id', deviceId)
+    .eq('status', 'active')
+
+  if (deviceLogoutError) throw deviceLogoutError
 
   await insertDeviceEvent({
     admin_id: admin?.admin_id || '',
@@ -761,14 +769,15 @@ export async function logoutCurrentAdminDevice({ admin, req }) {
     session_id: sessionId,
     event_type: 'device_logout_current',
     result: 'logged_out',
-    reason: 'Admin logged out this device',
+    reason: 'Admin logged out all sessions on this device',
     ip_address: ipAddress,
     user_agent: userAgent,
+    metadata: { session_scope: 'all_active_sessions_for_device' },
   })
 
   return {
     ok: true,
-    message: 'Current admin device logged out',
+    message: 'Current admin device and all of its sessions logged out',
   }
 }
 
