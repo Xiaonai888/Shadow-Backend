@@ -192,6 +192,83 @@ async function countActiveDevices(adminId, adminEmail) {
   return count || 0
 }
 
+// Release inactive device slots only after their sessions are no longer valid.
+// Keep the device record for audit/history and preserve the 2-device limit.
+async function releaseExpiredAdminDeviceSlots(adminId, adminEmail) {
+  const now = new Date()
+  const nowIso = now.toISOString()
+  const cutoff = new Date(
+    now.getTime() - SESSION_DAYS * 24 * 60 * 60 * 1000
+  ).toISOString()
+
+  let query = supabase
+    .from('admin_devices')
+    .select('id, admin_id, admin_email, last_seen_at')
+    .eq('status', 'active')
+    .lt('last_seen_at', cutoff)
+
+  if (adminId) query = query.eq('admin_id', adminId)
+  else query = query.eq('admin_email', normalizeEmail(adminEmail))
+
+  const { data: staleDevices, error } = await query
+  if (error) throw error
+
+  for (const device of staleDevices || []) {
+    // Never release a device that still has an unexpired active session.
+    const { data: validSessions, error: sessionError } = await supabase
+      .from('admin_sessions')
+      .select('id')
+      .eq('device_id', device.id)
+      .eq('status', 'active')
+      .gt('expires_at', nowIso)
+      .limit(1)
+
+    if (sessionError) throw sessionError
+    if (validSessions?.length) continue
+
+    const { error: expireError } = await supabase
+      .from('admin_sessions')
+      .update({
+        status: 'expired',
+        revoked_reason: 'Session expired',
+      })
+      .eq('device_id', device.id)
+      .eq('status', 'active')
+      .lte('expires_at', nowIso)
+
+    if (expireError) throw expireError
+
+    // Recheck last_seen_at in the UPDATE so a recently used device is not
+    // logged out due to a concurrent refresh.
+    const { data: released, error: releaseError } = await supabase
+      .from('admin_devices')
+      .update({
+        status: 'logged_out',
+        logged_out_at: nowIso,
+        updated_at: nowIso,
+      })
+      .eq('id', device.id)
+      .eq('status', 'active')
+      .lt('last_seen_at', cutoff)
+      .select('id')
+      .maybeSingle()
+
+    if (releaseError) throw releaseError
+
+    if (released) {
+      await insertDeviceEvent({
+        admin_id: device.admin_id,
+        admin_email: device.admin_email,
+        device_id: device.id,
+        event_type: 'device_auto_logout_inactive',
+        result: 'logged_out',
+        reason: 'No valid session after 7 days of inactivity',
+        metadata: { inactive_days: SESSION_DAYS },
+      })
+    }
+  }
+}
+
 async function reactivateDevice(device, req, admin) {
   const now = new Date().toISOString()
   const ipAddress = getAdminDeviceClientIp(req)
@@ -335,6 +412,8 @@ export async function registerAdminDeviceSession({ req, res, admin }) {
   const adminEmail = admin?.email || ''
 
   try {
+    await releaseExpiredAdminDeviceSlots(adminId, adminEmail)
+
     let device = await getActiveDeviceByTokenHash(deviceTokenHash)
 
     if (device && device.admin_id !== adminId && normalizeEmail(device.admin_email) !== normalizeEmail(adminEmail)) {
@@ -616,6 +695,8 @@ export async function validateAdminSession({ decoded, req }) {
 export async function listAdminDevices({ admin }) {
   const adminId = admin?.admin_id || admin?.id || ''
   const adminEmail = admin?.email || ''
+
+  await releaseExpiredAdminDeviceSlots(adminId, adminEmail)
 
   let query = supabase
     .from('admin_devices')
