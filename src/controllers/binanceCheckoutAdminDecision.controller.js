@@ -40,6 +40,10 @@ const MESSAGES = {
   TRANSACTION_ALREADY_USED: 'This Binance transaction was already credited.',
   TRANSACTION_ALREADY_CREDITED: 'This Binance transaction was already credited.',
   RECEIVER_CHANGED: 'Binance receiver information has changed. Do not approve.',
+  RECEIVER_OR_PAYER_MISMATCH: 'Official Binance payer or receiver UID does not match the checkout.',
+  PAYER_UID_MISMATCH: 'Official receipt payer UID does not match the reader's saved Binance UID.',
+  PAYER_UID_NOT_UNIQUE: 'This Binance UID is linked to multiple readers. Contact Admin.',
+  PAYER_PROFILE_CHANGED: 'The Binance payer profile changed after checkout creation. Do not link this receipt.',
   DATABASE_NOT_READY: 'Install the required Binance checkout SQL first.',
 }
 
@@ -75,6 +79,10 @@ async function handleDecision(req, res, type) {
   privateHeaders(res)
   const admin = adminIdentity(req, res)
   if (!admin) return
+  const orderId = String(req.params.orderId || '').trim()
+  if (!UUID_RE.test(orderId)) {
+    return res.status(400).json({ ok: false, code: 'INVALID_ORDER_ID', message: MESSAGES.INVALID_ORDER_ID })
+  }
   if (type === 'approve' && (
     req.body?.official_receipt_verified !== true ||
     req.body?.recipient_verified !== true ||
@@ -91,15 +99,17 @@ async function handleDecision(req, res, type) {
     return res.status(400).json({ ok: false, code: 'PASSKEY_REQUIRED', message: 'Enter the six-digit Admin Passkey.' })
   }
   try {
-    const purpose = `binance_checkout_${type}:${String(req.params.orderId || '').trim()}`
+    const purpose = `binance_checkout_${type}:${orderId}`
     const verified = await verifyAdminPasskeyPin({ admin: req.admin, req, pin, purpose })
     if (!verified.ok) return res.status(verified.status || 403).json({ ok: false, code: verified.code || 'PASSKEY_FAILED', message: verified.message || 'Passkey verification failed.' })
-    const payload = { orderId: req.params.orderId, adminId: admin.id, adminEmail: admin.email, reason }
+    const payload = { orderId, adminId: admin.id, adminEmail: admin.email, reason }
     const result = type === 'approve'
       ? await approveBinanceCheckoutReview(payload)
       : await rejectBinanceCheckoutReview(payload)
 
-    if (result?.status === 'credited' || result?.status === 'rejected') {
+    // A retry of an already-approved Admin action must not publish a second
+    // payment-success notification. The SQL RPC reports credit_applied=false.
+    if ((result?.status === 'credited' && result.credit_applied === true) || result?.status === 'rejected') {
       try {
         const { data: order, error: orderError } = await supabase
           .from('binance_checkout_orders')
