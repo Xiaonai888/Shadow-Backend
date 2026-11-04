@@ -11,12 +11,26 @@ export async function getMyAuthorStoreOfflinePdfGrant(req, res) {
   try {
     const { data: purchase, error: purchaseError } = await supabase
       .from('author_store_reader_downloads')
-      .select('product_id, pdf_file_url, title, access_rule')
+      .select('product_id, order_id, pdf_file_url, title, access_rule')
       .eq('buyer_id', buyerId)
       .eq('product_id', productId)
       .maybeSingle()
     if (purchaseError) throw purchaseError
-    if (!purchase) return res.status(403).json({ ok: false, message: 'This PDF is not in your purchased library' })
+    if (!purchase?.order_id) return res.status(403).json({ ok: false, message: 'Confirmed purchase required' })
+
+    const { data: order, error: orderError } = await supabase
+      .from('author_store_orders')
+      .select('id, status, order_status, payment_status, pdf_unlock_status')
+      .eq('id', purchase.order_id)
+      .eq('buyer_id', buyerId)
+      .maybeSingle()
+    if (orderError) throw orderError
+    const orderStatus = String(order?.status || order?.order_status || '').toLowerCase()
+    if (!order || !['confirmed', 'preparing', 'shipped', 'completed'].includes(orderStatus)
+      || String(order.payment_status || '').toLowerCase() !== 'paid'
+      || String(order.pdf_unlock_status || '').toLowerCase() !== 'unlocked') {
+      return res.status(403).json({ ok: false, message: 'Confirmed paid PDF unlock required' })
+    }
 
     const { data: product, error: productError } = await supabase
       .from('author_store_products')
@@ -79,13 +93,13 @@ export async function getMyAuthorStorePurchasedPdf(req, res) {
 
     const { data: order, error: orderError } = await supabase
       .from('author_store_orders')
-      .select('id, status, order_status, payment_status')
+      .select('id, status, order_status, payment_status, pdf_unlock_status')
       .eq('id', purchase.order_id)
       .eq('buyer_id', buyerId)
       .maybeSingle()
     if (orderError) throw orderError
     const orderStatus = String(order?.status || order?.order_status || '').toLowerCase()
-    if (!order || !['confirmed', 'preparing', 'shipped', 'completed'].includes(orderStatus) || String(order.payment_status || '').toLowerCase() !== 'paid') {
+    if (!order || !['confirmed', 'preparing', 'shipped', 'completed'].includes(orderStatus) || String(order.payment_status || '').toLowerCase() !== 'paid' || String(order.pdf_unlock_status || '').toLowerCase() !== 'unlocked') {
       return res.status(403).json({ ok: false, message: 'Confirmed paid purchase required' })
     }
 
