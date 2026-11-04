@@ -11,7 +11,8 @@ const LANGUAGES = new Set(['km', 'en', 'zh', 'ja', 'ko'])
 const TARGETS = new Set(['shadow_mall', 'diamonds'])
 const LEGACY_FLAGS = ['app', 'physicalBooks', 'binancePay', 'payway']
 const PAYOUT_FLAGS = ['payoutBank', 'payoutBinance', 'payoutPhone']
-const NEW_FLAGS = ['shadowMall', 'readerMall', ...PAYOUT_FLAGS]
+const SCOPED_PAYMENT_FLAGS = ['premiumPayway', 'premiumBinancePay', 'pdfPayway', 'pdfBinancePay']
+const NEW_FLAGS = ['shadowMall', 'readerMall', ...PAYOUT_FLAGS, ...SCOPED_PAYMENT_FLAGS]
 // Future Country Rules switches are automatically eligible for per-user overrides.
 const EXTRA_BOOLEAN_KEY = /^[a-z][a-zA-Z0-9_]{0,63}$/
 const MAX_RULE_KEYS = 64
@@ -21,6 +22,10 @@ const FALLBACK_RULES = {
     physicalBooks: true,
     binancePay: false,
     payway: false,
+    premiumPayway: false,
+    premiumBinancePay: false,
+    pdfPayway: false,
+    pdfBinancePay: false,
     shadowMall: true,
     readerMall: true,
     payoutBank: true,
@@ -34,6 +39,10 @@ const FALLBACK_RULES = {
     physicalBooks: true,
     binancePay: false,
     payway: false,
+    premiumPayway: false,
+    premiumBinancePay: false,
+    pdfPayway: false,
+    pdfBinancePay: false,
     shadowMall: true,
     readerMall: true,
     payoutBank: false,
@@ -63,6 +72,11 @@ function validRule(entry) {
 function normalizeRegionRule(entry, region) {
   return {
     ...entry,
+    // Fill missing keys in legacy settings without changing saved policy.
+    premiumPayway: typeof entry.premiumPayway === 'boolean' ? entry.premiumPayway : entry.payway,
+    premiumBinancePay: typeof entry.premiumBinancePay === 'boolean' ? entry.premiumBinancePay : false,
+    pdfPayway: typeof entry.pdfPayway === 'boolean' ? entry.pdfPayway : entry.payway,
+    pdfBinancePay: typeof entry.pdfBinancePay === 'boolean' ? entry.pdfBinancePay : false,
     shadowMall: typeof entry.shadowMall === 'boolean' ? entry.shadowMall : region === 'kh',
     readerMall: typeof entry.readerMall === 'boolean' ? entry.readerMall : region === 'kh',
     payoutBank: typeof entry.payoutBank === 'boolean' ? entry.payoutBank : region === 'kh',
@@ -122,14 +136,14 @@ async function getException(userId) {
 
 // Binance alone uses the saved-country rules during the general policy pause.
 // Match requireBinanceSavedCountry in paymentCountryGate.middleware.js.
-function resolveBinanceDuringPause(rules, region, countryAvailable, exception) {
+function resolveScopedPaymentDuringPause(rules, region, countryAvailable, exception, feature) {
   if (!countryAvailable || !['kh', 'international'].includes(region)) return false
   const baseline = exception?.mode === 'cambodia_experience' ? 'kh' : region
-  let allowed = rules?.[baseline]?.binancePay === true
+  let allowed = rules?.[baseline]?.[feature] === true
   if (exception?.mode === 'all_eligible') allowed = true
   if (exception?.mode === 'custom') {
-    if (exception.overrides?.binancePay === 'allow') allowed = true
-    if (exception.overrides?.binancePay === 'block') allowed = false
+    if (exception.overrides?.[feature] === 'allow') allowed = true
+    if (exception.overrides?.[feature] === 'block') allowed = false
   }
   return allowed
 }
@@ -157,7 +171,11 @@ function resolveRules(rules, region, countryAvailable, exception, policyEnabled)
       shadowMall: true,
       readerMall: true,
       payway: true,
-      binancePay: resolveBinanceDuringPause(rules, region, countryAvailable, exception),
+      binancePay: resolveScopedPaymentDuringPause(rules, region, countryAvailable, exception, 'binancePay'),
+      premiumPayway: resolveScopedPaymentDuringPause(rules, region, countryAvailable, exception, 'premiumPayway'),
+      premiumBinancePay: resolveScopedPaymentDuringPause(rules, region, countryAvailable, exception, 'premiumBinancePay'),
+      pdfPayway: resolveScopedPaymentDuringPause(rules, region, countryAvailable, exception, 'pdfPayway'),
+      pdfBinancePay: resolveScopedPaymentDuringPause(rules, region, countryAvailable, exception, 'pdfBinancePay'),
       shopTarget: 'shadow_mall',
     }
   }
@@ -173,6 +191,10 @@ function resolveRules(rules, region, countryAvailable, exception, policyEnabled)
       readerMall: false,
       payway: false,
       binancePay: false,
+      premiumPayway: false,
+      premiumBinancePay: false,
+      pdfPayway: false,
+      pdfBinancePay: false,
       shopTarget: 'diamonds',
     })
     // New features should not be enabled for unknown countries unless both
@@ -199,8 +221,12 @@ function resolveRules(rules, region, countryAvailable, exception, policyEnabled)
     if (LANGUAGES.has(exception.overrides.storyLanguage)) effective.storyLanguage = exception.overrides.storyLanguage
     if (TARGETS.has(exception.overrides.shopTarget)) effective.shopTarget = exception.overrides.shopTarget
   }
-  // Do not re-clamp by country here. Such clamping would cancel explicit
-  // per-user grants; any separate global safety kill switches remain elsewhere.
+  // A verified saved country is mandatory for scoped payment methods.
+  // Do not advertise methods that the backend will reject.
+  if (!countryAvailable) {
+    effective.binancePay = false
+    for (const key of SCOPED_PAYMENT_FLAGS) effective[key] = false
+  }
   return effective
 }
 
@@ -272,7 +298,8 @@ router.get('/', optionalReader, async (req, res) => {
     // Binance remains country-controlled while all other features are paused.
     userId ? getException(userId) : Promise.resolve(null),
   ])
-  const country = savedCountry.status === 'fulfilled' ? savedCountry.value?.country || null : null
+  const country = savedCountry.status === 'fulfilled' && savedCountry.value?.verified === true
+    ? savedCountry.value.country || null : null
   const region = country === null ? 'unknown' : country === 'KH' ? 'kh' : 'international'
   const settings = settingsResult.status === 'fulfilled'
     ? settingsResult.value
@@ -283,6 +310,7 @@ router.get('/', optionalReader, async (req, res) => {
   // If the saved rule/exception could not be checked, do not advertise Binance.
   if (!settings.ready || (userId && exceptionResult.status !== 'fulfilled')) {
     effective.binancePay = false
+    for (const key of SCOPED_PAYMENT_FLAGS) effective[key] = false
   }
   const canCreateTicket = Boolean(policyEnabled && country && userId && req.user?.session_id)
   if (settingsResult.status === 'rejected') {
