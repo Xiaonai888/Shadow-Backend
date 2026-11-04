@@ -30,6 +30,16 @@ const PLANS = new Map([
   [12, { months: 12, price: 70, base: 2200, bonus: 1080 }],
 ])
 
+// The first middleware on protected routes must rate-limit by IP before
+// authentication. express-rate-limit uses its IPv4/IPv6-safe IP key by default.
+// Keep the post-auth per-user limits below for checkout and status requests.
+const preAuthWriteIpLimit = rateLimit({
+  windowMs: 60_000, limit: 60, standardHeaders: 'draft-8', legacyHeaders: false,
+})
+const preAuthReadIpLimit = rateLimit({
+  windowMs: 60_000, limit: 180, standardHeaders: 'draft-8', legacyHeaders: false,
+})
+
 const readLimit = rateLimit({
   windowMs: 60_000, limit: 45, standardHeaders: 'draft-8', legacyHeaders: false,
   keyGenerator: (req) => String(req.user?.user_id || req.user?.id || req.ip),
@@ -170,7 +180,7 @@ router.get('/plans', (_req, res) => {
   })
 })
 
-router.post('/checkout', requireUser, writeLimit, requirePaymentCountry('premiumBinancePay'), async (req, res) => {
+router.post('/checkout', preAuthWriteIpLimit, requireUser, writeLimit, requirePaymentCountry('premiumBinancePay'), async (req, res) => {
   noStore(res)
   const userId = accountId(req)
   const plan = planByMonths(req.body?.plan_months)
@@ -263,7 +273,7 @@ router.post('/checkout', requireUser, writeLimit, requirePaymentCountry('premium
   }
 })
 
-router.get('/checkout/:orderId', requireUser, readLimit, async (req, res) => {
+router.get('/checkout/:orderId', preAuthReadIpLimit, requireUser, readLimit, async (req, res) => {
   noStore(res)
   const userId = accountId(req)
   if (!userId) return errorResponse(res, 'LOGIN_REQUIRED', 'Please sign in.', 401)
@@ -301,7 +311,7 @@ router.get('/checkout/:orderId', requireUser, readLimit, async (req, res) => {
   }
 })
 
-router.post('/checkout/:orderId/cancel', requireUser, writeLimit, async (req, res) => {
+router.post('/checkout/:orderId/cancel', preAuthWriteIpLimit, requireUser, writeLimit, async (req, res) => {
   noStore(res)
   const userId = accountId(req)
   if (!userId) return errorResponse(res, 'LOGIN_REQUIRED', 'Please sign in.', 401)
