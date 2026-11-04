@@ -126,6 +126,7 @@ declare
   v_reference text;
   v_note text := btrim(coalesce(p_note, ''));
   v_receipt public.binance_usdt_alert_transactions%rowtype;
+  v_payer_profile_count integer := 0;
   v_diamonds integer := coalesce(p_diamonds, 0);
   v_bonus integer := 0;
   v_usdt numeric(28,8) := null;
@@ -205,6 +206,19 @@ begin
   end if;
 
   if v_action = 'recovery' then
+    -- Recovery must never run without the central receipt-consumption trigger.
+    -- The historical migration may be installed before Step 1, but recovered
+    -- payments are fail-closed until Step 1 has been installed and enabled.
+    if pg_catalog.to_regclass('public.shadow_binance_payment_claims') is null
+       or not exists (
+         select 1 from pg_catalog.pg_trigger t
+         where t.tgrelid = 'public.admin_binance_usdt_credit_actions'::pg_catalog.regclass
+           and t.tgname = 'shadow_binance_legacy_credit_once_v1'
+           and t.tgenabled in ('O','A') and not t.tgisinternal
+       ) then
+      raise exception 'BINANCE_GLOBAL_RECEIPT_GUARD_REQUIRED';
+    end if;
+
     select * into v_receipt
     from public.binance_usdt_alert_transactions
     where transaction_id = v_transaction
@@ -214,6 +228,36 @@ begin
     end if;
     if v_receipt.currency <> 'USDT' or v_receipt.amount is distinct from p_verified_usdt then
       raise exception 'Verified USDT amount does not match the official Binance receipt';
+    end if;
+    if coalesce(v_receipt.order_type,'') not in ('PAY','C2C')
+       or v_receipt.receiver_uid is distinct from '514018161'
+       or v_receipt.payer_uid !~ '^[0-9]{5,20}$' then
+      raise exception 'BINANCE_OFFICIAL_PAYER_OR_RECEIVER_NOT_VERIFIED';
+    end if;
+
+    -- A payer UID must belong to exactly this one reader. Do not assign a
+    -- legitimate transfer to a different Shadow account by mistaken selection.
+    select count(*) into v_payer_profile_count
+    from public.reader_binance_payment_profiles p
+    where p.binance_uid = v_receipt.payer_uid;
+    if v_payer_profile_count <> 1 or not exists (
+      select 1 from public.reader_binance_payment_profiles p
+      where p.user_id = p_user_id and p.binance_uid = v_receipt.payer_uid
+    ) then
+      raise exception 'BINANCE_PAYER_UID_DOES_NOT_MATCH_RECIPIENT';
+    end if;
+
+    -- A Premium/PDF receipt must not be reassigned to manual Diamond recovery,
+    -- even if that universal checkout is still waiting or recently expired.
+    if exists (
+      select 1 from public.shadow_binance_purchase_orders o
+      where o.receiver_uid = v_receipt.receiver_uid
+        and o.amount_usdt = v_receipt.amount
+        and o.user_id = p_user_id
+        and v_receipt.transaction_time_ms >= (extract(epoch from o.created_at) * 1000)::bigint - 60000
+        and v_receipt.transaction_time_ms <= (extract(epoch from o.expires_at) * 1000)::bigint + 600000
+    ) then
+      raise exception 'BINANCE_RECEIPT_BELONGS_TO_UNIVERSAL_CHECKOUT';
     end if;
     v_usdt := v_receipt.amount;
   end if;
