@@ -11,6 +11,7 @@ import {
   updateStoryAdminVisibility,
   downloadAdminStoryMedia
 } from '../controllers/adminStories.controller.js'
+import { restoreDeletedEpisodeByAdmin } from '../controllers/adminEpisodeRestore.controller.js'
 import { getAdminStoryGrowthDaily } from '../controllers/adminStoryGrowth.controller.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
@@ -63,6 +64,12 @@ router.patch(
   manageStories,
   invalidatePublicStoriesAfterMutation,
   updateStoryAdminVisibility
+)
+router.post(
+  '/:storyId/episodes/:episodeId/restore',
+  manageStories,
+  invalidatePublicStoriesAfterMutation,
+  restoreDeletedEpisodeByAdmin
 )
 router.post('/:storyId/warnings', manageStories, issueStoryWarning)
 router.patch('/authors/:authorId/status', manageStories, updateAuthorAdminStatus)
