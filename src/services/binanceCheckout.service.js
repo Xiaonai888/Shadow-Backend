@@ -7,6 +7,7 @@ const COLUMNS = 'id,user_id,package_usd,diamonds,amount_usdt,bonus_vouchers,rece
 const ID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i
 const RECEIVER_QR_PATH = '/api/purchase/binance/receiver/qr'
 const CHECKOUT_TTL_MS = 15 * 60 * 1000
+const RECEIPT_RECONCILE_MS = 24 * 60 * 60 * 1000
 
 export class BinanceCheckoutError extends Error {
   constructor(code, status = 400) {
@@ -85,6 +86,7 @@ function present(row, receiverVerified = false) {
     expires_at: Number.isFinite(deadline) ? new Date(deadline).toISOString() : row.expires_at,
     created_at: row.created_at,
     credited_at: row.credited_at || null,
+    awaiting_verification: row.status === 'waiting_payment' && isExpired(row),
     automatic_credit_enabled: false,
   }
 }
@@ -102,18 +104,60 @@ async function activeOrder(userId) {
   return data
 }
 
+async function ensureNoReceiptForDiamond(row, userId) {
+  // Unknown/changed payer identity is not proof of non-payment. Fail closed.
+  const { data: profile, error: profileError } = await supabase
+    .from('reader_binance_payment_profiles').select('binance_uid,updated_at')
+    .eq('user_id', userId).maybeSingle()
+  if (profileError) throw profileError
+  if (!/^\d{5,20}$/.test(String(profile?.binance_uid || '')) ||
+      Date.parse(profile.updated_at) > Date.parse(row.created_at)) {
+    throw new BinanceCheckoutError('PAYMENT_REVIEW_REQUIRED', 409)
+  }
+  const start = Date.parse(row.created_at)
+  const end = checkoutDeadline(row)
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    throw new BinanceCheckoutError('PAYMENT_REVIEW_REQUIRED', 409)
+  }
+  const { data: receipts, error: receiptError } = await supabase
+    .from('binance_usdt_alert_transactions').select('transaction_id')
+    .eq('payer_uid', profile.binance_uid).eq('receiver_uid', row.receiver_uid)
+    .eq('amount', row.amount_usdt)
+    .gte('transaction_time_ms', start - 60000).lte('transaction_time_ms', end + 60000)
+    .limit(1)
+  if (receiptError) throw receiptError
+  if (receipts?.length) throw new BinanceCheckoutError('PAYMENT_REVIEW_REQUIRED', 409)
+}
+
+async function activeUniversalPurchase(userId) {
+  const { data, error } = await supabase
+    .from('shadow_binance_purchase_orders')
+    .select('id,status,created_at')
+    .eq('user_id', userId)
+    .in('status', ['waiting_payment', 'pending_review'])
+    .order('created_at', { ascending: false })
+    .limit(1).maybeSingle()
+  if (error) throw error
+  if (!data) return false
+  // Stay clear of active Premium/PDF receipts throughout the matching window.
+  return data.status === 'pending_review' ||
+    !Number.isFinite(Date.parse(data.created_at)) ||
+    Date.now() < Date.parse(data.created_at) + RECEIPT_RECONCILE_MS
+}
+
 async function expireActiveOrder(row, userId) {
   if (row.status !== 'waiting_payment' || !isExpired(row)) return
-  // Compare the precise row state to avoid expiring an order claimed in parallel.
+  const created = Date.parse(row.created_at)
+  if (!Number.isFinite(created) || Date.now() < created + RECEIPT_RECONCILE_MS) {
+    throw new BinanceCheckoutError('PAYMENT_VERIFICATION_WINDOW', 409)
+  }
+  await ensureNoReceiptForDiamond(row, userId)
   const { data, error } = await supabase
     .from('binance_checkout_orders')
     .update({ status: 'expired', updated_at: new Date().toISOString() })
-    .eq('id', row.id)
-    .eq('user_id', userId)
-    .eq('status', 'waiting_payment')
-    .eq('created_at', row.created_at)
-    .select('id')
-    .maybeSingle()
+    .eq('id', row.id).eq('user_id', userId).eq('status', 'waiting_payment')
+    .eq('created_at', row.created_at).is('credited_at', null)
+    .select('id').maybeSingle()
   if (error) throw error
   if (!data) throw new BinanceCheckoutError('ACTIVE_CHECKOUT_EXISTS', 409)
 }
@@ -121,6 +165,7 @@ async function expireActiveOrder(row, userId) {
 export async function createBinanceCheckoutOrder({ userId, packageUsd }) {
   const owner = requireUserId(userId)
   const selected = readBinancePackage(packageUsd)
+  if (await activeUniversalPurchase(owner)) throw new BinanceCheckoutError('ACTIVE_CHECKOUT_EXISTS', 409)
   const receiver = await verifyReceiver()
   const previous = await activeOrder(owner)
 
@@ -184,12 +229,17 @@ export async function getBinanceCheckoutOrder({ userId, orderId }) {
 export async function cancelBinanceCheckoutOrder({ userId, orderId }) {
   const owner = requireUserId(userId)
   const id = requireOrderId(orderId)
+  const active = await activeOrder(owner)
+  if (active && active.id === id && active.status === 'waiting_payment') {
+    await ensureNoReceiptForDiamond(active, owner)
+  }
   const { data, error } = await supabase
     .from('binance_checkout_orders')
     .update({ status: 'cancelled', updated_at: new Date().toISOString() })
     .eq('id', id)
     .eq('user_id', owner)
     .eq('status', 'waiting_payment')
+    .is('credited_at', null)
     .select(COLUMNS)
     .maybeSingle()
   if (error) throw error
