@@ -122,7 +122,9 @@ async function readerProfile(userId) {
 }
 async function profileAvailableForOrder(userId, row) {
   const profile = await readerProfile(userId)
-  return Boolean(profile && Date.parse(profile.updatedAt) <= Date.parse(row.created_at))
+  return Boolean(profile && Number.isFinite(Date.parse(profile.updatedAt)) &&
+    Number.isFinite(Date.parse(row.created_at)) &&
+    Date.parse(profile.updatedAt) <= Date.parse(row.created_at))
 }
 async function existingUniversalOrder(userId) {
   const { data, error } = await supabase
@@ -142,6 +144,18 @@ async function expireUnpaidAfterGrace(row, userId) {
   if (row.status !== 'waiting_payment' || Date.now() - Date.parse(row.created_at) < REVIEW_GRACE_MS) {
     return false
   }
+  const profile = await readerProfile(userId)
+  if (!profile || !Number.isFinite(Date.parse(profile.updatedAt)) ||
+      Date.parse(profile.updatedAt) > Date.parse(row.created_at)) return false
+  const { data: receipts, error: receiptError } = await supabase
+    .from('binance_usdt_alert_transactions').select('transaction_id')
+    .eq('payer_uid', profile.uid).eq('receiver_uid', row.receiver_uid)
+    .eq('amount', row.amount_usdt)
+    .gte('transaction_time_ms', Date.parse(row.created_at) - 60000)
+    .lte('transaction_time_ms', Date.parse(row.expires_at) + 60000)
+    .limit(1)
+  if (receiptError) throw receiptError
+  if (receipts?.length) return false
   const { data, error } = await supabase
     .from('shadow_binance_purchase_orders')
     .update({ status: 'expired', updated_at: new Date().toISOString() })
@@ -258,9 +272,14 @@ router.post('/checkout', preAuthWriteIpLimit, requireUser, writeLimit, requirePa
         // A concurrent create may have inserted the same order. Reuse the
         // winner rather than suggesting a second Binance transfer.
         const current = await existingUniversalOrder(userId)
-        if (current?.purchase_kind === 'premium' && Number(current.purchase_snapshot?.plan_months) === plan.months) {
-          const canPay = await profileAvailableForOrder(userId, current)
-          return res.status(200).json({ ok: true, reused: true, order: formatOrder(current, canPay) })
+        if (current?.purchase_kind === 'premium' && current.status === 'waiting_payment' &&
+            Number(current.purchase_snapshot?.plan_months) === plan.months) {
+          const profileValid = await profileAvailableForOrder(userId, current)
+          const receiverValid = current.receiver_uid === receiver.uid &&
+            current.receiver_name === receiver.name && current.receiver_qr_sha256 === qrHash
+          if (profileValid && receiverValid) {
+            return res.status(200).json({ ok: true, reused: true, order: formatOrder(current, true) })
+          }
         }
         return errorResponse(res, 'ACTIVE_CHECKOUT_EXISTS', 'An active checkout already exists.', 409)
       }
