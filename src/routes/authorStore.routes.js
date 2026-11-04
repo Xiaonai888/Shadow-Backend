@@ -196,6 +196,14 @@ const createOrderIpLimit = createIpLimiter({
   max: 30,
 })
 
+// Keep Binance checkout status polling available without giving write operations
+// a higher limit. Both limiters are IP-based and run before authentication.
+const binancePdfStatusIpLimit = createIpLimiter({
+  key: 'author-store-binance-pdf-status-ip',
+  windowMs: 60 * 1000,
+  max: 120,
+})
+
 router.post('/orders', createOrderIpLimit, legacyAuthorBookCountryGate, createAuthorStoreOrder)
 // Use actual product types from the DB, never client-supplied 'product_type'.
 const authorStoreDigitalCountryGate = async (req, res, next) => {
@@ -217,10 +225,10 @@ const authorStoreDigitalCountryGate = async (req, res, next) => {
   }
 }
 
-router.post('/orders/create-payment', requireUser, authorBookCountryGate, authorStoreDigitalCountryGate, createAuthorStoreOrderPayment)
-router.post('/orders/binance-pdf/checkout', requireUser,
+router.post('/orders/create-payment', createOrderIpLimit, requireUser, authorBookCountryGate, authorStoreDigitalCountryGate, createAuthorStoreOrderPayment)
+router.post('/orders/binance-pdf/checkout', createOrderIpLimit, requireUser,
   requirePaymentCountry('pdfBinancePay'), createAuthorStoreBinancePdfCheckout)
-router.get('/orders/binance-pdf/:purchaseId', requireUser, getAuthorStoreBinancePdfCheckout)
+router.get('/orders/binance-pdf/:purchaseId', binancePdfStatusIpLimit, requireUser, getAuthorStoreBinancePdfCheckout)
 router.get('/orders/my', requireUser, getMyAuthorStoreBuyerOrders)
 router.get('/orders/book-holds/my', requireUser, getMyAuthorStoreBuyerBookHoldStatuses)
 router.post('/orders/:orderId/confirm-received', requireUser, confirmMyAuthorStoreBookReceived)
