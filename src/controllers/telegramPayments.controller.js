@@ -202,9 +202,10 @@ function getAllowedApproverIds() {
 }
 
 function isAllowedApprover(userId) {
+  // A missing allowlist MUST NOT grant approval authority to everyone in a
+  // Telegram chat. Configure TELEGRAM_APPROVER_IDS before using quick actions.
   const ids = getAllowedApproverIds()
-  if (!ids.length) return true
-  return ids.includes(String(userId))
+  return ids.length > 0 && /^\d{4,20}$/.test(String(userId || '')) && ids.includes(String(userId))
 }
 
 function merchantMatches(parsed) {
@@ -268,7 +269,15 @@ async function findMatchingAuthorStoreOrders(parsed) {
     .order('created_at', { ascending: false })
 
   if (error) throw error
-  return data || []
+  // Binance PDF checkout also creates author_store_orders in waiting_payment.
+  // Without this filter, a *different* ABA alert of the same amount could be
+  // wrongly matched to a Binance-only order and unlock its PDF via ABA.
+  return (data || []).filter((order) => {
+    const payload = order.request_payload
+    if (!payload || typeof payload !== 'object') return true
+    const paymentMethod = String(payload.payment_method || '').toLowerCase()
+    return !paymentMethod.includes('binance') && !payload.binance_purchase_id
+  })
 }
 
 function getOrderItems(order) {
@@ -332,6 +341,14 @@ async function saveTelegramPayment(parsed, message) {
     .select('*')
     .single()
 
+  if (error?.code === '23505') {
+    // Two webhook deliveries may race between the read and unique insert.
+    // Read the existing receipt instead of treating a normal retry as failure.
+    const existingResult = await supabase.from('telegram_payments')
+      .select('*').eq('trx_id', parsed.trx_id).maybeSingle()
+    if (existingResult.error) throw existingResult.error
+    if (existingResult.data) return { payment: existingResult.data, duplicate: true }
+  }
   if (error) throw error
   return { payment: data, duplicate: false }
 }
@@ -1048,13 +1065,8 @@ async function processAbaMessage(parsed, message) {
   const { payment: telegramPayment, duplicate } = await saveTelegramPayment(parsed, message)
 
   if (duplicate || ['auto_released', 'duplicate', 'shadow_mall_under_review', 'author_store_under_review', 'author_pdf_completed'].includes(telegramPayment.match_status)) {
-    await replyTelegram(chatId, messageId, [
-      '🔁 <b>DUPLICATE IGNORED</b>',
-      '',
-      '💰 Receipt Source: <b>ABA / PayWay (previously recorded)</b>',
-      `🧾 Trx ID: <code>${html(parsed.trx_id)}</code>`,
-      'This transaction was already received.',
-    ].join('\n'))
+    // Receipt already recorded: no second group message for the same money.
+    // Failed first reports are handled by the dedicated reconciliation worker.
     return
   }
 
@@ -1464,6 +1476,8 @@ export async function handleTelegramWebhook(req, res) {
     return res.status(200).json({ ok: true })
   } catch (error) {
     console.error('TELEGRAM WEBHOOK ERROR:', error)
-    return res.status(200).json({ ok: false, message: error.message })
+    // Telegram retries non-2xx responses. A temporary DB failure must NOT be
+    // acknowledged as a successfully processed payment event.
+    return res.status(503).json({ ok: false, message: 'Telegram payment processing temporarily unavailable' })
   }
 }
