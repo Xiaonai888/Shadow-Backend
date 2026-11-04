@@ -20,6 +20,34 @@
 
 begin;
 
+-- Fail closed when deployed ahead of the receipt-identity and global-claim
+-- migrations. Function compilation alone is not proof of schema readiness.
+do $$
+begin
+  if pg_catalog.to_regclass('public.shadow_binance_payment_claims') is null
+    or pg_catalog.to_regclass('public.shadow_binance_purchase_orders') is null
+    or not exists (
+      select 1 from pg_catalog.pg_trigger t
+      where t.tgrelid = pg_catalog.to_regclass('public.admin_binance_usdt_credit_actions')
+        and t.tgname = 'shadow_binance_legacy_credit_once_v1'
+        and t.tgenabled in ('O','A') and not t.tgisinternal
+    )
+    or pg_catalog.to_regprocedure('public.claim_shadow_binance_receipt_once_v1(text,uuid,text,text,text)') is null
+    or not exists (
+      select 1 from pg_catalog.pg_attribute a
+      where a.attrelid = pg_catalog.to_regclass('public.binance_usdt_alert_transactions')
+        and a.attname = 'payer_uid' and a.attnum > 0 and not a.attisdropped
+    )
+    or not exists (
+      select 1 from pg_catalog.pg_attribute a
+      where a.attrelid = pg_catalog.to_regclass('public.binance_usdt_alert_transactions')
+        and a.attname = 'receiver_uid' and a.attnum > 0 and not a.attisdropped
+    ) then
+    raise exception 'BINANCE_PREMIUM_RECEIPT_SCHEMA_NOT_READY';
+  end if;
+end;
+$$;
+
 create or replace function public.auto_fulfill_shadow_binance_premium_v1(
   p_limit integer default 10
 )
@@ -205,10 +233,9 @@ begin
     if v_order.list_price_usd <> v_price
       or v_order.payable_usd <> v_price
       or v_order.amount_usdt <> v_price + 1.00
-      or (v_order.purchase_snapshot ? 'base_diamonds'
-        and v_order.purchase_snapshot->>'base_diamonds' <> v_base_diamonds::text)
-      or (v_order.purchase_snapshot ? 'bonus_diamonds'
-        and v_order.purchase_snapshot->>'bonus_diamonds' <> v_bonus_diamonds::text) then
+      or v_order.purchase_snapshot->>'base_diamonds' is distinct from v_base_diamonds::text
+      or v_order.purchase_snapshot->>'bonus_diamonds' is distinct from v_bonus_diamonds::text
+      or v_order.purchase_snapshot->>'total_diamonds' is distinct from v_diamonds::text then
       continue;
     end if;
 
@@ -312,8 +339,7 @@ begin
     'ok', true,
     'checked', v_checked,
     'fulfilled', v_fulfilled,
-    'fulfilled_orders', v_grants,
-    'pdf_not_enabled', true
+    'fulfilled_orders', v_grants
   );
 end;
 $$;
