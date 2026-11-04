@@ -170,7 +170,7 @@ router.get('/plans', (_req, res) => {
   })
 })
 
-router.post('/checkout', requireUser, writeLimit, requirePaymentCountry('binancePay'), async (req, res) => {
+router.post('/checkout', requireUser, writeLimit, requirePaymentCountry('premiumBinancePay'), async (req, res) => {
   noStore(res)
   const userId = accountId(req)
   const plan = planByMonths(req.body?.plan_months)
