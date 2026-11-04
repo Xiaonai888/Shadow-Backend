@@ -58,12 +58,22 @@ begin
       ('shadow_binance_purchase_orders','purchase_snapshot'),
       ('shadow_binance_purchase_orders','amount_usdt'),
       ('shadow_binance_purchase_orders','author_income_usd'),
+      ('shadow_binance_purchase_orders','status'),
+      ('shadow_binance_purchase_orders','receiver_uid'),
+      ('shadow_binance_purchase_orders','fulfillment_key'),
+      ('binance_checkout_orders','id'),('binance_checkout_orders','user_id'),
+      ('binance_checkout_orders','status'),('binance_checkout_orders','created_at'),
+      ('binance_checkout_orders','credited_at'),
+      ('binance_checkout_orders','verified_transaction_id'),
+      ('binance_checkout_orders','receiver_uid'),
+      ('binance_checkout_orders','amount_usdt'),
       ('reader_binance_payment_profiles','binance_uid'),
       ('reader_binance_payment_profiles','updated_at'),
       ('binance_usdt_alert_transactions','payer_uid'),
       ('binance_usdt_alert_transactions','receiver_uid'),
       ('binance_usdt_alert_transactions','transaction_time_ms'),
-      ('user_wallets','voucher_balance')
+      ('user_wallets','user_id'),('user_wallets','voucher_balance'),
+      ('user_wallets','diamond_balance'),('user_wallets','gem_balance')
     ) as v(table_name,col_name)
   loop
     if pg_catalog.to_regclass('public.'||check_row.table_name) is null
@@ -77,7 +87,12 @@ begin
   end loop;
   if pg_catalog.to_regprocedure(
     'public.claim_shadow_binance_receipt_once_v1(text,uuid,text,text,text)'
-  ) is null then
+  ) is null or not exists (
+    select 1 from pg_catalog.pg_trigger t
+    where t.tgrelid = pg_catalog.to_regclass('public.admin_binance_usdt_credit_actions')
+      and t.tgname = 'shadow_binance_legacy_credit_once_v1'
+      and t.tgenabled in ('O','A') and not t.tgisinternal
+  ) then
     raise exception 'BINANCE_PDF_MISSING_GLOBAL_RECEIPT_CLAIM';
   end if;
 end;
@@ -189,6 +204,10 @@ begin
      'items_count',v_item_count,
      'author_income_usd',v_income,
      'platform_fee_usd',v_fee,
+     -- Existing Author Store keeps the published nominal 10% rate in the
+     -- order column, even when free-fee promotions reduce the actual fee.
+     'nominal_platform_fee_rate',0.10,
+     'effective_platform_fee_rate',round(v_fee/v_subtotal,6),
      'source','author_store',
      'payment_method','binance_personal_pay'
   );
@@ -212,7 +231,9 @@ begin
     pg_catalog.jsonb_build_object(
       'payment_method','binance_personal_pay',
       'binance_purchase_id',v_purchase::text,
-      'checkout_attribution',coalesce(p->'checkout_attribution','{}'::jsonb)
+      'checkout_attribution',coalesce(p->'checkout_attribution','{}'::jsonb),
+      'nominal_platform_fee_rate',0.10,
+      'effective_platform_fee_rate',round(v_fee/v_subtotal,6)
     ),'{}'::jsonb,v_expiry,v_now
   ) returning id into v_author_order;
 
