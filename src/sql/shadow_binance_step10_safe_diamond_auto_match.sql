@@ -12,6 +12,36 @@
 
 begin;
 
+-- A Diamond worker must not begin if the shared receipt-claim and matching
+-- schemas are incomplete. This migration only validates; it credits nobody.
+do $$
+begin
+  if pg_catalog.to_regclass('public.shadow_binance_payment_claims') is null
+    or pg_catalog.to_regclass('public.shadow_binance_purchase_orders') is null
+    or not exists (
+      select 1 from pg_catalog.pg_trigger t
+      where t.tgrelid = pg_catalog.to_regclass('public.admin_binance_usdt_credit_actions')
+        and t.tgname = 'shadow_binance_legacy_credit_once_v1'
+        and t.tgenabled in ('O','A') and not t.tgisinternal
+    )
+    or pg_catalog.to_regclass('public.binance_checkout_claims') is null
+    or pg_catalog.to_regprocedure('public.submit_binance_checkout_claim_v1(uuid,uuid,text)') is null
+    or pg_catalog.to_regprocedure('public.approve_binance_checkout_admin_decision_v1(uuid,text,text,text,boolean,boolean,boolean)') is null
+    or not exists (
+      select 1 from pg_catalog.pg_attribute a
+      where a.attrelid = pg_catalog.to_regclass('public.binance_usdt_alert_transactions')
+        and a.attname = 'payer_uid' and a.attnum > 0 and not a.attisdropped
+    )
+    or not exists (
+      select 1 from pg_catalog.pg_attribute a
+      where a.attrelid = pg_catalog.to_regclass('public.binance_usdt_alert_transactions')
+        and a.attname = 'receiver_uid' and a.attnum > 0 and not a.attisdropped
+    ) then
+    raise exception 'BINANCE_DIAMOND_CROSS_PURCHASE_SCHEMA_NOT_READY';
+  end if;
+end;
+$$;
+
 create or replace function public.auto_credit_binance_checkout_v1(p_limit integer default 10)
 returns jsonb
 language plpgsql
