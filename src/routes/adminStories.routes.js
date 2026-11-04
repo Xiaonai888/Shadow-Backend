@@ -34,6 +34,20 @@ const storyGrowthDailyLimit = rateLimit({
   },
 })
 
+// The restore endpoint must have an IP limiter before admin authentication.
+// This limits repeated requests without changing admin permission checks.
+const adminEpisodeRestoreLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_EPISODE_RESTORE_RATE_LIMIT',
+    message: 'Too many episode restore requests. Please retry shortly.',
+  },
+})
+
 function invalidatePublicStoriesAfterMutation(
   _req,
   res,
@@ -67,6 +81,7 @@ router.patch(
 )
 router.post(
   '/:storyId/episodes/:episodeId/restore',
+  adminEpisodeRestoreLimit,
   manageStories,
   invalidatePublicStoriesAfterMutation,
   restoreDeletedEpisodeByAdmin
