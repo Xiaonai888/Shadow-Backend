@@ -1,5 +1,25 @@
 begin;
 
+-- The decision RPC verifies the trusted sender/receiver IDs against the reader.
+-- Do not upgrade this RPC until those receipt columns are installed.
+do $$
+begin
+  if pg_catalog.to_regclass('public.shadow_binance_purchase_orders') is null
+    or not exists (
+      select 1 from pg_catalog.pg_attribute a
+      where a.attrelid = pg_catalog.to_regclass('public.binance_usdt_alert_transactions')
+        and a.attname = 'payer_uid' and a.attnum > 0 and not a.attisdropped
+    )
+    or not exists (
+      select 1 from pg_catalog.pg_attribute a
+      where a.attrelid = pg_catalog.to_regclass('public.binance_usdt_alert_transactions')
+        and a.attname = 'receiver_uid' and a.attnum > 0 and not a.attisdropped
+    ) then
+    raise exception 'BINANCE_ADMIN_DECISION_RECEIPT_SCHEMA_NOT_READY';
+  end if;
+end;
+$$;
+
 create table if not exists public.binance_checkout_admin_decisions (
   id uuid primary key default gen_random_uuid(),
   order_id uuid not null unique references public.binance_checkout_orders(id) on delete restrict,
@@ -62,6 +82,9 @@ begin
   if v_order.status <> 'pending_review' or v_claim.review_status <> 'submitted' then
     raise exception 'BINANCE_CHECKOUT_NOT_PENDING_REVIEW';
   end if;
+  if v_claim.user_id is distinct from v_order.user_id then
+    raise exception 'BINANCE_CLAIM_READER_MISMATCH';
+  end if;
 
   update public.binance_checkout_orders
   set status = 'cancelled', updated_at = now()
@@ -109,6 +132,7 @@ declare
   v_decision public.binance_checkout_admin_decisions%rowtype;
   v_credit jsonb;
   v_credit_id uuid;
+  v_payer_profile_count integer;
   v_reason text := btrim(coalesce(p_reason, ''));
 begin
   if p_order_id is null or char_length(v_reason) not between 12 and 500
@@ -145,6 +169,9 @@ begin
   if v_order.status <> 'pending_review' or v_claim.review_status <> 'submitted' then
     raise exception 'BINANCE_CHECKOUT_NOT_PENDING_REVIEW';
   end if;
+  if v_claim.user_id is distinct from v_order.user_id then
+    raise exception 'BINANCE_CLAIM_READER_MISMATCH';
+  end if;
 
   perform pg_catalog.pg_advisory_xact_lock(
     pg_catalog.hashtextextended('admin-payment-reference:' || upper(btrim(v_claim.transaction_id)), 0)
@@ -156,6 +183,31 @@ begin
 
   if v_receipt.currency <> 'USDT' or v_receipt.amount is distinct from v_order.amount_usdt then
     raise exception 'BINANCE_RECEIPT_AMOUNT_MISMATCH';
+  end if;
+  if coalesce(v_receipt.order_type,'') not in ('PAY','C2C')
+     or v_receipt.receiver_uid is distinct from v_order.receiver_uid
+     or v_receipt.receiver_uid is distinct from '514018161'
+     or v_receipt.payer_uid !~ '^[0-9]{5,20}$' then
+    raise exception 'BINANCE_OFFICIAL_PAYER_OR_RECEIVER_MISMATCH';
+  end if;
+  select count(*) into v_payer_profile_count
+  from public.reader_binance_payment_profiles p
+  where p.binance_uid = v_receipt.payer_uid;
+  if v_payer_profile_count <> 1 or not exists (
+    select 1 from public.reader_binance_payment_profiles p
+    where p.user_id = v_order.user_id and p.binance_uid = v_receipt.payer_uid
+      and p.updated_at <= v_order.created_at
+  ) then
+    raise exception 'BINANCE_PAYER_UID_DOES_NOT_MATCH_ORDER';
+  end if;
+  if exists (
+    select 1 from public.shadow_binance_purchase_orders o
+    where o.receiver_uid = v_receipt.receiver_uid and o.amount_usdt = v_receipt.amount
+      and o.user_id = v_order.user_id
+      and v_receipt.transaction_time_ms >= (extract(epoch from o.created_at) * 1000)::bigint - 60000
+      and v_receipt.transaction_time_ms <= (extract(epoch from o.expires_at) * 1000)::bigint + 600000
+  ) then
+    raise exception 'BINANCE_CROSS_PURCHASE_RECEIPT_AMBIGUOUS';
   end if;
 
   if v_receipt.transaction_time_ms < (
