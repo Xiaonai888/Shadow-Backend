@@ -5,7 +5,18 @@ import { isReaderClassificationCountryPolicyEnabled, readReaderClassificationCou
 const ISSUER = 'shadow-country-settings'
 const AUDIENCE = 'shadow-payment-creation'
 const INVALID_COUNTRIES = new Set(['XX', 'ZZ', 'T1'])
-const PAYMENT_FEATURES = new Set(['payway', 'binancePay'])
+const SCOPED_PAYMENT_FEATURES = new Set(['premiumPayway', 'premiumBinancePay', 'pdfPayway', 'pdfBinancePay'])
+const COUNTRY_CONTROLLED_DURING_PAUSE = new Set(['binancePay', ...SCOPED_PAYMENT_FEATURES])
+const PAYMENT_FEATURES = new Set(['payway', 'binancePay', ...SCOPED_PAYMENT_FEATURES])
+
+function isPaymentFeatureEnabled(rule, feature) {
+  if (typeof rule?.[feature] === 'boolean') return rule[feature]
+  // Legacy saved country settings predate these four switches.
+  // Existing ABA defaults are retained; Binance is fail-closed until enabled.
+  if (feature === 'premiumPayway' || feature === 'pdfPayway') return rule?.payway === true
+  if (feature === 'premiumBinancePay' || feature === 'pdfBinancePay') return false
+  return false
+}
 
 function validCountry(value) {
   return typeof value === 'string' && /^[A-Z]{2}$/.test(value) && !INVALID_COUNTRIES.has(value)
@@ -37,10 +48,10 @@ function deny(res, code, message, status = 403) {
   return res.status(status).json({ ok: false, code, message })
 }
 
-// Binance purchases obey saved Admin Country Rules even while the broader
-// reader-country policy is temporarily paused. Do not change ABA/PayWay.
-// The authenticated user's saved classification is the sole country source.
-async function requireBinanceSavedCountry(req, res, next) {
+// Legacy Diamonds ABA remains paused as before. Binance and scoped purchase
+// methods use saved Admin Country Rules even while the broader policy is paused.
+// The authenticated reader's saved country, not a request header, is authoritative.
+async function requireSavedPaymentCountry(req, res, next, feature) {
   const userId = req.user?.user_id
   if (!userId) return deny(res, 'UNAUTHORIZED', 'Sign in to continue', 401)
 
@@ -58,7 +69,9 @@ async function requireBinanceSavedCountry(req, res, next) {
     ])
     if (settingsError || exceptionError || !settings?.rules ||
         typeof settings.rules.kh?.binancePay !== 'boolean' ||
-        typeof settings.rules.international?.binancePay !== 'boolean') {
+        typeof settings.rules.international?.binancePay !== 'boolean' ||
+        (typeof settings.rules.kh?.[feature] !== 'boolean' && !SCOPED_PAYMENT_FEATURES.has(feature)) ||
+        (typeof settings.rules.international?.[feature] !== 'boolean' && !SCOPED_PAYMENT_FEATURES.has(feature))) {
       throw settingsError || exceptionError || new Error('Binance country rules missing')
     }
 
@@ -67,19 +80,19 @@ async function requireBinanceSavedCountry(req, res, next) {
       (!exception.expires_at || Date.parse(exception.expires_at) > Date.now())
       ? exception : null
     const selectedRegion = activeException?.mode === 'cambodia_experience' ? 'kh' : region
-    let allowed = settings.rules[selectedRegion].binancePay === true
+    let allowed = isPaymentFeatureEnabled(settings.rules[selectedRegion], feature)
     if (activeException?.mode === 'all_eligible') allowed = true
     if (activeException?.mode === 'custom') {
-      if (activeException.overrides?.binancePay === 'allow') allowed = true
-      if (activeException.overrides?.binancePay === 'block') allowed = false
+      if (activeException.overrides?.[feature] === 'allow') allowed = true
+      if (activeException.overrides?.[feature] === 'block') allowed = false
     }
 
     if (!allowed) {
-      return deny(res, 'PAYMENT_METHOD_UNAVAILABLE', 'Binance Pay is not available for your account')
+      return deny(res, 'PAYMENT_METHOD_UNAVAILABLE', 'This payment method is not available for your account')
     }
     return next()
   } catch (error) {
-    console.error('BINANCE COUNTRY GATE ERROR:', String(error?.message || error).slice(0, 180))
+    console.error('PAYMENT COUNTRY RULE GATE ERROR:', String(error?.message || error).slice(0, 180))
     return deny(res, 'COUNTRY_GATE_UNAVAILABLE', 'Could not verify Binance country permission', 503)
   }
 }
@@ -89,8 +102,10 @@ export function requirePaymentCountry(feature) {
 
   return async function paymentCountryGuard(req, res, next) {
     if (!isReaderClassificationCountryPolicyEnabled()) {
-      // Enforce only Binance; the existing temporary pause stays in place for ABA.
-      return feature === 'binancePay' ? requireBinanceSavedCountry(req, res, next) : next()
+      // Existing Diamonds ABA stays as-is, but every new Premium/PDF method
+      // gets its own saved-country rule (even while the broad policy is paused).
+      return COUNTRY_CONTROLLED_DURING_PAUSE.has(feature)
+        ? requireSavedPaymentCountry(req, res, next, feature) : next()
     }
 
     const secret = signingSecret()
@@ -159,7 +174,7 @@ export function requirePaymentCountry(feature) {
         (!exception.expires_at || Date.parse(exception.expires_at) > Date.now())
         ? exception : null
       const effectiveRegion = activeException?.mode === 'cambodia_experience' ? 'kh' : region
-      let permitted = settings.rules?.[effectiveRegion]?.[feature] === true
+      let permitted = isPaymentFeatureEnabled(settings.rules?.[effectiveRegion], feature)
       if (activeException?.mode === 'all_eligible') permitted = true
 
       if (activeException?.mode === 'custom') {
