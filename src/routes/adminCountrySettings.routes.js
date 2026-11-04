@@ -10,7 +10,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const REGIONS = ['kh', 'international']
 const LEGACY_BOOLEAN_KEYS = ['app', 'physicalBooks', 'binancePay', 'payway']
 const PAYOUT_BOOLEAN_KEYS = ['payoutBank', 'payoutBinance', 'payoutPhone']
-const BOOLEAN_KEYS = [...LEGACY_BOOLEAN_KEYS, 'shadowMall', 'readerMall', ...PAYOUT_BOOLEAN_KEYS]
+const SCOPED_PAYMENT_KEYS = ['premiumPayway', 'premiumBinancePay', 'pdfPayway', 'pdfBinancePay']
+const BOOLEAN_KEYS = [...LEGACY_BOOLEAN_KEYS, ...SCOPED_PAYMENT_KEYS, 'shadowMall', 'readerMall', ...PAYOUT_BOOLEAN_KEYS]
 const RULE_KEYS = [...BOOLEAN_KEYS, 'storyLanguage', 'shopTarget']
 const LANGUAGES = ['km', 'en', 'zh', 'ja', 'ko']
 const SHOP_TARGETS = ['shadow_mall', 'diamonds']
@@ -53,11 +54,17 @@ function normalizeRules(value) {
     if (!LANGUAGES.includes(entry.storyLanguage) || !SHOP_TARGETS.includes(entry.shopTarget)) return null
     if (keys.some(key => !RULE_KEYS.includes(key) &&
         (!EXTRA_BOOLEAN_KEY.test(key) || typeof entry[key] !== 'boolean'))) return null
-    if (['shadowMall', 'readerMall', ...PAYOUT_BOOLEAN_KEYS].some(key =>
+    if (['shadowMall', 'readerMall', ...PAYOUT_BOOLEAN_KEYS, ...SCOPED_PAYMENT_KEYS].some(key =>
         entry[key] !== undefined && typeof entry[key] !== 'boolean')) return null
 
     const next = {
       ...entry,
+      // Existing rules in Supabase predate scoped payment methods.
+      // Preserve prior ABA eligibility. New Binance types remain OFF by default.
+      premiumPayway: typeof entry.premiumPayway === 'boolean' ? entry.premiumPayway : entry.payway,
+      premiumBinancePay: typeof entry.premiumBinancePay === 'boolean' ? entry.premiumBinancePay : false,
+      pdfPayway: typeof entry.pdfPayway === 'boolean' ? entry.pdfPayway : entry.payway,
+      pdfBinancePay: typeof entry.pdfBinancePay === 'boolean' ? entry.pdfBinancePay : false,
       shadowMall: typeof entry.shadowMall === 'boolean' ? entry.shadowMall : region === 'kh',
       readerMall: typeof entry.readerMall === 'boolean' ? entry.readerMall : region === 'kh',
       payoutBank: typeof entry.payoutBank === 'boolean' ? entry.payoutBank : region === 'kh',
