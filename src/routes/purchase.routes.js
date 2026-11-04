@@ -6,6 +6,7 @@ import { requirePaymentCountry } from '../middleware/paymentCountryGate.middlewa
 import binanceReceiverRoutes from './binanceReceiver.routes.js'
 import binanceCheckoutRoutes from './binanceCheckout.routes.js'
 import binanceCheckoutClaimsRoutes from './binanceCheckoutClaims.routes.js'
+import binancePremiumCheckoutRoutes from './binancePremiumCheckout.routes.js'
 import {
   createAbaPayment,
   getAbaPaymentStatus,
@@ -66,6 +67,7 @@ const upload = multer({
 router.use('/binance', purchasePreAuthLimit, binanceReceiverRoutes)
 router.use('/binance', purchasePreAuthLimit, binanceCheckoutRoutes)
 router.use('/binance', purchasePreAuthLimit, binanceCheckoutClaimsRoutes)
+router.use('/binance/premium', purchasePreAuthLimit, binancePremiumCheckoutRoutes)
 
 router.get('/packages', purchasePreAuthLimit, getPurchasePackages)
 router.get('/wallet', purchasePreAuthLimit, requireUser, purchaseReadLimit, getMyWallet)
