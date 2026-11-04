@@ -13,6 +13,10 @@ create table if not exists public.binance_usdt_alert_transactions (
   currency text not null default 'USDT' check (currency = 'USDT'),
   order_type text not null default '' check (char_length(order_type) <= 40),
   payer_name text not null default '' check (char_length(payer_name) <= 120),
+  -- Official API identity fields are optional only for old or incomplete
+  -- receipts. Missing identity must NEVER qualify for auto-fulfillment.
+  payer_uid text,
+  receiver_uid text,
   delivery_status text not null default 'pending'
     check (delivery_status in ('pending', 'sending', 'sent', 'failed')),
   attempt_count integer not null default 0 check (attempt_count between 0 and 20),
@@ -24,6 +28,45 @@ create table if not exists public.binance_usdt_alert_transactions (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Existing deployments may have been created before identity capture was
+-- introduced. Upgrade in place without deleting historical receipt rows.
+alter table public.binance_usdt_alert_transactions
+  add column if not exists payer_uid text,
+  add column if not exists receiver_uid text;
+
+-- Valid IDs from the official Binance API are required for automatic matching.
+-- Keep empty / NULL on legacy records; never guess an ID from a payer name.
+do $$
+begin
+  if not exists (select 1 from pg_catalog.pg_constraint where conrelid =
+      'public.binance_usdt_alert_transactions'::pg_catalog.regclass
+      and conname = 'binance_usdt_receipt_payer_uid_v1') then
+    alter table public.binance_usdt_alert_transactions add constraint
+      binance_usdt_receipt_payer_uid_v1
+      check (coalesce(payer_uid, '') = '' or payer_uid ~ '^[0-9]{5,20}$') not valid;
+  end if;
+  if not exists (select 1 from pg_catalog.pg_constraint where conrelid =
+      'public.binance_usdt_alert_transactions'::pg_catalog.regclass
+      and conname = 'binance_usdt_receipt_receiver_uid_v1') then
+    alter table public.binance_usdt_alert_transactions add constraint
+      binance_usdt_receipt_receiver_uid_v1
+      check (coalesce(receiver_uid, '') = '' or receiver_uid ~ '^[0-9]{5,20}$') not valid;
+  end if;
+end;
+$$;
+
+-- Prevent case-only aliases from consuming one Binance receipt twice.
+-- A historical collision deliberately aborts migration for manual review.
+create unique index if not exists binance_usdt_alert_tx_normalized_uq
+  on public.binance_usdt_alert_transactions (upper(btrim(transaction_id)));
+
+create index if not exists binance_usdt_alert_match_identity_idx
+  on public.binance_usdt_alert_transactions
+  (payer_uid, receiver_uid, amount, transaction_time_ms)
+  where payer_uid ~ '^[0-9]{5,20}$'
+    and receiver_uid ~ '^[0-9]{5,20}$'
+    and currency = 'USDT';
 
 create index if not exists binance_usdt_alert_transactions_due_idx
   on public.binance_usdt_alert_transactions
