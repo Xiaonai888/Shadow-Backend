@@ -9,21 +9,33 @@ const router = express.Router()
 const STATUSES = new Set(['all', 'pending', 'editing', 'retry', 'done', 'needs_review'])
 const PAGE_SIZE = 10
 
-router.use(requireAdmin)
-router.use((_req, res, next) => {
-  res.set('Cache-Control', 'private, no-store')
-  next()
+// First route middleware: block abusive requests by IP before admin auth/session validation.
+// Express-rate-limit's default key generator handles IPv4 and IPv6 safely.
+const preAuthIpLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { ok: false, code: 'BINANCE_EDIT_QUEUE_IP_RATE_LIMIT', message: 'Too many requests.' },
 })
-router.use(rateLimit({
+
+// Preserve the original 40/minute per-admin read limit, after requireAdmin.
+const adminReadLimiter = rateLimit({
   windowMs: 60_000,
   limit: 40,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   keyGenerator: (req) => String(req.admin?.admin_id || req.admin?.id || ipKeyGenerator(req.ip)),
   message: { ok: false, code: 'BINANCE_EDIT_QUEUE_RATE_LIMIT', message: 'Too many queue reads.' },
-}))
+})
 
-router.get('/', async (req, res) => {
+function preventPrivateCaching(_req, res, next) {
+  res.set('Cache-Control', 'private, no-store')
+  next()
+}
+
+// The route checker requires an explicit pre-auth IP limiter as the first argument.
+router.get('/', preAuthIpLimiter, requireAdmin, preventPrivateCaching, adminReadLimiter, async (req, res) => {
   const role = String(req.admin?.role || '').trim().toLowerCase()
   if (!['owner', 'admin'].includes(role)) {
     return res.status(403).json({ ok: false, code: 'ADMIN_REQUIRED', message: 'Owner/Admin access required.' })
