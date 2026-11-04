@@ -54,6 +54,16 @@ function isTelegramDeliveryEnabled() {
     && Boolean(getAlertChatId())
 }
 
+// Fail closed on malformed RPC responses. SQL makes the actual entitlement
+// writes; this worker only notifies after an explicit committed-success result.
+function verifiedBatch(data, countKey, rowsKey, source) {
+  if (data?.ok !== true || !Number.isSafeInteger(data[countKey]) || data[countKey] < 0
+      || !Array.isArray(data[rowsKey]) || data[rowsKey].length !== data[countKey]) {
+    throw new Error(`Invalid ${source} settlement response`)
+  }
+  return data
+}
+
 function safeError(error) {
   const message = String(error?.message || error || 'Unknown error')
   return message.replace(/[\r\n\t]/g, ' ').slice(0, 300)
@@ -178,8 +188,10 @@ async function ingestBinanceReceipts() {
       currency: 'USDT',
       order_type: item.orderType,
       payer_name: item.payerName,
-      payer_uid: item.payerUid,
-      receiver_uid: item.receiverUid,
+      // Never trust masked/non-numeric API identifiers. Keep the receipt for
+      // audit, but make automatic fulfillment fail closed without verified UID.
+      payer_uid: /^\d{5,20}$/.test(String(item.payerUid ?? '')) ? String(item.payerUid) : '',
+      receiver_uid: /^\d{5,20}$/.test(String(item.receiverUid ?? '')) ? String(item.receiverUid) : '',
     }))
 
     const { error: insertError } = await supabase
@@ -512,6 +524,7 @@ export async function processBinanceUsdtAlertsOnce() {
         p_limit: 10,
       })
       if (error) throw error
+      verifiedBatch(data, 'credited', 'credited_orders', 'Diamond')
       matching = data
       if (Number(data?.credited || 0) > 0) {
         console.info('BINANCE AUTO CREDITED ORDERS:', data.credited)
@@ -544,9 +557,7 @@ export async function processBinanceUsdtAlertsOnce() {
           p_limit: 10,
         })
         if (error) throw error
-        if (data?.ok !== true || !Number.isSafeInteger(Number(data?.fulfilled || 0))) {
-          throw new Error('Invalid Premium fulfillment RPC result')
-        }
+        verifiedBatch(data, 'fulfilled', 'fulfilled_orders', 'Premium')
         premiumMatching = data
         const fulfilled = Number(data.fulfilled || 0)
         if (fulfilled > 0) {
@@ -578,9 +589,7 @@ export async function processBinanceUsdtAlertsOnce() {
       try {
         const { data, error } = await supabase.rpc('auto_fulfill_shadow_binance_pdf_v1', { p_limit: 10 })
         if (error) throw error
-        if (data?.ok !== true || !Number.isSafeInteger(Number(data?.fulfilled || 0))) {
-          throw new Error('Invalid PDF fulfillment RPC result')
-        }
+        verifiedBatch(data, 'fulfilled', 'fulfilled_orders', 'PDF')
         pdfMatching = data
         const fulfilled = Number(data.fulfilled || 0)
         if (fulfilled > 0) console.info('BINANCE PDF AUTO FULFILLED ORDERS:', fulfilled)
