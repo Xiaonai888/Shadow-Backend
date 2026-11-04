@@ -92,7 +92,7 @@ router.patch('/credit-notices/:noticeId/seen', purchasePreAuthLimit, requireUser
 
 router.get('/premium/plans', purchasePreAuthLimit, getPremiumPlans)
 router.get('/premium/status', purchasePreAuthLimit, requireUser, purchaseReadLimit, getPremiumStatus)
-router.post('/premium/create', purchasePreAuthLimit, requireUser, purchaseWriteLimit, createPremiumPayment)
+router.post('/premium/create', purchasePreAuthLimit, requireUser, purchaseWriteLimit, requirePaymentCountry('premiumPayway'), createPremiumPayment)
 router.get('/premium/status/:orderId', purchasePreAuthLimit, requireUser, purchaseReadLimit, getPremiumPaymentStatus)
 router.post('/premium/cancel/:orderId', purchasePreAuthLimit, requireUser, purchaseWriteLimit, cancelPremiumPayment)
 
