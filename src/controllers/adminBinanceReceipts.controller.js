@@ -76,7 +76,38 @@ function applyFilters(query, filters) {
   return filtered.order('transaction_id', { ascending: true })
 }
 
-function toReceipt(row) {
+// Read global fulfillment claims separately from Telegram-delivery status.
+// A received Binance alert is NOT proof of a wallet credit.
+async function getReceiptClaimMaps(rows) {
+  const ids = [...new Set(rows.map(row => String(row.transaction_id || '')).filter(Boolean))]
+  if (!ids.length) return { available: true, claims: new Map(), reviews: new Map() }
+  const [claimResult, reviewResult] = await Promise.all([
+    supabase.from('shadow_binance_payment_claims')
+      .select('transaction_id,user_id,purchase_kind,origin,fulfillment_key,created_at')
+      .eq('provider', 'binance').in('transaction_id', ids),
+    supabase.from('binance_checkout_claims')
+      .select('transaction_id,user_id,review_status').in('transaction_id', ids),
+  ])
+  if (claimResult.error || reviewResult.error) {
+    // Old installations may not have installed the universal ledger yet.
+    // Preserve read-only receipt history but mark financial evidence UNKNOWN.
+    console.error('ADMIN BINANCE CLAIM LOOKUP UNAVAILABLE:',
+      String(claimResult.error?.code || reviewResult.error?.code || 'UNKNOWN'))
+    return { available: false, claims: new Map(), reviews: new Map() }
+  }
+  return {
+    available: true,
+    claims: new Map((claimResult.data || []).map(row => [row.transaction_id, row])),
+    reviews: new Map((reviewResult.data || []).map(row => [row.transaction_id, row])),
+  }
+}
+
+function toReceipt(row, evidence = null) {
+  const claim = evidence?.claims?.get(row.transaction_id) || null
+  const review = evidence?.reviews?.get(row.transaction_id) || null
+  const available = evidence?.available === true
+  const kind = claim?.purchase_kind || null
+  const fulfillmentStatus = claim ? 'fulfilled' : review?.review_status || (available ? 'unclaimed' : 'unknown')
   return {
     transaction_id: row.transaction_id,
     transaction_time_ms: row.transaction_time_ms,
@@ -87,9 +118,14 @@ function toReceipt(row) {
     telegram_alert_status: row.delivery_status || 'unknown',
     created_at: row.created_at,
     source: 'binance_personal_pay_alert',
-    account_match_status: 'not_recorded',
-    diamond_credit_status: 'not_recorded',
-    voucher_credit_status: 'not_recorded',
+    account_match_status: claim ? 'fulfilled' : review ? 'under_review' : (available ? 'unclaimed' : 'unknown'),
+    diamond_credit_status: claim && ['diamonds', 'premium'].includes(kind) ? 'credited' : (available ? 'not_verified' : 'unknown'),
+    voucher_credit_status: claim && ['diamonds', 'premium', 'pdf'].includes(kind) ? 'credited' : (available ? 'not_verified' : 'unknown'),
+    receipt_claim_status: fulfillmentStatus,
+    fulfilled_purchase_kind: kind,
+    fulfilled_user_id: claim?.user_id || null,
+    fulfillment_key: claim?.fulfillment_key || null,
+    financial_claim_at: claim?.created_at || null,
   }
 }
 
@@ -108,9 +144,10 @@ async function listRecords(req, res, mode) {
     const { data, error } = await query.range(offset, offset + PAGE_LIMIT)
     if (error) throw error
     const rows = data || []
+    const evidence = await getReceiptClaimMaps(rows.slice(0, PAGE_LIMIT))
     const items = rows.slice(0, PAGE_LIMIT).map((row) => mode === 'alert_history'
       ? {
-          ...toReceipt(row),
+          ...toReceipt(row, evidence),
           attempt_count: row.attempt_count,
           next_attempt_at: row.next_attempt_at,
           telegram_message_id: row.telegram_message_id,
@@ -118,7 +155,7 @@ async function listRecords(req, res, mode) {
           last_alert_error: row.last_error || null,
           updated_at: row.updated_at,
         }
-      : toReceipt(row))
+      : toReceipt(row, evidence))
     return res.status(200).json({
       ok: true,
       items,
@@ -128,7 +165,9 @@ async function listRecords(req, res, mode) {
       has_prev: filters.page > 1,
       history_kind: mode === 'alert_history' ? 'telegram_alert_delivery_only' : 'received_usdt_receipts',
       read_only: true,
-      credits_verified: false,
+      credits_verified: evidence.available && items.every(item => item.receipt_claim_status === 'fulfilled'),
+      credit_evidence_available: evidence.available,
+      credit_evidence_source: evidence.available ? 'shadow_binance_payment_claims' : 'unavailable',
     })
   } catch (error) {
     return fail(res, error, mode)
@@ -157,10 +196,11 @@ export async function getAdminBinanceReceiptDetails(req, res) {
       .maybeSingle()
     if (error) throw error
     if (!data) return res.status(404).json({ ok: false, message: 'Binance receipt was not found' })
+    const evidence = await getReceiptClaimMaps([data])
     return res.status(200).json({
       ok: true,
       receipt: {
-        ...toReceipt(data),
+        ...toReceipt(data, evidence),
         attempt_count: data.attempt_count,
         next_attempt_at: data.next_attempt_at,
         claimed_at: data.claimed_at,
@@ -170,7 +210,9 @@ export async function getAdminBinanceReceiptDetails(req, res) {
         updated_at: data.updated_at,
       },
       read_only: true,
-      warning: 'A payer name or Binance receipt alone does not prove which Shadow user should receive Diamonds.',
+      credits_verified: evidence.available && evidence.claims.has(data.transaction_id),
+      credit_evidence_available: evidence.available,
+      warning: 'Official Binance receipt identity and the atomic global claim must both be verified before inferring any credit.',
     })
   } catch (error) {
     return fail(res, error, 'details')
@@ -182,9 +224,13 @@ export function getAdminBinanceCreditAvailability(req, res) {
   return res.status(200).json({
     ok: true,
     manual_top_up_enabled: false,
+    // The old Admin manual top-up UI stays disabled. Auto fulfillment runs
+    // in the backend worker, NOT through the manual credit UI.
     automatic_credit_enabled: false,
+    worker_switch_enabled: process.env.BINANCE_USDT_ALERT_ENABLED === 'true',
+    worker_status_verified: false,
     planned_fixed_voucher_bonus: 100,
     source: 'binance_usdt_alert_transactions',
-    message: 'Binance receipts are stored for review only. Verified recipient matching, an idempotent credit ledger, and atomic Diamond/Voucher crediting must be connected before financial actions can be enabled.',
+    message: 'Manual Binance credit is disabled on this page. Server-side automatic Diamond, Premium, and PDF fulfillment is conditional on the worker, migrations, and verified official receipts. Inspect global receipt claims for actual results.',
   })
 }
