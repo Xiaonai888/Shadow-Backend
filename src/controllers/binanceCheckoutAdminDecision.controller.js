@@ -41,7 +41,7 @@ const MESSAGES = {
   TRANSACTION_ALREADY_CREDITED: 'This Binance transaction was already credited.',
   RECEIVER_CHANGED: 'Binance receiver information has changed. Do not approve.',
   RECEIVER_OR_PAYER_MISMATCH: 'Official Binance payer or receiver UID does not match the checkout.',
-  PAYER_UID_MISMATCH: 'Official receipt payer UID does not match the reader's saved Binance UID.',
+  PAYER_UID_MISMATCH: "Official receipt payer UID does not match the reader's saved Binance UID.",
   PAYER_UID_NOT_UNIQUE: 'This Binance UID is linked to multiple readers. Contact Admin.',
   PAYER_PROFILE_CHANGED: 'The Binance payer profile changed after checkout creation. Do not link this receipt.',
   DATABASE_NOT_READY: 'Install the required Binance checkout SQL first.',
