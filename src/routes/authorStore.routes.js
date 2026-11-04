@@ -1,4 +1,6 @@
 import { getReaderStoreHome } from '../controllers/readerStore.controller.js'
+import { supabase } from '../config/supabase.js'
+import { requirePaymentCountry } from '../middleware/paymentCountryGate.middleware.js'
 import { getMyAuthorStoreEarnings } from '../controllers/authorStoreEarnings.controller.js'
 import { getMyAuthorStoreBookPending, confirmMyAuthorStoreBookReceived } from '../controllers/authorStoreBookPending.controller.js'
 import { submitMyAuthorStoreBookEvidence, getMyAuthorStoreBuyerBookHoldStatuses, getAdminAuthorStoreBookHolds } from '../controllers/authorStoreBookWorkflow.controller.js'
@@ -11,6 +13,8 @@ import { getMyAuthorStoreOfflinePdfGrant, getMyAuthorStorePurchasedPdf } from '.
 import {
   createAuthorStoreOrder,
   createAuthorStoreOrderPayment,
+  createAuthorStoreBinancePdfCheckout,
+  getAuthorStoreBinancePdfCheckout,
   createMyAuthorStoreCategory,
   createMyAuthorStoreProduct,
   createMyAuthorStoreWithdrawal,
@@ -193,7 +197,30 @@ const createOrderIpLimit = createIpLimiter({
 })
 
 router.post('/orders', createOrderIpLimit, legacyAuthorBookCountryGate, createAuthorStoreOrder)
-router.post('/orders/create-payment', requireUser, authorBookCountryGate, createAuthorStoreOrderPayment)
+// Use actual product types from the DB, never client-supplied 'product_type'.
+const authorStoreDigitalCountryGate = async (req, res, next) => {
+  try {
+    const items = Array.isArray(req.body?.items) ? req.body.items : []
+    const ids = [...new Set(items.map(i => String(i?.id || i?.product_id || i?.productId || '').trim()).filter(Boolean))]
+    if (!ids.length || ids.length > 30) return res.status(400).json({ ok: false, message: 'Invalid cart items' })
+    const { data, error } = await supabase.from('author_store_products')
+      .select('id,product_type').in('id', ids)
+    if (error) throw error
+    if (data?.length !== ids.length) return res.status(400).json({ ok: false, message: 'Invalid cart products' })
+    if (data.some(item => item.product_type === 'pdf')) {
+      return requirePaymentCountry('pdfPayway')(req, res, next)
+    }
+    return next()
+  } catch (error) {
+    console.error('AUTHOR STORE PDF COUNTRY GATE ERROR:', error?.message || error)
+    return res.status(503).json({ ok: false, message: 'Could not verify PDF country permissions' })
+  }
+}
+
+router.post('/orders/create-payment', requireUser, authorBookCountryGate, authorStoreDigitalCountryGate, createAuthorStoreOrderPayment)
+router.post('/orders/binance-pdf/checkout', requireUser,
+  requirePaymentCountry('pdfBinancePay'), createAuthorStoreBinancePdfCheckout)
+router.get('/orders/binance-pdf/:purchaseId', requireUser, getAuthorStoreBinancePdfCheckout)
 router.get('/orders/my', requireUser, getMyAuthorStoreBuyerOrders)
 router.get('/orders/book-holds/my', requireUser, getMyAuthorStoreBuyerBookHoldStatuses)
 router.post('/orders/:orderId/confirm-received', requireUser, confirmMyAuthorStoreBookReceived)
