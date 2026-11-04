@@ -111,6 +111,7 @@ as $$
 declare
   v_receipt public.binance_usdt_alert_transactions%rowtype;
   v_uid text;
+  v_profile_updated timestamptz;
   v_count integer;
 begin
   if tg_op = 'UPDATE' then
@@ -145,6 +146,11 @@ begin
     end if;
   end if;
 
+  if new.status = 'fulfilled' and (new.fulfilled_at is null
+     or new.verified_at is null or new.fulfilled_at < new.verified_at) then
+    raise exception 'BINANCE_FULFILLMENT_TIMELINE_INVALID';
+  end if;
+
   if new.status <> 'fulfilled' then
     if new.verified_transaction_id is not null
       or new.verified_at is not null or new.fulfilled_at is not null then
@@ -177,13 +183,14 @@ begin
   end if;
 
   -- Never infer buyer identity from Binance display names or matching amounts.
-  select p.binance_uid into v_uid
+  select p.binance_uid,p.updated_at into v_uid,v_profile_updated
   from public.reader_binance_payment_profiles p
   where p.user_id = new.user_id;
   select count(*) into v_count
   from public.reader_binance_payment_profiles p
   where p.binance_uid = v_uid and v_uid <> '';
   if nullif(v_uid, '') is null or v_count <> 1
+    or v_profile_updated is null or v_profile_updated > new.created_at
     or v_receipt.payer_uid is distinct from v_uid then
     raise exception 'BINANCE_VERIFIED_PAYER_UID_REQUIRED';
   end if;
@@ -191,7 +198,7 @@ begin
   if v_receipt.transaction_time_ms <
        (extract(epoch from new.created_at) * 1000 - 60000)::bigint
     or v_receipt.transaction_time_ms >
-       (extract(epoch from new.expires_at) * 1000 + 600000)::bigint then
+       (extract(epoch from new.expires_at) * 1000 + 60000)::bigint then
     raise exception 'BINANCE_RECEIPT_TIME_WINDOW_MISMATCH';
   end if;
 
