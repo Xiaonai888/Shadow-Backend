@@ -17,6 +17,7 @@ const TELEGRAM_EDIT_SCAN_INTERVAL_MS = 60 * 1000
 const MAX_TELEGRAM_EDIT_RETRIES = 6
 // Limit database checks while Binance receipt history catches up every 15s.
 const PREMIUM_MATCH_SCAN_INTERVAL_MS = 60 * 1000
+const PDF_MATCH_SCAN_INTERVAL_MS = 60 * 1000
 
 let started = false
 let running = false
@@ -27,6 +28,8 @@ let wasCatchingUp = false
 let lastMatchErrorLogAt = 0
 let lastPremiumMatchErrorLogAt = 0
 let lastPremiumMatchScanAt = 0
+let lastPdfMatchScanAt = 0
+let lastPdfMatchErrorLogAt = 0
 let lastTelegramErrorLogAt = 0
 let lastEditErrorLogAt = 0
 let lastEditQueueScanAt = 0
@@ -485,11 +488,13 @@ export async function processBinanceUsdtAlertsOnce() {
   let editError = null
   let matchError = null
   let premiumMatchError = null
+  let pdfMatchError = null
   let ingest = null
   let delivery = null
   let edits = null
   let matching = null
   let premiumMatching = null
+  let pdfMatching = null
 
   try {
     try {
@@ -566,6 +571,31 @@ export async function processBinanceUsdtAlertsOnce() {
       }
     }
 
+    // PDF: one transaction commits the official receipt claim, author PDF
+    // download grants, paid order, +100 vouchers, and global fulfillment status.
+    if (Date.now() - lastPdfMatchScanAt >= PDF_MATCH_SCAN_INTERVAL_MS) {
+      lastPdfMatchScanAt = Date.now()
+      try {
+        const { data, error } = await supabase.rpc('auto_fulfill_shadow_binance_pdf_v1', { p_limit: 10 })
+        if (error) throw error
+        if (data?.ok !== true || !Number.isSafeInteger(Number(data?.fulfilled || 0))) {
+          throw new Error('Invalid PDF fulfillment RPC result')
+        }
+        pdfMatching = data
+        const fulfilled = Number(data.fulfilled || 0)
+        if (fulfilled > 0) console.info('BINANCE PDF AUTO FULFILLED ORDERS:', fulfilled)
+        for (const item of Array.isArray(data.fulfilled_orders) ? data.fulfilled_orders : []) {
+          if (!item?.user_id || !item?.author_order_number) continue
+          publishPaymentStatus({
+            user_id: item.user_id, order_id: item.author_order_number,
+            status: 'success', amount_usd: Math.max(0, Number(item.amount_usdt || 0) - 1),
+            diamonds: 0, bonus_gems: 0, released_at: item.fulfilled_at || null,
+            updated_at: item.fulfilled_at || null,
+          })
+        }
+      } catch (error) { pdfMatchError = error }
+    }
+
     // Always attempt Telegram delivery even if an unrelated order match fails.
     try {
       delivery = await deliverPendingAlerts()
@@ -590,6 +620,10 @@ export async function processBinanceUsdtAlertsOnce() {
       lastMatchErrorLogAt = Date.now()
       console.error('BINANCE USDT CHECKOUT MATCH ERROR:', safeError(matchError))
     }
+    if (pdfMatchError && Date.now() - lastPdfMatchErrorLogAt >= ANCILLARY_ERROR_LOG_INTERVAL_MS) {
+      lastPdfMatchErrorLogAt = Date.now()
+      console.error('BINANCE PDF AUTO FULFILL ERROR:', safeError(pdfMatchError))
+    }
     if (premiumMatchError && Date.now() - lastPremiumMatchErrorLogAt >= ANCILLARY_ERROR_LOG_INTERVAL_MS) {
       lastPremiumMatchErrorLogAt = Date.now()
       console.error('BINANCE PREMIUM AUTO FULFILL ERROR:', safeError(premiumMatchError))
@@ -606,7 +640,7 @@ export async function processBinanceUsdtAlertsOnce() {
       throw new Error(`history: ${safeError(ingestError)}`)
     }
 
-    return { ingest, matching, premiumMatching, delivery, edits }
+    return { ingest, matching, premiumMatching, pdfMatching, delivery, edits }
   } finally {
     running = false
   }
