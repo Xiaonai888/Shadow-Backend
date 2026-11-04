@@ -2536,6 +2536,8 @@ function publicAuthorPaymentOrder(order) {
     order_id: order.order_id,
     order_number: order.order_number || order.order_id,
     aba_transaction_id: order.aba_transaction_id || '',
+    payment_method: order.request_payload?.payment_method || 'aba_payway',
+    binance_purchase_id: order.request_payload?.binance_purchase_id || null,
     items: order.items || [],
     checkout_attribution: order.request_payload?.checkout_attribution || null,
     buyer_profile: order.buyer_profile || {},
@@ -4822,4 +4824,173 @@ export async function reorderMyAuthorStoreCategories(req, res) {
     console.error('REORDER MY AUTHOR STORE CATEGORIES ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to reorder store categories', error: error.message })
   }
+}
+
+
+// BINANCE PDF: separate checkout from the ABA callback. Financial side-effects
+// are exclusively in the atomic Supabase RPC (Step 15 SQL migration).
+const BINANCE_PDF_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const BINANCE_PDF_QR = '/api/purchase/binance/receiver/qr'
+
+function publicBinancePdfCheckout(row, paidOrder = null, receiverVerified = false) {
+  const expires = Date.parse(row.expires_at || '')
+  const ready = row.status === 'waiting_payment' && expires > Date.now() && receiverVerified
+  const meta = row.purchase_snapshot || {}
+  return {
+    id: row.id,
+    order_id: meta.author_order_number || '',
+    author_order_id: meta.author_order_id || '',
+    purchase_kind: 'pdf',
+    status: row.status,
+    payment_status: paidOrder?.payment_status || (row.status === 'fulfilled' ? 'paid' : 'pending'),
+    pdf_unlock_status: paidOrder?.pdf_unlock_status || (row.status === 'fulfilled' ? 'unlocked' : 'pending'),
+    amount_usdt: String(row.amount_usdt),
+    price_usd: String(row.payable_usd),
+    fee_usdt: String(row.binance_fee_usdt),
+    bonus_vouchers: Number(row.bonus_vouchers),
+    checkout_ready: ready,
+    receiver: ready ? { uid: row.receiver_uid, name: row.receiver_name } : null,
+    qr_path: ready ? BINANCE_PDF_QR : null,
+    created_at: row.created_at,
+    expires_at: row.expires_at,
+    fulfilled_at: row.fulfilled_at || null,
+  }
+}
+
+function publicBinancePdfError(res, err) {
+  const code = String(err?.code || err?.message || '')
+  if (code.includes('BINANCE_PDF_ACTIVE') || code.includes('duplicate key value')) {
+    return res.status(409).json({ ok: false, code: 'BINANCE_ACTIVE_CHECKOUT', message: 'A Binance checkout is already active. Complete or ask Admin to review it first.' })
+  }
+  if (code.includes('PAYER_UID_NOT_UNIQUE')) {
+    return res.status(409).json({ ok: false, code: 'BINANCE_PROFILE_REQUIRED', message: 'Save your unique Binance UID before purchasing.' })
+  }
+  console.error('AUTHOR BINANCE PDF PAYMENT ERROR:', String(err?.message || err).slice(0, 200))
+  return res.status(503).json({ ok: false, code: 'BINANCE_PDF_UNAVAILABLE', message: 'Verified Binance PDF checkout unavailable.' })
+}
+
+export async function createAuthorStoreBinancePdfCheckout(req, res) {
+  res.set('Cache-Control', 'private, no-store')
+  try {
+    const userId = getUserId(req)
+    if (!userId) return res.status(401).json({ ok: false, message: 'Please sign in.' })
+    const { getVerifiedBinanceReceiver } = await import('../services/binanceReceiverGuard.service.js')
+    const receiver = await getVerifiedBinanceReceiver()
+    if (!/^\d{5,20}$/.test(String(receiver.uid || '')) || !receiver.qrBytes?.length) {
+      throw new Error('Invalid Binance receiver')
+    }
+    const { data: payer, error: profileErr } = await supabase
+      .from('reader_binance_payment_profiles')
+      .select('binance_uid')
+      .eq('user_id', userId)
+      .maybeSingle()
+    if (profileErr) throw profileErr
+    if (!/^\d{5,20}$/.test(String(payer?.binance_uid || ''))) {
+      return res.status(409).json({ ok: false, code: 'BINANCE_PROFILE_REQUIRED', message: 'Save your Binance Name and UID first.' })
+    }
+    const { count: duplicates, error: duplicatesError } = await supabase
+      .from('reader_binance_payment_profiles')
+      .select('user_id', { count: 'exact', head: true })
+      .eq('binance_uid', payer.binance_uid)
+    if (duplicatesError) throw duplicatesError
+    if (duplicates !== 1) return res.status(409).json({ ok: false, code: 'BINANCE_UID_NOT_UNIQUE', message: 'Binance UID is not unique.' })
+
+    const built = await buildAuthorStoreOrderItems(req.body?.items)
+    let orderItems = await applyDiscoverAuthorStoreCheckoutPrices(req.body?.items, built.orderItems)
+    if (!orderItems.length || !orderItems.every(i => String(i.product_type || '').toLowerCase() === 'pdf')) {
+      return res.status(400).json({ ok: false, code: 'PDF_ONLY', message: 'Binance PDF checkout only accepts digital PDF books.' })
+    }
+    const usage = await getAuthorStorePromoUsedQuantities(built.authorPageId)
+    orderItems = applyAuthorStorePromoIncome(orderItems, usage)
+    const subtotal = Number(orderItems.reduce((sum, i) => sum + Number(i.total_usd || 0), 0).toFixed(2))
+    if (!Number.isFinite(subtotal) || subtotal < 0.01 || subtotal > 100000) {
+      return res.status(400).json({ ok: false, message: 'Invalid PDF subtotal.' })
+    }
+    const income = sumAuthorStoreIncomeItems(orderItems)
+    const signature = createAuthorCartSignature(orderItems, null, built.authorPageId)
+    const { data: activeOrder, error: activeError } = await supabase
+      .from('shadow_binance_purchase_orders')
+      .select('*')
+      .eq('user_id', userId)
+      .in('status', ['waiting_payment', 'pending_review'])
+      .order('created_at', { ascending: false })
+      .limit(1).maybeSingle()
+    if (activeError) throw activeError
+    if (activeOrder) {
+      const same = activeOrder.purchase_kind === 'pdf'
+        && activeOrder.purchase_snapshot?.cart_signature === signature
+        && Number(activeOrder.payable_usd) === subtotal
+      if (!same) return res.status(409).json({ ok: false, code: 'BINANCE_ACTIVE_CHECKOUT', message: 'Complete the current Binance order first.' })
+      const hash = crypto.createHash('sha256').update(receiver.qrBytes).digest('hex')
+      const validReceiver = activeOrder.receiver_uid === receiver.uid && activeOrder.receiver_name === receiver.name
+        && activeOrder.receiver_qr_sha256 === hash
+      return res.json({ ok: true, reused: true, order: publicBinancePdfCheckout(activeOrder, null, validReceiver) })
+    }
+
+    const user = await getUserProfile(userId)
+    const readerProfile = await getBuyerProfileForAuthorStore(userId)
+    const result = await supabase.rpc('create_shadow_binance_pdf_checkout_v1', {
+      p: {
+        user_id: userId,
+        author_page_id: built.authorPageId,
+        order_public_id: createAuthorStorePaymentOrderId(),
+        cart_signature: signature,
+        items: orderItems,
+        subtotal_usd: subtotal,
+        platform_fee_usd: income.platform_fee_usd,
+        author_income_usd: income.author_income_usd,
+        checkout_attribution: buildAuthorStoreCheckoutAttribution(orderItems),
+        buyer_name: user?.name || user?.username || '',
+        buyer_email: user?.email || '',
+        buyer_profile: {
+          name: user?.name || user?.username || '',
+          phone_number: readerProfile?.phone_number || '',
+          telegram_username: readerProfile?.telegram_username || '',
+          facebook_link: readerProfile?.facebook_link || '',
+        },
+        receiver_uid: receiver.uid,
+        receiver_name: receiver.name,
+        receiver_qr_sha256: crypto.createHash('sha256').update(receiver.qrBytes).digest('hex'),
+      },
+    })
+    if (result.error) throw result.error
+    if (result.data?.ok !== true || !BINANCE_PDF_ID.test(String(result.data?.purchase_id || ''))) {
+      throw new Error('BINANCE_PDF_INVALID_RPC_RESULT')
+    }
+    const { data: created, error: readError } = await supabase
+      .from('shadow_binance_purchase_orders').select('*')
+      .eq('id', result.data.purchase_id).eq('user_id', userId).single()
+    if (readError) throw readError
+    return res.status(201).json({ ok: true, reused: false, order: publicBinancePdfCheckout(created, null, true) })
+  } catch (err) { return publicBinancePdfError(res, err) }
+}
+
+export async function getAuthorStoreBinancePdfCheckout(req, res) {
+  res.set('Cache-Control', 'private, no-store')
+  try {
+    const userId = getUserId(req)
+    if (!userId) return res.status(401).json({ ok: false })
+    const id = String(req.params.purchaseId || '')
+    if (!BINANCE_PDF_ID.test(id)) return res.status(400).json({ ok: false, code: 'INVALID_ID' })
+    const { data: row, error } = await supabase
+      .from('shadow_binance_purchase_orders').select('*')
+      .eq('id', id).eq('user_id', userId).eq('purchase_kind', 'pdf').maybeSingle()
+    if (error) throw error
+    if (!row) return res.status(404).json({ ok: false, code: 'NOT_FOUND' })
+    const { data: authorOrder, error: authorErr } = await supabase
+      .from('author_store_orders').select('id,payment_status,pdf_unlock_status')
+      .eq('id', row.purchase_snapshot?.author_order_id).eq('buyer_id', userId).maybeSingle()
+    if (authorErr) throw authorErr
+    if (!authorOrder) throw new Error('BINANCE_PDF_AUTHOR_ORDER_NOT_FOUND')
+    let verified = false
+    if (row.status === 'waiting_payment' && Date.parse(row.expires_at) > Date.now()) {
+      try {
+        const { getVerifiedBinanceReceiver } = await import('../services/binanceReceiverGuard.service.js')
+        const receiver = await getVerifiedBinanceReceiver()
+        verified = receiver.uid === row.receiver_uid && receiver.name === row.receiver_name
+          && crypto.createHash('sha256').update(receiver.qrBytes).digest('hex') === row.receiver_qr_sha256
+      } catch { /* receiver outage: status still readable but QR is hidden */ }
+    }
+    return res.json({ ok: true, order: publicBinancePdfCheckout(row, authorOrder, verified) })
+  } catch (err) { return publicBinancePdfError(res, err) }
 }
