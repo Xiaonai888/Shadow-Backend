@@ -16,6 +16,7 @@ function getUserId(req) {
 }
 
 function getPlan(value) {
+  if (!(typeof value === 'number' || typeof value === 'string') || !/^(1|3|12)$/.test(String(value))) return null
   const months = Number(value)
   return PREMIUM_PLANS.find((plan) => plan.months === months) || null
 }
@@ -27,10 +28,8 @@ function createOrderId() {
 }
 
 function getExpiresAt() {
-  const minutes = Math.max(
-    3,
-    Number(process.env.PREMIUM_PAYMENT_EXPIRES_MINUTES || 15)
-  )
+  const configured = Number(process.env.PREMIUM_PAYMENT_EXPIRES_MINUTES || 15)
+  const minutes = Number.isFinite(configured) ? Math.max(3, Math.min(30, configured)) : 15
 
   return new Date(Date.now() + minutes * 60 * 1000).toISOString()
 }
@@ -59,7 +58,7 @@ function publicPayment(item) {
     total_diamonds: Number(item.diamonds || 0),
     payment_method: item.payment_method || 'premium_aba_payment_link',
     checkout_url: item.checkout_url || PAYMENT_LINK,
-    status: item.status,
+    status: item.status === 'waiting_payment' && item.paid_at ? 'pending_review' : item.status,
     match_status: item.match_status || '',
     match_reason: item.match_reason || '',
     aba_trx_id: item.aba_trx_id || '',
@@ -88,6 +87,8 @@ async function expireOldPayments(userId) {
     .eq('purchase_type', 'premium')
     .eq('payment_method', 'premium_aba_payment_link')
     .eq('status', 'waiting_payment')
+    .is('paid_at', null)
+    .is('released_at', null)
     .lt('expires_at', now)
 
   if (error) throw error
@@ -166,7 +167,6 @@ export async function getPremiumStatus(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to load Premium status',
-      error: error.message,
     })
   }
 }
@@ -175,9 +175,9 @@ export async function createPremiumPayment(req, res) {
   try {
     const userId = getUserId(req)
     const plan = getPlan(
-      req.body.plan_months ??
-        req.body.months ??
-        req.body.plan
+      req.body?.plan_months ??
+        req.body?.months ??
+        req.body?.plan
     )
 
     if (!userId) {
@@ -195,6 +195,19 @@ export async function createPremiumPayment(req, res) {
     }
 
     await expireOldPayments(userId)
+    // Don't create a second identical ABA Premium order when the provider
+    // already recorded payment but the Telegram release is still processing.
+    const { data: paidPending, error: paidPendingError } = await supabase
+      .from('payment_transactions').select('id')
+      .eq('user_id', userId).eq('purchase_type', 'premium')
+      .eq('payment_method', 'premium_aba_payment_link')
+      .eq('status', 'waiting_payment').not('paid_at', 'is', null)
+      .limit(1).maybeSingle()
+    if (paidPendingError) throw paidPendingError
+    if (paidPending) return res.status(409).json({
+      ok: false, code: 'PREMIUM_PAYMENT_PENDING_REVIEW',
+      message: 'Your previous Premium payment was received and is still being verified. Please check its status.',
+    })
 
     const existing = await findActivePayment(
       userId,
@@ -263,7 +276,6 @@ export async function createPremiumPayment(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to create Premium payment',
-      error: error.message,
     })
   }
 }
@@ -323,12 +335,27 @@ export async function getPremiumPaymentStatus(req, res) {
             updated_at: new Date().toISOString(),
           })
           .eq('id', payment.id)
+          .eq('user_id', userId)
+          .eq('purchase_type', 'premium')
           .eq('status', 'waiting_payment')
+          .is('paid_at', null)
+          .is('released_at', null)
           .select('*')
-          .single()
+          .maybeSingle()
 
       if (expiredError) throw expiredError
-      payment = expired
+      if (expired) {
+        payment = expired
+      } else {
+        // A Telegram approval could release the payment concurrently.
+        const { data: current, error: currentError } = await supabase
+          .from('payment_transactions').select('*')
+          .eq('id', payment.id).eq('user_id', userId)
+          .eq('purchase_type', 'premium').maybeSingle()
+        if (currentError) throw currentError
+        if (!current) return res.status(404).json({ ok: false, message: 'Premium payment not found' })
+        payment = current
+      }
     }
 
     const premium = await getPremiumState(userId)
@@ -344,7 +371,6 @@ export async function getPremiumPaymentStatus(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to load Premium payment status',
-      error: error.message,
     })
   }
 }
@@ -354,7 +380,7 @@ export async function cancelPremiumPayment(req, res) {
     const userId = getUserId(req)
     const orderId = String(
       req.params.orderId ||
-        req.body.order_id ||
+        req.body?.order_id ||
         ''
     ).trim()
 
@@ -372,6 +398,10 @@ export async function cancelPremiumPayment(req, res) {
       })
     }
 
+    if (req.body?.confirm_not_paid !== true) {
+      return res.status(409).json({ ok: false, code: 'CONFIRM_NOT_PAID_REQUIRED', message: 'Cancel only if you have NOT paid. Confirm no transfer was sent.' })
+    }
+
     const { data: payment, error: paymentError } =
       await supabase
         .from('payment_transactions')
@@ -383,12 +413,7 @@ export async function cancelPremiumPayment(req, res) {
 
     if (paymentError) throw paymentError
 
-    if (!payment) {
-      return res.status(200).json({
-        ok: true,
-        cancelled: true,
-      })
-    }
+    if (!payment) return res.status(404).json({ ok: false, message: 'Premium payment not found' })
 
     if (payment.status !== 'waiting_payment') {
       return res.status(400).json({
@@ -397,7 +422,7 @@ export async function cancelPremiumPayment(req, res) {
       })
     }
 
-    const { error } = await supabase
+    const { data: cancelled, error } = await supabase
       .from('payment_transactions')
       .update({
         status: 'cancelled',
@@ -406,9 +431,16 @@ export async function cancelPremiumPayment(req, res) {
         updated_at: new Date().toISOString(),
       })
       .eq('id', payment.id)
+      .eq('user_id', userId)
+      .eq('purchase_type', 'premium')
       .eq('status', 'waiting_payment')
+      .is('paid_at', null)
+      .is('released_at', null)
+      .select('id')
+      .maybeSingle()
 
     if (error) throw error
+    if (!cancelled) return res.status(409).json({ ok: false, code: 'PAYMENT_STATE_CHANGED', message: 'Payment may have been received; check status before cancelling.' })
 
     return res.status(200).json({
       ok: true,
@@ -420,7 +452,6 @@ export async function cancelPremiumPayment(req, res) {
     return res.status(500).json({
       ok: false,
       message: 'Failed to cancel Premium payment',
-      error: error.message,
     })
   }
 }
