@@ -105,7 +105,7 @@ export async function linkBinanceReceiptToCheckoutForAdmin({ orderId, transactio
 
   const { data: order, error: orderError } = await supabase
     .from('binance_checkout_orders')
-    .select('id,user_id,status,amount_usdt,created_at,expires_at,credited_at')
+    .select('id,user_id,status,amount_usdt,receiver_uid,created_at,expires_at,credited_at')
     .eq('id', id)
     .maybeSingle()
   if (orderError) throw orderError
@@ -114,22 +114,51 @@ export async function linkBinanceReceiptToCheckoutForAdmin({ orderId, transactio
     throw new BinanceClaimError('ORDER_NOT_CLAIMABLE', 409)
   }
 
-  const [receiptResult, creditResult, linkedResult] = await Promise.all([
+  // A manually linked receipt must satisfy the SAME identity and global
+  // consumption checks as the automatic Diamond/Premium/PDF workers.
+  // A checked Admin confirmation box is not a substitute for actual evidence.
+  const [receiptResult, creditResult, linkedResult, globalResult, profileResult] = await Promise.all([
     supabase.from('binance_usdt_alert_transactions')
-      .select('transaction_id,currency,amount,transaction_time_ms')
+      .select('transaction_id,currency,amount,transaction_time_ms,payer_uid,receiver_uid')
       .eq('transaction_id', transaction).maybeSingle(),
     supabase.from('admin_binance_usdt_credit_actions')
       .select('id').eq('transaction_id', transaction).limit(1).maybeSingle(),
     supabase.from('binance_checkout_orders')
       .select('id').eq('verified_transaction_id', transaction).limit(1).maybeSingle(),
+    supabase.from('shadow_binance_payment_claims')
+      .select('transaction_id').eq('provider', 'binance').eq('transaction_id', transaction).limit(1).maybeSingle(),
+    supabase.from('reader_binance_payment_profiles')
+      .select('binance_uid,updated_at').eq('user_id', order.user_id).maybeSingle(),
   ])
-  if (receiptResult.error) throw receiptResult.error
-  if (creditResult.error) throw creditResult.error
-  if (linkedResult.error) throw linkedResult.error
+  for (const result of [receiptResult, creditResult, linkedResult, globalResult, profileResult]) {
+    if (result.error) throw result.error
+  }
   if (!receiptResult.data) throw new BinanceClaimError('RECEIPT_NOT_FOUND', 404)
-  if (creditResult.data || linkedResult.data) throw new BinanceClaimError('TRANSACTION_ALREADY_CREDITED', 409)
+  if (creditResult.data || linkedResult.data || globalResult.data) {
+    throw new BinanceClaimError('TRANSACTION_ALREADY_CREDITED', 409)
+  }
 
   const receipt = receiptResult.data
+  if (!/^\d{5,20}$/.test(String(receipt.payer_uid || '')) ||
+      String(receipt.receiver_uid || '') !== String(order.receiver_uid || '')) {
+    throw new BinanceClaimError('RECEIVER_OR_PAYER_MISMATCH', 409)
+  }
+  if (String(profileResult.data?.binance_uid || '') !== String(receipt.payer_uid)) {
+    throw new BinanceClaimError('PAYER_UID_MISMATCH', 409)
+  }
+  const profileUpdated = Date.parse(profileResult.data?.updated_at || '')
+  const orderCreated = Date.parse(order.created_at || '')
+  if (!Number.isFinite(profileUpdated) || !Number.isFinite(orderCreated) || profileUpdated > orderCreated) {
+    throw new BinanceClaimError('PAYER_PROFILE_CHANGED', 409)
+  }
+  const { data: uidOwners, error: uidOwnersError } = await supabase
+    .from('reader_binance_payment_profiles')
+    .select('user_id').eq('binance_uid', String(receipt.payer_uid)).limit(2)
+  if (uidOwnersError) throw uidOwnersError
+  if (!Array.isArray(uidOwners) || uidOwners.length !== 1 || uidOwners[0].user_id !== order.user_id) {
+    throw new BinanceClaimError('PAYER_UID_NOT_UNIQUE', 409)
+  }
+
   const expected = usdtUnits(order.amount_usdt)
   const paid = usdtUnits(receipt.amount)
   if (receipt.currency !== 'USDT' || expected === null || paid === null || expected <= 0n || paid !== expected) {
@@ -143,8 +172,10 @@ export async function linkBinanceReceiptToCheckoutForAdmin({ orderId, transactio
     throw new BinanceClaimError('RECEIPT_TIME_MISMATCH', 409)
   }
 
-  // SQL serializes order changes and prevents one transaction from being
-  // claimed against multiple orders. Admin approval and passkey are separate.
+  // The claim RPC is idempotent per Diamond order, while the global receipt
+  // ledger and its credit-action trigger enforce cross-type uniqueness at
+  // fulfillment time. Prechecks above are defense-in-depth, not the SQL lock.
+  // Admin approval and a fresh Admin Passkey are still required.
   const claim = await submitBinanceCheckoutClaim({
     userId: order.user_id,
     orderId: id,
