@@ -64,10 +64,14 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 })
 
-router.use('/binance', purchasePreAuthLimit, binanceReceiverRoutes)
-router.use('/binance', purchasePreAuthLimit, binanceCheckoutRoutes)
-router.use('/binance', purchasePreAuthLimit, binanceCheckoutClaimsRoutes)
-router.use('/binance/premium', purchasePreAuthLimit, binancePremiumCheckoutRoutes)
+// Apply the shared pre-auth limiter ONCE per Binance request. Mounting it on
+// every child router charged 2-4 hits for a single request that passed through
+// earlier child routers before reaching its matching checkout endpoint.
+router.use('/binance', purchasePreAuthLimit)
+router.use('/binance', binanceReceiverRoutes)
+router.use('/binance', binanceCheckoutRoutes)
+router.use('/binance', binanceCheckoutClaimsRoutes)
+router.use('/binance/premium', binancePremiumCheckoutRoutes)
 
 router.get('/packages', purchasePreAuthLimit, getPurchasePackages)
 router.get('/wallet', purchasePreAuthLimit, requireUser, purchaseReadLimit, getMyWallet)
