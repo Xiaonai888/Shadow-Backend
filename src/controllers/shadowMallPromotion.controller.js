@@ -1284,13 +1284,27 @@ const AUTO_AD_STORY_SELECT = [
 ].join(', ')
 let autoAdGenerationPromise = null
 
-function cambodiaAutoAdDay() {
-  return new Date(Date.now() + 7 * 60 * 60 * 1000)
-    .toISOString().slice(0, 10)
+const AUTO_AD_SLOT_MS = 6 * 60 * 60 * 1000
+const AUTO_AD_CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
+
+// Fixed Cambodia slots: 00:00, 06:00, 12:00, 18:00 (Asia/Phnom_Penh).
+// No cron or per-user database writes are required.
+function cambodiaAutoAdSlot(nowMs = Date.now()) {
+  const slotStart = Math.floor((nowMs + AUTO_AD_CAMBODIA_OFFSET_MS) / AUTO_AD_SLOT_MS) * AUTO_AD_SLOT_MS
+  const localStart = new Date(slotStart)
+  const day = localStart.toISOString().slice(0, 10)
+  const hour = String(localStart.getUTCHours()).padStart(2, '0')
+  const startedAtMs = slotStart - AUTO_AD_CAMBODIA_OFFSET_MS
+  return {
+    day,
+    slot_key: `${day}T${hour}:00`,
+    started_at: new Date(startedAtMs).toISOString(),
+    next_refresh_at: new Date(startedAtMs + AUTO_AD_SLOT_MS).toISOString(),
+  }
 }
 
-function autoAdDailyScore(day, id) {
-  const value = `${day}:${id}`
+function autoAdDailyScore(slotKey, id) {
+  const value = `${slotKey}:${id}`
   let hash = 2166136261
   for (let i = 0; i < value.length; i += 1) {
     hash ^= value.charCodeAt(i)
@@ -1313,12 +1327,18 @@ async function readAutoAdControl() {
 }
 
 function autoAdPublicResponse(row) {
+  const slot = cambodiaAutoAdSlot()
+  const enabled = row.mode === 'auto'
   return {
     ok: true,
-    mode: row.mode === 'auto' ? 'auto' : 'manual',
-    day: row.day || null,
+    mode: enabled ? 'auto' : 'manual',
+    day: enabled ? slot.day : (row.day || null),
+    slot_key: enabled ? slot.slot_key : null,
+    slot_started_at: enabled ? slot.started_at : null,
+    next_refresh_at: enabled ? slot.next_refresh_at : null,
+    refresh_interval_hours: 6,
     generated_at: row.generated_at || null,
-    ads: row.mode === 'auto' && Array.isArray(row.ads) ? row.ads : [],
+    ads: enabled && Array.isArray(row.ads) ? row.ads : [],
   }
 }
 
@@ -1334,7 +1354,7 @@ function autoAdStoryQuery() {
     .or('total_episodes.gte.6,story_status.ilike.completed')
 }
 
-async function selectDailyAutoAdStories(day) {
+async function selectSlotAutoAdStories(slotKey, previousAds = []) {
   const [lowViews, newest] = await Promise.all([
     autoAdStoryQuery()
       .order('total_views', { ascending: true })
@@ -1347,21 +1367,31 @@ async function selectDailyAutoAdStories(day) {
   if (lowViews.error) throw lowViews.error
   if (newest.error) throw newest.error
 
+  // Deterministic pseudo-random order for each 6-hour slot. All users see the
+  // same ten saved ads; refreshing a page does not trigger a new random list.
   const randomized = (rows) => [...(rows || [])].sort(
-    (a, b) => autoAdDailyScore(day, a.id) - autoAdDailyScore(day, b.id)
+    (a, b) => autoAdDailyScore(slotKey, a.id) - autoAdDailyScore(slotKey, b.id)
   )
   const groups = [randomized(lowViews.data), randomized(newest.data)]
-  const selected = []
-  const seen = new Set()
-  const add = (story) => {
-    if (!story?.id || seen.has(story.id) || selected.length >= 10) return
-    seen.add(story.id)
-    selected.push(story)
+  const pool = []
+  const poolSeen = new Set()
+  const addToPool = (story) => {
+    if (!story?.id || poolSeen.has(story.id)) return
+    poolSeen.add(story.id)
+    pool.push(story)
   }
-  for (let i = 0; selected.length < 10 && i < 60; i += 1) {
-    add(groups[0][i])
-    add(groups[1][i])
+  for (let i = 0; i < 60; i += 1) {
+    addToPool(groups[0][i])
+    addToPool(groups[1][i])
   }
+
+  // Prefer stories absent from the previous batch; reuse only if fewer than
+  // ten alternative eligible stories exist.
+  const previousIds = new Set((previousAds || []).map((item) => String(item.story_id || '')))
+  const selected = [
+    ...pool.filter((story) => !previousIds.has(String(story.id))),
+    ...pool.filter((story) => previousIds.has(String(story.id))),
+  ].slice(0, 10)
   if (!selected.length) return []
 
   const ids = selected.map((story) => story.id)
@@ -1413,18 +1443,26 @@ async function selectDailyAutoAdStories(day) {
   })
 }
 
-async function ensureDailyAutoAdControl() {
+async function ensureSlotAutoAdControl() {
   const row = await readAutoAdControl()
-  const day = cambodiaAutoAdDay()
-  if (row.mode !== 'auto' || (row.day === day && Array.isArray(row.ads))) {
-    return row
-  }
+  if (row.mode !== 'auto') return row
+
+  const slot = cambodiaAutoAdSlot()
+  const generatedAt = Date.parse(row.generated_at || '')
+  const fresh = row.day === slot.day &&
+    Number.isFinite(generatedAt) &&
+    generatedAt >= Date.parse(slot.started_at) &&
+    generatedAt < Date.parse(slot.next_refresh_at) &&
+    Array.isArray(row.ads)
+  if (fresh) return row
+
+  // Same-process single-flight protects Supabase on concurrent public requests.
   if (!autoAdGenerationPromise) {
     autoAdGenerationPromise = (async () => {
-      const ads = await selectDailyAutoAdStories(day)
+      const ads = await selectSlotAutoAdStories(slot.slot_key, row.ads)
       const { data, error } = await supabase
         .from(AUTO_AD_CONTROL_TABLE)
-        .update({ day, ads, generated_at: new Date().toISOString() })
+        .update({ day: slot.day, ads, generated_at: new Date().toISOString() })
         .eq('id', 1)
         .eq('mode', 'auto')
         .select('id, mode, day, ads, generated_at, updated_at')
@@ -1439,7 +1477,7 @@ async function ensureDailyAutoAdControl() {
 export async function getAdminShadowMallAutoAds(req, res) {
   try {
     res.setHeader('Cache-Control', 'private, no-store')
-    const row = await ensureDailyAutoAdControl()
+    const row = await ensureSlotAutoAdControl()
     return res.status(200).json(autoAdPublicResponse(row))
   } catch (error) {
     console.error('GET ADMIN AUTO ADS ERROR:', error)
@@ -1464,7 +1502,7 @@ export async function updateAdminShadowMallAutoAdMode(req, res) {
     }, { onConflict: 'id' })
     if (error) throw error
     invalidateShadowMallPromotionsCache()
-    const row = await ensureDailyAutoAdControl()
+    const row = await ensureSlotAutoAdControl()
     return res.status(200).json(autoAdPublicResponse(row))
   } catch (error) {
     console.error('UPDATE AUTO AD MODE ERROR:', error)
@@ -1475,11 +1513,10 @@ export async function updateAdminShadowMallAutoAdMode(req, res) {
 export async function getPublicShadowMallAdControl(req, res) {
   try {
     res.setHeader('Cache-Control', 'no-store')
-    const row = await ensureDailyAutoAdControl()
+    const row = await ensureSlotAutoAdControl()
     return res.status(200).json(autoAdPublicResponse(row))
   } catch (error) {
     console.error('GET PUBLIC AUTO ADS ERROR:', error)
     return res.status(500).json({ ok: false, message: 'Failed to load Ad control' })
   }
 }
-
