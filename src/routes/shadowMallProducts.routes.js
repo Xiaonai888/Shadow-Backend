@@ -25,6 +25,7 @@ import {
   getPublicShadowMallPromotion,
   getPublicShadowMallPromotions,
   getPublicShadowMallAdControl,
+  getPublicShadowMallAutoAdCatalog,
   reorderAdminShadowMallPromotions,
   updateAdminShadowMallPromotion,
   updateAdminShadowMallPromotionById,
@@ -222,6 +223,15 @@ router.get(
   '/ad-control',
   publicPromotionRateLimit,
   getPublicShadowMallAdControl
+)
+
+// Public shared catalog for the smart Auto Ad queue. This endpoint has no
+// per-user DB writes or authentication; its controller provides cache headers.
+// Paginate with GET /ad-catalog?limit=50&cursor=<last_story_uuid>.
+router.get(
+  '/ad-catalog',
+  publicPromotionRateLimit,
+  getPublicShadowMallAutoAdCatalog
 )
 
 router.get('/products', getShadowMallProducts)
