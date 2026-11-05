@@ -11,6 +11,16 @@ const FROZEN_PATH_PREFIXES = [
   '/api/reader-stories',
 ]
 
+const TRUSTED_YOUTUBE_HOSTS = new Set([
+  'youtube.com',
+  'www.youtube.com',
+  'm.youtube.com',
+  'youtube-nocookie.com',
+  'www.youtube-nocookie.com',
+  'youtu.be',
+  'www.youtu.be',
+])
+
 function requestPath(req) {
   return String(req.originalUrl || req.url || '')
     .split('?')[0]
@@ -24,6 +34,61 @@ function isFrozenPath(path) {
     FROZEN_PATH_PREFIXES.some((prefix) =>
       input.startsWith(prefix)
     ) || input.includes('/manga')
+  )
+}
+
+// YouTube videos are external links, not files uploaded to R2.
+// Apply the exception ONLY to verified video links on Fast/Reel write routes.
+function trustedYouTubeVideoId(value) {
+  if (typeof value !== 'string' || value.length > 2048) return ''
+
+  try {
+    const url = new URL(value.trim())
+    if (url.protocol !== 'https:' || url.username || url.password) return ''
+    const host = url.hostname.toLowerCase()
+    if (!TRUSTED_YOUTUBE_HOSTS.has(host)) return ''
+
+    const segments = url.pathname.split('/').filter(Boolean)
+    let id = ''
+    if (host === 'youtu.be' || host === 'www.youtu.be') {
+      if (segments.length !== 1) return ''
+      id = segments[0]
+    } else if (segments.length === 1 && segments[0] === 'watch') {
+      id = url.searchParams.get('v') || ''
+    } else if (segments.length === 2 && ['shorts', 'embed', 'live'].includes(segments[0])) {
+      id = segments[1]
+    }
+
+    return /^[A-Za-z0-9_-]{11}$/.test(id) ? id : ''
+  } catch {
+    return ''
+  }
+}
+
+// The auto-thumbnail must be on YouTube's own image host and match the video ID.
+function trustedYouTubeThumbnailId(value) {
+  if (typeof value !== 'string' || value.length > 2048) return ''
+
+  try {
+    const url = new URL(value.trim())
+    if (
+      url.protocol !== 'https:' ||
+      url.hostname.toLowerCase() !== 'img.youtube.com' ||
+      url.username || url.password || url.search || url.hash
+    ) return ''
+
+    const match = /^\/vi\/([A-Za-z0-9_-]{11})\/(?:default|mqdefault|hqdefault|sddefault|maxresdefault)\.jpg$/.exec(url.pathname)
+    return match?.[1] || ''
+  } catch {
+    return ''
+  }
+}
+
+function isFastReelWrite(req, path) {
+  const method = String(req.method || '').toUpperCase()
+  return (
+    (method === 'POST' && path === '/api/fast/videos') ||
+    (method === 'PATCH' && /^\/api\/fast\/videos\/[^/]+$/.test(path))
   )
 }
 
@@ -58,14 +123,27 @@ function isLegacyCompatibleMutation(req, path) {
 function mediaPolicyBody(req, path) {
   const method = String(req.method || '').toUpperCase()
 
-  if (method !== 'POST' || path !== '/api/authors/me/payment-methods') {
-    return req.body
+  if (method === 'POST' && path === '/api/authors/me/payment-methods') {
+    const body = { ...(req.body || {}) }
+    delete body.qr_image_url
+    delete body.qrImageUrl
+    return body
   }
 
-  const body = { ...(req.body || {}) }
-  delete body.qr_image_url
-  delete body.qrImageUrl
-  return body
+  if (isFastReelWrite(req, path) && req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
+    const checkedBody = { ...req.body }
+    const videoId = trustedYouTubeVideoId(checkedBody.video_url)
+    if (videoId) {
+      delete checkedBody.video_url
+      if (trustedYouTubeThumbnailId(checkedBody.thumbnail_url) === videoId) {
+        delete checkedBody.thumbnail_url
+      }
+    }
+    // Never modify req.body; the Fast controller receives and validates the original payload.
+    return checkedBody
+  }
+
+  return req.body
 }
 
 function sendPolicyError(res, error) {
@@ -116,8 +194,7 @@ export function globalMediaUploadGuard(req, res, next) {
 
   try {
     const body = mediaPolicyBody(req, path)
-
-    assertNoInlineMediaReferences(body, 'request.body')
+    assertNoInlineMediaReferences(req.body, 'request.body')
     assertNoInlineMediaReferences(req.query, 'request.query')
 
     if (!isLegacyCompatibleMutation(req, path)) {
