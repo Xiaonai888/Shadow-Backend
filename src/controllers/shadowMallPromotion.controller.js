@@ -1284,6 +1284,15 @@ const AUTO_AD_STORY_SELECT = [
 ].join(', ')
 let autoAdGenerationPromise = null
 
+// Shared, public catalog pages. No per-reader Supabase queries or writes.
+// Bounded in-memory single-flight cache; a CDN may additionally cache the GET.
+const AUTO_AD_CATALOG_DEFAULT_PAGE_SIZE = 50
+const AUTO_AD_CATALOG_MAX_PAGE_SIZE = 100
+const AUTO_AD_CATALOG_CACHE_MS = 2 * 60 * 1000
+const AUTO_AD_CATALOG_MAX_CACHED_PAGES = 24
+const autoAdCatalogCache = new Map()
+const AUTO_AD_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 const AUTO_AD_SLOT_MS = 6 * 60 * 60 * 1000
 const AUTO_AD_CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
 
@@ -1338,64 +1347,37 @@ function autoAdPublicResponse(row) {
     next_refresh_at: enabled ? slot.next_refresh_at : null,
     refresh_interval_hours: 6,
     generated_at: row.generated_at || null,
-    ads: enabled && Array.isArray(row.ads) ? row.ads : [],
+    // Rotation cursor is stored only inside the cached DB record, never sent
+    // as part of a public Ad card. The public response still contains <= 10.
+    ads: enabled && Array.isArray(row.ads)
+      ? row.ads.slice(0, 10).map((ad) => {
+          const { __shadow_pool_cursor: _internalCursor, ...publicAd } = ad || {}
+          return publicAd
+        })
+      : [],
   }
 }
 
-function autoAdStoryQuery() {
+// Eligibility is enforced server-side for both the small six-hour fallback
+// and the shared catalog used by future personalized Discover queues.
+// Five episodes OR completed (short completed stories qualify).
+function autoAdStoryQuery(selectFields = AUTO_AD_STORY_SELECT) {
   return supabase
     .from('stories')
-    .select(AUTO_AD_STORY_SELECT)
+    .select(selectFields)
     .eq('status', 'published')
     .is('deleted_at', null)
     .or('admin_visibility_status.is.null,admin_visibility_status.eq.active')
     .or('is_adult.is.null,is_adult.eq.false')
     .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false,exclusive_status.eq.approved')
-    .or('total_episodes.gte.6,story_status.ilike.completed')
+    .or('total_episodes.gte.5,story_status.ilike.completed')
 }
 
-async function selectSlotAutoAdStories(slotKey, previousAds = []) {
-  const [lowViews, newest] = await Promise.all([
-    autoAdStoryQuery()
-      .order('total_views', { ascending: true })
-      .order('created_at', { ascending: false })
-      .limit(60),
-    autoAdStoryQuery()
-      .order('created_at', { ascending: false })
-      .limit(60),
-  ])
-  if (lowViews.error) throw lowViews.error
-  if (newest.error) throw newest.error
-
-  // Deterministic pseudo-random order for each 6-hour slot. All users see the
-  // same ten saved ads; refreshing a page does not trigger a new random list.
-  const randomized = (rows) => [...(rows || [])].sort(
-    (a, b) => autoAdDailyScore(slotKey, a.id) - autoAdDailyScore(slotKey, b.id)
-  )
-  const groups = [randomized(lowViews.data), randomized(newest.data)]
-  const pool = []
-  const poolSeen = new Set()
-  const addToPool = (story) => {
-    if (!story?.id || poolSeen.has(story.id)) return
-    poolSeen.add(story.id)
-    pool.push(story)
-  }
-  for (let i = 0; i < 60; i += 1) {
-    addToPool(groups[0][i])
-    addToPool(groups[1][i])
-  }
-
-  // Prefer stories absent from the previous batch; reuse only if fewer than
-  // ten alternative eligible stories exist.
-  const previousIds = new Set((previousAds || []).map((item) => String(item.story_id || '')))
-  const selected = [
-    ...pool.filter((story) => !previousIds.has(String(story.id))),
-    ...pool.filter((story) => previousIds.has(String(story.id))),
-  ].slice(0, 10)
-  if (!selected.length) return []
-
-  const ids = selected.map((story) => story.id)
-  const authorIds = [...new Set(selected.map((story) => story.author_id).filter(Boolean))]
+// Enrich only the stories the client may use; images are URLs, not image bytes.
+async function enrichAutoAdStories(stories, { compact = false } = {}) {
+  if (!stories?.length) return []
+  const ids = stories.map((story) => story.id)
+  const authorIds = [...new Set(stories.map((story) => story.author_id).filter(Boolean))]
   const [slidesResult, authorsResult] = await Promise.all([
     supabase.from('story_carousel_slides')
       .select('story_id, image_url, sort_order')
@@ -1417,15 +1399,15 @@ async function selectSlotAutoAdStories(slotKey, previousAds = []) {
       firstSlide.set(slide.story_id, slide.image_url)
     }
   }
-  const authorMap = new Map(
-    (authorsResult.data || []).map((page) => [page.id, page])
-  )
-  return selected.map((story) => {
+  const authorMap = new Map((authorsResult.data || []).map((author) => [author.id, author]))
+  return stories.map((story) => {
     const author = authorMap.get(story.author_id)
     return {
       story_id: story.id,
       title: story.title,
-      description: story.description || '',
+      description: compact
+        ? String(story.description || '').slice(0, 360)
+        : String(story.description || ''),
       preview_image_url: firstSlide.get(story.id) || story.cover_url || '',
       cover_url: story.cover_url || '',
       story_status: story.story_status || 'New',
@@ -1433,14 +1415,137 @@ async function selectSlotAutoAdStories(slotKey, previousAds = []) {
       episode_count: Number(story.total_episodes || 0),
       total_views: Number(story.total_views || 0),
       total_likes: Number(story.total_likes || 0),
-      tags: Array.isArray(story.tags) ? story.tags : [],
+      tags: Array.isArray(story.tags) ? story.tags.slice(0, 12) : [],
       author_id: story.author_id,
       author_name: author?.page_name || '',
       author_username: author?.page_username || '',
       author_avatar_url: author?.avatar_url || '',
       last_update_at: story.updated_at || story.created_at || null,
+      created_at: story.created_at || null,
     }
   })
+}
+
+// The existing DB row already has an `ads` JSONB array. Store a small cursor
+// on the FIRST cached card, not the whole pool of IDs; public responses strip
+// this internal field. No new SQL table, per-user writes, or full-pool scan.
+function previousPoolCursor(previousAds) {
+  const state = previousAds?.[0]?.__shadow_pool_cursor
+  const cursor = typeof state?.last_id === 'string' ? state.last_id : ''
+  return {
+    lastId: AUTO_AD_UUID_PATTERN.test(cursor) ? cursor : '',
+    cycle: Math.max(1, Number(state?.cycle) || 1),
+  }
+}
+
+async function eligibleStoriesAfter(cursor, limit) {
+  let query = autoAdStoryQuery()
+    .order('id', { ascending: true })
+    .limit(limit)
+  if (cursor) query = query.gt('id', cursor)
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
+}
+
+async function selectSlotAutoAdStories(_slotKey, previousAds = []) {
+  const previous = previousPoolCursor(previousAds)
+  // Stable UUID order works across thousands of stories. Each slot reads at
+  // most 10 eligible records (plus an optional wrap query), not all stories.
+  const first = await eligibleStoriesAfter(previous.lastId, 10)
+  let selected = [...first]
+  let cycle = previous.cycle
+  if (selected.length < 10 && previous.lastId) {
+    // End of the pool: start a new cycle without repeating any card IN this batch.
+    const beginning = await eligibleStoriesAfter('', 10 - selected.length)
+    const seen = new Set(selected.map((story) => String(story.id)))
+    for (const story of beginning) {
+      if (!seen.has(String(story.id))) {
+        selected.push(story)
+        seen.add(String(story.id))
+      }
+    }
+    cycle += 1
+  }
+  if (!selected.length) return []
+
+  const ads = await enrichAutoAdStories(selected)
+  // Persist the cursor in the existing JSONB array. This is NOT exposed by API.
+  ads[0].__shadow_pool_cursor = {
+    version: 1,
+    last_id: String(selected[selected.length - 1].id),
+    cycle,
+  }
+  return ads
+}
+
+async function loadSharedAutoAdCatalogPage(cursor, limit) {
+  const cacheKey = `${cursor || 'first'}:${limit}`
+  const existing = autoAdCatalogCache.get(cacheKey)
+  if (existing && (existing.promise || existing.expiresAt > Date.now())) {
+    return existing.promise || existing.value
+  }
+
+  // Pages are sorted by immutable UUID, so new stories enter automatically.
+  // 1 extra item determines has_more without an expensive COUNT query.
+  const promise = (async () => {
+    let query = autoAdStoryQuery()
+      .order('id', { ascending: true })
+      .limit(limit + 1)
+    if (cursor) query = query.gt('id', cursor)
+    const { data, error } = await query
+    if (error) throw error
+    const results = data || []
+    const hasMore = results.length > limit
+    const pageStories = results.slice(0, limit)
+    const ads = await enrichAutoAdStories(pageStories, { compact: true })
+    return {
+      ok: true,
+      stories: ads,
+      has_more: hasMore,
+      next_cursor: hasMore && pageStories.length
+        ? String(pageStories[pageStories.length - 1].id)
+        : null,
+      page_size: limit,
+    }
+  })()
+
+  if (autoAdCatalogCache.size >= AUTO_AD_CATALOG_MAX_CACHED_PAGES) {
+    autoAdCatalogCache.delete(autoAdCatalogCache.keys().next().value)
+  }
+  autoAdCatalogCache.set(cacheKey, { promise, expiresAt: 0 })
+  try {
+    const value = await promise
+    autoAdCatalogCache.set(cacheKey, {
+      value,
+      expiresAt: Date.now() + AUTO_AD_CATALOG_CACHE_MS,
+    })
+    return value
+  } catch (error) {
+    autoAdCatalogCache.delete(cacheKey)
+    throw error
+  }
+}
+
+// NEXT STEP: mount this read-only endpoint in shadowMallProducts.routes.js.
+// GET /api/shadow-mall/ad-catalog?limit=50&cursor=<last_uuid>
+// Shared URL and response for every reader; the browser personalizes locally.
+export async function getPublicShadowMallAutoAdCatalog(req, res) {
+  const cursor = String(req.query?.cursor || '').trim()
+  if (cursor && !AUTO_AD_UUID_PATTERN.test(cursor)) {
+    return res.status(400).json({ ok: false, message: 'Invalid catalog cursor' })
+  }
+  const requestedLimit = Number(req.query?.limit)
+  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+    ? Math.max(1, Math.min(AUTO_AD_CATALOG_MAX_PAGE_SIZE, Math.floor(requestedLimit)))
+    : AUTO_AD_CATALOG_DEFAULT_PAGE_SIZE
+  try {
+    res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=120, stale-while-revalidate=60')
+    return res.status(200).json(await loadSharedAutoAdCatalogPage(cursor, limit))
+  } catch (error) {
+    console.error('GET SHARED AUTO AD CATALOG ERROR:', error)
+    return res.status(500).json({ ok: false, message: 'Failed to load story catalog' })
+  }
 }
 
 async function ensureSlotAutoAdControl() {
@@ -1462,9 +1567,11 @@ async function ensureSlotAutoAdControl() {
       const ads = await selectSlotAutoAdStories(slot.slot_key, row.ads)
       const { data, error } = await supabase
         .from(AUTO_AD_CONTROL_TABLE)
-        .update({ day: slot.day, ads, generated_at: new Date().toISOString() })
+        .update({ day: slot.day, ads, generated_at: new Date().toISOString(), updated_at: new Date().toISOString() })
         .eq('id', 1)
         .eq('mode', 'auto')
+        // Optimistic concurrency: one slot writer wins even across instances.
+        .eq('updated_at', row.updated_at)
         .select('id, mode, day, ads, generated_at, updated_at')
         .maybeSingle()
       if (error) throw error
