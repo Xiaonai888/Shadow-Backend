@@ -1490,8 +1490,12 @@ export async function updateAdminShadowMallAutoAdMode(req, res) {
   if (mode !== 'manual' && mode !== 'auto') {
     return res.status(400).json({ ok: false, message: 'Invalid Ad mode' })
   }
+
+  let previous = null
+  let savedModeChange = false
+  let restoredPreviousMode = false
   try {
-    const previous = await readAutoAdControl()
+    previous = await readAutoAdControl()
     const { error } = await supabase.from(AUTO_AD_CONTROL_TABLE).upsert({
       id: 1,
       mode,
@@ -1501,15 +1505,45 @@ export async function updateAdminShadowMallAutoAdMode(req, res) {
       updated_at: new Date().toISOString(),
     }, { onConflict: 'id' })
     if (error) throw error
+    savedModeChange = previous.mode !== mode
+
     invalidateShadowMallPromotionsCache()
     const row = await ensureSlotAutoAdControl()
     return res.status(200).json(autoAdPublicResponse(row))
   } catch (error) {
+    // A failed initial Auto Ad generation must not silently leave Auto enabled
+    // while the Admin shows an error. Keep existing Manual Ads available.
+    if (savedModeChange && previous?.mode === 'manual' && mode === 'auto') {
+      try {
+        const { data: restoredRow, error: restoreError } = await supabase
+          .from(AUTO_AD_CONTROL_TABLE)
+          .update({
+            mode: 'manual',
+            day: previous.day,
+            ads: Array.isArray(previous.ads) ? previous.ads : [],
+            generated_at: previous.generated_at,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', 1)
+          .eq('mode', 'auto')
+          .select('id, mode')
+          .maybeSingle()
+        if (restoreError) throw restoreError
+        restoredPreviousMode = restoredRow?.mode === 'manual'
+        if (restoredPreviousMode) invalidateShadowMallPromotionsCache()
+      } catch (restoreError) {
+        console.error('AUTO AD MODE ROLLBACK ERROR:', restoreError)
+      }
+    }
     console.error('UPDATE AUTO AD MODE ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to update Ad mode' })
+    return res.status(500).json({
+      ok: false,
+      message: restoredPreviousMode
+        ? 'Auto Ads could not start. Manual Ads are still enabled.'
+        : 'Failed to update Ad mode. Check the current mode before retrying.',
+    })
   }
 }
-
 export async function getPublicShadowMallAdControl(req, res) {
   try {
     res.setHeader('Cache-Control', 'no-store')
