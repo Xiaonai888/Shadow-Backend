@@ -6,6 +6,7 @@ const REPORT_TYPES = new Set([
   'author_page',
   'author_post',
   'reader_post',
+  'fast_video',
 ])
 
 const REASON_CODES = new Set([
@@ -181,6 +182,25 @@ async function getReaderPostTarget(targetId) {
   }
 }
 
+// Fast reports must resolve the actual Fast video, never an unrelated Story or Post.
+// Use only fields already present in fast_videos and only publicly available videos.
+async function getFastVideoTarget(targetId) {
+  const { data, error } = await supabase
+    .from('fast_videos')
+    .select('id, title, description, video_url, status')
+    .eq('id', targetId)
+    .eq('status', 'published')
+    .maybeSingle()
+
+  if (error) throw error
+  if (!data) return null
+
+  return {
+    title: `Fast Reel: ${excerpt(data.title, 180) || 'Untitled video'}`,
+    excerpt: excerpt(data.description || data.video_url),
+  }
+}
+
 async function getAuthorReviewTarget(targetId) {
   const { data, error } = await supabase
     .from('author_page_reviews')
@@ -231,6 +251,7 @@ async function resolveTarget(reportType, targetId) {
   if (reportType === 'author_page') return getAuthorPageTarget(targetId)
   if (reportType === 'author_post') return getAuthorPostTarget(targetId)
   if (reportType === 'reader_post') return getReaderPostTarget(targetId)
+  if (reportType === 'fast_video') return getFastVideoTarget(targetId)
   return null
 }
 
