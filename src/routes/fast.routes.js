@@ -14,6 +14,13 @@ import {
 
 import fastLikesRouter from './fastLikes.routes.js'
 import {
+  listFastComments,
+  createFastComment,
+  updateFastComment,
+  deleteFastComment,
+  setFastCommentLike,
+} from '../controllers/fastComments.controller.js'
+import {
   listMyFastReels,
   updateMyFastReel,
   deleteMyFastReel,
@@ -181,6 +188,29 @@ router.post(
 router.get('/videos/mine', fastVideoManageReadLimit, requireUser, listMyFastReels)
 router.patch('/videos/:id', fastVideoManageWriteLimit, requireUser, updateMyFastReel)
 router.delete('/videos/:id', fastVideoManageWriteLimit, requireUser, deleteMyFastReel)
+
+// Fast Reel comments are separate from Story and Discover comments.
+// IP rate limits run BEFORE requireUser (which validates device sessions).
+const fastCommentReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 450,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { ok: false, message: 'Too many comment requests. Please try again.' },
+})
+const fastCommentWriteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 45,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { ok: false, message: 'Too many comment changes. Please try again.' },
+})
+
+router.get('/videos/:id/comments', fastCommentReadLimit, listFastComments)
+router.post('/videos/:id/comments', fastCommentWriteLimit, requireUser, createFastComment)
+router.patch('/videos/:id/comments/:commentId', fastCommentWriteLimit, requireUser, updateFastComment)
+router.delete('/videos/:id/comments/:commentId', fastCommentWriteLimit, requireUser, deleteFastComment)
+router.put('/videos/:id/comments/:commentId/like', fastCommentWriteLimit, requireUser, setFastCommentLike)
 
 // Fast Like API: isolated router; does not touch any Post reaction endpoints.
 router.use('/videos', fastLikesRouter)
