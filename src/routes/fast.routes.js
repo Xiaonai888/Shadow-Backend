@@ -7,6 +7,7 @@ import { requireUser } from '../middleware/user.middleware.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 import { createFastVideo } from '../controllers/fastVideos.controller.js'
 import { listPublicFastVideos } from '../controllers/fastFeed.controller.js'
+import fastLikesRouter from './fastLikes.routes.js'
 import {
   listMyFastReels,
   updateMyFastReel,
@@ -137,6 +138,9 @@ router.post(
 router.get('/videos/mine', requireUser, listMyFastReels)
 router.patch('/videos/:id', requireUser, updateMyFastReel)
 router.delete('/videos/:id', requireUser, deleteMyFastReel)
+
+// Fast Like API: isolated router; does not touch any Post reaction endpoints.
+router.use('/videos', fastLikesRouter)
 
 router.get('/videos', fastVideoFeedLimit, listPublicFastVideos)
 router.post('/videos', requireUser, createFastVideo)
