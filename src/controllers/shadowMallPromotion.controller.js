@@ -1292,6 +1292,17 @@ const AUTO_AD_CATALOG_CACHE_MS = 2 * 60 * 1000
 const AUTO_AD_CATALOG_MAX_CACHED_PAGES = 24
 const autoAdCatalogCache = new Map()
 const AUTO_AD_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const AUTO_AD_CATALOG_CURSOR_PREFIX = 'v3.'
+const AUTO_AD_CATALOG_CURSOR_MAX_LENGTH = 512
+// Every shared catalog page combines a stable UUID-wide pool lane and a
+// globally newest lane. Browser still chooses seven personalized + three
+// newest from these 50 candidates; there is no per-reader database query.
+const AUTO_AD_CATALOG_POOL_WEIGHT = 7
+const AUTO_AD_CATALOG_NEW_WEIGHT = 3
+// After the 150 globally newest candidates have been offered, use the
+// remaining pages for the UUID-wide pool. This avoids scanning the same
+// thousands of stories again via two independent lanes.
+const AUTO_AD_CATALOG_RECENT_BUDGET = 150
 
 const AUTO_AD_SLOT_MS = 6 * 60 * 60 * 1000
 const AUTO_AD_CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
@@ -1479,47 +1490,175 @@ async function selectSlotAutoAdStories(_slotKey, previousAds = []) {
   return ads
 }
 
+// The API cursor contains two independent positions: a stable UUID walk
+// through every eligible story, and a newest-first walk across the WHOLE
+// eligible story pool. This prevents the "new" candidates from being chosen
+// only out of the current UUID page. No reader ID is used by the backend.
+// Existing UUID-only cursors remain supported for deployed older clients.
+function decodeSharedAutoAdCatalogCursor(value) {
+  if (!value) {
+    return { kind: 'mixed', poolId: '', recentAt: '', recentId: '', poolDone: false, recentDone: false, recentCount: 0 }
+  }
+  if (AUTO_AD_UUID_PATTERN.test(value)) return { kind: 'legacy', lastId: value }
+  if (!value.startsWith(AUTO_AD_CATALOG_CURSOR_PREFIX) ||
+      value.length > AUTO_AD_CATALOG_CURSOR_MAX_LENGTH) return null
+  try {
+    const raw = Buffer.from(value.slice(AUTO_AD_CATALOG_CURSOR_PREFIX.length), 'base64url').toString('utf8')
+    const data = JSON.parse(raw)
+    if (data?.v !== 3 || typeof data.p !== 'string' || typeof data.t !== 'string' ||
+        typeof data.n !== 'string' || typeof data.d !== 'boolean' || typeof data.r !== 'boolean' ||
+        !Number.isSafeInteger(data.k) || data.k < 0 || data.k > AUTO_AD_CATALOG_RECENT_BUDGET) return null
+    if (data.p && !AUTO_AD_UUID_PATTERN.test(data.p)) return null
+    if (data.n && !AUTO_AD_UUID_PATTERN.test(data.n)) return null
+    if (Boolean(data.t) !== Boolean(data.n)) return null
+    if (data.t && (data.t.length > 50 || !/^\d{4}-\d{2}-\d{2}T/.test(data.t) ||
+        !Number.isFinite(Date.parse(data.t)))) return null
+    return { kind: 'mixed', poolId: data.p, recentAt: data.t, recentId: data.n,
+      poolDone: data.d, recentDone: data.r, recentCount: data.k }
+  } catch {
+    return null
+  }
+}
+
+function encodeSharedAutoAdCatalogCursor(state) {
+  return AUTO_AD_CATALOG_CURSOR_PREFIX + Buffer.from(JSON.stringify({
+    v: 3,
+    p: state.poolId,
+    t: state.recentAt,
+    n: state.recentId,
+    d: state.poolDone,
+    r: state.recentDone,
+    k: state.recentCount,
+  })).toString('base64url')
+}
+
+function autoAdCatalogLaneSizes(limit, state = { recentDone: false, recentCount: 0 }) {
+  // A 50-story page normally uses 35 pool + 15 newest candidates. Once the
+  // shared newest budget is exhausted, scan all 50 via the stable pool lane.
+  if (limit === 1 || state.recentDone || state.recentCount >= AUTO_AD_CATALOG_RECENT_BUDGET) {
+    return { pool: limit, recent: 0 }
+  }
+  const preferredRecent = Math.max(1, Math.round(limit * AUTO_AD_CATALOG_NEW_WEIGHT /
+    (AUTO_AD_CATALOG_POOL_WEIGHT + AUTO_AD_CATALOG_NEW_WEIGHT)))
+  const recent = Math.min(preferredRecent, AUTO_AD_CATALOG_RECENT_BUDGET - state.recentCount)
+  return { pool: limit - recent, recent }
+}
+
+async function loadSharedAutoAdCatalogPageUncached(cursor, limit) {
+  const state = decodeSharedAutoAdCatalogCursor(cursor)
+  if (!state) throw new Error('Invalid shared catalog cursor')
+
+  // Old clients may have an already-persisted UUID cursor. Finish their
+  // current cycle in its original order without breaking their saved queue.
+  if (state.kind === 'legacy') {
+    const { data, error } = await autoAdStoryQuery()
+      .order('id', { ascending: true })
+      .gt('id', state.lastId)
+      .limit(limit + 1)
+    if (error) throw error
+    const results = data || []
+    const pageStories = results.slice(0, limit)
+    const hasMore = results.length > limit
+    return {
+      ok: true,
+      stories: await enrichAutoAdStories(pageStories, { compact: true }),
+      has_more: hasMore,
+      next_cursor: hasMore ? String(pageStories[pageStories.length - 1].id) : null,
+      page_size: limit,
+    }
+  }
+
+  const sizes = autoAdCatalogLaneSizes(limit, state)
+  const poolQuery = state.poolDone ? Promise.resolve({ data: [], error: null }) : (() => {
+    let query = autoAdStoryQuery()
+      .order('id', { ascending: true })
+      .limit(sizes.pool + 1)
+    if (state.poolId) query = query.gt('id', state.poolId)
+    return query
+  })()
+  const recentQuery = state.recentDone || sizes.recent === 0
+    ? Promise.resolve({ data: [], error: null })
+    : (() => {
+        let query = autoAdStoryQuery()
+          .not('created_at', 'is', null)
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false })
+          .limit(sizes.recent + 1)
+        if (state.recentAt) {
+          // Tie-break on UUID so timestamps shared by many stories never
+          // skip or repeat a page boundary (PostgREST OR filter).
+          query = query.or(`created_at.lt.${state.recentAt},and(created_at.eq.${state.recentAt},id.lt.${state.recentId})`)
+        }
+        return query
+      })()
+
+  const [poolResult, recentResult] = await Promise.all([poolQuery, recentQuery])
+  if (poolResult.error) throw poolResult.error
+  if (recentResult.error) throw recentResult.error
+  const poolRows = (poolResult.data || []).slice(0, sizes.pool)
+  const recentRows = (recentResult.data || []).slice(0, sizes.recent)
+
+  // Keep each lane's cursor tied to the LAST record actually consumed.
+  // Cross-lane duplicates are de-duplicated without discarding unconsumed
+  // rows. The UUID lane eventually covers every eligible story.
+  const next = {
+    poolId: poolRows.length ? String(poolRows[poolRows.length - 1].id) : state.poolId,
+    recentAt: recentRows.length ? String(recentRows[recentRows.length - 1].created_at) : state.recentAt,
+    recentId: recentRows.length ? String(recentRows[recentRows.length - 1].id) : state.recentId,
+    poolDone: state.poolDone || (poolResult.data || []).length <= sizes.pool,
+    recentDone: state.recentDone || sizes.recent === 0 ||
+      state.recentCount + recentRows.length >= AUTO_AD_CATALOG_RECENT_BUDGET ||
+      (recentResult.data || []).length <= sizes.recent,
+    recentCount: state.recentCount + recentRows.length,
+  }
+
+  const picked = []
+  const pickedIds = new Set()
+  const add = (story) => {
+    if (!story?.id || pickedIds.has(String(story.id))) return
+    pickedIds.add(String(story.id))
+    picked.push(story)
+  }
+  // Interleave both lanes for deterministic, shared, cacheable pages.
+  // The browser will independently rank these records for each reader.
+  let poolAt = 0
+  let recentAt = 0
+  while (poolAt < poolRows.length || recentAt < recentRows.length) {
+    for (let i = 0; i < AUTO_AD_CATALOG_POOL_WEIGHT && poolAt < poolRows.length; i += 1) {
+      add(poolRows[poolAt++])
+    }
+    for (let i = 0; i < AUTO_AD_CATALOG_NEW_WEIGHT && recentAt < recentRows.length; i += 1) {
+      add(recentRows[recentAt++])
+    }
+  }
+
+  // Once the UUID lane has covered every eligible story, the catalog cycle
+  // is complete; remaining recent-lane records would only duplicate it.
+  if (next.poolDone) next.recentDone = true
+  const hasMore = !next.poolDone
+  return {
+    ok: true,
+    stories: await enrichAutoAdStories(picked, { compact: true }),
+    has_more: hasMore,
+    next_cursor: hasMore ? encodeSharedAutoAdCatalogCursor(next) : null,
+    page_size: limit,
+  }
+}
+
 async function loadSharedAutoAdCatalogPage(cursor, limit) {
   const cacheKey = `${cursor || 'first'}:${limit}`
   const existing = autoAdCatalogCache.get(cacheKey)
   if (existing && (existing.promise || existing.expiresAt > Date.now())) {
     return existing.promise || existing.value
   }
-
-  // Pages are sorted by immutable UUID, so new stories enter automatically.
-  // 1 extra item determines has_more without an expensive COUNT query.
-  const promise = (async () => {
-    let query = autoAdStoryQuery()
-      .order('id', { ascending: true })
-      .limit(limit + 1)
-    if (cursor) query = query.gt('id', cursor)
-    const { data, error } = await query
-    if (error) throw error
-    const results = data || []
-    const hasMore = results.length > limit
-    const pageStories = results.slice(0, limit)
-    const ads = await enrichAutoAdStories(pageStories, { compact: true })
-    return {
-      ok: true,
-      stories: ads,
-      has_more: hasMore,
-      next_cursor: hasMore && pageStories.length
-        ? String(pageStories[pageStories.length - 1].id)
-        : null,
-      page_size: limit,
-    }
-  })()
-
+  const promise = loadSharedAutoAdCatalogPageUncached(cursor, limit)
   if (autoAdCatalogCache.size >= AUTO_AD_CATALOG_MAX_CACHED_PAGES) {
     autoAdCatalogCache.delete(autoAdCatalogCache.keys().next().value)
   }
   autoAdCatalogCache.set(cacheKey, { promise, expiresAt: 0 })
   try {
     const value = await promise
-    autoAdCatalogCache.set(cacheKey, {
-      value,
-      expiresAt: Date.now() + AUTO_AD_CATALOG_CACHE_MS,
-    })
+    autoAdCatalogCache.set(cacheKey, { value, expiresAt: Date.now() + AUTO_AD_CATALOG_CACHE_MS })
     return value
   } catch (error) {
     autoAdCatalogCache.delete(cacheKey)
@@ -1527,12 +1666,11 @@ async function loadSharedAutoAdCatalogPage(cursor, limit) {
   }
 }
 
-// NEXT STEP: mount this read-only endpoint in shadowMallProducts.routes.js.
-// GET /api/shadow-mall/ad-catalog?limit=50&cursor=<last_uuid>
-// Shared URL and response for every reader; the browser personalizes locally.
+// GET /api/shadow-mall/ad-catalog?limit=50&cursor=<opaque_cursor>
+// Public, shared responses: no reader-specific Supabase query or write.
 export async function getPublicShadowMallAutoAdCatalog(req, res) {
   const cursor = String(req.query?.cursor || '').trim()
-  if (cursor && !AUTO_AD_UUID_PATTERN.test(cursor)) {
+  if (!decodeSharedAutoAdCatalogCursor(cursor)) {
     return res.status(400).json({ ok: false, message: 'Invalid catalog cursor' })
   }
   const requestedLimit = Number(req.query?.limit)
