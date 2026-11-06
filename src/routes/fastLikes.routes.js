@@ -7,17 +7,25 @@ import {
   setMyFastVideoLike,
 } from '../controllers/fastLikes.controller.js'
 
-// NEW: standalone Fast Likes routes.
-// LATER connect in src/routes/fast.routes.js:
-//   import fastLikesRouter from './fastLikes.routes.js'
-//   router.use('/videos', fastLikesRouter)
-//
-// Endpoints after mounting:
-// GET /api/fast/videos/:id/likes        (public count)
-// GET /api/fast/videos/:id/likes/me     (reader's status + count)
-// PUT /api/fast/videos/:id/likes/me     (reader Like/Unlike)
+// Standalone Fast Likes routes, mounted at /videos by fast.routes.js.
+// GET /api/fast/videos/:id/likes       (public count)
+// GET /api/fast/videos/:id/likes/me    (reader's status + count)
+// PUT /api/fast/videos/:id/likes/me    (reader Like/Unlike)
 
 const router = Router()
+
+// Always run an IP-based limiter BEFORE authentication or controller logic.
+const likeReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'FAST_LIKE_READ_RATE_LIMITED',
+    message: 'Too many Like status requests. Please try again shortly.',
+  },
+})
 
 const likeWriteLimit = rateLimit({
   windowMs: 60 * 1000,
@@ -31,8 +39,8 @@ const likeWriteLimit = rateLimit({
   },
 })
 
-router.get('/:id/likes', getFastVideoLikes)
-router.get('/:id/likes/me', requireUser, getMyFastVideoLike)
-router.put('/:id/likes/me', requireUser, likeWriteLimit, setMyFastVideoLike)
+router.get('/:id/likes', likeReadLimit, getFastVideoLikes)
+router.get('/:id/likes/me', likeReadLimit, requireUser, getMyFastVideoLike)
+router.put('/:id/likes/me', likeWriteLimit, requireUser, setMyFastVideoLike)
 
 export default router
