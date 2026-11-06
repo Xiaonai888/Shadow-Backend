@@ -6,6 +6,7 @@ const REPORT_TYPES = new Set([
   'author_page',
   'author_post',
   'reader_post',
+  'fast_video',
 ])
 
 const REPORT_STATUSES = new Set([
@@ -21,6 +22,7 @@ const TYPE_LABELS = {
   author_page: 'Author Page',
   author_post: 'Author Post',
   reader_post: 'Reader Post',
+  fast_video: 'Fast Reel',
 }
 
 const REASON_LABELS = {
@@ -194,6 +196,7 @@ export async function getAdminReportStats(req, res) {
       authorPages,
       authorPosts,
       readerPosts,
+      fastVideos,
       todayCount,
     ] = await Promise.all([
       countReports(),
@@ -206,6 +209,7 @@ export async function getAdminReportStats(req, res) {
       countReports((query) => query.eq('report_type', 'author_page')),
       countReports((query) => query.eq('report_type', 'author_post')),
       countReports((query) => query.eq('report_type', 'reader_post')),
+      countReports((query) => query.eq('report_type', 'fast_video')),
       countReports((query) => query.gte('created_at', todayIso)),
     ])
 
@@ -226,6 +230,7 @@ export async function getAdminReportStats(req, res) {
           author_page: authorPages,
           author_post: authorPosts,
           reader_post: readerPosts,
+          fast_video: fastVideos,
         },
       },
     })
