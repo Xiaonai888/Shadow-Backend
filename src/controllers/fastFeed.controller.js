@@ -83,3 +83,62 @@ export async function listPublicFastVideos(req, res) {
     return res.status(500).json({ ok: false, message: 'Unable to load Fast videos' })
   }
 }
+
+
+
+export async function getPublicFastVideo(req, res) {
+  const id = String(req.params.id || '').trim()
+
+  if (!UUID.test(id)) {
+    return res.status(400).json({
+      ok: false,
+      message: 'Invalid Reel ID',
+    })
+  }
+
+  try {
+    const { data: video, error } = await supabase
+      .from('fast_videos')
+      .select('id,user_id,video_url,thumbnail_url,title,description,published_at')
+      .eq('id', id)
+      .eq('status', 'published')
+      .eq('access_type', 'free')
+      .eq('platform', 'youtube')
+      .maybeSingle()
+
+    if (error) throw error
+
+    if (!video) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Reel not found',
+      })
+    }
+
+    const { data: page, error: pageError } = await supabase
+      .from('author_pages')
+      .select('page_username,page_name,avatar_url')
+      .eq('user_id', video.user_id)
+      .eq('status', 'active')
+      .limit(1)
+      .maybeSingle()
+
+    if (pageError) throw pageError
+
+    res.set('Cache-Control', 'public, max-age=15')
+
+    return res.json({
+      ok: true,
+      video: {
+        ...video,
+        creator: page || null,
+      },
+    })
+  } catch (error) {
+    console.error('FAST SHARE REEL ERROR:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Unable to load Reel',
+    })
+  }
+}
