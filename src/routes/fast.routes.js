@@ -6,7 +6,12 @@ import { rateLimit } from 'express-rate-limit'
 import { requireUser } from '../middleware/user.middleware.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 import { createFastVideo } from '../controllers/fastVideos.controller.js'
-import { listPublicFastVideos } from '../controllers/fastFeed.controller.js'
+
+import {
+  listPublicFastVideos,
+  getPublicFastVideo,
+} from '../controllers/fastFeed.controller.js'
+
 import fastLikesRouter from './fastLikes.routes.js'
 import {
   listMyFastReels,
@@ -181,6 +186,7 @@ router.delete('/videos/:id', fastVideoManageWriteLimit, requireUser, deleteMyFas
 router.use('/videos', fastLikesRouter)
 
 router.get('/videos', fastVideoFeedLimit, listPublicFastVideos)
+router.get('/videos/:id', fastVideoFeedLimit, getPublicFastVideo)
 router.post('/videos', fastVideoManageWriteLimit, requireUser, createFastVideo)
 router.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
