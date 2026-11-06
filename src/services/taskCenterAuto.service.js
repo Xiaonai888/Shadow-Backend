@@ -7,6 +7,16 @@ const MISSION_LIMIT = 2
 const KHMER_AUDIENCE = 'khmer'
 const RECENT_COOLDOWN_DAYS = 7
 const MIN_EPISODES = 5
+// Completed 1-4 episode stories are allowed, but limited to 10% of selections
+// while standard (5+ episode) stories are available.
+const SHORT_STORY_SHARE = 0.10
+// Prefer stories with fewer total views. Shares are rebalanced if a band is empty.
+const VIEW_TIERS = [
+  { maxViews: 100, weight: 50 },
+  { maxViews: 500, weight: 30 },
+  { maxViews: 2000, weight: 15 },
+  { maxViews: Infinity, weight: 5 },
+]
 
 function getPhnomPenhDateKey(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -27,9 +37,60 @@ function normalizeStoryStatus(value) {
   return String(value || '').trim().toLowerCase()
 }
 
-function randomItem(items = []) {
-  if (!Array.isArray(items) || items.length === 0) return null
-  return items[Math.floor(Math.random() * items.length)] || null
+function safeViews(story) {
+  const views = Number(story?.total_views)
+  return Number.isFinite(views) ? Math.max(0, views) : 0
+}
+
+function isShortStory(story) {
+  const episodes = Number(story?.total_episodes || 0)
+  return episodes > 0 && episodes < MIN_EPISODES
+}
+
+function weightedRandom(rows, getWeight) {
+  if (!rows.length) return null
+  const weights = rows.map((row) => Math.max(0, Number(getWeight(row)) || 0))
+  const total = weights.reduce((sum, weight) => sum + weight, 0)
+  if (total <= 0) return rows[Math.floor(Math.random() * rows.length)] || null
+
+  let ticket = Math.random() * total
+  for (let i = 0; i < rows.length; i += 1) {
+    ticket -= weights[i]
+    if (ticket < 0) return rows[i]
+  }
+  return rows[rows.length - 1]
+}
+
+function pickLowViewStory(stories, lastSelectedMap, recentUpdateMap) {
+  // Short stories never flood the daily missions even if there are many of them.
+  const standard = stories.filter((story) => !isShortStory(story))
+  const short = stories.filter(isShortStory)
+  const candidatePool = standard.length && short.length
+    ? (Math.random() < SHORT_STORY_SHARE ? short : standard)
+    : (standard.length ? standard : short)
+
+  const availableTiers = VIEW_TIERS.map((tier, index) => ({
+    weight: tier.weight,
+    stories: candidatePool.filter((story) => {
+      const views = safeViews(story)
+      const min = index === 0 ? 0 : VIEW_TIERS[index - 1].maxViews + 1
+      return views >= min && views <= tier.maxViews
+    }),
+  })).filter((tier) => tier.stories.length > 0)
+
+  const selectedTier = weightedRandom(availableTiers, (tier) => tier.weight)
+  if (!selectedTier) return null
+
+  // Views per episode are a secondary tie-breaker within the selected tier.
+  // Never let a recently updated high-view story override the low-view tier.
+  return weightedRandom(selectedTier.stories, (story) => {
+    const episodes = Math.max(1, Number(story.total_episodes) || 1)
+    const viewsPerEpisode = safeViews(story) / episodes
+    const lowViewWeight = 1 / (1 + Math.log1p(viewsPerEpisode) * 0.35)
+    const unseenBonus = lastSelectedMap.has(String(story.id)) ? 1 : 1.2
+    const updateBonus = recentUpdateMap.has(String(story.id)) ? 1.05 : 1
+    return lowViewWeight * unseenBonus * updateBonus
+  })
 }
 
 function toTime(value) {
@@ -77,9 +138,10 @@ async function getMissionRows() {
 async function getEligibleStories() {
   const { data, error } = await supabase
     .from('stories')
-    .select('id, title, story_status, status, deleted_at, is_shadow_exclusive, is_adult, total_episodes, created_at, updated_at')
+    .select('id, title, story_status, status, deleted_at, is_shadow_exclusive, is_adult, total_episodes, total_views, created_at, updated_at')
     .eq('status', 'published')
     .is('deleted_at', null)
+    .order('total_views', { ascending: true, nullsFirst: false })
     .limit(5000)
 
   if (error) throw error
@@ -89,7 +151,9 @@ async function getEligibleStories() {
     if (!String(story.title || '').trim()) return false
     if (Boolean(story.is_shadow_exclusive)) return false
     if (Boolean(story.is_adult)) return false
-    if (Number(story.total_episodes || 0) < MIN_EPISODES) return false
+    const episodes = Number(story.total_episodes || 0)
+    if (episodes < 1) return false
+    if (isShortStory(story) && normalizeStoryStatus(story.story_status) !== 'completed') return false
     return true
   })
 }
@@ -163,44 +227,27 @@ function pickStory({
   cooldownCutoff,
 }) {
   const available = stories.filter((story) => !selectedStoryIds.has(String(story.id)))
+  if (!available.length) return null
 
-  const unseen = available.filter((story) => !lastSelectedMap.has(String(story.id)))
-
-  const unseenUpdated = unseen.filter((story) => recentUpdateMap.has(String(story.id)))
-  const unseenUpdatedPick = randomItem(unseenUpdated)
-  if (unseenUpdatedPick) return { story: unseenUpdatedPick, source: 'unseen' }
-
-  const unseenCompleted = unseen.filter(
-    (story) => normalizeStoryStatus(story.story_status) === 'completed'
-  )
-  const unseenCompletedPick = randomItem(unseenCompleted)
-  if (unseenCompletedPick) return { story: unseenCompletedPick, source: 'unseen' }
-
+  // Avoid repeating a story within seven days whenever alternatives exist.
   const outsideCooldown = available.filter((story) => {
     const history = lastSelectedMap.get(String(story.id))
     return !history || toTime(history.selected_at) < cooldownCutoff
   })
+  const pool = outsideCooldown.length ? outsideCooldown : available
+  const story = pickLowViewStory(pool, lastSelectedMap, recentUpdateMap)
+  if (!story) return null
 
-  const updated = outsideCooldown.filter((story) => recentUpdateMap.has(String(story.id)))
-  const updatedPick = randomItem(updated)
-  if (updatedPick) return { story: updatedPick, source: 'updated' }
+  const id = String(story.id)
+  const source = !lastSelectedMap.has(id)
+    ? 'unseen'
+    : recentUpdateMap.has(id)
+      ? 'updated'
+      : normalizeStoryStatus(story.story_status) === 'completed'
+        ? 'completed'
+        : 'recycle'
 
-  const completed = outsideCooldown.filter(
-    (story) => normalizeStoryStatus(story.story_status) === 'completed'
-  )
-  const completedPick = randomItem(completed)
-  if (completedPick) return { story: completedPick, source: 'completed' }
-
-  const recyclePool = [...available].sort((a, b) => {
-    const aTime = toTime(lastSelectedMap.get(String(a.id))?.selected_at)
-    const bTime = toTime(lastSelectedMap.get(String(b.id))?.selected_at)
-
-    if (aTime !== bTime) return aTime - bTime
-    return Math.random() - 0.5
-  })
-
-  const recyclePick = recyclePool[0] || null
-  return recyclePick ? { story: recyclePick, source: 'recycle' } : null
+  return { story, source }
 }
 
 async function deleteInvalidTodayRows(rows = []) {
@@ -337,11 +384,9 @@ export async function rotateTaskCenterAutoStories({ force = false } = {}) {
     getHistoryRows(missionIds),
   ])
 
-  const recommendationStories = stories.filter(
-    (story) =>
-      normalizeStoryStatus(story.story_status) === 'completed' ||
-      recentUpdateMap.has(String(story.id))
-  )
+  // Include all eligible published stories, not only recent updates or completed ones.
+  // Otherwise low-view ongoing stories that have not updated recently disappear.
+  const recommendationStories = stories
 
   if (recommendationStories.length < MISSION_LIMIT) {
     throw new Error('Auto reading mission requires at least 2 eligible published stories')
