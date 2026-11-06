@@ -2,7 +2,8 @@ import { supabase } from '../config/supabase.js'
 import { filterVisibleSavedReaderPosts } from '../services/readerPostPrivacy.service.js'
 import { recordReaderBoostInterest } from '../services/boostAnalyticsTracking.service.js'
 
-const SOURCE_TYPES = new Set(['reader_post', 'author_post', 'promotion'])
+const SOURCE_TYPES = new Set(['reader_post', 'author_post', 'promotion', 'fast_video'])
+const FAST_VIDEO_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SORT_TYPES = new Set(['newest', 'oldest'])
 const MAX_SNAPSHOT_BYTES = 200000
 const MAX_PAGE_SIZE = 50
@@ -33,6 +34,9 @@ function normalizeSourceType(value, allowAll = false) {
     promotion: 'promotion',
     ad: 'promotion',
     ads: 'promotion',
+    fast_video: 'fast_video',
+    reel: 'fast_video',
+    fast: 'fast_video',
   }
 
   return aliases[normalized] || ''
@@ -420,7 +424,7 @@ export async function savePost(req, res) {
     const userId = getUserId(req)
     const sourceType = normalizeSourceType(req.body.source_type)
     const sourceId = normalizeText(req.body.source_id)
-    const sourceUrl = normalizeText(req.body.source_url).slice(0, 2000)
+    let sourceUrl = normalizeText(req.body.source_url).slice(0, 2000)
     const snapshotData = normalizeSnapshot(req.body.snapshot_data)
     const collectionIds = normalizeCollectionIds(req.body.collection_ids)
     const originalCreatedAtText = normalizeText(req.body.original_created_at)
@@ -453,6 +457,46 @@ export async function savePost(req, res) {
       return res.status(400).json({
         ok: false,
         message: 'original_created_at is invalid',
+      })
+    }
+
+    // A saved Reel must reference a real, publicly available Shadow Fast video.
+    // Build its snapshot from the database instead of trusting client-supplied
+    // video metadata. Other saved-post types keep their original behavior.
+    if (sourceType === 'fast_video') {
+      if (!FAST_VIDEO_ID.test(sourceId)) {
+        return res.status(400).json({
+          ok: false,
+          message: 'A valid Fast Reel ID is required',
+        })
+      }
+
+      const { data: reel, error: reelError } = await supabase
+        .from('fast_videos')
+        .select('id, title, description, thumbnail_url, video_url, published_at')
+        .eq('id', sourceId)
+        .eq('status', 'published')
+        .eq('access_type', 'free')
+        .eq('platform', 'youtube')
+        .maybeSingle()
+
+      if (reelError) throw reelError
+
+      if (!reel) {
+        return res.status(404).json({
+          ok: false,
+          message: 'Fast Reel not found or is not publicly available',
+        })
+      }
+
+      sourceUrl = `/fast?reel=${encodeURIComponent(reel.id)}`
+      Object.assign(snapshotData, {
+        title: reel.title || 'Fast Reel',
+        description: reel.description || '',
+        image_url: reel.thumbnail_url || '',
+        thumbnail_url: reel.thumbnail_url || '',
+        video_url: reel.video_url || '',
+        platform: 'youtube',
       })
     }
 
