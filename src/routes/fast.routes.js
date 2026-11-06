@@ -29,6 +29,43 @@ const fastVideoFeedLimit = rateLimit({
   },
 })
 
+// IP rate limits must run before requireUser or upload parsing.
+const fastVideoManageReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 300,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'FAST_MANAGE_READ_RATE_LIMITED',
+    message: 'Too many Reel requests. Please try again shortly.',
+  },
+})
+
+const fastVideoManageWriteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'FAST_MANAGE_WRITE_RATE_LIMITED',
+    message: 'Too many Reel changes. Please try again shortly.',
+  },
+})
+
+const fastVideoUploadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 30,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'FAST_THUMBNAIL_RATE_LIMITED',
+    message: 'Too many thumbnail uploads. Please try again shortly.',
+  },
+})
+
 const upload = multer({
   dest: os.tmpdir(),
   limits: {
@@ -81,6 +118,7 @@ function uploadThumbnail(req, res, next) {
 
 router.post(
   '/upload-thumbnail',
+  fastVideoUploadLimit,
   requireUser,
   uploadThumbnail,
   cleanupTempFile,
@@ -135,15 +173,15 @@ router.post(
   }
 )
 
-router.get('/videos/mine', requireUser, listMyFastReels)
-router.patch('/videos/:id', requireUser, updateMyFastReel)
-router.delete('/videos/:id', requireUser, deleteMyFastReel)
+router.get('/videos/mine', fastVideoManageReadLimit, requireUser, listMyFastReels)
+router.patch('/videos/:id', fastVideoManageWriteLimit, requireUser, updateMyFastReel)
+router.delete('/videos/:id', fastVideoManageWriteLimit, requireUser, deleteMyFastReel)
 
 // Fast Like API: isolated router; does not touch any Post reaction endpoints.
 router.use('/videos', fastLikesRouter)
 
 router.get('/videos', fastVideoFeedLimit, listPublicFastVideos)
-router.post('/videos', requireUser, createFastVideo)
+router.post('/videos', fastVideoManageWriteLimit, requireUser, createFastVideo)
 router.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
     return res.status(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({
