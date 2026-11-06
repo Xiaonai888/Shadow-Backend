@@ -20,6 +20,18 @@ function boolean(value, fallback = true) {
   return fallback
 }
 
+
+function slugify(value) {
+  return text(value)
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-/, '')
+    .replace(/-$/, '')
+    .slice(0, 120)
+}
+
+
 function parseYoutubeUrl(value) {
   const raw = text(value)
   if (!raw) throw new Error('YouTube link is required')
