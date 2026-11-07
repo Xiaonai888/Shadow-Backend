@@ -1,7 +1,8 @@
 import { supabase } from '../config/supabase.js'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const VIDEO_FIELDS = 'id,user_id,video_url,thumbnail_url,title,description,status,access_type,unlock_price_diamonds,published_at'
+// Include tags so the owner's Edit view can round-trip existing metadata.
+const VIDEO_FIELDS = 'id,user_id,video_url,thumbnail_url,title,description,tags,status,access_type,unlock_price_diamonds,published_at'
 
 function pageNumber(value, fallback, maximum) {
   if (value === undefined || value === '') return fallback
@@ -27,23 +28,33 @@ function youtubeId(value) {
   }
 }
 
+// Same normalizer used by createFastVideo: a maximum of 10 normalized tags,
+// lowercase, leading '#' stripped, whitespace replaced with '-'.
+function normalizeTags(value) {
+  if (!Array.isArray(value) || value.length > 40) return null
+  const unique = new Set()
+  for (const raw of value) {
+    if (typeof raw !== 'string') return null
+    const tag = raw.trim().replace(/^#+/, '').replace(/\s+/g, '-').toLowerCase().slice(0, 24)
+    if (tag) unique.add(tag)
+    if (unique.size >= 10) break
+  }
+  return [...unique]
+}
+
 export async function listMyFastReels(req, res) {
   const userId = req.user?.user_id
   if (!userId) return res.status(401).json({ ok: false, message: 'Unauthorized' })
-
   const limit = pageNumber(req.query.limit, 12, 30)
   const offset = pageNumber(req.query.offset, 0, 5000)
   if (!limit || offset === null) return res.status(400).json({ ok: false, message: 'Invalid pagination' })
-
   try {
-    const { data, error } = await supabase
-      .from('fast_videos')
+    const { data, error } = await supabase.from('fast_videos')
       .select(VIDEO_FIELDS)
       .eq('user_id', userId)
       .order('published_at', { ascending: false, nullsFirst: false })
       .order('id', { ascending: false })
       .range(offset, offset + limit)
-
     if (error) throw error
     const results = data || []
     res.set('Cache-Control', 'private, no-store')
@@ -63,13 +74,12 @@ export async function updateMyFastReel(req, res) {
   if (!userId) return res.status(401).json({ ok: false, message: 'Unauthorized' })
   if (!UUID.test(String(req.params.id || ''))) return res.status(400).json({ ok: false, message: 'Invalid Reel ID' })
 
-  const input = req.body || {}
-  const allowed = ['title', 'description', 'video_url', 'status']
+  const input = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}
+  const allowed = ['title', 'description', 'video_url', 'status', 'tags']
   const keys = Object.keys(input)
   if (!keys.length || keys.some(key => !allowed.includes(key))) {
     return res.status(400).json({ ok: false, message: 'Invalid Reel fields' })
   }
-
   const changes = {}
   if (Object.hasOwn(input, 'title')) {
     if (typeof input.title !== 'string' || !input.title.trim() || input.title.trim().length > 100) {
@@ -96,32 +106,25 @@ export async function updateMyFastReel(req, res) {
     }
     changes.status = input.status
   }
-
+  if (Object.hasOwn(input, 'tags')) {
+    const normalized = normalizeTags(input.tags)
+    if (normalized === null) return res.status(400).json({ ok: false, message: 'Invalid tags' })
+    changes.tags = normalized
+  }
   try {
-    const { data: current, error: readError } = await supabase
-      .from('fast_videos')
+    const { data: current, error: readError } = await supabase.from('fast_videos')
       .select('id,status,published_at')
-      .eq('id', req.params.id)
-      .eq('user_id', userId)
-      .maybeSingle()
-
+      .eq('id', req.params.id).eq('user_id', userId).maybeSingle()
     if (readError) throw readError
     if (!current) return res.status(404).json({ ok: false, message: 'Reel not found' })
-
     if (changes.status === 'published' && current.status !== 'published') {
       changes.published_at = new Date().toISOString()
     } else if (changes.status === 'draft') {
       changes.published_at = null
     }
-
-    const { data, error } = await supabase
-      .from('fast_videos')
-      .update(changes)
-      .eq('id', req.params.id)
-      .eq('user_id', userId)
-      .select(VIDEO_FIELDS)
-      .maybeSingle()
-
+    const { data, error } = await supabase.from('fast_videos')
+      .update(changes).eq('id', req.params.id).eq('user_id', userId)
+      .select(VIDEO_FIELDS).maybeSingle()
     if (error) throw error
     if (!data) return res.status(404).json({ ok: false, message: 'Reel not found' })
     res.set('Cache-Control', 'private, no-store')
@@ -136,16 +139,9 @@ export async function deleteMyFastReel(req, res) {
   const userId = req.user?.user_id
   if (!userId) return res.status(401).json({ ok: false, message: 'Unauthorized' })
   if (!UUID.test(String(req.params.id || ''))) return res.status(400).json({ ok: false, message: 'Invalid Reel ID' })
-
   try {
-    const { data, error } = await supabase
-      .from('fast_videos')
-      .delete()
-      .eq('id', req.params.id)
-      .eq('user_id', userId)
-      .select('id')
-      .maybeSingle()
-
+    const { data, error } = await supabase.from('fast_videos')
+      .delete().eq('id', req.params.id).eq('user_id', userId).select('id').maybeSingle()
     if (error) throw error
     if (!data) return res.status(404).json({ ok: false, message: 'Reel not found' })
     res.set('Cache-Control', 'private, no-store')
