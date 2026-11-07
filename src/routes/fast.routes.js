@@ -7,10 +7,13 @@ import { requireUser } from '../middleware/user.middleware.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 import { createFastVideo } from '../controllers/fastVideos.controller.js'
 
+
 import {
   listMyFastNotInterested,
   setMyFastNotInterested,
+  resetMyFastNotInterested,
 } from '../controllers/fastNotInterested.controller.js'
+
 
 import {
   listPublicFastVideos,
@@ -231,6 +234,15 @@ router.get(
   requireUser,
   listMyFastNotInterested
 )
+
+
+router.delete(
+  '/videos/not-interested/mine',
+  fastVideoManageWriteLimit,
+  requireUser,
+  resetMyFastNotInterested
+)
+
 
 router.put(
   '/videos/:id/not-interested/me',
