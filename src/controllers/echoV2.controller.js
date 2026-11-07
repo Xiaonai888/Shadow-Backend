@@ -9,6 +9,7 @@ const SOURCE_TYPES = new Set([
   'reader_post',
   'author_post',
   'shadow_mall_promotion',
+  'fast_video',
 ])
 
 const DESTINATIONS = new Set([
@@ -412,6 +413,52 @@ async function readSource(
         cover_url:
           episode.cover_url || '',
       },
+    }
+  }
+
+  // Fast Reels reuse the existing Echo V2 records, rate limits and feed.
+  // This source is public only when the original Reel is published and free.
+  if (sourceType === 'fast_video') {
+    const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    if (!UUID.test(sourceId)) return null
+
+    const { data: reel, error } = await supabase
+      .from('fast_videos')
+      .select('id,user_id,title,description,thumbnail_url,published_at')
+      .eq('id', sourceId)
+      .eq('status', 'published')
+      .eq('access_type', 'free')
+      .eq('platform', 'youtube')
+      .maybeSingle()
+
+    if (error) throw error
+    if (!reel) return null
+
+    const [{ data: page, error: pageError }, user] = await Promise.all([
+      supabase.from('author_pages')
+        .select('id,user_id,page_name,page_username,avatar_url')
+        .eq('user_id', reel.user_id)
+        .eq('status', 'active')
+        .limit(1)
+        .maybeSingle(),
+      readUser(reel.user_id),
+    ])
+    if (pageError) throw pageError
+    if (!user) return null
+
+    const thumbnail = reel.thumbnail_url || ''
+    return {
+      type: 'fast_video',
+      id: String(reel.id),
+      name: page?.page_name || user.name || 'Shadow Fast',
+      content: [reel.title, reel.description].filter(Boolean).join(' — '),
+      image_url: thumbnail,
+      image_urls: thumbnail ? [thumbnail] : [],
+      label: 'Fast Reel',
+      url: `/fast?reel=${encodeURIComponent(reel.id)}`,
+      created_at: reel.published_at || null,
+      owner: page || normalizeUser(user, reel.user_id),
+      reel: { id: reel.id, title: reel.title || '', thumbnail_url: thumbnail },
     }
   }
 
