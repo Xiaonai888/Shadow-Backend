@@ -13,6 +13,7 @@ import {
 } from '../controllers/fastFeed.controller.js'
 
 import fastLikesRouter from './fastLikes.routes.js'
+import { getPublicFastSaveCount } from '../controllers/fastSaves.controller.js'
 import {
   listFastComments,
   createFastComment,
@@ -211,6 +212,9 @@ router.post('/videos/:id/comments', fastCommentWriteLimit, requireUser, createFa
 router.patch('/videos/:id/comments/:commentId', fastCommentWriteLimit, requireUser, updateFastComment)
 router.delete('/videos/:id/comments/:commentId', fastCommentWriteLimit, requireUser, deleteFastComment)
 router.put('/videos/:id/comments/:commentId/like', fastCommentWriteLimit, requireUser, setFastCommentLike)
+
+// Public Reel Save count; no authentication required for aggregate totals.
+router.get('/videos/:id/saves', fastVideoFeedLimit, getPublicFastSaveCount)
 
 // Fast Like API: isolated router; does not touch any Post reaction endpoints.
 router.use('/videos', fastLikesRouter)
