@@ -3,7 +3,7 @@ import { supabase } from '../config/supabase.js'
 
 // Isolated Fast Reel comments. Never write to the Story/Post comments tables.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const COMMENT_FIELDS = 'id,video_id,user_id,parent_id,body,likes_count,reply_count,created_at,updated_at,deleted_at,user:users(id,name,username,avatar_url,role)'
+const COMMENT_FIELDS = 'id,video_id,user_id,parent_id,body,likes_count,reply_count,created_at,updated_at,deleted_at,user:users!fast_video_comments_user_id_fkey(id,name,username,avatar_url,role)'
 const MAX_BODY = 1000
 
 const validId = value => typeof value === 'string' && UUID.test(value)
