@@ -184,13 +184,49 @@ router.delete(
 )
 
 
+// Only coalesce truly concurrent identical inbox reads. This is NOT a TTL cache:
+// the next request after settlement reads fresh messages/unread state again.
+// Keep the key scoped to a verified reader identity and exact normalized filters.
+const managedInboxInflight = new Map()
+const MANAGED_INBOX_MAX_INFLIGHT = 200
+
+function listManagedConversationsSingleflight({ userId, status, view }) {
+  const readerId = String(userId || '').trim().toLowerCase()
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(readerId)) {
+    // Let the existing service reject invalid identifiers in its usual way.
+    return listManagedConversations({ userId, status, view })
+  }
+
+  const normalizedStatus = String(status || 'all').trim().toLowerCase()
+  const normalizedView = String(view || 'active').trim().toLowerCase()
+  if (!['all', 'pending', 'accepted', 'declined', 'blocked'].includes(normalizedStatus) ||
+      !['active', 'archived'].includes(normalizedView)) {
+    return listManagedConversations({ userId, status, view })
+  }
+
+  const key = `${readerId}\u001f${normalizedStatus}\u001f${normalizedView}`
+  const existing = managedInboxInflight.get(key)
+  if (existing) return existing
+
+  const pending = listManagedConversations({ userId, status, view })
+  if (managedInboxInflight.size >= MANAGED_INBOX_MAX_INFLIGHT) return pending
+
+  managedInboxInflight.set(key, pending)
+  // Attach both handlers so rejections never create an unhandled promise.
+  void pending.then(
+    () => { if (managedInboxInflight.get(key) === pending) managedInboxInflight.delete(key) },
+    () => { if (managedInboxInflight.get(key) === pending) managedInboxInflight.delete(key) },
+  )
+  return pending
+}
+
 router.get(
   '/conversations/managed',
   conversationReadGuard,
   async (req, res) => {
     try {
       const conversations =
-        await listManagedConversations({
+        await listManagedConversationsSingleflight({
           userId:
             req.user?.user_id,
           status:
