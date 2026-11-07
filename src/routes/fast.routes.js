@@ -7,13 +7,11 @@ import { requireUser } from '../middleware/user.middleware.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 import { createFastVideo } from '../controllers/fastVideos.controller.js'
 
-
 import {
   listMyFastNotInterested,
   setMyFastNotInterested,
   resetMyFastNotInterested,
 } from '../controllers/fastNotInterested.controller.js'
-
 
 import {
   listPublicFastVideos,
@@ -34,6 +32,14 @@ import {
   updateMyFastReel,
   deleteMyFastReel,
 } from '../controllers/fastReelManagement.controller.js'
+import {
+  listMyFastReelPlaylists,
+  createFastReelPlaylist,
+  updateFastReelPlaylist,
+  deleteFastReelPlaylist,
+  getFastReelPlaylistAssignments,
+  setFastReelPlaylistAssignments,
+} from '../controllers/fastReelPlaylists.controller.js'
 import path from 'node:path'
 
 const router = express.Router()
@@ -95,13 +101,11 @@ const upload = multer({
   },
   fileFilter(req, file, callback) {
     const allowedTypes = ['image/jpeg', 'image/png', 'image/webp']
-
     if (!allowedTypes.includes(file.mimetype)) {
       const error = new Error('Thumbnail must be JPG, JPEG, PNG, or WEBP')
       error.statusCode = 400
       return callback(error)
     }
-
     return callback(null, true)
   },
 })
@@ -116,13 +120,11 @@ async function removeTempFile(req) {
 
 function cleanupTempFile(req, res, next) {
   let cleaned = false
-
   const cleanup = () => {
     if (cleaned) return
     cleaned = true
     removeTempFile(req).catch(() => {})
   }
-
   res.once('finish', cleanup)
   res.once('close', cleanup)
   next()
@@ -131,7 +133,6 @@ function cleanupTempFile(req, res, next) {
 function uploadThumbnail(req, res, next) {
   upload.single('thumbnail')(req, res, (error) => {
     if (!error) return next()
-
     removeTempFile(req).catch(() => {})
     return next(error)
   })
@@ -146,14 +147,12 @@ router.post(
   async (req, res) => {
     try {
       const userId = req.user?.user_id
-
       if (!userId) {
         return res.status(401).json({
           ok: false,
           message: 'Unauthorized',
         })
       }
-
       if (!req.file) {
         return res.status(400).json({
           ok: false,
@@ -185,7 +184,6 @@ router.post(
       })
     } catch (error) {
       console.error('FAST THUMBNAIL UPLOAD ERROR:', error)
-
       return res.status(error.statusCode || 500).json({
         ok: false,
         message: error.message || 'Failed to upload thumbnail',
@@ -197,6 +195,15 @@ router.post(
 router.get('/videos/mine', fastVideoManageReadLimit, requireUser, listMyFastReels)
 router.patch('/videos/:id', fastVideoManageWriteLimit, requireUser, updateMyFastReel)
 router.delete('/videos/:id', fastVideoManageWriteLimit, requireUser, deleteMyFastReel)
+
+// Author-owned playlists. Reads and writes are authenticated and rate-limited.
+// Route ordering preserves all existing /videos and comments endpoints.
+router.get('/playlists/mine', fastVideoManageReadLimit, requireUser, listMyFastReelPlaylists)
+router.post('/playlists', fastVideoManageWriteLimit, requireUser, createFastReelPlaylist)
+router.patch('/playlists/:playlistId', fastVideoManageWriteLimit, requireUser, updateFastReelPlaylist)
+router.delete('/playlists/:playlistId', fastVideoManageWriteLimit, requireUser, deleteFastReelPlaylist)
+router.get('/videos/:id/playlists', fastVideoManageReadLimit, requireUser, getFastReelPlaylistAssignments)
+router.put('/videos/:id/playlists', fastVideoManageWriteLimit, requireUser, setFastReelPlaylistAssignments)
 
 // Fast Reel comments are separate from Story and Discover comments.
 // IP rate limits run BEFORE requireUser (which validates device sessions).
@@ -227,14 +234,12 @@ router.get('/videos/:id/saves', fastVideoFeedLimit, getPublicFastSaveCount)
 // Fast Like API: isolated router; does not touch any Post reaction endpoints.
 router.use('/videos', fastLikesRouter)
 
-
 router.get(
   '/videos/not-interested/mine',
   fastVideoManageReadLimit,
   requireUser,
   listMyFastNotInterested
 )
-
 
 router.delete(
   '/videos/not-interested/mine',
@@ -243,14 +248,12 @@ router.delete(
   resetMyFastNotInterested
 )
 
-
 router.put(
   '/videos/:id/not-interested/me',
   fastVideoManageWriteLimit,
   requireUser,
   setMyFastNotInterested
 )
-
 
 router.get('/videos', fastVideoFeedLimit, listPublicFastVideos)
 router.get('/videos/:id', fastVideoFeedLimit, getPublicFastVideo)
@@ -265,14 +268,12 @@ router.use((error, req, res, next) => {
           : error.message,
     })
   }
-
   if (error) {
     return res.status(error.statusCode || 400).json({
       ok: false,
       message: error.message || 'Thumbnail upload failed',
     })
   }
-
   return next()
 })
 
