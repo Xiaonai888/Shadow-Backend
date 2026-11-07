@@ -8,6 +8,11 @@ import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 import { createFastVideo } from '../controllers/fastVideos.controller.js'
 
 import {
+  listMyFastNotInterested,
+  setMyFastNotInterested,
+} from '../controllers/fastNotInterested.controller.js'
+
+import {
   listPublicFastVideos,
   getPublicFastVideo,
 } from '../controllers/fastFeed.controller.js'
@@ -218,6 +223,22 @@ router.get('/videos/:id/saves', fastVideoFeedLimit, getPublicFastSaveCount)
 
 // Fast Like API: isolated router; does not touch any Post reaction endpoints.
 router.use('/videos', fastLikesRouter)
+
+
+router.get(
+  '/videos/not-interested/mine',
+  fastVideoManageReadLimit,
+  requireUser,
+  listMyFastNotInterested
+)
+
+router.put(
+  '/videos/:id/not-interested/me',
+  fastVideoManageWriteLimit,
+  requireUser,
+  setMyFastNotInterested
+)
+
 
 router.get('/videos', fastVideoFeedLimit, listPublicFastVideos)
 router.get('/videos/:id', fastVideoFeedLimit, getPublicFastVideo)
