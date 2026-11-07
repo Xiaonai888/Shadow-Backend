@@ -74,11 +74,46 @@ function publicComment(row, likedIds, readerId) {
 }
 
 function sendError(res, error, action) {
-  console.error(`[FAST_COMMENTS_${action}_ERROR]`, { code: error?.code, message: error?.message })
-  if (error?.code === '23503') return res.status(404).json({ ok: false, message: 'Reel or comment not found' })
-  if (error?.code === '23514' || error?.code === 'P0001') return res.status(400).json({ ok: false, message: 'Invalid Reel comment' })
-  if (error?.code === '42P01') return res.status(503).json({ ok: false, message: 'Fast comments migration is not installed' })
-  return res.status(500).json({ ok: false, message: 'Fast comments are temporarily unavailable' })
+  const diagnostic = {
+    action,
+    code: error?.code || 'UNKNOWN',
+    message: error?.message || 'Unknown database error',
+    details: error?.details || null,
+    hint: error?.hint || null,
+    status: error?.status || 500,
+  }
+
+  // One-line structured error for Render Logs
+  console.error(
+    `[FAST_COMMENTS_${action}_ERROR] ${JSON.stringify(diagnostic)}`
+  )
+
+  if (error?.code === '23503') {
+    return res.status(404).json({
+      ok: false,
+      message: 'Reel or comment not found',
+    })
+  }
+
+  if (error?.code === '23514' || error?.code === 'P0001') {
+    return res.status(400).json({
+      ok: false,
+      message: 'Invalid Reel comment',
+    })
+  }
+
+  if (error?.code === '42P01') {
+    return res.status(503).json({
+      ok: false,
+      message: 'Fast comments migration is not installed',
+    })
+  }
+
+  return res.status(500).json({
+    ok: false,
+    message: 'Fast comments are temporarily unavailable',
+    error_code: diagnostic.code,
+  })
 }
 
 export async function listFastComments(req, res) {
