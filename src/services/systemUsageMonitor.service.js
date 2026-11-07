@@ -6,6 +6,7 @@ const MAX_LIVE_WINDOWS = 16
 const MAX_MINUTE_WINDOWS = 120
 const MAX_KEYS_PER_WINDOW = 500
 const MAX_ROWS_PER_SNAPSHOT = 100
+const MAX_ERROR_ROWS_PER_SNAPSHOT = 20
 
 let liveWindow = createWindow(LIVE_WINDOW_MS)
 let minuteWindow = createWindow(MINUTE_WINDOW_MS)
@@ -215,7 +216,7 @@ function addToWindow(window, sample) {
 }
 
 function snapshotRows(window) {
-  return [...window.rows.values()]
+  const ranked = [...window.rows.values()]
     .map((row) => ({
       kind: row.kind,
       feature: row.feature,
@@ -234,7 +235,24 @@ function snapshotRows(window) {
         : 0,
     }))
     .sort((a, b) => b.count - a.count || b.bytes - a.bytes)
-    .slice(0, MAX_ROWS_PER_SNAPSHOT)
+
+  if (ranked.length <= MAX_ROWS_PER_SNAPSHOT) return ranked
+
+  // Keep the snapshot cap unchanged; reserve up to 20 positions for
+  // low-volume errors that would otherwise disappear from saved detail.
+  const prioritizedErrors = ranked
+    .filter((row) => row.errors > 0)
+    .sort((a, b) => b.errors - a.errors || b.count - a.count)
+    .slice(0, MAX_ERROR_ROWS_PER_SNAPSHOT)
+
+  const selected = new Set(prioritizedErrors.map(metricKey))
+  for (const row of ranked) {
+    if (selected.size >= MAX_ROWS_PER_SNAPSHOT) break
+    selected.add(metricKey(row))
+  }
+
+  // Keep the original request-volume ordering for report consumers.
+  return ranked.filter((row) => selected.has(metricKey(row)))
 }
 
 function summarize(window) {
