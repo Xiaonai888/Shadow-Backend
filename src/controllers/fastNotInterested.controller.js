@@ -119,3 +119,39 @@ export async function setMyFastNotInterested(req, res) {
     return reportDatabaseError(res, error, 'WRITE')
   }
 }
+
+
+/**
+ * Reset all Fast Not interested feedback for
+ * the currently authenticated reader only.
+ *
+ * DELETE /api/fast/videos/not-interested/mine
+ */
+export async function resetMyFastNotInterested(req, res) {
+  const userId = String(req.user?.user_id || '')
+
+  if (!UUID.test(userId)) {
+    return res.status(401).json({
+      ok: false,
+      message: 'Reader account required',
+    })
+  }
+
+  try {
+    const { error } = await supabase
+      .from('fast_video_not_interested')
+      .delete()
+      .eq('user_id', userId)
+
+    if (error) throw error
+
+    res.set('Cache-Control', 'private, no-store')
+
+    return res.json({
+      ok: true,
+      message: 'Fast Not interested feedback reset',
+    })
+  } catch (error) {
+    return reportDatabaseError(res, error, 'RESET')
+  }
+}
