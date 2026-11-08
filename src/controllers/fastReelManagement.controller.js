@@ -47,12 +47,43 @@ export async function listMyFastReels(req, res) {
   if (!userId) return res.status(401).json({ ok: false, message: 'Unauthorized' })
   const limit = pageNumber(req.query.limit, 12, 30)
   const offset = pageNumber(req.query.offset, 0, 5000)
-  if (!limit || offset === null) return res.status(400).json({ ok: false, message: 'Invalid pagination' })
+  const mode = String(req.query.mode || 'manager').toLowerCase()
+  const sort = String(req.query.sort || 'latest').toLowerCase()
+
+  if (!limit || offset === null ||
+      !['manager', 'gallery'].includes(mode) ||
+      !['latest', 'popular', 'oldest'].includes(sort)) {
+    return res.status(400).json({ ok: false, message: 'Invalid Reel query' })
+  }
+
   try {
-    const { data, error } = await supabase.from('fast_videos')
+    let query = supabase.from('fast_videos')
       .select(VIDEO_FIELDS)
       .eq('user_id', userId)
-      .order('published_at', { ascending: false, nullsFirst: false })
+
+    if (mode === 'gallery') {
+      query = query
+        .eq('status', 'published')
+        .eq('access_type', 'free')
+        .eq('platform', 'youtube')
+
+      if (sort === 'popular') {
+        query = query
+          .order('view_count', { ascending: false })
+          .order('published_at', { ascending: false })
+      } else {
+        query = query.order('published_at', {
+          ascending: sort === 'oldest'
+        })
+      }
+    } else {
+      query = query.order('published_at', {
+        ascending: false,
+        nullsFirst: false
+      })
+    }
+
+    const { data, error } = await query
       .order('id', { ascending: false })
       .range(offset, offset + limit)
     if (error) throw error
