@@ -2,7 +2,7 @@ import { supabase } from '../config/supabase.js'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 // Include tags so the owner's Edit view can round-trip existing metadata.
-const VIDEO_FIELDS = 'id,user_id,video_url,thumbnail_url,title,description,tags,status,access_type,unlock_price_diamonds,published_at'
+const VIDEO_FIELDS = 'id,user_id,video_url,thumbnail_url,title,description,tags,status,access_type,unlock_price_diamonds,published_at,view_count'
 
 function pageNumber(value, fallback, maximum) {
   if (value === undefined || value === '') return fallback
