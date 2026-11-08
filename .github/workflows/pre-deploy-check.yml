@@ -11,26 +11,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Backend
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: Shadow-Backend
 
       - name: Checkout Reader
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Xiaonai888/Web-React-2
           ref: main
           path: Web-React-2
 
       - name: Checkout Admin
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Xiaonai888/AdminDashboard
           ref: main
           path: AdminDashboard
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 
