@@ -37,6 +37,108 @@ const ERROR_EVIDENCE_LIMIT = 5000
 const historicalErrorEvidence =
   new Map()
 
+// Bounded, diagnostic-only 5xx rollups. Never writes a row per request.
+const FIVE_XX_LOG_WINDOW_MS = 15 * 60 * 1000
+const FIVE_XX_LOG_MAX_GROUPS = 80
+const fiveXXLogGroups = new Map()
+let fiveXXLogOverflow = 0
+let fiveXXLogWindowStart =
+  Math.floor(Date.now() / FIVE_XX_LOG_WINDOW_MS) * FIVE_XX_LOG_WINDOW_MS
+
+function safeFiveXXCode(value, fallback = 'UNKNOWN_5XX') {
+  return String(value || fallback)
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_:-]/g, '_')
+    .slice(0, 64) || fallback
+}
+
+function safeFiveXXStage(value) {
+  return String(value || 'unknown')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_:-]/g, '_')
+    .slice(0, 64) || 'unknown'
+}
+
+function flushFiveXXDiagnostics(now = Date.now()) {
+  const newWindowStart =
+    Math.floor(now / FIVE_XX_LOG_WINDOW_MS) * FIVE_XX_LOG_WINDOW_MS
+  if (newWindowStart === fiveXXLogWindowStart) return
+
+  if (fiveXXLogGroups.size || fiveXXLogOverflow) {
+    const groups = [...fiveXXLogGroups.values()]
+      .sort((a, b) => b.count - a.count)
+    console.warn('SHADOW_5XX_SUMMARY_15M', JSON.stringify({
+      from: new Date(fiveXXLogWindowStart).toISOString(),
+      to: new Date(fiveXXLogWindowStart + FIVE_XX_LOG_WINDOW_MS).toISOString(),
+      total: groups.reduce((sum, row) => sum + row.count, fiveXXLogOverflow),
+      overflow: fiveXXLogOverflow,
+      groups,
+    }))
+  }
+
+  fiveXXLogGroups.clear()
+  fiveXXLogOverflow = 0
+  fiveXXLogWindowStart = newWindowStart
+}
+
+function recordFiveXXDiagnostic(context, status, elapsedMs) {
+  if (status < 500 || !context ||
+      context.route.startsWith('GET /api/admin/system-control')) return
+
+  const now = Date.now()
+  flushFiveXXDiagnostics(now)
+  const failure = (context.external_failures || []).find(
+    (item) => Number(item?.status || 0) >= 400
+  ) || context.external_failures?.[0] || null
+  const marker = context.diagnostic_marker || {}
+  const errorCode = safeFiveXXCode(
+    failure?.code || marker.error_code || context.response_error_code || `HTTP_${status}`
+  )
+  const stage = safeFiveXXStage(
+    marker.stage || marker.session_stage || marker.error_stage || marker.phase
+  )
+  const feature = safeFiveXXStage(marker.feature || 'unknown')
+  const provider = safeFiveXXCode(failure?.provider || 'APPLICATION', 'APPLICATION')
+  const target = String(failure?.target || context.route).slice(0, 180)
+  const key = [context.route, status, errorCode, stage, feature, provider, target].join('\u001f')
+  const existing = fiveXXLogGroups.get(key)
+  if (existing) {
+    existing.count += 1
+    existing.last_seen = new Date(now).toISOString()
+    existing.max_duration_ms = Math.max(existing.max_duration_ms, elapsedMs)
+    return
+  }
+  if (fiveXXLogGroups.size >= FIVE_XX_LOG_MAX_GROUPS) {
+    fiveXXLogOverflow += 1
+    return
+  }
+  const item = {
+    route: context.route,
+    http_status: status,
+    error_code: errorCode,
+    stage,
+    feature,
+    provider,
+    target,
+    provider_status: Number(failure?.status || 0),
+    count: 1,
+    first_seen: new Date(now).toISOString(),
+    last_seen: new Date(now).toISOString(),
+    max_duration_ms: Math.max(0, Number(elapsedMs) || 0),
+    request_id: context.request_id || null,
+  }
+  fiveXXLogGroups.set(key, item)
+  // One immediate notice per unique failure signature, never per request.
+  console.warn('SHADOW_5XX_FIRST', JSON.stringify(item))
+}
+
+if (ENABLED) {
+  const fiveXXLogTimer = setInterval(flushFiveXXDiagnostics, 60 * 1000)
+  fiveXXLogTimer.unref?.()
+}
+
 const GUEST_TRAFFIC_WINDOW_MS = 60 * 1000
 const GUEST_TRAFFIC_MAX_WINDOWS = 60
 const GUEST_TRAFFIC_MAX_ROUTES = 160
@@ -798,6 +900,14 @@ function recordHistoricalErrorEvidence(
       'object'
       ? context.diagnostic_marker
       : null
+  const rootCauseCode = safeFiveXXCode(
+    firstFailure?.code || marker?.error_code || responseCode ||
+      `HTTP_${status}`
+  )
+  const diagnosticStage = safeFiveXXStage(
+    marker?.stage || marker?.session_stage ||
+      marker?.error_stage || marker?.phase
+  )
   const sampleError =
     cleanHistoricalErrorText(
       ([401, 403].includes(status)
@@ -830,6 +940,8 @@ function recordHistoricalErrorEvidence(
     errorClass,
     provider,
     target,
+    rootCauseCode,
+    diagnosticStage,
   ].join('\u001f')
 
   const current =
@@ -843,6 +955,9 @@ function recordHistoricalErrorEvidence(
       route: context.route,
       http_status: status,
       response_code: responseCode || null,
+      root_cause_code: rootCauseCode,
+      diagnostic_stage: diagnosticStage,
+      provider_http_status: Number(firstFailure?.status || 0),
       error_class:
         errorClass,
       provider,
@@ -899,6 +1014,14 @@ function logRequestEvidence(req, res, context, elapsedMs) {
   )
 
   const status = Number(res.statusCode || 0)
+  // Guaranteed 5xx aggregation independent of the sampled-request log cap.
+  // This does not change HTTP responses or send extra database requests.
+  try {
+    recordFiveXXDiagnostic(context, status, elapsedMs)
+  } catch (diagnosticError) {
+    console.warn('SHADOW_5XX_DIAGNOSTIC_FAILURE',
+      String(diagnosticError?.message || diagnosticError).slice(0, 120))
+  }
   const sseResponse =
     isSseResponse(res)
   const failed = [401, 403, 429].includes(status) || status >= 500 || context.external_errors > 0
@@ -1071,6 +1194,9 @@ export function getHistoricalErrorEvidence({
         entry.http_status,
       response_code:
         entry.response_code || null,
+      root_cause_code: entry.root_cause_code || null,
+      diagnostic_stage: entry.diagnostic_stage || 'unknown',
+      provider_http_status: Number(entry.provider_http_status || 0),
       error_class:
         entry.error_class,
       provider:
