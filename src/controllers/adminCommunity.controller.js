@@ -950,17 +950,40 @@ export async function getAdminCommunityAuthors(req, res) {
   }
 }
 
+// Attach a safe stage to failed visitor metrics queries without changing
+// their results or triggering extra database requests.
+function visitorOverviewFailure(error, stage) {
+  const failure = new Error(
+    String(error?.message || 'Visitor overview query failed')
+  )
+  failure.cause = error
+  failure.code = String(error?.code || '')
+  failure.status = Number(error?.status) || 0
+  failure.visitor_overview_stage = stage
+  return failure
+}
+
+async function withVisitorOverviewStage(promise, stage) {
+  try {
+    return await promise
+  } catch (error) {
+    throw visitorOverviewFailure(error, stage)
+  }
+}
+
 async function loadAdminCommunityVisitorOverviewPayload() {
   const [
     overviewResult,
     metricsResult,
     readersTodayCount,
   ] = await Promise.all([
-    supabase.rpc(
-      'get_anonymous_visitor_overview'
+    withVisitorOverviewStage(
+      supabase.rpc('get_anonymous_visitor_overview'),
+      'overview_rpc'
     ),
-    supabase.rpc(
-      'get_admin_community_visitor_metrics_v1'
+    withVisitorOverviewStage(
+      supabase.rpc('get_admin_community_visitor_metrics_v1'),
+      'metrics_rpc'
     ),
     getReadersTodayCount().catch((error) => {
       console.error('ADMIN READERS TODAY COUNT ERROR:', error)
@@ -969,7 +992,7 @@ async function loadAdminCommunityVisitorOverviewPayload() {
   ])
 
   if (overviewResult.error) {
-    throw overviewResult.error
+    throw visitorOverviewFailure(overviewResult.error, 'overview_rpc')
   }
 
   const overviewRows =
@@ -1022,33 +1045,18 @@ async function loadAdminCommunityVisitorOverviewPayload() {
       readerActivity,
       storyUpdates,
     ] = await Promise.all([
-      getVisitorsTodayCount(),
-      countVisitorRows(
-        'is_suspected_bot',
-        true
+      withVisitorOverviewStage(getVisitorsTodayCount(), 'fallback_visitors_today'),
+      withVisitorOverviewStage(
+        countVisitorRows('is_suspected_bot', true),
+        'fallback_suspected_bots'
       ),
-      countVisitorRows(
-        'risk_level',
-        'normal'
-      ),
-      countVisitorRows(
-        'risk_level',
-        'low_risk'
-      ),
-      countVisitorRows(
-        'risk_level',
-        'suspicious'
-      ),
-      countVisitorRows(
-        'risk_level',
-        'likely_bot'
-      ),
-      countVisitorRows(
-        'risk_level',
-        'high_risk'
-      ),
-      getReaderActivityToday(),
-      getStoryUpdatesToday(),
+      withVisitorOverviewStage(countVisitorRows('risk_level', 'normal'), 'fallback_normal_risk'),
+      withVisitorOverviewStage(countVisitorRows('risk_level', 'low_risk'), 'fallback_low_risk'),
+      withVisitorOverviewStage(countVisitorRows('risk_level', 'suspicious'), 'fallback_suspicious_risk'),
+      withVisitorOverviewStage(countVisitorRows('risk_level', 'likely_bot'), 'fallback_likely_bot_risk'),
+      withVisitorOverviewStage(countVisitorRows('risk_level', 'high_risk'), 'fallback_high_risk'),
+      withVisitorOverviewStage(getReaderActivityToday(), 'fallback_reader_activity'),
+      withVisitorOverviewStage(getStoryUpdatesToday(), 'fallback_story_updates'),
     ])
 
     metrics = {
@@ -1177,7 +1185,23 @@ export async function getAdminCommunityVisitorOverview(req, res) {
     }
     return res.status(200).json(await communityVisitorOverviewPending)
   } catch (error) {
-    console.error('ADMIN COMMUNITY VISITOR OVERVIEW ERROR:', error)
+    const stage = String(error?.visitor_overview_stage || 'overview_unclassified')
+    const errorCode = String(error?.code || 'VISITOR_OVERVIEW_UNKNOWN')
+      .replace(/[^a-zA-Z0-9_]/g, '_')
+      .slice(0, 64)
+    markRequestDiagnostic({
+      feature: 'admin_community_visitor_overview',
+      stage,
+      error_code: errorCode,
+      metrics_rpc: stage.startsWith('fallback_') ? 'fallback' : stage,
+      provider_status: Number(error?.status) || 0,
+    })
+    // Only stable metadata is logged here; avoid visitor IDs or query arguments.
+    console.error('ADMIN COMMUNITY VISITOR OVERVIEW ERROR:', {
+      stage,
+      error_code: errorCode,
+      provider_status: Number(error?.status) || 0,
+    })
     return res.status(error.code === 'COMMUNITY_FALLBACK_LIMIT' ? 503 : 500).json({
       ok: false,
       message: error.code === 'COMMUNITY_FALLBACK_LIMIT'
