@@ -4,7 +4,7 @@
 import { createHmac } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export async function recordFastReelView(req, res) {
   const videoId = String(req.params.id || '').trim()
