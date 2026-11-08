@@ -326,13 +326,29 @@ const defaultLeadCharacter =
   characters[0] ||
   null
 
-const leadCharacterId =
+
+if (
   requestedLeadCharacterId &&
-  characterIds.has(
-    requestedLeadCharacterId
-  )
-    ? requestedLeadCharacterId
-    : defaultLeadCharacter?.id || null
+  !characterIds.has(String(requestedLeadCharacterId))
+) {
+  return res.status(400).json({
+    ok: false,
+    message: 'Selected Lead Character is invalid. Please choose a Lead again.',
+  })
+}
+
+const leadCharacterId =
+  requestedLeadCharacterId ||
+  defaultLeadCharacter?.id ||
+  null
+
+if (!leadCharacterId) {
+  return res.status(400).json({
+    ok: false,
+    message: 'A Lead Character is required for this episode.',
+  })
+}
+
 
 let audioOwnerId = ''
 if (Array.isArray(req.body.messages) && req.body.messages.length <= MAX_MESSAGES &&
@@ -440,18 +456,23 @@ const content = JSON.stringify({
   story_id: storyId,
   episode_title: title,
   lead_character_id: leadCharacterId,
-  characters: episodeCharacters.map(
-    (character) => ({
-      id: character.id,
-      nickname: character.nickname || '',
-      avatar_url: character.avatar_url || '',
-      role_group: character.role_group,
-      is_lead:
-        character.is_lead === true,
-      chat_side: character.chat_side,
-      sort_order: character.sort_order,
-    })
-  ),
+  
+characters: episodeCharacters.map((character) => {
+  const isEpisodeLead =
+    Boolean(leadCharacterId) &&
+    String(character.id) === String(leadCharacterId)
+
+  return {
+    id: character.id,
+    nickname: character.nickname || '',
+    avatar_url: character.avatar_url || '',
+    role_group: character.role_group,
+    is_lead: isEpisodeLead,
+    chat_side: isEpisodeLead ? 'right' : 'left',
+    sort_order: character.sort_order,
+  }
+}),
+
   messages: normalized.messages,
   ...(notificationSettings ? { notification_settings: notificationSettings } : {}),
 })
