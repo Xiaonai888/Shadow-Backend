@@ -21,7 +21,7 @@ export async function listPublicFastVideos(req, res) {
   try {
     let query = supabase
       .from('fast_videos')
-      .select('id,user_id,video_url,thumbnail_url,title,description,published_at')
+      .select('id,user_id,video_url,thumbnail_url,title,description,published_at,view_count')
       .eq('status', 'published')
       .eq('access_type', 'free')
       .eq('platform', 'youtube')
@@ -99,7 +99,7 @@ export async function getPublicFastVideo(req, res) {
   try {
     const { data: video, error } = await supabase
       .from('fast_videos')
-      .select('id,user_id,video_url,thumbnail_url,title,description,published_at')
+      .select('id,user_id,video_url,thumbnail_url,title,description,published_at,view_count')
       .eq('id', id)
       .eq('status', 'published')
       .eq('access_type', 'free')
