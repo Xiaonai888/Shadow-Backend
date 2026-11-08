@@ -27,6 +27,7 @@ import { cachePublicStoryRecommendations } from '../services/publicStoryRecommen
 import { cachePublicStoryDataResponse } from '../services/publicStoryDataCache.service.js'
 import { APP_REGISTRY } from '../config/appRegistry.js'
 import { getSupabaseClient } from '../config/supabase.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 import {
   traceEpisodeView,
   traceReaderEpisodeList,
@@ -56,6 +57,99 @@ const publicStoriesListReadSpamGuard = createSpamGuard({
   threshold: 300,
   windowSeconds: 60,
 })
+
+// Route-level 5xx tracing includes pre-cache failures as well as controller failures.
+// This is diagnostics only: no extra requests, response changes, or database writes.
+const PUBLIC_STORY_LIST_ERROR_WINDOW_MS = 60 * 1000
+const PUBLIC_STORY_LIST_ERROR_MAX_LOGS = 8
+let publicStoryListErrorMinute = 0
+const publicStoryListErrorSignatures = new Set()
+
+function classifyPublicStoryListFailure(body) {
+  const suppliedCode = String(body?.code || '').trim().toUpperCase()
+  if (/^[A-Z][A-Z0-9_]{2,63}$/.test(suppliedCode)) return suppliedCode
+
+  const message = [body?.error, body?.message]
+    .filter((value) => typeof value === 'string')
+    .join(' ')
+    .slice(0, 1000)
+
+  const pgCode = message.match(/\b(?:PGRST\d{3}|42P01|42703|42501|57014|53300|22P02|08P01|XX000)\b/i)
+  if (pgCode) return pgCode[0].toUpperCase()
+  if (/timeout|timed out|canceling statement due to statement timeout/i.test(message)) return 'UPSTREAM_TIMEOUT'
+  if (/relation .* does not exist/i.test(message)) return 'DB_RELATION_MISSING'
+  if (/column .* does not exist/i.test(message)) return 'DB_COLUMN_MISSING'
+  if (/permission denied|row.level security/i.test(message)) return 'DB_PERMISSION_DENIED'
+  if (/too many connections|remaining connection slots/i.test(message)) return 'DB_CONNECTION_LIMIT'
+  if (/fetch failed|failed to fetch|ECONNRESET|EAI_AGAIN|ENOTFOUND/i.test(message)) return 'UPSTREAM_NETWORK_ERROR'
+  return 'PUBLIC_STORIES_HTTP_5XX'
+}
+
+function tracePublicStoryListFailures(req, res, next) {
+  const startedAt = Date.now()
+  let recorded = false
+
+  const recordFailure = (body, responseKind) => {
+    if (recorded || Number(res.statusCode || 0) < 500) return
+    recorded = true
+
+    const cache = String(res.getHeader('X-Shadow-Public-Stories-Cache') || 'NONE').toUpperCase()
+    const cacheState = ['HIT', 'MISS', 'WAIT'].includes(cache) ? cache : 'NONE'
+    const stage = cacheState === 'MISS' ? 'origin_pipeline'
+      : cacheState === 'WAIT' ? 'inflight_wait'
+        : cacheState === 'HIT' ? 'cache_response' : 'before_cache_or_unhandled'
+    const sort = String(req.query?.sort || 'latest')
+      .trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 40) || 'latest'
+    const errorCode = classifyPublicStoryListFailure(body)
+    const status = Number(res.statusCode || 500)
+
+    markRequestDiagnostic({
+      feature: 'public_story_list',
+      stage,
+      cache_state: cacheState,
+      sort,
+      error_code: errorCode,
+      response_status: status,
+      response_kind: responseKind,
+    })
+
+    // Avoid log storms when several visitors hit the same failure.
+    const minute = Math.floor(Date.now() / PUBLIC_STORY_LIST_ERROR_WINDOW_MS)
+    if (minute !== publicStoryListErrorMinute) {
+      publicStoryListErrorMinute = minute
+      publicStoryListErrorSignatures.clear()
+    }
+    const key = `${sort}|${stage}|${status}|${errorCode}`
+    if (publicStoryListErrorSignatures.has(key) ||
+        publicStoryListErrorSignatures.size >= PUBLIC_STORY_LIST_ERROR_MAX_LOGS) return
+
+    publicStoryListErrorSignatures.add(key)
+    console.warn('PUBLIC_STORIES_LIST_5XX', JSON.stringify({
+      sort,
+      stage,
+      cache_state: cacheState,
+      status,
+      error_code: errorCode,
+      response_kind: responseKind,
+      elapsed_ms: Date.now() - startedAt,
+    }))
+  }
+
+  const originalJson = res.json.bind(res)
+  res.json = (body) => {
+    recordFailure(body, 'json')
+    return originalJson(body)
+  }
+
+  // Express may send a non-JSON error if a cache/pre-handler middleware fails.
+  const originalEnd = res.end.bind(res)
+  res.end = (...args) => {
+    recordFailure(null, 'non_json')
+    return originalEnd(...args)
+  }
+
+  return next()
+}
 
 const NEW_ARRIVALS_WINDOW_MS = 60 * 1000
 const NEW_ARRIVALS_MAX_BOOKS = 100
@@ -335,6 +429,7 @@ router.get('/apps', async (req, res) => {
 
 router.get(
   '/stories',
+  tracePublicStoryListFailures,
   publicStoriesListCacheHitLimit,
   limitNewArrivalsReadBudget,
   cachePublicStoriesResponse,
