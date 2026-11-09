@@ -32,7 +32,7 @@ const FALLBACK_RULES = {
     payoutBinance: false,
     payoutPhone: true,
     storyLanguage: 'km',
-    shopTarget: 'shadow_mall',
+    shopTarget: shopAllowed ? 'shadow_mall' : 'diamonds',
   },
   international: {
     app: true,
@@ -152,6 +152,12 @@ function resolveRules(rules, region, countryAvailable, exception, policyEnabled)
   if (!policyEnabled) {
     const baseline = exception?.mode === 'cambodia_experience' ? 'kh' : region
     const regionGame = rules[baseline === 'international' ? 'international' : 'kh']?.game
+    const shopTarget = exception?.mode === 'custom' && TARGETS.has(exception.overrides?.shopTarget)
+  ? exception.overrides.shopTarget : rules.kh.shopTarget
+const shopFlag = exception?.mode === 'all_eligible'
+  || (exception?.mode === 'custom' && exception.overrides?.shadowMall === 'allow')
+  || (rules.kh.shadowMall === true && exception?.overrides?.shadowMall !== 'block')
+const shopAllowed = countryAvailable && region === 'kh' && shopFlag && shopTarget === 'shadow_mall'
     let gameAllowed = countryAvailable && typeof regionGame === 'boolean' ? regionGame : true
 
     if (countryAvailable && exception?.mode === 'all_eligible') {
@@ -168,7 +174,7 @@ function resolveRules(rules, region, countryAvailable, exception, policyEnabled)
       app: true,
       game: gameAllowed,
       physicalBooks: true,
-      shadowMall: true,
+      shadowMall: shopAllowed,
       readerMall: true,
       payway: true,
       binancePay: resolveScopedPaymentDuringPause(rules, region, countryAvailable, exception, 'binancePay'),
