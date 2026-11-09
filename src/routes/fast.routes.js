@@ -6,7 +6,7 @@ import { rateLimit } from 'express-rate-limit'
 import { requireUser } from '../middleware/user.middleware.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 import { createFastVideo } from '../controllers/fastVideos.controller.js'
-import { recordFastReelView } from '../controllers/fastReelViews.controller.js'
+import { recordFastReelView, recordFastReelViewV2 } from '../controllers/fastReelViews.controller.js'
 
 import {
   listMyFastNotInterested,
@@ -207,6 +207,12 @@ router.post(
   recordFastReelView
 )
 
+router.post(
+  '/videos/:id/view/v2',
+  fastVideoViewWriteLimit,
+  requireUser,
+  recordFastReelViewV2
+)
 
 router.get('/videos/mine', fastVideoManageReadLimit, requireUser, listMyFastReels)
 router.patch('/videos/:id', fastVideoManageWriteLimit, requireUser, updateMyFastReel)
