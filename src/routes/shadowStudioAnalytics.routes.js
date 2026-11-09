@@ -16,9 +16,8 @@ const readLimit = rateLimit({
   message: { ok: false, code: 'STUDIO_RATE_LIMITED', message: 'Too many Studio analytics requests.' },
 })
 
-router.use(readLimit, requireUser)
-router.get('/dashboard', getStudioDashboard)
-router.get('/ranking', getStudioRanking)
-router.get('/videos/:videoId', getStudioVideoAnalytics)
+router.get('/dashboard', readLimit, requireUser, getStudioDashboard)
+router.get('/ranking', readLimit, requireUser, getStudioRanking)
+router.get('/videos/:videoId', readLimit, requireUser, getStudioVideoAnalytics)
 
 export default router
