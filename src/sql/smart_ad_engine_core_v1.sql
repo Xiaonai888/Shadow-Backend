@@ -66,7 +66,7 @@ AS $$
   )
   SELECT ids.id,
     COUNT(published.id)::bigint,
-    MAX(published.id) FILTER (WHERE published.episode_position = 1),
+    (ARRAY_AGG(published.id) FILTER (WHERE published.episode_position = 1))[1] AS first_episode_id,
     MAX(published.published_time)
   FROM ids LEFT JOIN published ON published.story_id = ids.id
   GROUP BY ids.id;
