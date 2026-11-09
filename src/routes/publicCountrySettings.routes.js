@@ -32,7 +32,7 @@ const FALLBACK_RULES = {
     payoutBinance: false,
     payoutPhone: true,
     storyLanguage: 'km',
-    shopTarget: shopAllowed ? 'shadow_mall' : 'diamonds',
+    shopTarget: 'shadow_mall',
   },
   international: {
     app: true,
@@ -43,13 +43,13 @@ const FALLBACK_RULES = {
     premiumBinancePay: false,
     pdfPayway: false,
     pdfBinancePay: false,
-    shadowMall: true,
+    shadowMall: false,
     readerMall: true,
     payoutBank: false,
     payoutBinance: false,
     payoutPhone: true,
     storyLanguage: 'en',
-    shopTarget: 'shadow_mall',
+    shopTarget: 'diamonds',
   },
 }
 let cached = null
@@ -153,11 +153,15 @@ function resolveRules(rules, region, countryAvailable, exception, policyEnabled)
     const baseline = exception?.mode === 'cambodia_experience' ? 'kh' : region
     const regionGame = rules[baseline === 'international' ? 'international' : 'kh']?.game
     const shopTarget = exception?.mode === 'custom' && TARGETS.has(exception.overrides?.shopTarget)
-  ? exception.overrides.shopTarget : rules.kh.shopTarget
-const shopFlag = exception?.mode === 'all_eligible'
-  || (exception?.mode === 'custom' && exception.overrides?.shadowMall === 'allow')
-  || (rules.kh.shadowMall === true && exception?.overrides?.shadowMall !== 'block')
-const shopAllowed = countryAvailable && region === 'kh' && shopFlag && shopTarget === 'shadow_mall'
+      ? exception.overrides.shopTarget
+      : rules.kh.shopTarget
+    let shopEnabled = rules.kh.shadowMall === true
+    if (exception?.mode === 'all_eligible') shopEnabled = true
+    if (exception?.mode === 'custom') {
+      if (exception.overrides?.shadowMall === 'allow') shopEnabled = true
+      if (exception.overrides?.shadowMall === 'block') shopEnabled = false
+    }
+    const shopAllowed = countryAvailable && region === 'kh' && shopEnabled && shopTarget === 'shadow_mall'
     let gameAllowed = countryAvailable && typeof regionGame === 'boolean' ? regionGame : true
 
     if (countryAvailable && exception?.mode === 'all_eligible') {
@@ -182,7 +186,7 @@ const shopAllowed = countryAvailable && region === 'kh' && shopFlag && shopTarge
       premiumBinancePay: resolveScopedPaymentDuringPause(rules, region, countryAvailable, exception, 'premiumBinancePay'),
       pdfPayway: resolveScopedPaymentDuringPause(rules, region, countryAvailable, exception, 'pdfPayway'),
       pdfBinancePay: resolveScopedPaymentDuringPause(rules, region, countryAvailable, exception, 'pdfBinancePay'),
-      shopTarget: 'shadow_mall',
+      shopTarget: shopAllowed ? 'shadow_mall' : 'diamonds',
     }
   }
   // Country Rules supply defaults; explicit User Exceptions take precedence.
@@ -211,11 +215,11 @@ const shopAllowed = countryAvailable && region === 'kh' && shopFlag && shopTarge
       effective[key] = rules.kh[key] === true && rules.international[key] === true
     }
   }
- if (exception?.mode === 'all_eligible') {
-  for (const key of Object.keys(effective)) {
-    if (typeof effective[key] === 'boolean') effective[key] = true
+  if (exception?.mode === 'all_eligible') {
+    for (const key of Object.keys(effective)) {
+      if (typeof effective[key] === 'boolean') effective[key] = true
+    }
   }
-}
   if (exception?.mode === 'custom' && exception.overrides && typeof exception.overrides === 'object') {
     for (const [key, value] of Object.entries(exception.overrides)) {
       if (!Object.hasOwn(effective, key) || !Object.hasOwn(rules.kh, key) ||
@@ -233,6 +237,10 @@ const shopAllowed = countryAvailable && region === 'kh' && shopFlag && shopTarge
     effective.binancePay = false
     for (const key of SCOPED_PAYMENT_FLAGS) effective[key] = false
   }
+  const shopAllowed = countryAvailable && region === 'kh' &&
+    effective.shadowMall === true && effective.shopTarget === 'shadow_mall'
+  effective.shadowMall = shopAllowed
+  effective.shopTarget = shopAllowed ? 'shadow_mall' : 'diamonds'
   return effective
 }
 
@@ -315,6 +323,8 @@ router.get('/', optionalReader, async (req, res) => {
   const effective = resolveRules(settings.rules, region, Boolean(country), exception, policyEnabled)
   // If the saved rule/exception could not be checked, do not advertise Binance.
   if (!settings.ready || (userId && exceptionResult.status !== 'fulfilled')) {
+    effective.shadowMall = false
+    effective.shopTarget = 'diamonds'
     effective.binancePay = false
     for (const key of SCOPED_PAYMENT_FLAGS) effective[key] = false
   }
