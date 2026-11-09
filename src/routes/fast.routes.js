@@ -6,7 +6,7 @@ import { rateLimit } from 'express-rate-limit'
 import { requireUser } from '../middleware/user.middleware.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 import { createFastVideo } from '../controllers/fastVideos.controller.js'
-import { recordFastReelView, recordFastReelViewV2 } from '../controllers/fastReelViews.controller.js'
+import { recordFastReelViewV2 } from '../controllers/fastReelViews.controller.js'
 
 import {
   listMyFastNotInterested,
@@ -200,12 +200,6 @@ const fastVideoViewWriteLimit = rateLimit({
   legacyHeaders: false,
   message: { ok: false, message: 'Too many Reel playback reports.' },
 })
-
-router.post(
-  '/videos/:id/view',
-  fastVideoViewWriteLimit,
-  recordFastReelView
-)
 
 router.post(
   '/videos/:id/view/v2',
