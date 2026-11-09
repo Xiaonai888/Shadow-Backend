@@ -40,6 +40,7 @@ import readerMailsRoutes from './src/routes/readerMails.routes.js'
 import chatRoutes from './src/routes/chat.routes.js'
 import adminNotificationsRoutes from './src/routes/adminNotifications.routes.js'
 import advertisementsRoutes from './src/routes/advertisements.routes.js'
+import smartAdRoutes from './src/routes/smartAd.routes.js'
 import googleAdsSettingsRoutes from './src/routes/googleAdsSettings.routes.js'
 import adminBlockListRoutes from './src/routes/adminBlockList.routes.js'
 import adminReaderMailsRoutes from './src/routes/adminReaderMails.routes.js'
@@ -119,6 +120,7 @@ import { startMangaR2DeleteRetryWorker } from './src/services/mangaR2DeleteRetry
 import { startHeavyMediaWorkerCoordinator } from './src/services/heavyMediaWorkerCoordinator.service.js'
 import { startAuthorStoryPushQueue } from './src/services/authorStoryPushQueue.service.js'
 import { startStoryEpisodePushScheduler } from './src/services/storyEpisodePushScheduler.js'
+import { startSmartAdMaintenanceScheduler } from './src/services/smartAdMaintenance.service.js'
 import { startBinanceUsdtAlertWorker } from './src/services/binanceUsdtAlertWorker.service.js'
 import { startTelegramMissingReportRecovery } from './src/services/telegramMissingReportRecovery.service.js'
 import { startShadowReadEventDailySettlement } from './src/services/shadowReadEventDailySettlement.service.js'
@@ -986,6 +988,7 @@ app.use('/api/profile-frames', readerProfileFramesRouter)
 app.use('/api/admin/chat-story-library', adminChatStoryLibraryRoutes)
 app.use('/api/admin/ranking', adminRankingRoutes)
 app.use('/api/advertisements', advertisementsRoutes)
+app.use('/api/smart-ads', smartAdRoutes)
 app.use('/api/google-ads', googleAdsSettingsRoutes)
 app.use('/api/admin/block-list', adminBlockListRoutes)
 app.use('/api/admin/mails', adminReaderMailsRoutes)
@@ -1077,6 +1080,7 @@ app.listen(PORT, () => {
   startHeavyMediaWorkerCoordinator()
   startAuthorStoryPushQueue()
   startStoryEpisodePushScheduler()
+  startSmartAdMaintenanceScheduler()
   startBinanceUsdtAlertWorker()
   startTelegramMissingReportRecovery()
   startShadowReadEventDailySettlement()
