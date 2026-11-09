@@ -78,6 +78,8 @@ import { startAuthorPostCleanup } from './src/services/authorPostCleanup.service
 import { startCommentTrashCleanup } from './src/services/commentTrashCleanup.service.js'
 import { startReaderLibraryTrashCleanup } from './src/services/readerLibraryTrashCleanup.service.js'
 import fastRoutes from './src/routes/fast.routes.js'
+import studioAnalyticsRoutes from './src/routes/shadowStudioAnalytics.routes.js'
+import studioVideoTypeRoutes from './src/routes/shadowStudioVideoType.routes.js'
 import contentReportsRoutes from './src/routes/contentReports.routes.js'
 import adminReportsRoutes from './src/routes/adminReports.routes.js'
 import adminAuthorReviewsRoutes from './src/routes/adminAuthorReviews.routes.js'
@@ -1009,6 +1011,8 @@ app.use('/api/discover-stories', readerReadSpamGuard, discoverStoriesRoutes)
 app.use('/api/discover-search', readerReadSpamGuard, discoverSearchRoutes)
 app.use('/api/spin', readerActionSpamGuard, spinRoutes)
 app.use('/api/fast', mediaUploadRouteSpamGuard, fastRoutes)
+app.use('/api/shadow-studio/analytics', studioAnalyticsRoutes)
+app.use('/api/shadow-studio/video-type', studioVideoTypeRoutes)
 app.use('/api/reports', reportActionSpamGuard, contentReportsRoutes)
 app.use('/api/admin/reports', adminReportsRoutes)
 app.use('/api/admin/author-reviews', adminAuthorReviewsRoutes)
