@@ -9,19 +9,41 @@ import {
 
 const router = express.Router()
 
-function guard(limit) {
-  return rateLimit({
-    windowMs: 60000,
-    limit,
-    standardHeaders: 'draft-7',
-    legacyHeaders: false,
-    message: { ok: false, message: 'Too many Smart Ad requests' },
-  })
-}
+const versionIpLimiter = rateLimit({
+  windowMs: 60000,
+  limit: 30,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { ok: false, message: 'Too many Smart Ad requests' },
+})
 
-router.get('/version', guard(30), getSmartAdVersion)
-router.post('/select', guard(30), postSmartAdSelection)
-router.post('/impressions', guard(60), postSmartAdImpressions)
-router.post('/open', guard(45), postSmartAdOpen)
+const selectIpLimiter = rateLimit({
+  windowMs: 60000,
+  limit: 30,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { ok: false, message: 'Too many Smart Ad requests' },
+})
+
+const impressionsIpLimiter = rateLimit({
+  windowMs: 60000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { ok: false, message: 'Too many Smart Ad requests' },
+})
+
+const openIpLimiter = rateLimit({
+  windowMs: 60000,
+  limit: 45,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { ok: false, message: 'Too many Smart Ad requests' },
+})
+
+router.get('/version', versionIpLimiter, getSmartAdVersion)
+router.post('/select', selectIpLimiter, postSmartAdSelection)
+router.post('/impressions', impressionsIpLimiter, postSmartAdImpressions)
+router.post('/open', openIpLimiter, postSmartAdOpen)
 
 export default router
