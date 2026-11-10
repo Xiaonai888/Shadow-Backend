@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { invalidateAdvertisementResponseCache } from '../services/advertisementsResponseCache.service.js'
+import { updateAdminRotatingAdvertisementSettings } from './adRotation.controller.js'
 
 const placements = new Set(['opening', 'freeUnlock', 'me'])
 const settingsFields = new Set(['enabled', 'mode', 'manual_ad_id', 'rotate_every_seconds', 'max_ads', 'restart_rotation'])
@@ -14,14 +15,14 @@ function isId(value) {
   return Number.isSafeInteger(value) && value > 0
 }
 
-function validSettings(settings) {
+function validSettings(settings, placement) {
   if (!isObject(settings)) return false
   for (const [key, value] of Object.entries(settings)) {
     if (!settingsFields.has(key)) return false
     if (key === 'enabled' || key === 'restart_rotation') {
       if (typeof value !== 'boolean') return false
     } else if (key === 'mode') {
-      if (value !== 'manual' && value !== 'auto') return false
+      if (value !== 'manual' && value !== 'auto' && !(placement === 'freeUnlock' && value === 'auto_system')) return false
     } else if (key === 'manual_ad_id') {
       if (value !== null && !isId(value)) return false
     } else if (key === 'rotate_every_seconds') {
@@ -76,7 +77,7 @@ export async function saveAdminAdvertisementBatch(req, res) {
   const settings = body.settings ?? {}
   const items = body.items ?? []
   const moves = body.moves ?? []
-  if (!validSettings(settings) || !validItems(items) || !validMoves(moves)) {
+  if (!validSettings(settings, placement) || !validItems(items) || !validMoves(moves)) {
     return res.status(400).json({ ok: false, message: 'Invalid advertisement batch changes' })
   }
   if (!Object.keys(settings).length && !items.length && !moves.length) {
@@ -84,6 +85,27 @@ export async function saveAdminAdvertisementBatch(req, res) {
   }
 
   try {
+    if (placement === 'freeUnlock') {
+      const { data: current, error: lookupError } = await supabase
+        .from('shadow_advertisement_rotation_settings')
+        .select('mode')
+        .eq('placement', placement)
+        .maybeSingle()
+      if (lookupError) throw lookupError
+      if (settings.mode === 'auto_system' || current?.mode === 'auto_system') {
+        if (items.length || moves.length) {
+          return res.status(409).json({
+            ok: false,
+            message: 'Save Auto System mode changes separately from Manual/Auto Rotation library changes',
+          })
+        }
+        if (!Object.keys(settings).length) {
+          return res.status(400).json({ ok: false, message: 'No Auto System settings to save' })
+        }
+        return updateAdminRotatingAdvertisementSettings({ ...req, body: settings }, res)
+      }
+    }
+
     const actor = String(req.admin?.username || req.admin?.email || 'Admin').slice(0, 120)
     const { data, error } = await supabase.rpc('shadow_save_advertisement_batch', {
       p_placement: placement,
