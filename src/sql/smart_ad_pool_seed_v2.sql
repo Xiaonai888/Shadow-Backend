@@ -101,10 +101,10 @@ BEGIN
   END IF;
 
   IF v_inserted > 0 THEN
-    UPDATE public.smart_ad_engine_state
-    SET catalog_version = catalog_version + 1,
+    UPDATE public.smart_ad_engine_state AS state
+    SET catalog_version = state.catalog_version + 1,
         last_daily_check_at = now()
-    WHERE id = 1;
+    WHERE state.id = 1;
   END IF;
 
   RETURN QUERY
