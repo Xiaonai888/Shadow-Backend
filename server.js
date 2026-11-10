@@ -81,6 +81,10 @@ import { startCommentTrashCleanup } from './src/services/commentTrashCleanup.ser
 import { startReaderLibraryTrashCleanup } from './src/services/readerLibraryTrashCleanup.service.js'
 import fastRoutes from './src/routes/fast.routes.js'
 import studioAnalyticsRoutes from './src/routes/shadowStudioAnalytics.routes.js'
+import studioChannelAnalyticsRoutes from './src/routes/shadowStudioChannelAnalytics.routes.js'
+import studioAdvancedAnalyticsRoutes from './src/routes/shadowStudioAdvancedMetrics.routes.js'
+import studioAudienceAnalyticsRoutes from './src/routes/shadowStudioAudienceAnalytics.routes.js'
+import studioTrendsAnalyticsRoutes from './src/routes/shadowStudioTrendsAnalytics.routes.js'
 import studioVideoTypeRoutes from './src/routes/shadowStudioVideoType.routes.js'
 import studioContentPlaylistRoutes from './src/routes/shadowStudioContentPlaylists.routes.js'
 import contentReportsRoutes from './src/routes/contentReports.routes.js'
@@ -1019,6 +1023,10 @@ app.use('/api/discover-search', readerReadSpamGuard, discoverSearchRoutes)
 app.use('/api/spin', readerActionSpamGuard, spinRoutes)
 app.use('/api/fast', mediaUploadRouteSpamGuard, fastRoutes)
 app.use('/api/shadow-studio/analytics', studioAnalyticsRoutes)
+app.use('/api/shadow-studio/channel-analytics', studioChannelAnalyticsRoutes)
+app.use('/api/shadow-studio/advanced-analytics', studioAdvancedAnalyticsRoutes)
+app.use('/api/shadow-studio/audience-analytics', studioAudienceAnalyticsRoutes)
+app.use('/api/shadow-studio/trends-analytics', studioTrendsAnalyticsRoutes)
 app.use('/api/shadow-studio/video-type', studioVideoTypeRoutes)
 app.use('/api/shadow-studio/content', studioContentPlaylistRoutes)
 app.use('/api/reports', reportActionSpamGuard, contentReportsRoutes)
