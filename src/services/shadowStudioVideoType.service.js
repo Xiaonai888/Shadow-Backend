@@ -48,11 +48,6 @@ export async function setStudioVideoType(ownerId, videoId, videoType, durationSe
     .maybeSingle()
   if (readError) throw readError
   if (!existing || existing.platform !== 'youtube') return null
-  if (videoType === 'long' && isYouTubeShortsUrl(existing.video_url)) {
-    const error = new Error('YouTube Shorts links cannot be classified as long videos.')
-    error.status = 400
-    throw error
-  }
   const changes = { video_type: videoType }
   if (durationSeconds !== undefined) changes.duration_seconds = durationSeconds
   const { data, error } = await supabase
