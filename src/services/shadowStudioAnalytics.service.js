@@ -77,8 +77,7 @@ export async function studioDashboard(ownerId) {
     supabase.from('fast_videos').select(VIDEO_FIELDS)
       .eq('user_id', ownerId).eq('status', 'published').eq('access_type', 'free')
       .not('published_at', 'is', null)
-      .or('video_type.eq.long,and(video_type.is.null,duration_seconds.gt.180)')
-      .not('video_url', 'ilike', '%/shorts/%')
+      .eq('video_type', 'long')
       .order('published_at', { ascending: false }).order('id', { ascending: false }).limit(3),
     supabase.rpc('shadow_studio_creator_30d_views', { p_owner: ownerId }),
   ])
