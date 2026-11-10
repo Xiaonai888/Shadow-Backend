@@ -15,7 +15,7 @@ const PLACEMENTS = {
   },
 }
 
-const MODES = ['manual', 'auto']
+const MODES = ['manual', 'auto', 'auto_system']
 const FREQUENCIES = ['once_per_session', 'once_per_day', 'every_visit', 'every_unlock']
 const BADGES = ['', 'HOT', 'NEW', 'TOP', 'END', 'UP']
 
@@ -243,6 +243,7 @@ async function restartAutoRotation(placement, settings, shouldRestart) {
 
 async function selectPublicItem(placement, settings) {
   if (!settings?.enabled) return null
+  if (settings.mode === 'auto_system') return null
 
   if (settings.mode === 'manual') {
     if (!settings.manual_ad_id) return null
@@ -353,7 +354,8 @@ export async function getPublicRotatingAdvertisement(req, res) {
       ok: true,
       advertisement: publicItem(item, placement),
       rotation: settings
-        ? {
+            ? {
+            enabled: Boolean(settings.enabled),
             mode: settings.mode,
             rotate_every_seconds: Number(settings.rotate_every_seconds || 0),
             rotation_started_at: settings.rotation_started_at || null,
@@ -812,7 +814,7 @@ export async function updateLegacyRotatingAdvertisement(req, res) {
   try {
     const { placement, config } = resolvePlacement(req)
     const settings = await getSettings(placement, config)
-    if (settings.mode === 'auto') return res.status(409).json({ ok: false, message: 'Auto Rotation is active. Use the Rotation Manager.' })
+    if (settings.mode !== 'manual') return res.status(409).json({ ok: false, message: 'Use the Rotation Manager for the selected mode.' })
 
     let current = settings.manual_ad_id
       ? await getItem(placement, settings.manual_ad_id)
