@@ -1,8 +1,7 @@
 import { supabase } from '../config/supabase.js'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-// Include tags so the owner's Edit view can round-trip existing metadata.
-const VIDEO_FIELDS = 'id,user_id,video_url,thumbnail_url,title,description,tags,status,access_type,unlock_price_diamonds,published_at,view_count'
+const VIDEO_FIELDS = 'id,user_id,video_url,thumbnail_url,title,description,tags,status,access_type,unlock_price_diamonds,published_at,view_count,video_type,duration_seconds'
 
 function pageNumber(value, fallback, maximum) {
   if (value === undefined || value === '') return fallback
@@ -28,8 +27,6 @@ function youtubeId(value) {
   }
 }
 
-// Same normalizer used by createFastVideo: a maximum of 10 normalized tags,
-// lowercase, leading '#' stripped, whitespace replaced with '-'.
 function normalizeTags(value) {
   if (!Array.isArray(value) || value.length > 40) return null
   const unique = new Set()
@@ -49,10 +46,13 @@ export async function listMyFastReels(req, res) {
   const offset = pageNumber(req.query.offset, 0, 5000)
   const mode = String(req.query.mode || 'manager').toLowerCase()
   const sort = String(req.query.sort || 'latest').toLowerCase()
+  const videoType = String(req.query.video_type || 'all').toLowerCase()
 
   if (!limit || offset === null ||
       !['manager', 'gallery'].includes(mode) ||
-      !['latest', 'popular', 'oldest'].includes(sort)) {
+      !['latest', 'popular', 'oldest'].includes(sort) ||
+      !['all', 'long', 'short'].includes(videoType) ||
+      (mode !== 'manager' && videoType !== 'all')) {
     return res.status(400).json({ ok: false, message: 'Invalid Reel query' })
   }
 
@@ -77,6 +77,8 @@ export async function listMyFastReels(req, res) {
         })
       }
     } else {
+      if (videoType === 'short') query = query.eq('video_type', 'short')
+      if (videoType === 'long') query = query.or('video_type.eq.long,video_type.is.null')
       query = query.order('published_at', {
         ascending: false,
         nullsFirst: false
@@ -92,7 +94,12 @@ export async function listMyFastReels(req, res) {
     return res.json({
       ok: true,
       videos: results.slice(0, limit),
-      pagination: { limit, offset, next_offset: offset + Math.min(results.length, limit), has_more: results.length > limit },
+      pagination: {
+        limit,
+        offset,
+        next_offset: offset + Math.min(results.length, limit),
+        has_more: results.length > limit,
+      },
     })
   } catch (error) {
     console.error('FAST REEL MINE ERROR:', error)
