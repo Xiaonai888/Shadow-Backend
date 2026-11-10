@@ -5,7 +5,7 @@ create table if not exists public.reader_health_events (
   session_hash varchar(40) not null,
   sampled boolean not null,
   event_type varchar(30) not null check (event_type in (
-    'session_seen', 'js_error', 'promise_rejection', 'script_load_failure',
+    'js_error', 'promise_rejection', 'script_load_failure',
     'long_task', 'event_loop_delay', 'slow_api', 'slow_boot'
   )),
   page_group varchar(20) not null,
@@ -45,9 +45,8 @@ base as materialized (
 totals as (
   select
     count(*) as event_count,
-    count(distinct session_hash) filter (where event_type = 'session_seen') as sampled_sessions,
-    count(distinct session_hash) filter (where event_type <> 'session_seen') as affected_sessions_observed,
-    count(distinct session_hash) filter (where sampled and event_type <> 'session_seen') as affected_sampled_sessions,
+    count(distinct session_hash) as affected_sessions_observed,
+    count(distinct session_hash) filter (where sampled) as affected_sampled_sessions,
     count(distinct session_hash) filter (where event_type in ('js_error', 'promise_rejection', 'script_load_failure')) as confirmed_error_sessions,
     count(distinct session_hash) filter (where event_type in ('long_task', 'event_loop_delay', 'slow_api', 'slow_boot')) as slowdown_signal_sessions,
     count(*) filter (where event_type in ('js_error', 'promise_rejection', 'script_load_failure')) as error_events,
@@ -59,7 +58,6 @@ category_rollup as (
     count(distinct session_hash) as affected_sessions,
     max(metric_ms) as max_metric_ms
   from base
-  where event_type <> 'session_seen'
   group by event_type
   order by event_count desc
   limit 12
@@ -69,7 +67,6 @@ page_rollup as (
     count(distinct session_hash) as affected_sessions,
     count(*) filter (where event_type in ('js_error', 'promise_rejection', 'script_load_failure')) as error_events
   from base
-  where event_type <> 'session_seen'
   group by page_group
   order by event_count desc
   limit 15
@@ -78,7 +75,6 @@ browser_rollup as (
   select browser, os, device, count(*) as event_count,
     count(distinct session_hash) as affected_sessions
   from base
-  where event_type <> 'session_seen'
   group by browser, os, device
   order by event_count desc
   limit 15
@@ -89,15 +85,14 @@ signature_rollup as (
     max(metric_ms) as max_metric_ms,
     max(observed_at) as last_seen
   from base
-  where event_type <> 'session_seen'
   group by event_type, page_group, fingerprint
   order by event_count desc
   limit 25
 ),
 hourly_rollup as (
   select date_trunc('hour', observed_at) as hour,
-    count(*) filter (where event_type <> 'session_seen') as event_count,
-    count(distinct session_hash) filter (where event_type <> 'session_seen') as affected_sessions
+    count(*) as event_count,
+    count(distinct session_hash) as affected_sessions
   from base
   group by date_trunc('hour', observed_at)
   order by hour desc
