@@ -5,7 +5,7 @@ import { unlink } from 'node:fs/promises'
 import { rateLimit } from 'express-rate-limit'
 import { requireUser } from '../middleware/user.middleware.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
-import { createFastVideo } from '../controllers/fastVideos.controller.js'
+import { createFastVideo, getReelYouTubeMetadata } from '../controllers/fastVideos.controller.js'
 import { recordFastReelViewV2 } from '../controllers/fastReelViews.controller.js'
 
 import {
@@ -206,6 +206,13 @@ router.post(
   fastVideoViewWriteLimit,
   requireUser,
   recordFastReelViewV2
+)
+
+router.get(
+  '/videos/youtube-metadata/:youtubeId',
+  fastVideoManageReadLimit,
+  requireUser,
+  getReelYouTubeMetadata
 )
 
 router.get('/videos/mine', fastVideoManageReadLimit, requireUser, listMyFastReels)
