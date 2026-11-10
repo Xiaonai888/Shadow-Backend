@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
 
 const EVENT_TYPES = new Set([
-  'session_seen', 'js_error', 'promise_rejection', 'script_load_failure',
+  'js_error', 'promise_rejection', 'script_load_failure',
   'long_task', 'event_loop_delay', 'slow_api', 'slow_boot',
 ])
 const PAGE_GROUPS = new Set([
@@ -13,17 +13,25 @@ const BROWSERS = new Set(['EDGE', 'SAMSUNG', 'CHROME', 'FIREFOX', 'SAFARI', 'OTH
 const SYSTEMS = new Set(['ANDROID', 'IOS', 'WINDOWS', 'MACOS', 'LINUX', 'OTHER'])
 const DEVICES = new Set(['MOBILE', 'TABLET', 'DESKTOP'])
 const CRITICAL = new Set(['js_error', 'promise_rejection', 'script_load_failure'])
-const QUEUE_LIMIT = 1200
-const BATCH_LIMIT = 150
-const FLUSH_MS = 60000
-const REPORT_CACHE_MS = 90000
+const QUEUE_LIMIT = 600
+const BATCH_LIMIT = 120
+const FLUSH_DELAY_MS = 30000
+const FAILURE_COOLDOWN_MS = 15 * 60 * 1000
+const REPORT_CACHE_MS = 5 * 60 * 1000
+const FAILURE_CACHE_MS = 10 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
+const MAX_SESSIONS = 5000
+const MAX_REPORTS_PER_SESSION = 3
 const SECRET = process.env.READER_HEALTH_HASH_SECRET || process.env.JWT_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY
 const queue = []
+const sessions = new Map()
+const reports = new Map()
+const inFlightReports = new Map()
+let flushTimer = null
 let running = false
 let nextPruneAt = 0
+let cooldownUntil = 0
 let lastWarningAt = 0
-let nextFlushAt = 0
-let lastReport = null
 let received = 0
 let dropped = 0
 let persisted = 0
@@ -59,9 +67,9 @@ export function validateReaderHealthPayload(payload) {
     payload.events.every((event) => validEvent(event, payload.sampled))
 }
 
-function sessionHash(sessionId) {
+function sessionHash(value) {
   return createHmac('sha256', SECRET)
-    .update(`shadow-reader-health-v1:${sessionId}`)
+    .update(`shadow-reader-health-v1:${value}`)
     .digest('hex')
     .slice(0, 40)
 }
@@ -73,9 +81,18 @@ function warnOnce(message) {
   console.warn('READER_HEALTH_TELEMETRY:', String(message).slice(0, 160))
 }
 
+function scheduleFlush() {
+  if (flushTimer || running || !queue.length || Date.now() < cooldownUntil) return
+  flushTimer = setTimeout(() => {
+    flushTimer = null
+    void flushReaderHealthTelemetry()
+  }, FLUSH_DELAY_MS)
+  flushTimer.unref?.()
+}
+
 async function pruneIfDue() {
   if (Date.now() < nextPruneAt) return
-  nextPruneAt = Date.now() + 24 * 60 * 60 * 1000
+  nextPruneAt = Date.now() + DAY_MS
   try {
     const { error } = await supabase.rpc('prune_reader_health_events')
     if (error) warnOnce(error.code || 'Reader health retention is unavailable')
@@ -86,7 +103,21 @@ async function pruneIfDue() {
 
 export function recordReaderHealthReport(payload) {
   if (!validateReaderHealthPayload(payload)) return false
+  if (Date.now() < cooldownUntil) {
+    dropped += payload.events.length
+    return true
+  }
   const hashed = sessionHash(payload.session_id)
+  const day = new Date().toISOString().slice(0, 10)
+  const key = `${day}:${hashed}`
+  const prior = sessions.get(key) || 0
+  if (prior >= MAX_REPORTS_PER_SESSION) {
+    dropped += payload.events.length
+    return true
+  }
+  sessions.delete(key)
+  sessions.set(key, prior + 1)
+  if (sessions.size > MAX_SESSIONS) sessions.delete(sessions.keys().next().value)
   const rows = payload.events.map((event, index) => ({
     report_id: payload.report_id,
     event_index: index,
@@ -103,16 +134,21 @@ export function recordReaderHealthReport(payload) {
   for (const row of rows) {
     if (queue.length >= QUEUE_LIMIT) {
       dropped += 1
-      continue
+    } else {
+      queue.push(row)
+      received += 1
     }
-    queue.push(row)
-    received += 1
   }
+  scheduleFlush()
   return true
 }
 
 export async function flushReaderHealthTelemetry() {
-  if (running || !queue.length || Date.now() < nextFlushAt) return
+  if (running || !queue.length || Date.now() < cooldownUntil) return
+  if (flushTimer) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
   running = true
   const batch = queue.splice(0, BATCH_LIMIT)
   try {
@@ -122,48 +158,16 @@ export async function flushReaderHealthTelemetry() {
     })
     if (error) throw error
     persisted += batch.length
-    nextFlushAt = 0
-    lastReport = null
+    reports.clear()
     void pruneIfDue()
   } catch (error) {
-    const available = QUEUE_LIMIT - queue.length
-    const kept = batch.slice(0, Math.max(0, available))
-    dropped += batch.length - kept.length
-    queue.unshift(...kept)
-    nextFlushAt = Date.now() + 5 * 60 * 1000
+    cooldownUntil = Date.now() + FAILURE_COOLDOWN_MS
+    dropped += batch.length + queue.length
+    queue.length = 0
     warnOnce(error?.code || error?.message || 'Reader health persistence failed')
   } finally {
     running = false
-  }
-}
-
-export async function getReaderHealthDiagnostics(hours = 24, force = false) {
-  const selectedHours = [1, 6, 24, 168].includes(Number(hours)) ? Number(hours) : 24
-  if (!force && lastReport?.hours === selectedHours && lastReport.expires > Date.now()) {
-    return { ...lastReport.data, ingestion: getReaderHealthIngestionStatus() }
-  }
-  try {
-    const { data, error } = await supabase.rpc('get_reader_health_diagnostics', {
-      p_hours: selectedHours,
-    })
-    if (error) throw error
-    if (!data || typeof data !== 'object') throw new Error('Unexpected health report format')
-    lastReport = {
-      hours: selectedHours,
-      expires: Date.now() + REPORT_CACHE_MS,
-      data,
-    }
-    return { ...data, ingestion: getReaderHealthIngestionStatus() }
-  } catch (error) {
-    warnOnce(error?.code || error?.message || 'Reader health report failed')
-    return {
-      available: false,
-      generated_at: new Date().toISOString(),
-      hours: selectedHours,
-      status: error?.code === '42883' || error?.code === '42P01'
-        ? 'SQL_NOT_INSTALLED' : 'REPORT_UNAVAILABLE',
-      ingestion: getReaderHealthIngestionStatus(),
-    }
+    scheduleFlush()
   }
 }
 
@@ -173,8 +177,46 @@ export function getReaderHealthIngestionStatus() {
     events_received_since_restart: received,
     events_persisted_since_restart: persisted,
     events_dropped_since_restart: dropped,
+    write_paused_until: cooldownUntil > Date.now() ? new Date(cooldownUntil).toISOString() : null,
   }
 }
 
-const timer = setInterval(() => { void flushReaderHealthTelemetry() }, FLUSH_MS)
-timer.unref?.()
+export async function getReaderHealthDiagnostics(hours = 24) {
+  const selectedHours = [1, 6, 24, 168].includes(Number(hours)) ? Number(hours) : 24
+  const cached = reports.get(selectedHours)
+  if (cached && cached.expires > Date.now()) {
+    return { ...cached.data, ingestion: getReaderHealthIngestionStatus() }
+  }
+  if (inFlightReports.has(selectedHours)) {
+    const data = await inFlightReports.get(selectedHours)
+    return { ...data, ingestion: getReaderHealthIngestionStatus() }
+  }
+  const request = (async () => {
+    try {
+      const { data, error } = await supabase.rpc('get_reader_health_diagnostics', {
+        p_hours: selectedHours,
+      })
+      if (error) throw error
+      if (!data || typeof data !== 'object') throw new Error('Unexpected health report format')
+      reports.set(selectedHours, { data, expires: Date.now() + REPORT_CACHE_MS })
+      return data
+    } catch (error) {
+      warnOnce(error?.code || error?.message || 'Reader health report failed')
+      const data = {
+        available: false,
+        generated_at: new Date().toISOString(),
+        hours: selectedHours,
+        status: ['42883', '42P01'].includes(error?.code) ? 'SQL_NOT_INSTALLED' : 'REPORT_UNAVAILABLE',
+      }
+      reports.set(selectedHours, { data, expires: Date.now() + FAILURE_CACHE_MS })
+      return data
+    }
+  })()
+  inFlightReports.set(selectedHours, request)
+  try {
+    const data = await request
+    return { ...data, ingestion: getReaderHealthIngestionStatus() }
+  } finally {
+    inFlightReports.delete(selectedHours)
+  }
+}
