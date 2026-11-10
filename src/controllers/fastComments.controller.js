@@ -5,6 +5,7 @@ import { supabase } from '../config/supabase.js'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const COMMENT_FIELDS = 'id,video_id,user_id,parent_id,body,likes_count,reply_count,created_at,updated_at,deleted_at,user:users!fast_video_comments_user_id_fkey(id,name,username,avatar_url,role)'
 const MAX_BODY = 1000
+const SORT_OPTIONS = new Set(['top', 'newest', 'all'])
 
 const validId = value => typeof value === 'string' && UUID.test(value)
 const trimBody = value => typeof value === 'string' ? value.trim() : ''
@@ -83,32 +84,17 @@ function sendError(res, error, action) {
     status: error?.status || 500,
   }
 
-  // One-line structured error for Render Logs
-  console.error(
-    `[FAST_COMMENTS_${action}_ERROR] ${JSON.stringify(diagnostic)}`
-  )
+  console.error(`[FAST_COMMENTS_${action}_ERROR] ${JSON.stringify(diagnostic)}`)
 
   if (error?.code === '23503') {
-    return res.status(404).json({
-      ok: false,
-      message: 'Reel or comment not found',
-    })
+    return res.status(404).json({ ok: false, message: 'Reel or comment not found' })
   }
-
   if (error?.code === '23514' || error?.code === 'P0001') {
-    return res.status(400).json({
-      ok: false,
-      message: 'Invalid Reel comment',
-    })
+    return res.status(400).json({ ok: false, message: 'Invalid Reel comment' })
   }
-
   if (error?.code === '42P01') {
-    return res.status(503).json({
-      ok: false,
-      message: 'Fast comments migration is not installed',
-    })
+    return res.status(503).json({ ok: false, message: 'Fast comments migration is not installed' })
   }
-
   return res.status(500).json({
     ok: false,
     message: 'Fast comments are temporarily unavailable',
@@ -122,9 +108,11 @@ export async function listFastComments(req, res) {
   const parentId = rawParent ? String(rawParent) : null
   const limit = req.query.limit === undefined ? 20 : Number(req.query.limit)
   const offset = req.query.offset === undefined ? 0 : Number(req.query.offset)
+  const sort = req.query.sort === undefined ? 'newest' : String(req.query.sort)
   if (!validId(videoId) || (parentId && !validId(parentId)) ||
       !Number.isSafeInteger(limit) || limit < 1 || limit > 30 ||
-      !Number.isSafeInteger(offset) || offset < 0 || offset > 5000) {
+      !Number.isSafeInteger(offset) || offset < 0 || offset > 5000 ||
+      !SORT_OPTIONS.has(sort)) {
     return res.status(400).json({ ok: false, message: 'Invalid Reel comment query' })
   }
   try {
@@ -141,7 +129,13 @@ export async function listFastComments(req, res) {
     } else {
       // Deleted parents with visible replies remain as placeholders so replies stay accessible.
       query = query.is('parent_id', null).or('deleted_at.is.null,reply_count.gt.0')
-        .order('created_at', { ascending: false }).order('id', { ascending: false })
+      if (sort === 'top') {
+        // Sort in the DB before pagination: a local page-only sort misses older popular comments.
+        query = query.order('likes_count', { ascending: false })
+          .order('reply_count', { ascending: false })
+      }
+      // Both Newest and All show the full root set, newest first, like Reader Post.
+      query = query.order('created_at', { ascending: false }).order('id', { ascending: false })
     }
     const [{ data, error, count }, commentCount] = await Promise.all([
       query.range(offset, offset + limit), visibleCount(videoId),
@@ -210,7 +204,6 @@ export async function deleteFastComment(req, res) {
   const userId = req.user?.user_id
   if (!validId(videoId) || !validId(commentId) || !validId(userId)) return res.status(400).json({ ok: false, message: 'Invalid comment ID' })
   try {
-    // Soft deletion preserves reply threads; user identity/text disappear from public output.
     const { data, error } = await supabase.from('fast_video_comments')
       .update({ deleted_at: new Date().toISOString() }).eq('video_id', videoId)
       .eq('id', commentId).eq('user_id', userId).is('deleted_at', null)
