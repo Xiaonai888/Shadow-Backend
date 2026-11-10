@@ -27,6 +27,22 @@ function adminKey(req) {
   )
 }
 
+const ipReadLimit = rateLimit({
+  windowMs: 60_000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { ok: false, code: 'SMART_AD_IP_RATE_LIMIT' },
+})
+
+const ipWriteLimit = rateLimit({
+  windowMs: 60 * 60_000,
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { ok: false, code: 'SMART_AD_IP_RATE_LIMIT' },
+})
+
 const readLimit = rateLimit({
   windowMs: 60_000,
   limit: 20,
@@ -45,9 +61,8 @@ const writeLimit = rateLimit({
   message: { ok: false, code: 'SMART_AD_ADMIN_RATE_LIMIT' },
 })
 
-router.use(requireAdmin)
-router.get('/status', readLimit, getSmartAdAdminReadiness)
-router.post('/bootstrap', ownerOnly, writeLimit, postSmartAdAdminBootstrap)
-router.post('/refresh', ownerOnly, writeLimit, postSmartAdAdminRefresh)
+router.get('/status', ipReadLimit, requireAdmin, readLimit, getSmartAdAdminReadiness)
+router.post('/bootstrap', ipWriteLimit, requireAdmin, ownerOnly, writeLimit, postSmartAdAdminBootstrap)
+router.post('/refresh', ipWriteLimit, requireAdmin, ownerOnly, writeLimit, postSmartAdAdminRefresh)
 
 export default router
