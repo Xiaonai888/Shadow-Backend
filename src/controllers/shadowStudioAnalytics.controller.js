@@ -1,6 +1,6 @@
 import { studioDashboard, studioRanking, studioVideoAnalytics } from '../services/shadowStudioAnalytics.service.js'
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function sendError(res, error, operation) {
   console.error(`[SHADOW_STUDIO_${operation}_ERROR]`, {
