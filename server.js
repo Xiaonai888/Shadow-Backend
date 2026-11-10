@@ -82,6 +82,7 @@ import { startReaderLibraryTrashCleanup } from './src/services/readerLibraryTras
 import fastRoutes from './src/routes/fast.routes.js'
 import studioAnalyticsRoutes from './src/routes/shadowStudioAnalytics.routes.js'
 import studioVideoTypeRoutes from './src/routes/shadowStudioVideoType.routes.js'
+import studioContentPlaylistRoutes from './src/routes/shadowStudioContentPlaylists.routes.js'
 import contentReportsRoutes from './src/routes/contentReports.routes.js'
 import adminReportsRoutes from './src/routes/adminReports.routes.js'
 import adminAuthorReviewsRoutes from './src/routes/adminAuthorReviews.routes.js'
@@ -1018,6 +1019,7 @@ app.use('/api/spin', readerActionSpamGuard, spinRoutes)
 app.use('/api/fast', mediaUploadRouteSpamGuard, fastRoutes)
 app.use('/api/shadow-studio/analytics', studioAnalyticsRoutes)
 app.use('/api/shadow-studio/video-type', studioVideoTypeRoutes)
+app.use('/api/shadow-studio/content', studioContentPlaylistRoutes)
 app.use('/api/reports', reportActionSpamGuard, contentReportsRoutes)
 app.use('/api/admin/reports', adminReportsRoutes)
 app.use('/api/admin/author-reviews', adminAuthorReviewsRoutes)
