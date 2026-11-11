@@ -63,10 +63,36 @@ function normalizeLink(value) {
   return parsed.toString()
 }
 
+function normalizeTextStyle(value, textOverlay) {
+  if (!textOverlay || !value || typeof value !== 'object' || Array.isArray(value)) return null
+
+  const colors = new Set(['#162453', '#000000', '#393944', '#FFFFFF', '#E74159', '#F15D22', '#F6C843', '#23965E', '#009CBE', '#335CF1', '#7E3EDD', '#D742AD', 'transparent'])
+  const number = (key, fallback, min, max) => {
+    if (value[key] == null) return fallback
+    const parsed = Number(value[key])
+    return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback
+  }
+
+  const rotation = number('rotation', 0, -1000000, 1000000)
+
+  return {
+    background: colors.has(value.background) ? value.background : '#162453',
+    font: ['classic', 'modern', 'typewriter'].includes(value.font) ? value.font : 'classic',
+    align: ['left', 'center', 'right'].includes(value.align) ? value.align : 'center',
+    x: number('x', 50, 5, 95),
+    y: number('y', 50, 8, 92),
+    scale: number('scale', 1, 0.45, 3),
+    rotation: rotation % 360,
+  }
+}
+
 function readExtras(body = {}) {
+  const textOverlay = normalizeText(body.text_overlay, 200, 'Text')
+
   return {
     altText: normalizeText(body.alt_text, 500, 'Alt text'),
-    textOverlay: normalizeText(body.text_overlay, 200, 'Text'),
+    textOverlay,
+    textStyle: normalizeTextStyle(body.text_overlay_style, textOverlay),
     mentionUsername: normalizeMention(body.mention_username),
     linkUrl: normalizeLink(body.link_url),
   }
@@ -78,6 +104,7 @@ function updatePayload(extras) {
   return {
     alt_text: extras.altText || null,
     text_overlay: extras.textOverlay || null,
+    text_overlay_style: extras.textStyle,
     mention_username: extras.mentionUsername || null,
     link_url: extras.linkUrl || null,
     caption: extras.textOverlay || '',
@@ -113,7 +140,7 @@ export async function saveMyReaderStoryExtras(req, res) {
       .eq('user_id', userId)
       .eq('status', 'active')
       .gt('expires_at', new Date().toISOString())
-      .select('id, alt_text, text_overlay, mention_username, link_url')
+      .select('id, alt_text, text_overlay, text_overlay_style, mention_username, link_url')
       .maybeSingle()
 
     if (error) throw error
@@ -184,7 +211,7 @@ export async function saveMyAuthorStoryExtras(req, res) {
       .eq('author_page_id', authorPage.id)
       .eq('status', 'active')
       .gt('expires_at', new Date().toISOString())
-      .select('id, alt_text, text_overlay, mention_username, link_url')
+      .select('id, alt_text, text_overlay, text_overlay_style, mention_username, link_url')
       .maybeSingle()
 
     if (error) throw error
