@@ -1,8 +1,6 @@
 import { supabase } from '../config/supabase.js'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const PLAYLIST_FIELDS = 'id,name,is_public,created_at,updated_at'
-const VIDEO_FIELDS = 'id,user_id,video_url,thumbnail_url,title,description,tags,status,access_type,unlock_price_diamonds,published_at,view_count,video_type,duration_seconds'
 
 function pageValue(value, fallback, maximum) {
   if (value === undefined) return fallback
@@ -27,62 +25,33 @@ export async function getMyStudioPlaylistVideos(req, res) {
   }
 
   try {
-    const { data: playlist, error: ownerError } = await supabase
-      .from('fast_reel_playlists')
-      .select(PLAYLIST_FIELDS)
-      .eq('id', playlistId)
-      .eq('user_id', userId)
-      .maybeSingle()
-    if (ownerError) throw ownerError
-    if (!playlist) return res.status(404).json({ ok: false, message: 'Playlist not found' })
-
-    const { data: membership, count, error: membersError } = await supabase
-      .from('fast_reel_playlist_items')
-      .select('video_id', { count: 'exact' })
-      .eq('playlist_id', playlistId)
-      .order('video_id', { ascending: false })
-      .range(offset, offset + limit)
-    if (membersError) throw membersError
-
-    const entries = Array.isArray(membership) ? membership : []
-    const videoIds = entries.slice(0, limit).map(row => row.video_id).filter(id => UUID.test(String(id || '')))
-    let videos = []
-    if (videoIds.length) {
-      const { data, error } = await supabase
-  .from('fast_videos')
-  .select(VIDEO_FIELDS)
-  .eq('user_id', userId)
-  .eq('studio_state', 'active')
-  .in('id', videoIds)
-      if (error) throw error
-      const byId = new Map((data || []).map(video => [video.id, video]))
-      videos = videoIds.map(id => byId.get(id)).filter(Boolean)
+    const { data, error } = await supabase.rpc('shadow_studio_playlist_active_page', {
+      p_owner: userId,
+      p_playlist: playlistId,
+      p_limit: limit,
+      p_offset: offset,
+    })
+    if (error) throw error
+    if (data?.ok === false && data?.code === 'NOT_FOUND') {
+      return res.status(404).json({ ok: false, message: 'Playlist not found' })
     }
-
-    const nextOffset = offset + Math.min(entries.length, limit)
+    if (data?.ok !== true || !Array.isArray(data.videos) || !data.playlist || !data.pagination) {
+      throw new Error('Invalid Playlist page response')
+    }
     res.set('Cache-Control', 'private, no-store')
     return res.json({
       ok: true,
-      playlist: {
-        ...playlist,
-        video_count: Number.isSafeInteger(count) ? count : null,
-        thumbnail_url: offset === 0 ? videos[0]?.thumbnail_url || null : null,
-      },
-      videos,
-      pagination: {
-        limit,
-        offset,
-        next_offset: nextOffset,
-        has_more: entries.length > limit,
-        total: Number.isSafeInteger(count) ? count : null,
-      },
+      playlist: data.playlist,
+      videos: data.videos,
+      pagination: data.pagination,
     })
   } catch (error) {
     console.error('SHADOW STUDIO PLAYLIST CONTENT ERROR:', {
       code: error?.code || 'UNKNOWN',
       message: error?.message || 'Unknown error',
     })
-    return res.status(500).json({ ok: false, message: 'Unable to load Playlist videos' })
+    return res.status(['42883', 'PGRST202'].includes(error?.code) ? 503 : 500)
+      .json({ ok: false, message: 'Unable to load Playlist videos' })
   }
 }
 
