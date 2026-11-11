@@ -135,6 +135,7 @@ import {
   startMemoryIncidentMonitor,
 } from './src/services/memoryIncidentTracer.service.js'
 import storyTranslationRoutes from './src/routes/storyTranslation.routes.js'
+import shadowDocsReviewAIRoutes from './src/routes/shadowDocsReviewAI.routes.js'
 import spinRoutes from './src/routes/spin.routes.js'
 import gameSettingsRoutes from './src/routes/gameSettings.routes.js'
 import adminGameSettingsRoutes from './src/routes/adminGameSettings.routes.js'
@@ -1055,6 +1056,7 @@ app.use('/api/admin/boost', adminBoostInsightsRoutes)
 app.use('/api/admin/author-ads', adminAuthorAdsRoutes)
 app.use('/api/music', musicRoutes)
 app.use('/api/story-translation', storyTranslationSpamGuard, storyTranslationRoutes)
+app.use('/api/shadow-docs/review-ai', shadowDocsReviewAIRoutes)
 app.use('/api/games', readerReadSpamGuard, gameSettingsRoutes)
 app.use('/api/admin/games', adminGameSettingsRoutes)
 app.use('/api/admin/apps', adminAppSettingsRoutes)
