@@ -289,16 +289,18 @@ export async function getMyAuthorPageNotificationUnreadCount(
     }
 
     stage = 'count_unread'
-    const { count, error } = await supabase
-      .from('author_page_notifications')
-      .select('id', {
-        count: 'exact',
-        head: true,
-      })
-      .eq('author_page_id', authorPage.id)
-      .eq('user_id', userId)
-      .eq('is_read', false)
+    let unreadQuery = supabase
+  .from('author_page_notifications')
+  .select('id', { count: 'exact', head: true })
+  .eq('author_page_id', authorPage.id)
+  .eq('user_id', userId)
+  .eq('is_read', false)
 
+if (req.query.source === 'fast_reel') {
+  unreadQuery = unreadQuery.contains('metadata', { source: 'fast_reel' })
+}
+
+const { count, error } = await unreadQuery
     if (error) throw error
 
     res.setHeader(
