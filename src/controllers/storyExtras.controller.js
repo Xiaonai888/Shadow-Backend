@@ -145,7 +145,8 @@ function updatePayload(extras) {
     text_overlay_style: extras.textStyle,
     mention_username: extras.mentionUsername || null,
     mention_target_type: extras.mentionTargetType,
-‌    mention_target_id: extras.mentionTargetId,
+    mention_target_id: extras.mentionTargetId,
+
     link_url: extras.linkUrl || null,
     caption: extras.textOverlay || '',
     updated_at: now,
