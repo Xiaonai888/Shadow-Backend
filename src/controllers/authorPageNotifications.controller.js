@@ -439,10 +439,12 @@ export async function getMyAuthorPageNotifications(req, res) {
       query = query.eq('type', type)
     }
 
-    if (unreadOnly) {
-      query = query.eq('is_read', false)
-    }
-
+    if (req.query.source === 'fast_reel') {
+  query = query.contains('metadata', { source: 'fast_reel' })
+}
+if (unreadOnly) {
+  query = query.eq('is_read', false)
+}
     const requests = [query]
 
     if (includeMeta) {
