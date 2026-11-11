@@ -1,4 +1,6 @@
 import { supabase } from '../config/supabase.js'
+import { executeStudioRecycleAction } from '../services/shadowStudioRecycleBridge.service.js'
+import { invalidateStudioChannelCache } from '../services/shadowStudioChannelCache.service.js'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const VIDEO_FIELDS = 'id,user_id,video_url,thumbnail_url,title,description,tags,status,access_type,unlock_price_diamonds,published_at,view_count,video_type,duration_seconds,archived_at,deleted_at,purge_at'
@@ -134,12 +136,13 @@ async function changeVideo(req, res, action) {
     return res.status(400).json({ ok: false, message: 'Invalid video ID' })
   }
   try {
-    const { data, error } = await supabase.rpc('shadow_studio_recycle_video', {
-      p_owner: owner,
-      p_video: videoId,
-      p_action: action,
-    })
-    if (error) throw error
+    const data = await executeStudioRecycleAction({
+  ownerId: owner,
+  videoId,
+  action,
+  client: supabase,
+  invalidate: invalidateStudioChannelCache,
+})
     if (data?.ok !== true) {
       const status = data?.code === 'NOT_FOUND' ? 404 : data?.code === 'EXPIRED' ? 410 : 409
       return res.status(status).json({ ok: false, message: data?.code || 'Video state conflict' })
