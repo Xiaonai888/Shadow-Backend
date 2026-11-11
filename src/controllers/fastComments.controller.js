@@ -1,5 +1,7 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
+import { createAuthorPageNotification } from './authorPageNotifications.controller.js'
+import { publishAuthorPageNotificationCreated } from '../services/authorPageNotificationSse.service.js'
 
 // Isolated Fast Reel comments. Never write to the Story/Post comments tables.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -174,7 +176,54 @@ export async function createFastComment(req, res) {
       .select('id').single()
     if (error) throw error
     const [comment, commentCount] = await Promise.all([findComment(videoId, data.id), visibleCount(videoId)])
-    res.set('Cache-Control', 'no-store')
+
+if (reel.user_id && reel.user_id !== userId) {
+  try {
+    const { data: authorPage, error: pageError } = await supabase
+      .from('author_pages')
+      .select('id')
+      .eq('user_id', reel.user_id)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (pageError) throw pageError
+
+    if (authorPage) {
+      const actor = Array.isArray(comment?.user) ? comment.user[0] : comment?.user
+      const actorName = String(actor?.name || actor?.username || 'Reader').slice(0, 80)
+
+      const notification = await createAuthorPageNotification({
+        authorPageId: authorPage.id,
+        userId: reel.user_id,
+        type: 'comment',
+        title: 'New comment on your Reel',
+        message: body.slice(0, 180),
+        targetUrl: `/author/reel/studio/videos/${videoId}/analytics?section=engagement`,
+        metadata: {
+          source: 'fast_reel',
+          notification_type: 'comment',
+          video_id: videoId,
+          comment_id: data.id,
+          actor_id: userId,
+          actor_name: actorName,
+          actor_username: actor?.username || '',
+          actor_avatar_url: actor?.avatar_url || '',
+        },
+      })
+
+      if (notification) {
+        publishAuthorPageNotificationCreated({
+          userId: reel.user_id,
+          notification,
+        })
+      }
+    }
+  } catch (error) {
+    console.error('FAST_REEL_NOTIFICATION_ERROR', error)
+  }
+}
+
+res.set('Cache-Control', 'no-store')
     return res.status(201).json({ ok: true, comment: publicComment(comment, new Set(), userId), comment_count: commentCount })
   } catch (error) { return sendError(res, error, 'CREATE') }
 }
