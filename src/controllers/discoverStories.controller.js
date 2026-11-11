@@ -33,7 +33,9 @@ function makeAuthorStory(story, hasViewed) {
     text_overlay: story.text_overlay || '',
     text_overlay_style: story.text_overlay_style || null,
     mention_username:
-      story.mention_username || '',
+    story.mention_username || '',
+    mention_target_type: story.mention_target_type || null,
+    mention_target_id: story.mention_target_id || null,
     link_url: story.link_url || '',
     allow_messages: Boolean(
       story.allow_messages
@@ -60,7 +62,9 @@ function makeReaderStory(story, hasViewed) {
     text_overlay: story.text_overlay || '',
     text_overlay_style: story.text_overlay_style || null,
     mention_username:
-      story.mention_username || '',
+    story.mention_username || '',
+    mention_target_type: story.mention_target_type || null,
+    mention_target_id: story.mention_target_id || null,
     link_url: story.link_url || '',
     allow_messages: Boolean(
       story.allow_messages
