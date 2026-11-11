@@ -87,6 +87,7 @@ import studioAudienceAnalyticsRoutes from './src/routes/shadowStudioAudienceAnal
 import studioTrendsAnalyticsRoutes from './src/routes/shadowStudioTrendsAnalytics.routes.js'
 import studioVideoTypeRoutes from './src/routes/shadowStudioVideoType.routes.js'
 import studioContentPlaylistRoutes from './src/routes/shadowStudioContentPlaylists.routes.js'
+import studioMeRoutes from './src/routes/shadowStudioMe.routes.js'
 import contentReportsRoutes from './src/routes/contentReports.routes.js'
 import adminReportsRoutes from './src/routes/adminReports.routes.js'
 import adminAuthorReviewsRoutes from './src/routes/adminAuthorReviews.routes.js'
@@ -1030,6 +1031,7 @@ app.use('/api/shadow-studio/audience-analytics', studioAudienceAnalyticsRoutes)
 app.use('/api/shadow-studio/trends-analytics', studioTrendsAnalyticsRoutes)
 app.use('/api/shadow-studio/video-type', studioVideoTypeRoutes)
 app.use('/api/shadow-studio/content', studioContentPlaylistRoutes)
+app.use('/api/shadow-studio/me', studioMeRoutes)
 app.use('/api/reports', reportActionSpamGuard, contentReportsRoutes)
 app.use('/api/admin/reports', adminReportsRoutes)
 app.use('/api/admin/author-reviews', adminAuthorReviewsRoutes)
