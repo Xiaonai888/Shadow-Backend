@@ -5,7 +5,7 @@ import { assertR2MediaReference } from '../services/mediaStoragePolicy.service.j
 import { getRotationAdminSnapshot, reorderRotationItems } from '../services/adRotationAdmin.service.js'
 
 const PLACEMENT = 'opening'
-const MODES = ['manual', 'auto']
+const MODES = ['manual', 'auto', 'auto_system']
 const FREQUENCIES = ['once_per_session', 'once_per_day', 'every_visit', 'every_unlock']
 const BADGES = ['', 'HOT', 'NEW', 'TOP', 'END', 'UP']
 
@@ -152,7 +152,7 @@ async function getFirstAvailableItem() {
 }
 
 async function selectPublicItem(settings) {
-  if (!settings?.enabled) return null
+  if (!settings?.enabled || settings.mode === 'auto_system') return null
 
   if (settings.mode === 'manual') {
     if (!settings.manual_ad_id) return null
@@ -263,6 +263,7 @@ export async function getPublicOpeningAdvertisement(req, res) {
       advertisement: publicItem(item),
      rotation: settings
         ? {
+            enabled: Boolean(settings.enabled),
             mode: settings.mode,
             rotate_every_seconds: Number(settings.rotate_every_seconds || 0),
             rotation_started_at: settings.rotation_started_at || null,
@@ -609,7 +610,7 @@ export async function updateLegacyOpeningAdvertisement(req, res) {
   try {
     const settings = await getSettings()
     if (!settings) return res.status(404).json({ ok: false, message: 'Opening rotation settings not found' })
-    if (settings.mode === 'auto') return res.status(409).json({ ok: false, message: 'Auto Rotation is active. Use the Rotation Manager.' })
+    if (settings.mode !== 'manual') return res.status(409).json({ ok: false, message: 'Use the Rotation Manager for the selected mode.' })
 
     let current = settings.manual_ad_id ? await getItem(settings.manual_ad_id) : null
     if (!current || current.is_archived) current = await getFirstAvailableItem()
