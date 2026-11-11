@@ -49,10 +49,11 @@ export async function getMyStudioPlaylistVideos(req, res) {
     let videos = []
     if (videoIds.length) {
       const { data, error } = await supabase
-        .from('fast_videos')
-        .select(VIDEO_FIELDS)
-        .eq('user_id', userId)
-        .in('id', videoIds)
+  .from('fast_videos')
+  .select(VIDEO_FIELDS)
+  .eq('user_id', userId)
+  .eq('studio_state', 'active')
+  .in('id', videoIds)
       if (error) throw error
       const byId = new Map((data || []).map(video => [video.id, video]))
       videos = videoIds.map(id => byId.get(id)).filter(Boolean)
