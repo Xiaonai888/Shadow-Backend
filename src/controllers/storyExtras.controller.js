@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { invalidateDiscoverStorySharedCache } from '../services/discoverStorySharedCache.service.js'
 
 function makeError(message, statusCode = 400, code = 'STORY_EXTRAS_INVALID') {
   const error = new Error(message)
@@ -194,6 +195,8 @@ export async function saveMyReaderStoryExtras(req, res) {
       })
     }
 
+    invalidateDiscoverStorySharedCache()
+
     return res.status(200).json({
       ok: true,
       story: data,
@@ -265,6 +268,8 @@ export async function saveMyAuthorStoryExtras(req, res) {
         message: 'Story not found',
       })
     }
+
+    invalidateDiscoverStorySharedCache()
 
     return res.status(200).json({
       ok: true,
