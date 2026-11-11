@@ -86,14 +86,52 @@ function normalizeTextStyle(value, textOverlay) {
   }
 }
 
+async function validateMentionTarget(extras) {
+  if (!extras.mentionTargetType || !extras.mentionTargetId) return
+
+  const isAuthor = extras.mentionTargetType === 'author'
+  const usernameField = isAuthor ? 'page_username' : 'username'
+
+  const { data, error } = await supabase
+    .from(isAuthor ? 'author_pages' : 'users')
+    .select(`id, ${usernameField}`)
+    .eq('id', extras.mentionTargetId)
+    .eq(isAuthor ? 'status' : 'is_active', isAuthor ? 'active' : true)
+    .maybeSingle()
+
+  if (error) throw error
+
+  if (
+    !data ||
+    String(data[usernameField] || '').toLowerCase() !==
+      extras.mentionUsername.toLowerCase()
+  ) {
+    throw makeError('Mention target does not match username')
+  }
+}
+
 function readExtras(body = {}) {
   const textOverlay = normalizeText(body.text_overlay, 200, 'Text')
+  const mentionUsername = normalizeMention(body.mention_username)
+  const targetType = String(body.mention_target_type || '').trim().toLowerCase()
+  const targetId = String(body.mention_target_id || '').trim()
+
+  if (mentionUsername && (targetType || targetId)) {
+    if (
+      !['reader', 'author'].includes(targetType) ||
+      !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(targetId)
+    ) {
+      throw makeError('Invalid mention target')
+    }
+  }
 
   return {
     altText: normalizeText(body.alt_text, 500, 'Alt text'),
     textOverlay,
     textStyle: normalizeTextStyle(body.text_overlay_style, textOverlay),
-    mentionUsername: normalizeMention(body.mention_username),
+    mentionUsername,
+    mentionTargetType: mentionUsername ? targetType || null : null,
+    mentionTargetId: mentionUsername ? targetId || null : null,
     linkUrl: normalizeLink(body.link_url),
   }
 }
@@ -106,6 +144,8 @@ function updatePayload(extras) {
     text_overlay: extras.textOverlay || null,
     text_overlay_style: extras.textStyle,
     mention_username: extras.mentionUsername || null,
+    mention_target_type: extras.mentionTargetType,
+‌    mention_target_id: extras.mentionTargetId,
     link_url: extras.linkUrl || null,
     caption: extras.textOverlay || '',
     updated_at: now,
@@ -132,6 +172,7 @@ export async function saveMyReaderStoryExtras(req, res) {
     }
 
     const extras = readExtras(req.body)
+    await validateMentionTarget(extras)
 
     const { data, error } = await supabase
       .from('reader_stories')
@@ -140,7 +181,7 @@ export async function saveMyReaderStoryExtras(req, res) {
       .eq('user_id', userId)
       .eq('status', 'active')
       .gt('expires_at', new Date().toISOString())
-      .select('id, alt_text, text_overlay, text_overlay_style, mention_username, link_url')
+      .select('id, alt_text, text_overlay, text_overlay_style, mention_username, mention_target_type, mention_target_id, link_url')
       .maybeSingle()
 
     if (error) throw error
@@ -203,6 +244,7 @@ export async function saveMyAuthorStoryExtras(req, res) {
     }
 
     const extras = readExtras(req.body)
+    await validateMentionTarget(extras)
 
     const { data, error } = await supabase
       .from('author_page_stories')
@@ -211,7 +253,7 @@ export async function saveMyAuthorStoryExtras(req, res) {
       .eq('author_page_id', authorPage.id)
       .eq('status', 'active')
       .gt('expires_at', new Date().toISOString())
-      .select('id, alt_text, text_overlay, text_overlay_style, mention_username, link_url')
+      .select('id, alt_text, text_overlay, text_overlay_style, mention_username, mention_target_type, mention_target_id, link_url')
       .maybeSingle()
 
     if (error) throw error
