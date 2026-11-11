@@ -31,6 +31,7 @@ function makeAuthorStory(story, hasViewed) {
     caption: story.caption || '',
     alt_text: story.alt_text || '',
     text_overlay: story.text_overlay || '',
+    text_overlay_style: story.text_overlay_style || null,
     mention_username:
       story.mention_username || '',
     link_url: story.link_url || '',
@@ -57,6 +58,7 @@ function makeReaderStory(story, hasViewed) {
     caption: story.caption || '',
     alt_text: story.alt_text || '',
     text_overlay: story.text_overlay || '',
+    text_overlay_style: story.text_overlay_style || null,
     mention_username:
       story.mention_username || '',
     link_url: story.link_url || '',
