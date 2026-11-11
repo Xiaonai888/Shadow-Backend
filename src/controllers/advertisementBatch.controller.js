@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { invalidateAdvertisementResponseCache } from '../services/advertisementsResponseCache.service.js'
 import { updateAdminRotatingAdvertisementSettings } from './adRotation.controller.js'
+import { updateAdminOpeningRotationSettings } from './openingAdRotation.controller.js'
 
 const placements = new Set(['opening', 'freeUnlock', 'me'])
 const settingsFields = new Set(['enabled', 'mode', 'manual_ad_id', 'rotate_every_seconds', 'max_ads', 'restart_rotation'])
@@ -22,7 +23,7 @@ function validSettings(settings, placement) {
     if (key === 'enabled' || key === 'restart_rotation') {
       if (typeof value !== 'boolean') return false
     } else if (key === 'mode') {
-      if (value !== 'manual' && value !== 'auto' && !(placement === 'freeUnlock' && value === 'auto_system')) return false
+      if (value !== 'manual' && value !== 'auto' && value !== 'auto_system') return false
     } else if (key === 'manual_ad_id') {
       if (value !== null && !isId(value)) return false
     } else if (key === 'rotate_every_seconds') {
@@ -85,7 +86,7 @@ export async function saveAdminAdvertisementBatch(req, res) {
   }
 
   try {
-    if (placement === 'freeUnlock') {
+    if (placement === 'opening' || placement === 'freeUnlock' || placement === 'me') {
       const { data: current, error: lookupError } = await supabase
         .from('shadow_advertisement_rotation_settings')
         .select('mode')
@@ -102,7 +103,9 @@ export async function saveAdminAdvertisementBatch(req, res) {
         if (!Object.keys(settings).length) {
           return res.status(400).json({ ok: false, message: 'No Auto System settings to save' })
         }
-        return updateAdminRotatingAdvertisementSettings({ ...req, body: settings }, res)
+        return placement === 'opening'
+  ? updateAdminOpeningRotationSettings({ ...req, body: settings }, res)
+  : updateAdminRotatingAdvertisementSettings({ ...req, body: settings }, res)
       }
     }
 
