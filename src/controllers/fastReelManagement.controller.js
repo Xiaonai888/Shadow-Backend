@@ -1,6 +1,8 @@
 import { supabase } from '../config/supabase.js'
+import { executeStudioRecycleAction } from '../services/shadowStudioRecycleBridge.service.js'
+import { invalidateStudioChannelCache } from '../services/shadowStudioChannelCache.service.js'
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const VIDEO_FIELDS = 'id,user_id,video_url,thumbnail_url,title,description,tags,status,access_type,unlock_price_diamonds,published_at,view_count,video_type,duration_seconds'
 
 function pageNumber(value, fallback, maximum) {
@@ -60,6 +62,7 @@ export async function listMyFastReels(req, res) {
     let query = supabase.from('fast_videos')
       .select(VIDEO_FIELDS)
       .eq('user_id', userId)
+      .eq('studio_state', 'active')
 
     if (mode === 'gallery') {
       query = query
@@ -151,20 +154,21 @@ export async function updateMyFastReel(req, res) {
   }
   try {
     const { data: current, error: readError } = await supabase.from('fast_videos')
-      .select('id,status,published_at')
+      .select('id,status,published_at,studio_state')
       .eq('id', req.params.id).eq('user_id', userId).maybeSingle()
     if (readError) throw readError
     if (!current) return res.status(404).json({ ok: false, message: 'Reel not found' })
+    if (current.studio_state !== 'active') return res.status(409).json({ ok: false, message: 'Restore this Reel before editing it' })
     if (changes.status === 'published' && current.status !== 'published') {
       changes.published_at = new Date().toISOString()
     } else if (changes.status === 'draft') {
       changes.published_at = null
     }
     const { data, error } = await supabase.from('fast_videos')
-      .update(changes).eq('id', req.params.id).eq('user_id', userId)
+      .update(changes).eq('id', req.params.id).eq('user_id', userId).eq('studio_state', 'active')
       .select(VIDEO_FIELDS).maybeSingle()
     if (error) throw error
-    if (!data) return res.status(404).json({ ok: false, message: 'Reel not found' })
+    if (!data) return res.status(409).json({ ok: false, message: 'Reel is no longer active' })
     res.set('Cache-Control', 'private, no-store')
     return res.json({ ok: true, video: data })
   } catch (error) {
@@ -178,14 +182,21 @@ export async function deleteMyFastReel(req, res) {
   if (!userId) return res.status(401).json({ ok: false, message: 'Unauthorized' })
   if (!UUID.test(String(req.params.id || ''))) return res.status(400).json({ ok: false, message: 'Invalid Reel ID' })
   try {
-    const { data, error } = await supabase.from('fast_videos')
-      .delete().eq('id', req.params.id).eq('user_id', userId).select('id').maybeSingle()
-    if (error) throw error
-    if (!data) return res.status(404).json({ ok: false, message: 'Reel not found' })
+    const data = await executeStudioRecycleAction({
+      ownerId: userId,
+      videoId: req.params.id,
+      action: 'trash',
+      client: supabase,
+      invalidate: invalidateStudioChannelCache,
+    })
+    if (data.ok !== true) {
+      const status = data.code === 'NOT_FOUND' ? 404 : 409
+      return res.status(status).json({ ok: false, message: data.code || 'Unable to move Reel to Trash' })
+    }
     res.set('Cache-Control', 'private, no-store')
-    return res.json({ ok: true, id: data.id })
+    return res.json({ ok: true, id: data.id, state: 'trashed' })
   } catch (error) {
     console.error('FAST REEL DELETE ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Unable to delete Reel' })
+    return res.status(500).json({ ok: false, message: 'Unable to move Reel to Trash' })
   }
 }
