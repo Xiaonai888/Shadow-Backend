@@ -18,6 +18,7 @@ export async function listUnclassifiedStudioVideos(ownerId, limit, offset) {
     .from('fast_videos')
     .select(VIDEO_COLUMNS)
     .eq('user_id', ownerId)
+    .eq('studio_state', 'active')
     .eq('platform', 'youtube')
     .is('video_type', null)
     .order('published_at', { ascending: false, nullsFirst: false })
@@ -45,6 +46,7 @@ export async function setStudioVideoType(ownerId, videoId, videoType, durationSe
     .select('id,video_url,platform')
     .eq('user_id', ownerId)
     .eq('id', videoId)
+    .eq('studio_state', 'active')
     .maybeSingle()
   if (readError) throw readError
   if (!existing || existing.platform !== 'youtube') return null
@@ -55,6 +57,7 @@ export async function setStudioVideoType(ownerId, videoId, videoType, durationSe
     .update(changes)
     .eq('id', videoId)
     .eq('user_id', ownerId)
+    .eq('studio_state', 'active')
     .select(VIDEO_COLUMNS)
     .maybeSingle()
   if (error) throw error
