@@ -59,7 +59,7 @@ async function loadSharedCatalog(
     supabase
       .from('author_page_stories')
       .select(
-        'id, author_page_id, media_type, media_url, mime_type, caption, alt_text, text_overlay, mention_username, link_url, allow_messages, view_count, created_at, expires_at'
+        'id, author_page_id, media_type, media_url, mime_type, caption, alt_text, text_overlay, text_overlay_style, mention_username, link_url, allow_messages, view_count, created_at, expires_at'
       )
       .eq('status', 'active')
       .gt('expires_at', nowIso)
@@ -70,7 +70,7 @@ async function loadSharedCatalog(
     supabase
       .from('reader_stories')
       .select(
-        'id, user_id, media_type, media_url, mime_type, caption, alt_text, text_overlay, mention_username, link_url, allow_messages, view_count, created_at, expires_at'
+        'id, user_id, media_type, media_url, mime_type, caption, alt_text, text_overlay, text_overlay_style, mention_username, link_url, allow_messages, view_count, created_at, expires_at'
       )
       .eq('status', 'active')
       .gt('expires_at', nowIso)
