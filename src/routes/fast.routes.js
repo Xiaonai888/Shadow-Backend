@@ -20,6 +20,7 @@ import {
 } from '../controllers/fastFeed.controller.js'
 
 import fastLikesRouter from './fastLikes.routes.js'
+import { getMyStudioCommunity } from '../controllers/shadowStudioCommunity.controller.js'
 import { getPublicFastSaveCount } from '../controllers/fastSaves.controller.js'
 import {
   listFastComments,
@@ -215,6 +216,7 @@ router.get(
   getReelYouTubeMetadata
 )
 
+router.get('/studio/community', fastVideoManageReadLimit, requireUser, getMyStudioCommunity)
 router.get('/videos/mine', fastVideoManageReadLimit, requireUser, listMyFastReels)
 router.patch('/videos/:id', fastVideoManageWriteLimit, requireUser, updateMyFastReel)
 router.delete('/videos/:id', fastVideoManageWriteLimit, requireUser, deleteMyFastReel)
