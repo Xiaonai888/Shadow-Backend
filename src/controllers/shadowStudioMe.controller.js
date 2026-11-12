@@ -2,7 +2,7 @@ import { supabase } from '../config/supabase.js'
 import { executeStudioRecycleAction } from '../services/shadowStudioRecycleBridge.service.js'
 import { invalidateStudioChannelCache } from '../services/shadowStudioChannelCache.service.js'
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const VIDEO_FIELDS = 'id,user_id,video_url,thumbnail_url,title,description,tags,status,access_type,unlock_price_diamonds,published_at,view_count,video_type,duration_seconds,archived_at,deleted_at,purge_at'
 
 function userId(req, res) {
