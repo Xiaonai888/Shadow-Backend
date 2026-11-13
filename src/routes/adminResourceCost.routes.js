@@ -20,13 +20,14 @@ const allowedFormats = new Set([
   'provider-csv', 'upload-csv', 'api-csv', 'evidence-json',
 ])
 
-router.use(createRateLimit({
+const resourceCostGuard = createRateLimit({
   key: 'admin-resource-cost',
   windowMs: 60 * 1000,
   max: 20,
   message: 'Too many Resource & Cost requests. Please try again shortly.',
-}))
-router.use(requireAdminPermission('system_control.view'))
+})
+const viewResourceCost = requireAdminPermission('system_control.view')
+
 router.use((req, res, next) => {
   res.set('Cache-Control', 'private, no-store')
   next()
@@ -91,7 +92,7 @@ function respondError(res, error) {
   })
 }
 
-router.get('/health', async (req, res) => {
+router.get('/health', resourceCostGuard, viewResourceCost, async (req, res) => {
   try {
     const now = Date.now()
     if (!healthCache || healthCache.expiresAt <= now) {
@@ -110,7 +111,7 @@ router.get('/health', async (req, res) => {
   }
 })
 
-router.get('/summary', async (req, res) => {
+router.get('/summary', resourceCostGuard, viewResourceCost, async (req, res) => {
   try {
     const result = await reportFor(req.query)
     return res.status(200).json({
@@ -123,7 +124,7 @@ router.get('/summary', async (req, res) => {
   }
 })
 
-router.get('/download', async (req, res) => {
+router.get('/download', resourceCostGuard, viewResourceCost, async (req, res) => {
   try {
     const format = String(req.query?.format || 'full-zip').trim().toLowerCase()
     if (!allowedFormats.has(format)) throw new RangeError('Unsupported report format.')
