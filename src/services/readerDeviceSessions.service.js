@@ -154,6 +154,7 @@ export async function createReaderDeviceSession({ req, userId, deviceKey }) {
   if (!data?.device_id || !data?.session_id || !data?.expires_at) {
     throw new Error('Reader session registration returned incomplete data')
   }
+  invalidateReaderSessionValidationCache({ userId, deviceId: data.device_id })
 
   writeSessionValidationCache(
     {
