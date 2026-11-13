@@ -2708,12 +2708,24 @@ export function buildAuthorStoreAttributionReportLines(order, productType = '') 
     return ['📍 Source: <b>Not recorded (older order)</b>']
   }
 
+  
   const sourceLabels = {
     author_store: 'Author Page Store',
     discover_promotion: 'Discover — Book & PDF Promotion',
-    mixed: 'Discover Promotion + Author Page Store',
+    mixed: 'Multiple Purchase Sources',
   }
-  const lines = [`📍 Source: <b>${html(sourceLabels[attribution.source] || 'Not recorded')}</b>`]
+  const purchaseSourceLabels = {
+    stories: 'Stories Page — Book & PDF Promotion',
+    manga: 'Manga Page — Book & PDF Promotion',
+    discover: 'Discover — Book & PDF Promotion',
+    author_store: 'Author Page Store',
+    mixed: 'Multiple Purchase Sources',
+  }
+  const sourceLabel = purchaseSourceLabels[attribution.purchase_source]
+    || sourceLabels[attribution.source]
+    || 'Not recorded'
+  const lines = [`📍 Source: <b>${html(sourceLabel)}</b>`]
+
   const matchingItems = attribution.items.filter((item) => !productType || item.product_type === productType)
 
   for (const item of matchingItems.slice(0, 8)) {
@@ -2730,6 +2742,7 @@ export function buildAuthorStoreAttributionReportLines(order, productType = '') 
       ? 'Discover Admin Promotion'
       : item.discount_source === 'author' ? 'Author Discount' : 'Promotion'
     lines.push(`🏷️ Promotion: <b>${html(item.title || item.product_id)}</b>`)
+    lines.push(`📍 Promotion Page: <b>${html(purchaseSourceLabels[item.purchase_source] || purchaseSourceLabels.discover)}</b>`)
     lines.push(`💰 Original: <b>${html(moneyFormatAttribution(original))}</b>`)
     if (Math.abs(original - author) >= 0.005) {
       lines.push(`🏪 Author Store Price: <b>${html(moneyFormatAttribution(author))}</b>`)
