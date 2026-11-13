@@ -163,6 +163,7 @@ import readerChatIndicatorRoutes from './src/routes/readerChatIndicator.routes.j
 import { requireAdmin } from './src/middleware/auth.middleware.js'
 import imageLoadDiagnosticsRoutes from './src/routes/imageLoadDiagnostics.routes.js'
 import { readerHealthPublicRoutes, readerHealthAdminRoutes } from './src/routes/readerHealthTelemetry.routes.js'
+import { storyCreationErrorPublicRoutes, storyCreationErrorAdminRoutes } from './src/routes/storyCreationErrorMonitoring.routes.js'
 
 dotenv.config()
 
@@ -1065,7 +1066,9 @@ app.use('/api/admin/apps', adminAppSettingsRoutes)
 app.use('/api/admin/work', adminWorkRoutes)
 app.use('/api/diagnostics/images', imageLoadDiagnosticsRoutes)
 app.use('/api/diagnostics/reader-health', readerHealthPublicRoutes)
+app.use('/api/diagnostics/story-creation', storyCreationErrorPublicRoutes)
 app.use('/api/admin/reader-health', readerHealthAdminRoutes)
+app.use('/api/admin/story-creation-errors', storyCreationErrorAdminRoutes)
 app.use('/api/admin/system-control', adminSystemControlRoutes)
 app.use('/api/story-episode-push', storyEpisodePushWakeRoutes)
 app.use('/api/media-direct', mediaUploadRouteSpamGuard, mediaDirectRoutes)
