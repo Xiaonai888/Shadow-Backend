@@ -217,15 +217,24 @@ function getCurrency(order) {
   return cleanText(firstDefined(order?.currency, order?.currency_code, 'USD')).toUpperCase()
 }
 
-function getOrderSource(order) {
-  return cleanText(
-    firstDefined(
-      order?.source,
-      order?.order_source,
-      order?.sales_channel,
-      'Shadow Author Store'
-    )
+function getOrderSource(order, item) {
+  const attribution = order?.request_payload?.checkout_attribution
+  const products = Array.isArray(attribution?.items) ? attribution.items : []
+  const product = products.find((row) => cleanText(row?.product_id) === cleanText(item?.product_id))
+  const source = cleanText(
+    product?.purchase_source ||
+    (product?.source === 'discover_promotion' ? 'discover' : product?.source) ||
+    (products.length === 1 ? attribution?.purchase_source : '')
   )
+  const labels = {
+    stories: 'Stories Page — Book & PDF Promotion',
+    manga: 'Manga Page — Book & PDF Promotion',
+    discover: 'Discover — Book & PDF Promotion',
+    author_store: 'Author Page Store',
+  }
+  return labels[source] || cleanText(firstDefined(
+    order?.source, order?.order_source, order?.sales_channel, 'Shadow Author Store'
+  ))
 }
 
 function getOrderNote(order) {
@@ -521,7 +530,7 @@ function buildSheetRow(order, item, lineIndex, itemCount) {
     order_status: orderStatus,
     prepare_status: getPrepareStatus(order),
     is_revenue_order: revenueOrder,
-    order_source: getOrderSource(order),
+    order_source: getOrderSource(order, item),
     note: getOrderNote(order),
     updated_at: firstDefined(
       order?.updated_at,
