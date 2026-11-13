@@ -65,6 +65,23 @@ function normalizeLink(value) {
 }
 
 function normalizeTextStyle(value, textOverlay) {
+  if (value && typeof value === 'object' && !Array.isArray(value) && Array.isArray(value.layers)) {
+    if (value.layers.length > 100) throw makeError('Too many text layers')
+
+    const layers = value.layers
+      .filter((layer) => layer && typeof layer === 'object' && !Array.isArray(layer) && String(layer.text || '').trim())
+      .map((layer, index) => {
+        const text = normalizeText(layer.text, 200, 'Text')
+        return {
+          id: String(layer.id || `layer-${index + 1}`).slice(0, 80),
+          text,
+          ...normalizeTextStyle(layer, text),
+        }
+      })
+
+    return layers.length ? { layers } : null
+  }
+
   if (!textOverlay || !value || typeof value !== 'object' || Array.isArray(value)) return null
 
   const background = typeof value.background === 'string' ? value.background.trim() : ''
@@ -114,7 +131,11 @@ async function validateMentionTarget(extras) {
 }
 
 function readExtras(body = {}) {
-  const textOverlay = normalizeText(body.text_overlay, 200, 'Text')
+  const firstLayerText = Array.isArray(body.text_overlay_style?.layers)
+  ? body.text_overlay_style.layers.find((layer) => typeof layer?.text === 'string' && layer.text.trim())?.text
+  : ''
+
+const textOverlay = normalizeText(body.text_overlay || firstLayerText, 200, 'Text')
   const mentionUsername = normalizeMention(body.mention_username)
   const targetType = String(body.mention_target_type || '').trim().toLowerCase()
   const targetId = String(body.mention_target_id || '').trim()
