@@ -131,6 +131,18 @@ const readerProtectedRouteLimit = rateLimit({
   },
 })
 
+const readerPaymentProfileIpLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'READER_PAYMENT_PROFILE_IP_RATE_LIMIT',
+    message: 'Too many payment profile requests. Please wait before trying again.',
+  },
+})
+
 function invalidatePublicStoriesAfterMutation(req, res, next) {
   res.once('finish', () => {
     if (
@@ -266,7 +278,7 @@ router.post(
   readerProtectedRouteLimit,
   confirmEmailChange
 )
-router.put('/payment-profile', requireUser, readerProtectedRouteLimit, requireReaderPaymentBinanceProfile, updatePaymentProfile)
+router.put('/payment-profile', readerPaymentProfileIpLimit, requireUser, readerProtectedRouteLimit, requireReaderPaymentBinanceProfile, updatePaymentProfile)
 router.get('/:username/profile', requireUser, readerProtectedRouteLimit, getPublicUserProfile)
 router.get('/:username/followers', requireUser, readerProtectedRouteLimit, getUserFollowers)
 router.get('/:username/following', requireUser, readerProtectedRouteLimit, getUserFollowing)
