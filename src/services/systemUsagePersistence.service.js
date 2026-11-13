@@ -10,6 +10,7 @@ import {
   loadArchivedUsageHistory,
   runSystemUsageRetention,
 } from './systemUsageRollup.service.js'
+import { flushResourceCostUploadAudit } from './resourceCostUploadAudit.service.js'
 
 const MINUTE_MS = 60 * 1000
 const HOUR_MS = 60 * MINUTE_MS
@@ -1912,6 +1913,12 @@ export async function persistSystemUsageSnapshot() {
       initial.source,
       now
     )
+
+    try {
+      await flushResourceCostUploadAudit()
+    } catch (error) {
+      console.error('RESOURCE_COST_UPLOAD_AUDIT_SAVE_ERROR:', error?.message || error)
+    }
 
     if (
       initial.totals.count === 0 &&
