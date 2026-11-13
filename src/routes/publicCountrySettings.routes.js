@@ -22,7 +22,6 @@ const FALLBACK_RULES = {
     physicalBooks: true,
     binancePay: false,
     readerPaymentBinance: false,
-    readerPaymentBinance: false,
     payway: false,
     premiumPayway: false,
     premiumBinancePay: false,
