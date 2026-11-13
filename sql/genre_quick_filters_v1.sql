@@ -56,17 +56,16 @@ begin
             or coalesce(is_free_published, false)
             or not coalesce(is_locked, false)
         )::bigint as free_count,
-        min(first_published_at + interval '7 days') filter (
+        min(coalesce(first_published_at, published_at, created_at, 'epoch'::timestamptz) + interval '7 days') filter (
           where episode_rank > 5
             and coalesce(is_locked, false)
             and not coalesce(is_free_published, false)
-            and first_published_at is not null
-            and first_published_at > now() - interval '7 days'
-            and first_published_at <= now()
         ) as next_free_at
       from (
         select
           e.first_published_at,
+          e.published_at,
+          e.created_at,
           e.is_locked,
           e.is_free_published,
           row_number() over (
