@@ -4,13 +4,16 @@ import { requireAdminPermission } from '../middleware/adminPermission.middleware
 import { resourceCostCalendarPeriod } from '../services/resourceCostSummary.service.js'
 import { getResourceCostReport } from '../services/resourceCostReportData.service.js'
 import { createResourceCostDownload } from '../services/resourceCostReportExport.service.js'
+import { getResourceCostHealth } from '../services/resourceCostHealth.service.js'
 
 const router = express.Router()
 const DAY_MS = 24 * 60 * 60 * 1000
 const QUERY_BUCKET_MS = 15 * 60 * 1000
 const CACHE_MS = 15 * 60 * 1000
 const MAX_CACHE_ENTRIES = 12
+const HEALTH_CACHE_MS = 5 * 60 * 1000
 const reportCache = new Map()
+let healthCache = null
 const allowedModes = new Set(['today', 'week', 'month', 'last7', 'last30', 'custom'])
 const allowedFormats = new Set([
   'full-zip', 'daily-csv', 'weekly-csv', 'monthly-csv',
@@ -87,6 +90,25 @@ function respondError(res, error) {
       : 'Resource & Cost data is unavailable. Check stored provider records and database setup.',
   })
 }
+
+router.get('/health', async (req, res) => {
+  try {
+    const now = Date.now()
+    if (!healthCache || healthCache.expiresAt <= now) {
+      healthCache = { expiresAt: now + HEALTH_CACHE_MS, pending: getResourceCostHealth() }
+    }
+    let result
+    try {
+      result = await healthCache.pending
+    } catch (error) {
+      healthCache = null
+      throw error
+    }
+    return res.status(200).json({ ok: true, health: result })
+  } catch (error) {
+    return respondError(res, error)
+  }
+})
 
 router.get('/summary', async (req, res) => {
   try {
