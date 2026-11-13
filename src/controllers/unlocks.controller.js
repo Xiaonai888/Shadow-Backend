@@ -2828,6 +2828,8 @@ export async function unlockEpisodeWithAd(req, res) {
 export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
   const userId = req.user?.user_id
   const storyId = String(req.params?.storyId || '').trim()
+  const purchaseSource = ['stories', 'manga'].includes(req.body?.purchase_source) ? req.body.purchase_source : 'discover'
+  const purchaseSourceLabel = purchaseSource === 'manga' ? 'Manga Page' : purchaseSource === 'stories' ? 'Stories Page' : 'Discover Page'
 
   if (!userId || !storyId) {
     return res.status(401).json({ ok: false, message: 'Login required' })
@@ -3035,6 +3037,7 @@ export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
     const metadata = {
       purchase_key: purchaseKey,
       package_key: 'discover_special_promotion',
+      purchase_source: purchaseSource,
       package_label: 'Special Promotion -50%',
       episode_count: episodesToUnlock.length,
       discount_percent: 50,
@@ -3093,7 +3096,7 @@ export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
         authorId: story.author_id,
         type: 'unlock',
         title: `${reader?.name || reader?.username || 'A reader'} unlocked ${purchase.unlocks.length} episodes`,
-        message: `${price} Diamonds spent on ${story.title || 'your story'} through Special Promotion`,
+        message: `${price} Diamonds spent on ${story.title || 'your story'} through Special Promotion on ${purchaseSourceLabel}`,
         targetUrl: `/story/${storyId}/episode/${firstEpisode.id}`,
         sourceKey: `diamond-unlock:${purchaseKey}`,
         metadata: {
@@ -3101,6 +3104,7 @@ export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
           episode_id: firstEpisode.id,
           purchase_key: purchaseKey,
           package_key: 'discover_special_promotion',
+          purchase_source: purchaseSource,
           episode_count: purchase.unlocks.length,
           diamond_amount: price,
           reader_id: userId,
