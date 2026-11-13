@@ -21,6 +21,7 @@ async function fetchAll(client, table, columns, timeField, from, to, options = {
       .gte(timeField, from)
       .lt(timeField, to)
     if (options.granularity) query = query.eq('granularity', options.granularity)
+    if (options.jobType) query = query.eq('job_type', options.jobType)
     query = query.order(timeField, { ascending: true })
     for (const field of options.tieBreakers || []) query = query.order(field, { ascending: true })
     query = query.range(offset, offset + PAGE_SIZE - 1)
@@ -59,6 +60,56 @@ function applicationFromWindow(row, timeField) {
   return result
 }
 
+export function summarizeMangaDirectJobs(jobs = []) {
+  const groups = new Map()
+  const seen = new Set()
+  let unknownSize = 0
+  let unverifiedJobs = 0
+  let duplicates = 0
+  let verifiedJobs = 0
+  for (const job of jobs) {
+    if (job?.job_type !== 'manga_page_v2' || job?.payload?.intake !== 'r2_direct') continue
+    const id = String(job.id || '')
+    const created = Date.parse(job.created_at || '')
+    if (!id || !Number.isFinite(created)) {
+      unverifiedJobs += 1
+      continue
+    }
+    if (seen.has(id)) {
+      duplicates += 1
+      continue
+    }
+    seen.add(id)
+    const hour = new Date(Math.floor(created / HOUR_MS) * HOUR_MS).toISOString()
+    const size = Number(job.payload?.source_bytes)
+    const validSize = Number.isSafeInteger(size) && size > 0
+    if (!validSize) unknownSize += 1
+    const key = hour
+    const group = groups.get(key) || {
+      hour_start: hour,
+      feature: 'manga_page_image',
+      route: 'story_media.manga_direct',
+      upload_mode: 'direct',
+      attempts: 0,
+      successes: 0,
+      failures: 0,
+      ingress_bytes: 0,
+      egress_bytes: 0,
+      object_bytes: 0,
+    }
+    group.attempts += 1
+    group.successes += 1
+    if (validSize) {
+      group.ingress_bytes += size
+      group.object_bytes += size
+    }
+    if (!Number.isSafeInteger(group.ingress_bytes)) throw new RangeError('Direct Manga bytes exceeded safe integer precision.')
+    groups.set(key, group)
+    verifiedJobs += 1
+  }
+  return { rows: [...groups.values()], verifiedJobs, unknownSize, unverifiedJobs, duplicates }
+}
+
 function detectedServices(value) {
   const ids = [
     process.env.RENDER_SERVICE_ID,
@@ -87,11 +138,18 @@ export async function getResourceCostReport({
   const renderFields = 'service_id,hour_start,total_bytes,http_response_bytes,service_initiated_bytes,websocket_response_bytes,private_link_bytes,breakdown_available'
   const providerFields = 'provider,metric,scope,observed_hour,observed_at,period_start,period_end,kind,unit,value,status'
   const uploadFields = 'hour_start,feature,route,upload_mode,attempts,successes,failures,ingress_bytes,egress_bytes,object_bytes'
-  const [renderRows, providerRows, uploadRows] = await Promise.all([
+  const [renderRows, providerRows, storedUploadRows, directMangaJobs] = await Promise.all([
     fetchAll(database, 'render_bandwidth_hourly', renderFields, 'hour_start', range.from, end, { tieBreakers: ['service_id'] }),
     fetchAll(database, 'resource_cost_provider_observations', providerFields, 'observed_at', obsStart, obsEnd, { tieBreakers: ['provider', 'metric', 'scope'] }),
     fetchAll(database, 'resource_cost_upload_hourly', uploadFields, 'hour_start', range.from, end, { tieBreakers: ['feature', 'route', 'upload_mode'] }),
+    fetchAll(database, 'heavy_media_jobs', 'id,job_type,created_at,payload', 'created_at', range.from, end, { jobType: 'manga_page_v2', tieBreakers: ['id'] }),
   ])
+  const directManga = summarizeMangaDirectJobs(directMangaJobs)
+  const existingDirectHours = new Set(storedUploadRows.filter((row) =>
+    row.upload_mode === 'direct' && row.route === 'story_media.manga_direct'
+  ).map((row) => row.hour_start))
+  const includedDirectRows = directManga.rows.filter((row) => !existingDirectHours.has(row.hour_start))
+  const uploadRows = [...storedUploadRows, ...includedDirectRows]
 
   const applicationRows = []
   const applicationCoverage = { requested: Boolean(includeApplication), status: 'not_requested', windows: 0, truncated_top_rows: true, source_types: [], note: null }
@@ -135,10 +193,29 @@ export async function getResourceCostReport({
   })
   return {
     ...summary,
+    accuracy: {
+      ...summary.accuracy,
+      direct_manga_accepted_means_r2_intake_verified_and_processing_queued: true,
+      direct_manga_object_bytes_are_not_render_egress: true,
+      unfinalized_r2_signed_puts_are_not_observed: true,
+    },
     sources: {
       render: { rows: renderRows.length, table: 'render_bandwidth_hourly', billing_authoritative: false },
       provider: { rows: providerRows.filter((row) => resourceCostTimestamp(row.observed_at) >= start).length, table: 'resource_cost_provider_observations', include_late_interval_observations: true },
-      upload: { rows: uploadRows.length, table: 'resource_cost_upload_hourly' },
+      upload: { rows: uploadRows.length, table: 'resource_cost_upload_hourly + heavy_media_jobs' },
+      direct_manga: {
+        table: 'heavy_media_jobs',
+        job_type: 'manga_page_v2',
+        intake: 'r2_direct',
+        verified_queued_jobs: directManga.verifiedJobs,
+        included_hour_groups: includedDirectRows.length,
+        existing_ledger_hour_groups: directManga.rows.length - includedDirectRows.length,
+        duplicate_job_rows_ignored: directManga.duplicates,
+        jobs_with_unknown_size: directManga.unknownSize,
+        jobs_with_invalid_identity_or_time: directManga.unverifiedJobs,
+        coverage: directManga.unknownSize || directManga.unverifiedJobs ? 'partial' : 'verified_queued_only',
+        note: 'Only verified R2 direct uploads with a queued Manga job are observed. This is not evidence that later processing finished. Unfinalized signed PUTs and billed R2 operations are not measured here.',
+      },
       application: applicationCoverage,
     },
   }
