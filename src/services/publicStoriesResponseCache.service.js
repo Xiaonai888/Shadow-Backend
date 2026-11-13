@@ -20,6 +20,24 @@ let publicStoriesViewSensitiveVersion = 0
 let lastViewSensitiveInvalidationAt = 0
 let viewSensitiveInvalidationTimer = null
 
+function getCacheTtlMs(req, body = null) {
+  const filter = String(req?.query?.genre_filter || '').trim().toLowerCase()
+
+  if (filter === 'wait_free') {
+    const nextExpiry = (Array.isArray(body?.stories) ? body.stories : [])
+      .map((story) => Date.parse(story?.next_wait_free_at || ''))
+      .filter(Number.isFinite)
+      .reduce((soonest, value) => Math.min(soonest, value), Infinity)
+
+    return Number.isFinite(nextExpiry)
+      ? Math.max(1000, Math.min(2 * 60 * 1000, nextExpiry - Date.now()))
+      : 2 * 60 * 1000
+  }
+
+  if (filter === 'fully_free' || filter === 'completed') return 15 * 60 * 1000
+  return CACHE_TTL_MS
+}
+
 function getRequestSort(req) {
   return String(req?.query?.sort || 'latest')
     .trim()
@@ -159,7 +177,7 @@ export async function cachePublicStoriesResponse(
   if (
     cached &&
     Date.now() - Number(cached.cachedAt || 0) >
-      CACHE_TTL_MS
+      Number(cached.ttlMs || CACHE_TTL_MS)
   ) {
     publicStoriesCache.delete(key)
   }
@@ -282,6 +300,7 @@ export async function cachePublicStoriesResponse(
         body,
         statusCode: res.statusCode,
         cachedAt: Date.now(),
+        ttlMs: getCacheTtlMs(req, body),
       }
 
       setCacheEntry(key, entry)
