@@ -78,8 +78,9 @@ const validBackground = background === 'transparent' || /^#[0-9a-f]{6}$/i.test(b
   const rotation = number('rotation', 0, -1000000, 1000000)
 
   return {
-    background: validBackground ? (background === 'transparent' ? background : background.toUpperCase()) : '#162453',
-    font: ['classic', 'modern', 'typewriter', 'poster', 'handwriting', 'rounded', 'elegant', 'minimal', 'retro', 'neon'].includes(value.font) ? value.font : 'classic',
+    background: validBackground ? (background === 'transparent' ? background : background.toUpperCase()) : '#FFFFFF',
+    font: ['classic', 'robotoBold', 'modern', 'typewriter', 'poster', 'handwriting', 'rounded', 'elegant', 'minimal', 'retro', 'neon'].includes(value.font) ? value.font : 'classic',
+    styleMode: ['shape', 'inverse', 'outline', 'outlineInverse', 'plain'].includes(value.styleMode) ? value.styleMode : 'shape',
     align: ['left', 'center', 'right'].includes(value.align) ? value.align : 'center',
     x: number('x', 50, 5, 95),
     y: number('y', 50, 8, 92),
