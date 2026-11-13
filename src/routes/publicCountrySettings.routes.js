@@ -11,7 +11,7 @@ const LANGUAGES = new Set(['km', 'en', 'zh', 'ja', 'ko'])
 const TARGETS = new Set(['shadow_mall', 'diamonds'])
 const LEGACY_FLAGS = ['app', 'physicalBooks', 'binancePay', 'payway']
 const PAYOUT_FLAGS = ['payoutBank', 'payoutBinance', 'payoutPhone']
-const SCOPED_PAYMENT_FLAGS = ['premiumPayway', 'premiumBinancePay', 'pdfPayway', 'pdfBinancePay']
+const SCOPED_PAYMENT_FLAGS = ['premiumPayway', 'premiumBinancePay', 'pdfPayway', 'pdfBinancePay', 'readerPaymentBinance']
 const NEW_FLAGS = ['shadowMall', 'readerMall', ...PAYOUT_FLAGS, ...SCOPED_PAYMENT_FLAGS]
 // Future Country Rules switches are automatically eligible for per-user overrides.
 const EXTRA_BOOLEAN_KEY = /^[a-z][a-zA-Z0-9_]{0,63}$/
@@ -21,6 +21,7 @@ const FALLBACK_RULES = {
     app: true,
     physicalBooks: true,
     binancePay: false,
+    readerPaymentBinance: false,
     payway: false,
     premiumPayway: false,
     premiumBinancePay: false,
@@ -38,6 +39,7 @@ const FALLBACK_RULES = {
     app: true,
     physicalBooks: true,
     binancePay: false,
+    readerPaymentBinance: false,
     payway: false,
     premiumPayway: false,
     premiumBinancePay: false,
