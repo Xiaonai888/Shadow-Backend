@@ -19,7 +19,9 @@ import {
 } from '../services/storyAgeAccess.service.js'
 import {
   applyGenrePaginationQuery,
+  decodeGenreCursor,
   finalizeGenrePage,
+  finalizeQuickGenrePage,
 } from '../services/publicGenrePagination.service.js'
 import { isRelationshipGroup, normalizeRelationshipTag } from '../utils/storyRelationshipGroups.js'
 import { makeSmartSearchOrFilter } from '../services/smartSearchCore.service.js'
@@ -68,6 +70,19 @@ const PUBLIC_STORY_LIST_SELECT = [
   'total_views',
   'total_likes',
   'total_comments',
+  'created_at',
+  'updated_at',
+].join(', ')
+
+const GENRE_QUICK_STORY_SELECT = [
+  'id',
+  'title',
+  'cover_url',
+  'main_genre',
+  'tags',
+  'story_type',
+  'story_status',
+  'total_episodes',
   'created_at',
   'updated_at',
 ].join(', ')
@@ -1215,6 +1230,93 @@ export async function getPublicStories(req, res) {
       genrePagination
         ? String(req.query.cursor || '').trim()
         : ''
+
+    const genreFilter = String(req.query.genre_filter || '')
+      .trim()
+      .toLowerCase()
+
+    if (genrePagination && ['wait_free', 'fully_free', 'completed'].includes(genreFilter)) {
+      const parsedCursor = genreCursor ? decodeGenreCursor(genreCursor) : null
+
+      if (genreCursor && (!parsedCursor || !Number.isFinite(Date.parse(parsedCursor.value)) ||
+        !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(parsedCursor.id))) {
+        return res.status(400).json({ ok: false, message: 'Invalid Genre cursor' })
+      }
+
+      const { data: quickRows, error: quickError } = await supabase.rpc(
+        'get_genre_quick_story_ids_v1',
+        {
+          p_mode: genreFilter,
+          p_language: language,
+          p_story_setting: storySetting,
+          p_story_type: ['novel', 'manga', 'chat_story'].includes(storyType) ? storyType : '',
+          p_story_status: storyStatus,
+          p_genre: genre,
+          p_relationship_group: relationshipGroup,
+          p_search: search,
+          p_can_view_adult: Boolean(ageAccess?.can_view_adult_stories),
+          p_cursor_time: parsedCursor?.value || null,
+          p_cursor_id: parsedCursor?.id || null,
+        }
+      )
+
+      if (quickError && quickError.code !== 'PGRST202' && quickError.code !== '42883') {
+        throw quickError
+      }
+
+      if (!quickError) {
+        const quickPage = finalizeQuickGenrePage(quickRows || [])
+        const ids = quickPage.stories.map((item) => item.story_id)
+        let storyRows = []
+  
+        if (ids.length) {
+          const { data: fetched, error: storyError } = await supabase
+            .from('stories')
+            .select(GENRE_QUICK_STORY_SELECT)
+            .in('id', ids)
+            .eq('status', 'published')
+            .is('deleted_at', null)
+  
+          if (storyError) throw storyError
+          storyRows = fetched || []
+        }
+  
+        const storyById = new Map(storyRows.map((story) => [String(story.id), story]))
+        const stories = quickPage.stories.flatMap((entry) => {
+          const story = storyById.get(String(entry.story_id))
+          if (!story) return []
+  
+          const isCompleted = isStoryCompleted(story)
+          const freeCount = Number(entry.free_episode_count || 0)
+          return [{
+            id: story.id,
+            title: story.title,
+            cover_url: story.cover_url,
+            main_genre: story.main_genre,
+            tags: story.tags || [],
+            story_type: story.story_type || 'novel',
+            story_status: story.story_status || 'New',
+            total_episodes: story.total_episodes,
+            is_completed: isCompleted,
+            is_fully_free: Boolean(entry.is_fully_free),
+            has_free_episode: freeCount > 0,
+            free_episode_count: freeCount,
+            has_wait_free_episode: Boolean(entry.has_wait_free_episode),
+            wait_free_episode_count: entry.has_wait_free_episode ? 1 : 0,
+            next_wait_free_at: entry.next_wait_free_at || null,
+            completed_at: isCompleted ? story.updated_at : null,
+            created_at: story.created_at,
+            updated_at: story.updated_at,
+          }]
+        })
+  
+        return res.status(200).json({
+          ok: true,
+          stories,
+          pagination: quickPage.pagination,
+        })
+      }
+    }
 
     const buildStoriesQuery = (
       genreMode = 'main'
