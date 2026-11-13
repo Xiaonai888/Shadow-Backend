@@ -5,7 +5,7 @@ import { isReaderClassificationCountryPolicyEnabled, readReaderClassificationCou
 const ISSUER = 'shadow-country-settings'
 const AUDIENCE = 'shadow-payment-creation'
 const INVALID_COUNTRIES = new Set(['XX', 'ZZ', 'T1'])
-const SCOPED_PAYMENT_FEATURES = new Set(['premiumPayway', 'premiumBinancePay', 'pdfPayway', 'pdfBinancePay'])
+const SCOPED_PAYMENT_FEATURES = new Set(['premiumPayway', 'premiumBinancePay', 'pdfPayway', 'pdfBinancePay', 'readerPaymentBinance'])
 const COUNTRY_CONTROLLED_DURING_PAUSE = new Set(['binancePay', ...SCOPED_PAYMENT_FEATURES])
 const PAYMENT_FEATURES = new Set(['payway', 'binancePay', ...SCOPED_PAYMENT_FEATURES])
 
@@ -95,6 +95,12 @@ async function requireSavedPaymentCountry(req, res, next, feature) {
     console.error('PAYMENT COUNTRY RULE GATE ERROR:', String(error?.message || error).slice(0, 180))
     return deny(res, 'COUNTRY_GATE_UNAVAILABLE', 'Could not verify Binance country permission', 503)
   }
+}
+
+export function requireReaderPaymentBinanceProfile(req, res, next) {
+  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}
+  if (!Object.hasOwn(body, 'binance_name') && !Object.hasOwn(body, 'binance_uid')) return next()
+  return requireSavedPaymentCountry(req, res, next, 'readerPaymentBinance')
 }
 
 export function requirePaymentCountry(feature) {
