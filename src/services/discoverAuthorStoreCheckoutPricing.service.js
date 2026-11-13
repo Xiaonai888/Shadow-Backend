@@ -98,21 +98,29 @@ export async function applyDiscoverAuthorStoreCheckoutPrices(cartItems, orderIte
         promotion_price_usd: unitPrice,
         discount_percent: Number(offer.discount_percent),
         discount_source: String(offer.discount_source || 'none'),
+        purchase_source: ['stories', 'manga'].includes(requested.promotion_entry_source)
+          ? requested.promotion_entry_source
+          : 'discover',
         rotation_key: String(rotation.rotation_key),
       },
     }
   })
 }
 
+
 export function buildAuthorStoreCheckoutAttribution(orderItems) {
   const items = (Array.isArray(orderItems) ? orderItems : []).map((item) => {
     const promotion = item.discover_promotion_snapshot || null
+    const purchaseSource = promotion
+      ? (['stories', 'manga'].includes(promotion.purchase_source) ? promotion.purchase_source : 'discover')
+      : 'author_store'
     return {
       product_id: String(item.product_id || ''),
       product_type: String(item.product_type || '').toLowerCase(),
       title: String(item.product_title || item.title || ''),
       quantity: Number(item.quantity || 1),
       source: promotion ? 'discover_promotion' : 'author_store',
+      purchase_source: purchaseSource,
       original_price_usd: promotion ? promotion.original_price_usd : null,
       author_price_usd: promotion ? promotion.author_price_usd : null,
       unit_price_usd: Number(item.unit_price_usd || 0),
@@ -122,10 +130,12 @@ export function buildAuthorStoreCheckoutAttribution(orderItems) {
     }
   })
   const discoverCount = items.filter((item) => item.source === 'discover_promotion').length
+  const purchaseSources = [...new Set(items.map((item) => item.purchase_source))]
   return {
     source: discoverCount === items.length && discoverCount > 0
       ? 'discover_promotion'
       : discoverCount > 0 ? 'mixed' : 'author_store',
+    purchase_source: purchaseSources.length === 1 ? purchaseSources[0] : 'mixed',
     items,
   }
 }
