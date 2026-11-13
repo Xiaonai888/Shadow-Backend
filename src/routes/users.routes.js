@@ -33,6 +33,7 @@ import {
 import { searchReaderBlockTargets } from '../controllers/readerBlockSearch.controller.js'
 import { getMyReaderBlockedList } from '../controllers/readerBlockedList.controller.js'
 import { blockReaderAccount, unblockReaderAccount } from '../controllers/readerAccountBlocks.controller.js'
+import { requireReaderPaymentBinanceProfile } from '../middleware/paymentCountryGate.middleware.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import readerDeviceAccessRoutes from './readerDeviceAccess.routes.js'
 import { verifyTurnstile } from '../middleware/turnstile.middleware.js'
@@ -265,7 +266,7 @@ router.post(
   readerProtectedRouteLimit,
   confirmEmailChange
 )
-router.put('/payment-profile', requireUser, readerProtectedRouteLimit, updatePaymentProfile)
+router.put('/payment-profile', requireUser, readerProtectedRouteLimit, requireReaderPaymentBinanceProfile, updatePaymentProfile)
 router.get('/:username/profile', requireUser, readerProtectedRouteLimit, getPublicUserProfile)
 router.get('/:username/followers', requireUser, readerProtectedRouteLimit, getUserFollowers)
 router.get('/:username/following', requireUser, readerProtectedRouteLimit, getUserFollowing)
