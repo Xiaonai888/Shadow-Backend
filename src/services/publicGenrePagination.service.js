@@ -66,3 +66,25 @@ export function finalizeGenrePage(rows, sort) {
     },
   }
 }
+
+export function finalizeQuickGenrePage(rows) {
+  const items = Array.isArray(rows) ? rows : []
+  const stories = items.slice(0, GENRE_PAGE_SIZE)
+  const last = stories[stories.length - 1]
+  const hasMore = items.length > GENRE_PAGE_SIZE
+  const nextCursor = hasMore && last?.story_id && last?.sort_at
+    ? Buffer.from(JSON.stringify({
+        value: String(last.sort_at),
+        id: String(last.story_id),
+      })).toString('base64url')
+    : null
+
+  return {
+    stories,
+    pagination: {
+      limit: GENRE_PAGE_SIZE,
+      has_more: Boolean(nextCursor),
+      next_cursor: nextCursor,
+    },
+  }
+}
