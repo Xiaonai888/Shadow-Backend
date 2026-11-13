@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { persistResourceCostProviderObservations } from './resourceCostProviderSync.service.js'
 import { getSystemUsageSnapshot } from './systemUsageMonitor.service.js'
 import {
   getHistoricalErrorEvidence,
@@ -1855,7 +1856,12 @@ async function syncProvidersIfDue(
         now + PROVIDER_SYNC_MS
       ).toISOString()
 
-    updateReconciliation(source, now)
+        updateReconciliation(source, now)
+    try {
+      await persistResourceCostProviderObservations(providerState, new Date(now))
+    } catch (error) {
+      console.error('RESOURCE_COST_PROVIDER_SAVE_ERROR:', error?.message || error)
+    }
   } finally {
     providerSyncing = false
   }
