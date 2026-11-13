@@ -189,6 +189,23 @@ export async function validateReaderDeviceSession(decoded) {
   const identity = sessionValidationIdentity(decoded)
   const validationRevision = sessionValidationRevision
 
+  const cacheInvalidSession = (code) => {
+    const result = { ok: false, code }
+    if (validationRevision !== sessionValidationRevision) return result
+
+    const expiresAt = Date.now() + 15 * 1000
+    if (sessionValidationCache.size >= SESSION_VALIDATION_CACHE_LIMIT) {
+      sessionValidationCache.delete(sessionValidationCache.keys().next().value)
+    }
+    sessionValidationCache.set(cacheKey, {
+      ...identity,
+      result,
+      expiresAt,
+      sessionExpiresAt: expiresAt,
+    })
+    return result
+  }
+
   const validation = (async () => {
     const { data: session, error } = await supabase
       .from('reader_sessions')
@@ -201,14 +218,12 @@ export async function validateReaderDeviceSession(decoded) {
 
     if (error) throw error
     if (!session || session.revoked_at) {
-      sessionValidationCache.delete(cacheKey)
-      return { ok: false, code: 'READER_SESSION_REVOKED' }
+      return cacheInvalidSession('READER_SESSION_REVOKED')
     }
 
     const nowMs = Date.now()
     if (new Date(session.expires_at).getTime() <= nowMs) {
-      sessionValidationCache.delete(cacheKey)
-      return { ok: false, code: 'READER_SESSION_EXPIRED' }
+      return cacheInvalidSession('READER_SESSION_EXPIRED')
     }
 
     let sessionExpiresAt = session.expires_at
@@ -230,8 +245,7 @@ export async function validateReaderDeviceSession(decoded) {
 
       if (touchError) throw touchError
       if (!touched) {
-        sessionValidationCache.delete(cacheKey)
-        return { ok: false, code: 'READER_SESSION_REVOKED' }
+        return cacheInvalidSession('READER_SESSION_REVOKED')
       }
 
       const { error: deviceError } = await supabase
