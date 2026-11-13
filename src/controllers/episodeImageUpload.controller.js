@@ -5,6 +5,7 @@ import {
   cleanupStoryImageResult,
   processStoryImageFile,
 } from '../services/storyImagePipeline.service.js'
+import { recordResourceCostUpload } from '../services/resourceCostUploadAudit.service.js'
 
 const NOVEL_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 const MANGA_IMAGE_MAX_BYTES = 5 * 1024 * 1024
@@ -221,6 +222,7 @@ async function uploadRawImage({
   }
 
   let processed = null
+  let storedOnR2 = false
 
   try {
     processed =
@@ -260,6 +262,7 @@ async function uploadRawImage({
         },
         `episode-content/${userId}/${folderName}`
       )
+    storedOnR2 = true
 
     return res.status(201).json({
       ok: true,
@@ -298,6 +301,19 @@ async function uploadRawImage({
       file
     )
   } finally {
+    try {
+      recordResourceCostUpload({
+        feature: kind === 'novel' ? 'novel_episode_image' : 'manga_page_image',
+        route: kind === 'novel' ? 'story_media.novel_raw' : 'story_media.manga_raw',
+        mode: 'proxy',
+        status: storedOnR2 ? 'success' : 'failure',
+        ingressBytes: file.size,
+        egressBytes: storedOnR2 ? Number(processed?.size || 0) : 0,
+        objectBytes: storedOnR2 ? Number(processed?.size || 0) : 0,
+      })
+    } catch (auditError) {
+      console.error('RESOURCE_COST_UPLOAD_AUDIT_ERROR:', auditError?.message || auditError)
+    }
     await cleanupStoryImageResult(
       processed
     )
