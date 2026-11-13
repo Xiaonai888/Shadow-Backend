@@ -71,6 +71,47 @@ function safeError(error) {
 
 // Use the same transaction's committed global fulfillment claim for a
 // purchase label. Never infer Diamond / Premium / PDF from amount or payer name.
+
+async function getVerifiedPdfPurchasePage(claim) {
+  if (claim?.purchase_kind !== 'pdf' || !claim?.user_id || !claim?.fulfillment_key) return ''
+  try {
+    const { data: payment, error: paymentError } = await supabase
+      .from('shadow_binance_purchase_orders')
+      .select('purchase_snapshot')
+      .eq('fulfillment_key', claim.fulfillment_key)
+      .eq('user_id', claim.user_id)
+      .eq('purchase_kind', 'pdf')
+      .eq('status', 'fulfilled')
+      .maybeSingle()
+    if (paymentError) throw paymentError
+
+    const orderId = String(payment?.purchase_snapshot?.author_order_id || '')
+    if (!orderId) return ''
+
+    const { data: order, error: orderError } = await supabase
+      .from('author_store_orders')
+      .select('request_payload')
+      .eq('id', orderId)
+      .eq('buyer_id', claim.user_id)
+      .eq('payment_status', 'paid')
+      .maybeSingle()
+    if (orderError) throw orderError
+
+    const source = String(order?.request_payload?.checkout_attribution?.purchase_source || '')
+    const labels = new Map([
+      ['stories', 'Stories Page'],
+      ['manga', 'Manga Page'],
+      ['discover', 'Discover Page'],
+      ['author_store', 'Author Store'],
+      ['mixed', 'Multiple Pages'],
+    ])
+    return labels.get(source) || ''
+  } catch (error) {
+    console.warn('BINANCE PDF PAGE SOURCE UNAVAILABLE:', safeError(error))
+    return ''
+  }
+}
+
 async function findVerifiedReportContext(transactionId) {
   try {
     const { data, error } = await supabase
@@ -93,8 +134,9 @@ async function findVerifiedReportContext(transactionId) {
     }
     return {
       purchaseKind: String(data.purchase_kind || '').toLowerCase(),
-      fulfillmentKey: String(data.fulfillment_key || ''),
+            fulfillmentKey: String(data.fulfillment_key || ''),
       buyer,
+      purchasePage: await getVerifiedPdfPurchasePage(data),
     }
   } catch (error) {
     // Report receipt independently of purchase matching.
@@ -139,6 +181,9 @@ export function formatBinanceUsdtAlertMessage(row, verifiedContext = null) {
     `💵 Amount Received: <b>${html(row?.amount)} USDT</b>`,
     payer ? `👤 From: <b>${html(payer)}</b>` : '👤 From: Unknown',
     `🏷️ Purchase Source: <b>${html(purchase)}</b>`,
+        verifiedContext?.purchasePage
+      ? `📍 Purchase Page: <b>${html(verifiedContext.purchasePage)}</b>`
+      : null,
     verifiedContext?.buyer ? `👤 Shadow Buyer: <b>${html(verifiedContext.buyer)}</b>` : null,
     verifiedContext?.fulfillmentKey ? `📦 Order Reference: <code>${html(verifiedContext.fulfillmentKey)}</code>` : null,
     `📋 Status: <b>${verifiedContext ? 'Fulfillment recorded' : 'Received · Awaiting order verification'}</b>`,
@@ -424,6 +469,7 @@ async function getTelegramEditPayload(task) {
     purchaseKind: claim.purchase_kind,
     fulfillmentKey: claim.fulfillment_key,
     buyer: user?.username ? '@' + user.username : String(user?.name || ''),
+    purchasePage: await getVerifiedPdfPurchasePage(claim),
   }
   return { messageId, text: formatBinanceUsdtAlertMessage(receipt, verifiedContext) }
 }
