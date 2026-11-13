@@ -67,7 +67,8 @@ function normalizeLink(value) {
 function normalizeTextStyle(value, textOverlay) {
   if (!textOverlay || !value || typeof value !== 'object' || Array.isArray(value)) return null
 
-  const colors = new Set(['#162453', '#000000', '#393944', '#FFFFFF', '#E74159', '#F15D22', '#F6C843', '#23965E', '#009CBE', '#335CF1', '#7E3EDD', '#D742AD', 'transparent'])
+  const background = typeof value.background === 'string' ? value.background.trim() : ''
+const validBackground = background === 'transparent' || /^#[0-9a-f]{6}$/i.test(background)
   const number = (key, fallback, min, max) => {
     if (value[key] == null) return fallback
     const parsed = Number(value[key])
@@ -77,8 +78,8 @@ function normalizeTextStyle(value, textOverlay) {
   const rotation = number('rotation', 0, -1000000, 1000000)
 
   return {
-    background: colors.has(value.background) ? value.background : '#162453',
-    font: ['classic', 'modern', 'typewriter'].includes(value.font) ? value.font : 'classic',
+    background: validBackground ? (background === 'transparent' ? background : background.toUpperCase()) : '#162453',
+    font: ['classic', 'modern', 'typewriter', 'poster', 'handwriting', 'rounded', 'elegant', 'minimal', 'retro', 'neon'].includes(value.font) ? value.font : 'classic',
     align: ['left', 'center', 'right'].includes(value.align) ? value.align : 'center',
     x: number('x', 50, 5, 95),
     y: number('y', 50, 8, 92),
