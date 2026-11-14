@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { persistResourceCostProviderObservations } from './resourceCostProviderSync.service.js'
 import { getSystemUsageSnapshot } from './systemUsageMonitor.service.js'
+import { getPassiveRequestSnapshot } from './passiveRequestMonitor.service.js'
 import {
   getHistoricalErrorEvidence,
   getPageRequestSnapshot,
@@ -405,6 +406,15 @@ function buildSnapshot(now = Date.now()) {
           routes: data.routes.slice(0, 40),
         }
       })(),
+      passive_request_monitor: {
+        ...getPassiveRequestSnapshot({
+          minutes: 15,
+          from: windowStart,
+          to: windowEnd,
+          limit: 40,
+        }),
+        persistence: 'stored_15_minute_snapshot',
+      },
       monitor: source.monitor,
       top_rows: aggregateRows(minutes),
       summary_rows: summarizeUsageMinutes(minutes).rows,
