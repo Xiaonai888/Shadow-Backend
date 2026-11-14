@@ -2101,9 +2101,6 @@ export async function updateMyAuthorStoreProduct(req, res) {
 if (!['Khmer', 'English', 'Chinese', 'Japanese', 'Korean'].includes(cleanText(req.body.novel_type ?? req.body.novelType))) {
   return res.status(400).json({ ok: false, message: 'Please select a valid Story Language.' })
 }
-
-if (!title) {
-
     if (!title) {
       return res.status(400).json({ ok: false, message: 'Product title is required' })
     }
