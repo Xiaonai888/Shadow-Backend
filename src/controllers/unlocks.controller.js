@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
+import { getCurrentDiscoverSpecialPromotionsForLanguage } from '../services/discoverSpecialPromotionLanguage.service.js'
+import { normalizeDiscoverPromotionLanguage } from '../services/discoverPromotionLanguageRotation.service.js'
 import { createAuthorEarningsFromDiamondUnlock } from '../services/authorRevenue.service.js'
 import { createStoryReadingIncome } from '../services/storyReadingIncome.service.js'
 import { recordReaderBoostInterest } from '../services/boostAnalyticsTracking.service.js'
@@ -2836,8 +2838,23 @@ export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
   }
 
   try {
+    const story = await getStory(storyId)
+    const requestedRawLanguage = String(req.body?.story_language || '').trim()
+    const requestedLanguage = normalizeDiscoverPromotionLanguage(requestedRawLanguage)
+    const actualLanguage = normalizeDiscoverPromotionLanguage(story?.story_language)
+
+    if (requestedRawLanguage && (!requestedLanguage || requestedLanguage !== actualLanguage)) {
+      return res.status(409).json({
+        ok: false,
+        code: 'PROMOTION_CHANGED',
+        message: 'The story language has changed. Refresh and try again.',
+      })
+    }
+
     const { getCurrentDiscoverSpecialPromotions } = await import('./discoverSpecialPromotion.controller.js')
-    const rotation = await getCurrentDiscoverSpecialPromotions()
+    const rotation = requestedLanguage
+      ? await getCurrentDiscoverSpecialPromotionsForLanguage(requestedLanguage)
+      : await getCurrentDiscoverSpecialPromotions()
     const offer = rotation.promotions.find((item) => String(item.story_id) === storyId)
 
     if (!offer || Date.now() >= new Date(offer.expires_at).getTime()) {
@@ -2847,8 +2864,6 @@ export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
         message: 'This promotion is no longer available',
       })
     }
-
-    const story = await getStory(storyId)
 
     if (
       !story ||
