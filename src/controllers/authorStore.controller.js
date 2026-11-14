@@ -1984,7 +1984,11 @@ export async function createMyAuthorStoreProduct(req, res) {
     const status = PRODUCT_STATUSES.has(statusRaw) ? statusRaw : 'draft'
     const coverUrl = cleanText(req.body.cover_url || req.body.coverUrl)
 
-    if (!title) {
+if (!['Khmer', 'English', 'Chinese', 'Japanese', 'Korean'].includes(cleanText(req.body.novel_type ?? req.body.novelType))) {
+  return res.status(400).json({ ok: false, message: 'Please select a valid Story Language.' })
+}
+
+if (!title) {
       return res.status(400).json({ ok: false, message: 'Product title is required' })
     }
 
@@ -2093,6 +2097,12 @@ export async function updateMyAuthorStoreProduct(req, res) {
     const statusRaw = cleanText(req.body.status || 'draft').toLowerCase()
     const status = PRODUCT_STATUSES.has(statusRaw) ? statusRaw : 'draft'
     const coverUrl = cleanText(req.body.cover_url || req.body.coverUrl)
+
+if (!['Khmer', 'English', 'Chinese', 'Japanese', 'Korean'].includes(cleanText(req.body.novel_type ?? req.body.novelType))) {
+  return res.status(400).json({ ok: false, message: 'Please select a valid Story Language.' })
+}
+
+if (!title) {
 
     if (!title) {
       return res.status(400).json({ ok: false, message: 'Product title is required' })
