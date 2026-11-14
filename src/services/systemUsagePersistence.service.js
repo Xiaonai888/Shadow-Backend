@@ -2300,6 +2300,92 @@ function buildPageRequestHistory(stored, fromMs, toMs) {
 }
 
 
+function buildPassiveRequestHistory(stored, fromMs, toMs) {
+  const metrics = [
+    'requests', 'client_reported_hidden_requests',
+    'client_reported_visible_requests', 'unknown_visibility_requests',
+    'rapid_repeat_requests', 'rapid_repeat_authenticated_requests',
+    'errors_4xx', 'errors_5xx', 'supabase_calls',
+    'external_calls', 'response_bytes',
+  ]
+  const empty = () => Object.fromEntries(metrics.map((key) => [key, 0]))
+  const totals = empty()
+  const grouped = new Map()
+  let storedWindows = 0
+  let detailCapped = false
+
+  for (const window of stored) {
+    const start = Date.parse(window.window_start)
+    const end = Date.parse(window.window_end)
+    if (!Number.isFinite(start) || !Number.isFinite(end) ||
+        start < fromMs || end > toMs || end - start !== SNAPSHOT_MS) continue
+
+    const data = window.payload?.passive_request_monitor
+    if (!data || !Array.isArray(data.rows)) continue
+
+    storedWindows += 1
+    for (const metric of metrics) totals[metric] += safeNumber(data.totals?.[metric])
+    if (data.detail_capped || safeNumber(data.total_rows) > data.rows.length) {
+      detailCapped = true
+    }
+
+    for (const row of data.rows) {
+      const page = String(row.page || 'UNATTRIBUTED').slice(0, 180)
+      const route = String(row.route || 'UNKNOWN').slice(0, 210)
+      const key = `${page}\u001f${route}`
+
+      if (!grouped.has(key) && grouped.size >= 2000) {
+        detailCapped = true
+        continue
+      }
+
+      const item = grouped.get(key) || {
+        page, route, ...empty(), signals: [], last_seen_at: null,
+      }
+
+      for (const metric of metrics) item[metric] += safeNumber(row[metric])
+      item.signals = [...new Set([
+        ...item.signals,
+        ...(Array.isArray(row.signals) ? row.signals : []),
+      ])]
+
+      if (row.last_seen_at && (!item.last_seen_at || item.last_seen_at < row.last_seen_at)) {
+        item.last_seen_at = row.last_seen_at
+      }
+      grouped.set(key, item)
+    }
+  }
+
+  const rows = [...grouped.values()]
+    .map((row) => ({
+      ...row,
+      classification: row.signals.length ? 'REVIEW' : 'OBSERVED',
+    }))
+    .sort((a, b) =>
+      b.client_reported_hidden_requests - a.client_reported_hidden_requests ||
+      b.rapid_repeat_requests - a.rapid_repeat_requests ||
+      b.supabase_calls - a.supabase_calls ||
+      b.requests - a.requests)
+
+  return {
+    mode: 'passive_existing_http_requests_only',
+    verdict_policy: 'review_only_never_auto_block',
+    persistence: 'stored_15_minute_snapshot',
+    from: new Date(fromMs).toISOString(),
+    to: new Date(toMs).toISOString(),
+    window_minutes: storedWindows * 15,
+    stored_windows: storedWindows,
+    partial: storedWindows * SNAPSHOT_MS < toMs - fromMs,
+    detail_capped: detailCapped || rows.length > 80,
+    totals,
+    rows: rows.slice(0, 80),
+    coverage: {
+      historical_detail_capped: detailCapped,
+      archived_rollups_excluded: true,
+    },
+  }
+}
+
 export async function getSystemUsageHistory({
   from,
   to,
@@ -2645,6 +2731,7 @@ export async function getSystemUsageHistory({
     series: compactHistorySeries(series, toMs - fromMs),
     usage_summary: usageSummary,
     page_requests: buildPageRequestHistory(stored, fromMs, toMs),
+    passive_request_monitor: buildPassiveRequestHistory(stored, fromMs, toMs),
   }
 }
 
