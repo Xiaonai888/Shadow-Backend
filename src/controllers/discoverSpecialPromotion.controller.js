@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { getCurrentDiscoverSpecialPromotionsForLanguage } from '../services/discoverSpecialPromotionLanguage.service.js'
 
 const ROTATION_MS = 6 * 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -163,10 +164,14 @@ export async function getCurrentDiscoverSpecialPromotion() {
 
 export async function getActiveDiscoverSpecialPromotion(req, res) {
   try {
-    let rotation = await getCurrentDiscoverSpecialPromotions()
+    const language = req.query?.language
+    const getRotation = () => language
+      ? getCurrentDiscoverSpecialPromotionsForLanguage(language)
+      : getCurrentDiscoverSpecialPromotions()
+    let rotation = await getRotation()
 
     if (Date.now() >= rotation.expiresAt) {
-      rotation = await getCurrentDiscoverSpecialPromotions()
+      rotation = await getRotation()
     }
 
     if (Date.now() >= rotation.expiresAt) {
