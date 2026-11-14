@@ -3,6 +3,7 @@ import https from 'node:https'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import jwt from 'jsonwebtoken'
 import { recordSystemUsage } from './systemUsageMonitor.service.js'
+import { observePassiveRequest } from './passiveRequestMonitor.service.js'
 
 const ENABLED =
   String(process.env.TRAFFIC_DIAGNOSTIC_ENABLED ?? 'true')
@@ -1668,6 +1669,7 @@ export function trafficDiagnosticMiddleware(req, res, next) {
 
     trackGuestRequest(req, res, context, elapsedMs, responseBytes)
     trackPageRequest(req, res, context, elapsedMs, responseBytes)
+    try { observePassiveRequest(req, res, context, { responseBytes }) } catch {}
 
     logRequestEvidence(
       req,
