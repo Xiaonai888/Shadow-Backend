@@ -188,6 +188,7 @@ export async function getActiveDiscoverSpecialPromotion(req, res) {
       expires_at: rotation.expires_at,
       slot_start_at: rotation.slot_start_at,
       rotation_key: rotation.rotation_key,
+      ...(rotation.language ? { language: rotation.language } : {}),
     })
   } catch (error) {
     console.error('GET DISCOVER SPECIAL PROMOTION ERROR:', error)
