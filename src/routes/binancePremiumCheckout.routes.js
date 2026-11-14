@@ -4,7 +4,7 @@
 // Premium. Only auto_fulfill_shadow_binance_premium_v1 may do so atomically.
 import { randomUUID, createHash } from 'node:crypto'
 import express from 'express'
-import { rateLimit } from 'express-rate-limit'
+import { rateLimit, ipKeyGenerator } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requirePaymentCountry } from '../middleware/paymentCountryGate.middleware.js'
@@ -42,11 +42,11 @@ const preAuthReadIpLimit = rateLimit({
 
 const readLimit = rateLimit({
   windowMs: 60_000, limit: 45, standardHeaders: 'draft-8', legacyHeaders: false,
-  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || req.ip),
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || ipKeyGenerator(req.ip)),
 })
 const writeLimit = rateLimit({
   windowMs: 60_000, limit: 6, standardHeaders: 'draft-8', legacyHeaders: false,
-  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || req.ip),
+  keyGenerator: (req) => String(req.user?.user_id || req.user?.id || ipKeyGenerator(req.ip)),
 })
 
 function noStore(res) {
