@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { getCurrentDiscoverPdfPromotionsForLanguage } from '../services/discoverPdfPromotionLanguage.service.js'
 
 const ROTATION_MS = 6 * 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -192,8 +193,12 @@ export async function getCurrentDiscoverAuthorStorePromotions() {
 
 export async function getActiveDiscoverAuthorStorePromotions(req, res) {
   try {
-    let rotation = await getCurrentDiscoverAuthorStorePromotions()
-    if (Date.now() >= rotation.expiresAt) rotation = await getCurrentDiscoverAuthorStorePromotions()
+    const language = String(req.query?.language || '').trim()
+    const getRotation = () => language
+      ? getCurrentDiscoverPdfPromotionsForLanguage(language)
+      : getCurrentDiscoverAuthorStorePromotions()
+    let rotation = await getRotation()
+    if (Date.now() >= rotation.expiresAt) rotation = await getRotation()
     if (Date.now() >= rotation.expiresAt) throw new Error('Author store promotion has expired')
 
     const secondsRemaining = Math.max(0, Math.floor((rotation.expiresAt - Date.now()) / 1000))
@@ -207,6 +212,7 @@ export async function getActiveDiscoverAuthorStorePromotions(req, res) {
       expires_at: rotation.expires_at,
       rotation_key: rotation.rotation_key,
       currency: rotation.currency,
+      ...(rotation.language ? { language: rotation.language } : {}),
     })
   } catch (error) {
     console.error('GET DISCOVER AUTHOR STORE PROMOTION ERROR:', error)
