@@ -1,4 +1,5 @@
 import { getCurrentDiscoverAuthorStorePromotions } from '../controllers/discoverAuthorStorePromotion.controller.js'
+import { getCurrentDiscoverPdfPromotionsForLanguage } from './discoverPdfPromotionLanguage.service.js'
 
 function productIdOf(item) {
   return String(item?.id || item?.product_id || item?.productId || '').trim()
@@ -38,16 +39,30 @@ export async function applyDiscoverAuthorStoreCheckoutPrices(cartItems, orderIte
     throw promotionChanged()
   }
 
-  const rotation = await getCurrentDiscoverAuthorStorePromotions()
-  const expiresAt = Number(rotation?.expiresAt)
+  const hasLanguageMarker = (item) =>
+    Object.prototype.hasOwnProperty.call(item, 'discover_promotion_story_language')
 
-  if (!rotation || !Number.isFinite(expiresAt) || Date.now() >= expiresAt) {
-    throw promotionChanged()
-  }
+  if (requestedItems.some((item) =>
+    hasLanguageMarker(item) &&
+    (!hasPromotionMarker(item) ||
+      String(item.discover_promotion_story_language || '') !== 'km')
+  )) throw promotionChanged()
 
-  const offers = new Map(
-    (rotation.promotions || []).map((offer) => [String(offer.product_id), offer])
+  const needsLegacy = requestedItems.some((item) =>
+    hasPromotionMarker(item) && !hasLanguageMarker(item)
   )
+  const needsKhmer = requestedItems.some((item) =>
+    hasPromotionMarker(item) && hasLanguageMarker(item)
+  )
+
+  const [legacyRotation, khmerRotation] = await Promise.all([
+    needsLegacy ? getCurrentDiscoverAuthorStorePromotions() : null,
+    needsKhmer ? getCurrentDiscoverPdfPromotionsForLanguage('km') : null,
+  ])
+
+  if ([legacyRotation, khmerRotation].some((rotation) =>
+    rotation && (!Number.isFinite(rotation.expiresAt) || Date.now() >= rotation.expiresAt)
+  )) throw promotionChanged()
 
   return orderItems.map((orderItem, index) => {
     const requested = requestedItems[index]
@@ -57,7 +72,11 @@ export async function applyDiscoverAuthorStoreCheckoutPrices(cartItems, orderIte
 
     if (!hasPromotionMarker(requested)) return orderItem
 
-    const offer = offers.get(String(orderItem.product_id))
+    const rotation = hasLanguageMarker(requested) ? khmerRotation : legacyRotation
+    const expiresAt = Number(rotation?.expiresAt)
+    const offer = rotation?.promotions.find(
+      (item) => String(item.product_id) === String(orderItem.product_id)
+    )
     const type = String(orderItem.product_type || '').toLowerCase()
     const rotationKey = String(requested.discover_promotion_rotation_key || '')
     const submittedExpiry = Date.parse(String(requested.discover_promotion_expires_at || ''))
@@ -74,6 +93,7 @@ export async function applyDiscoverAuthorStoreCheckoutPrices(cartItems, orderIte
       Date.now() >= expiresAt ||
       String(offer.author_page_id) !== String(orderItem.author_page_id) ||
       String(offer.product_type).toLowerCase() !== type ||
+      (hasLanguageMarker(requested) && (type !== 'pdf' || offer.story_language !== 'km')) ||
       actualPrice === null ||
       authorPrice !== actualPrice ||
       promotionPrice === null ||
