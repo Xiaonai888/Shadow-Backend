@@ -77,13 +77,14 @@ export async function studioDashboard(ownerId) {
     supabase.from('fast_videos').select(VIDEO_FIELDS)
       .eq('user_id', ownerId).eq('status', 'published').eq('access_type', 'free')
       .not('published_at', 'is', null)
-      .eq('video_type', 'long')
+      .eq('studio_state', 'active')
+      .or('video_type.eq.long,and(video_type.is.null,video_url.not.ilike.*shorts*)')
       .order('published_at', { ascending: false }).order('id', { ascending: false }).limit(3),
     supabase.rpc('shadow_studio_creator_30d_views', { p_owner: ownerId }),
   ])
   raise(recent.error)
-  raise(window.error)
-  const row = scalar(window.data)
+  if (window.error) console.warn('[SHADOW_STUDIO_DASHBOARD_VIEWS_UNAVAILABLE]', window.error.code || 'UNKNOWN')
+  const row = window.error ? null : scalar(window.data)
   const videos = await Promise.all((recent.data || []).map(enriched))
   return {
     period_days: 30,
