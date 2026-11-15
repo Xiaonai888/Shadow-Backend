@@ -131,7 +131,7 @@ export async function createReaderDeviceSession({ req, userId, deviceKey }) {
     : crypto.randomBytes(32).toString('hex')
   const deviceInfo = getDeviceInfo(req)
   const jwtId = crypto.randomUUID()
-  const { data, error } = await supabase.rpc('reader_register_device_session', {
+  const { data, error } = await supabase.rpc('reader_register_device_session_v2', {
     p_user_id: userId,
     p_device_key_hash: crypto.createHash('sha256').update(key).digest('hex'),
     p_device_label: deviceInfo.device_label,
@@ -151,7 +151,7 @@ export async function createReaderDeviceSession({ req, userId, deviceKey }) {
     throw error
   }
 
-  if (!data?.device_id || !data?.session_id || !data?.expires_at) {
+  if (!data?.device_id || !data?.session_id || !data?.jwt_id || !data?.expires_at) {
     throw new Error('Reader session registration returned incomplete data')
   }
   invalidateReaderSessionValidationCache({ userId, deviceId: data.device_id })
@@ -161,7 +161,7 @@ export async function createReaderDeviceSession({ req, userId, deviceKey }) {
       user_id: userId,
       session_id: data.session_id,
       device_id: data.device_id,
-      jwt_id: jwtId,
+      jwt_id: data.jwt_id,
     },
     data.expires_at
   )
@@ -170,7 +170,7 @@ export async function createReaderDeviceSession({ req, userId, deviceKey }) {
     deviceKey: key,
     deviceId: data.device_id,
     sessionId: data.session_id,
-    jwtId,
+    jwtId: data.jwt_id,
     expiresAt: data.expires_at,
   }
 }
