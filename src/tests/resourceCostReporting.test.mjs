@@ -171,7 +171,7 @@ test('Source history remainder is labeled unclassified, not silently discarded',
       system_usage_snapshots: [{ window_start: from, window_end: '2026-11-12T17:15:00Z', request_count: 10, bytes: 100, payload: { top_rows: [{ feature: 'reader', dependency: 'CLIENT', kind: 'http_response', count: 3, bytes: 30 }] } }],
     }),
   })
-  const unknown = report.days[0].application_attribution.find((row) => row.feature === 'unclassified')
+  const unknown = report.days[0].application_attribution.find((row) => row.feature === 'unattributed' && row.kind === 'unclassified')
   assert.ok(unknown)
   assert.equal(unknown.observed_bytes, 70)
   assert.equal(unknown.observed_events, 7)
