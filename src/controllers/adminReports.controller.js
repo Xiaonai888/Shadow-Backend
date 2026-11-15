@@ -39,6 +39,23 @@ const REASON_LABELS = {
 
 const DEFAULT_LIMIT = 25
 const MAX_LIMIT = 100
+const DISCOVER_STORY_AUTO_NOTE = 'AUTO_EXPIRED_STORY: Story expired after 24 hours'
+const DISCOVER_STORY_LINK_PATTERN = '%/discover?story=%'
+const DISCOVER_STORY_ROUTINE_REASONS = ['false_information', 'other']
+const DISCOVER_STORY_SERIOUS_REASONS = [
+  'spam_or_scam',
+  'harassment_or_bullying',
+  'hate_speech',
+  'violence_or_threat',
+  'sexual_or_inappropriate',
+  'copyright_or_stolen_content',
+  'impersonation',
+]
+const DISCOVER_STORY_RECHECK_MS = 10 * 60 * 1000
+const DISCOVER_STORY_DAY_MS = 24 * 60 * 60 * 1000
+const DISCOVER_STORY_BATCH_SIZE = 100
+let lastDiscoverStoryMaintenanceAt = 0
+let discoverStoryMaintenancePromise = null
 
 function cleanText(value) {
   return String(value || '').trim()
@@ -163,6 +180,152 @@ async function createActivityLog({ req, action, report, details }) {
   }
 }
 
+function getDiscoverStoryReportSource(report) {
+  if (report?.report_type && report.report_type !== 'story') return ''
+  try {
+    const url = new URL(String(report?.target_url || ''))
+    if (!['www.shadowerabook.site', 'shadowerabook.site'].includes(url.hostname)) return ''
+    if (url.pathname !== '/discover') return ''
+    if (url.searchParams.get('story') !== String(report?.target_id || '')) return ''
+    const source = url.searchParams.get('source')
+    return source === 'author' || source === 'reader' ? source : ''
+  } catch {
+    return ''
+  }
+}
+
+async function findExpiredDiscoverStoryReportIds(reports, nowMs) {
+  const valid = reports
+    .map((report) => ({ ...report, source: getDiscoverStoryReportSource(report) }))
+    .filter((report) => report.source && !cleanText(report.admin_note))
+  const confirmed = new Set()
+  const toCheck = { author: [], reader: [] }
+
+  for (const report of valid) {
+    const createdAt = new Date(report.created_at || 0).getTime()
+    if (!Number.isFinite(createdAt) || createdAt <= 0) continue
+    if (nowMs - createdAt >= DISCOVER_STORY_DAY_MS) {
+      confirmed.add(report.id)
+    } else {
+      toCheck[report.source].push(report)
+    }
+  }
+
+  const results = await Promise.all([
+    toCheck.author.length
+      ? supabase.from('author_page_stories').select('id, expires_at, status')
+          .in('id', [...new Set(toCheck.author.map((item) => item.target_id))])
+      : Promise.resolve({ data: [], error: null }),
+    toCheck.reader.length
+      ? supabase.from('reader_stories').select('id, expires_at, status')
+          .in('id', [...new Set(toCheck.reader.map((item) => item.target_id))])
+      : Promise.resolve({ data: [], error: null }),
+  ])
+
+  for (const result of results) {
+    if (result.error) throw result.error
+  }
+
+  for (const [index, source] of ['author', 'reader'].entries()) {
+    const storyMap = new Map((results[index].data || []).map((item) => [String(item.id), item]))
+    for (const report of toCheck[source]) {
+      const story = storyMap.get(String(report.target_id))
+      const expiresAt = new Date(story?.expires_at || 0).getTime()
+      if (!story || story.status !== 'active' || (Number.isFinite(expiresAt) && expiresAt <= nowMs)) {
+        confirmed.add(report.id)
+      }
+    }
+  }
+
+  return [...confirmed]
+}
+
+async function processDiscoverStoryRetention(reasons, cutoffIso) {
+  const { data, error } = await supabase
+    .from('content_reports')
+    .select('id, target_id, target_url, report_type')
+    .eq('report_type', 'story')
+    .in('status', ['resolved', 'dismissed'])
+    .in('reason_code', reasons)
+    .like('target_url', DISCOVER_STORY_LINK_PATTERN)
+    .lte('created_at', cutoffIso)
+    .order('created_at', { ascending: true })
+    .limit(DISCOVER_STORY_BATCH_SIZE)
+
+  if (error) throw error
+  const ids = (data || [])
+    .filter((report) => getDiscoverStoryReportSource(report))
+    .map((report) => report.id)
+
+  if (!ids.length) return
+  const { error: deleteError } = await supabase
+    .from('content_reports')
+    .delete()
+    .eq('report_type', 'story')
+    .in('status', ['resolved', 'dismissed'])
+    .in('id', ids)
+
+  if (deleteError) throw deleteError
+}
+
+async function performDiscoverStoryReportMaintenance() {
+  const nowMs = Date.now()
+  const { data, error } = await supabase
+    .from('content_reports')
+    .select('id, target_id, target_url, report_type, created_at, admin_note')
+    .eq('report_type', 'story')
+    .eq('status', 'pending')
+    .in('reason_code', DISCOVER_STORY_ROUTINE_REASONS)
+    .like('target_url', DISCOVER_STORY_LINK_PATTERN)
+    .order('created_at', { ascending: true })
+    .limit(DISCOVER_STORY_BATCH_SIZE)
+
+  if (error) throw error
+  const expiredIds = await findExpiredDiscoverStoryReportIds(data || [], nowMs)
+  if (expiredIds.length) {
+    const nowIso = new Date(nowMs).toISOString()
+    const { error: updateError } = await supabase
+      .from('content_reports')
+      .update({
+        status: 'dismissed',
+        admin_note: DISCOVER_STORY_AUTO_NOTE,
+        reviewed_by: 'System',
+        reviewed_at: nowIso,
+        updated_at: nowIso,
+      })
+      .eq('report_type', 'story')
+      .eq('status', 'pending')
+      .in('id', expiredIds)
+
+    if (updateError) throw updateError
+  }
+
+  await processDiscoverStoryRetention(
+    DISCOVER_STORY_ROUTINE_REASONS,
+    new Date(nowMs - 30 * DISCOVER_STORY_DAY_MS).toISOString()
+  )
+  await processDiscoverStoryRetention(
+    DISCOVER_STORY_SERIOUS_REASONS,
+    new Date(nowMs - 90 * DISCOVER_STORY_DAY_MS).toISOString()
+  )
+}
+
+async function ensureDiscoverStoryReportMaintenance() {
+  if (discoverStoryMaintenancePromise) return discoverStoryMaintenancePromise
+  if (Date.now() - lastDiscoverStoryMaintenanceAt < DISCOVER_STORY_RECHECK_MS) return
+  discoverStoryMaintenancePromise = (async () => {
+    try {
+      await performDiscoverStoryReportMaintenance()
+    } catch (error) {
+      console.error('DISCOVER STORY REPORT LIFECYCLE ERROR:', error)
+    } finally {
+      lastDiscoverStoryMaintenanceAt = Date.now()
+      discoverStoryMaintenancePromise = null
+    }
+  })()
+  return discoverStoryMaintenancePromise
+}
+
 async function countReports(applyFilter) {
   let query = supabase
     .from('content_reports')
@@ -181,6 +344,7 @@ async function countReports(applyFilter) {
 
 export async function getAdminReportStats(req, res) {
   try {
+    await ensureDiscoverStoryReportMaintenance()
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     const todayIso = today.toISOString()
@@ -247,6 +411,7 @@ export async function getAdminReportStats(req, res) {
 
 export async function getAdminReports(req, res) {
   try {
+    await ensureDiscoverStoryReportMaintenance()
     const page = normalizePage(req.query.page)
     const limit = normalizeLimit(req.query.limit)
     const status = cleanText(req.query.status || 'all').toLowerCase()
@@ -275,6 +440,10 @@ export async function getAdminReports(req, res) {
     let query = supabase
       .from('content_reports')
       .select('*', { count: 'exact' })
+
+    if (status === 'all') {
+      query = query.or('admin_note.is.null,admin_note.not.like.AUTO_EXPIRED_STORY%')
+    }
 
     if (status !== 'all') {
       query = query.eq('status', status)
