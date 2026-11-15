@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { persistResourceCostProviderObservations } from './resourceCostProviderSync.service.js'
 import { getSystemUsageSnapshot } from './systemUsageMonitor.service.js'
+import { buildResourceCostWindowAttribution } from './resourceCostAttributionWindow.service.js'
 import { getPassiveRequestSnapshot } from './passiveRequestMonitor.service.js'
 import {
   getHistoricalErrorEvidence,
@@ -418,6 +419,7 @@ function buildSnapshot(now = Date.now()) {
       monitor: source.monitor,
       top_rows: aggregateRows(minutes),
       summary_rows: summarizeUsageMinutes(minutes).rows,
+      resource_cost_attribution: buildResourceCostWindowAttribution(minutes),
       provider_reconciliation:
         cloneProviderState(),
     },
