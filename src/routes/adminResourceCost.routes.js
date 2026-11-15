@@ -7,6 +7,7 @@ import { createResourceCostDownload } from '../services/resourceCostReportExport
 import { getResourceCostHealth } from '../services/resourceCostHealth.service.js'
 import { getResourceCostYesterdaySnapshot } from '../services/resourceCostYesterdaySnapshot.service.js'
 import { getResourceCostOverview } from '../services/resourceCostOverview.service.js'
+import { getResourceCostOverview } from '../services/resourceCostOverview.service.js'
 
 const router = express.Router()
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -132,6 +133,14 @@ router.get('/overview', resourceCostGuard, viewResourceCost, async (req, res) =>
 })
 
 router.get('/summary', resourceCostGuard, viewResourceCost, async (req, res) => {
+  router.get('/overview', resourceCostGuard, viewResourceCost, async (req, res) => {
+  try {
+    const overview = await getResourceCostOverview({ period: req.query?.period || 'last7' })
+    return res.status(200).json({ ok: true, overview })
+  } catch (error) {
+    return respondError(res, error)
+  }
+})
   try {
     const result = await reportFor(req.query)
     return res.status(200).json({
