@@ -10,6 +10,7 @@ import {
   adminFinancialConfiguredSheetUrl,
   validateAdminFinancialSheetLink,
 } from '../services/adminFinancialReportsSheetLink.service.js'
+import { diagnoseAdminFinancialReportsError } from '../services/adminFinancialReportsDiagnostics.service.js'
 
 const reports = createAdminFinancialReportsSyncService({
   isConfigured: isAdminFinancialReportsConfigured,
@@ -18,15 +19,19 @@ const reports = createAdminFinancialReportsSyncService({
   loadRows: (period) => loadAdminFinancialReportSourceRows({ db: supabase, ...period }),
 })
 
-function errorReply(res, error, task) {
-  const status = Number(error?.statusCode)
-  const safeStatus = [400, 409, 413, 429, 503].includes(status) ? status : 502
-  if (safeStatus === 502) console.error(`ADMIN FINANCIAL REPORTS ${task} ERROR:`, error)
-  return res.status(safeStatus).json({
+function errorReply(res, error, task, spreadsheetUrl = '') {
+  const result = diagnoseAdminFinancialReportsError(error, {
+    task,
+    spreadsheetUrl,
+    spreadsheetId: process.env.SHADOW_ADMIN_FINANCIAL_SHEET_ID,
+    secret: process.env.SHADOW_ADMIN_FINANCIAL_SECRET,
+  })
+  console.error(`ADMIN FINANCIAL REPORTS ${task} ERROR:`, result.diagnostic.code, result.diagnostic.origin)
+  return res.status(result.statusCode).json({
     ok: false,
-    message: safeStatus === 502
-      ? 'Unable to complete Financial Reports request; check server logs'
-      : String(error.message || 'Financial Reports request failed').slice(0, 180),
+    code: result.diagnostic.code,
+    message: result.message,
+    diagnostic: result.diagnostic,
     ...(Number.isInteger(error?.synced_rows) ? { synced_rows: error.synced_rows } : {}),
   })
 }
@@ -51,7 +56,7 @@ export async function connectAdminFinancialReportsSheet(req, res) {
     const result = await reports.connectSheet()
     return res.status(200).json(result)
   } catch (error) {
-    return errorReply(res, error, 'CONNECT')
+    return errorReply(res, error, 'CONNECT', req.body?.spreadsheet_url)
   }
 }
 
