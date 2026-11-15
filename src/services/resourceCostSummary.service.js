@@ -72,6 +72,7 @@ function newDay(item) {
     provider_metrics: [],
     upload_audit: newUpload(),
     application_attribution: [],
+    route_attribution: [],
     warnings: [],
   }
 }
@@ -268,19 +269,68 @@ function normalizeApplicationAttribution(rows, days) {
     const start = Date.parse(day.period_start)
     const end = Date.parse(day.period_end)
     const sources = new Map()
+    const routes = new Map()
+
     for (const row of rows) {
       const at = Date.parse(row.hour_start || row.started_at || '')
       if (!inRange(at, start, end)) continue
+
       const feature = String(row.feature || 'unknown')
       const dependency = String(row.dependency || 'UNKNOWN')
       const kind = String(row.kind || 'unknown')
+      const bytes = natural(row.bytes) ?? 0
+      const events = natural(row.count) ?? 0
+
       const key = [feature, dependency, kind].join('\u001f')
-      const current = sources.get(key) || { feature, dependency, kind, observed_bytes: 0, observed_events: 0 }
-      current.observed_bytes += natural(row.bytes) ?? 0
-      current.observed_events += natural(row.count) ?? 0
+      const current = sources.get(key) || {
+        feature,
+        dependency,
+        kind,
+        observed_bytes: 0,
+        observed_events: 0,
+      }
+
+      current.observed_bytes += bytes
+      current.observed_events += events
       sources.set(key, current)
+
+      const route = String(row.route || row.source_route || 'UNKNOWN')
+      const target = String(row.target || row.target_path || 'MULTIPLE')
+      const entry_point = String(row.entry_point || 'unknown_entry')
+      const classification = String(row.classification || 'legacy_partial')
+
+      const routeKey = [
+        feature,
+        dependency,
+        kind,
+        route,
+        target,
+        entry_point,
+        classification,
+      ].join('\u001f')
+
+      const routeCurrent = routes.get(routeKey) || {
+        feature,
+        dependency,
+        kind,
+        route,
+        target,
+        entry_point,
+        classification,
+        observed_bytes: 0,
+        observed_events: 0,
+      }
+
+      routeCurrent.observed_bytes += bytes
+      routeCurrent.observed_events += events
+      routes.set(routeKey, routeCurrent)
     }
-    day.application_attribution = [...sources.values()].sort((a, b) => b.observed_bytes - a.observed_bytes)
+
+    day.application_attribution = [...sources.values()]
+      .sort((a, b) => b.observed_bytes - a.observed_bytes)
+
+    day.route_attribution = [...routes.values()]
+      .sort((a, b) => b.observed_bytes - a.observed_bytes)
   }
 }
 
