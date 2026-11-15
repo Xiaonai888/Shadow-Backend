@@ -48,7 +48,7 @@ export function buildResourceCostYesterdayPayload(report) {
   const renderTotal = hasRender ? measuredBytes(render.total_bytes) : null
   const serviceInitiated = hasRender ? measuredBytes(render.service_initiated_bytes) : null
   const supabaseEgress = providerMetric(report, 'supabase', /egress|bandwidth/i)
-  const r2Storage = providerMetric(report, 'cloudflare_r2', /storage/i)
+  const r2Storage = providerMetric(report, 'cloudflare_r2', /^storage\.total\.bytes$/i)
   const coverage = String(render.coverage || 'unknown')
   const status = hasRender && coverage === 'complete' && supabaseEgress !== null && r2Storage !== null
     ? 'complete' : 'partial'
