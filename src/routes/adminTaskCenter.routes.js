@@ -27,6 +27,7 @@ import {
   updateAdminInternationalReadingMissionMode,
   rotateAdminInternationalReadingMissions,
 } from '../controllers/adminTaskCenterInternational.controller.js'
+import { getAdminTaskCenterSelectionHistory } from '../controllers/adminTaskCenterSelectionHistory.controller.js'
 import path from 'node:path'
 
 const router = express.Router()
@@ -148,6 +149,7 @@ router.get('/public/version', taskCenterPublicLimit, getPublicTaskCenterVersion)
 router.get('/public', taskCenterPublicLimit, getPublicTaskCenterSettings)
 router.get('/admin', requireAdmin, adminTaskCenterReadLimit, getAdminTaskCenterSettings)
 router.get('/admin/reader-activity', requireAdmin, adminTaskCenterReadLimit, getAdminReaderActivity)
+router.get('/admin/selection-history', requireAdmin, adminTaskCenterReadLimit, getAdminTaskCenterSelectionHistory)
 router.get('/admin/reading-missions', requireAdmin, adminTaskCenterReadLimit, getAdminReadingMissions)
 router.post('/admin/reading-missions', requireAdmin, adminTaskCenterWriteLimit, createAdminReadingMission)
 router.put('/admin/reading-missions/:missionId', requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingMission)
