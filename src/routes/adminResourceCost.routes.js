@@ -5,6 +5,7 @@ import { resourceCostCalendarPeriod } from '../services/resourceCostSummary.serv
 import { getResourceCostReport } from '../services/resourceCostReportData.service.js'
 import { createResourceCostDownload } from '../services/resourceCostReportExport.service.js'
 import { getResourceCostHealth } from '../services/resourceCostHealth.service.js'
+import { getResourceCostYesterdaySnapshot } from '../services/resourceCostYesterdaySnapshot.service.js'
 
 const router = express.Router()
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -106,6 +107,15 @@ router.get('/health', resourceCostGuard, viewResourceCost, async (req, res) => {
       throw error
     }
     return res.status(200).json({ ok: true, health: result })
+  } catch (error) {
+    return respondError(res, error)
+  }
+})
+
+router.get('/yesterday-snapshot', resourceCostGuard, viewResourceCost, async (req, res) => {
+  try {
+    const snapshot = await getResourceCostYesterdaySnapshot()
+    return res.status(200).json({ ok: true, snapshot })
   } catch (error) {
     return respondError(res, error)
   }
