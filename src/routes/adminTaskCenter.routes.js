@@ -44,6 +44,18 @@ const taskCenterPublicLimit = rateLimit({
   },
 })
 
+const adminTaskCenterPreAuthIpLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ADMIN_TASK_CENTER_IP_RATE_LIMIT',
+    message: 'Too many Task Center requests from this IP. Please retry shortly.',
+  },
+})
+
 const adminTaskCenterIdentity = (req) => String(
   req.admin?.admin_id ||
   req.admin?.id ||
@@ -147,26 +159,27 @@ function uploadTaskCenterCover(req, res, next) {
 
 router.get('/public/version', taskCenterPublicLimit, getPublicTaskCenterVersion)
 router.get('/public', taskCenterPublicLimit, getPublicTaskCenterSettings)
-router.get('/admin', requireAdmin, adminTaskCenterReadLimit, getAdminTaskCenterSettings)
-router.get('/admin/reader-activity', requireAdmin, adminTaskCenterReadLimit, getAdminReaderActivity)
-router.get('/admin/selection-history', requireAdmin, adminTaskCenterReadLimit, getAdminTaskCenterSelectionHistory)
-router.get('/admin/reading-missions', requireAdmin, adminTaskCenterReadLimit, getAdminReadingMissions)
-router.post('/admin/reading-missions', requireAdmin, adminTaskCenterWriteLimit, createAdminReadingMission)
-router.put('/admin/reading-missions/:missionId', requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingMission)
-router.delete('/admin/reading-missions/:missionId', requireAdmin, adminTaskCenterWriteLimit, deleteAdminReadingMission)
-router.get('/admin/international/reading-missions', requireAdmin, adminTaskCenterReadLimit, getAdminInternationalReadingMissions)
-router.post('/admin/international/reading-missions', requireAdmin, adminTaskCenterWriteLimit, createAdminInternationalReadingMission)
-router.put('/admin/international/reading-missions/:missionId', requireAdmin, adminTaskCenterWriteLimit, updateAdminInternationalReadingMission)
-router.delete('/admin/international/reading-missions/:missionId', requireAdmin, adminTaskCenterWriteLimit, deleteAdminInternationalReadingMission)
-router.put('/admin/international/reading-mode', requireAdmin, adminTaskCenterWriteLimit, updateAdminInternationalReadingMissionMode)
-router.post('/admin/international/auto-rotate', requireAdmin, adminTaskCenterWriteLimit, rotateAdminInternationalReadingMissions)
-router.put('/admin/reading-task', requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingTask)
-router.put('/admin/reading-mode', requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingMissionMode)
-router.post('/admin/auto-rotate', requireAdmin, adminTaskCenterWriteLimit, rotateAdminTaskCenterAutoStories)
+router.get('/admin', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterReadLimit, getAdminTaskCenterSettings)
+router.get('/admin/reader-activity', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterReadLimit, getAdminReaderActivity)
+router.get('/admin/selection-history', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterReadLimit, getAdminTaskCenterSelectionHistory)
+router.get('/admin/reading-missions', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterReadLimit, getAdminReadingMissions)
+router.post('/admin/reading-missions', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterWriteLimit, createAdminReadingMission)
+router.put('/admin/reading-missions/:missionId', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingMission)
+router.delete('/admin/reading-missions/:missionId', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterWriteLimit, deleteAdminReadingMission)
+router.get('/admin/international/reading-missions', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterReadLimit, getAdminInternationalReadingMissions)
+router.post('/admin/international/reading-missions', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterWriteLimit, createAdminInternationalReadingMission)
+router.put('/admin/international/reading-missions/:missionId', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterWriteLimit, updateAdminInternationalReadingMission)
+router.delete('/admin/international/reading-missions/:missionId', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterWriteLimit, deleteAdminInternationalReadingMission)
+router.put('/admin/international/reading-mode', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterWriteLimit, updateAdminInternationalReadingMissionMode)
+router.post('/admin/international/auto-rotate', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterWriteLimit, rotateAdminInternationalReadingMissions)
+router.put('/admin/reading-task', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingTask)
+router.put('/admin/reading-mode', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterWriteLimit, updateAdminReadingMissionMode)
+router.post('/admin/auto-rotate', adminTaskCenterPreAuthIpLimit, requireAdmin, adminTaskCenterWriteLimit, rotateAdminTaskCenterAutoStories)
 router.post('/auto-rotate/run', taskCenterAutoRunLimit, runTaskCenterAutoRotation)
 
 router.put(
   '/admin/cover',
+  adminTaskCenterPreAuthIpLimit,
   requireAdmin,
   adminTaskCenterWriteLimit,
   uploadTaskCenterCover,
