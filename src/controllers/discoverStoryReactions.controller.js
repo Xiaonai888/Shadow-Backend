@@ -68,58 +68,95 @@ async function getActiveStory(
   return data || null
 }
 
-async function canViewStory(
-  sourceType,
-  story,
-  userId
-) {
-  if (
-    String(story.user_id) ===
-    String(userId)
-  ) {
+async function canViewStory(sourceType, story, userId) {
+  const viewerId = String(userId || '').trim()
+  const ownerId = String(story?.user_id || '').trim()
+
+  if (!viewerId || !ownerId) return false
+
+  const isOwner = viewerId === ownerId
+  const now = new Date().toISOString()
+
+  if (sourceType === 'author') {
+    const pageId = String(story?.author_page_id || '').trim()
+    if (!pageId) return false
+
+    const { data: page, error: pageError } = await supabase
+      .from('author_pages')
+      .select('id, user_id')
+      .eq('id', pageId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (pageError) throw pageError
+    if (!page || String(page.user_id) !== ownerId) return false
+    if (isOwner) return true
+
+    const [pageBlock, authorBlock, accountBlock] = await Promise.all([
+      supabase
+        .from('reader_blocked_author_pages')
+        .select('id')
+        .eq('reader_user_id', viewerId)
+        .eq('author_page_id', pageId)
+        .limit(1),
+      supabase
+        .from('author_blocked_readers')
+        .select('id')
+        .eq('author_page_id', pageId)
+        .eq('reader_user_id', viewerId)
+        .eq('scope_type', 'all_author')
+        .eq('is_active', true)
+        .gt('expires_at', now)
+        .limit(1),
+      supabase
+        .from('chat_blocks')
+        .select('blocker_user_id')
+        .or(`and(blocker_user_id.eq.${viewerId},blocked_user_id.eq.${ownerId}),and(blocker_user_id.eq.${ownerId},blocked_user_id.eq.${viewerId})`)
+        .limit(1),
+    ])
+
+    for (const result of [pageBlock, authorBlock, accountBlock]) {
+      if (result.error) throw result.error
+      if (result.data?.length) return false
+    }
+
     return true
   }
 
-  if (sourceType === 'author') {
-    const {
-      data,
-      error,
-    } = await supabase
-      .from('author_page_follows')
-      .select('author_page_id')
-      .eq(
-        'follower_user_id',
-        userId
-      )
-      .eq(
-        'author_page_id',
-        story.author_page_id
-      )
-      .maybeSingle()
+  if (sourceType !== 'reader') return false
 
-    if (error) throw error
-    return Boolean(data)
-  }
-
-  const {
-    data,
-    error,
-  } = await supabase
-    .from('user_follows')
-    .select('following_user_id')
-    .eq(
-      'follower_user_id',
-      userId
-    )
-    .eq(
-      'following_user_id',
-      story.user_id
-    )
+  const { data: reader, error: readerError } = await supabase
+    .from('users')
+    .select('id, reader_posts_private')
+    .eq('id', ownerId)
+    .eq('is_active', true)
     .maybeSingle()
 
-  if (error) throw error
-  return Boolean(data)
+  if (readerError) throw readerError
+  if (!reader) return false
+  if (isOwner) return true
+
+  const { data: blocks, error: blocksError } = await supabase
+    .from('chat_blocks')
+    .select('blocker_user_id')
+    .or(`and(blocker_user_id.eq.${viewerId},blocked_user_id.eq.${ownerId}),and(blocker_user_id.eq.${ownerId},blocked_user_id.eq.${viewerId})`)
+    .limit(1)
+
+  if (blocksError) throw blocksError
+  if (blocks?.length) return false
+  if (reader.reader_posts_private !== true) return true
+
+  const { data: follow, error: followError } = await supabase
+    .from('user_follows')
+    .select('following_user_id')
+    .eq('follower_user_id', viewerId)
+    .eq('following_user_id', ownerId)
+    .maybeSingle()
+
+  if (followError) throw followError
+  return Boolean(follow)
 }
+
 
 async function getReactionCounts(
   sourceType,
