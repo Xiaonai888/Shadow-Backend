@@ -149,6 +149,8 @@ function isInvalidInput(message) {
     message.includes('must include past or current time') ||
     message.includes('Unsupported report type') ||
     message.includes('Unsupported incident status') ||
+    message.includes('Unsupported incident group') ||
+    message.includes('Incident status does not belong to group') ||
     message.includes('can only be applied') ||
     message.includes('must be FIX_APPLIED') ||
     message.includes('must be VERIFIED') ||
@@ -440,6 +442,7 @@ router.get('/incidents', systemControlGuard, viewSystemControl, async (req, res)
         from: req.query?.from,
         to: req.query?.to,
         status: req.query?.status,
+        group: req.query?.group,
       })
 
     return res.status(200).json({
