@@ -19,7 +19,7 @@ let healthCache = null
 const allowedModes = new Set(['today', 'week', 'month', 'last7', 'last30', 'custom'])
 const allowedFormats = new Set([
   'full-zip', 'daily-csv', 'weekly-csv', 'monthly-csv',
-  'provider-csv', 'upload-csv', 'api-csv', 'evidence-json',
+  'provider-csv', 'upload-csv', 'api-csv', 'route-csv', 'evidence-json',
 ])
 
 const resourceCostGuard = createRateLimit({
