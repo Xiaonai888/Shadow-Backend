@@ -1910,6 +1910,24 @@ async function runRetentionIfDue(
   }
 }
 
+let resourceCostYesterdayCaptureSlot = ''
+
+function maybeCaptureResourceCostYesterday(now) {
+  const cambodia = new Date(now + 7 * 60 * 60 * 1000)
+  const hour = cambodia.getUTCHours()
+  if (hour < 7) return
+  const slot = `${cambodia.toISOString().slice(0, 10)}:${hour < 13 ? 'morning' : 'afternoon'}`
+  if (resourceCostYesterdayCaptureSlot === slot) return
+  resourceCostYesterdayCaptureSlot = slot
+  void import('./resourceCostYesterdaySnapshot.service.js')
+    .then(({ captureResourceCostYesterdaySnapshot }) =>
+      captureResourceCostYesterdaySnapshot(new Date(now))
+    )
+    .catch((error) => {
+      console.error('RESOURCE_COST_DAILY_SNAPSHOT_ERROR:', error?.message || error)
+    })
+}
+
 export async function persistSystemUsageSnapshot() {
   if (writing) return
 
@@ -1926,9 +1944,10 @@ export async function persistSystemUsageSnapshot() {
 
     try {
       await flushResourceCostUploadAudit()
-    } catch (error) {
+       } catch (error) {
       console.error('RESOURCE_COST_UPLOAD_AUDIT_SAVE_ERROR:', error?.message || error)
     }
+    maybeCaptureResourceCostYesterday(now)
 
     if (
       initial.totals.count === 0 &&
