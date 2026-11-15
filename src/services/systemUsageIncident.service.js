@@ -1411,6 +1411,18 @@ export async function listSystemUsageIncidents(
     String(source.to || '').trim()
   const status =
     clean(source.status || '', 40).toUpperCase()
+    const group = clean(source.group || '', 20).toUpperCase()
+
+  const groupStatuses =
+    group === 'ACTIVE'
+      ? ['OPEN', 'INVESTIGATING', 'FIX_APPLIED']
+      : group === 'HISTORY'
+        ? ['VERIFIED', 'RESOLVED', 'ARCHIVED']
+        : null
+
+  if (group && !groupStatuses) {
+    throw new Error('Unsupported incident group.')
+  }
 
   const fromMs = fromText
     ? new Date(fromText).getTime()
@@ -1511,14 +1523,14 @@ export async function listSystemUsageIncidents(
     )
   }
 
-  if (
-    status &&
-    status !== 'ALL'
-  ) {
-    query = query.eq(
-      'status',
-      status
-    )
+    if (status && status !== 'ALL') {
+    if (groupStatuses && !groupStatuses.includes(status)) {
+      throw new Error('Incident status does not belong to group.')
+    }
+
+    query = query.eq('status', status)
+  } else if (groupStatuses) {
+    query = query.in('status', groupStatuses)
   }
 
   const { data, error } =
