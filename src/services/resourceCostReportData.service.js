@@ -1,5 +1,6 @@
 import { resourceCostRange, resourceCostTimestamp } from './resourceCostMath.service.js'
 import { buildResourceCostSummary } from './resourceCostSummary.service.js'
+import { resourceCostAttributionReportRows } from './resourceCostAttributionReport.service.js'
 
 const HOUR_MS = 3_600_000
 const DAY_MS = 86_400_000
@@ -35,29 +36,7 @@ async function fetchAll(client, table, columns, timeField, from, to, options = {
 }
 
 function applicationFromWindow(row, timeField) {
-  const start = row[timeField]
-  const top = Array.isArray(row?.payload?.top_rows) ? row.payload.top_rows : []
-  const result = top.map((item) => ({
-    hour_start: start,
-    feature: String(item.feature || 'unknown'),
-    kind: String(item.kind || 'unknown'),
-    dependency: String(item.dependency || 'UNKNOWN'),
-    count: Number(item.count) || 0,
-    bytes: Number(item.bytes) || 0,
-  }))
-  const countedBytes = result.reduce((sum, row) => sum + (Number(row.bytes) || 0), 0)
-  const countedEvents = result.reduce((sum, row) => sum + (Number(row.count) || 0), 0)
-  const missingBytes = Math.max(0, (Number(row.bytes) || 0) - countedBytes)
-  const missingEvents = Math.max(0, (Number(row.request_count) || 0) - countedEvents)
-  if (missingBytes || missingEvents) result.push({
-    hour_start: start,
-    feature: 'unclassified',
-    kind: 'unclassified',
-    dependency: 'UNKNOWN',
-    count: missingEvents,
-    bytes: missingBytes,
-  })
-  return result
+  return resourceCostAttributionReportRows(row, timeField)
 }
 
 export function summarizeMangaDirectJobs(jobs = []) {
