@@ -137,6 +137,25 @@ function attributionRows(report) {
   })))
 }
 
+function routeAttributionRows(report) {
+  return report.days.flatMap((day) =>
+    (day.route_attribution || []).map((row) => ({
+      date: day.date,
+      feature: row.feature,
+      dependency: row.dependency,
+      kind: row.kind,
+      entry_point: row.entry_point,
+      route: row.route,
+      target: row.target,
+      classification: row.classification,
+      observed_events: row.observed_events,
+      observed_bytes: row.observed_bytes,
+      coverage: report.sources?.application?.status || 'unknown',
+      note: 'Observed API usage, not invoice cost. Grouped or historical data may lack exact routes.',
+    }))
+  )
+}
+
 function readme(report) {
   return [
     'Shadow Resource & Cost Report',
@@ -224,7 +243,11 @@ function makeZip(files) {
 
 export function createResourceCostDownload(report, format = 'full-zip') {
   validReport(report)
-  const valid = new Set(['daily-csv', 'weekly-csv', 'monthly-csv', 'provider-csv', 'upload-csv', 'api-csv', 'evidence-json', 'full-zip'])
+    const valid = new Set([
+    'daily-csv', 'weekly-csv', 'monthly-csv',
+    'provider-csv', 'upload-csv', 'api-csv',
+    'route-csv', 'evidence-json', 'full-zip',
+  ])
   if (!valid.has(format)) throw new TypeError('Unsupported Resource & Cost export format.')
   const files = {
     'daily-csv': ['Daily.csv', csv(BREAKDOWN_COLUMNS, resourceCostBreakdownRows(report, 'day'))],
@@ -233,6 +256,11 @@ export function createResourceCostDownload(report, format = 'full-zip') {
     'provider-csv': ['Providers.csv', csv(['date', 'provider', 'metric', 'scope', 'unit', 'kind', 'aggregation', 'value', 'samples', 'incomplete_samples', 'note'], providerRows(report))],
     'upload-csv': ['UploadRoutes.csv', csv(['date', 'feature', 'route', 'mode', 'attempts', 'successes', 'failures', 'ingress_bytes', 'egress_bytes', 'object_bytes', 'note'], uploadRows(report))],
     'api-csv': ['ApiAttribution.csv', csv(['date', 'feature', 'dependency', 'kind', 'observed_events', 'observed_bytes', 'coverage', 'note'], attributionRows(report))],
+        'route-csv': ['RouteAttribution.csv', csv([
+      'date', 'feature', 'dependency', 'kind',
+      'entry_point', 'route', 'target', 'classification',
+      'observed_events', 'observed_bytes', 'coverage', 'note',
+    ], routeAttributionRows(report))],
     'evidence-json': ['Evidence.json', JSON.stringify(report, null, 2)],
   }
   const stamp = report.period.from.slice(0, 10).replaceAll('-', '')
