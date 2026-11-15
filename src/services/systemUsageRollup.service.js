@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { buildResourceCostWindowAttribution } from './resourceCostAttributionWindow.service.js'
 
 const HOUR_MS = 60 * 60 * 1000
 const DAY_MS = 24 * HOUR_MS
@@ -421,6 +422,7 @@ function groupSourceRows(
         source_rows: 0,
         details: new Map(),
         summaries: new Map(),
+        attributionWindows: [],
         legacy_summary_windows: 0,
       }
 
@@ -454,6 +456,7 @@ function groupSourceRows(
     )
     const sourceSummary = sourceSummaryRows(row)
     mergeSummaryRows(current.summaries, sourceSummary.rows)
+    current.attributionWindows.push(row)
     current.legacy_summary_windows += safeNumber(row?.payload?.summary_legacy_windows) +
       (sourceSummary.legacy ? (sourceType === 'snapshot' ? 1 : Math.max(1, safeNumber(row.source_rows))) : 0)
 
@@ -494,6 +497,10 @@ function groupSourceRows(
         }),
         summary_legacy_windows: group.legacy_summary_windows,
         summary_limit: MAX_SUMMARY_ROWS,
+        resource_cost_attribution: buildResourceCostWindowAttribution(
+          group.attributionWindows,
+          { maxExactRoutes: 100, maxOtherGroups: 40 }
+        ),
       },
     }))
     .sort(
