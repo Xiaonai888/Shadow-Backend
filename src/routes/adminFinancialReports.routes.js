@@ -8,6 +8,12 @@ import {
 } from '../controllers/adminFinancialReports.controller.js'
 
 const router = express.Router()
+const preAuthIpLimit = createRateLimit({
+  key: 'admin-financial-reports-preauth-ip',
+  max: 60,
+  windowMs: 60 * 1000,
+  message: 'Too many Financial Reports requests. Try again shortly.',
+})
 const requestLimit = createRateLimit({
   key: 'admin-financial-reports-sync',
   max: 6,
@@ -16,13 +22,13 @@ const requestLimit = createRateLimit({
   identity: (req) => req.admin?.admin_id || req.admin?.id || req.admin?.email,
 })
 
-router.use(requireAdmin)
-router.use((req, res, next) => {
+const preventCaching = (req, res, next) => {
   res.set('Cache-Control', 'private, no-store')
   next()
-})
-router.get('/status', getAdminFinancialReportsStatus)
-router.post('/connect', requestLimit, connectAdminFinancialReportsSheet)
-router.post('/sync', requestLimit, syncAdminFinancialReportsSheet)
+}
+
+router.get('/status', preAuthIpLimit, requireAdmin, preventCaching, getAdminFinancialReportsStatus)
+router.post('/connect', preAuthIpLimit, requireAdmin, preventCaching, requestLimit, connectAdminFinancialReportsSheet)
+router.post('/sync', preAuthIpLimit, requireAdmin, preventCaching, requestLimit, syncAdminFinancialReportsSheet)
 
 export default router
