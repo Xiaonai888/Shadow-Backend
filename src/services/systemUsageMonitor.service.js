@@ -1,4 +1,5 @@
 import { registerRuntimeInspectable } from './runtimeMemoryInspector.service.js'
+import { summarizeResourceCostMinuteAttribution } from './resourceCostAttributionMinute.service.js'
 
 const LIVE_WINDOW_MS = 15 * 1000
 const MINUTE_WINDOW_MS = 60 * 1000
@@ -297,8 +298,11 @@ function summarize(window) {
     count,
     bytes,
     mb: Number((bytes / 1024 / 1024).toFixed(4)),
-    errors,
+     errors,
     rows,
+    ...(window.interval_ms === MINUTE_WINDOW_MS
+      ? { resource_cost_attribution: summarizeResourceCostMinuteAttribution(window.rows.values()) }
+      : {}),
     source_totals: [...bySource.values()].sort(
       (a, b) => b.count - a.count || b.bytes - a.bytes
     ),
@@ -353,6 +357,14 @@ function cloneHistory(items) {
     ...item,
     rows: item.rows.map((row) => ({ ...row })),
     source_totals: item.source_totals.map((row) => ({ ...row })),
+    resource_cost_attribution: item.resource_cost_attribution
+      ? {
+          ...item.resource_cost_attribution,
+          rows: item.resource_cost_attribution.rows.map((row) => ({ ...row })),
+          totals: { ...item.resource_cost_attribution.totals },
+          coverage: { ...item.resource_cost_attribution.coverage },
+        }
+      : null,
     detail_coverage: { ...item.detail_coverage },
   }))
 }
