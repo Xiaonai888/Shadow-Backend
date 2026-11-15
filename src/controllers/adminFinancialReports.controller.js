@@ -6,6 +6,10 @@ import {
 } from '../services/adminFinancialReportsGoogle.service.js'
 import { loadAdminFinancialReportSourceRows } from '../services/adminFinancialReportsSources.service.js'
 import { createAdminFinancialReportsSyncService } from '../services/adminFinancialReportsSync.service.js'
+import {
+  adminFinancialConfiguredSheetUrl,
+  validateAdminFinancialSheetLink,
+} from '../services/adminFinancialReportsSheetLink.service.js'
 
 const reports = createAdminFinancialReportsSyncService({
   isConfigured: isAdminFinancialReportsConfigured,
@@ -28,11 +32,22 @@ function errorReply(res, error, task) {
 }
 
 export function getAdminFinancialReportsStatus(req, res) {
-  return res.status(200).json({ ok: true, ...reports.status() })
+  const current = reports.status()
+  return res.status(200).json({
+    ok: true,
+    ...current,
+    spreadsheet_url: current.configured
+      ? adminFinancialConfiguredSheetUrl(process.env.SHADOW_ADMIN_FINANCIAL_SHEET_ID)
+      : '',
+  })
 }
 
 export async function connectAdminFinancialReportsSheet(req, res) {
   try {
+    validateAdminFinancialSheetLink(
+      req.body?.spreadsheet_url,
+      process.env.SHADOW_ADMIN_FINANCIAL_SHEET_ID
+    )
     const result = await reports.connectSheet()
     return res.status(200).json(result)
   } catch (error) {
