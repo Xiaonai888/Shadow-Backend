@@ -20,6 +20,18 @@ function getLimit(value) {
   return Math.min(30, Math.max(1, parsed))
 }
 
+function getExcludedCreators(value) {
+  if (typeof value !== 'string' || value.length > 7000) return new Set()
+
+  const validKey = /^(?:author|reader):[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i
+  return new Set(
+    value.split(',')
+      .slice(0, 100)
+      .filter((key) => validKey.test(key))
+      .map((key) => key.toLowerCase())
+  )
+}
+
 function makeAuthorStory(story, hasViewed) {
   return {
     id: story.id,
@@ -161,6 +173,7 @@ export async function getDiscoverStoriesFeed(req, res) {
     }
 
     const groupLimit = getLimit(req.query.limit)
+    const excludedCreators = getExcludedCreators(req.query.exclude_creators)
     const now = new Date().toISOString()
     const { authorStories, readerStories, authorPages, readers } =
       await getDiscoverStorySharedCatalog(now)
@@ -276,6 +289,7 @@ export async function getDiscoverStoriesFeed(req, res) {
       const page = authorById.get(String(story.author_page_id))
       if (!page) continue
       const isOwner = String(page.user_id) === userId
+      if (!isOwner && excludedCreators.has(`author:${page.id}`)) continue
       if (!isOwner && (
         blockedPageIds.has(String(page.id)) ||
         blockedAccountIds.has(String(page.user_id))
@@ -312,6 +326,7 @@ export async function getDiscoverStoriesFeed(req, res) {
       const reader = readerById.get(String(story.user_id))
       if (!reader) continue
       const isOwner = String(reader.id) === userId
+      if (!isOwner && excludedCreators.has(`reader:${reader.id}`)) continue
       const isFollowing = followedReaderIds.has(String(reader.id))
       if (!isOwner && (
         blockedAccountIds.has(String(reader.id)) ||
