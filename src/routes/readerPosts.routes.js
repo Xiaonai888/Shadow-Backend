@@ -116,7 +116,7 @@ function coalesceReaderPostsFeed(req, res, next) {
 }
 
 router.get('/feed', requireUser, readerPostsReadLimit, coalesceReaderPostsFeed, getReaderPostsFeed)
-router.get('/me', requireUser, readerPostsReadLimit, getMyReaderPosts)
+router.get('/me', requireUser, readerPostsReadLimit, coalesceReaderPostsFeed, getMyReaderPosts)
 router.get('/me/:postId/tags', requireUser, readerPostsReadLimit, getMyReaderPostTags)
 router.get('/:postId/comments/pending', requireUser, readerPostsReadLimit, getPendingReaderPostComments)
 router.post('/:postId/comments/review', requireUser, readerPostsWriteLimit, reviewPendingReaderPostComments)
@@ -212,6 +212,7 @@ router.get(
   '/user/:username',
   requireUser,
   readerPostsReadLimit,
+  coalesceReaderPostsFeed,
   getReaderPostsByUsername
 )
 
