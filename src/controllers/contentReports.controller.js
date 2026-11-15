@@ -35,6 +35,40 @@ function excerpt(value, limit = 500) {
   return cleanText(value).replace(/\s+/g, ' ').slice(0, limit)
 }
 
+async function getDiscoverStoryTarget(targetId) {
+  const sources = [
+    { table: 'author_page_stories', type: 'author', title: 'Author' },
+    { table: 'reader_stories', type: 'reader', title: 'Reader' },
+  ]
+
+  for (const source of sources) {
+    const { data, error } = await supabase
+      .from(source.table)
+      .select('id, media_type, caption, text_overlay, alt_text, media_url')
+      .eq('id', targetId)
+      .eq('status', 'active')
+      .maybeSingle()
+
+    if (error) throw error
+    if (!data) continue
+
+    const details = [data.caption, data.text_overlay, data.alt_text]
+      .map(cleanText)
+      .filter(Boolean)
+      .join(' | ')
+    const mediaLabel = data.media_type === 'video' ? 'Video' : 'Photo'
+    const params = new URLSearchParams({ story: targetId, source: source.type })
+
+    return {
+      title: `${source.title} Story (${mediaLabel})`,
+      excerpt: excerpt(details || data.media_url || ''),
+      reportUrl: `https://www.shadowerabook.site/discover?${params.toString()}`,
+    }
+  }
+
+  return null
+}
+
 async function getStoryTarget(targetId) {
   const { data, error } = await supabase
     .from('stories')
@@ -43,7 +77,7 @@ async function getStoryTarget(targetId) {
     .maybeSingle()
 
   if (error) throw error
-  if (!data) return null
+  if (!data) return getDiscoverStoryTarget(targetId)
 
   return {
     title: cleanText(data.title) || 'Story',
@@ -182,8 +216,6 @@ async function getReaderPostTarget(targetId) {
   }
 }
 
-// Fast reports must resolve the actual Fast video, never an unrelated Story or Post.
-// Use only fields already present in fast_videos and only publicly available videos.
 async function getFastVideoTarget(targetId) {
   const { data, error } = await supabase
     .from('fast_videos')
@@ -344,7 +376,7 @@ export async function createContentReport(req, res) {
         target_id: targetId,
         target_title: target.title,
         target_excerpt: target.excerpt,
-        target_url: targetUrl,
+        target_url: target.reportUrl || targetUrl,
         reason_code: reasonCode,
         reason_text: reasonText,
         status: 'pending',
