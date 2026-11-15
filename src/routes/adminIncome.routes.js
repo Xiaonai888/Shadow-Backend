@@ -25,6 +25,7 @@ import {
 import { getAdminStoryPayoutQueue } from '../controllers/adminStoryPayoutQueue.controller.js'
 import { getAdminAuthorPageAuthors, getAdminAuthorPageAuthorTransactions } from '../controllers/adminAuthorPageAuthorSummary.controller.js'
 import { getAdminAuthorIncomeExportData } from '../controllers/adminAuthorIncomeExport.controller.js'
+import adminFinancialReportsRoutes from './adminFinancialReports.routes.js'
 const router = express.Router()
 const SUMMARY_CACHE_MS = 30 * 1000
 const SUMMARY_CACHE_MAX_ENTRIES = 32
@@ -280,6 +281,7 @@ function invalidateIncomeSummaryCache(req, res, next) {
   next()
 }
 
+router.use('/financial-reports', adminFinancialReportsRoutes)
 router.get('/events', requireAdmin, streamAdminIncomeEvents)
 router.get('/summary', requireAdmin, getCachedAdminIncomeSummary)
 router.get('/episode-sales', requireAdmin, getAdminEpisodeSales)
