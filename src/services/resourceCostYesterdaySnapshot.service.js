@@ -6,7 +6,7 @@ const HOUR_MS = 60 * 60 * 1000
 const DAY_MS = 24 * HOUR_MS
 const CAMBODIA_OFFSET_MS = 7 * HOUR_MS
 const FIRST_CAPTURE_HOUR = 7
-const RETRY_DELAY_MS = 6 * HOUR_MS
+const RETRY_HOUR = 13
 const READ_CACHE_MS = 15 * 60 * 1000
 
 let cached = { date: '', until: 0, value: null }
@@ -108,9 +108,20 @@ export async function captureResourceCostYesterdaySnapshot(now = new Date()) {
       updateCache(window.date, previous)
       return previous
     }
-    if (previous && new Date(now).getTime() - Date.parse(previous.captured_at) < RETRY_DELAY_MS) {
-      updateCache(window.date, previous)
-      return previous
+    if (previous) {
+      const capturedAt = Date.parse(previous.captured_at)
+      const capturedHour = Number.isFinite(capturedAt)
+        ? new Date(capturedAt + CAMBODIA_OFFSET_MS).getUTCHours()
+        : null
+
+      if (
+        window.localHour < RETRY_HOUR ||
+        capturedHour === null ||
+        capturedHour >= RETRY_HOUR
+      ) {
+        updateCache(window.date, previous)
+        return previous
+      }
     }
 
     const report = await getResourceCostReport({
