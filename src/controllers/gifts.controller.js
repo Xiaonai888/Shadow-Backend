@@ -161,6 +161,92 @@ export async function getGiftCatalog(req, res) {
   }
 }
 
+const TOP_FANS_CACHE_MS = 60 * 1000
+const TOP_FANS_CACHE_MAX = 300
+const topFansCache = new Map()
+const topFansInFlight = new Map()
+
+function invalidateStoryTopFansCache(storyId) {
+  const prefix = `${storyId}:`
+
+  for (const key of topFansCache.keys()) {
+    if (key.startsWith(prefix)) topFansCache.delete(key)
+  }
+
+  for (const key of topFansInFlight.keys()) {
+    if (key.startsWith(prefix)) topFansInFlight.delete(key)
+  }
+}
+
+async function getCachedStoryTopFans(storyId, period, limit) {
+  const key = `${storyId}:${period}:${limit}`
+  const cached = topFansCache.get(key)
+
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.result
+  }
+
+  if (cached) topFansCache.delete(key)
+
+  const existing = topFansInFlight.get(key)
+  if (existing) return existing
+
+  const request = (async () => {
+    if (!(await storyExists(storyId))) {
+      return {
+        status: 404,
+        body: { ok: false, message: 'Story not found.' },
+      }
+    }
+
+    const { data, error } = await supabase.rpc(
+      'get_story_top_fans',
+      {
+        p_story_id: storyId,
+        p_period: period,
+        p_limit: limit,
+      }
+    )
+
+    if (error) throw error
+
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        period,
+        fans: (data || []).map(publicFan),
+      },
+    }
+  })()
+
+  topFansInFlight.set(key, request)
+
+  try {
+    const result = await request
+
+    if (
+      result.status === 200 &&
+      topFansInFlight.get(key) === request
+    ) {
+      topFansCache.set(key, {
+        result,
+        expiresAt: Date.now() + TOP_FANS_CACHE_MS,
+      })
+
+      while (topFansCache.size > TOP_FANS_CACHE_MAX) {
+        topFansCache.delete(topFansCache.keys().next().value)
+      }
+    }
+
+    return result
+  } finally {
+    if (topFansInFlight.get(key) === request) {
+      topFansInFlight.delete(key)
+    }
+  }
+}
+
 export async function getStoryTopFans(req, res) {
   try {
     const storyId = cleanUuid(req.params.storyId)
@@ -174,26 +260,13 @@ export async function getStoryTopFans(req, res) {
       })
     }
 
-    if (!(await storyExists(storyId))) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Story not found.',
-      })
-    }
-
-    const { data, error } = await supabase.rpc('get_story_top_fans', {
-      p_story_id: storyId,
-      p_period: period,
-      p_limit: limit,
-    })
-
-    if (error) throw error
-
-    return res.status(200).json({
-      ok: true,
+    const result = await getCachedStoryTopFans(
+      storyId,
       period,
-      fans: (data || []).map(publicFan),
-    })
+      limit
+    )
+
+    return res.status(result.status).json(result.body)
   } catch (error) {
     console.error('GET STORY TOP FANS ERROR:', error)
 
@@ -311,6 +384,7 @@ export async function sendStoryGift(req, res) {
         message: 'Gift result is pending. Retry with the same request ID.',
       })
     }
+    invalidateStoryTopFansCache(storyId)
 
     if (['diamond', 'diamonds'].includes(String(gift.currency || '').toLowerCase())) {
       emitAdminIncomeChange({
