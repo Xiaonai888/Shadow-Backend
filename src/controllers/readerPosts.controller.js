@@ -784,7 +784,7 @@ function uniqueStrings(values) {
   ]
 }
 
-async function readReaderPostEchoCounts(
+async function loadReaderPostEchoCounts(
   postIds
 ) {
   const ids = uniqueStrings(postIds)
@@ -856,6 +856,53 @@ async function readReaderPostEchoCounts(
   }
 
   return counts
+}
+
+
+const ECHO_COUNT_CACHE_TTL_MS = 3_000
+const ECHO_COUNT_CACHE_MAX = 32
+const readerPostEchoCountCache = new Map()
+
+async function readReaderPostEchoCounts(postIds) {
+  const ids = uniqueStrings(postIds)
+  if (!ids.length) return new Map()
+
+  const key = [...ids].sort().join(',')
+  const cached = readerPostEchoCountCache.get(key)
+
+  if (cached && cached.expiresAt > Date.now()) {
+    return new Map(await cached.promise)
+  }
+
+  if (cached) readerPostEchoCountCache.delete(key)
+
+  const promise = loadReaderPostEchoCounts(ids)
+  const entry = {
+    promise,
+    expiresAt: Number.POSITIVE_INFINITY,
+  }
+
+  readerPostEchoCountCache.set(key, entry)
+
+  while (readerPostEchoCountCache.size > ECHO_COUNT_CACHE_MAX) {
+    readerPostEchoCountCache.delete(readerPostEchoCountCache.keys().next().value)
+  }
+
+  try {
+    const result = await promise
+
+    if (readerPostEchoCountCache.get(key) === entry) {
+      entry.expiresAt = Date.now() + ECHO_COUNT_CACHE_TTL_MS
+    }
+
+    return new Map(result)
+  } catch (error) {
+    if (readerPostEchoCountCache.get(key) === entry) {
+      readerPostEchoCountCache.delete(key)
+    }
+
+    throw error
+  }
 }
 
 
