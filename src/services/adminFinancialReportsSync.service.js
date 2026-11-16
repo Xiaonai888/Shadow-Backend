@@ -125,16 +125,29 @@ export function createAdminFinancialReportsSyncService({
         throw errorWithStatus('Too many transactions for one sync; choose a shorter from/to period', 413)
       }
       const totals = { appended: 0, updated: 0, skipped: 0, processed: 0, batches: 0 }
+      const batches = []
       for (let index = 0; index < result.rows.length; index += BATCH_SIZE) {
-        const rows = result.rows.slice(index, index + BATCH_SIZE)
+        batches.push(result.rows.slice(index, index + BATCH_SIZE))
+      }
+      if (!batches.length && period.month) batches.push([])
+      for (const rows of batches) {
         let response
         try {
-          response = await writeRows(rows)
+          response = await writeRows(rows, { month: period.month || '' })
+          if (response?.ok !== true) throw new Error('Google Sheets did not confirm the transaction batch')
+          if (period.month && (
+            response.report_month !== period.month ||
+            !Array.isArray(response.updated_months) ||
+            !response.updated_months.includes(period.month) ||
+            !Number.isInteger(response.verified_rows) ||
+            response.verified_rows !== rows.length
+          )) {
+            throw new Error(`Google Sheets did not verify report month ${period.month}; update and deploy Code.gs before syncing`)
+          }
         } catch (error) {
           error.synced_rows = totals.processed
           throw error
         }
-        if (response?.ok !== true) throw new Error('Google Sheets did not confirm the transaction batch')
         totals.appended += Number(response.appended || 0)
         totals.updated += Number(response.updated || 0)
         totals.skipped += Number(response.skipped || 0)
