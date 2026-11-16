@@ -858,46 +858,70 @@ async function readReaderPostEchoCounts(
   return counts
 }
 
-async function readLinkedEchoPostIds(
-  postIds
-) {
-  const ids = uniqueStrings(postIds)
 
+const LINKED_ECHO_CACHE_TTL_MS = 5_000
+const LINKED_ECHO_CACHE_MAX = 32
+const linkedEchoPostIdsCache = new Map()
+
+async function readLinkedEchoPostIds(postIds) {
+  const ids = uniqueStrings(postIds)
   if (!ids.length) return new Set()
 
-  const [v2Result, legacyResult] =
-    await Promise.all([
-      supabase
-        .from(
-          'social_echo_reader_posts_v2'
-        )
-        .select('reader_post_id')
-        .in('reader_post_id', ids),
-      supabase
-        .from('social_echoes')
-        .select('reader_post_id')
-        .in('reader_post_id', ids),
+  const key = [...ids].sort().join(',')
+  const cached = linkedEchoPostIdsCache.get(key)
+
+  if (cached && cached.expiresAt > Date.now()) {
+    return new Set(await cached.promise)
+  }
+
+  if (cached) linkedEchoPostIdsCache.delete(key)
+
+  const promise = Promise.all([
+    supabase
+      .from('social_echo_reader_posts_v2')
+      .select('reader_post_id')
+      .in('reader_post_id', ids),
+    supabase
+      .from('social_echoes')
+      .select('reader_post_id')
+      .in('reader_post_id', ids),
+  ]).then(([v2Result, legacyResult]) => {
+    if (v2Result.error) throw v2Result.error
+    if (legacyResult.error) throw legacyResult.error
+
+    return uniqueStrings([
+      ...(v2Result.data || []).map((row) => row.reader_post_id),
+      ...(legacyResult.data || []).map((row) => row.reader_post_id),
     ])
+  })
 
-  if (v2Result.error) {
-    throw v2Result.error
+  const entry = {
+    promise,
+    expiresAt: Number.POSITIVE_INFINITY,
   }
 
-  if (legacyResult.error) {
-    throw legacyResult.error
+  linkedEchoPostIdsCache.set(key, entry)
+
+  while (linkedEchoPostIdsCache.size > LINKED_ECHO_CACHE_MAX) {
+    linkedEchoPostIdsCache.delete(linkedEchoPostIdsCache.keys().next().value)
   }
 
-  return new Set(
-    [
-      ...(v2Result.data || []),
-      ...(legacyResult.data || []),
-    ]
-      .map((row) =>
-        String(row.reader_post_id || '')
-      )
-      .filter(Boolean)
-  )
+  try {
+    const result = await promise
+
+    if (linkedEchoPostIdsCache.get(key) === entry) {
+      entry.expiresAt = Date.now() + LINKED_ECHO_CACHE_TTL_MS
+    }
+
+    return new Set(result)
+  } catch (error) {
+    if (linkedEchoPostIdsCache.get(key) === entry) {
+      linkedEchoPostIdsCache.delete(key)
+    }
+    throw error
+  }
 }
+
 
 async function readLinkedEchoByPostId(
   postId,
