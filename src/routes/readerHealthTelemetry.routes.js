@@ -5,6 +5,7 @@ import {
   getReaderHealthDiagnostics,
   recordReaderHealthReport,
 } from '../services/readerHealthTelemetry.service.js'
+import { getReaderLoginIssues } from '../services/readerLoginIssueMonitor.service.js'
 
 export const readerHealthPublicRoutes = express.Router()
 export const readerHealthAdminRoutes = express.Router()
@@ -68,6 +69,22 @@ readerHealthAdminRoutes.get('/', adminLimiter,
     }
     const report = await getReaderHealthDiagnostics(hours, req.query.refresh === '1')
     return res.status(200).json({ ok: true, report })
+  })
+
+readerHealthAdminRoutes.get('/login-issues', adminLimiter,
+  requireAdminPermission('system_control.view'), async (req, res) => {
+    res.set('Cache-Control', 'no-store')
+    const hours = Number(req.query.hours || 24)
+    if (![24, 168].includes(hours)) {
+      return res.status(400).json({ ok: false, code: 'READER_LOGIN_ISSUES_BAD_RANGE' })
+    }
+    try {
+      const report = await getReaderLoginIssues(hours)
+      return res.status(200).json({ ok: true, report })
+    } catch (error) {
+      console.error('READER_LOGIN_ISSUES_REPORT_ERROR:', error?.code || error?.message || 'UNAVAILABLE')
+      return res.status(503).json({ ok: false, code: 'READER_LOGIN_ISSUES_UNAVAILABLE' })
+    }
   })
 
 export default readerHealthPublicRoutes
