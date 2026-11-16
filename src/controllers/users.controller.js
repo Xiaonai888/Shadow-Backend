@@ -515,6 +515,7 @@ export async function loginUser(req, res) {
         .gte('created_at', new Date(Date.now() - 60 * 60 * 1000).toISOString())
       if (countError) throw countError
       if (Number(count || 0) >= 5) {
+        recordReaderLoginIssue({ userId: verifiedUserId, code: 'READER_LOGIN_CHALLENGE_LIMIT', source: 'LOGIN' })
         return res.status(429).json({
           ok: false,
           code: 'READER_LOGIN_CHALLENGE_LIMIT',
@@ -573,8 +574,13 @@ export async function loginUser(req, res) {
       deviceKey: session.deviceKey,
     })
 
-  } catch (error) {
-        if (error.code === 'READER_SESSION_LIMIT_REACHED') {
+    } catch (error) {
+    recordReaderLoginIssue({
+      userId: verifiedUserId,
+      code: error.code || 'LOGIN_OTHER',
+      source: 'LOGIN',
+    })
+    if (error.code === 'READER_SESSION_LIMIT_REACHED') {
       return res.status(409).json({
         ok: false,
         code: 'READER_SESSION_LIMIT_REACHED',
