@@ -6,6 +6,7 @@ import {
   getAdminFinancialReportsStatus,
   syncAdminFinancialReportsSheet,
 } from '../controllers/adminFinancialReports.controller.js'
+import { getAdminFinancialReportsHistoryRange } from '../controllers/adminFinancialReportsHistory.controller.js'
 
 const router = express.Router()
 const preAuthIpLimit = createRateLimit({
@@ -28,6 +29,7 @@ const preventCaching = (req, res, next) => {
 }
 
 router.get('/status', preAuthIpLimit, requireAdmin, preventCaching, getAdminFinancialReportsStatus)
+router.get('/history-range', preAuthIpLimit, requireAdmin, preventCaching, getAdminFinancialReportsHistoryRange)
 router.post('/connect', preAuthIpLimit, requireAdmin, preventCaching, requestLimit, connectAdminFinancialReportsSheet)
 router.post('/sync', preAuthIpLimit, requireAdmin, preventCaching, requestLimit, syncAdminFinancialReportsSheet)
 
