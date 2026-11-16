@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { createReaderDeviceSession } from '../services/readerDeviceSessions.service.js'
 import { getReaderSecuritySettings, createReaderEmailChallenge, consumeReaderEmailChallenge, verifyReaderPinForUser } from '../services/readerSecurity.service.js'
+import { recordReaderLoginIssue } from '../services/readerLoginIssueMonitor.service.js'
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase()
@@ -451,6 +452,7 @@ if (existingUsername) {
 }
 
 export async function loginUser(req, res) {
+  let verifiedUserId = ''
   try {
     if (!process.env.JWT_SECRET) {
       return res.status(500).json({
@@ -495,7 +497,7 @@ export async function loginUser(req, res) {
         message: 'Email, username, or password is incorrect',
       })
     }
-
+    verifiedUserId = data.id
     const settings = await getReaderSecuritySettings(data.id)
     const emailRequired = Boolean(settings.email_2fa_enabled)
     const pinRequired = Boolean(settings.pin_hash)
