@@ -1,7 +1,9 @@
 import { supabase } from '../config/supabase.js'
 import { readSmartAdActiveCatalogPage, readSmartAdPoolState } from './smartAdPool.service.js'
 import { readSmartAdCatalogByIds } from './smartAdCatalog.service.js'
-import { chooseSmartAdSelection } from './smartAdSelection.service.js'
+import { scoreSmartAd } from './smartAdSelection.service.js'
+import { selectDiverseSmartAdCandidates } from './smartAdDiversityPolicy.service.js'
+import { readSmartAdRecentHistory } from './smartAdRecentHistory.service.js'
 import { smartAdCambodiaSlot, SMART_AD_POLICY } from './smartAdEligibility.service.js'
 import {
   readSmartAdSeenHistory,
@@ -57,48 +59,65 @@ export async function selectSmartAdBatch({
   requireSmartAdPlacement(placement)
   const offset = cursorOffset(cursor)
   const cleanedInterests = normalizeInterests(interests)
-  const exclusions = new Set(excludedIds(excludeStoryIds))
+  const exclusions = excludedIds(excludeStoryIds)
   const cooldown = excludedIds(cooldownStoryIds)
   if (!Number.isSafeInteger(Number(queueIndex)) || Number(queueIndex) < 0 || Number(queueIndex) > 10000) {
     throw new SmartAdRequestError('Invalid Smart Ad queue index')
   }
   const slot = smartAdCambodiaSlot(now)
-  const [state, history] = await Promise.all([
+  const [state, seenInSlot, recentHistory] = await Promise.all([
     readSmartAdPoolState({ db }),
     readSmartAdSeenHistory(readerHash, slot.slot_key, { db }),
+    readSmartAdRecentHistory(readerHash, { db, now }),
   ])
-  const seen = new Set([...history, ...exclusions, ...cooldown])
-  const pages = []
+  const hardExcluded = new Set([...seenInSlot, ...exclusions, ...cooldown])
   const candidates = new Map()
+  const pages = []
+  let unseenCount = 0
   let next = String(offset)
   let endOfPool = false
 
   for (let i = 0; i < MAX_PAGES_PER_SELECTION; i += 1) {
     const pageStart = next
     const page = await readSmartAdActiveCatalogPage({ cursor: pageStart, limit: PAGE_SIZE, db, now })
-    const available = (page.stories || []).filter((story) =>
-      story?.story_id && story?.first_episode_id && !seen.has(String(story.story_id)))
-    for (const story of available) {
-      if (!candidates.has(String(story.story_id))) candidates.set(String(story.story_id), story)
+    const unseen = []
+    for (const story of page.stories || []) {
+      const id = String(story?.story_id || '')
+      if (!id || !story?.first_episode_id || hardExcluded.has(id) || candidates.has(id)) continue
+      candidates.set(id, story)
+      if (!recentHistory.has(id)) {
+        unseen.push(id)
+        unseenCount += 1
+      }
     }
-    pages.push({ cursor: pageStart, available })
+    pages.push({ cursor: pageStart, unseen })
     if (!page.next_cursor) {
       next = null
       endOfPool = true
       break
     }
-    next = page.next_cursor
-    if (candidates.size >= 35) break
+    next = String(page.next_cursor)
+    if (unseenCount >= 35) break
   }
 
-  const exposure = await readSmartAdExposureTotals([...candidates.keys()], { db, now })
-  const ads = chooseSmartAdSelection({
-    candidates: [...candidates.values()], readerKey: readerHash, placement,
-    slotKey: slot.slot_key, interests: cleanedInterests, exposure,
-    seenInSlot: [...seen], cooldownIds: cooldown, queueIndex: Number(queueIndex), now,
+  const unseenIds = [...candidates.keys()].filter((id) => !recentHistory.has(id))
+  const exposure = await readSmartAdExposureTotals(unseenIds, { db, now })
+  const seed = `${readerHash}:${placement}:${slot.slot_key}:${queueIndex}`
+  const ads = selectDiverseSmartAdCandidates({
+    candidates: [...candidates.values()],
+    limit: placement === 'opening' || placement === 'me' ? 1 : 10,
+    hardExcludedIds: [...hardExcluded],
+    recentHistory,
+    seed,
+    now,
+    shortShare: SMART_AD_POLICY.shortExposureShare,
+    allowRecentFallback: endOfPool,
+    preferredScore: (story) => scoreSmartAd(story, {
+      interests: cleanedInterests, exposure, seed, now,
+    }),
   })
-  const chosenIds = new Set(ads.map((story) => String(story.story_id)))
-  const unusedPage = pages.find((page) => page.available.some((story) => !chosenIds.has(String(story.story_id))))
+  const chosen = new Set(ads.map((story) => String(story.story_id)))
+  const unusedPage = pages.find((page) => page.unseen.some((id) => !chosen.has(id)))
   const nextCursor = unusedPage ? unusedPage.cursor : next
 
   return {
