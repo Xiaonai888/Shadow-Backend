@@ -455,6 +455,7 @@ export async function loginUser(req, res) {
   let verifiedUserId = ''
   try {
     if (!process.env.JWT_SECRET) {
+      recordReaderLoginIssue({ code: 'LOGIN_OTHER', source: 'LOGIN' })
       return res.status(500).json({
         ok: false,
         message: 'JWT_SECRET is missing',
@@ -465,6 +466,7 @@ export async function loginUser(req, res) {
     const password = String(req.body.password || '')
 
     if (!identifier || !password) {
+      recordReaderLoginIssue({ code: 'LOGIN_OTHER', source: 'LOGIN' })
       return res.status(400).json({
         ok: false,
         message: 'Email/username and password are required',
@@ -492,6 +494,7 @@ export async function loginUser(req, res) {
     if (error) throw error
 
     if (!data || !verifyPassword(password, data.password_hash)) {
+      recordReaderLoginIssue({ code: 'INVALID_CREDENTIALS', source: 'LOGIN' })
       return res.status(401).json({
         ok: false,
         message: 'Email, username, or password is incorrect',
@@ -574,7 +577,7 @@ export async function loginUser(req, res) {
       deviceKey: session.deviceKey,
     })
 
-    } catch (error) {
+  } catch (error) {
     recordReaderLoginIssue({
       userId: verifiedUserId,
       code: error.code || 'LOGIN_OTHER',
@@ -602,6 +605,7 @@ export async function loginUser(req, res) {
 
 
 export async function verifyReaderLogin(req, res) {
+  let verifiedUserId = ''
   try {
     const challengeId = String(req.body?.challenge_id || '')
     const deviceKey = String(req.body?.deviceKey || '')
@@ -609,6 +613,7 @@ export async function verifyReaderLogin(req, res) {
     const pin = String(req.body?.pin || '')
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(challengeId) ||
         !/^[a-f0-9]{64}$/.test(deviceKey)) {
+      recordReaderLoginIssue({ code: 'READER_LOGIN_CHALLENGE_INVALID', source: 'VERIFY' })
       return res.status(400).json({ ok: false, code: 'READER_LOGIN_CHALLENGE_INVALID' })
     }
 
@@ -622,6 +627,7 @@ export async function verifyReaderLogin(req, res) {
     if (challengeError) throw challengeError
     if (!challenge || new Date(challenge.expires_at).getTime() <= Date.now() ||
         !/^[a-f0-9]{64}$/.test(String(challenge.device_key_hash || ''))) {
+      recordReaderLoginIssue({ code: 'READER_LOGIN_CHALLENGE_EXPIRED', source: 'VERIFY' })
       return res.status(401).json({ ok: false, code: 'READER_LOGIN_CHALLENGE_EXPIRED' })
     }
     const actualKeyHash = crypto.createHash('sha256').update(deviceKey).digest('hex')
@@ -629,23 +635,31 @@ export async function verifyReaderLogin(req, res) {
       Buffer.from(actualKeyHash, 'hex'),
       Buffer.from(challenge.device_key_hash, 'hex')
     )) {
+      recordReaderLoginIssue({ code: 'READER_LOGIN_DEVICE_MISMATCH', source: 'VERIFY' })
       return res.status(401).json({ ok: false, code: 'READER_LOGIN_DEVICE_MISMATCH' })
     }
 
     const { data: user, error: userError } = await supabase.from('users')
       .select('*').eq('id', challenge.user_id).eq('is_active', true).maybeSingle()
     if (userError) throw userError
-    if (!user) return res.status(401).json({ ok: false, code: 'READER_LOGIN_CHALLENGE_INVALID' })
+    if (!user) {
+      recordReaderLoginIssue({ code: 'READER_LOGIN_CHALLENGE_INVALID', source: 'VERIFY' })
+      return res.status(401).json({ ok: false, code: 'READER_LOGIN_CHALLENGE_INVALID' })
+    }
+    verifiedUserId = user.id
     const settings = await getReaderSecuritySettings(user.id)
     if (settings.email_2fa_enabled && !challenge.email_code_hash) {
+      recordReaderLoginIssue({ userId: verifiedUserId, code: 'READER_LOGIN_RESTART_REQUIRED', source: 'VERIFY' })
       return res.status(401).json({ ok: false, code: 'READER_LOGIN_RESTART_REQUIRED' })
     }
     if (settings.pin_hash) {
- if (!/^(?:\d{4}|\d{6})$/.test(pin)) {
-  return res.status(400).json({ ok: false, code: 'READER_PIN_INVALID_FORMAT', message: 'Enter your existing 4-digit PIN or new 6-digit PIN.' })
-}
-  const pinResult = await verifyReaderPinForUser(user.id, pin)
+      if (!/^(?:\d{4}|\d{6})$/.test(pin)) {
+        recordReaderLoginIssue({ userId: verifiedUserId, code: 'READER_PIN_INVALID_FORMAT', source: 'VERIFY' })
+        return res.status(400).json({ ok: false, code: 'READER_PIN_INVALID_FORMAT', message: 'Enter your existing 4-digit PIN or new 6-digit PIN.' })
+      }
+      const pinResult = await verifyReaderPinForUser(user.id, pin)
       if (!pinResult.ok) {
+        recordReaderLoginIssue({ userId: verifiedUserId, code: pinResult.code, source: 'VERIFY' })
         return res.status(pinResult.code === 'READER_PIN_LOCKED' ? 429 : 401).json({
           ok: false,
           code: pinResult.code,
@@ -664,6 +678,7 @@ export async function verifyReaderLogin(req, res) {
         deviceKey,
       })
       if (!verified.ok) {
+        recordReaderLoginIssue({ userId: verifiedUserId, code: verified.code, source: 'VERIFY' })
         return res.status(401).json({ ok: false, code: verified.code, message: 'Invalid or expired email code.' })
       }
     } else {
@@ -678,13 +693,23 @@ export async function verifyReaderLogin(req, res) {
         .select('id')
         .maybeSingle()
       if (consumeError) throw consumeError
-      if (!consumed) return res.status(401).json({ ok: false, code: 'READER_LOGIN_CHALLENGE_EXPIRED' })
+      if (!consumed) {
+        recordReaderLoginIssue({ userId: verifiedUserId, code: 'READER_LOGIN_CHALLENGE_EXPIRED', source: 'VERIFY' })
+        return res.status(401).json({ ok: false, code: 'READER_LOGIN_CHALLENGE_EXPIRED' })
+      }
     }
 
     const session = await createReaderDeviceSession({ req, userId: user.id, deviceKey })
     const token = createUserToken(user, session)
     return res.status(200).json({ ok: true, token, user: publicUser(user), deviceKey: session.deviceKey })
   } catch (error) {
+    recordReaderLoginIssue({
+      userId: verifiedUserId,
+      code: error.code === 'READER_SESSION_LIMIT_REACHED'
+        ? 'READER_SESSION_LIMIT_REACHED'
+        : 'READER_LOGIN_VERIFICATION_UNAVAILABLE',
+      source: 'VERIFY',
+    })
     if (error.code === 'READER_SESSION_LIMIT_REACHED') {
       return res.status(409).json({
         ok: false,
