@@ -10,6 +10,10 @@ import {
   validateShadowReadEventStart,
   SHADOW_READ_EVENT_PRIZES,
 } from '../services/shadowReadEventPlanner.service.js'
+import {
+  getShadowReadEventLanguageControls,
+  updateShadowReadEventLanguageControl,
+} from '../services/shadowReadEventLanguageControl.service.js'
 
 const router = express.Router()
 
@@ -66,6 +70,47 @@ function ensureEventManager(req, res, next) {
 }
 
 router.use(ipLimit, requireAdminPermission('monthly_vote.view'))
+
+router.get('/language-controls', readLimit, async (req, res) => {
+  res.set('Cache-Control', 'private, no-store')
+  try {
+    const languages = await getShadowReadEventLanguageControls({ fresh: true })
+    return res.json({ ok: true, languages })
+  } catch (error) {
+    console.error('ADMIN_READ_EVENT_LANGUAGE_GET_ERROR', {
+      code: error?.code || error?.name || 'unknown',
+    })
+    return res.status(503).json({ ok: false, code: 'READ_EVENT_LANGUAGE_UNAVAILABLE' })
+  }
+})
+
+router.patch('/language-controls', ensureEventManager, writeLimit, async (req, res) => {
+  res.set('Cache-Control', 'private, no-store')
+  const language = req.body?.language
+  const enabled = req.body?.enabled
+  if (typeof language !== 'string' || typeof enabled !== 'boolean') {
+    return res.status(400).json({ ok: false, code: 'READ_EVENT_LANGUAGE_INVALID' })
+  }
+  try {
+    const language_control = await updateShadowReadEventLanguageControl({
+      language,
+      enabled,
+      adminId: req.admin?.admin_id,
+    })
+    return res.json({ ok: true, language_control })
+  } catch (error) {
+    console.error('ADMIN_READ_EVENT_LANGUAGE_PATCH_ERROR', {
+      code: error?.code || error?.name || 'unknown',
+    })
+    if (error?.code === 'READ_EVENT_LANGUAGE_INVALID' || error?.code === 'READ_EVENT_ADMIN_INVALID') {
+      return res.status(400).json({ ok: false, code: error.code })
+    }
+    if (error?.code === 'READ_EVENT_LANGUAGE_NOT_SUPPORTED') {
+      return res.status(409).json({ ok: false, code: error.code })
+    }
+    return res.status(503).json({ ok: false, code: 'READ_EVENT_LANGUAGE_SAVE_UNAVAILABLE' })
+  }
+})
 
 router.get('/', readLimit, async (req, res) => {
   res.set('Cache-Control', 'private, no-store')
