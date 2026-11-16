@@ -142,15 +142,16 @@ function normalizeMessages(input, characterIds, audioOwnerId = '') {
   for (let index = 0; index < input.length; index += 1) {
     const item = input[index] || {}
     const requestedType = cleanText(item.type).toLowerCase()
-const type = requestedType === 'voice' ? 'audio' : ['chat', 'aside', 'author_note', 'image', 'audio', 'notification'].includes(requestedType)
+const type = requestedType === 'voice' ? 'audio' : ['chat', 'aside', 'author_note', 'image', 'sticker', 'audio', 'notification'].includes(requestedType)
   ? requestedType
   : 'aside'
 const text = cleanText(item.text)
 const imageUrl = cleanNullableText(item.image_url || item.imageUrl)
 const characterId = cleanNullableText(item.character_id || item.characterId)
 if (type === 'image' && !imageUrl) continue
+if (type === 'sticker' && (!imageUrl || !/^https:\/\/[^\s]+$/i.test(imageUrl) || imageUrl.length > 2048)) return { error: 'Sticker requires a valid HTTPS image', messages: [] }
 if (type === 'notification' && !text) return { error: 'Notification text is required', messages: [] }
-if (type !== 'image' && type !== 'audio' && !text) continue
+if (type !== 'image' && type !== 'sticker' && type !== 'audio' && !text) continue
 const audioUrl = type === 'audio' ? normalizeVoiceUrl(item.audio_url || item.audioUrl || item.voice_url || item.voiceUrl, audioOwnerId) : null
 const audioDuration = type === 'audio' ? Number(item.audio_duration ?? item.audioDuration ?? item.duration_seconds ?? item.duration) : null
 if (type === 'audio' && !audioUrl) return { error: 'Voice must be uploaded to this author account before saving', messages: [] }
@@ -177,7 +178,7 @@ if (type === 'audio' && (!characterId || !characterIds.has(characterId)))
     if (type === 'chat' && (!characterId || !characterIds.has(characterId))) {
   return { error: 'One or more selected characters are invalid', messages: [] }
 }
-if (type === 'image' && characterId && !characterIds.has(characterId)) {
+if (['image', 'sticker'].includes(type) && characterId && !characterIds.has(characterId)) {
   return { error: 'The selected image character is invalid', messages: [] }
 }
 
@@ -217,9 +218,9 @@ if (type === 'notification') {
     messages.push({
   id: cleanText(item.id) || `${Date.now()}-${index}`,
   type,
-  character_id: ['chat', 'image', 'audio', 'notification'].includes(type) ? characterId : null,
-  text: type === 'image' || type === 'audio' ? '' : text,
-  image_url: ['image', 'notification'].includes(type) ? imageUrl : null,
+  character_id: ['chat', 'image', 'sticker', 'audio', 'notification'].includes(type) ? characterId : null,
+  text: ['image', 'sticker', 'audio'].includes(type) ? '' : text,
+  image_url: ['image', 'sticker', 'notification'].includes(type) ? imageUrl : null,
   ...(notification ? { notification } : {}),
   ...(type === 'audio' ? { audio_url: audioUrl, audio_duration: audioDuration } : {}),
   sort_order: messages.length,
