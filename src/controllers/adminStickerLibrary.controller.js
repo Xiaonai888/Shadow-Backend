@@ -5,11 +5,14 @@ import {
   deleteMediaLibraryObject,
   deleteMediaLibraryObjects,
 } from '../services/mediaLibraryR2.service.js'
+import {
+  normalizeStickerFolderColor,
+  validateStickerFolderCoverReference,
+} from '../services/stickerFolderCoverReference.service.js'
 
-// Sticker records never query or modify the existing Character tables.
 const FOLDER_TABLE = 'sticker_folders'
 const IMAGE_TABLE = 'sticker_library'
-const FOLDER_FIELDS = 'id,name,icon,description,cover_image_url,cover_storage_key,sort_order,is_active,created_at,updated_at'
+const FOLDER_FIELDS = 'id,name,icon,description,color,cover_image_url,cover_storage_key,sort_order,is_active,created_at,updated_at'
 const IMAGE_FIELDS = 'id,folder_id,title,alt_text,image_url,storage_key,sort_order,is_active,animation_type,animation_speed,animation_repeat,created_at,updated_at'
 const ANIMATIONS = new Set(['none', 'bounce', 'shake', 'pulse', 'float'])
 const SPEEDS = new Set(['slow', 'normal', 'fast'])
@@ -54,6 +57,9 @@ function ensureDb(error) {
     if (error.code === '42P01' || error.code === 'PGRST205') {
       throw fail(503, 'Sticker database tables are not installed yet. Run the Sticker SQL migration.', 'STICKER_TABLE_MISSING')
     }
+    if (error.code === '42703' && /color/.test(error.message || '')) {
+      throw fail(503, 'Sticker folder color migration is required.', 'STICKER_COLOR_MIGRATION_REQUIRED')
+    }
     throw error
   }
 }
@@ -88,12 +94,9 @@ async function requireFolder(id) {
 }
 async function validateImageReference(rawUrl, rawKey) {
   const storage_key = assertR2StorageKey(rawKey, { field: 'sticker_library.storage_key', allowEmpty: false })
-  // Accept images from the existing direct and fallback upload pipelines.
   if (!['admin-media-library/images/', 'media-library/images/'].some((prefix) => storage_key.startsWith(prefix))) {
     throw fail(400, 'Sticker image must come from the existing Admin Media Library uploader')
   }
-  // Direct upload uses R2_PUBLIC_URL; fallback R2 may prefer CLOUDFLARE_R2_PUBLIC_URL.
-  // Match the complete configured URL + key, never an arbitrary external URL.
   const image_url = String(rawUrl || '').trim()
   const publicBases = [process.env.R2_PUBLIC_URL, process.env.CLOUDFLARE_R2_PUBLIC_URL]
     .map((url) => String(url || '').trim().replace(/\/+$/, ''))
@@ -101,8 +104,6 @@ async function validateImageReference(rawUrl, rawKey) {
   if (!publicBases.some((base) => image_url === `${base}/${storage_key}`)) {
     throw fail(400, 'Image URL and storage key do not match the same Cloudflare object')
   }
-  // Never allow one stored R2 object to be owned by both Character and Sticker;
-  // deleting one library must not delete an asset still used by the other.
   const checks = await Promise.all([
     supabase.from('media_library').select('id').eq('storage_key', storage_key).limit(1),
     supabase.from(IMAGE_TABLE).select('id').eq('storage_key', storage_key).limit(1),
@@ -110,6 +111,21 @@ async function validateImageReference(rawUrl, rawKey) {
   for (const check of checks) ensureDb(check.error)
   if (checks.some((check) => check.data?.length)) throw fail(409, 'This image is already saved in a media library. Upload a new copy.', 'STICKER_IMAGE_ALREADY_USED')
   return { image_url, storage_key }
+}
+function hasCoverReference(body) {
+  return Object.hasOwn(body, 'cover_image_url') || Object.hasOwn(body, 'cover_storage_key')
+}
+async function coverPatch(body, folderId = '') {
+  if (!hasCoverReference(body)) return {}
+  const rawUrl = body.cover_image_url
+  const rawKey = body.cover_storage_key
+  if ((rawUrl === null || rawUrl === '') && (rawKey === null || rawKey === '')) {
+    return { cover_image_url: null, cover_storage_key: null }
+  }
+  if (typeof rawUrl !== 'string' || !rawUrl.trim() || typeof rawKey !== 'string' || !rawKey.trim()) {
+    throw fail(400, 'Cover URL and storage key are both required.', 'STICKER_COVER_REFERENCE_INCOMPLETE')
+  }
+  return validateStickerFolderCoverReference(rawUrl, rawKey, folderId)
 }
 
 export const listStickers = handle(async (req, res) => {
@@ -142,9 +158,11 @@ export const createStickerFolder = handle(async (req, res) => {
     name: required(body.name, 'Folder name', 100),
     icon: string(body.icon, 20) || '📁',
     description: string(body.description, 300),
+    color: normalizeStickerFolderColor(body.color),
     sort_order: sortOrder(body.sort_order ?? 0),
     is_active: visible(body.is_active ?? true),
     updated_at: now(),
+    ...await coverPatch(body),
   }
   const { data, error } = await supabase.from(FOLDER_TABLE).insert(row).select(FOLDER_FIELDS).single()
   ensureDb(error)
@@ -152,17 +170,25 @@ export const createStickerFolder = handle(async (req, res) => {
 })
 
 export const updateStickerFolder = handle(async (req, res) => {
-  await requireFolder(req.params.folderId)
+  const folder = await requireFolder(req.params.folderId)
   const b = req.body || {}
   const patch = { updated_at: now() }
   if (Object.hasOwn(b, 'name')) patch.name = required(b.name, 'Folder name', 100)
   if (Object.hasOwn(b, 'icon')) patch.icon = string(b.icon, 20) || '📁'
   if (Object.hasOwn(b, 'description')) patch.description = string(b.description, 300)
+  if (Object.hasOwn(b, 'color')) patch.color = normalizeStickerFolderColor(b.color)
   if (Object.hasOwn(b, 'sort_order')) patch.sort_order = sortOrder(b.sort_order)
   if (Object.hasOwn(b, 'is_active')) patch.is_active = visible(b.is_active)
-  const { data, error } = await supabase.from(FOLDER_TABLE).update(patch).eq('id', req.params.folderId).select(FOLDER_FIELDS).single()
+  Object.assign(patch, await coverPatch(b, folder.id))
+  const { data, error } = await supabase.from(FOLDER_TABLE).update(patch).eq('id', folder.id).select(FOLDER_FIELDS).single()
   ensureDb(error)
-  res.json({ ok: true, folder: data })
+  let cleanup_warning = null
+  const coverChanged = Object.hasOwn(patch, 'cover_storage_key') && folder.cover_storage_key !== data.cover_storage_key
+  if (coverChanged && folder.cover_storage_key) {
+    try { await deleteMediaLibraryObject(folder.cover_storage_key) }
+    catch (e) { cleanup_warning = e.message }
+  }
+  res.json({ ok: true, folder: data, cleanup_warning })
 })
 
 export const uploadStickerCover = handle(async (req, res) => {
@@ -203,7 +229,6 @@ export const deleteStickerCover = handle(async (req, res) => {
 
 export const deleteStickerFolder = handle(async (req, res) => {
   const folder = await requireFolder(req.params.folderId)
-  // Cursor pagination avoids holding a huge unbounded list in one Supabase request.
   const keys = new Set(folder.cover_storage_key ? [folder.cover_storage_key] : [])
   let lastId = ''
   let imageCount = 0
@@ -219,7 +244,6 @@ export const deleteStickerFolder = handle(async (req, res) => {
     lastId = data.at(-1).id
     if (data.length < 500) break
   }
-  // sticker_library.folder_id ON DELETE CASCADE is installed by the next SQL step.
   const { error } = await supabase.from(FOLDER_TABLE).delete().eq('id', folder.id)
   ensureDb(error)
   let cleanup_warning = null
@@ -265,8 +289,6 @@ export const updateStickerImage = handle(async (req, res) => {
   if (Object.hasOwn(b, 'animation_type')) patch.animation_type = option(b.animation_type, ANIMATIONS, 'animation type')
   if (Object.hasOwn(b, 'animation_speed')) patch.animation_speed = option(b.animation_speed, SPEEDS, 'animation speed')
   if (Object.hasOwn(b, 'animation_repeat')) patch.animation_repeat = option(b.animation_repeat, REPEATS, 'animation repeat')
-  // Storage keys and URLs are deliberately immutable: changing CSS animation
-  // never re-uploads, re-compresses or changes the source image.
   const { data, error } = await supabase.from(IMAGE_TABLE).update(patch)
     .eq('id', item.id).select(IMAGE_FIELDS).single()
   ensureDb(error)
