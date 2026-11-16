@@ -13,7 +13,7 @@ const SOURCE_TABLES = [
   {
     key: 'aba_topups',
     table: 'payment_transactions',
-    fields: 'id,user_id,order_id,tran_id,status,purchase_type,package_usd,amount_usd,diamonds,bonus_gems,payment_method,created_at,updated_at,paid_at,confirmed_at,released_at',
+    fields: 'id,user_id,order_id,aba_trx_id,status,purchase_type,package_usd,amount_usd,diamonds,bonus_gems,payment_method,created_at,updated_at,paid_at,confirmed_at,released_at',
   },
   {
     key: 'binance_topups',
