@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { smartAdCambodiaSlot, SMART_AD_POLICY } from './smartAdEligibility.service.js'
+import { invalidateSmartAdRecentHistory } from './smartAdRecentHistory.service.js'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const VISITOR = /^[a-zA-Z0-9._:-]{8,128}$/
@@ -121,6 +122,9 @@ export async function recordSmartAdEvents({
   if (error) throw error
   for (const id of ids) statsCache.delete(id)
   const item = Array.isArray(data) ? data[0] : data
+  if (Number(item?.new_impressions || 0) > 0) {
+    invalidateSmartAdRecentHistory(readerHash, { db })
+  }
   return {
     accepted_count: Number(item?.accepted_count || 0),
     new_impressions: Number(item?.new_impressions || 0),
