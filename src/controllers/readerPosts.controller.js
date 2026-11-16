@@ -30,8 +30,9 @@ const readerPostsRequestContext =
 
 function createReaderPostsRequestState() {
   return {
-    relationshipSnapshots:
-      new Map(),
+    relationshipSnapshots: new Map(),
+    userSnapshots: new Map(),
+    privateOwnerSnapshots: new Map(),
   }
 }
 
@@ -414,38 +415,87 @@ function normalizePost(
   }
 }
 
-async function readUsersByIds(userIds) {
-  const ids = [
-    ...new Set(
-      (userIds || [])
-        .map((id) => String(id || ''))
-        .filter(Boolean)
-    ),
-  ]
 
-  if (!ids.length) return new Map()
-
+async function loadUsersByIds(ids) {
   const { data, error } = await supabase
     .from('users')
-    .select(
-      'id, name, username, avatar_url, is_active'
-    )
+    .select('id, name, username, avatar_url, is_active')
     .in('id', ids)
 
   if (error) throw error
 
   return new Map(
     (data || [])
-      .filter(
-        (user) =>
-          user.is_active !== false
-      )
-      .map((user) => [
-        String(user.id),
-        user,
-      ])
+      .filter((user) => user.is_active !== false)
+      .map((user) => [String(user.id), user])
   )
 }
+
+async function readUsersByIds(userIds) {
+  const ids = uniqueStrings(userIds)
+  if (!ids.length) return new Map()
+
+  const state = readerPostsRequestContext.getStore()
+  if (!state) return loadUsersByIds(ids)
+
+  const snapshots = state.userSnapshots
+  const missingIds = ids.filter((id) => !snapshots.has(id))
+
+  if (missingIds.length) {
+    const request = loadUsersByIds(missingIds)
+    for (const id of missingIds) {
+      snapshots.set(
+        id,
+        request.then((users) => users.get(id) || null)
+      )
+    }
+  }
+
+  try {
+    const rows = await Promise.all(
+      ids.map(async (id) => [id, await snapshots.get(id)])
+    )
+    return new Map(rows.filter(([, user]) => Boolean(user)))
+  } catch (error) {
+    for (const id of missingIds) snapshots.delete(id)
+    throw error
+  }
+}
+
+async function readPrivateReaderOwnerIds(ownerIds) {
+  const ids = uniqueStrings(ownerIds)
+  if (!ids.length) return new Set()
+
+  const state = readerPostsRequestContext.getStore()
+  if (!state) return getPrivateReaderOwnerIds(ids)
+
+  const snapshots = state.privateOwnerSnapshots
+  const missingIds = ids.filter((id) => !snapshots.has(id))
+
+  if (missingIds.length) {
+    const request = getPrivateReaderOwnerIds(missingIds)
+    for (const id of missingIds) {
+      snapshots.set(
+        id,
+        request.then((privateIds) => privateIds.has(id))
+      )
+    }
+  }
+
+  try {
+    const flags = await Promise.all(
+      ids.map((id) => snapshots.get(id))
+    )
+    return new Set(
+      ids.filter((id, index) => flags[index])
+    )
+  } catch (error) {
+    for (const id of missingIds) snapshots.delete(id)
+    throw error
+  }
+}
+
+
 
 async function loadViewerRelationshipSnapshot(
   viewerId
@@ -1085,7 +1135,7 @@ async function attachVisibleUsers(
         sharedStateReady
       ? sharedEchoCounts
       : readReaderPostEchoCounts(postIds),
-    getPrivateReaderOwnerIds(
+    readPrivateReaderOwnerIds(
   ownerIds.filter((id) => String(id) !== String(viewerId || ''))
 ),
   ])
@@ -2433,7 +2483,7 @@ async function readSocialEchoPosts({
     await Promise.all([
       readUsersByIds(relationshipOwnerIds),
       getRelationshipMaps(viewerId, relationshipOwnerIds),
-      getPrivateReaderOwnerIds(
+      readPrivateReaderOwnerIds(
   relationshipOwnerIds.filter((id) => String(id) !== String(viewerId || ''))
 ),
     ])
