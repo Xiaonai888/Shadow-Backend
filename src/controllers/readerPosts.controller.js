@@ -1014,7 +1014,9 @@ async function attachVisibleUsers(
         sharedStateReady
       ? sharedEchoCounts
       : readReaderPostEchoCounts(postIds),
-    getPrivateReaderOwnerIds(ownerIds),
+    getPrivateReaderOwnerIds(
+  ownerIds.filter((id) => String(id) !== String(viewerId || ''))
+),
   ])
 
   return rows
@@ -2360,7 +2362,9 @@ async function readSocialEchoPosts({
     await Promise.all([
       readUsersByIds(relationshipOwnerIds),
       getRelationshipMaps(viewerId, relationshipOwnerIds),
-      getPrivateReaderOwnerIds(relationshipOwnerIds),
+      getPrivateReaderOwnerIds(
+  relationshipOwnerIds.filter((id) => String(id) !== String(viewerId || ''))
+),
     ])
 
   const storyMap = new Map(
