@@ -175,10 +175,14 @@ export function connectAdminFinancialReports() {
   return callFinancialScript('connect')
 }
 
-export function upsertAdminFinancialReportRows(rows) {
+export function upsertAdminFinancialReportRows(rows, options = {}) {
   if (!Array.isArray(rows) || rows.length > MAX_BATCH_ROWS) {
     throw new Error(`Admin Financial Reports accepts at most ${MAX_BATCH_ROWS} rows per request`)
   }
-  if (!rows.length) return Promise.resolve({ ok: true, appended: 0, updated: 0, skipped: 0 })
-  return callFinancialScript('upsert_rows', { rows })
+  const month = String(options?.month || '').trim()
+  if (month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+    throw new Error('Report month must use YYYY-MM')
+  }
+  if (!rows.length && !month) return Promise.resolve({ ok: true, appended: 0, updated: 0, skipped: 0 })
+  return callFinancialScript('upsert_rows', { rows, ...(month ? { report_month: month } : {}) })
 }
