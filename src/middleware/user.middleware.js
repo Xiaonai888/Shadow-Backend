@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { validateReaderDeviceSession } from '../services/readerDeviceSessions.service.js'
+import { recordReaderLoginIssue } from '../services/readerLoginIssueMonitor.service.js'
 
 const READER_SESSION_DAYS = 60
 const RENEW_AFTER_SECONDS = 24 * 60 * 60
@@ -51,6 +52,7 @@ export async function requireUser(req, res, next) {
     }
 
     if (!decoded.session_id || !decoded.device_id || !decoded.jwt_id) {
+      recordReaderLoginIssue({ userId: decoded.user_id, code: 'READER_SESSION_REQUIRED', source: 'SESSION' })
       return res.status(401).json({
         ok: false,
         code: 'READER_SESSION_REQUIRED',
@@ -71,6 +73,7 @@ export async function requireUser(req, res, next) {
     }
 
     if (!session.ok) {
+      recordReaderLoginIssue({ userId: decoded.user_id, code: session.code, source: 'SESSION' })
       return res.status(401).json({
         ok: false,
         code: session.code,
