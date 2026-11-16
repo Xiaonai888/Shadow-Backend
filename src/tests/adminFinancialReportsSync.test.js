@@ -14,9 +14,13 @@ function harness({ rows = [], writer, connector, configured = true } = {}) {
     clock: () => now,
     isConfigured: () => configured,
     loadRows: async ({ month }) => ({ rows, source_counts: { test: rows.length }, range: { month } }),
-    writeRows: writer || (async (chunk) => {
+    writeRows: writer || (async (chunk, options = {}) => {
       batches.push(chunk)
-      return { ok: true, appended: chunk.length, updated: 0, skipped: 0 }
+      return {
+        ok: true, appended: chunk.length, updated: 0, skipped: 0,
+        report_month: options.month || '', updated_months: options.month ? [options.month] : [],
+        verified_rows: chunk.length,
+      }
     }),
     connect: connector || (async () => ({ ok: true, spreadsheet_url: 'https://docs.google.com/spreadsheets/d/test', script_version: '1.0' })),
   })
@@ -56,11 +60,13 @@ test('sync sends 520 rows in bounded batches without a background timer', async 
   assert.equal(batches.length, 3)
 })
 
-test('no rows means no requests to Google Sheets', async () => {
+test('empty months are created in Google Sheets and confirmed', async () => {
   const { service, batches } = harness()
   const result = await service.syncPeriod({ month: '2026-11' })
   assert.equal(result.rows_found, 0)
-  assert.equal(batches.length, 0)
+  assert.equal(batches.length, 1)
+  assert.deepEqual(batches[0], [])
+  assert.equal(result.batches, 1)
 })
 
 test('sync cannot run concurrently with another sync or connect', async () => {
@@ -72,7 +78,7 @@ test('sync cannot run concurrently with another sync or connect', async () => {
     clock: () => now,
     isConfigured: () => true,
     loadRows: async () => { entered(); await held; return { rows: sample(1) } },
-    writeRows: async () => ({ ok: true, appended: 1 }),
+    writeRows: async (rows, options) => ({ ok: true, appended: 1, report_month: options.month, updated_months: [options.month], verified_rows: rows.length }),
     connect: async () => ({ ok: true }),
   })
   const running = service.syncPeriod({ month: '2026-11' })
@@ -87,10 +93,10 @@ test('sync cannot run concurrently with another sync or connect', async () => {
 
 test('failed batch does not report success and allows retry', async () => {
   let attempt = 0
-  const { service } = harness({ rows: sample(260), writer: async (rows) => {
+  const { service } = harness({ rows: sample(260), writer: async (rows, options) => {
     attempt += 1
     if (attempt === 2) throw new Error('Google unreachable')
-    return { ok: true, appended: rows.length }
+    return { ok: true, appended: rows.length, report_month: options.month, updated_months: [options.month], verified_rows: rows.length }
   } })
   await assert.rejects(service.syncPeriod({ month: '2026-11' }), (error) => {
     assert.equal(error.synced_rows, 250)
@@ -114,4 +120,16 @@ test('unconfigured integration fails without touching data', async () => {
   assert.equal(service.status().configured, false)
   await assert.rejects(service.connectSheet(), /not configured/)
   await assert.rejects(service.syncPeriod({}), /not configured/)
+})
+
+test('monthly sync refuses to mark a month complete without Google verification', async () => {
+  const { service } = harness({ rows: sample(2), writer: async () => ({ ok: true, appended: 2 }) })
+  await assert.rejects(service.syncPeriod({ month: '2026-11' }), /did not verify report month/)
+  assert.equal(service.status().last_sync, null)
+})
+
+test('monthly sync refuses false confirmation of an empty month', async () => {
+  const { service } = harness({ writer: async () => ({ ok: true, report_month: '2026-10', updated_months: ['2026-10'], verified_rows: 0 }) })
+  await assert.rejects(service.syncPeriod({ month: '2026-11' }), /did not verify report month/)
+  assert.equal(service.status().last_sync, null)
 })
