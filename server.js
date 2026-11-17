@@ -132,6 +132,7 @@ import { startSmartAdMaintenanceScheduler } from './src/services/smartAdMaintena
 import { startBinanceUsdtAlertWorker } from './src/services/binanceUsdtAlertWorker.service.js'
 import { startTelegramMissingReportRecovery } from './src/services/telegramMissingReportRecovery.service.js'
 import { startShadowReadEventDailySettlement } from './src/services/shadowReadEventDailySettlement.service.js'
+import { startShadowReadEventAutoCycle } from './src/services/shadowReadEventAutoCycle.service.js'
 import {
   memoryIncidentTracer,
   startMemoryIncidentMonitor,
@@ -1110,6 +1111,7 @@ app.listen(PORT, () => {
   startBinanceUsdtAlertWorker()
   startTelegramMissingReportRecovery()
   startShadowReadEventDailySettlement()
+  startShadowReadEventAutoCycle()
   startMemoryIncidentMonitor()
   startWorkDetectorMonitor()
   startSystemUsagePersistence()
