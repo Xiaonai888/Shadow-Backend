@@ -9,6 +9,30 @@ import {
 
 const router = express.Router()
 
+const preAuthReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 240,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'READER_PROFILE_PHOTOS_RATE_LIMITED',
+    message: 'Too many requests. Please try again later.',
+  },
+})
+
+const preAuthWriteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'READER_PROFILE_PHOTOS_RATE_LIMITED',
+    message: 'Too many requests. Please try again later.',
+  },
+})
+
 const readLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 90,
@@ -25,9 +49,8 @@ const writeLimit = rateLimit({
   keyGenerator: (req) => String(req.user?.user_id || req.user?.id),
 })
 
-router.use(requireUser)
-router.get('/', readLimit, listMyReaderProfilePhotos)
-router.post('/', writeLimit, registerMyReaderProfilePhoto)
-router.delete('/:photoId', writeLimit, removeMyReaderProfilePhoto)
+router.get('/', preAuthReadLimit, requireUser, readLimit, listMyReaderProfilePhotos)
+router.post('/', preAuthWriteLimit, requireUser, writeLimit, registerMyReaderProfilePhoto)
+router.delete('/:photoId', preAuthWriteLimit, requireUser, writeLimit, removeMyReaderProfilePhoto)
 
 export default router
