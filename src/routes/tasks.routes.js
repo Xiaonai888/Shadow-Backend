@@ -38,6 +38,18 @@ router.use(rateLimit({
   legacyHeaders: false,
 }))
 
+const overviewIpRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'TASK_OVERVIEW_IP_RATE_LIMIT',
+    message: 'Too many overview requests. Please try again shortly.',
+  },
+})
+
 const taskRateLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 300,
@@ -161,7 +173,7 @@ function cacheTaskOverview(req, res, next) {
 
 router.use(invalidateOverviewOnMutation)
 
-router.get('/overview', requireUser, taskRateLimit, cacheTaskOverview, getTaskOverview)
+router.get('/overview', overviewIpRateLimit, requireUser, taskRateLimit, cacheTaskOverview, getTaskOverview)
 
 router.get('/check-in', requireUser, taskRateLimit, getTaskCheckIn)
 router.post('/check-in/claim', requireUser, taskRateLimit, claimTaskCheckIn)
