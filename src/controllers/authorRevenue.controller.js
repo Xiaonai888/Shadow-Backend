@@ -2342,7 +2342,7 @@ async function getMyAuthorIncomeUncached(
       settings,
       quest,
       paymentMethod,
-      totalIncome,
+      incomeTotals,
       recentEarnings,
       topSupporters,
       monthlyEarnings,
@@ -2458,28 +2458,6 @@ async function getMyAuthorIncomeUncached(
         (a, b) => b.percent - a.percent
       )[0] || shareCandidates[0]
 
-    const lastMonthKey =
-      getPreviousMonthKey()
-
-    const {
-      data: lastMonthRows,
-      error: lastMonthError,
-    } = await supabase
-      .from('author_earnings')
-      .select('author_net_payout_usd')
-      .eq('author_id', authorPage.id)
-      .eq('currency', 'diamond')
-      .in(
-        'source_type',
-        AUTHOR_INCOME_SOURCE_TYPES
-      )
-      .eq('earning_month', lastMonthKey)
-      .neq('earning_status', 'void')
-
-    if (lastMonthError) {
-      throw lastMonthError
-    }
-
     return res.status(200).json({
       ok: true,
       author_page: {
@@ -2503,16 +2481,8 @@ async function getMyAuthorIncomeUncached(
         this_month_usd:
           incomeRecordData.summary
             .this_month_usd,
-        last_month_usd:
-          (lastMonthRows || []).reduce(
-            (sum, item) =>
-              sum +
-              numberValue(
-                item.author_net_payout_usd
-              ),
-            0
-          ),
-        total_usd: totalIncome,
+        last_month_usd: incomeTotals.lastMonthUsd,
+        total_usd: incomeTotals.totalUsd,
       },
       gifts: {
         total_received:
