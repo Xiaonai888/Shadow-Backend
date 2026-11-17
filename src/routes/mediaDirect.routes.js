@@ -55,6 +55,7 @@ const AUDIO_EXTENSIONS = Object.freeze({
 })
 const CATEGORIES = Object.freeze({
   reader_story_image: { scope: 'user', folder: 'reader-stories/images', maxBytes: 5 * MB },
+  author_story_image: { scope: 'author', folder: 'author-stories/images', maxBytes: 5 * MB },
   reader_post_image: { scope: 'user', folder: 'reader-posts/images', maxBytes: 5 * MB },
   reader_avatar: { scope: 'user', folder: 'reader-profiles/avatars', maxBytes: 2 * MB },
   story_cover: { scope: 'author', folder: 'story-covers', maxBytes: 5 * MB },
@@ -394,7 +395,7 @@ async function finalize(req, res, role) {
       ...(claims.policy.audio ? { CopySourceIfMatch: head.ETag } : {}),
       MetadataDirective: 'REPLACE',
       ContentType: claims.mime,
-      CacheControl: 'public, max-age=31536000, immutable',
+            CacheControl: ['reader_story_image', 'author_story_image'].includes(claims.category) ? 'public, max-age=86400' : 'public, max-age=31536000, immutable',
     }))
     copied = true
     const publicUrl = `${c.publicUrl}/${finalKey}`
@@ -430,6 +431,12 @@ async function finalize(req, res, role) {
       file_url: publicUrl,
       fileUrl: publicUrl,
       asset,
+            ...(['reader_story_image', 'author_story_image'].includes(claims.category) ? {
+        story_image_proof: jwt.sign({
+          v: 1, purpose: 'story_image', owner, role, category: claims.category,
+          author_page_id: authorPage?.id || null, key: finalKey, mime: claims.mime, size: claims.size,
+        }, process.env.JWT_SECRET, { audience: 'shadow-story-image', issuer: 'shadow-backend', expiresIn: '10m', algorithm: 'HS256' }),
+      } : {}),
     })
   } catch (error) {
     if (copied && finalKey) await deleteObject(finalKey).catch(() => {})
