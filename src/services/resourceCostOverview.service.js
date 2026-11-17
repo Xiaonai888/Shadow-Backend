@@ -43,7 +43,7 @@ function selectedPeriod(mode, now) {
     : mode === 'last7' ? shiftDay(today, -6)
       : mode === 'week' ? shiftDay(today, -mondayOffset)
         : mode === 'month' ? `${today.slice(0, 7)}-01`
-          : mode === 'last30' ? shiftDay(today, -30)
+          : mode === 'last30' ? shiftDay(today, -29)
             : shiftMonth(today, -11)
   const endExclusive = mode === 'yesterday' ? today : shiftDay(today, 1)
   const dates = []
