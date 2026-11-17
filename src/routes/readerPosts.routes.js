@@ -36,6 +36,10 @@ import { getMyReaderPostTags } from '../controllers/readerPostTags.controller.js
 const router = express.Router()
 const feedRequestsInFlight = new Map()
 const FEED_IN_FLIGHT_LIMIT = 200
+const FEED_RESPONSE_TTL_MS = 2500
+const FEED_RESPONSE_CACHE_LIMIT = 100
+const feedResponseCache = new Map()
+let feedCacheGeneration = 0
 
 const readerPostsPreAuthLimit = rateLimit({
   windowMs: 60 * 1000,
@@ -64,6 +68,18 @@ const readerPostsWriteLimit = rateLimit({
   keyGenerator: readerPostIdentity,
 })
 
+router.use((req, res, next) => {
+  if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) {
+    res.once('finish', () => {
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        feedCacheGeneration += 1
+        feedResponseCache.clear()
+      }
+    })
+  }
+  next()
+})
+
 function coalesceReaderPostsFeed(req, res, next) {
   const userId = String(req.user?.user_id || req.user?.id || '').trim()
   const authorization = String(req.headers.authorization || '')
@@ -72,6 +88,20 @@ function coalesceReaderPostsFeed(req, res, next) {
   const key = createHash('sha256')
     .update(JSON.stringify([userId, authorization, req.originalUrl]))
     .digest('hex')
+  const eligibleForCache = req.path === '/feed'
+  const cacheGeneration = feedCacheGeneration
+
+  if (eligibleForCache) {
+    const cached = feedResponseCache.get(key)
+    if (cached) {
+      if (cached.expiresAt > Date.now() && cached.generation === cacheGeneration) {
+        res.set('Cache-Control', 'private, no-store')
+        return res.status(200).json(cached.body)
+      }
+      feedResponseCache.delete(key)
+    }
+  }
+
   const existing = feedRequestsInFlight.get(key)
 
   if (existing) {
@@ -105,7 +135,21 @@ function coalesceReaderPostsFeed(req, res, next) {
   const originalJson = res.json.bind(res)
   res.json = (body) => {
     const status = res.statusCode || 200
+
+    if (eligibleForCache && status === 200 && body?.ok === true && cacheGeneration === feedCacheGeneration) {
+      feedResponseCache.delete(key)
+      feedResponseCache.set(key, {
+        body,
+        generation: cacheGeneration,
+        expiresAt: Date.now() + FEED_RESPONSE_TTL_MS,
+      })
+      while (feedResponseCache.size > FEED_RESPONSE_CACHE_LIMIT) {
+        feedResponseCache.delete(feedResponseCache.keys().next().value)
+      }
+    }
+
     finish({ status, body })
+    res.set('Cache-Control', 'private, no-store')
     return originalJson(body)
   }
 
@@ -215,7 +259,6 @@ router.post(
   requirePrivateReaderPostAccess,
   createReaderPostEcho
 )
-
 
 router.get(
   '/user/:username',
