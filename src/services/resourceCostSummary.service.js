@@ -8,6 +8,7 @@ const RENDER_FIELDS = ['total_bytes', 'http_response_bytes', 'service_initiated_
 const UPLOAD_FIELDS = ['attempts', 'successes', 'failures', 'ingress_bytes', 'egress_bytes', 'object_bytes']
 
 function natural(value) {
+  if (value === null || value === undefined || value === '') return null
   const number = Number(value)
   return Number.isSafeInteger(number) && number >= 0 ? number : null
 }
@@ -387,7 +388,11 @@ export function buildResourceCostSummary({
     }
   }
   const completeDays = days.filter((day) => day.render.coverage === 'complete').length
-  render.coverage = !names.length ? 'unknown_services' : completeDays === days.length ? 'complete' : 'partial'
+  render.coverage = !names.length ? 'unknown_services'
+    : completeDays === days.length ? 'complete'
+      : days.every((day) => day.render.coverage === 'partial_breakdown' || day.render.coverage === 'complete') ? 'partial_breakdown'
+        : days.every((day) => day.render.coverage === 'pending_provider_data') ? 'pending_provider_data'
+          : 'partial'
   return {
     period: { ...range, timezone: 'Asia/Phnom_Penh', days: days.length },
     generated_at: new Date().toISOString(),
