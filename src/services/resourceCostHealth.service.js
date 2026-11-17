@@ -90,7 +90,12 @@ export async function getResourceCostHealth({ client, providerState, uploadHealt
   const entries = await Promise.all(SOURCES.map(async (spec) => [spec.key, await latestSource(database, spec, current)]))
   const sources = Object.fromEntries(entries)
   const providers = {
-    render: providerInfo(state, 'render'),
+    render: {
+      ...providerInfo(state, 'render'),
+      service_ids: state?.render?.service_ids || [],
+      sync_diagnostics: state?.render?.sync_diagnostics ?? null,
+      hourly_history: state?.render?.hourly_history ?? null,
+    },
     supabase: providerInfo(state, 'supabase'),
     cloudflare_r2: providerInfo(state, 'cloudflare_r2'),
     last_sync_at: safeDate(state?.last_sync_at),
