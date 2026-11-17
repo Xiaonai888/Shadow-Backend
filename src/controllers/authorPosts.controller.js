@@ -970,20 +970,7 @@ export async function createMyAuthorPost(req, res) {
 
     if (createError) throw createError
 
-    if (!createdComment.is_hidden) {
-      await queueAuthorCommentMassMention({
-        senderUserId: userId,
-        commentId: createdComment.id,
-        postId,
-        text,
-        post,
-      })
-    }
-
-    const nextCommentCount =
-      await getVisibleAuthorPostCommentCount(
-      await bumpContentVersions(['discover'])
-    }
+    await bumpContentVersions(['discover'])
 
     return res.status(201).json({
       ok: true,
@@ -2598,6 +2585,16 @@ export async function createAuthorPostComment(req, res) {
       .single()
 
     if (createError) throw createError
+
+    if (!createdComment.is_hidden) {
+      await queueAuthorCommentMassMention({
+        senderUserId: userId,
+        commentId: createdComment.id,
+        postId,
+        text,
+        post,
+      })
+    }
 
     const nextCommentCount =
       await getVisibleAuthorPostCommentCount(
