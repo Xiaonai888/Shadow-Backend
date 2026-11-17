@@ -1,4 +1,5 @@
 import express from 'express'
+import { createHash } from 'node:crypto'
 import { rateLimit } from 'express-rate-limit'
 import { requireUser } from '../middleware/user.middleware.js'
 import {
@@ -22,12 +23,21 @@ import {
 import { getWeeklyReading, claimWeeklyReadingReward } from '../controllers/weeklyReading.controller.js'
 
 const router = express.Router()
+const OVERVIEW_CACHE_TTL_MS = 2000
+const OVERVIEW_CACHE_LIMIT = 200
+const OVERVIEW_INFLIGHT_LIMIT = 128
+const OVERVIEW_VERSION_LIMIT = 2000
+const overviewCache = new Map()
+const overviewPending = new Map()
+const overviewVersions = new Map()
+
 router.use(rateLimit({
   windowMs: 60 * 1000,
   limit: 3000,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
 }))
+
 const taskRateLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 300,
@@ -41,7 +51,117 @@ const taskRateLimit = rateLimit({
   },
 })
 
-router.get('/overview', requireUser, taskRateLimit, getTaskOverview)
+function taskUserId(req) {
+  return String(req.user?.user_id || req.user?.id || '').trim()
+}
+
+function invalidateOverviewOnMutation(req, res, next) {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next()
+
+  res.once('finish', () => {
+    if (res.statusCode < 200 || res.statusCode >= 300) return
+
+    const userId = taskUserId(req)
+    if (!userId) return
+
+    const version = (overviewVersions.get(userId) || 0) + 1
+    overviewVersions.delete(userId)
+    overviewVersions.set(userId, version)
+
+    while (overviewVersions.size > OVERVIEW_VERSION_LIMIT) {
+      overviewVersions.delete(overviewVersions.keys().next().value)
+    }
+
+    for (const [key, cached] of overviewCache) {
+      if (cached.userId === userId) overviewCache.delete(key)
+    }
+  })
+
+  return next()
+}
+
+function cacheTaskOverview(req, res, next) {
+  const userId = taskUserId(req)
+  const authorization = String(req.headers.authorization || '').trim()
+
+  if (!userId || !authorization) return next()
+
+  const version = overviewVersions.get(userId) || 0
+  const tokenHash = createHash('sha256').update(authorization).digest('hex')
+  const key = `${userId}:${tokenHash}:${version}`
+  const now = Date.now()
+  const cached = overviewCache.get(key)
+
+  if (cached && cached.expiresAt > now) {
+    overviewCache.delete(key)
+    overviewCache.set(key, cached)
+    res.set('Cache-Control', 'private, no-store')
+    return res.status(200).json(cached.body)
+  }
+  if (cached) overviewCache.delete(key)
+
+  const active = overviewPending.get(key)
+
+  if (active) {
+    active.then((result) => {
+      if (res.headersSent || res.writableEnded || res.destroyed) return
+      if (!result) return next()
+      res.set('Cache-Control', 'private, no-store')
+      return res.status(result.status).json(result.body)
+    }).catch(next)
+    return
+  }
+
+  if (overviewPending.size >= OVERVIEW_INFLIGHT_LIMIT) return next()
+
+  let resolvePending
+  const promise = new Promise((resolve) => {
+    resolvePending = resolve
+  })
+  overviewPending.set(key, promise)
+
+  let settled = false
+  const finish = (result) => {
+    if (settled) return
+    settled = true
+    if (overviewPending.get(key) === promise) overviewPending.delete(key)
+    resolvePending(result)
+  }
+
+  const originalJson = res.json.bind(res)
+  res.set('Cache-Control', 'private, no-store')
+
+  res.json = (body) => {
+    const status = res.statusCode || 200
+
+    if (
+      status === 200 &&
+      body?.ok === true &&
+      (overviewVersions.get(userId) || 0) === version
+    ) {
+      overviewCache.delete(key)
+      overviewCache.set(key, {
+        userId,
+        body,
+        expiresAt: Date.now() + OVERVIEW_CACHE_TTL_MS,
+      })
+
+      while (overviewCache.size > OVERVIEW_CACHE_LIMIT) {
+        overviewCache.delete(overviewCache.keys().next().value)
+      }
+    }
+
+    finish({ status, body })
+    return originalJson(body)
+  }
+
+  res.once('close', () => finish(null))
+  return next()
+}
+
+router.use(invalidateOverviewOnMutation)
+
+router.get('/overview', requireUser, taskRateLimit, cacheTaskOverview, getTaskOverview)
 
 router.get('/check-in', requireUser, taskRateLimit, getTaskCheckIn)
 router.post('/check-in/claim', requireUser, taskRateLimit, claimTaskCheckIn)
