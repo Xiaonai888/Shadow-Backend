@@ -69,6 +69,7 @@ function ensureEventManager(req, res, next) {
   return next()
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const requireReadEventView = requireAdminPermission('monthly_vote.view')
 
 router.get('/language-controls', ipLimit, requireReadEventView, readLimit, async (req, res) => {
@@ -109,6 +110,50 @@ router.patch('/language-controls', ipLimit, requireReadEventView, ensureEventMan
       return res.status(409).json({ ok: false, code: error.code })
     }
     return res.status(503).json({ ok: false, code: 'READ_EVENT_LANGUAGE_SAVE_UNAVAILABLE' })
+  }
+})
+
+router.get('/auto-cycle-settings', ipLimit, requireReadEventView, readLimit, async (req, res) => {
+  res.set('Cache-Control', 'private, no-store')
+  try {
+    const { data, error } = await supabase
+      .from('shadow_read_event_auto_settings')
+      .select('auto_enabled,updated_at')
+      .eq('setting_id', 1)
+      .maybeSingle()
+    if (error) throw error
+    if (!data || typeof data.auto_enabled !== 'boolean') {
+      return res.status(503).json({ ok: false, code: 'READ_EVENT_AUTO_SETTINGS_MISSING' })
+    }
+    return res.json({ ok: true, auto_enabled: data.auto_enabled, updated_at: data.updated_at })
+  } catch (error) {
+    console.error('ADMIN_READ_EVENT_AUTO_GET_ERROR', { code: error?.code || error?.name || 'unknown' })
+    return res.status(503).json({ ok: false, code: 'READ_EVENT_AUTO_SETTINGS_UNAVAILABLE' })
+  }
+})
+
+router.patch('/auto-cycle-settings', ipLimit, requireReadEventView, ensureEventManager, writeLimit, async (req, res) => {
+  res.set('Cache-Control', 'private, no-store')
+  const enabled = req.body?.enabled
+  const adminId = req.admin?.admin_id
+  if (typeof enabled !== 'boolean' || typeof adminId !== 'string' || !UUID_PATTERN.test(adminId)) {
+    return res.status(400).json({ ok: false, code: 'READ_EVENT_AUTO_SETTINGS_INVALID' })
+  }
+  try {
+    const { data, error } = await supabase
+      .from('shadow_read_event_auto_settings')
+      .update({ auto_enabled: enabled, updated_by: adminId, updated_at: new Date().toISOString() })
+      .eq('setting_id', 1)
+      .select('auto_enabled,updated_at')
+      .maybeSingle()
+    if (error) throw error
+    if (!data || data.auto_enabled !== enabled) {
+      return res.status(503).json({ ok: false, code: 'READ_EVENT_AUTO_SETTINGS_MISSING' })
+    }
+    return res.json({ ok: true, auto_enabled: enabled, updated_at: data.updated_at })
+  } catch (error) {
+    console.error('ADMIN_READ_EVENT_AUTO_PATCH_ERROR', { code: error?.code || error?.name || 'unknown' })
+    return res.status(503).json({ ok: false, code: 'READ_EVENT_AUTO_SETTINGS_SAVE_UNAVAILABLE' })
   }
 })
 
@@ -208,8 +253,6 @@ router.post('/prepare', ipLimit, requireReadEventView, ensureEventManager, write
   }
 })
 
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 router.patch('/status', ipLimit, requireReadEventView, ensureEventManager, writeLimit, async (req, res) => {
   res.set('Cache-Control', 'private, no-store')
