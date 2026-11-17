@@ -1,8 +1,11 @@
 import { supabase } from '../config/supabase.js'
 import { getReaderTagMentionPermissions } from './readerTagMentionPermissions.service.js'
 import { createNotification } from '../controllers/notifications.controller.js'
+import { extractMassMentionTags } from './massMentionAudience.service.js'
+import { enqueueMassMentionComment } from './massMentionJob.service.js'
+import { wakeMassMentionWorker } from './massMentionWorker.service.js'
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const LIMIT = 20
 
 async function notifyNewLinks(rows, { postId = '', commentId = '' } = {}) {
@@ -55,7 +58,9 @@ function mentionsInText(content) {
   const names = new Set()
   const pattern = /(^|[^A-Za-z0-9_@./])@([A-Za-z0-9_]{3,30})(?![A-Za-z0-9_])/g
   for (const match of String(content || '').matchAll(pattern)) {
-    names.add(match[2].toLowerCase())
+    const name = match[2].toLowerCase()
+    if (name === 'follower' || name === 'followers' || name === 'highlight') continue
+    names.add(name)
     if (names.size >= LIMIT) break
   }
   return [...names]
@@ -181,8 +186,9 @@ export async function syncReaderCommentMentionLinks({
   if (!UUID.test(actorId) || !UUID.test(id)) {
     throw new TypeError('Invalid comment or author ID')
   }
+  const massTags = extractMassMentionTags(text)
   const mentions = await mentionIds(text, actorId)
-  if (!existingComment && !mentions.length) return
+  if (!existingComment && !mentions.length && !massTags.length) return
   const requested = await permittedRows({
     actorId,
     commentId: id,
@@ -241,5 +247,28 @@ export async function syncReaderCommentMentionLinks({
   }
   if (!moderationPending && inserted.length) {
     await notifyNewLinks(inserted, { commentId: id })
+  }
+  if (!moderationPending && massTags.length) {
+    try {
+      const { data: comment, error } = await supabase
+        .from('reader_post_comments')
+        .select('post_id,is_hidden,moderation_status')
+        .eq('id', id)
+        .eq('user_id', actorId)
+        .maybeSingle()
+      if (error) throw error
+      if (comment && !comment.is_hidden && comment.moderation_status === 'approved') {
+        const results = await enqueueMassMentionComment({
+          senderUserId: actorId,
+          commentId: id,
+          postId: comment.post_id,
+          sourceKind: 'reader_post_comment',
+          text,
+        })
+        if (results.some((result) => result.status === 'queued')) wakeMassMentionWorker()
+      }
+    } catch (error) {
+      console.error('READER_MASS_MENTION_QUEUE_ERROR:', error)
+    }
   }
 }
