@@ -13,6 +13,7 @@ import {
   savePost,
   updateSavedPostCollection,
 } from '../controllers/savedPosts.controller.js'
+import { getSavedPostCards } from '../controllers/savedPostCards.controller.js'
 
 const router = express.Router()
 const savedPostsPreAuthLimit = rateLimit({
@@ -37,6 +38,7 @@ const savedPostsWriteLimit = rateLimit({
 })
 
 router.get('/', savedPostsPreAuthLimit, requireUser, savedPostsReadLimit, getSavedPosts)
+router.get('/cards', savedPostsPreAuthLimit, requireUser, savedPostsReadLimit, getSavedPostCards)
 router.get('/status', savedPostsPreAuthLimit, requireUser, savedPostsReadLimit, getSavedPostStatus)
 router.post('/', savedPostsPreAuthLimit, requireUser, savedPostsWriteLimit, savePost)
 router.delete('/source', savedPostsPreAuthLimit, requireUser, savedPostsWriteLimit, removeSavedPostBySource)
