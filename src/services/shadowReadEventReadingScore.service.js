@@ -2,7 +2,7 @@ import { supabase } from '../config/supabase.js'
 
 const DAY_MS = 86400000
 const FIRST_EVENT_MS = Date.UTC(2026, 10, 2)
-const EVENT_INTERVAL_DAYS = 28
+const EVENT_INTERVAL_DAYS = 14
 const EVENT_LENGTH_DAYS = 7
 const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
