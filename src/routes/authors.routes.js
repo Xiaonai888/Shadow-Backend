@@ -136,6 +136,7 @@ import {
   selectMyAuthorCover,
   deleteMyAuthorCover,
 } from '../controllers/authorCoverLibrary.controller.js'
+import authorProfilePhotoLibraryRoutes from './authorProfilePhotoLibrary.routes.js'
 import { requireAuthorPayoutMethod } from '../middleware/authorPayoutCountryGate.middleware.js'
 import { invalidateMyAuthorPageCache } from '../services/myAuthorPageCache.service.js'
 import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
@@ -313,6 +314,18 @@ router.get('/me/49-day-event', requireUser, getMyAuthor49DayEvent)
 router.get('/me/cover-library', requireUser, listMyAuthorCovers)
 router.put('/me/cover-library/active', requireUser, invalidateMyAuthorPageAfterMutation, invalidatePublicStoriesAfterMutation, selectMyAuthorCover)
 router.delete('/me/cover-library/:assetId', requireUser, deleteMyAuthorCover)
+
+router.use(
+  '/me/profile-photo-library',
+  (req, res, next) => {
+    if (req.method !== 'PUT') return next()
+    invalidateMyAuthorPageAfterMutation(req, res, () =>
+      invalidatePublicStoriesAfterMutation(req, res, next)
+    )
+  },
+  authorProfilePhotoLibraryRoutes
+)
+
 router.get('/me/daily-80-event', requireUser, getMyAuthorDaily80Event)
 router.get('/me/daily-50-event', requireUser, getMyAuthorDaily50Event)
 router.get('/me/dashboard', requireUser, getMyAuthorDashboard)
