@@ -11,6 +11,9 @@ const AUTHOR_TYPE_TAGS = {
 }
 const ALLOWED_TYPES = new Set(Object.keys(AUTHOR_TYPE_TAGS))
 const REQUEST_TIMEOUT_MS = 12000
+const LOOKUP_CACHE_TTL_MS = 15 * 1000
+const MISSING_LOOKUP_TTL_MS = 30 * 1000
+const LOOKUP_CACHE_LIMIT = 300
 
 function getSettings() {
   return {
@@ -51,12 +54,29 @@ function shouldSend(notification) {
   return currency === 'diamond' || currency === 'diamonds'
 }
 
-
 const authorPreferenceLookups = new Map()
+const authorPreferenceCache = new Map()
 const lookupStatusCounts = new Map()
+
+function rememberAuthorPreference(key, data, ttlMs) {
+  authorPreferenceCache.delete(key)
+  authorPreferenceCache.set(key, {
+    ...data,
+    expiresAt: Date.now() + ttlMs,
+  })
+  while (authorPreferenceCache.size > LOOKUP_CACHE_LIMIT) {
+    authorPreferenceCache.delete(authorPreferenceCache.keys().next().value)
+  }
+}
 
 async function readAuthorPreference({ appId, apiKey, authorUserId, type }) {
   const key = `${appId}:${authorUserId}`
+  const cached = authorPreferenceCache.get(key)
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.missing === true ? false : cached.enabledTypes[type] === true
+  }
+  if (cached) authorPreferenceCache.delete(key)
+
   let request = authorPreferenceLookups.get(key)
 
   if (!request) {
@@ -115,11 +135,12 @@ async function readAuthorPreference({ appId, apiKey, authorUserId, type }) {
       notification_type: type,
     })
 
-    if (result.status === 404) return false
+    if (result.status === 404) {
+      rememberAuthorPreference(key, { missing: true }, MISSING_LOOKUP_TTL_MS)
+      return false
+    }
 
-    throw new Error(
-      `OneSignal user lookup failed (${result.status})`
-    )
+    throw new Error(`OneSignal user lookup failed (${result.status})`)
   }
 
   const user = result.user
@@ -129,16 +150,17 @@ async function readAuthorPreference({ appId, apiKey, authorUserId, type }) {
   }
 
   const tags = user?.properties?.tags || {}
-
   const masterEnabled =
     String(tags[AUTHOR_TAG] || '').trim().toLowerCase() === 'true'
+  const enabledTypes = {}
+  for (const enabledType of ALLOWED_TYPES) {
+    enabledTypes[enabledType] = masterEnabled &&
+      String(tags[AUTHOR_TYPE_TAGS[enabledType]] || '').trim().toLowerCase() === 'true'
+  }
 
-  const typeEnabled =
-    String(tags[AUTHOR_TYPE_TAGS[type]] || '').trim().toLowerCase() === 'true'
-
-  return masterEnabled && typeEnabled
+  rememberAuthorPreference(key, { enabledTypes }, LOOKUP_CACHE_TTL_MS)
+  return enabledTypes[type] === true
 }
-
 
 function isNoRecipients(result) {
   if (result?.id) return false
