@@ -7,6 +7,7 @@ import readerCommentSettingsRoutes from './readerCommentSettings.routes.js'
 import readerMessagesRepliesSettingsRoutes from './readerMessagesRepliesSettings.routes.js'
 import readerRestrictionSettingsRoutes from './readerRestrictionSettings.routes.js'
 import readerRestrictionsRoutes from './readerRestrictions.routes.js'
+import readerProfilePhotosRoutes from './readerProfilePhotos.routes.js'
 import { getReaderAccountPrivacy, updateReaderAccountPrivacy } from '../controllers/readerAccountPrivacy.controller.js'
 import {
   getMeSummary,
@@ -171,6 +172,7 @@ router.use('/me/messages-replies', readerMessagesRepliesSettingsRoutes)
 router.use('/me/restriction-settings', readerRestrictionSettingsRoutes)
 router.use('/me/restricted-readers', readerRestrictionsRoutes)
 router.use(readerAuthSafetyLimit)
+router.use('/me/profile-photos', readerProfilePhotosRoutes)
 router.get('/me', requireUser, readerProfileRouteLimit, getCurrentUser)
 // Story Language is an account preference, not an IP/country restriction.
 const ALLOWED_STORY_LANGUAGES = new Set(['km', 'en', 'zh', 'ja', 'ko'])
