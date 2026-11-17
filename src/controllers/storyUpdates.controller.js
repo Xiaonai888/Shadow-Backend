@@ -95,7 +95,15 @@ export async function getPublicStoryUpdates(req, res) {
         .select('id, story_type')
         .in('id', missingTypeIds.slice(index, index + 100))
 
-              console.warn('[STORY_UPDATE_TYPE_LOOKUP_ERROR]', typeError.message)
+                    if (typeError) {
+        markRequestDiagnostic({
+          feature: 'public_story_updates',
+          stage: 'story_type_lookup',
+          error_code: String(typeError.code || 'TYPE_LOOKUP_FAILED'),
+        })
+        console.warn('[STORY_UPDATE_TYPE_LOOKUP_ERROR]', typeError.message)
+        break
+      }
 
       for (const row of typeRows || []) {
         storyTypes.set(String(row.id), String(row.story_type || 'novel').trim().toLowerCase())
