@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { markRequestDiagnostic } from './trafficDiagnostic.service.js'
 
 const API_ROOT = 'https://api.onesignal.com'
 const SITE_ROOT = 'https://www.shadowerabook.site'
@@ -50,28 +51,94 @@ function shouldSend(notification) {
   return currency === 'diamond' || currency === 'diamonds'
 }
 
+
+const authorPreferenceLookups = new Map()
+const lookupStatusCounts = new Map()
+
 async function readAuthorPreference({ appId, apiKey, authorUserId, type }) {
-  const response = await fetch(
-    `${API_ROOT}/apps/${encodeURIComponent(appId)}/users/by/external_id/${encodeURIComponent(authorUserId)}`,
-    {
-      headers: { Authorization: `Key ${apiKey}` },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  const key = `${appId}:${authorUserId}`
+  let request = authorPreferenceLookups.get(key)
+
+  if (!request) {
+    request = (async () => {
+      const response = await fetch(
+        `${API_ROOT}/apps/${encodeURIComponent(appId)}/users/by/external_id/${encodeURIComponent(authorUserId)}`,
+        {
+          headers: { Authorization: `Key ${apiKey}` },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        }
+      )
+
+      if (!response.ok) {
+        const count = (lookupStatusCounts.get(response.status) || 0) + 1
+        lookupStatusCounts.set(response.status, count)
+
+        if (count === 1 || count % 25 === 0) {
+          console.warn('ONESIGNAL_LOOKUP_STATUS', {
+            stage: 'user_lookup',
+            http_status: response.status,
+            calls_observed: count,
+          })
+        }
+
+        return { status: response.status, user: null }
+      }
+
+      return {
+        status: response.status,
+        user: await response.json(),
+      }
+    })()
+
+    authorPreferenceLookups.set(key, request)
+  }
+
+  let result
+
+  try {
+    result = await request
+  } finally {
+    if (authorPreferenceLookups.get(key) === request) {
+      authorPreferenceLookups.delete(key)
     }
-  )
+  }
 
-  if (response.status === 404) return false
-  if (!response.ok) throw new Error(`OneSignal user lookup failed (${response.status})`)
+  if (!result.user) {
+    markRequestDiagnostic({
+      feature: 'author_story_push',
+      stage: 'onesignal_user_lookup',
+      provider_status: result.status,
+      error_code:
+        result.status === 404
+          ? 'ONESIGNAL_USER_NOT_FOUND'
+          : `ONESIGNAL_HTTP_${result.status}`,
+      notification_type: type,
+    })
 
-  const user = await response.json()
+    if (result.status === 404) return false
+
+    throw new Error(
+      `OneSignal user lookup failed (${result.status})`
+    )
+  }
+
+  const user = result.user
+
   if (String(user?.identity?.external_id || '') !== authorUserId) {
     throw new Error('OneSignal user identity mismatch')
   }
 
   const tags = user?.properties?.tags || {}
-  const masterEnabled = String(tags[AUTHOR_TAG] || '').trim().toLowerCase() === 'true'
-  const typeEnabled = String(tags[AUTHOR_TYPE_TAGS[type]] || '').trim().toLowerCase() === 'true'
+
+  const masterEnabled =
+    String(tags[AUTHOR_TAG] || '').trim().toLowerCase() === 'true'
+
+  const typeEnabled =
+    String(tags[AUTHOR_TYPE_TAGS[type]] || '').trim().toLowerCase() === 'true'
+
   return masterEnabled && typeEnabled
 }
+
 
 function isNoRecipients(result) {
   if (result?.id) return false
