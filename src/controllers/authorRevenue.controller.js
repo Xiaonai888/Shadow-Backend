@@ -1788,28 +1788,45 @@ async function getPrimaryPaymentMethod(authorId) {
 }
 
 async function sumAuthorIncome({ authorId, from }) {
-  let query = supabase
-    .from('author_earnings')
-    .select('author_net_payout_usd')
-    .eq('author_id', authorId)
-    .eq('currency', 'diamond')
-    .in('source_type', AUTHOR_INCOME_SOURCE_TYPES)
-    .neq('earning_status', 'void')
+  const pageSize = 1000
+  const lastMonthKey = getPreviousMonthKey()
+  let offset = 0
+  let totalUsd = 0
+  let lastMonthUsd = 0
 
-  if (from) {
-    query = query.gte('created_at', from)
+  while (true) {
+    let query = supabase
+      .from('author_earnings')
+      .select('id, author_net_payout_usd, earning_month')
+      .eq('author_id', authorId)
+      .eq('currency', 'diamond')
+      .in('source_type', AUTHOR_INCOME_SOURCE_TYPES)
+      .neq('earning_status', 'void')
+
+    if (from) query = query.gte('created_at', from)
+
+    const { data, error } = await query
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range(offset, offset + pageSize - 1)
+
+    if (error) throw error
+
+    for (const row of data || []) {
+      const amount = numberValue(row.author_net_payout_usd)
+      totalUsd += amount
+      if (row.earning_month === lastMonthKey) {
+        lastMonthUsd += amount
+      }
+    }
+
+    if (!data || data.length < pageSize) break
+    offset += pageSize
   }
 
-  const { data, error } = await query
-
-  if (error) throw error
-
-  return (data || []).reduce(
-    (sum, item) =>
-      sum + numberValue(item.author_net_payout_usd),
-    0
-  )
+  return { totalUsd, lastMonthUsd }
 }
+
 
 async function getRecentEarnings(authorId) {
   const { data, error } = await supabase
