@@ -4,6 +4,7 @@ import os from 'node:os'
 import { unlink } from 'node:fs/promises'
 import { rateLimit } from 'express-rate-limit'
 import { requireUser } from '../middleware/user.middleware.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 import { uploadImageToR2AsWebP } from '../services/r2Storage.service.js'
 import { createFastVideo, getReelYouTubeMetadata } from '../controllers/fastVideos.controller.js'
 import { recordFastReelViewV2 } from '../controllers/fastReelViews.controller.js'
@@ -58,7 +59,6 @@ const fastVideoFeedLimit = rateLimit({
   },
 })
 
-// IP rate limits must run before requireUser or upload parsing.
 const fastVideoManageReadLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 300,
@@ -194,16 +194,91 @@ router.post(
   }
 )
 
+const VIEW_GATE_WINDOW_MS = 5 * 60 * 1000
+const VIEW_GATE_MAX_ISSUES = 8
+const VIEW_GATE_MAX_BUCKETS = 24
+
+function createViewGateWindow(now) {
+  return {
+    startedAt: now,
+    rejected: 0,
+    buckets: new Map(),
+    sampled: new Set(),
+  }
+}
+
+let viewGateWindow = createViewGateWindow(Date.now())
+
+function traceFastViewGate(req, res, next) {
+  const startedAt = Date.now()
+  const originalJson = res.json.bind(res)
+  res.json = (payload) => {
+    const status = Number(res.statusCode || 0)
+    if (status === 401 || status === 403 || status === 429) {
+      const now = Date.now()
+      if (now - viewGateWindow.startedAt >= VIEW_GATE_WINDOW_MS) {
+        if (viewGateWindow.rejected > 0) {
+          console.warn('FAST_REEL_VIEW_GATE_SUMMARY', JSON.stringify({
+            from: new Date(viewGateWindow.startedAt).toISOString(),
+            to: new Date(now).toISOString(),
+            rejected: viewGateWindow.rejected,
+            reasons: Object.fromEntries(viewGateWindow.buckets),
+          }))
+        }
+        viewGateWindow = createViewGateWindow(now)
+      }
+
+      const fallbackCode = status === 429
+        ? 'FAST_REEL_VIEW_RATE_LIMITED'
+        : status === 401 ? 'REEL_VIEW_UNAUTHORIZED' : 'REEL_VIEW_FORBIDDEN'
+      const code = String(payload?.code || fallbackCode)
+        .toUpperCase()
+        .replace(/[^A-Z0-9_]/g, '_')
+        .slice(0, 64) || fallbackCode
+      const key = `${status}_${code}`
+      const bucket = viewGateWindow.buckets.has(key)
+        ? key : viewGateWindow.buckets.size < VIEW_GATE_MAX_BUCKETS ? key : 'OTHER'
+      viewGateWindow.buckets.set(bucket, (viewGateWindow.buckets.get(bucket) || 0) + 1)
+      viewGateWindow.rejected += 1
+
+      markRequestDiagnostic({
+        feature: 'fast_reel_view_v2',
+        stage: status === 429 ? 'rate_limit' : 'auth_gate',
+        error_code: code,
+        view_http_status: status,
+        view_mode: req.body?.mode === 'qualified' ? 'qualified' : 'fast',
+        view_duration_ms: now - startedAt,
+      })
+
+      if (!viewGateWindow.sampled.has(key) && viewGateWindow.sampled.size < VIEW_GATE_MAX_ISSUES) {
+        viewGateWindow.sampled.add(key)
+        console.warn('FAST_REEL_VIEW_GATE_ISSUE', JSON.stringify({
+          status,
+          code,
+          mode: req.body?.mode === 'qualified' ? 'qualified' : 'fast',
+        }))
+      }
+    }
+    return originalJson(payload)
+  }
+  next()
+}
+
 const fastVideoViewWriteLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 60,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
-  message: { ok: false, message: 'Too many Reel playback reports.' },
+  message: {
+    ok: false,
+    code: 'FAST_REEL_VIEW_RATE_LIMITED',
+    message: 'Too many Reel playback reports.',
+  },
 })
 
 router.post(
   '/videos/:id/view/v2',
+  traceFastViewGate,
   fastVideoViewWriteLimit,
   requireUser,
   recordFastReelViewV2
@@ -221,8 +296,6 @@ router.get('/videos/mine', fastVideoManageReadLimit, requireUser, listMyFastReel
 router.patch('/videos/:id', fastVideoManageWriteLimit, requireUser, updateMyFastReel)
 router.delete('/videos/:id', fastVideoManageWriteLimit, requireUser, deleteMyFastReel)
 
-// Author-owned playlists. Reads and writes are authenticated and rate-limited.
-// Route ordering preserves all existing /videos and comments endpoints.
 router.get('/playlists/mine', fastVideoManageReadLimit, requireUser, listMyFastReelPlaylists)
 router.post('/playlists', fastVideoManageWriteLimit, requireUser, createFastReelPlaylist)
 router.patch('/playlists/:playlistId', fastVideoManageWriteLimit, requireUser, updateFastReelPlaylist)
@@ -230,8 +303,6 @@ router.delete('/playlists/:playlistId', fastVideoManageWriteLimit, requireUser, 
 router.get('/videos/:id/playlists', fastVideoManageReadLimit, requireUser, getFastReelPlaylistAssignments)
 router.put('/videos/:id/playlists', fastVideoManageWriteLimit, requireUser, setFastReelPlaylistAssignments)
 
-// Fast Reel comments are separate from Story and Discover comments.
-// IP rate limits run BEFORE requireUser (which validates device sessions).
 const fastCommentReadLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 450,
@@ -253,10 +324,8 @@ router.patch('/videos/:id/comments/:commentId', fastCommentWriteLimit, requireUs
 router.delete('/videos/:id/comments/:commentId', fastCommentWriteLimit, requireUser, deleteFastComment)
 router.put('/videos/:id/comments/:commentId/like', fastCommentWriteLimit, requireUser, setFastCommentLike)
 
-// Public Reel Save count; no authentication required for aggregate totals.
 router.get('/videos/:id/saves', fastVideoFeedLimit, getPublicFastSaveCount)
 
-// Fast Like API: isolated router; does not touch any Post reaction endpoints.
 router.use('/videos', fastLikesRouter)
 
 router.get(
