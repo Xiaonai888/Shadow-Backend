@@ -69,9 +69,9 @@ function ensureEventManager(req, res, next) {
   return next()
 }
 
-router.use(ipLimit, requireAdminPermission('monthly_vote.view'))
+const requireReadEventView = requireAdminPermission('monthly_vote.view')
 
-router.get('/language-controls', readLimit, async (req, res) => {
+router.get('/language-controls', ipLimit, requireReadEventView, readLimit, async (req, res) => {
   res.set('Cache-Control', 'private, no-store')
   try {
     const languages = await getShadowReadEventLanguageControls({ fresh: true })
@@ -84,7 +84,7 @@ router.get('/language-controls', readLimit, async (req, res) => {
   }
 })
 
-router.patch('/language-controls', ensureEventManager, writeLimit, async (req, res) => {
+router.patch('/language-controls', ipLimit, requireReadEventView, ensureEventManager, writeLimit, async (req, res) => {
   res.set('Cache-Control', 'private, no-store')
   const language = req.body?.language
   const enabled = req.body?.enabled
@@ -112,7 +112,7 @@ router.patch('/language-controls', ensureEventManager, writeLimit, async (req, r
   }
 })
 
-router.get('/', readLimit, async (req, res) => {
+router.get('/', ipLimit, requireReadEventView, readLimit, async (req, res) => {
   res.set('Cache-Control', 'private, no-store')
   const startsOn = eventDate(req.query?.starts_on)
   if (!startsOn) {
@@ -184,7 +184,7 @@ router.get('/', readLimit, async (req, res) => {
   }
 })
 
-router.post('/prepare', ensureEventManager, writeLimit, async (req, res) => {
+router.post('/prepare', ipLimit, requireReadEventView, ensureEventManager, writeLimit, async (req, res) => {
   res.set('Cache-Control', 'private, no-store')
   const startsOn = eventDate(req.body?.starts_on)
   if (!startsOn) {
@@ -211,7 +211,7 @@ router.post('/prepare', ensureEventManager, writeLimit, async (req, res) => {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-router.patch('/status', ensureEventManager, writeLimit, async (req, res) => {
+router.patch('/status', ipLimit, requireReadEventView, ensureEventManager, writeLimit, async (req, res) => {
   res.set('Cache-Control', 'private, no-store')
   const eventId = req.body?.event_id
   const enabled = req.body?.enabled
