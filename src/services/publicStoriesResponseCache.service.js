@@ -35,7 +35,8 @@ function getCacheTtlMs(req, body = null) {
   }
 
   if (filter === 'fully_free' || filter === 'completed') return 15 * 60 * 1000
-  return CACHE_TTL_MS
+  if (isViewSensitiveRequest(req)) return CACHE_TTL_MS
+  return 2 * 60 * 1000
 }
 
 function getRequestSort(req) {
