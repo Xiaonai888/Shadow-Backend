@@ -277,6 +277,15 @@ router.use(rateLimit({
   keyGenerator: (req) => req.spamGuard?.identity_type === 'account' ? req.spamGuard.guard_key : String(req.socket?.remoteAddress || 'unknown')
 }))
 
+router.use(['/upload-novel-image', '/upload-manga-page', '/upload-manga-page-v2', '/upload-image'], (req, res, next) => {
+  if (req.method !== 'POST' || process.env.MEDIA_LEGACY_UPLOAD_ENABLED === 'true') return next()
+  return res.status(410).json({
+    ok: false,
+    code: 'LEGACY_MEDIA_UPLOAD_DISABLED',
+    message: 'Direct Cloudflare R2 upload is required.',
+  })
+})
+
 router.post(
   '/upload-novel-image',
   requireUser,
