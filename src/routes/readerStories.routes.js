@@ -1,3 +1,4 @@
+import { finalizeMyReaderStoryImageUpload } from '../controllers/readerStoryDirectImage.controller.js'
 import express from 'express'
 import multer from 'multer'
 import os from 'node:os'
@@ -129,6 +130,14 @@ router.post(
   requireUser,
   enforceReaderStoryDailyLimit,
   finalizeMyReaderStoryVideoUpload
+)
+
+router.post(
+  '/me/image-upload/finalize',
+  readerStoryActionLimit,
+  requireUser,
+  enforceReaderStoryDailyLimit,
+  finalizeMyReaderStoryImageUpload
 )
 
 router.post(
