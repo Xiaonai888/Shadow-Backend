@@ -1,7 +1,16 @@
 import { supabase } from '../config/supabase.js'
 
 const OPTIONS = new Set(['everyone', 'following', 'nobody'])
-const DEFAULT_SETTINGS = Object.freeze({ tags: 'everyone', mentions: 'everyone', reviewTags: true })
+const DEFAULT_SETTINGS = Object.freeze({
+  tags: 'everyone',
+  mentions: 'everyone',
+  followersMentions: 'everyone',
+  highlightMentions: 'everyone',
+  reviewTags: true,
+})
+const SETTINGS_COLUMNS = 'tags,mentions,followers_mentions,highlight_mentions,review_tags'
+const LEGACY_KEYS = ['tags', 'mentions', 'reviewTags']
+const MASS_MENTION_KEYS = ['followersMentions', 'highlightMentions']
 
 function readerId(req) {
   return String(req.user?.user_id || req.user?.id || '').trim()
@@ -16,6 +25,8 @@ function normalizeSettings(row) {
   return {
     tags: OPTIONS.has(row?.tags) ? row.tags : DEFAULT_SETTINGS.tags,
     mentions: OPTIONS.has(row?.mentions) ? row.mentions : DEFAULT_SETTINGS.mentions,
+    followersMentions: OPTIONS.has(row?.followers_mentions) ? row.followers_mentions : DEFAULT_SETTINGS.followersMentions,
+    highlightMentions: OPTIONS.has(row?.highlight_mentions) ? row.highlight_mentions : DEFAULT_SETTINGS.highlightMentions,
     reviewTags: typeof row?.review_tags === 'boolean' ? row.review_tags : DEFAULT_SETTINGS.reviewTags,
   }
 }
@@ -23,9 +34,18 @@ function normalizeSettings(row) {
 function parseSettings(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null
   const keys = Object.keys(body)
-  if (keys.length !== 3 || keys.some((key) => !['tags', 'mentions', 'reviewTags'].includes(key))) return null
+  if (keys.length !== LEGACY_KEYS.length && keys.length !== LEGACY_KEYS.length + MASS_MENTION_KEYS.length) return null
+  if (LEGACY_KEYS.some((key) => !Object.prototype.hasOwnProperty.call(body, key))) return null
+  if (keys.some((key) => !LEGACY_KEYS.includes(key) && !MASS_MENTION_KEYS.includes(key))) return null
   if (!OPTIONS.has(body.tags) || !OPTIONS.has(body.mentions) || typeof body.reviewTags !== 'boolean') return null
-  return { tags: body.tags, mentions: body.mentions, review_tags: body.reviewTags }
+
+  const values = { tags: body.tags, mentions: body.mentions, review_tags: body.reviewTags }
+  if (keys.length === LEGACY_KEYS.length + MASS_MENTION_KEYS.length) {
+    if (!OPTIONS.has(body.followersMentions) || !OPTIONS.has(body.highlightMentions)) return null
+    values.followers_mentions = body.followersMentions
+    values.highlight_mentions = body.highlightMentions
+  }
+  return values
 }
 
 async function findActiveReader(id) {
@@ -50,7 +70,7 @@ export async function getReaderTagsMentions(req, res) {
 
     const { data, error } = await supabase
       .from('reader_tag_mention_settings')
-      .select('tags,mentions,review_tags')
+      .select(SETTINGS_COLUMNS)
       .eq('user_id', id)
       .maybeSingle()
     if (error) throw error
@@ -80,7 +100,7 @@ export async function updateReaderTagsMentions(req, res) {
     const { data, error } = await supabase
       .from('reader_tag_mention_settings')
       .upsert({ user_id: id, ...values, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
-      .select('tags,mentions,review_tags')
+      .select(SETTINGS_COLUMNS)
       .single()
     if (error) throw error
 
