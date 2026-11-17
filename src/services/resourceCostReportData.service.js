@@ -160,7 +160,7 @@ export async function getResourceCostReport({
       : 'Top-route details are bounded. Unlisted application traffic and provider network overhead are not attributed.'
   }
 
-    const configuredRenderServiceIds = detectedServices(serviceIds)
+  const configuredRenderServiceIds = detectedServices(serviceIds)
   const summary = buildResourceCostSummary({
     from: range.from,
     to: end,
@@ -171,8 +171,14 @@ export async function getResourceCostReport({
     uploadRows,
     applicationRows,
   })
-  const observedRenderServiceIds = [...new Set(renderRows.map(row => String(row.service_id || '').trim()).filter(Boolean))].sort()
-  const renderIndex = new Map(renderRows.map(row => [`${row.service_id}|${Date.parse(row.hour_start)}`, row]))
+  const validRenderRows = renderRows.filter((row) => {
+    const hour = Date.parse(row?.hour_start || '')
+    const bytes = row?.total_bytes
+    return Boolean(String(row?.service_id || '').trim()) && Number.isFinite(hour) && hour % HOUR_MS === 0 &&
+      bytes !== null && bytes !== undefined && bytes !== '' && Number.isSafeInteger(Number(bytes)) && Number(bytes) >= 0
+  })
+  const observedRenderServiceIds = [...new Set(validRenderRows.map(row => String(row.service_id).trim()))].sort()
+  const renderIndex = new Map(validRenderRows.map(row => [`${String(row.service_id).trim()}|${Date.parse(row.hour_start)}`, row]))
   const matureUntil = Math.floor((resourceCostTimestamp(asOf) - 2 * HOUR_MS) / HOUR_MS) * HOUR_MS
   const renderHourGaps = summary.service_ids.map(service_id => {
     const missing_hour_utc = [], incomplete_breakdown_hour_utc = []
@@ -194,8 +200,10 @@ export async function getResourceCostReport({
       unfinalized_r2_signed_puts_are_not_observed: true,
     },
     sources: {
-            render: {
+      render: {
         rows: renderRows.length,
+        valid_hourly_rows: validRenderRows.length,
+        invalid_hourly_rows: renderRows.length - validRenderRows.length,
         table: 'render_bandwidth_hourly',
         billing_authoritative: false,
         configured_service_ids: configuredRenderServiceIds,
