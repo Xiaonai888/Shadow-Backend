@@ -56,8 +56,11 @@ async function latestSource(database, spec, now) {
 
 function providerInfo(state, key) {
   const value = state?.[key] || {}
+  const status = typeof value.status === 'string' ? value.status : 'unknown'
+  const diagnostics = key === 'render' ? value.sync_diagnostics : null
   return {
-    sync_status: typeof value.status === 'string' ? value.status : 'unknown',
+    sync_status: key === 'render' && status === 'ok' &&
+      Number(diagnostics?.hours_without_breakdown) > 0 ? 'partial' : status,
     last_checked_at: safeDate(value.checked_at),
   }
 }
@@ -95,6 +98,7 @@ export async function getResourceCostHealth({ client, providerState, uploadHealt
       service_ids: state?.render?.service_ids || [],
       sync_diagnostics: state?.render?.sync_diagnostics ?? null,
       hourly_history: state?.render?.hourly_history ?? null,
+      sync_error: typeof state?.render?.error === 'string' ? state.render.error : null,
     },
     supabase: providerInfo(state, 'supabase'),
     cloudflare_r2: providerInfo(state, 'cloudflare_r2'),
