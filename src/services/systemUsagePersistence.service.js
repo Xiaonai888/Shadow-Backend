@@ -1046,6 +1046,18 @@ async function syncRenderProvider(now) {
       serviceIds,
       now
     )
+        const syncDiagnostics = {
+      requested_service_ids: serviceIds,
+      bandwidth_series_received: bandwidthData.length,
+      unmatched_service_series: bandwidthData.filter(s => !renderMetricService(s, serviceIds)).length,
+      unsupported_unit_series: bandwidthData.filter(s => !bytesMultiplier(s?.unit)).length,
+      missing_values_series: bandwidthData.filter(s => !Array.isArray(s?.values)).length,
+      ignored_points: bandwidthData.reduce((n, s) => n + (Array.isArray(s?.values) ? s.values : []).filter(p => renderMetricHour(p, now) === null || p?.value == null || !Number.isFinite(Number(p.value)) || Number(p.value) < 0).length, 0),
+      hourly_rows_after_parse: hourlyRows.length,
+      breakdown_series_received: Array.isArray(bandwidthSourcesData?.data) ? bandwidthSourcesData.data.length : 0,
+      breakdown_endpoint_available: Array.isArray(bandwidthSourcesData?.data),
+      hours_without_breakdown: hourlyRows.filter(r => !r.breakdown_available).length,
+    }
 
     const displayServiceId = serviceIds[0]
     const displayRow = hourlyRows
@@ -1089,6 +1101,7 @@ async function syncRenderProvider(now) {
       service_ids: serviceIds,
       ...parsed,
       provider_bytes: displayRow?.total_bytes ?? null,
+      sync_diagnostics: syncDiagnostics,
       comparable: Boolean(displayRow) && !stale,
       traffic_sources_available: Boolean(sources),
       traffic_source_series_count: sources?.series_count || 0,
