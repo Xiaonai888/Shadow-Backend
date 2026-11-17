@@ -5,6 +5,7 @@ import path from 'node:path'
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import { supabase } from '../config/supabase.js'
 import { assertAuthorCoverUploadAllowed } from './authorCoverLibrary.controller.js'
+import { assertAuthorAvatarUploadAllowed } from './authorProfilePhotoLibrary.controller.js'
 import {
   deleteR2ObjectByKey,
   uploadFileToR2,
@@ -274,6 +275,11 @@ async function uploadAuthorImageToR2({
       'Invalid R2 upload folder'
     )
   }
+  
+if (folderKey === 'author_page_avatar') {
+  await assertAuthorAvatarUploadAllowed(authorPage.id)
+}
+
     if (folderKey === 'author_page_cover') {
     await assertAuthorCoverUploadAllowed(authorPage.id)
   }
