@@ -7,6 +7,7 @@ import {
   markNotificationAsRead,
 } from '../controllers/notifications.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
+import { getMyMassMentionDigest } from '../controllers/massMentionDigest.controller.js'
 
 const router = express.Router()
 
@@ -43,6 +44,7 @@ const notificationWriteLimit = rateLimit({
 
 router.get('/', notificationReadLimit, requireUser, getMyNotifications)
 router.get('/unread-count', notificationReadLimit, requireUser, getMyNotificationUnreadCount)
+router.get('/mass-mentions/:digestId', notificationReadLimit, requireUser, getMyMassMentionDigest)
 router.patch('/read-all', notificationWriteLimit, requireUser, markAllNotificationsAsRead)
 router.patch('/:notificationId/read', notificationWriteLimit, requireUser, markNotificationAsRead)
 
