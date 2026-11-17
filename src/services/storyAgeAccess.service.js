@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
+import { markRequestDiagnostic } from './trafficDiagnostic.service.js'
 
 const ADULT_AGE = 18
 const AGE_ACCESS_CACHE_MS = 5 * 1000
@@ -149,6 +150,21 @@ export function applyAdultStoryVisibility(query, access) {
 }
 
 export function hideAdultStory(res) {
+  const access = res.req?.readerAgeAccess
+
+  markRequestDiagnostic({
+    feature: 'public_story_access',
+    access_stage: 'reader_age_gate',
+    access_result: 'expected_restriction',
+    error_code: 'ADULT_RESTRICTED',
+    response_status: 403,
+    age_known: Number.isFinite(access?.age),
+    viewer_authenticated: Boolean(access?.user_id),
+  })
+
+  res.setHeader('Cache-Control', 'private, no-store')
+  res.setHeader('X-Shadow-Access-Reason', 'adult-restricted')
+
   return res.status(403).json({
     ok: false,
     code: 'ADULT_RESTRICTED',
