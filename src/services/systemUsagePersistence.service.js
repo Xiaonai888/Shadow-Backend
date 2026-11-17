@@ -37,6 +37,7 @@ let retentionRunning = false
 let lastRetentionAt = 0
 let lastRenderFullBackfillAt = 0
 let lastRenderBackfillServiceKey = ''
+let renderBreakdownQueryParam = 'resource'
 
 const providerState = {
   last_sync_at: null,
@@ -841,11 +842,14 @@ function renderMetricHour(point, now) {
     : null
 }
 
+function renderBandwidthSourceSeries(payload) {
+  if (Array.isArray(payload)) return payload
+  return Array.isArray(payload?.data) ? payload.data : []
+}
+
 function collectRenderHourly(data, sourcesData, serviceIds, now) {
   const rows = new Map()
-  const sourceRows = Array.isArray(sourcesData?.data)
-    ? sourcesData.data
-    : []
+  const sourceRows = renderBandwidthSourceSeries(sourcesData)
   const sourceTotals = new Map()
 
   for (const series of Array.isArray(data) ? data : []) {
@@ -1029,15 +1033,30 @@ async function syncRenderProvider(now) {
   const query = new URLSearchParams({ startTime: start, endTime: end })
   for (const serviceId of serviceIds) query.append('resource', serviceId)
 
-    try {
+  try {
     let bandwidthSourcesFetchError = null
+    let breakdownFallbackAttempted = false
+    const fetchBandwidthSources = async () => {
+      const sourceParams = new URLSearchParams({ startTime: start, endTime: end })
+      for (const serviceId of serviceIds) sourceParams.append(renderBreakdownQueryParam, serviceId)
+      try {
+        return await fetchJson(`https://api.render.com/v1/metrics/bandwidth-sources?${sourceParams}`, apiKey)
+      } catch (error) {
+        if (renderBreakdownQueryParam !== 'resource' || !/HTTP 400\b/.test(String(error?.message || ''))) throw error
+        breakdownFallbackAttempted = true
+        const legacyParams = new URLSearchParams({ startTime: start, endTime: end })
+        for (const serviceId of serviceIds) legacyParams.append('service', serviceId)
+        const result = await fetchJson(`https://api.render.com/v1/metrics/bandwidth-sources?${legacyParams}`, apiKey)
+        renderBreakdownQueryParam = 'service'
+        return result
+      }
+    }
     const [bandwidthData, bandwidthSourcesData] = await Promise.all([
       fetchJson(`https://api.render.com/v1/metrics/bandwidth?${query}`, apiKey),
-      fetchJson(`https://api.render.com/v1/metrics/bandwidth-sources?${query}`, apiKey)
-               .catch((error) => {
-          bandwidthSourcesFetchError = String(error?.message || error).slice(0, 200)
-          return null
-        }),
+      fetchBandwidthSources().catch((error) => {
+        bandwidthSourcesFetchError = String(error?.message || error).slice(0, 200)
+        return null
+      }),
     ])
 
     if (!Array.isArray(bandwidthData)) {
@@ -1050,7 +1069,10 @@ async function syncRenderProvider(now) {
       serviceIds,
       now
     )
-        const syncDiagnostics = {
+    const sourceSeries = renderBandwidthSourceSeries(bandwidthSourcesData)
+    const sourceResponseValid = Array.isArray(bandwidthSourcesData) ||
+      Array.isArray(bandwidthSourcesData?.data)
+    const syncDiagnostics = {
       requested_service_ids: serviceIds,
       bandwidth_series_received: bandwidthData.length,
       unmatched_service_series: bandwidthData.filter(s => !renderMetricService(s, serviceIds)).length,
@@ -1058,11 +1080,15 @@ async function syncRenderProvider(now) {
       missing_values_series: bandwidthData.filter(s => !Array.isArray(s?.values)).length,
       ignored_points: bandwidthData.reduce((n, s) => n + (Array.isArray(s?.values) ? s.values : []).filter(p => renderMetricHour(p, now) === null || p?.value == null || !Number.isFinite(Number(p.value)) || Number(p.value) < 0).length, 0),
       hourly_rows_after_parse: hourlyRows.length,
-      breakdown_series_received: Array.isArray(bandwidthSourcesData?.data) ? bandwidthSourcesData.data.length : 0,
-      breakdown_endpoint_available: Array.isArray(bandwidthSourcesData?.data),
-                breakdown_fetch_error: bandwidthSourcesFetchError,
-      breakdown_response_shape: Array.isArray(bandwidthSourcesData?.data) ? 'data_array' : bandwidthSourcesData === null ? 'no_response' : 'unexpected_shape',
-      breakdown_unmatched_service_series: (Array.isArray(bandwidthSourcesData?.data) ? bandwidthSourcesData.data : []).filter(s => !renderMetricService(s, serviceIds)).length,
+      breakdown_series_received: sourceSeries.length,
+      breakdown_endpoint_available: sourceResponseValid,
+      breakdown_fetch_error: bandwidthSourcesFetchError,
+      breakdown_query_parameter: renderBreakdownQueryParam,
+      breakdown_fallback_attempted: breakdownFallbackAttempted,
+      breakdown_response_shape: Array.isArray(bandwidthSourcesData) ? 'array' : Array.isArray(bandwidthSourcesData?.data) ? 'data_array' : bandwidthSourcesData == null ? 'no_response' : 'unexpected_shape',
+      breakdown_unmatched_service_series: sourceSeries.filter(s => !renderMetricService(s, serviceIds)).length,
+      breakdown_unrecognized_traffic_source_series: sourceSeries.filter(s => !['http', 'websocket', 'nat', 'privatelink', 'total'].includes((renderMetricLabel(s, 'trafficSource') || String(s?.trafficSource || '')).trim().toLowerCase())).length,
+      breakdown_invalid_points: sourceSeries.reduce((n, s) => n + (Array.isArray(s?.values) ? s.values : []).filter(p => renderMetricHour(p, now) === null || p?.value == null || !Number.isFinite(Number(p.value)) || Number(p.value) < 0).length, 0),
       hours_without_breakdown: hourlyRows.filter(r => !r.breakdown_available).length,
     }
 
@@ -1074,9 +1100,7 @@ async function syncRenderProvider(now) {
     const sources = displayRow?.breakdown_available
       ? {
           available: true,
-          series_count: Array.isArray(bandwidthSourcesData?.data)
-            ? bandwidthSourcesData.data.length
-            : 0,
+          series_count: sourceSeries.length,
           category_raw_total: displayRow.total_bytes || 1,
           raw: {
             http: displayRow.http_response_bytes,
@@ -1126,7 +1150,7 @@ async function syncRenderProvider(now) {
         ...saved,
         full_backfill: fullBackfill,
         row_count: hourlyRows.length,
-        source_breakdown_available: Array.isArray(bandwidthSourcesData?.data),
+        source_breakdown_available: sourceResponseValid,
       }
       if (fullBackfill) {
         lastRenderFullBackfillAt = now
