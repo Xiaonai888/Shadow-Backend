@@ -16,6 +16,7 @@ import {
   assertAuthorStorageAvailable,
   recordAuthorR2Asset,
 } from '../services/authorStorageQuota.service.js'
+import { assertAuthorCoverUploadAllowed } from '../controllers/authorCoverLibrary.controller.js'
 import { createPresignedPutUrl } from '../services/storyVideoDirectUpload.service.js'
 import { rateLimit } from 'express-rate-limit'
 
@@ -315,6 +316,7 @@ async function initiate(req, res, role) {
   let authorPage = null
   if (policy.scope === 'author') {
     authorPage = await authorPageFor(owner)
+    if (category === 'author_page_cover') await assertAuthorCoverUploadAllowed(authorPage.id)
     if (policy.trackQuota) await assertAuthorStorageAvailable(authorPage.id, fileSize)
   }
   if (policy.audio) await assertOwnedAudioStory(input.storyId, owner)
@@ -379,6 +381,7 @@ async function finalize(req, res, role) {
     if (claims.policy.scope === 'author') {
       authorPage = await authorPageFor(owner)
       if (authorPage.id !== claims.author_page_id) throw fail(403, 'DIRECT_UPLOAD_AUTHOR_MISMATCH', 'Author account has changed')
+      if (claims.category === 'author_page_cover') await assertAuthorCoverUploadAllowed(authorPage.id)
       if (claims.policy.trackQuota) await assertAuthorStorageAvailable(authorPage.id, claims.size)
     }
     const storageOwner = authorPage?.id || owner
