@@ -18,6 +18,40 @@ import {
   authorReaderBlockedPayload,
   getActiveAuthorReaderBlock,
 } from '../utils/authorReaderCommentBlocks.js'
+import { extractMassMentionTags } from '../services/massMentionAudience.service.js'
+import { enqueueMassMentionComment } from '../services/massMentionJob.service.js'
+import { wakeMassMentionWorker } from '../services/massMentionWorker.service.js'
+
+async function queueAuthorCommentMassMention({ senderUserId, commentId, postId, text, post = null }) {
+  if (!extractMassMentionTags(text).length) return
+  try {
+    let sourcePost = post
+    if (!sourcePost) {
+      const { data, error } = await supabase
+        .from('author_page_posts')
+        .select('id, author_page_id, user_id, status')
+        .eq('id', postId)
+        .eq('status', 'active')
+        .maybeSingle()
+      if (error) throw error
+      sourcePost = data
+    }
+    if (!sourcePost || sourcePost.status !== 'active') return
+    const results = await enqueueMassMentionComment({
+      senderUserId,
+      commentId,
+      postId: sourcePost.id,
+      sourceKind: 'author_post_comment',
+      authorPageId: String(sourcePost.user_id) === String(senderUserId)
+        ? sourcePost.author_page_id
+        : null,
+      text,
+    })
+    if (results.some((item) => item.status === 'queued')) wakeMassMentionWorker()
+  } catch (error) {
+    console.error('AUTHOR_MASS_MENTION_QUEUE_ERROR:', error)
+  }
+}
 
 function getRequestUserId(req) {
   try {
@@ -936,8 +970,18 @@ export async function createMyAuthorPost(req, res) {
 
     if (createError) throw createError
 
-    if (!scheduleRequested) {
-      invalidateDiscoverAuthorPostsSharedCache()
+    if (!createdComment.is_hidden) {
+      await queueAuthorCommentMassMention({
+        senderUserId: userId,
+        commentId: createdComment.id,
+        postId,
+        text,
+        post,
+      })
+    }
+
+    const nextCommentCount =
+      await getVisibleAuthorPostCommentCount(
       await bumpContentVersions(['discover'])
     }
 
@@ -2817,8 +2861,8 @@ export async function updateOwnAuthorPostComment(req, res) {
     }
 
     const { data: existingComment, error: findError } = await supabase
-      .from('author_page_post_comments')
-      .select('id, user_id')
+            .from('author_page_post_comments')
+      .select('id, user_id, post_id, is_hidden')
       .eq('id', commentId)
       .is('deleted_at', null)
       .maybeSingle()
@@ -2852,6 +2896,15 @@ export async function updateOwnAuthorPostComment(req, res) {
       .single()
 
     if (updateError) throw updateError
+
+    if (!updatedComment.is_hidden) {
+      await queueAuthorCommentMassMention({
+        senderUserId: userId,
+        commentId,
+        postId: existingComment.post_id,
+        text,
+      })
+    }
 
     const reactionMap =
       await getAuthorPostCommentReactionMap(
