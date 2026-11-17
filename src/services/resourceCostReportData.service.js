@@ -160,16 +160,18 @@ export async function getResourceCostReport({
       : 'Top-route details are bounded. Unlisted application traffic and provider network overhead are not attributed.'
   }
 
+    const configuredRenderServiceIds = detectedServices(serviceIds)
   const summary = buildResourceCostSummary({
     from: range.from,
     to: end,
     asOf,
-    serviceIds: detectedServices(serviceIds),
+    serviceIds: configuredRenderServiceIds,
     renderRows,
     providerRows,
     uploadRows,
     applicationRows,
   })
+  const observedRenderServiceIds = [...new Set(renderRows.map(row => String(row.service_id || '').trim()).filter(Boolean))].sort()
   const renderIndex = new Map(renderRows.map(row => [`${row.service_id}|${Date.parse(row.hour_start)}`, row]))
   const matureUntil = Math.floor((resourceCostTimestamp(asOf) - 2 * HOUR_MS) / HOUR_MS) * HOUR_MS
   const renderHourGaps = summary.service_ids.map(service_id => {
@@ -196,6 +198,12 @@ export async function getResourceCostReport({
         rows: renderRows.length,
         table: 'render_bandwidth_hourly',
         billing_authoritative: false,
+        configured_service_ids: configuredRenderServiceIds,
+        observed_service_ids: observedRenderServiceIds,
+        configured_without_measurements: configuredRenderServiceIds.filter(id => !observedRenderServiceIds.includes(id)),
+        observed_not_configured: observedRenderServiceIds.filter(id => !configuredRenderServiceIds.includes(id)),
+        sync_service_limit_exceeded: configuredRenderServiceIds.length > 20,
+        service_inventory_verified: false,
         service_hour_diagnostics: renderHourGaps,
       },
       provider: { rows: providerRows.filter((row) => resourceCostTimestamp(row.observed_at) >= start).length, table: 'resource_cost_provider_observations', include_late_interval_observations: true },
