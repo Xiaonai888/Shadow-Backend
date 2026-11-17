@@ -1029,11 +1029,15 @@ async function syncRenderProvider(now) {
   const query = new URLSearchParams({ startTime: start, endTime: end })
   for (const serviceId of serviceIds) query.append('resource', serviceId)
 
-  try {
+    try {
+    let bandwidthSourcesFetchError = null
     const [bandwidthData, bandwidthSourcesData] = await Promise.all([
       fetchJson(`https://api.render.com/v1/metrics/bandwidth?${query}`, apiKey),
       fetchJson(`https://api.render.com/v1/metrics/bandwidth-sources?${query}`, apiKey)
-        .catch(() => null),
+               .catch((error) => {
+          bandwidthSourcesFetchError = String(error?.message || error).slice(0, 200)
+          return null
+        }),
     ])
 
     if (!Array.isArray(bandwidthData)) {
@@ -1056,6 +1060,9 @@ async function syncRenderProvider(now) {
       hourly_rows_after_parse: hourlyRows.length,
       breakdown_series_received: Array.isArray(bandwidthSourcesData?.data) ? bandwidthSourcesData.data.length : 0,
       breakdown_endpoint_available: Array.isArray(bandwidthSourcesData?.data),
+                breakdown_fetch_error: bandwidthSourcesFetchError,
+      breakdown_response_shape: Array.isArray(bandwidthSourcesData?.data) ? 'data_array' : bandwidthSourcesData === null ? 'no_response' : 'unexpected_shape',
+      breakdown_unmatched_service_series: (Array.isArray(bandwidthSourcesData?.data) ? bandwidthSourcesData.data : []).filter(s => !renderMetricService(s, serviceIds)).length,
       hours_without_breakdown: hourlyRows.filter(r => !r.breakdown_available).length,
     }
 
