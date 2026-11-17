@@ -127,6 +127,7 @@ import musicRoutes from './src/routes/music.routes.js'
 import { startMangaR2DeleteRetryWorker } from './src/services/mangaR2DeleteRetry.service.js'
 import { startHeavyMediaWorkerCoordinator } from './src/services/heavyMediaWorkerCoordinator.service.js'
 import { startAuthorStoryPushQueue } from './src/services/authorStoryPushQueue.service.js'
+import { startMassMentionWorker } from './src/services/massMentionWorker.service.js'
 import { startStoryEpisodePushScheduler } from './src/services/storyEpisodePushScheduler.js'
 import { startSmartAdMaintenanceScheduler } from './src/services/smartAdMaintenance.service.js'
 import { startBinanceUsdtAlertWorker } from './src/services/binanceUsdtAlertWorker.service.js'
@@ -1106,6 +1107,7 @@ app.listen(PORT, () => {
   void startMangaR2DeleteRetryWorker()
   startHeavyMediaWorkerCoordinator()
   startAuthorStoryPushQueue()
+  if (process.env.MASS_MENTION_WORKER_ENABLED === 'true') startMassMentionWorker()
   startStoryEpisodePushScheduler()
   startSmartAdMaintenanceScheduler()
   startBinanceUsdtAlertWorker()
