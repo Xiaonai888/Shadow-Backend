@@ -1,147 +1,219 @@
-import { getActiveReaderToken } from '../utils/readerActiveAccount'
+import express from 'express'
+import jwt from 'jsonwebtoken'
+import { createHash } from 'node:crypto'
+import { rateLimit } from 'express-rate-limit'
+import {
+  createEchoV2,
+  deleteEchoV2,
+  getEchoV2BySource,
+  getEchoV2ByUsername,
+  getEchoV2Feed,
+  getEchoV2Health,
+  getMyEchoV2,
+  getReceivedEchoV2,
+} from '../controllers/echoV2.controller.js'
+import { requireUser } from '../middleware/user.middleware.js'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL ||
-  (['localhost', '127.0.0.1'].includes(window.location.hostname)
-    ? 'http://localhost:5000'
-    : 'https://shadow-backend-kucw.onrender.com')
+const router = express.Router()
+const FAST_ECHO_CACHE_TTL_MS = 2500
+const FAST_ECHO_CACHE_LIMIT = 200
+const FAST_ECHO_PENDING_LIMIT = 100
+const fastEchoCache = new Map()
+const fastEchoPending = new Map()
+let fastEchoGeneration = 0
 
-const VIEWER_STORAGE_KEY = 'shadow_fast_reel_viewer_id_v1'
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const recentlyReported = new Map()
-const REPEAT_INTERVAL_MS = 30 * 60 * 1000
-let volatileViewerId = null
+const echoV2ReadLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 900,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ECHO_V2_READ_RATE_LIMIT',
+    message: 'Too many echo requests. Please retry shortly.',
+  },
+})
 
-export class FastReelViewError extends Error {
-  constructor(status, code, message, reason = '') {
-    super(message)
-    this.name = 'FastReelViewError'
-    this.status = status
-    this.code = code
-    this.reason = reason
-    this.retryable = code === 'INVALID_VIEW_RESPONSE' || status === 0 || status === 408 || status === 429 || status >= 500
-  }
-}
+const echoV2WriteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'ECHO_V2_WRITE_RATE_LIMIT',
+    message: 'Too many echo actions. Please retry shortly.',
+  },
+})
 
-function getBrowserViewerId() {
+function optionalUser(req, res, next) {
   try {
-    const prior = localStorage.getItem(VIEWER_STORAGE_KEY)
-    if (prior && UUID.test(prior)) return prior
-  } catch {}
+    const authHeader =
+      req.headers.authorization || ''
+    const token =
+      authHeader.startsWith('Bearer ')
+        ? authHeader.slice(7)
+        : ''
 
-  if (volatileViewerId) return volatileViewerId
-  if (typeof crypto === 'undefined' || typeof crypto.randomUUID !== 'function') return null
-
-  const value = crypto.randomUUID()
-  volatileViewerId = value
-  try { localStorage.setItem(VIEWER_STORAGE_KEY, value) } catch {}
-  return value
-}
-
-export async function recordFastReelView(videoId) {
-  const id = String(videoId || '').trim()
-  if (!UUID.test(id)) return null
-
-  const now = Date.now()
-  const last = recentlyReported.get(id)
-  if (last && now - last < REPEAT_INTERVAL_MS) return null
-
-  const viewerId = getBrowserViewerId()
-  if (!viewerId) return null
-
-  recentlyReported.set(id, now)
-  if (recentlyReported.size > 500) recentlyReported.clear()
-
-  try {
-    const response = await fetch(
-      `${API_BASE_URL}/api/fast/videos/${encodeURIComponent(id)}/view`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ viewer_id: viewerId }),
-        cache: 'no-store',
-        keepalive: true,
-      }
-    )
-    const data = await response.json().catch(() => ({}))
-    if (!response.ok || !data.ok) throw new Error(data.message || 'View tracking failed')
-    return data
-  } catch (error) {
-    recentlyReported.delete(id)
-    throw error
-  }
-}
-
-export async function recordFastReelViewV2(
-  videoId,
-  { mode = 'fast', watchedSeconds = 0, durationSeconds = null } = {}
-) {
-  const id = String(videoId || '').trim()
-  if (!UUID.test(id)) {
-    throw new FastReelViewError(400, 'INVALID_REEL_ID', 'Invalid Reel ID')
-  }
-  if (mode !== 'fast' && mode !== 'qualified') {
-    throw new FastReelViewError(400, 'INVALID_VIEW_MODE', 'Invalid Reel view mode')
-  }
-
-  const body = { mode }
-  if (mode === 'qualified') {
     if (
-      typeof watchedSeconds !== 'number' ||
-      typeof durationSeconds !== 'number' ||
-      !Number.isFinite(watchedSeconds) ||
-      !Number.isFinite(durationSeconds) ||
-      durationSeconds <= 0 ||
-      durationSeconds > 43200 ||
-      watchedSeconds < 0 ||
-      watchedSeconds > durationSeconds + 1
+      !token ||
+      !process.env.JWT_SECRET
     ) {
-      throw new FastReelViewError(400, 'INVALID_WATCH_DATA', 'Invalid Reel playback duration')
+      return next()
     }
-    body.watched_seconds = watchedSeconds
-    body.video_duration_seconds = durationSeconds
-  }
 
-  const token = getActiveReaderToken()
-  if (!token) {
-    throw new FastReelViewError(401, 'LOGIN_REQUIRED', 'Reader login required to count Reel views')
-  }
-
-  let response
-  try {
-    response = await fetch(
-      `${API_BASE_URL}/api/fast/videos/${encodeURIComponent(id)}/view/v2`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-        cache: 'no-store',
-      }
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET
     )
-  } catch (error) {
-    throw new FastReelViewError(0, 'VIEW_NETWORK_ERROR', error?.message || 'Reel view request failed')
-  }
 
-  const data = await response.json().catch(() => null)
-  if (!response.ok || data?.ok !== true) {
-    throw new FastReelViewError(
-      response.status,
-      String(data?.code || 'VIEW_REQUEST_FAILED'),
-      String(data?.message || 'Unable to record Reel playback'),
-      String(data?.reason || '')
-    )
-  }
+    if (decoded.type === 'reader') {
+      req.user = decoded
+    }
 
-  if (
-    typeof data.counted !== 'boolean' ||
-    !['number', 'string'].includes(typeof data.view_count) ||
-    !Number.isSafeInteger(Number(data.view_count)) ||
-    Number(data.view_count) < 0
-  ) {
-    throw new FastReelViewError(response.status, 'INVALID_VIEW_RESPONSE', 'Invalid Reel view response')
+    return next()
+  } catch {
+    return next()
   }
-
-  return data
 }
+
+function invalidateFastEchoCache(req, res, next) {
+  res.once('finish', () => {
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      fastEchoGeneration += 1
+      fastEchoCache.clear()
+    }
+  })
+  return next()
+}
+
+function coalesceFastEchoSource(req, res, next) {
+  if (String(req.params.sourceType || '').toLowerCase() !== 'fast_video') return next()
+
+  const authHeader = String(req.headers.authorization || '')
+  const viewerId = String(req.user?.user_id || req.user?.id || '')
+  const key = createHash('sha256')
+    .update(JSON.stringify([viewerId, authHeader, req.originalUrl]))
+    .digest('hex')
+  const generation = fastEchoGeneration
+  const now = Date.now()
+  const cached = fastEchoCache.get(key)
+
+  if (cached && cached.expiresAt > now && cached.generation === generation) {
+    fastEchoCache.delete(key)
+    fastEchoCache.set(key, cached)
+    res.set('Cache-Control', 'private, no-store')
+    return res.status(200).json(cached.body)
+  }
+  if (cached) fastEchoCache.delete(key)
+
+  const pendingKey = `${generation}:${key}`
+  const existing = fastEchoPending.get(pendingKey)
+  if (existing) {
+    existing.then((result) => {
+      if (res.headersSent || res.writableEnded || res.destroyed) return
+      if (!result || generation !== fastEchoGeneration) return next()
+      res.set('Cache-Control', 'private, no-store')
+      return res.status(200).json(result)
+    }).catch(next)
+    return
+  }
+
+  if (fastEchoPending.size >= FAST_ECHO_PENDING_LIMIT) return next()
+
+  let resolvePending
+  const promise = new Promise((resolve) => {
+    resolvePending = resolve
+  })
+  fastEchoPending.set(pendingKey, promise)
+
+  let settled = false
+  const finish = (value) => {
+    if (settled) return
+    settled = true
+    if (fastEchoPending.get(pendingKey) === promise) fastEchoPending.delete(pendingKey)
+    resolvePending(value)
+  }
+
+  res.set('Cache-Control', 'private, no-store')
+  const originalJson = res.json.bind(res)
+  res.json = (body) => {
+    const success = res.statusCode === 200 && body?.ok === true
+    if (success && generation === fastEchoGeneration) {
+      fastEchoCache.delete(key)
+      fastEchoCache.set(key, {
+        body,
+        generation,
+        expiresAt: Date.now() + FAST_ECHO_CACHE_TTL_MS,
+      })
+      while (fastEchoCache.size > FAST_ECHO_CACHE_LIMIT) {
+        fastEchoCache.delete(fastEchoCache.keys().next().value)
+      }
+    }
+    finish(success && generation === fastEchoGeneration ? body : null)
+    return originalJson(body)
+  }
+
+  res.once('close', () => finish(null))
+  return next()
+}
+
+router.get(
+  '/health',
+  echoV2ReadLimit,
+  getEchoV2Health
+)
+
+router.get(
+  '/source/:sourceType/:sourceId',
+  echoV2ReadLimit,
+  optionalUser,
+  coalesceFastEchoSource,
+  getEchoV2BySource
+)
+
+router.get(
+  '/feed',
+  echoV2ReadLimit,
+  requireUser,
+  getEchoV2Feed
+)
+
+router.get(
+  '/me',
+  echoV2ReadLimit,
+  requireUser,
+  getMyEchoV2
+)
+
+router.get(
+  '/received',
+  echoV2ReadLimit,
+  requireUser,
+  getReceivedEchoV2
+)
+
+router.get(
+  '/user/:username',
+  echoV2ReadLimit,
+  requireUser,
+  getEchoV2ByUsername
+)
+
+router.post(
+  '/',
+  echoV2WriteLimit,
+  requireUser,
+  invalidateFastEchoCache,
+  createEchoV2
+)
+
+router.delete(
+  '/:echoId',
+  echoV2WriteLimit,
+  requireUser,
+  invalidateFastEchoCache,
+  deleteEchoV2
+)
+
+export default router
