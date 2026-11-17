@@ -1,4 +1,5 @@
 import { recordReaderDailyActivity } from '../services/readerDailyActivity.service.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 import jwt from 'jsonwebtoken'
 import { supabase } from '../config/supabase.js'
 import { attachEpisodePageParts } from '../services/episodePageParts.service.js'
@@ -2738,6 +2739,7 @@ if (slidesError) throw slidesError
 }
 
 export async function getPublicStoryEpisodes(req, res) {
+  let stage = 'story_lookup'
   try {
     const { storyId } = req.params
 
@@ -2768,12 +2770,14 @@ export async function getPublicStoryEpisodes(req, res) {
       })
     }
 
-    const ageAccess = await getReaderAgeAccess(req)
+    stage = 'reader_age_access'
+const ageAccess = await getReaderAgeAccess(req)
 
 if (!isStoryVisibleToReader(story, ageAccess)) {
   return hideAdultStory(res)
 }
 
+    stage = 'episodes_query'
     const { data, error } = await supabase
       .from('episodes')
       .select(
@@ -2805,6 +2809,7 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
       .filter(Boolean)
 
     if (visibleEpisodeIds.length) {
+      stage = 'episode_comment_totals'
       const { data: totals, error: commentError } =
         await supabase.rpc(
           'get_episode_comment_totals',
@@ -2850,7 +2855,15 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
         )
       ),
     })
-  } catch (error) {
+    } catch (error) {
+    markRequestDiagnostic({
+      feature: 'public_story_episodes',
+      stage,
+      error_code: String(
+        error?.code || error?.name || 'EPISODES_FAILED'
+      ).slice(0, 60),
+    })
+
     console.error(
       'GET PUBLIC STORY EPISODES ERROR:',
       error
