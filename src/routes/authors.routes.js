@@ -131,6 +131,11 @@ import {
   updateMyAuthorCommentCleanupSettings,
 } from '../controllers/authorCommentProtectionSettings.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
+import {
+  listMyAuthorCovers,
+  selectMyAuthorCover,
+  deleteMyAuthorCover,
+} from '../controllers/authorCoverLibrary.controller.js'
 import { requireAuthorPayoutMethod } from '../middleware/authorPayoutCountryGate.middleware.js'
 import { invalidateMyAuthorPageCache } from '../services/myAuthorPageCache.service.js'
 import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
@@ -305,6 +310,9 @@ router.use('/me', rateLimit({
 }))
 
 router.get('/me/49-day-event', requireUser, getMyAuthor49DayEvent)
+router.get('/me/cover-library', requireUser, listMyAuthorCovers)
+router.put('/me/cover-library/active', requireUser, invalidateMyAuthorPageAfterMutation, invalidatePublicStoriesAfterMutation, selectMyAuthorCover)
+router.delete('/me/cover-library/:assetId', requireUser, deleteMyAuthorCover)
 router.get('/me/daily-80-event', requireUser, getMyAuthorDaily80Event)
 router.get('/me/daily-50-event', requireUser, getMyAuthorDaily50Event)
 router.get('/me/dashboard', requireUser, getMyAuthorDashboard)
