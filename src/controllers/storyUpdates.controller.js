@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { getReaderAgeAccess } from '../services/storyAgeAccess.service.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 
 function normalizePositiveInteger(value, fallback, max) {
   const number = Number(value)
@@ -28,6 +29,7 @@ function getCambodiaDateKey() {
 }
 
 export async function getPublicStoryUpdates(req, res) {
+  let stage = 'reader_age_access'
   try {
     const days = normalizePositiveInteger(req.query.days, 7, 7)
     const limitPerDay = normalizePositiveInteger(
@@ -48,6 +50,7 @@ export async function getPublicStoryUpdates(req, res) {
     const includeStoryType = String(req.query.include_story_type || '') === '1'
     const ageAccess = await getReaderAgeAccess(req)
 
+       stage = 'story_updates_rpc'
     const rpcStartedAt = Date.now()
     const { data, error } = await supabase.rpc(
       'get_public_story_updates',
@@ -92,10 +95,7 @@ export async function getPublicStoryUpdates(req, res) {
         .select('id, story_type')
         .in('id', missingTypeIds.slice(index, index + 100))
 
-      if (typeError) {
-        console.warn('[STORY_UPDATE_TYPE_LOOKUP_ERROR]', typeError.message)
-        break
-      }
+              console.warn('[STORY_UPDATE_TYPE_LOOKUP_ERROR]', typeError.message)
 
       for (const row of typeRows || []) {
         storyTypes.set(String(row.id), String(row.story_type || 'novel').trim().toLowerCase())
@@ -130,6 +130,11 @@ export async function getPublicStoryUpdates(req, res) {
       })),
     })
   } catch (error) {
+    markRequestDiagnostic({
+      feature: 'public_story_updates',
+      stage,
+      error_code: String(error?.code || error?.name || 'STORY_UPDATES_FAILED'),
+    })
     console.error('[SUPABASE_RPC_ERROR]', JSON.stringify({
       time: new Date().toISOString(),
       endpoint: '/api/public/story-updates',
