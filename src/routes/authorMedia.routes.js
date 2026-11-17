@@ -76,6 +76,9 @@ router.get(
 router.post(
   '/profile-image',
   requireUser,
+  (req, res, next) => process.env.MEDIA_LEGACY_UPLOAD_ENABLED === 'true'
+    ? next()
+    : res.status(410).json({ ok: false, code: 'LEGACY_MEDIA_UPLOAD_DISABLED', message: 'Use Cloudflare R2 Direct Upload.' }),
   uploadProfileImage,
   cleanupTempFile,
   guardDiskBackedUploads,
