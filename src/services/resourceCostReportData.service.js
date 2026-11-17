@@ -170,8 +170,7 @@ export async function getResourceCostReport({
     uploadRows,
     applicationRows,
   })
-  return {
-      const renderIndex = new Map(renderRows.map(row => [`${row.service_id}|${Date.parse(row.hour_start)}`, row]))
+  const renderIndex = new Map(renderRows.map(row => [`${row.service_id}|${Date.parse(row.hour_start)}`, row]))
   const matureUntil = Math.floor((resourceCostTimestamp(asOf) - 2 * HOUR_MS) / HOUR_MS) * HOUR_MS
   const renderHourGaps = summary.service_ids.map(service_id => {
     const missing_hour_utc = [], incomplete_breakdown_hour_utc = []
@@ -184,6 +183,7 @@ export async function getResourceCostReport({
     }
     return { service_id, expected_hours, observed_hours: expected_hours - missing_hour_utc.length, missing_hour_utc, incomplete_breakdown_hour_utc }
   })
+  return {
     ...summary,
     accuracy: {
       ...summary.accuracy,
