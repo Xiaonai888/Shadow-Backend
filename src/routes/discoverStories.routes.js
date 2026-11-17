@@ -1,4 +1,5 @@
 import express from 'express'
+import { rateLimit } from 'express-rate-limit'
 import { createHash } from 'node:crypto'
 import {
   getDiscoverStoriesFeed,
@@ -13,6 +14,18 @@ import {
 import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 
 const router = express.Router()
+const discoverFeedIpLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    code: 'DISCOVER_STORIES_IP_RATE_LIMIT',
+    message: 'Too many Discover requests. Please retry shortly.',
+  },
+})
+
 const FEED_CACHE_TTL_MS = 2000
 const FEED_CACHE_MAX_ENTRIES = 80
 const FEED_CACHE_MAX_BODY_BYTES = 192 * 1024
@@ -105,16 +118,18 @@ function cacheFeedResult(req, res, next) {
   return next()
 }
 
-router.get('/feed', requireUser, cacheFeedResult, getDiscoverStoriesFeed)
+router.get('/feed', discoverFeedIpLimit, requireUser, cacheFeedResult, getDiscoverStoriesFeed)
 
 router.get(
   '/:sourceType/:storyId/reaction',
+  discoverFeedIpLimit,
   requireUser,
   getDiscoverStoryReactionStatus
 )
 
 router.post(
   '/:sourceType/:storyId/reaction',
+  discoverFeedIpLimit,
   requireUser,
   toggleDiscoverStoryReaction
 )
