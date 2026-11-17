@@ -171,6 +171,19 @@ export async function getResourceCostReport({
     applicationRows,
   })
   return {
+      const renderIndex = new Map(renderRows.map(row => [`${row.service_id}|${Date.parse(row.hour_start)}`, row]))
+  const matureUntil = Math.floor((resourceCostTimestamp(asOf) - 2 * HOUR_MS) / HOUR_MS) * HOUR_MS
+  const renderHourGaps = summary.service_ids.map(service_id => {
+    const missing_hour_utc = [], incomplete_breakdown_hour_utc = []
+    let expected_hours = 0
+    for (const day of summary.days) for (let h = Math.ceil(Date.parse(day.period_start) / HOUR_MS) * HOUR_MS; h < Math.min(Date.parse(day.period_end), matureUntil); h += HOUR_MS) {
+      expected_hours++
+      const row = renderIndex.get(`${service_id}|${h}`), hour = new Date(h).toISOString()
+      if (!row) missing_hour_utc.push(hour)
+      else if (row.breakdown_available !== true || ['http_response_bytes', 'service_initiated_bytes', 'websocket_response_bytes', 'private_link_bytes'].some(key => row[key] == null || !Number.isSafeInteger(Number(row[key])))) incomplete_breakdown_hour_utc.push(hour)
+    }
+    return { service_id, expected_hours, observed_hours: expected_hours - missing_hour_utc.length, missing_hour_utc, incomplete_breakdown_hour_utc }
+  })
     ...summary,
     accuracy: {
       ...summary.accuracy,
@@ -179,7 +192,12 @@ export async function getResourceCostReport({
       unfinalized_r2_signed_puts_are_not_observed: true,
     },
     sources: {
-      render: { rows: renderRows.length, table: 'render_bandwidth_hourly', billing_authoritative: false },
+            render: {
+        rows: renderRows.length,
+        table: 'render_bandwidth_hourly',
+        billing_authoritative: false,
+        service_hour_diagnostics: renderHourGaps,
+      },
       provider: { rows: providerRows.filter((row) => resourceCostTimestamp(row.observed_at) >= start).length, table: 'resource_cost_provider_observations', include_late_interval_observations: true },
       upload: { rows: uploadRows.length, table: 'resource_cost_upload_hourly + heavy_media_jobs' },
       direct_manga: {
