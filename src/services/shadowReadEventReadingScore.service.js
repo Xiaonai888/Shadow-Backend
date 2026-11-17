@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { getShadowReadEventLanguageEnabled } from './shadowReadEventLanguageControl.service.js'
 
 const DAY_MS = 86400000
 const FIRST_EVENT_MS = Date.UTC(2026, 10, 2)
@@ -38,6 +39,42 @@ export function getShadowReadEventReadingWindow(now = new Date()) {
   }
 }
 
+async function eligibleForKhmerEvent(userId) {
+  if (!(await getShadowReadEventLanguageEnabled('km'))) return false
+  const { data: reader, error } = await supabase
+    .from('users')
+    .select('story_language')
+    .eq('id', userId)
+    .maybeSingle()
+  if (error) throw error
+  return reader && String(reader.story_language || 'km').toLowerCase() === 'km'
+}
+
+async function awardMissionPoints({ eventId, userId, mission, episodeId }) {
+  const target = Number(mission.target_amount)
+  const maximum = Number(mission.max_points)
+  if (!Number.isInteger(target) || target < 1 || !Number.isInteger(maximum) || maximum < 1) {
+    throw new Error('Invalid Read Event mission point configuration')
+  }
+
+  const { data, error } = await supabase.rpc('shadow_read_event_record_mission_points', {
+    p_event_id: eventId,
+    p_user_id: userId,
+    p_mission_id: mission.id,
+    p_evidence_key: `episode:${episodeId}`,
+    p_points: Math.ceil(maximum / target),
+  })
+  if (error) throw error
+  const result = Array.isArray(data) ? data[0] : data
+  if (!result || result.ok !== true) throw new Error('Invalid Read Event mission score response')
+  return {
+    mission_id: mission.id,
+    awarded: result.awarded === true,
+    points_added: Number(result.points_added || 0),
+    reason: result.reason || null,
+  }
+}
+
 export async function recordShadowReadEventReadingScore({ userId, storyId, episodeId } = {}) {
   const user = String(userId || '').trim()
   const story = String(storyId || '').trim()
@@ -67,70 +104,93 @@ export async function recordShadowReadEventReadingScore({ userId, storyId, episo
     .eq('reader_group_snapshot', 'kh')
     .maybeSingle()
   if (participantError) throw participantError
-  if (!participant) return { ok: true, awarded: false, reason: 'not_joined' }
 
-  const joinedAt = new Date(participant.joined_at).getTime()
-  const minimumReadAt = Math.max(joinedAt, Date.parse(window.dayStartIso))
-  if (!Number.isFinite(minimumReadAt)) throw new Error('Invalid Read Event join time')
+  const { data: missions, error: missionError } = await supabase
+    .from('shadow_read_event_missions')
+    .select('id,slot,mission_type,story_id,target_amount,max_points')
+    .eq('event_id', event.id)
+    .eq('day_number', window.dayNumber)
+    .in('mission_type', ['daily_story', 'free_read'])
+    .order('slot', { ascending: true })
+    .limit(2)
+  if (missionError) throw missionError
 
-  const [readingResult, missionResult] = await Promise.all([
-    supabase.from('reader_weekly_reading_episodes')
-      .select('episode_id,story_id,counted_at')
-      .eq('user_id', user)
-      .eq('week_start', window.startsOn)
-      .eq('story_id', story)
-      .eq('episode_id', episode)
-      .gte('counted_at', new Date(minimumReadAt).toISOString())
-      .lt('counted_at', window.nextDayStartIso)
-      .maybeSingle(),
-    supabase.from('shadow_read_event_missions')
-      .select('id,slot,mission_type,story_id,target_amount,max_points')
-      .eq('event_id', event.id)
-      .eq('day_number', window.dayNumber)
-      .in('mission_type', ['daily_story', 'free_read'])
-      .order('slot', { ascending: true })
-      .limit(2),
-  ])
-  if (readingResult.error) throw readingResult.error
-  if (missionResult.error) throw missionResult.error
-  if (!readingResult.data) return { ok: true, awarded: false, reason: 'reading_not_verified' }
+  const dailyMission = (missions || []).find((item) =>
+    item.slot === 1 && item.mission_type === 'daily_story' && UUID.test(String(item.story_id)))
+  if (!dailyMission || Number(dailyMission.target_amount) !== 2) {
+    return { ok: true, awarded: false, reason: 'daily_mission_unavailable' }
+  }
 
-  const missions = (missionResult.data || []).filter((mission) =>
-    mission.mission_type === 'free_read' ||
-    (mission.mission_type === 'daily_story' && String(mission.story_id) === story)
-  )
-  if (!missions.length) return { ok: true, awarded: false, reason: 'no_matching_mission' }
+  const matchesDaily = String(dailyMission.story_id) === story
+  const freeMission = (missions || []).find((item) => item.mission_type === 'free_read')
+  if (!matchesDaily && !participant) {
+    return { ok: true, awarded: false, reason: 'daily_story_required' }
+  }
+  if (!matchesDaily && !freeMission) {
+    return { ok: true, awarded: false, reason: 'no_matching_mission' }
+  }
 
-  const credited = []
-  for (const mission of missions) {
-    const target = Number(mission.target_amount)
-    const maximum = Number(mission.max_points)
-    if (!Number.isInteger(target) || target < 1 || !Number.isInteger(maximum) || maximum < 1) {
-      throw new Error('Invalid Read Event mission point configuration')
+  const { data: reading, error: readingError } = await supabase
+    .from('reader_weekly_reading_episodes')
+    .select('episode_id')
+    .eq('user_id', user)
+    .eq('week_start', window.startsOn)
+    .eq('story_id', story)
+    .eq('episode_id', episode)
+    .gte('counted_at', window.dayStartIso)
+    .lt('counted_at', window.nextDayStartIso)
+    .maybeSingle()
+  if (readingError) throw readingError
+  if (!reading) return { ok: true, awarded: false, reason: 'reading_not_verified' }
+
+  const { data: dailyEvidence, error: evidenceError } = await supabase
+    .from('reader_weekly_reading_episodes')
+    .select('episode_id')
+    .eq('user_id', user)
+    .eq('week_start', window.startsOn)
+    .eq('story_id', dailyMission.story_id)
+    .gte('counted_at', window.dayStartIso)
+    .lt('counted_at', window.nextDayStartIso)
+    .order('counted_at', { ascending: true })
+    .limit(2)
+  if (evidenceError) throw evidenceError
+
+  const qualifiedEpisodes = [...new Set((dailyEvidence || []).map((row) => String(row.episode_id)))]
+  if (qualifiedEpisodes.length !== 2) {
+    return { ok: true, awarded: false, qualified_day: false, reason: 'daily_story_incomplete' }
+  }
+
+  let autoJoined = false
+  if (!participant) {
+    if (!(await eligibleForKhmerEvent(user))) {
+      return { ok: true, awarded: false, reason: 'story_language_not_eligible' }
     }
 
-    const pointsPerEpisode = Math.ceil(maximum / target)
-    const { data, error } = await supabase.rpc('shadow_read_event_record_mission_points', {
-      p_event_id: event.id,
-      p_user_id: user,
-      p_mission_id: mission.id,
-      p_evidence_key: `episode:${episode}`,
-      p_points: pointsPerEpisode,
-    })
-    if (error) throw error
-    const result = Array.isArray(data) ? data[0] : data
-    if (!result || result.ok !== true) throw new Error('Invalid Read Event mission score response')
-    credited.push({
-      mission_id: mission.id,
-      awarded: result.awarded === true,
-      points_added: Number(result.points_added || 0),
-      reason: result.reason || null,
-    })
+    const { error: joinError } = await supabase
+      .from('shadow_read_event_participants')
+      .insert({ event_id: event.id, user_id: user, reader_group_snapshot: 'kh' })
+    if (joinError && String(joinError.code) !== '23505') throw joinError
+    autoJoined = !joinError
+  }
+
+  const credited = []
+  if (matchesDaily) {
+    for (const id of qualifiedEpisodes) {
+      credited.push(await awardMissionPoints({ eventId: event.id, userId: user, mission: dailyMission, episodeId: id }))
+    }
+  }
+  if (freeMission) {
+    const episodes = matchesDaily ? [...new Set([...qualifiedEpisodes, episode])] : [episode]
+    for (const id of episodes) {
+      credited.push(await awardMissionPoints({ eventId: event.id, userId: user, mission: freeMission, episodeId: id }))
+    }
   }
 
   return {
     ok: true,
     awarded: credited.some((item) => item.awarded),
+    auto_joined: autoJoined,
+    qualified_day: true,
     event_id: event.id,
     day_number: window.dayNumber,
     missions: credited,
