@@ -40,19 +40,21 @@ function selectedPeriod(mode, now) {
   const weekday = new Date(`${today}T00:00:00.000Z`).getUTCDay()
   const mondayOffset = (weekday + 6) % 7
   const fromDate = mode === 'yesterday' ? yesterday
-    : mode === 'last7' ? shiftDay(today, -7)
+    : mode === 'last7' ? shiftDay(today, -6)
       : mode === 'week' ? shiftDay(today, -mondayOffset)
         : mode === 'month' ? `${today.slice(0, 7)}-01`
           : mode === 'last30' ? shiftDay(today, -30)
             : shiftMonth(today, -11)
+  const endExclusive = mode === 'yesterday' ? today : shiftDay(today, 1)
   const dates = []
-  for (let date = fromDate; date < today; date = shiftDay(date, 1)) {
+  for (let date = fromDate; date < endExclusive; date = shiftDay(date, 1)) {
     if (dates.length >= 370) throw new RangeError('Cost Overview date range exceeds limit.')
     dates.push(date)
   }
   return {
     mode,
     today,
+    end_exclusive: endExclusive,
     from_date: fromDate,
     through_date: dates.length ? dates[dates.length - 1] : null,
     granularity: mode === 'last12months' ? 'month' : 'day',
@@ -66,7 +68,7 @@ async function savedSnapshots(database, period) {
   const { data, error } = await database.from('resource_cost_daily_snapshots')
     .select('snapshot_date,captured_at,status,payload')
     .gte('snapshot_date', period.from_date)
-    .lt('snapshot_date', period.today)
+    .lt('snapshot_date', period.end_exclusive)
     .order('snapshot_date', { ascending: true })
     .limit(370)
   if (error) throw new Error(`Cost Overview snapshots unavailable: ${error.message || String(error)}`)
@@ -152,7 +154,7 @@ async function readOverview(period, dependencies = {}) {
     period.dates.length && period.mode !== 'last12months'
       ? reportReader({
           from: startUtc(period.from_date),
-          to: startUtc(period.today),
+          to: startUtc(period.end_exclusive),
           includeApplication: true,
         })
       : Promise.resolve(null),
