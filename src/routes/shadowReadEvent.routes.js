@@ -343,52 +343,26 @@ async function joinReadEvent(req, res) {
       return res.status(409).json({ ok: false, code: 'READ_EVENT_NOT_ENABLED' })
     }
 
-    const [missionCount, milestoneCount, participantResult] = await Promise.all([
-      supabase.from('shadow_read_event_missions')
-        .select('id', { count: 'exact', head: true })
-        .eq('event_id', week.id),
-      supabase.from('shadow_read_event_milestones')
-        .select('tier', { count: 'exact', head: true })
-        .eq('event_id', week.id),
-      supabase.from('shadow_read_event_participants')
-        .select('joined_at')
-        .eq('event_id', week.id)
-        .eq('user_id', userId)
-        .maybeSingle(),
-    ])
-
-    if (missionCount.error) throw missionCount.error
-    if (milestoneCount.error) throw milestoneCount.error
-    if (participantResult.error) throw participantResult.error
-
-    if (missionCount.count !== 35 || milestoneCount.count !== 35) {
-      return res.status(409).json({ ok: false, code: 'READ_EVENT_PLAN_INCOMPLETE' })
-    }
-
-    if (participantResult.data) {
-      return res.json({
-        ok: true,
-        joined: true,
-        already_joined: true,
-        event_id: week.id,
-        starts_on: window.starts_on,
-      })
-    }
-
-    const { error: insertError } = await supabase
+    const { data: participant, error } = await supabase
       .from('shadow_read_event_participants')
-      .insert({
-        event_id: week.id,
-        user_id: userId,
-        reader_group_snapshot: 'kh',
+      .select('joined_at')
+      .eq('event_id', week.id)
+      .eq('user_id', userId)
+      .eq('reader_group_snapshot', 'kh')
+      .maybeSingle()
+    if (error) throw error
+    if (!participant) {
+      return res.status(409).json({
+        ok: false,
+        code: 'READ_EVENT_DAILY_STORY_REQUIRED',
+        message: 'Read two verified episodes of the selected daily story to join automatically',
       })
-
-    if (insertError && String(insertError.code) !== '23505') throw insertError
+    }
 
     return res.json({
       ok: true,
       joined: true,
-      already_joined: Boolean(insertError),
+      already_joined: true,
       event_id: week.id,
       starts_on: window.starts_on,
     })
@@ -397,7 +371,7 @@ async function joinReadEvent(req, res) {
     return res.status(503).json({
       ok: false,
       code: 'READ_EVENT_JOIN_UNAVAILABLE',
-      message: 'Unable to join Read Event',
+      message: 'Unable to verify Read Event participation',
     })
   }
 }
