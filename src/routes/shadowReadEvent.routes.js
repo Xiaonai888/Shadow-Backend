@@ -3,6 +3,7 @@ import { rateLimit } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { SHADOW_READ_EVENT_PRIZES } from '../services/shadowReadEventPlanner.service.js'
+import { getShadowReadEventLanguageEnabled } from '../services/shadowReadEventLanguageControl.service.js'
 
 const router = express.Router()
 const DAY_MS = 86400000
@@ -137,26 +138,18 @@ function leaderboardEventWindow(now = new Date()) {
 }
 
 async function isKhmerReader(userId) {
-  const { data: classification, error } = await supabase
-    .from('shadow_reader_classifications')
-    .select('admin_group_override')
-    .eq('user_id', userId)
+  const languageEnabled = await getShadowReadEventLanguageEnabled('km')
+  if (!languageEnabled) return false
+
+  const { data: reader, error } = await supabase
+    .from('users')
+    .select('story_language')
+    .eq('id', userId)
     .maybeSingle()
   if (error) throw error
+  if (!reader) return false
 
-  if (classification?.admin_group_override === 'kh') return true
-  if (classification?.admin_group_override === 'international') return false
-
-  const { data: snapshot, error: snapshotError } = await supabase
-    .from('shadow_reader_language_snapshots')
-    .select('khmer_stories,international_stories')
-    .eq('user_id', userId)
-    .maybeSingle()
-  if (snapshotError) throw snapshotError
-
-  const khmer = Math.max(0, Number(snapshot?.khmer_stories) || 0)
-  const international = Math.max(0, Number(snapshot?.international_stories) || 0)
-  return khmer + international >= 3 && khmer >= international
+  return String(reader.story_language || 'km').trim().toLowerCase() === 'km'
 }
 
 function visibleStory(row) {
