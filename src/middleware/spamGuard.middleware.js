@@ -683,6 +683,12 @@ export function createSpamGuard({
     const cachedRestriction = readCachedRestriction(safeScope, identity)
 
     if (cachedRestriction) {
+      markRequestDiagnostic({
+        guard_scope: safeScope,
+        guard_cache_state: 'blocked_cache',
+        guard_rpc_calls: 0,
+        guard_result: 'blocked',
+      })
       const { result, resolved, retryAfter } = cachedRestriction
       const effectiveScope = cachedRestriction.resolvedScope || safeScope
       const effectiveGuardKey = cachedRestriction.guardKey || identity.guardKey
@@ -700,13 +706,23 @@ export function createSpamGuard({
 }, 'cached')
     }
 
-    if (canUseReaderCache(safeScope, req, identity)) return next()
+    if (canUseReaderCache(safeScope, req, identity)) {
+      markRequestDiagnostic({
+        guard_scope: safeScope,
+        guard_cache_state: 'allowed_cache',
+        guard_rpc_calls: 0,
+        guard_result: 'allowed',
+      })
+      return next()
+    }
 
+    let guardRpcCalls = 0
     try {
       let effectiveScope = safeScope
       let effectiveGuardKey = identity.guardKey
       let effectiveIdentityType = identity.identityType
 
+      guardRpcCalls += 1
       let result = await evaluateGuard({
         guardKey: identity.guardKey,
         scope: safeScope,
@@ -724,6 +740,7 @@ export function createSpamGuard({
         const fallbackScope = `${safeScope}_ip_fallback`
         const fallbackGuardKey = `ip:${identity.ipAddress}`
 
+        guardRpcCalls += 1
         const fallbackResult = await evaluateGuard({
           guardKey: fallbackGuardKey,
           scope: fallbackScope,
@@ -748,6 +765,15 @@ export function createSpamGuard({
       }
 
       markHealthy()
+
+      markRequestDiagnostic({
+        guard_scope: effectiveScope,
+        guard_cache_state: 'miss',
+        guard_rpc_calls: guardRpcCalls,
+        guard_result: result?.allowed === false ? 'blocked' : result ? 'allowed' : 'no_result',
+        guard_identity_type: effectiveIdentityType,
+        guard_block_status: String(result?.block_status || 'unknown'),
+      })
 
       if (!result) return next()
 
@@ -781,6 +807,13 @@ export function createSpamGuard({
         resolved
       )
     } catch (error) {
+      markRequestDiagnostic({
+        guard_scope: safeScope,
+        guard_cache_state: 'error',
+        guard_rpc_calls: guardRpcCalls,
+        guard_result: 'evaluation_error',
+        guard_error_code: cleanText(error?.code || error?.name || 'UNKNOWN', 60),
+      })
       markDegraded(error, safeScope, requestPath)
 
       console.error('SPAM GUARD ERROR:', {
