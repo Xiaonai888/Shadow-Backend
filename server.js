@@ -2,7 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import { rateLimit } from 'express-rate-limit'
 import dotenv from 'dotenv'
-import { trafficDiagnosticMiddleware } from './src/services/trafficDiagnostic.service.js'
+import { trafficDiagnosticMiddleware, markRequestDiagnostic } from './src/services/trafficDiagnostic.service.js'
 
 import healthRoutes from './src/routes/health.routes.js'
 import slidesRoutes from './src/routes/slides.routes.js'
@@ -1083,8 +1083,32 @@ app.use((req, res) => {
 })
 
 app.use((error, req, res, next) => {
-  console.error('SERVER ERROR:', error)
-  res.status(500).json({ ok: false, message: 'Internal server error' })
+  const rawCode = String(error?.code || '').trim()
+  const errorCode = /^[A-Z][A-Z0-9_]{0,63}$/.test(rawCode)
+    ? rawCode
+    : 'UNHANDLED_EXPRESS_ERROR'
+
+  markRequestDiagnostic({
+    feature: 'server',
+    error_code: errorCode,
+    error_stage: 'express_error_handler',
+    error_name: String(error?.name || 'Error').slice(0, 60),
+    server_trace_id: String(req.shadowTraceId || '').slice(0, 60),
+  })
+
+  console.error('SERVER ERROR:', {
+    trace_id: req.shadowTraceId || null,
+    method: req.method,
+    route: diagnosticRoute(req),
+    error_code: errorCode,
+  }, error)
+
+  if (res.headersSent) return next(error)
+  return res.status(500).json({
+    ok: false,
+    code: 'SERVER_UNHANDLED_ERROR',
+    message: 'Internal server error',
+  })
 })
 
 const PORT = process.env.PORT || 5000
