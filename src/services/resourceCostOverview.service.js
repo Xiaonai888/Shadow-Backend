@@ -9,7 +9,7 @@ const HOUR_MS = 3_600_000
 const DAY_MS = 24 * HOUR_MS
 const OFFSET_MS = 7 * HOUR_MS
 const SOURCES = ['all', 'web', 'admin', 'shared']
-const MODES = new Set(['yesterday', 'last7', 'week', 'month', 'last30', 'last12months'])
+const MODES = new Set(['yesterday', 'last7', 'week', 'month', 'last30', 'last12months', 'custom'])
 const cache = new Map()
 
 function dateFromMs(ms) {
@@ -29,7 +29,18 @@ function startUtc(date) {
   return new Date(Date.parse(`${date}T00:00:00.000Z`) - OFFSET_MS).toISOString()
 }
 
-function selectedPeriod(mode, now) {
+function checkedCalendarDate(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new RangeError('Custom Date requires YYYY-MM-DD dates.')
+  }
+  const time = Date.parse(`${value}T00:00:00.000Z`)
+  if (!Number.isFinite(time) || new Date(time).toISOString().slice(0, 10) !== value) {
+    throw new RangeError('Invalid Custom Date calendar date.')
+  }
+  return value
+}
+
+function selectedPeriod(mode, now, from, to) {
   if (!MODES.has(mode)) throw new RangeError('Unsupported Cost Overview period.')
   const ms = new Date(now).getTime()
   if (!Number.isFinite(ms)) throw new TypeError('Invalid Cost Overview time.')
@@ -37,13 +48,26 @@ function selectedPeriod(mode, now) {
   const yesterday = shiftDay(today, -1)
   const weekday = new Date(`${today}T00:00:00.000Z`).getUTCDay()
   const mondayOffset = (weekday + 6) % 7
-  const fromDate = mode === 'yesterday' ? yesterday
-    : mode === 'last7' ? shiftDay(today, -6)
-      : mode === 'week' ? shiftDay(today, -mondayOffset)
-        : mode === 'month' ? `${today.slice(0, 7)}-01`
-          : mode === 'last30' ? shiftDay(today, -29)
-            : shiftMonth(today, -11)
-  const endExclusive = mode === 'yesterday' ? today : shiftDay(today, 1)
+  let fromDate
+  let endExclusive
+  if (mode === 'custom') {
+    fromDate = checkedCalendarDate(from)
+    const through = checkedCalendarDate(to)
+    if (fromDate > through) throw new RangeError('Custom Date start is after end.')
+    if (through > today) throw new RangeError('Custom Date cannot include future days.')
+    if ((Date.parse(`${through}T00:00:00.000Z`) - Date.parse(`${fromDate}T00:00:00.000Z`)) >= 370 * DAY_MS) {
+      throw new RangeError('Custom Date supports a maximum of 370 days per request.')
+    }
+    endExclusive = shiftDay(through, 1)
+  } else {
+    fromDate = mode === 'yesterday' ? yesterday
+      : mode === 'last7' ? shiftDay(today, -6)
+        : mode === 'week' ? shiftDay(today, -mondayOffset)
+          : mode === 'month' ? `${today.slice(0, 7)}-01`
+            : mode === 'last30' ? shiftDay(today, -29)
+              : shiftMonth(today, -11)
+    endExclusive = mode === 'yesterday' ? today : shiftDay(today, 1)
+  }
   const dates = []
   for (let date = fromDate; date < endExclusive; date = shiftDay(date, 1)) {
     if (dates.length >= 370) throw new RangeError('Cost Overview date range exceeds limit.')
@@ -268,12 +292,12 @@ async function readOverview(period, dependencies = {}) {
   }
 }
 
-export async function getResourceCostOverview({ period = 'last7', now = new Date() } = {}, dependencies = {}) {
-  const selection = selectedPeriod(period, now)
+export async function getResourceCostOverview({ period = 'last7', from = null, to = null, now = new Date() } = {}, dependencies = {}) {
+  const selection = selectedPeriod(period, now, from, to)
   if (dependencies.database) return readOverview(selection, dependencies)
-  const key = `${period}:${selection.today}`
+  const key = `${period}:${selection.from_date}:${selection.through_date}:${selection.today}`
   const current = Date.now()
-  const ttl = selection.dates.includes(selection.today) ? 2 * 60_000 : 15 * 60_000
+  const ttl = selection.dates.includes(selection.today) ? 2 * 60_000 : selection.through_date === shiftDay(selection.today, -1) ? 15 * 60_000 : 60 * 60_000
   const existing = cache.get(key)
   if (existing && existing.expires > current) return existing.pending
   const pending = readOverview(selection)
