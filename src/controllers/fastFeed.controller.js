@@ -23,6 +23,7 @@ export async function listPublicFastVideos(req, res) {
       .from('fast_videos')
       .select('id,user_id,video_url,thumbnail_url,title,description,published_at,view_count')
       .eq('status', 'published')
+      .eq('studio_state', 'active')
       .eq('access_type', 'free')
       .eq('platform', 'youtube')
 
@@ -102,6 +103,7 @@ export async function getPublicFastVideo(req, res) {
       .select('id,user_id,video_url,thumbnail_url,title,description,published_at,view_count')
       .eq('id', id)
       .eq('status', 'published')
+      .eq('studio_state', 'active')
       .eq('access_type', 'free')
       .eq('platform', 'youtube')
       .maybeSingle()
