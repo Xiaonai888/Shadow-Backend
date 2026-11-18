@@ -1640,7 +1640,10 @@ async function trackWeeklyReadingSessionProgress({
         readingPercent,
       })
 
-    if (fullState) return fullState
+    if (fullState) {
+      rememberWeeklySession(userId, weekStart, episodeId, fullState)
+      return fullState
+    }
   }
 
   const weeklyResult = {
