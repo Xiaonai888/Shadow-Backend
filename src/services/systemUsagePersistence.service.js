@@ -175,18 +175,39 @@ function compactUsageSummary(groups, totals) {
     .filter((row) => row.kind !== 'unclassified')
     .sort((a, b) => b.count - a.count || b.bytes - a.bytes)
   const selected = ranked.slice(0, MAX_SUMMARY_ROWS)
-  const covered = selected.reduce((sum, row) => ({
-    count: sum.count + row.count,
-    bytes: sum.bytes + row.bytes,
-    errors: sum.errors + row.errors,
+  const groupedOverflow = new Map()
+
+  for (const row of ranked.slice(MAX_SUMMARY_ROWS)) {
+    const key = `${row.kind}\u001f${row.dependency}`
+    const overflow = groupedOverflow.get(key) || {
+      kind: row.kind,
+      feature: 'OTHER_CLASSIFIED',
+      dependency: row.dependency,
+      count: 0,
+      bytes: 0,
+      errors: 0,
+    }
+    overflow.count += safeNumber(row.count)
+    overflow.bytes += safeNumber(row.bytes)
+    overflow.errors += safeNumber(row.errors)
+    groupedOverflow.set(key, overflow)
+  }
+
+  selected.push(...groupedOverflow.values())
+
+  const classified = selected.reduce((sum, row) => ({
+    count: sum.count + safeNumber(row.count),
+    bytes: sum.bytes + safeNumber(row.bytes),
+    errors: sum.errors + safeNumber(row.errors),
   }), { count: 0, bytes: 0, errors: 0 })
+
   const unclassified = {
     kind: 'unclassified',
     feature: 'OTHER',
     dependency: 'UNKNOWN',
-    count: Math.max(0, safeNumber(totals.count) - covered.count),
-    bytes: Math.max(0, safeNumber(totals.bytes) - covered.bytes),
-    errors: Math.max(0, safeNumber(totals.errors) - covered.errors),
+    count: Math.max(0, safeNumber(totals.count) - classified.count),
+    bytes: Math.max(0, safeNumber(totals.bytes) - classified.bytes),
+    errors: Math.max(0, safeNumber(totals.errors) - classified.errors),
   }
   if (unclassified.count || unclassified.bytes || unclassified.errors) {
     selected.push(unclassified)
@@ -198,10 +219,10 @@ function compactUsageSummary(groups, totals) {
       observedCount < safeNumber(totals.count) ||
       observedBytes < safeNumber(totals.bytes),
     source_row_groups: ranked.length,
-    raw_unclassified_events: Math.max(0, safeNumber(totals.count) - observedCount),
-    classified_events: Math.min(observedCount, safeNumber(totals.count)),
-    classified_bytes: Math.min(observedBytes, safeNumber(totals.bytes)),
-    classified_errors: Math.min(observedErrors, safeNumber(totals.errors)),
+    raw_unclassified_events: unclassified.count,
+    classified_events: Math.min(classified.count, safeNumber(totals.count)),
+    classified_bytes: Math.min(classified.bytes, safeNumber(totals.bytes)),
+    classified_errors: Math.min(classified.errors, safeNumber(totals.errors)),
   }
 }
 
