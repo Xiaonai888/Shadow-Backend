@@ -38,8 +38,8 @@ export async function refreshSystemUsageDailySummary({
   const archives = []
   for (const entry of selected) {
     const downloaded = await read({ path: entry.object_path, manifest: entry.manifest, client })
-    if (!downloaded?.recovered?.summary || downloaded?.recovered?.from !== entry.window_from ||
-        downloaded?.recovered?.to !== entry.window_to) {
+    if (!downloaded?.recovered?.summary || Date.parse(downloaded?.recovered?.from) !== Date.parse(entry.window_from) ||
+        Date.parse(downloaded?.recovered?.to) !== Date.parse(entry.window_to)) {
       throw new Error('Archive content does not match its declared time window.')
     }
     archives.push({
