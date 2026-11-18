@@ -1,6 +1,9 @@
 import { supabase } from '../config/supabase.js'
 import { persistResourceCostProviderObservations } from './resourceCostProviderSync.service.js'
-import { getSystemUsageSnapshot } from './systemUsageMonitor.service.js'
+import { getSystemUsageSnapshot, getSystemUsageArchiveMinutes } from './systemUsageMonitor.service.js'
+import { createSystemUsageGroupArchive } from './systemUsageGroupedArchive.service.js'
+import { persistSystemUsageGroupedArchive } from './systemUsageArchivePipeline.service.js'
+import { listSystemUsageArchiveIndex } from './systemUsageArchiveIndex.service.js'
 import { buildResourceCostWindowAttribution } from './resourceCostAttributionWindow.service.js'
 import { getPassiveRequestSnapshot } from './passiveRequestMonitor.service.js'
 import {
@@ -38,6 +41,7 @@ let lastRetentionAt = 0
 let lastRenderFullBackfillAt = 0
 let lastRenderBackfillServiceKey = ''
 let renderBreakdownQueryParam = 'resource'
+const preservedUsageArchiveWindows = new Map()
 
 const providerState = {
   last_sync_at: null,
@@ -1998,6 +2002,8 @@ async function runRetentionIfDue(
   now = Date.now(),
   force = false
 ) {
+  const archiveRetentionVerified = false
+  if (!archiveRetentionVerified) return
   if (retentionRunning) return
 
   if (
@@ -2042,6 +2048,99 @@ function maybeCaptureResourceCostYesterday(now) {
     .catch((error) => {
       console.error('RESOURCE_COST_DAILY_SNAPSHOT_ERROR:', error?.message || error)
     })
+}
+
+async function persistCompletedUsageGroupArchive(snapshot) {
+  const from = new Date(snapshot.windowStart).toISOString()
+  const to = new Date(snapshot.windowEnd).toISOString()
+  const key = `${from}:${to}`
+  if (preservedUsageArchiveWindows.has(key)) return
+
+  const collected = getSystemUsageArchiveMinutes({ from, to })
+  if (!Array.isArray(collected?.windows) || !collected.windows.length) {
+    if (snapshot.totals.count || snapshot.totals.bytes || snapshot.totals.errors) {
+      throw new Error('No completed minute groups were available for this nonempty snapshot.')
+    }
+    return
+  }
+
+  const rows = []
+  const totals = { count: 0, bytes: 0, errors: 0 }
+  let overflowEvents = 0
+  for (const minute of collected.windows) {
+    const minuteFrom = Date.parse(minute.from)
+    const minuteTo = Date.parse(minute.to)
+    if (!Number.isFinite(minuteFrom) || !Number.isFinite(minuteTo) ||
+        minuteFrom < snapshot.windowStart || minuteTo > snapshot.windowEnd ||
+        minuteTo - minuteFrom !== MINUTE_MS || !Array.isArray(minute.rows)) {
+      throw new Error('Invalid minute usage archive window.')
+    }
+    for (const field of ['count', 'bytes', 'errors']) {
+      const value = minute.totals?.[field]
+      if (!Number.isSafeInteger(value) || value < 0 ||
+          !Number.isSafeInteger(totals[field] + value)) {
+        throw new RangeError(`Invalid minute archive counter: ${field}`)
+      }
+      totals[field] += value
+    }
+    overflowEvents += Number(minute.coverage?.overflow_events || 0)
+    for (const row of minute.rows) {
+      rows.push({ ...row, minute_start: minute.from, minute_end: minute.to })
+    }
+  }
+
+  for (const field of ['count', 'bytes', 'errors']) {
+    if (totals[field] !== snapshot.totals[field]) {
+      throw new Error(`Minute archive and saved snapshot have different ${field} totals.`)
+    }
+  }
+
+  const existing = await listSystemUsageArchiveIndex({ from, to, limit: 100 })
+  if (!Array.isArray(existing?.rows) || existing.next_offset != null) {
+    throw new Error('Unable to inspect all overlapping usage archives.')
+  }
+  const overlaps = existing.rows.filter((item) =>
+    item.source_kind === 'observed_aggregates' &&
+    Date.parse(item.window_from) < Date.parse(to) &&
+    Date.parse(item.window_to) > Date.parse(from)
+  )
+  if (overlaps.length) {
+    if (overlaps.length !== 1 || overlaps[0].window_from !== from ||
+        overlaps[0].window_to !== to) {
+      throw new Error('Conflicting or overlapping usage archive windows exist.')
+    }
+    const generated = createSystemUsageGroupArchive(rows, { from, to })
+    if (overlaps[0].manifest?.sha256 !== generated.manifest.sha256 ||
+        overlaps[0].source_rows !== generated.summary.source_rows ||
+        overlaps[0].group_count !== generated.summary.group_count) {
+      throw new Error('Existing usage archive differs from current verified minute data.')
+    }
+    preservedUsageArchiveWindows.set(key, true)
+    return
+  }
+
+  const result = await persistSystemUsageGroupedArchive({
+    rows,
+    from,
+    to,
+    sourceKind: 'observed_aggregates',
+    coverage: {
+      source: 'system_usage_minute_grouped_metrics',
+      minute_windows: collected.windows.length,
+      requested_minute_windows: collected.coverage?.requested_minute_windows ?? 15,
+      grouped_metrics_preserved: collected.coverage?.all_group_dimensions_preserved === true,
+      overflow_events: overflowEvents,
+      event_level_complete: false,
+      snapshot_totals_reconciled: true,
+    },
+  })
+  if (!result?.verified || !result?.entry?.archive_key) {
+    throw new Error('Usage archive was not verified after persistence.')
+  }
+  preservedUsageArchiveWindows.set(key, true)
+  while (preservedUsageArchiveWindows.size > 16) {
+    preservedUsageArchiveWindows.delete(preservedUsageArchiveWindows.keys().next().value)
+  }
 }
 
 export async function persistSystemUsageSnapshot() {
@@ -2106,6 +2205,17 @@ export async function persistSystemUsageSnapshot() {
       )
 
     if (error) throw error
+
+    try {
+      await persistCompletedUsageGroupArchive(snapshot)
+    } catch (archiveError) {
+      console.error('SYSTEM_USAGE_GROUP_ARCHIVE_ERROR:', {
+        window_from: new Date(snapshot.windowStart).toISOString(),
+        window_to: new Date(snapshot.windowEnd).toISOString(),
+        reason: String(archiveError?.message || archiveError).slice(0, 240),
+        code: String(archiveError?.cause?.code || archiveError?.code || 'UNKNOWN').slice(0, 48),
+      })
+    }
 
     await runRetentionIfDue(now)
   } catch (error) {
