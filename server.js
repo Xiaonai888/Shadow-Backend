@@ -432,6 +432,15 @@ function auditAuthorStorePdfUpload(req, res, next) {
 }
 
 app.use(auditAuthorStorePdfUpload)
+app.use((req, res, next) => {
+  const origin = req.headers.origin
+  if (origin && !allowedOrigins.includes(origin)) {
+    return res.status(403).json({
+      ok: false, code: 'CORS_ORIGIN_DENIED', message: 'Origin not allowed'
+    })
+  }
+  next()
+})
 app.options('/api/author-store/me/pdfs/upload-private', cors({ ...corsOptions, allowedHeaders: undefined }))
 app.use(cors(corsOptions))
 app.options('*', cors(corsOptions))
