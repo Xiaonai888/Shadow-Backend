@@ -331,10 +331,13 @@ function buildSummaryStats(history, incidents, requestEvidence = []) {
     (row) => row.feature
   )
 
-  const active = incidents.filter(
-    (item) =>
-      String(item.status || '').toUpperCase() !== 'RESOLVED'
-  ).length
+  const incidentCounts = incidents.reduce((result, item) => {
+  const status = String(item.status || 'OPEN').toUpperCase()
+  if (['OPEN', 'INVESTIGATING', 'FIX_APPLIED'].includes(status)) result.active++
+  else if (status === 'VERIFIED') result.verified++
+  else if (['RESOLVED', 'ARCHIVED'].includes(status)) result.resolved++
+  return result
+}, { active: 0, verified: 0, resolved: 0 })
 
   const critical = incidents.filter(
     (item) =>
@@ -369,11 +372,10 @@ function buildSummaryStats(history, incidents, requestEvidence = []) {
     diagnostics_note:
       'DB fanout means many database calls per HTTP request. It is not proof of a loop or polling bug unless repeated-window evidence also supports repetition.', 
     incidents: {
-      total: incidents.length,
-      active,
-      resolved: incidents.length - active,
-      critical,
-    },
+  total: incidents.length,
+  ...incidentCounts,
+  critical,
+},
   }
 }
 
@@ -492,7 +494,7 @@ function summaryMarkdown(range, history, incidents, stats) {
     '## Incidents',
     '',
     `- Total: ${stats.incidents.total}`,
-    `- Active: ${stats.incidents.active}`,
+    `- Verified: ${stats.incidents.verified}`,
     `- Resolved: ${stats.incidents.resolved}`,
     `- Critical: ${stats.incidents.critical}`,
     '',
