@@ -1357,6 +1357,21 @@ export async function resolveSystemUsageIncident({
 
   if (error) throw error
 
+  if (
+    data.fix_applied_at &&
+    data.verified_at &&
+    clean(data.fix_summary, 2000)
+  ) {
+    try {
+      return await archiveIncidentRecord(data)
+    } catch (archiveError) {
+      console.error(
+        'SYSTEM_USAGE_INCIDENT_ARCHIVE_ERROR:',
+        archiveError?.message || archiveError
+      )
+    }
+  }
+
   return data
 }
 
