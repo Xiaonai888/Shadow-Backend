@@ -28,6 +28,7 @@ import { cachePublicStoryDataResponse } from '../services/publicStoryDataCache.s
 import { APP_REGISTRY } from '../config/appRegistry.js'
 import { getSupabaseClient } from '../config/supabase.js'
 import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
+import { traceStoryRecommendationFailures } from '../middleware/storyRecommendationsDiagnostics.middleware.js'
 import {
   traceEpisodeView,
   traceReaderEpisodeList,
@@ -444,6 +445,7 @@ router.get('/shadow-exclusive/stories/:storyId', getPublicShadowExclusiveStoryBy
 
 router.get(
   '/stories/:storyId/recommendations',
+  traceStoryRecommendationFailures,
   cachePublicStoryRecommendations,
   getPublicStoryRecommendations
 )
