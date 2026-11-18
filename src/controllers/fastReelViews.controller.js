@@ -160,6 +160,74 @@ export async function recordFastReelView(req, res) {
   }
 }
 
+async function diagnoseReelViewEligibility(videoId, readerId) {
+  const { data, error } = await supabase
+    .from('fast_videos')
+    .select('id,user_id,status,access_type,platform,view_count')
+    .eq('id', videoId)
+    .maybeSingle()
+
+  if (error) {
+    return {
+      status: 503,
+      code: 'REEL_VIEW_ELIGIBILITY_CHECK_FAILED',
+      message: 'Could not check Reel eligibility after the view was rejected.',
+      diagnostic: 'eligibility_read_failed',
+      dbCode: safeReason(error.code),
+    }
+  }
+
+  if (!data) {
+    return {
+      status: 404,
+      code: 'REEL_NOT_FOUND',
+      message: 'This Reel is not present in the view database.',
+      diagnostic: 'video_missing',
+    }
+  }
+
+  const reasons = []
+  if (data.status !== 'published') reasons.push('not_published')
+  if (data.access_type !== 'free') reasons.push('not_free')
+  if (data.platform !== 'youtube') reasons.push('not_youtube')
+
+  if (reasons.length) {
+    const isOwner = String(data.user_id) === String(readerId)
+    const first = reasons[0]
+    const ownerDetails = {
+      not_published: ['REEL_NOT_PUBLISHED', 'Publish this Reel before public views can be counted.'],
+      not_free: ['REEL_NOT_FREE', 'Only free Reels can receive public views.'],
+      not_youtube: ['REEL_PLATFORM_NOT_YOUTUBE', 'This Reel must be published using a YouTube link.'],
+    }
+    const [code, message] = isOwner
+      ? ownerDetails[first]
+      : ['REEL_NOT_ELIGIBLE', 'This Reel is not available for public view counting.']
+    return {
+      status: 404,
+      code,
+      message,
+      diagnostic: reasons.join('_'),
+      publicReason: isOwner ? reasons.join('_') : 'not_eligible',
+    }
+  }
+
+  if (data.view_count == null || !Number.isSafeInteger(Number(data.view_count)) || Number(data.view_count) < 0) {
+    return {
+      status: 502,
+      code: 'REEL_VIEW_COUNTER_INVALID',
+      message: 'Reel exists but its stored view counter is invalid.',
+      diagnostic: 'counter_invalid',
+    }
+  }
+
+  return {
+    status: 502,
+    code: 'REEL_VIEW_RPC_RESULT_MISMATCH',
+    message: 'Reel is eligible, but the SQL view function did not return its view counter.',
+    diagnostic: 'rpc_missing_total',
+  }
+}
+
 export async function recordFastReelViewV2(req, res) {
   res.set('Cache-Control', 'private, no-store')
   const startedAt = Date.now()
@@ -219,11 +287,20 @@ export async function recordFastReelViewV2(req, res) {
 
     const result = Array.isArray(data) ? data[0] : data
     if (!result || result.total_views == null) {
-      return finish(404, {
+      const check = await diagnoseReelViewEligibility(videoId, userId)
+      console.warn('FAST_REEL_VIEW_ELIGIBILITY_DIAG', JSON.stringify({
+        video_id: videoId,
+        mode,
+        stage: check.diagnostic,
+        code: check.code,
+        db_code: check.dbCode || null,
+      }))
+      return finish(check.status, {
         ok: false,
-        code: 'REEL_UNAVAILABLE',
-        message: 'Published free Reel not found.',
-      }, 'rpc_result')
+        code: check.code,
+        reason: check.publicReason || check.diagnostic,
+        message: check.message,
+      }, 'eligibility_check', check.dbCode || '')
     }
 
     const total = Number(result.total_views)
