@@ -57,6 +57,7 @@ router.get('/readers/ranking', requireAdminPermission('readers.view'), adminComm
 router.get('/readers/period', requireAdminPermission('readers.view'), adminCommunityReadLimit, getAdminReaderPeriod)
 router.get('/readers/period/detail', requireAdminPermission('readers.view'), adminCommunityReadLimit, getAdminReaderPeriodDetail)
 router.use('/readers/story-analytics', adminCommunityReadLimit, adminStoryAnalyticsRoutes)
+router.use('/readers/story-analytics', adminCommunityReadLimit, adminStoryAnalyticsRoutes)
 router.get('/readers/:readerId', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminCommunityReaderDetail)
 router.get('/reader-presence', requireAdmin, adminCommunityReadLimit, getAdminReaderPresence)
 router.get('/reader-countries', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminReaderCountryAnalytics)
