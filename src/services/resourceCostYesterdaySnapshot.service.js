@@ -1,5 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { getResourceCostReport } from './resourceCostReportData.service.js'
+import { refreshSystemUsageDailySummary } from './systemUsageDailySummaryRefresh.service.js'
 
 const TABLE = 'resource_cost_daily_snapshots'
 const HOUR_MS = 60 * 60 * 1000
@@ -11,6 +12,8 @@ const READ_CACHE_MS = 15 * 60 * 1000
 
 let cached = { date: '', until: 0, value: null }
 let pending = null
+let dailySummaryJob = null
+const summaryRefreshSlots = new Set()
 
 export function resourceCostYesterdayWindow(now = new Date()) {
   const timestamp = new Date(now).getTime()
@@ -25,6 +28,37 @@ export function resourceCostYesterdayWindow(now = new Date()) {
     from: new Date(start).toISOString(),
     to: new Date(start + DAY_MS).toISOString(),
     localHour: cambodiaTime.getUTCHours(),
+  }
+}
+
+function queueDailySummaryRefresh(window) {
+  const slot = `${window.today}:${window.localHour < RETRY_HOUR ? 'morning' : 'afternoon'}`
+  if (summaryRefreshSlots.has(slot) || dailySummaryJob) return
+  summaryRefreshSlots.add(slot)
+  const job = Promise.resolve()
+    .then(() => refreshSystemUsageDailySummary({ day: window.date }))
+    .then((result) => {
+      if (result?.status === 'missing') {
+        console.warn('SYSTEM_USAGE_DAILY_SUMMARY_MISSING:', {
+          day: window.date,
+          reason: 'No verified archive windows were found for this day.',
+        })
+      }
+    })
+    .catch((error) => {
+      summaryRefreshSlots.delete(slot)
+      console.error('SYSTEM_USAGE_DAILY_SUMMARY_REFRESH_ERROR:', {
+        day: window.date,
+        reason: String(error?.message || error).slice(0, 240),
+        code: String(error?.cause?.code || error?.code || 'UNKNOWN').slice(0, 48),
+      })
+    })
+    .finally(() => {
+      if (dailySummaryJob === job) dailySummaryJob = null
+    })
+  dailySummaryJob = job
+  while (summaryRefreshSlots.size > 4) {
+    summaryRefreshSlots.delete(summaryRefreshSlots.values().next().value)
   }
 }
 
@@ -64,7 +98,7 @@ export function buildResourceCostYesterdayPayload(report) {
       render_coverage: coverage,
       render_observed_service_hours: Number(render.observed_service_hours) || 0,
       render_expected_service_hours: render.expected_service_hours !== null && render.expected_service_hours !== undefined &&
-        Number.isFinite(Number(render.expected_service_hours)) ? Number(render.expected_service_hours) : null,
+      Number.isFinite(Number(render.expected_service_hours)) ? Number(render.expected_service_hours) : null,
       sources: {
         render: hasRender ? coverage : 'missing',
         supabase: supabaseEgress === null ? 'missing' : 'recorded',
@@ -100,6 +134,7 @@ export async function getResourceCostYesterdaySnapshot(now = new Date()) {
 export async function captureResourceCostYesterdaySnapshot(now = new Date()) {
   const window = resourceCostYesterdayWindow(now)
   if (window.localHour < FIRST_CAPTURE_HOUR) return null
+  queueDailySummaryRefresh(window)
   if (pending?.date === window.date) return pending.promise
 
   const promise = (async () => {
