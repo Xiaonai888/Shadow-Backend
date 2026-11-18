@@ -42,6 +42,10 @@ let lastRenderFullBackfillAt = 0
 let lastRenderBackfillServiceKey = ''
 let renderBreakdownQueryParam = 'resource'
 const preservedUsageArchiveWindows = new Map()
+const archiveRecoveryRetryAfter = new Map()
+const ARCHIVE_RECOVERY_LOOKBACK_MS = 90 * MINUTE_MS
+const ARCHIVE_RECOVERY_RETRY_MS = 5 * MINUTE_MS
+const ARCHIVE_RECOVERY_LIMIT = 2
 
 const providerState = {
   last_sync_at: null,
@@ -2105,8 +2109,8 @@ async function persistCompletedUsageGroupArchive(snapshot) {
     Date.parse(item.window_to) > Date.parse(from)
   )
   if (overlaps.length) {
-    if (overlaps.length !== 1 || overlaps[0].window_from !== from ||
-        overlaps[0].window_to !== to) {
+    if (overlaps.length !== 1 || Date.parse(overlaps[0].window_from) !== snapshot.windowStart ||
+        Date.parse(overlaps[0].window_to) !== snapshot.windowEnd) {
       throw new Error('Conflicting or overlapping usage archive windows exist.')
     }
     const generated = createSystemUsageGroupArchive(rows, { from, to })
@@ -2143,6 +2147,87 @@ async function persistCompletedUsageGroupArchive(snapshot) {
   }
 }
 
+async function recoverRecentSystemUsageArchives(now = Date.now()) {
+  const windowEnd = alignedWindowEnd(now)
+  const oldestEnd = windowEnd - ARCHIVE_RECOVERY_LOOKBACK_MS
+  const from = new Date(oldestEnd - SNAPSHOT_MS).toISOString()
+  const to = new Date(windowEnd).toISOString()
+  const [{ data, error }, index] = await Promise.all([
+    supabase.from('system_usage_snapshots')
+      .select('window_start,window_end,request_count,bytes,errors')
+      .gte('window_end', new Date(oldestEnd).toISOString())
+      .lte('window_end', to)
+      .order('window_end', { ascending: true })
+      .limit(8),
+    listSystemUsageArchiveIndex({ from, to, limit: 100 }),
+  ])
+  if (error) throw new Error('Recent usage archive recovery snapshot read failed.', { cause: error })
+  if (!Array.isArray(data) || !Array.isArray(index?.rows) || index.next_offset != null) {
+    throw new Error('Recent usage archive recovery returned incomplete database records.')
+  }
+
+  const recorded = new Set(index.rows
+    .filter((row) => row.source_kind === 'observed_aggregates')
+    .map((row) => `${new Date(row.window_from).toISOString()}:${new Date(row.window_to).toISOString()}`))
+  let attempted = 0
+  for (const row of data) {
+    const start = Date.parse(row.window_start)
+    const end = Date.parse(row.window_end)
+    if (!Number.isFinite(start) || !Number.isFinite(end) ||
+        end - start !== SNAPSHOT_MS || end > windowEnd || end < oldestEnd) {
+      continue
+    }
+    const count = Number(row.request_count)
+    const bytes = Number(row.bytes)
+    const errors = Number(row.errors)
+    if (![count, bytes, errors].every((value) => Number.isSafeInteger(value) && value >= 0)) {
+      throw new Error('Recent usage archive recovery found invalid persisted counters.')
+    }
+    const key = `${new Date(start).toISOString()}:${new Date(end).toISOString()}`
+    if (recorded.has(key) || preservedUsageArchiveWindows.has(key)) {
+      preservedUsageArchiveWindows.set(key, true)
+      continue
+    }
+    if (archiveRecoveryRetryAfter.get(key) > now) continue
+    if (attempted >= ARCHIVE_RECOVERY_LIMIT) break
+    attempted += 1
+    try {
+      await persistCompletedUsageGroupArchive({
+        windowStart: start,
+        windowEnd: end,
+        totals: { count, bytes, errors },
+      })
+      archiveRecoveryRetryAfter.delete(key)
+    } catch (failure) {
+      archiveRecoveryRetryAfter.set(key, now + ARCHIVE_RECOVERY_RETRY_MS)
+      console.error('SYSTEM_USAGE_GROUP_ARCHIVE_RECOVERY_ERROR:', {
+        window_from: new Date(start).toISOString(),
+        window_to: new Date(end).toISOString(),
+        reason: String(failure?.message || failure).slice(0, 240),
+        code: String(failure?.cause?.code || failure?.code || 'UNKNOWN').slice(0, 48),
+      })
+    }
+  }
+  for (const [key] of archiveRecoveryRetryAfter) {
+    const end = Date.parse(key.slice(25))
+    if (!Number.isFinite(end) || end < oldestEnd) archiveRecoveryRetryAfter.delete(key)
+  }
+  while (preservedUsageArchiveWindows.size > 32) {
+    preservedUsageArchiveWindows.delete(preservedUsageArchiveWindows.keys().next().value)
+  }
+}
+
+async function recoverRecentSystemUsageArchivesSafely(now) {
+  try {
+    await recoverRecentSystemUsageArchives(now)
+  } catch (failure) {
+    console.error('SYSTEM_USAGE_GROUP_ARCHIVE_RECOVERY_SCAN_ERROR:', {
+      reason: String(failure?.message || failure).slice(0, 240),
+      code: String(failure?.cause?.code || failure?.code || 'UNKNOWN').slice(0, 48),
+    })
+  }
+}
+
 export async function persistSystemUsageSnapshot() {
   if (writing) return
 
@@ -2169,6 +2254,7 @@ export async function persistSystemUsageSnapshot() {
       initial.totals.bytes === 0 &&
       initial.totals.errors === 0
     ) {
+      await recoverRecentSystemUsageArchivesSafely(now)
       await runRetentionIfDue(now)
       return
     }
@@ -2217,6 +2303,7 @@ export async function persistSystemUsageSnapshot() {
       })
     }
 
+    await recoverRecentSystemUsageArchivesSafely(now)
     await runRetentionIfDue(now)
   } catch (error) {
     console.error(
