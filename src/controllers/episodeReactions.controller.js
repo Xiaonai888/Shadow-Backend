@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 import { incrementAuthorPageAnalytics } from '../services/authorAnalytics.service.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
 import { updateAuthorRequestCache } from '../services/authorRequestCache.service.js'
@@ -317,6 +318,7 @@ export async function getEpisodeReactions(req, res) {
 }
 
 export async function toggleEpisodeReaction(req, res) {
+  let reactionStage = 'validate'
   try {
     const episodeId = String(req.params.episodeId || '').trim()
     const userId = req.user?.user_id
@@ -329,6 +331,7 @@ export async function toggleEpisodeReaction(req, res) {
       })
     }
 
+    reactionStage = 'load_episode'
     const episode = await getEpisode(episodeId)
 
     if (!episode) {
@@ -338,6 +341,7 @@ export async function toggleEpisodeReaction(req, res) {
       })
     }
 
+    reactionStage = 'load_existing_reaction'
     const { data: existing, error: existingError } = await supabase
       .from('episode_reactions')
       .select('id, reaction_type')
@@ -352,6 +356,7 @@ export async function toggleEpisodeReaction(req, res) {
         String(existing.reaction_type || 'love') !==
         reactionType
       ) {
+        reactionStage = 'change_reaction_type'
         const { error: updateError } = await supabase
           .from('episode_reactions')
           .update({
@@ -363,14 +368,20 @@ export async function toggleEpisodeReaction(req, res) {
 
         invalidateEpisodeStoryCounters(episode)
 
-        const [totalLikes] = await Promise.all([
-          syncEpisodeTotalLikes(episodeId),
-          updateEpisodeLikeNotificationReactionSafely(
-            episodeId,
-            userId,
-            reactionType
-          ),
-        ])
+        reactionStage = 'update_notification_metadata'
+        await updateEpisodeLikeNotificationReactionSafely(
+          episodeId,
+          userId,
+          reactionType
+        )
+
+        const totalLikes = Math.max(0, Number(episode.total_likes || 0))
+        markRequestDiagnostic({
+          feature: 'episode_reaction_toggle',
+          reaction_action: 'updated',
+          reaction_count_query: 'skipped_unchanged_membership',
+          reaction_stage: 'success',
+        })
 
         return res.status(200).json({
           ok: true,
@@ -381,6 +392,7 @@ export async function toggleEpisodeReaction(req, res) {
         })
       }
 
+      reactionStage = 'delete_reaction'
       const { error: deleteError } = await supabase
         .from('episode_reactions')
         .delete()
@@ -390,6 +402,7 @@ export async function toggleEpisodeReaction(req, res) {
 
       invalidateEpisodeStoryCounters(episode)
 
+      reactionStage = 'sync_count_and_notification'
       const [totalLikes] = await Promise.all([
         syncEpisodeTotalLikes(episodeId),
         deleteEpisodeLikeNotificationSafely(
@@ -405,6 +418,13 @@ export async function toggleEpisodeReaction(req, res) {
         delta: -1,
       })
 
+      markRequestDiagnostic({
+        feature: 'episode_reaction_toggle',
+        reaction_action: 'removed',
+        reaction_count_query: 'recounted',
+        reaction_stage: 'success',
+      })
+
       return res.status(200).json({
         ok: true,
         action: 'removed',
@@ -414,6 +434,7 @@ export async function toggleEpisodeReaction(req, res) {
       })
     }
 
+    reactionStage = 'insert_reaction'
     const { data: reaction, error: insertError } = await supabase
       .from('episode_reactions')
       .insert({
@@ -429,6 +450,7 @@ export async function toggleEpisodeReaction(req, res) {
 
     invalidateEpisodeStoryCounters(episode)
 
+    reactionStage = 'sync_episode_total'
     const totalLikes = await syncEpisodeTotalLikes(episodeId)
     publishAuthorStoryStatsChanged({
       userId: episode.user_id,
@@ -439,6 +461,7 @@ export async function toggleEpisodeReaction(req, res) {
     const isOwner = String(episode.user_id || '') === String(userId)
 
     if (!isOwner && episode.author_id) {
+      reactionStage = 'notify_author'
       const reader = await getReaderProfileSafely(userId)
       const readerName = reader?.name || reader?.username || 'A reader'
 
@@ -471,6 +494,14 @@ export async function toggleEpisodeReaction(req, res) {
       }
     }
 
+    markRequestDiagnostic({
+      feature: 'episode_reaction_toggle',
+      reaction_action: 'added',
+      reaction_count_query: 'recounted',
+      reaction_stage: 'success',
+      reaction_author_notification: !isOwner && Boolean(episode.author_id),
+    })
+
     return res.status(200).json({
       ok: true,
       action: 'added',
@@ -479,6 +510,12 @@ export async function toggleEpisodeReaction(req, res) {
       total_likes: totalLikes,
     })
   } catch (error) {
+    markRequestDiagnostic({
+      feature: 'episode_reaction_toggle',
+      reaction_stage: reactionStage,
+      reaction_result: 'error',
+      error_code: String(error?.code || error?.name || 'UNKNOWN').slice(0, 80),
+    })
     return res.status(500).json({
       ok: false,
       message: error.message || 'Failed to update episode reaction',
