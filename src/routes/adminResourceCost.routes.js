@@ -124,7 +124,11 @@ router.get('/yesterday-snapshot', resourceCostGuard, viewResourceCost, async (re
 
 router.get('/overview', resourceCostGuard, viewResourceCost, async (req, res) => {
   try {
-    const overview = await getResourceCostOverview({ period: req.query?.period || 'last7' })
+    const period = String(req.query?.period || 'last7').trim().toLowerCase()
+    const overview = await getResourceCostOverview({
+      period,
+      ...(period === 'custom' ? { from: req.query?.from, to: req.query?.to } : {}),
+    })
     return res.status(200).json({ ok: true, overview })
   } catch (error) {
     return respondError(res, error)
