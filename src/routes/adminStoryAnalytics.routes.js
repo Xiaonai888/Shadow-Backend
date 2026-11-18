@@ -8,7 +8,7 @@ import {
 
 const router = express.Router()
 
-router.use(rateLimit({
+const ipLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 60,
   standardHeaders: 'draft-8',
@@ -18,9 +18,9 @@ router.use(rateLimit({
     code: 'STORY_ANALYTICS_RATE_LIMIT',
     message: 'Too many story analytics requests. Please retry shortly.',
   },
-}))
+})
 
-router.get('/search', requireAdminPermission('readers.view'), searchAdminStoryAnalyticsController)
-router.get('/', requireAdminPermission('readers.view'), getAdminStoryAnalyticsController)
+router.get('/search', ipLimit, requireAdminPermission('readers.view'), searchAdminStoryAnalyticsController)
+router.get('/', ipLimit, requireAdminPermission('readers.view'), getAdminStoryAnalyticsController)
 
 export default router
