@@ -228,9 +228,58 @@ function compactUsageSummary(groups, totals) {
 
 function summarizeUsageMinutes(minutes) {
   const rows = []
+
   for (const minute of minutes) {
-    rows.push(...(minute.rows || []))
+    const detailedRows = Array.isArray(minute?.rows) ? minute.rows : []
+    rows.push(...detailedRows)
+
+    const sources = Array.isArray(minute?.source_totals) ? minute.source_totals : []
+    if (!sources.length) continue
+
+    const missingBySource = new Map()
+    for (const source of sources) {
+      const kind = String(source.kind || 'unknown')
+      const dependency = String(source.dependency || 'UNKNOWN')
+      const key = `${kind}\u001f${dependency}`
+      const current = missingBySource.get(key) || {
+        kind,
+        dependency,
+        count: 0,
+        bytes: 0,
+        errors: 0,
+      }
+      current.count += safeNumber(source.count)
+      current.bytes += safeNumber(source.bytes)
+      current.errors += safeNumber(source.errors)
+      missingBySource.set(key, current)
+    }
+
+    for (const row of detailedRows) {
+      const key = `${String(row.kind || 'unknown')}\u001f${String(row.dependency || 'UNKNOWN')}`
+      const current = missingBySource.get(key)
+      if (!current) continue
+      current.count -= safeNumber(row.count)
+      current.bytes -= safeNumber(row.bytes)
+      current.errors -= safeNumber(row.errors)
+    }
+
+    for (const current of missingBySource.values()) {
+      const count = Math.max(0, current.count)
+      const bytes = Math.max(0, current.bytes)
+      const errors = Math.max(0, current.errors)
+      if (count || bytes || errors) {
+        rows.push({
+          kind: current.kind,
+          feature: 'OTHER_FEATURE',
+          dependency: current.dependency,
+          count,
+          bytes,
+          errors,
+        })
+      }
+    }
   }
+
   return compactUsageSummary(rows, summarizeMinutes(minutes))
 }
 
