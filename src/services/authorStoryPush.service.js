@@ -12,7 +12,7 @@ const AUTHOR_TYPE_TAGS = {
 const ALLOWED_TYPES = new Set(Object.keys(AUTHOR_TYPE_TAGS))
 const REQUEST_TIMEOUT_MS = 12000
 const LOOKUP_CACHE_TTL_MS = 15 * 1000
-const MISSING_LOOKUP_TTL_MS = 30 * 1000
+const MISSING_LOOKUP_TTL_MS = 2 * 60 * 1000
 const LOOKUP_CACHE_LIMIT = 300
 
 function getSettings() {
