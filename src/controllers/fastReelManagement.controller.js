@@ -2,7 +2,7 @@ import { supabase } from '../config/supabase.js'
 import { executeStudioRecycleAction } from '../services/shadowStudioRecycleBridge.service.js'
 import { invalidateStudioChannelCache } from '../services/shadowStudioChannelCache.service.js'
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const VIDEO_FIELDS = 'id,user_id,video_url,thumbnail_url,title,description,tags,status,access_type,unlock_price_diamonds,published_at,view_count,video_type,duration_seconds'
 
 function pageNumber(value, fallback, maximum) {
@@ -80,8 +80,12 @@ export async function listMyFastReels(req, res) {
         })
       }
     } else {
-      if (videoType === 'short') query = query.eq('video_type', 'short')
-      if (videoType === 'long') query = query.or('video_type.eq.long,video_type.is.null')
+      if (videoType === 'short') {
+        query = query.or('video_type.eq.short,and(video_type.is.null,video_url.ilike.*youtube.com/shorts/*)')
+      }
+      if (videoType === 'long') {
+        query = query.or('video_type.eq.long,and(video_type.is.null,video_url.not.ilike.*youtube.com/shorts/*)')
+      }
       query = query.order('published_at', {
         ascending: false,
         nullsFirst: false
