@@ -23,6 +23,7 @@ import { getAdminDailyReaders } from '../controllers/adminDailyReaders.controlle
 import { getAdminReaderRanking } from '../controllers/adminReaderRanking.controller.js'
 import { getAdminReaderPeriod } from '../controllers/adminReaderPeriod.controller.js'
 import { getAdminReaderPeriodDetail } from '../controllers/adminReaderPeriodDetail.controller.js'
+import adminStoryAnalyticsRoutes from './adminStoryAnalytics.routes.js'
 
 const router = express.Router()
 router.use(rateLimit({
@@ -55,6 +56,7 @@ router.get('/readers/daily', requireAdminPermission('readers.view'), adminCommun
 router.get('/readers/ranking', requireAdminPermission('readers.view'), adminCommunityReadLimit, getAdminReaderRanking)
 router.get('/readers/period', requireAdminPermission('readers.view'), adminCommunityReadLimit, getAdminReaderPeriod)
 router.get('/readers/period/detail', requireAdminPermission('readers.view'), adminCommunityReadLimit, getAdminReaderPeriodDetail)
+router.use('/readers/story-analytics', adminCommunityReadLimit, adminStoryAnalyticsRoutes)
 router.get('/readers/:readerId', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminCommunityReaderDetail)
 router.get('/reader-presence', requireAdmin, adminCommunityReadLimit, getAdminReaderPresence)
 router.get('/reader-countries', requireAdminPermission('community.view'), adminCommunityReadLimit, getAdminReaderCountryAnalytics)
