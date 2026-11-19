@@ -129,7 +129,6 @@ export async function getResourceCostReport({
     fetchAll(database, 'resource_cost_upload_hourly', uploadFields, 'hour_start', range.from, end, { tieBreakers: ['feature', 'route', 'upload_mode'] }),
     fetchAll(database, 'heavy_media_jobs', 'id,job_type,created_at,payload', 'created_at', range.from, end, { jobType: 'manga_page_v2', tieBreakers: ['id'] }),
   ])
-    ])
   const renderRows = sharedRender.rows
   const directManga = summarizeMangaDirectJobs(directMangaJobs)
   const existingDirectHours = new Set(storedUploadRows.filter((row) =>
