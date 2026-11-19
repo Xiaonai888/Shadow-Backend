@@ -101,7 +101,7 @@ function sendError(res, operation, error) {
   return res.status(knownLimit ? 409 : 500).json({
     ok: false,
     code: knownLimit ? error.code : 'INTERNATIONAL_MISSION_OPERATION_FAILED',
-    message: knownLimit ? error.message : `Failed to ${operation.toLowerCase()} international reading mission`,
+    message: error?.message || `Failed to ${operation.toLowerCase()} international reading mission`,
   })
 }
 
