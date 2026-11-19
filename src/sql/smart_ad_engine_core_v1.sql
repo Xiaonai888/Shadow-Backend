@@ -283,3 +283,37 @@ DROP TRIGGER IF EXISTS smart_ad_pool_story_type_change_v1 ON public.stories;
 CREATE TRIGGER smart_ad_pool_story_type_change_v1
 AFTER UPDATE OF story_status, story_type ON public.stories
 FOR EACH ROW EXECUTE FUNCTION public.smart_ad_pool_story_type_change_v1();
+
+CREATE OR REPLACE FUNCTION public.smart_ad_story_language_version_v1()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NEW.story_language IS DISTINCT FROM OLD.story_language
+     AND EXISTS (
+       SELECT 1
+       FROM public.smart_ad_active_pool
+       WHERE story_id = NEW.id
+     )
+  THEN
+    UPDATE public.smart_ad_engine_state
+    SET catalog_version = catalog_version + 1
+    WHERE id = 1;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.smart_ad_story_language_version_v1()
+FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS smart_ad_story_language_version_v1
+ON public.stories;
+
+CREATE TRIGGER smart_ad_story_language_version_v1
+AFTER UPDATE OF story_language ON public.stories
+FOR EACH ROW
+EXECUTE FUNCTION public.smart_ad_story_language_version_v1();
