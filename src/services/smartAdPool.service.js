@@ -1,12 +1,23 @@
 import { supabase } from '../config/supabase.js'
 import { readSmartAdCandidatePage, readSmartAdCatalogByIds } from './smartAdCatalog.service.js'
 import { SMART_AD_POLICY, clampSmartAdCapacity } from './smartAdEligibility.service.js'
+import {
+  normalizeStoryLanguage,
+  filterAutoAdStoriesByLanguage,
+} from './ads/storyLanguageFilter.service.js'
 
 const PAGE = 100
 const MAX_SCAN = 12000
 const CATALOG_TTL_MS = 2 * 60000
 const catalogPageCache = new Map()
 const inFlightPages = new Map()
+const STORY_LANGUAGE_LABELS = Object.freeze({
+  km: 'Khmer',
+  en: 'English',
+  zh: 'Chinese',
+  ko: 'Korean',
+  ja: 'Japanese',
+})
 let refreshPromise = null
 let localEpoch = 0
 let stateCache = new WeakMap()
@@ -21,8 +32,6 @@ function verify(result, label) {
 function scoreCandidate(record, existing = false) {
   const views = Math.max(0, Number(record.total_views) || 0)
   const freshness = record.fresh_30_days ? 30 : 0
-  // Existing eligible members have a small retention bonus. Low-view stories
-  // still outrank high-view stories; metadata edits cannot fake freshness.
   return 100 / (1 + Math.log1p(views)) + freshness + (existing ? 4 : 0)
 }
 
@@ -65,7 +74,6 @@ export function invalidateSmartAdLocalCatalog() {
 export async function refreshSmartAdPool({
   db = supabase, now = Date.now(), weekly = false, scanLimit = MAX_SCAN,
 } = {}) {
-  // Must be called by a scheduled/admin maintenance task, NEVER on every GET.
   if (refreshPromise) return refreshPromise
   const execute = async () => {
     const state = await readSmartAdPoolState({ db })
@@ -103,7 +111,6 @@ export async function refreshSmartAdPool({
       story_kind: record.story_kind,
       priority_score: scoreCandidate(record, verifiedOld.has(record.story_id)),
     }))
-    // Atomic SQL reconciliation; no per-story writes or client-side pool tables.
     const result = await db.rpc('smart_ad_pool_reconcile_v1', {
       p_records: payload, p_capacity: capacity, p_weekly: Boolean(weekly),
     })
@@ -118,20 +125,26 @@ export async function refreshSmartAdPool({
 }
 
 export async function readSmartAdActiveCatalogPage({
-  cursor = 0, limit = 50, db = supabase, now = Date.now(),
+  cursor = 0, limit = 50, storyLanguage = 'km', db = supabase, now = Date.now(),
 } = {}) {
+  const language = normalizeStoryLanguage(storyLanguage)
+  if (!language) throw new TypeError('Invalid Story Language')
   const offset = Math.max(0, Math.floor(Number(cursor) || 0))
   const take = Math.max(1, Math.min(PAGE, Math.floor(Number(limit) || 50)))
   const state = await readSmartAdPoolState({ db })
-  const key = `${localEpoch}:${state.catalog_version}:${offset}:${take}`
+  const key = `${localEpoch}:${state.catalog_version}:${language}:${offset}:${take}`
   const cached = catalogPageCache.get(key)
   if (cached && cached.expiresAt > now) return cached.value
   if (inFlightPages.has(key)) return inFlightPages.get(key)
   const promise = (async () => {
-    const rows = verify(await db.from('smart_ad_active_pool').select('story_id')
-      .order('priority_score', { ascending: false }).order('story_id', { ascending: true })
-      .range(offset, offset + take - 1), 'Smart Ad catalog IDs')
-    const stories = await readSmartAdCatalogByIds(rows.map((row) => row.story_id), { db, now })
+    const rows = verify(await db.from('smart_ad_active_pool')
+      .select('story_id,stories!inner(story_language)')
+      .ilike('stories.story_language', STORY_LANGUAGE_LABELS[language])
+      .order('priority_score', { ascending: false })
+      .order('story_id', { ascending: true })
+      .range(offset, offset + take - 1), 'Smart Ad language catalog IDs')
+    const eligible = await readSmartAdCatalogByIds(rows.map((row) => row.story_id), { db, now })
+    const stories = filterAutoAdStoriesByLanguage(eligible, language)
     const result = {
       ok: true, stories: stories.map((story) => ({
         ...story, eligibility_version: Number(state.catalog_version),
