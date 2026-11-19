@@ -5,6 +5,7 @@ import { scoreSmartAd } from './smartAdSelection.service.js'
 import { selectDiverseSmartAdCandidates } from './smartAdDiversityPolicy.service.js'
 import { readSmartAdRecentHistory } from './smartAdRecentHistory.service.js'
 import { smartAdCambodiaSlot, SMART_AD_POLICY } from './smartAdEligibility.service.js'
+import { normalizeStoryLanguage } from './ads/storyLanguageFilter.service.js'
 import {
   readSmartAdSeenHistory,
   readSmartAdExposureTotals,
@@ -54,9 +55,12 @@ function excludedIds(value) {
 
 export async function selectSmartAdBatch({
   readerHash, placement, cursor = '0', queueIndex = 0,
+  storyLanguage = 'km',
   interests = {}, excludeStoryIds = [], cooldownStoryIds = [], db = supabase, now = Date.now(),
 } = {}) {
   requireSmartAdPlacement(placement)
+  const language = normalizeStoryLanguage(storyLanguage)
+  if (!language) throw new SmartAdRequestError('Invalid Story Language')
   const offset = cursorOffset(cursor)
   const cleanedInterests = normalizeInterests(interests)
   const exclusions = excludedIds(excludeStoryIds)
@@ -79,7 +83,9 @@ export async function selectSmartAdBatch({
 
   for (let i = 0; i < MAX_PAGES_PER_SELECTION; i += 1) {
     const pageStart = next
-    const page = await readSmartAdActiveCatalogPage({ cursor: pageStart, limit: PAGE_SIZE, db, now })
+    const page = await readSmartAdActiveCatalogPage({
+      cursor: pageStart, limit: PAGE_SIZE, storyLanguage: language, db, now,
+    })
     const unseen = []
     for (const story of page.stories || []) {
       const id = String(story?.story_id || '')
@@ -123,6 +129,7 @@ export async function selectSmartAdBatch({
   return {
     ok: true,
     placement,
+    story_language: language,
     slot_key: slot.slot_key,
     slot_started_at: slot.starts_at,
     next_rotation_at: slot.next_rotation_at,
