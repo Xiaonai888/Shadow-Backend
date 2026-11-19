@@ -2,6 +2,7 @@ import { resourceCostRange, resourceCostTimestamp } from './resourceCostMath.ser
 import { buildResourceCostSummary } from './resourceCostSummary.service.js'
 import { resourceCostAttributionReportRows } from './resourceCostAttributionReport.service.js'
 import { readSharedMonitoringRender } from './sharedMonitoring/sharedMonitoringRender.service.js'
+import { readSharedMonitoringProviders } from './sharedMonitoring/sharedMonitoringProviders.service.js'
 
 const HOUR_MS = 3_600_000
 const DAY_MS = 86_400_000
@@ -118,18 +119,23 @@ export async function getResourceCostReport({
   const renderFields = 'service_id,hour_start,total_bytes,http_response_bytes,service_initiated_bytes,websocket_response_bytes,private_link_bytes,breakdown_available'
   const providerFields = 'provider,metric,scope,observed_hour,observed_at,period_start,period_end,kind,unit,value,status'
   const uploadFields = 'hour_start,feature,route,upload_mode,attempts,successes,failures,ingress_bytes,egress_bytes,object_bytes'
-    const [sharedRender, providerRows, storedUploadRows, directMangaJobs] = await Promise.all([
+    const [sharedRender, sharedProviders, storedUploadRows, directMangaJobs] = await Promise.all([
     readSharedMonitoringRender({
       from: range.from,
       to: end,
       asOf,
       serviceIds: detectedServices(serviceIds),
     }, { client: database }),
-    fetchAll(database, 'resource_cost_provider_observations', providerFields, 'observed_at', obsStart, obsEnd, { tieBreakers: ['provider', 'metric', 'scope'] }),
+        readSharedMonitoringProviders({
+      from: range.from,
+      to: end,
+      asOf,
+    }, { client: database }),
     fetchAll(database, 'resource_cost_upload_hourly', uploadFields, 'hour_start', range.from, end, { tieBreakers: ['feature', 'route', 'upload_mode'] }),
     fetchAll(database, 'heavy_media_jobs', 'id,job_type,created_at,payload', 'created_at', range.from, end, { jobType: 'manga_page_v2', tieBreakers: ['id'] }),
   ])
   const renderRows = sharedRender.rows
+  const providerRows = sharedProviders.rows
   const directManga = summarizeMangaDirectJobs(directMangaJobs)
   const existingDirectHours = new Set(storedUploadRows.filter((row) =>
     row.upload_mode === 'direct' && row.route === 'story_media.manga_direct'
