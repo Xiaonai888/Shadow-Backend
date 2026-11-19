@@ -7,6 +7,7 @@ import {
   syncEpisodePageParts,
 } from '../services/episodePageParts.service.js'
 import { blockedWordsWarningPayload, findBlockedWordsInContent } from '../utils/blockedWords.js'
+import { validateAuthorNote } from '../utils/authorNote.js'
 import {
   applyEpisodeAccess,
   buildEpisodeAccess,
@@ -174,7 +175,9 @@ function validateEpisodeContentMedia(content, currentContent = '') {
 }
 
 function sendMediaAwareError(res, error, fallback) {
-  const statusCode = Number(error?.statusCode) || 500
+  const statusCode = String(error?.code || '').startsWith('AUTHOR_NOTE_')
+  ? 400
+  : Number(error?.statusCode) || 500
 
   return res.status(statusCode).json({
     ok: false,
@@ -393,6 +396,7 @@ function publicEpisode(
     title: visibleEpisode.title,
     cover_url: visibleEpisode.cover_url,
     content: visibleEpisode.content,
+    author_note: episode.author_note || null,
     youtube_video_id: visibleEpisode.youtube_video_id || null,
     youtube_title: visibleEpisode.youtube_title || null,
     pages: safePages,
@@ -813,7 +817,8 @@ export async function createStory(req, res) {
     if (priorStory) return await respondWithCreatedStory(res, priorStory)
 
     const title = cleanText(req.body.title)
-    const storyType = cleanStoryType(
+    const content = isManga ? '' : String(req.body.content || '')
+    const authorNote = validateAuthorNote(req.body.author_note)
       req.body.story_type || req.body.storyType
     )
     const storyLanguage = cleanText(
@@ -1569,6 +1574,7 @@ export async function updateEpisode(req, res) {
     const pageCount = pages.length
     const title = cleanText(req.body.title)
     const content = isManga ? '' : String(req.body.content || '')
+    const authorNote = validateAuthorNote(req.body.author_note)
 
     if (!isManga) {
       validateEpisodeContentMedia(content, episode.content || '')
@@ -1722,6 +1728,7 @@ const status = cleanText(req.body.status || episode.status || 'draft')
       title,
       cover_url: coverUrl,
       content,
+      ...(authorNote !== undefined ? { author_note: authorNote } : {}),
       youtube_video_id: youtubeVideoId,
       youtube_title: youtubeTitle,
       is_adult: isAdult,
