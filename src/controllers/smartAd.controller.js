@@ -45,6 +45,7 @@ export async function postSmartAdSelection(req, res) {
     const result = await selectSmartAdBatch({
       readerHash,
       placement,
+      storyLanguage: req.body?.story_language ?? 'km',
       cursor: req.body?.cursor,
       queueIndex: req.body?.queue_index ?? 0,
       interests: req.body?.interests,
