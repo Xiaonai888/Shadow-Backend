@@ -337,7 +337,6 @@ export async function getPublicAuthorPage(req, res) {
   try {
     const pageUsername = normalizePageUsername(req.params.pageUsername)
     const userId = getOptionalUserId(req)
-    const ageAccess = await getReaderAgeAccess(req)
 
     if (!pageUsername) {
       return res.status(400).json({
@@ -363,7 +362,7 @@ export async function getPublicAuthorPage(req, res) {
     }
 
     const isOwner = Boolean(userId) && String(data.user_id) === String(userId)
-    const canViewAdultStories = isOwner || ageAccess.can_view_adult_stories
+    const canViewAdultStories = true
     const includeWorks = String(req.query.include_works ?? '1') !== '0'
 
     let worksRequest
@@ -447,12 +446,7 @@ export async function getAuthorPageWorksPaginated(req, res) {
       return res.status(404).json({ ok: false, message: 'Author page not found' })
     }
 
-    const userId = getOptionalUserId(req)
-    const ageAccess = await getReaderAgeAccess(req)
-    const canViewAdultStories = Boolean(
-      (userId && String(userId) === String(authorPage.user_id)) ||
-      ageAccess.can_view_adult_stories
-    )
+    const canViewAdultStories = true
 
     let anchor = null
     if (beforeId) {
