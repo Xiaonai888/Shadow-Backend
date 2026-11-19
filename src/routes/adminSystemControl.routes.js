@@ -23,6 +23,7 @@ import {
 import { generateSystemUsageReport } from '../services/systemUsageReport.service.js'
 import { getAdminPerformanceDiagnostics } from '../services/adminPerformanceDiagnostics.service.js'
 import { getImageLoadDiagnosticsSnapshot } from './imageLoadDiagnostics.routes.js'
+import { readSharedSystemControlProviderUsage } from '../services/sharedMonitoring/sharedMonitoringSystemControl.service.js'
 
 const router = express.Router()
 const viewSystemControl = requireAdminPermission('system_control.view')
@@ -140,6 +141,41 @@ router.get('/render/bandwidth/monthly', systemControlGuard, viewSystemControl, a
     })
   }
 })
+
+router.get('/shared/provider-usage', systemControlGuard, viewSystemControl, async (req, res) => {
+  try {
+    const shared = await readSharedSystemControlProviderUsage({
+      from: req.query?.from,
+      to: req.query?.to,
+    })
+    return res.status(200).json({
+      ok: true,
+      shared_provider_usage: {
+        range: shared.range,
+        measured_at: shared.measured_at,
+        query_status: shared.query_status,
+        source_errors: shared.source_errors,
+        render: shared.render,
+        provider_observations: shared.provider_observations ? {
+          source: shared.provider_observations.source,
+          providers: shared.provider_observations.providers,
+          observed_rows: shared.provider_observations.rows.length,
+          invoice_cost_verified: shared.provider_observations.invoice_cost_verified,
+        } : null,
+        invoice_cost_usd: shared.invoice_cost_usd,
+      },
+    })
+  } catch (error) {
+    const invalid = error?.name === 'RangeError' || error?.name === 'TypeError'
+    if (!invalid) console.error('ADMIN_SHARED_PROVIDER_USAGE_ERROR:', error?.message || error)
+    return res.status(invalid ? 400 : 500).json({
+      ok: false,
+      code: invalid ? 'SHARED_PROVIDER_USAGE_INVALID_RANGE' : 'SHARED_PROVIDER_USAGE_FAILED',
+      message: invalid ? String(error.message) : 'Unable to read shared provider usage.',
+    })
+  }
+})
+
 
 function isInvalidInput(message) {
   return (
