@@ -576,6 +576,11 @@ function publicEpisode(
     title: visibleEpisode.title,
     cover_url: visibleEpisode.cover_url,
     content: visibleEpisode.content,
+    author_note:
+      accessible &&
+      String(story?.story_type || 'novel').toLowerCase() === 'novel'
+        ? visibleEpisode.author_note || null
+        : null,
     youtube_video_id: visibleEpisode.youtube_video_id || null,
     youtube_title: visibleEpisode.youtube_title || null,
     is_adult: visibleEpisode.is_adult,
