@@ -96,12 +96,25 @@ function responseData(settings, rows) {
 }
 
 function sendError(res, operation, error) {
-  console.error(`TASK CENTER INTERNATIONAL ${operation} ERROR:`, error)
-  const knownLimit = error?.code === 'INTERNATIONAL_MISSION_LIMIT_EXCEEDED'
-  return res.status(knownLimit ? 409 : 500).json({
+  const code = error?.code || 'UNKNOWN_ERROR'
+  const message = error?.message || 'Unknown error'
+  const details = error?.details || 'No details'
+  const hint = error?.hint || 'No hint'
+  const status = error?.status || error?.statusCode || 500
+  const constraint = error?.constraint || 'Unknown'
+
+  console.error('TASK CENTER INTERNATIONAL ERROR:', {
+    operation, code, message, details, hint, status, constraint
+  })
+
+  return res.status(code === 'INTERNATIONAL_MISSION_LIMIT_EXCEEDED' ? 409 : 500).json({
     ok: false,
-    code: knownLimit ? error.code : 'INTERNATIONAL_MISSION_OPERATION_FAILED',
-    message: error?.message || `Failed to ${operation.toLowerCase()} international reading mission`,
+    code,
+    operation,
+    details,
+    hint,
+    constraint,
+    message: `[${operation}] Code: ${code} | Error: ${message} | Details: ${details} | Hint: ${hint} | Constraint: ${constraint}`
   })
 }
 
