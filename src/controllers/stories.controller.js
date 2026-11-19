@@ -817,10 +817,9 @@ export async function createStory(req, res) {
     if (priorStory) return await respondWithCreatedStory(res, priorStory)
 
     const title = cleanText(req.body.title)
-    const content = isManga ? '' : String(req.body.content || '')
-    const authorNote = validateAuthorNote(req.body.author_note)
-      req.body.story_type || req.body.storyType
-    )
+const storyType = cleanText(
+  req.body.story_type || req.body.storyType
+)
     const storyLanguage = cleanText(
       req.body.story_language || req.body.storyLanguage || 'Khmer'
     )
@@ -1200,8 +1199,9 @@ export async function createEpisode(req, res) {
     if (priorEpisode) return await respondWithCreatedEpisode(res, story, priorEpisode)
 
     const isManga = story.story_type === 'manga'
-    const title = cleanText(req.body.title)
-    const content = isManga ? '' : String(req.body.content || '')
+const title = cleanText(req.body.title)
+const content = isManga ? '' : String(req.body.content || '')
+const authorNote = validateAuthorNote(req.body.author_note)
 
     if (!isManga) {
       validateEpisodeContentMedia(content)
@@ -1333,6 +1333,7 @@ const isLocked =
         title,
         cover_url: coverUrl,
         content,
+        author_note: authorNote ?? null,
         youtube_video_id: youtubeVideoId,
         youtube_title: youtubeTitle,
         is_adult: isAdult,
