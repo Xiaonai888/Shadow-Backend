@@ -1,8 +1,8 @@
 import { resourceCostRange, resourceCostTimestamp } from './resourceCostMath.service.js'
 import { buildResourceCostSummary } from './resourceCostSummary.service.js'
-import { resourceCostAttributionReportRows } from './resourceCostAttributionReport.service.js'
 import { readSharedMonitoringRender } from './sharedMonitoring/sharedMonitoringRender.service.js'
 import { readSharedMonitoringProviders } from './sharedMonitoring/sharedMonitoringProviders.service.js'
+import { readSharedMonitoringApplication } from './sharedMonitoring/sharedMonitoringApplication.service.js'
 
 const HOUR_MS = 3_600_000
 const DAY_MS = 86_400_000
@@ -35,10 +35,6 @@ async function fetchAll(client, table, columns, timeField, from, to, options = {
     if (data.length < PAGE_SIZE) return rows
   }
   throw new Error(`${table}: report row limit reached; reduce the date range. Nothing was silently omitted.`)
-}
-
-function applicationFromWindow(row, timeField) {
-  return resourceCostAttributionReportRows(row, timeField)
 }
 
 export function summarizeMangaDirectJobs(jobs = []) {
@@ -114,26 +110,26 @@ export async function getResourceCostReport({
   if (time <= start) throw new RangeError('The reporting period must begin before the current time.')
   const end = new Date(time).toISOString()
   const database = await clientOrDefault(dependencies.client)
-  const obsStart = new Date(start - 27 * HOUR_MS).toISOString()
-  const obsEnd = new Date(Math.min(resourceCostTimestamp(asOf), time + 48 * HOUR_MS)).toISOString()
-  const renderFields = 'service_id,hour_start,total_bytes,http_response_bytes,service_initiated_bytes,websocket_response_bytes,private_link_bytes,breakdown_available'
-  const providerFields = 'provider,metric,scope,observed_hour,observed_at,period_start,period_end,kind,unit,value,status'
   const uploadFields = 'hour_start,feature,route,upload_mode,attempts,successes,failures,ingress_bytes,egress_bytes,object_bytes'
-    const [sharedRender, sharedProviders, storedUploadRows, directMangaJobs] = await Promise.all([
+  const [sharedRender, sharedProviders, storedUploadRows, directMangaJobs, sharedApplication] = await Promise.all([
     readSharedMonitoringRender({
       from: range.from,
       to: end,
       asOf,
       serviceIds: detectedServices(serviceIds),
     }, { client: database }),
-        readSharedMonitoringProviders({
+    readSharedMonitoringProviders({
       from: range.from,
       to: end,
       asOf,
     }, { client: database }),
     fetchAll(database, 'resource_cost_upload_hourly', uploadFields, 'hour_start', range.from, end, { tieBreakers: ['feature', 'route', 'upload_mode'] }),
     fetchAll(database, 'heavy_media_jobs', 'id,job_type,created_at,payload', 'created_at', range.from, end, { jobType: 'manga_page_v2', tieBreakers: ['id'] }),
+    includeApplication
+      ? readSharedMonitoringApplication({ from: range.from, to: end, asOf }, { client: database })
+      : Promise.resolve(null),
   ])
+
   const renderRows = sharedRender.rows
   const providerRows = sharedProviders.rows
   const directManga = summarizeMangaDirectJobs(directMangaJobs)
@@ -143,34 +139,18 @@ export async function getResourceCostReport({
   const includedDirectRows = directManga.rows.filter((row) => !existingDirectHours.has(row.hour_start))
   const uploadRows = [...storedUploadRows, ...includedDirectRows]
 
-  const applicationRows = []
-  const applicationCoverage = { requested: Boolean(includeApplication), status: 'not_requested', windows: 0, truncated_top_rows: true, source_types: [], note: null }
-  if (includeApplication) {
-    const cutoff = Math.floor((resourceCostTimestamp(asOf) - 7 * DAY_MS) / HOUR_MS) * HOUR_MS
-    const archiveEnd = new Date(Math.min(cutoff, time)).toISOString()
-    const liveStart = new Date(Math.max(start, cutoff)).toISOString()
-    const sourceTypes = new Set()
-    if (start < cutoff) {
-      const archived = await fetchAll(database, 'system_usage_rollups', 'granularity,bucket_start,bucket_end,request_count,bytes,payload', 'bucket_start', range.from, archiveEnd, { granularity: 'hour' })
-      for (const window of archived) {
-        applicationRows.push(...applicationFromWindow(window, 'bucket_start'))
-        sourceTypes.add('hourly_rollup')
-      }
-      applicationCoverage.windows += archived.length
-    }
-    if (time > cutoff) {
-      const snapshots = await fetchAll(database, 'system_usage_snapshots', 'window_start,window_end,request_count,bytes,payload', 'window_start', liveStart, end)
-      for (const window of snapshots) {
-        applicationRows.push(...applicationFromWindow(window, 'window_start'))
-        sourceTypes.add('15_minute_snapshots')
-      }
-      applicationCoverage.windows += snapshots.length
-    }
-    applicationCoverage.status = applicationCoverage.windows ? 'partial_attribution' : 'missing'
-    applicationCoverage.source_types = [...sourceTypes]
-    applicationCoverage.note = start < resourceCostTimestamp(asOf) - 30 * DAY_MS
-      ? 'Application-level detail older than 30 days can be unavailable after daily rollup retention.'
-      : 'Top-route details are bounded. Unlisted application traffic and provider network overhead are not attributed.'
+  const applicationRows = sharedApplication?.rows ?? []
+  const applicationCoverage = {
+    requested: Boolean(includeApplication),
+    status: sharedApplication?.coverage?.status ?? 'not_requested',
+    windows: sharedApplication?.coverage?.windows ?? 0,
+    truncated_top_rows: true,
+    source_types: sharedApplication?.coverage?.source_types ?? [],
+    note: includeApplication
+      ? start < resourceCostTimestamp(asOf) - 30 * DAY_MS
+        ? 'Application-level detail older than 30 days can be unavailable after daily rollup retention.'
+        : 'Top-route details are bounded. Unlisted application traffic and provider network overhead are not attributed.'
+      : null,
   }
 
   const configuredRenderServiceIds = detectedServices(serviceIds)
