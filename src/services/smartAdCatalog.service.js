@@ -4,7 +4,7 @@ import { evaluateSmartAdEligibility } from './smartAdEligibility.service.js'
 const STORY_SELECT = [
   'id', 'title', 'story_type', 'story_status', 'status', 'deleted_at',
   'admin_visibility_status', 'is_adult', 'is_shadow_exclusive', 'exclusive_status',
-  'author_id', 'description', 'main_genre', 'tags', 'cover_url',
+  'author_id', 'description', 'main_genre', 'tags', 'cover_url', 'story_language',
   'total_views', 'total_likes', 'created_at',
 ].join(',')
 const MAX_PAGE = 100
@@ -30,6 +30,7 @@ function uniqueIds(values) {
 export function toSmartAdCatalogRecord(story, episode, author, slide, eligibility) {
   return {
     story_id: String(story.id),
+    story_language: String(story.story_language || '').trim(),
     title: shortText(story.title, 200),
     story_type: String(story.story_type || 'novel'),
     story_status: story.story_status || 'New',
@@ -94,8 +95,6 @@ export async function readSmartAdCandidatePage({
 } = {}) {
   const start = Math.max(0, Math.floor(Number(offset) || 0))
   const pageSize = Math.max(1, Math.min(MAX_PAGE, Math.floor(Number(limit) || MAX_PAGE)))
-  // Only fetch the metadata required to decide eligibility and display an Ad.
-  // More restrictive rules (published episode count/dates) are validated in bulk.
   const result = await db.from('stories').select(STORY_SELECT)
     .eq('status', 'published').is('deleted_at', null)
     .or('admin_visibility_status.is.null,admin_visibility_status.eq.active')
