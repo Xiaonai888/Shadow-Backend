@@ -5,6 +5,23 @@ import {
 } from '../services/storyAgeAccess.service.js'
 import { getSmartSearchVariants } from '../services/smartSearchCore.service.js'
 
+const STORY_LANGUAGE_NAMES = Object.freeze({
+  km: 'Khmer',
+  khmer: 'Khmer',
+  en: 'English',
+  english: 'English',
+  zh: 'Chinese',
+  chinese: 'Chinese',
+  ja: 'Japanese',
+  japanese: 'Japanese',
+  ko: 'Korean',
+  korean: 'Korean',
+})
+
+function normalizeStoryLanguage(value) {
+  return STORY_LANGUAGE_NAMES[String(value || '').trim().toLowerCase()] || ''
+}
+
 const VALID_TYPES = new Set([
   'all',
   'readers',
@@ -379,6 +396,7 @@ function discoverSearchCacheKey({
   requestedLimit,
   ageAccess,
   storySetting,
+  storyLanguage,
 }) {
   const ageScope =
     type === 'all' ||
@@ -396,6 +414,7 @@ function discoverSearchCacheKey({
     requestedLimit,
     ageScope,
     storySetting || '',
+    storyLanguage,
   ].join('\u001f')
 }
 
@@ -1376,6 +1395,7 @@ function emptyPayload(keyword, type) {
       readers: [],
       pages: [],
       stories: [],
+      other_language_stories: [],
       pdfs: [],
       posts: [],
     },
@@ -1383,6 +1403,7 @@ function emptyPayload(keyword, type) {
       readers: 0,
       pages: 0,
       stories: 0,
+      other_language_stories: 0,
       pdfs: 0,
       posts: 0,
       all: 0,
@@ -1398,6 +1419,7 @@ async function buildDiscoverSearchPayload({
   sectionLimit,
   ageAccess,
   storySetting,
+  storyLanguage,
 }) {
   const scanLimit =
     getScanLimit(
@@ -1471,6 +1493,7 @@ async function buildDiscoverSearchPayload({
     readers: [],
     pages: [],
     stories: [],
+    other_language_stories: [],
     pdfs: [],
     posts: [],
   }
@@ -1637,13 +1660,27 @@ async function buildDiscoverSearchPayload({
       type === 'all' ||
       type === 'stories'
     ) {
-      sections.stories =
-        finalizeStoryResults(
-          storyCandidates,
-          keyword,
-          sectionLimit,
-          pageMap
-        )
+      const rankedStories = finalizeStoryResults(
+        storyCandidates,
+        keyword,
+        MAX_SCAN_LIMIT,
+        pageMap
+      )
+      if (!storyLanguage) {
+        sections.stories = rankedStories.slice(0, sectionLimit)
+      } else {
+        sections.stories = rankedStories
+          .filter((story) =>
+            normalizeStoryLanguage(story.story_language) === storyLanguage
+          )
+          .slice(0, sectionLimit)
+        sections.other_language_stories = rankedStories
+          .filter((story) => {
+            const language = normalizeStoryLanguage(story.story_language)
+            return Boolean(language) && language !== storyLanguage
+          })
+          .slice(0, Math.min(sectionLimit, ALL_SECTION_LIMIT))
+      }
     }
 
     if (
@@ -1682,8 +1719,11 @@ async function buildDiscoverSearchPayload({
           ...sections.stories,
           ...sections.pdfs,
           ...sections.posts,
+          ...sections.other_language_stories,
         ]
-      : sections[type]
+      : type === 'stories'
+        ? [...sections.stories, ...sections.other_language_stories]
+        : sections[type]
 
   const shownCounts = {
     readers:
@@ -1692,6 +1732,8 @@ async function buildDiscoverSearchPayload({
       sections.pages.length,
     stories:
       sections.stories.length,
+    other_language_stories:
+      sections.other_language_stories.length,
     pdfs:
       sections.pdfs.length,
     posts:
@@ -1746,6 +1788,10 @@ export async function searchDiscover(
           )
         : requestedLimit
 
+    const storyLanguage = normalizeStoryLanguage(
+      req.query.language || req.query.story_language
+    )
+
     const storySetting =
       type === 'all' ||
       type === 'stories'
@@ -1787,6 +1833,7 @@ export async function searchDiscover(
         requestedLimit,
         ageAccess,
         storySetting,
+        storyLanguage,
       })
 
     const cached =
@@ -1833,6 +1880,7 @@ export async function searchDiscover(
         sectionLimit,
         ageAccess,
         storySetting,
+        storyLanguage,
       })
 
     discoverSearchPending.set(
