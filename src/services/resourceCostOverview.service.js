@@ -9,7 +9,7 @@ const HOUR_MS = 3_600_000
 const DAY_MS = 24 * HOUR_MS
 const OFFSET_MS = 7 * HOUR_MS
 const SOURCES = ['all', 'web', 'admin', 'shared']
-const MODES = new Set(['yesterday', 'last7', 'week', 'month', 'last30', 'last12months', 'custom'])
+const MODES = new Set(['today', 'yesterday', 'last7', 'week', 'month', 'last30', 'last12months', 'custom'])
 const RENDER_PAGE_SIZE = 750
 const RENDER_MAX_ROWS = 5000
 const RENDER_RECENT_DAYS = 7
@@ -62,7 +62,8 @@ function selectedPeriod(mode, now, from, to) {
     }
     endExclusive = shiftDay(through, 1)
   } else {
-    fromDate = mode === 'yesterday' ? yesterday
+    fromDate = mode === 'today' ? today
+      : mode === 'yesterday' ? yesterday
       : mode === 'last7' ? shiftDay(today, -6)
         : mode === 'week' ? shiftDay(today, -mondayOffset)
           : mode === 'month' ? `${today.slice(0, 7)}-01`
@@ -123,7 +124,7 @@ async function savedUsage(database, period) {
 async function recentRenderByDay(database, period) {
   const recentStart = shiftDay(period.today, -(RENDER_RECENT_DAYS - 1))
   const firstDate = period.from_date > recentStart ? period.from_date : recentStart
-  if (firstDate >= period.end_exclusive) return new Map()
+  if (firstDate >= period.end_exclusive) return { byDay: new Map(), byHour: new Map() }
   const all = []
   for (let offset = 0; offset < RENDER_MAX_ROWS; offset += RENDER_PAGE_SIZE) {
     const { data, error } = await database.from('render_bandwidth_hourly')
@@ -143,6 +144,7 @@ async function recentRenderByDay(database, period) {
   }
   const seen = new Set()
   const byDay = new Map()
+  const byHour = new Map()
   const firstMs = Date.parse(startUtc(firstDate))
   const lastMs = Date.parse(startUtc(period.end_exclusive))
   for (const row of all) {
@@ -163,8 +165,102 @@ async function recentRenderByDay(database, period) {
     value.observed_service_hours += 1
     value.services.add(service)
     byDay.set(day, value)
+    const hourLabel = String(new Date(hour + OFFSET_MS).getUTCHours()).padStart(2, '0')
+    const hourKey = `${day}T${hourLabel}:00`
+    const hourly = byHour.get(hourKey) || { total: 0, observed_service_hours: 0, services: new Set() }
+    hourly.total += bytes
+    if (!Number.isSafeInteger(hourly.total)) throw new RangeError('Cost Overview Render hourly bytes exceed safe precision.')
+    hourly.observed_service_hours += 1
+    hourly.services.add(service)
+    byHour.set(hourKey, hourly)
   }
-  return byDay
+  return { byDay, byHour }
+}
+
+async function savedHourlyUsage(database, period) {
+  if (period.mode !== 'today' && period.mode !== 'yesterday') return null
+  const date = period.from_date
+  const start = Date.parse(startUtc(date))
+  const end = start + DAY_MS
+  const { data, error } = await database.from('system_usage_snapshots')
+    .select('window_start,window_end,request_count,bytes')
+    .gte('window_start', new Date(start).toISOString())
+    .lt('window_start', new Date(end).toISOString())
+    .order('window_start', { ascending: true })
+    .limit(150)
+  if (error) throw new Error('Cost Overview hourly application observations unavailable.', { cause: error })
+  if (!Array.isArray(data) || data.length >= 150) {
+    throw new Error('Cost Overview hourly application observations are incomplete or exceed the safe query limit.')
+  }
+  const hours = new Map()
+  const seen = new Set()
+  for (const row of data) {
+    const from = Date.parse(row.window_start || '')
+    const to = Date.parse(row.window_end || '')
+    const bytes = resourceCostVerifiedNumber(row.bytes)
+    const operations = resourceCostVerifiedNumber(row.request_count)
+    if (!Number.isFinite(from) || to - from !== 15 * 60_000 || from % (15 * 60_000) !== 0 ||
+      from < start || to > end || !Number.isSafeInteger(bytes) || !Number.isSafeInteger(operations)) {
+      throw new Error('Cost Overview hourly application observation has an invalid 15-minute window.')
+    }
+    if (seen.has(from)) throw new Error('Cost Overview hourly application observations contain a duplicate window.')
+    seen.add(from)
+    const hour = new Date(from + OFFSET_MS).getUTCHours()
+    const value = hours.get(hour) || { bytes: 0, operations: 0, windows: 0 }
+    value.bytes += bytes
+    value.operations += operations
+    if (!Number.isSafeInteger(value.bytes) || !Number.isSafeInteger(value.operations)) {
+      throw new RangeError('Cost Overview hourly application counters exceed safe precision.')
+    }
+    value.windows += 1
+    hours.set(hour, value)
+  }
+  return hours
+}
+
+function hourRows(period, history, usageHours, now) {
+  if (!usageHours) return []
+  const date = period.from_date
+  const start = Date.parse(startUtc(date))
+  const current = new Date(now).getTime()
+  return Array.from({ length: 24 }, (_, hour) => {
+    const label = `${String(hour).padStart(2, '0')}:00`
+    const key = `${date}T${label}`
+    const render = history.byHour.get(key)
+    const usage = usageHours.get(hour)
+    const hourStart = start + hour * HOUR_MS
+    const upcoming = hourStart > current
+    const active = !upcoming && current < hourStart + HOUR_MS
+    const renderStatus = render ? active ? 'in_progress' : 'observed_partial'
+      : upcoming ? 'pending' : 'missing'
+    const usageStatus = usage?.windows === 4 ? 'complete'
+      : usage?.windows ? 'partial' : upcoming ? 'pending' : 'missing'
+    return {
+      date: key,
+      label,
+      granularity: 'hour',
+      verified_cost_usd: null,
+      render_outbound_bytes: render ? render.total : null,
+      sources: {
+        all: makeSource(usage ? { observed_api_bytes: usage.bytes, observed_operations: usage.operations } : null),
+        web: makeSource(null),
+        admin: makeSource(null),
+        shared: makeSource(null),
+      },
+      coverage: {
+        recorded_snapshot: Boolean(usage),
+        recorded_application: Boolean(usage),
+        recorded_render: Boolean(render),
+        render_status: renderStatus,
+        render_observed_service_hours: render?.observed_service_hours ?? 0,
+        render_measurement_source: render ? 'stored_hourly' : 'missing',
+        observed_usage_status: usageStatus,
+        observed_application_windows: usage?.windows ?? 0,
+        expected_application_windows: 4,
+        invoiced_cost: 'unavailable',
+      },
+    }
+  })
 }
 
 function summarySource(usage) {
@@ -286,16 +382,18 @@ function monthRows(days) {
   })
 }
 
-async function readOverview(period, dependencies = {}) {
+async function readOverview(period, dependencies = {}, now = new Date()) {
   const database = dependencies.database || supabase
-  const [snapshots, dailyUsage, renderByDay] = await Promise.all([
+  const [snapshots, dailyUsage, renderHistory, usageHours] = await Promise.all([
     savedSnapshots(database, period),
     savedUsage(database, period),
     recentRenderByDay(database, period),
+    savedHourlyUsage(database, period),
   ])
   const snapshotsByDate = new Map(snapshots.map((row) => [row.snapshot_date, row]))
   const usageByDate = new Map(dailyUsage.map((row) => [row.summary_date, row]))
-  const days = period.dates.map((date) => makeDay(date, usageByDate.get(date), snapshotsByDate.get(date), renderByDay, period.today))
+  const days = period.dates.map((date) => makeDay(date, usageByDate.get(date), snapshotsByDate.get(date), renderHistory.byDay, period.today))
+  const hourlySeries = hourRows(period, renderHistory, usageHours, now)
   const series = period.granularity === 'month' ? monthRows(days) : days
   const totals = Object.fromEntries(SOURCES.map((source) => [source,
     summarizeResourceCostSource(days, source, { complete: source === 'all' })]))
@@ -306,23 +404,29 @@ async function readOverview(period, dependencies = {}) {
       through_date: period.through_date,
       timezone: period.timezone,
       granularity: period.granularity,
+      hourly_granularity: hourlySeries.length ? 'hour' : null,
       days: period.dates.length,
     },
     generated_at: new Date().toISOString(),
     totals,
     series,
+    hourly_series: hourlySeries,
     coverage: {
       daily_snapshots: snapshots.length,
       daily_usage_summaries: dailyUsage.length,
       application_attribution: dailyUsage.length ? 'stored_grouped_metrics_partial' : 'not_available',
       render_measurements: days.filter((day) => day.coverage.recorded_render).length,
       render_measurements_unit: 'calendar_days',
+      hourly_render_measurements: hourlySeries.filter((row) => row.coverage.recorded_render).length,
+      hourly_application_measurements: hourlySeries.filter((row) => row.coverage.recorded_application).length,
       attribution_method: 'stored_daily_aggregate_feature_proxy',
       verified_source_costs_available: false,
     },
     notes: [
       'Daily usage comes from persisted aggregated monitor records, never a live full report.',
       'Recent Render daily totals are reconstructed from stored provider hourly measurements when they improve archived snapshots.',
+      'Today and Yesterday hourly_series contain exactly 24 Cambodia hours when available; missing hours are null, not zero.',
+      'Hourly API data uses persisted 15-minute backend snapshots and cannot be split reliably between Web and Admin.',
       'Older Render measurements require archived daily snapshots; missing hours are not inferred as zero.',
       'Web and Admin are API feature proxies, not verified traffic origin or bill attribution.',
       'Render bandwidth and observed application bytes are separate measurements and must not be added.',
@@ -333,13 +437,13 @@ async function readOverview(period, dependencies = {}) {
 
 export async function getResourceCostOverview({ period = 'last7', from = null, to = null, now = new Date() } = {}, dependencies = {}) {
   const selection = selectedPeriod(period, now, from, to)
-  if (dependencies.database) return readOverview(selection, dependencies)
+  if (dependencies.database) return readOverview(selection, dependencies, now)
   const key = `${period}:${selection.from_date}:${selection.through_date}:${selection.today}`
   const current = Date.now()
   const ttl = selection.dates.includes(selection.today) ? 2 * 60_000 : selection.through_date === shiftDay(selection.today, -1) ? 15 * 60_000 : 60 * 60_000
   const existing = cache.get(key)
   if (existing && existing.expires > current) return existing.pending
-  const pending = readOverview(selection)
+  const pending = readOverview(selection, {}, now)
   cache.set(key, { expires: current + ttl, pending })
   while (cache.size > 12) cache.delete(cache.keys().next().value)
   try {
