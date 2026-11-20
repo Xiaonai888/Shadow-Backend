@@ -2797,13 +2797,22 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
 
     const now = Date.now()
     const allEpisodes = data || []
-    const pendingPublishTimes = allEpisodes
-      .filter((episode) => String(episode.status || '').toLowerCase() === 'scheduled')
-      .map((episode) => Date.parse(episode.scheduled_at || ''))
-      .filter(Number.isFinite)
-    res.locals.publicStoryEpisodeNextScheduledAt = pendingPublishTimes.length
-      ? Math.min(...pendingPublishTimes)
+    const scheduledEpisodes = allEpisodes
+      .filter((episode) => {
+        if (String(episode.status || '').trim().toLowerCase() !== 'scheduled') return false
+        const publishTime = Date.parse(episode.scheduled_at || '')
+        return Number.isFinite(publishTime) && publishTime > now
+      })
+      .sort((a, b) =>
+        Date.parse(a.scheduled_at) - Date.parse(b.scheduled_at) ||
+        Number(a.episode_number || 0) - Number(b.episode_number || 0)
+      )
+    res.locals.publicStoryEpisodeNextScheduledAt = scheduledEpisodes.length
+      ? Date.parse(scheduledEpisodes[0].scheduled_at)
       : null
+    const upcomingEpisode = scheduledEpisodes.find((episode) =>
+      !episode.is_adult || Boolean(ageAccess?.can_view_adult_stories)
+    ) || null
     const visibleEpisodes = allEpisodes.filter((episode) =>
       isPublicEpisode(episode, now)
     )
@@ -2851,6 +2860,12 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
       free_published_episode_ids: [
         ...access.freePublishedEpisodeIds,
       ],
+      upcoming_episode: upcomingEpisode ? {
+        title: upcomingEpisode.title || '',
+        episode_number: Number(upcomingEpisode.episode_number || 0),
+        cover_url: upcomingEpisode.cover_url || story.cover_url || null,
+        scheduled_at: upcomingEpisode.scheduled_at,
+      } : null,
       episodes: visibleEpisodes.map((episode) =>
         publicEpisodeListItem(
           episode,
