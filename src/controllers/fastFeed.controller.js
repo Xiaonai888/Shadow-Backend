@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { filterLiveYoutubeReels, isLiveYoutubeReel } from '../services/youtubeReelVisibility.service.js'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -36,7 +37,7 @@ export async function listPublicFastVideos(req, res) {
 
     if (error) throw error
     const rows = Array.isArray(data) ? data : []
-    const pageVideos = rows.slice(0, limit)
+    const pageVideos = await filterLiveYoutubeReels(rows.slice(0, limit))
     const creatorIds = [...new Set(pageVideos.map(video => video.user_id).filter(Boolean))]
     const creatorsById = new Map()
 
@@ -68,14 +69,14 @@ export async function listPublicFastVideos(req, res) {
       creator: creatorsById.get(String(video.user_id)) || null,
     }))
 
-    res.set('Cache-Control', 'public, max-age=15, stale-while-revalidate=45')
+    res.set('Cache-Control', 'no-store')
     return res.json({
       ok: true,
       videos,
       pagination: {
         limit,
         offset,
-        next_offset: offset + videos.length,
+        next_offset: offset + Math.min(rows.length, limit),
         has_more: rows.length > limit,
       },
     })
@@ -110,7 +111,7 @@ export async function getPublicFastVideo(req, res) {
 
     if (error) throw error
 
-    if (!video) {
+    if (!video || !(await isLiveYoutubeReel(video.video_url))) {
       return res.status(404).json({
         ok: false,
         message: 'Reel not found',
@@ -127,7 +128,7 @@ export async function getPublicFastVideo(req, res) {
 
     if (pageError) throw pageError
 
-    res.set('Cache-Control', 'public, max-age=15')
+    res.set('Cache-Control', 'no-store')
 
     return res.json({
       ok: true,
