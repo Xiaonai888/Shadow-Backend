@@ -1,5 +1,10 @@
 import { supabase } from '../config/supabase.js'
 import { persistResourceCostProviderObservations } from './resourceCostProviderSync.service.js'
+import {
+  parseSupabaseUsageCountsStrict,
+  parseCloudflareR2StorageStrict,
+  hasValidCloudflareR2Operations,
+} from './resourceCostProviderPayload.service.js'
 import { getSystemUsageSnapshot, getSystemUsageArchiveMinutes } from './systemUsageMonitor.service.js'
 import { createSystemUsageGroupArchive } from './systemUsageGroupedArchive.service.js'
 import { persistSystemUsageGroupedArchive } from './systemUsageArchivePipeline.service.js'
@@ -1727,22 +1732,14 @@ async function syncCloudflareR2Provider(now) {
     ),
   ])
 
-  const storage =
-    storageResult.status === 'fulfilled'
-      ? parseCloudflareR2Storage(
-          storageResult.value
-        )
-      : null
+  const storage = storageResult.status === 'fulfilled'
+    ? parseCloudflareR2StorageStrict(storageResult.value)
+    : null
 
-  const operations =
-    operationsResult.status === 'fulfilled'
-      ? parseCloudflareR2Operations(
-          operationsResult.value,
-          start,
-          end
-        )
-      : null
-
+  const operations = operationsResult.status === 'fulfilled' &&
+    hasValidCloudflareR2Operations(operationsResult.value)
+    ? parseCloudflareR2Operations(operationsResult.value, start, end)
+    : null
   const errors = []
 
   if (storageResult.status === 'rejected') {
@@ -1769,17 +1766,19 @@ async function syncCloudflareR2Provider(now) {
     })
   }
 
-  const successCount =
-    Number(Boolean(storage)) +
-    Number(Boolean(operations))
+  if (storageResult.status === 'fulfilled' && !storage) {
+    errors.push({ source: 'storage_metrics', message: 'Invalid or unavailable R2 storage response.' })
+  } else if (storage && !storage.complete) {
+    errors.push({ source: 'storage_metrics', message: 'R2 storage response is incomplete.' })
+  }
+  if (operationsResult.status === 'fulfilled' && !operations) {
+    errors.push({ source: 'operations_analytics', message: 'Invalid or unavailable R2 operations response.' })
+  }
+  const successCount = Number(Boolean(storage)) + Number(Boolean(operations))
 
   providerState.cloudflare_r2 = {
-    status:
-      successCount === 2
-        ? 'ok'
-        : successCount === 1
-          ? 'partial'
-          : 'error',
+    status: successCount === 2 && storage.complete ? 'ok'
+      : successCount > 0 ? 'partial' : 'error',
     checked_at:
       new Date(now).toISOString(),
     account_id: accountId,
@@ -1841,10 +1840,10 @@ async function syncSupabaseProvider(now) {
       token
     )
 
-    const parsed = parseSupabaseUsageCounts(data)
+    const parsed = parseSupabaseUsageCountsStrict(data)
 
     providerState.supabase = {
-      status: parsed.available ? 'ok' : 'empty',
+      status: parsed.available ? parsed.complete ? 'ok' : 'partial' : 'empty',
       checked_at: new Date(now).toISOString(),
       project_ref: projectRef,
       provider_period: 'provider_default',
