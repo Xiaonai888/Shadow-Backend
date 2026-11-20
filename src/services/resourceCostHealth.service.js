@@ -27,6 +27,33 @@ const REQUIRED_METRICS = Object.freeze({
   ]),
 })
 
+function presentEnvironment(...keys) {
+  return keys.some((key) => typeof process.env[key] === 'string' && process.env[key].trim().length > 0)
+}
+
+function supabaseProjectAvailable() {
+  if (presentEnvironment('SUPABASE_PROJECT_REF')) return true
+  try {
+    return /^[a-z0-9-]+\.supabase\.co$/i.test(new URL(String(process.env.SUPABASE_URL || '')).hostname)
+  } catch {
+    return false
+  }
+}
+
+function environmentChecks() {
+  return {
+    supabase: {
+      management_token_present: presentEnvironment('SUPABASE_MANAGEMENT_TOKEN', 'SYSTEM_SUPABASE_MANAGEMENT_TOKEN'),
+      project_ref_available: supabaseProjectAvailable(),
+    },
+    cloudflare_r2: {
+      metrics_token_present: presentEnvironment('CLOUDFLARE_R2_METRICS_TOKEN'),
+      operations_token_present: presentEnvironment('CLOUDFLARE_API_TOKEN', 'SYSTEM_CLOUDFLARE_API_TOKEN'),
+      account_id_present: presentEnvironment('CLOUDFLARE_ACCOUNT_ID', 'SYSTEM_CLOUDFLARE_ACCOUNT_ID', 'R2_ACCOUNT_ID'),
+    },
+  }
+}
+
 function safeDate(value) {
   if (typeof value !== 'string' || !value) return null
   const parsed = Date.parse(value)
@@ -206,6 +233,7 @@ export async function getResourceCostHealth({ client, providerState, uploadHealt
     verified_complete: false,
     sources,
     providers,
+    environment_checks: environmentChecks(),
     upload_queue: {
       pending_attempts: uploads.pending_attempts ?? 0,
       pending_groups: uploads.pending_groups ?? 0,
@@ -216,6 +244,6 @@ export async function getResourceCostHealth({ client, providerState, uploadHealt
       durability: uploads.durability || 'memory_until_successful_batch_commit',
     },
     warnings: classifyWarnings(sources, providers, uploads),
-    interpretation: 'Provider metrics may be partial even when recent. Missing metric values are not zero. Error codes do not expose tokens. Provider billing remains unverified.',
+    interpretation: 'Provider metrics may be partial even when recent. Missing metric values are not zero. Environment checks only report whether configured names exist, not their values, validity or permissions. Provider billing remains unverified.',
   }
 }
