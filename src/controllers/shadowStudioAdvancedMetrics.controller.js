@@ -15,7 +15,11 @@ const ACTIONS = new Set(['impression', 'click'])
 function viewerId(req, res) {
   const id = String(req.user?.user_id || '')
   if (!UUID.test(id)) {
-    res.status(401).json({ ok: false, message: 'Sign in to use Studio tracking.' })
+   res.status(401).json({
+  ok: false,
+  code: 'STUDIO_VIEWER_SESSION_INVALID',
+  message: 'Sign in to use Studio tracking.',
+})
     return null
   }
   return id
@@ -47,11 +51,21 @@ export async function postStudioWatch(req, res) {
     || typeof playedSeconds !== 'number' || !Number.isFinite(playedSeconds)
     || playedSeconds < 0 || playedSeconds > 43200
     || (kind === 'start' && playedSeconds !== 0)) {
-    return res.status(400).json({ ok: false, message: 'Invalid Studio playback event.' })
+    return res.status(400).json({
+  ok: false,
+  code: 'STUDIO_PLAYBACK_EVENT_INVALID',
+  message: 'Invalid Studio playback event.',
+})
   }
   try {
     const result = await recordStudioWatch({ videoId, viewerId: id, sessionId, kind, playedSeconds })
-    return res.status(result.ok ? 200 : result.reason === 'session_not_started' ? 409 : 404).json(result)
+    const status = result.ok ? 200 : result.reason === 'session_not_started' ? 409 : 404
+return res.status(status).json(result.ok ? result : {
+  ...result,
+  code: result.code || (status === 409
+    ? 'STUDIO_WATCH_SESSION_NOT_STARTED'
+    : 'STUDIO_WATCH_NOT_FOUND'),
+})
   } catch (error) {
     return failure(res, error)
   }
@@ -64,13 +78,23 @@ export async function postStudioThumbnail(req, res) {
   const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}
   const videoId = String(body.video_id || '')
   if (!UUID.test(videoId) || !SURFACES.has(body.surface) || !ACTIONS.has(body.action)) {
-    return res.status(400).json({ ok: false, message: 'Invalid Studio thumbnail event.' })
+    return res.status(400).json({
+  ok: false,
+  code: 'STUDIO_THUMBNAIL_EVENT_INVALID',
+  message: 'Invalid Studio thumbnail event.',
+})
   }
   try {
     const result = await recordStudioThumbnail({
       videoId, viewerId: id, surface: body.surface, action: body.action,
     })
-    return res.status(result.ok ? 200 : result.reason === 'impression_required' ? 409 : 404).json(result)
+    const status = result.ok ? 200 : result.reason === 'impression_required' ? 409 : 404
+return res.status(status).json(result.ok ? result : {
+  ...result,
+  code: result.code || (status === 409
+    ? 'STUDIO_THUMBNAIL_IMPRESSION_REQUIRED'
+    : 'STUDIO_THUMBNAIL_NOT_FOUND'),
+})
   } catch (error) {
     return failure(res, error)
   }
@@ -83,7 +107,11 @@ export async function getStudioAdvancedSummary(req, res) {
   const days = Number(req.query.days ?? 30)
   const format = String(req.query.format || 'all').toLowerCase()
   if (!DAYS.has(days) || !FORMATS.has(format)) {
-    return res.status(400).json({ ok: false, message: 'Invalid Studio summary filters.' })
+    return res.status(400).json({
+  ok: false,
+  code: 'STUDIO_SUMMARY_FILTER_INVALID',
+  message: 'Invalid Studio summary filters.',
+})
   }
   try {
     const { value, cached } = await readStudioChannelCache(
