@@ -1719,7 +1719,7 @@ async function syncCloudflareR2Provider(now) {
       `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(
         accountId
       )}/r2/metrics`,
-      apiToken
+      String(process.env.CLOUDFLARE_R2_METRICS_TOKEN || '').trim() || apiToken
     ),
     fetchCloudflareGraphql(
       apiToken,
