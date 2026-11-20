@@ -33,7 +33,21 @@ begin
         else 0
       end as http_status,
       nullif(item.value->>'response_code', '') as response_code,
-      coalesce(nullif(item.value->>'error_class', ''), 'unknown') as error_class,
+coalesce(
+  nullif(item.value->>'root_cause_code', ''),
+  nullif(item.value->>'response_code', ''),
+  'UNKNOWN'
+) as root_cause_code,
+coalesce(
+  nullif(item.value->>'diagnostic_stage', ''),
+  'unknown'
+) as diagnostic_stage,
+case
+  when item.value->>'provider_http_status' ~ '^[0-9]{3}$'
+    then (item.value->>'provider_http_status')::integer
+  else 0
+end as provider_http_status,
+coalesce(nullif(item.value->>'error_class', ''), 'unknown') as error_class,
       coalesce(nullif(item.value->>'provider', ''), 'UNKNOWN') as provider,
       coalesce(nullif(item.value->>'target', ''), 'UNKNOWN') as target,
       case
@@ -66,7 +80,9 @@ begin
   ),
   groups as (
     select
-      route, http_status, response_code, error_class, provider, target,
+      route, http_status, response_code,
+      root_cause_code, diagnostic_stage, provider_http_status,
+      error_class, provider, target,
       sum(failures)::bigint as count,
       sum(external_failures)::bigint as external_error_count,
       min(first_seen_at) as first_seen_at,
@@ -75,7 +91,10 @@ begin
       (array_agg(sample_error order by last_seen_at desc nulls last))[1] as sample_error,
       (array_agg(sample_duration_ms order by last_seen_at desc nulls last))[1] as sample_duration_ms
     from evidence
-    group by route, http_status, response_code, error_class, provider, target
+    group by
+  route, http_status, response_code,
+  root_cause_code, diagnostic_stage, provider_http_status,
+  error_class, provider, target
   ),
   ranked as (
     select *
