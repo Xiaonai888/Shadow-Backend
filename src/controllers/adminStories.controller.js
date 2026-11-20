@@ -1,5 +1,10 @@
 import { supabase } from '../config/supabase.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
+import {
+  getAdminStoryLanguage,
+  applyAdminStoryLanguageFilter,
+} from '../services/adminStoryLanguage.service.js'
+import { loadAdminStoriesOverview } from '../services/adminStoriesOverview.service.js'
 
 const PAGE_SIZE_DEFAULT = 20
 const PAGE_SIZE_MAX = 100
@@ -285,56 +290,23 @@ async function countStories(builder) {
 
 export async function getAdminStoriesOverview(req, res) {
   try {
-    const { data: stories, error: storiesError } = await supabase
-      .from('stories')
-      .select('id, deleted_at, admin_visibility_status, policy_warning_count, story_status, total_episodes')
-
-    if (storiesError) throw storiesError
-
-    const { data: authors, error: authorsError } = await supabase
-      .from('author_pages')
-      .select('id, admin_status')
-
-    const storyRows = stories || []
-    const authorRows = authorsError ? [] : authors || []
-
-    const totalStories = storyRows.length
-    const activeStories = storyRows.filter((story) => !story.deleted_at).length
-    const deletedStories = storyRows.filter((story) => story.deleted_at).length
-    const restrictedStories = storyRows.filter((story) => story.admin_visibility_status === 'restricted').length
-    const disabledStories = storyRows.filter((story) => story.admin_visibility_status === 'disabled').length
-    const warnedStories = storyRows.filter((story) => Number(story.policy_warning_count || 0) > 0).length
-    const disabledAuthors = authorRows.filter((author) => author.admin_status === 'disabled').length
-    const availableStories = storyRows.filter((story) => !story.deleted_at)
-    const totalNew = availableStories.filter((story) => Number(story.total_episodes || 0) === 1 && String(story.story_status || '').toLowerCase() !== 'completed').length
-    const totalOngoing = availableStories.filter((story) => Number(story.total_episodes || 0) >= 2 && String(story.story_status || '').toLowerCase() !== 'completed').length
-    const totalCompleted = availableStories.filter((story) => String(story.story_status || '').toLowerCase() === 'completed').length
+    const summary = await loadAdminStoriesOverview(req.query.language || 'all')
 
     return res.status(200).json({
       ok: true,
-      summary: {
-        total_stories: totalStories,
-        active_stories: activeStories,
-        deleted_by_authors: deletedStories,
-        restricted_stories: restrictedStories,
-        disabled_stories: disabledStories,
-        warned_stories: warnedStories,
-        disabled_authors: disabledAuthors,
-        new_stories: totalNew,
-        ongoing_stories: totalOngoing,
-        completed_stories: totalCompleted,
-      },
+      summary,
     })
   } catch (error) {
     console.error('GET ADMIN STORIES OVERVIEW ERROR:', error)
-    return res.status(500).json({
+
+    return res.status(error?.status === 400 ? 400 : 500).json({
       ok: false,
-      message: 'Failed to load stories overview',
-      error: error.message,
+      message: error?.status === 400
+        ? 'Invalid Story Language'
+        : 'Failed to load stories overview',
     })
   }
 }
-
 const CAMBODIA_UTC_OFFSET_MS = 7 * 60 * 60 * 1000
 const ACTIVITY_PERIODS = ['today', 'week', 'month']
 const ACTIVITY_SORTS = ['episodes', 'consistency', 'latest']
@@ -406,6 +378,7 @@ export async function getAdminStoryUpdateActivity(req, res) {
     const limit = normalizeLimit(req.query.limit)
     const search = cleanText(req.query.q || req.query.search).toLowerCase()
     const storyType = cleanText(req.query.story_type || req.query.storyType || 'all').toLowerCase()
+    const language = getAdminStoryLanguage(req.query.language || 'all')
     const language = cleanText(req.query.language || 'all').toLowerCase()
     const genre = cleanText(req.query.genre || 'all').toLowerCase()
     const range = getCambodiaPeriodRange(period, offset)
@@ -815,6 +788,7 @@ export async function getAdminStories(req, res) {
     if (storyType === 'novel') query = query.or('story_type.eq.novel,story_type.is.null')
     if (storyType === 'manga') query = query.eq('story_type', 'manga')
     if (storyType === 'chat_story') query = query.eq('story_type', 'chat_story')
+    query = applyAdminStoryLanguageFilter(query, language)
     if (authorId) query = query.eq('author_id', authorId)
 
     if (lifecycle === 'new') {
@@ -905,7 +879,12 @@ export async function getAdminStories(req, res) {
     })
   } catch (error) {
     console.error('GET ADMIN STORIES ERROR:', error)
-    return res.status(500).json({ ok: false, message: 'Failed to load stories', error: error.message })
+    return res.status(error?.status === 400 ? 400 : 500).json({
+  ok: false,
+  message: error?.status === 400
+    ? 'Invalid Story Language'
+    : 'Failed to load stories',
+})
   }
 }
 
