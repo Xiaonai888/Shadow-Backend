@@ -1,6 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { getSystemUsageHistory } from './systemUsagePersistence.service.js'
-import { getRecentRequestEvidence } from './trafficDiagnostic.service.js'
+import { getRecentRequestEvidence, getHistoricalErrorEvidence } from './trafficDiagnostic.service.js'
 
 const REPORT_MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000
 const INCIDENT_PAGE_SIZE = 500
@@ -135,16 +135,16 @@ function aggregateBy(rows, keySelector) {
 }
 
 function diagnosticLabel(item) {
+  if (item.errors > 0) {
+    return 'errors_observed'
+  }
+
   if (
     item.http_requests > 0 &&
     item.supabase_calls >= 8 &&
     item.supabase_per_http >= 8
   ) {
     return 'database_fanout'
-  }
-
-  if (item.errors > 0) {
-    return 'errors_observed'
   }
 
   if (item.supabase_calls > 0) {
@@ -448,6 +448,20 @@ function summaryMarkdown(range, history, incidents, stats) {
     ])
   )
 
+    const errorTable = markdownTable(
+    ['Route', 'HTTP', 'Error Code', 'Stage', 'Provider', 'Provider HTTP', 'Count', 'Last seen'],
+    (stats.error_diagnostics || []).map((item) => [
+      item.route,
+      item.http_status,
+      item.error_code,
+      item.stage,
+      item.provider,
+      item.provider_http_status,
+      item.count,
+      item.last_seen_at,
+    ])
+  )
+
   const summary = stats.usage_summary || {}
   const usageTotals = summary.totals || {}
   const summaryRows = Array.isArray(summary.rows) ? summary.rows : []
@@ -517,6 +531,12 @@ function summaryMarkdown(range, history, incidents, stats) {
     '## Route Target Breakdown (bounded detail)',
     '',
     targetTable,
+    '',
+        '## Error Diagnostics (in memory only; last 2 hours maximum)',
+    '',
+    'Grouped by route, status, error code and stage. Counts only cover currently retained in-memory evidence; server restarts clear this data.',
+    '',
+    errorTable,
     '',
     '## Recent Per-Request Evidence (in memory only)',
     '',
@@ -899,7 +919,30 @@ async function buildReportBundle(from, to) {
   ])
 
   const requestEvidence = filterRecentEvidence(range)
-  const stats = buildSummaryStats(history, incidents, requestEvidence)
+    const errorDiagnostics = getHistoricalErrorEvidence({
+    from: range.from,
+    to: range.to,
+  }).slice(0, 60).map((item) => ({
+    route: String(item.route || 'UNKNOWN')
+      .replace(/[^a-z0-9_/: .()-]/gi, '_')
+      .slice(0, 160),
+    http_status: safeNumber(item.http_status) || '-',
+    error_code: String(
+      item.response_code || item.root_cause_code || `HTTP_${Number(item.http_status) || 0}`
+    ).replace(/[^a-z0-9_:-]/gi, '_').slice(0, 64),
+    stage: String(item.diagnostic_stage || 'unknown')
+      .replace(/[^a-z0-9_:-]/gi, '_').slice(0, 64),
+    provider: String(item.provider || 'APPLICATION')
+      .replace(/[^a-z0-9_:-]/gi, '_').slice(0, 64),
+    provider_http_status: safeNumber(item.provider_http_status) || '-',
+    count: safeNumber(item.count),
+    last_seen_at: iso(item.last_seen_at) || '-',
+  }))
+
+  const stats = {
+    ...buildSummaryStats(history, incidents, requestEvidence),
+    error_diagnostics: errorDiagnostics,
+  }
   const summaryMd = summaryMarkdown(
     range,
     history,
