@@ -45,7 +45,7 @@ export function buildResourceCostProviderObservations(state, at = new Date()) {
 
   const sb = state?.supabase || {}
   const sbScope = 'project'
-  const sbStatus = sb.status === 'ok' ? 'ok' : sb.status === 'error' ? 'error' : 'missing'
+  const sbStatus = sb.status === 'ok' || sb.status === 'partial' ? 'ok' : sb.status === 'error' ? 'error' : 'missing'
   push('supabase', 'api.requests.provider_window', sbScope, 'gauge', 'requests', sb.total_requests, previousHour, now, sbStatus)
   for (const field of ['auth', 'realtime', 'rest', 'storage']) {
     push('supabase', `api.${field}.provider_window`, sbScope, 'gauge', 'requests', sb.breakdown?.[field], previousHour, now, sbStatus)
