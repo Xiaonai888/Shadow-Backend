@@ -521,6 +521,7 @@ function destination(hostname) {
   if (!host) return 'UNKNOWN'
   if (host.endsWith('.supabase.co')) return 'SUPABASE'
   if (host.endsWith('.r2.cloudflarestorage.com')) return 'CLOUDFLARE_R2'
+  if (host === 'api.cloudflare.com') return 'CLOUDFLARE_API'
   if (host === 'api.telegram.org') return 'TELEGRAM'
   if (host === 'ipwho.is' || host.endsWith('.ipwho.is')) return 'IPWHO'
   return `OTHER:${host}`
@@ -638,6 +639,28 @@ async function captureFetchFailure({
     target,
     status: Number(response?.status || 0),
     status_text: response?.statusText || '',
+  }
+
+  if (provider === 'CLOUDFLARE_API' || provider === 'CLOUDFLARE_R2') {
+    failure.code = `${provider}_HTTP_${failure.status || 0}`
+  }
+
+  if (provider === 'CLOUDFLARE_API' && response) {
+    const size = Number(response.headers.get('content-length'))
+    const type = String(response.headers.get('content-type') || '')
+
+    if (size > 0 && size <= 8192 && /application\/json/i.test(type)) {
+      try {
+        const payload = await response.clone().json()
+        const code = payload?.errors?.find(
+          (entry) => /^\d{1,8}$/.test(String(entry?.code ?? ''))
+        )?.code
+
+        if (code !== undefined) {
+          failure.code = `CLOUDFLARE_API_${code}`
+        }
+      } catch {}
+    }
   }
 
   if (
@@ -1479,7 +1502,9 @@ function installHttpDiagnostic(moduleObject) {
             status,
             status_text:
               response.statusMessage || '',
-            code: 'HTTP_ERROR',
+                        code: ['CLOUDFLARE_API', 'CLOUDFLARE_R2'].includes(destination(meta.hostname))
+              ? `${destination(meta.hostname)}_HTTP_${status}`
+              : 'HTTP_ERROR',
           }
         )
       }
