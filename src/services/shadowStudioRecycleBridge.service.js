@@ -31,11 +31,30 @@ export async function executeStudioRecycleAction({
   if (!data || typeof data !== 'object' || typeof data.ok !== 'boolean') {
     throw new Error('Invalid Studio recycle response')
   }
+  if (data.ok) {
+    const { data: saved, error: verifyError } = await client.from('fast_videos')
+      .select('id,studio_state,status,deleted_at')
+      .eq('id', videoId)
+      .eq('user_id', ownerId)
+      .maybeSingle()
+    if (verifyError) throw verifyError
+    const verified = action === 'purge' ? !saved
+      : action === 'trash' ? saved?.studio_state === 'trashed' && saved?.status === 'draft' && Boolean(saved?.deleted_at)
+      : action === 'archive' ? saved?.studio_state === 'archived' && saved?.status === 'draft'
+      : action === 'unarchive' ? saved?.studio_state === 'active'
+      : action === 'restore' ? saved?.studio_state === 'active' || saved?.studio_state === 'archived'
+      : false
+    if (!verified) {
+      const failure = new Error('Reel state was not saved; please retry.')
+      failure.status = 409
+      throw failure
+    }
+  }
   if (data.ok && typeof invalidate === 'function') {
     try {
       await invalidate(ownerId)
-    } catch {
-      return data
+    } catch (error) {
+      console.warn('STUDIO_RECYCLE_CACHE_INVALIDATION_FAILED', error?.message || 'unknown')
     }
   }
   return data
