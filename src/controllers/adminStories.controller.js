@@ -5,6 +5,7 @@ import {
   applyAdminStoryLanguageFilter,
 } from '../services/adminStoryLanguage.service.js'
 import { loadAdminStoriesOverview } from '../services/adminStoriesOverview.service.js'
+import { normalizeStoryLanguage } from '../services/ads/storyLanguageFilter.service.js'
 
 const PAGE_SIZE_DEFAULT = 20
 const PAGE_SIZE_MAX = 100
@@ -379,7 +380,6 @@ export async function getAdminStoryUpdateActivity(req, res) {
     const search = cleanText(req.query.q || req.query.search).toLowerCase()
     const storyType = cleanText(req.query.story_type || req.query.storyType || 'all').toLowerCase()
     const language = getAdminStoryLanguage(req.query.language || 'all')
-    const language = cleanText(req.query.language || 'all').toLowerCase()
     const genre = cleanText(req.query.genre || 'all').toLowerCase()
     const range = getCambodiaPeriodRange(period, offset)
 
@@ -435,7 +435,7 @@ export async function getAdminStoryUpdateActivity(req, res) {
       const author = authors.get(story?.author_id || episode.author_id)
       if (!story || !author) return false
       if (storyType !== 'all' && String(story.story_type || '').toLowerCase() !== storyType) return false
-      if (language !== 'all' && String(story.story_language || '').toLowerCase() !== language) return false
+      if (language !== 'all' && normalizeStoryLanguage(story.story_language || '') !== language) return false
       if (genre !== 'all' && String(story.main_genre || '').toLowerCase() !== genre) return false
       if (!search) return true
 
@@ -743,6 +743,7 @@ export async function getAdminStories(req, res) {
     const visibility = cleanText(req.query.visibility || 'all').toLowerCase()
     const genre = cleanText(req.query.genre || 'all')
     const storyType = cleanText(req.query.story_type || req.query.storyType || 'all').toLowerCase()
+    const language = getAdminStoryLanguage(req.query.language || 'all')
     const lifecycle = cleanText(req.query.lifecycle || 'all').toLowerCase()
     const sort = cleanText(req.query.sort || 'newest').toLowerCase()
     const authorId = cleanText(req.query.author_id || req.query.authorId)
