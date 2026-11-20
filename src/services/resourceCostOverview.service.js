@@ -10,6 +10,9 @@ const DAY_MS = 24 * HOUR_MS
 const OFFSET_MS = 7 * HOUR_MS
 const SOURCES = ['all', 'web', 'admin', 'shared']
 const MODES = new Set(['yesterday', 'last7', 'week', 'month', 'last30', 'last12months', 'custom'])
+const RENDER_PAGE_SIZE = 750
+const RENDER_MAX_ROWS = 5000
+const RENDER_RECENT_DAYS = 7
 const cache = new Map()
 
 function dateFromMs(ms) {
@@ -54,7 +57,6 @@ function selectedPeriod(mode, now, from, to) {
     fromDate = checkedCalendarDate(from)
     const through = checkedCalendarDate(to)
     if (fromDate > through) throw new RangeError('Custom Date start is after end.')
-    if (through > today) throw new RangeError('Custom Date cannot include future days.')
     if ((Date.parse(`${through}T00:00:00.000Z`) - Date.parse(`${fromDate}T00:00:00.000Z`)) >= 370 * DAY_MS) {
       throw new RangeError('Custom Date supports a maximum of 370 days per request.')
     }
@@ -67,6 +69,9 @@ function selectedPeriod(mode, now, from, to) {
             : mode === 'last30' ? shiftDay(today, -29)
               : shiftMonth(today, -11)
     endExclusive = mode === 'yesterday' ? today : shiftDay(today, 1)
+  }
+  if (fromDate > today || endExclusive > shiftDay(today, 1)) {
+    throw new RangeError('Cost Overview cannot include future days.')
   }
   const dates = []
   for (let date = fromDate; date < endExclusive; date = shiftDay(date, 1)) {
@@ -115,30 +120,51 @@ async function savedUsage(database, period) {
   return data
 }
 
-async function recentRender(database, period) {
-  if (!period.dates.includes(period.today)) return null
-  const { data, error } = await database.from('render_bandwidth_hourly')
-    .select('service_id,hour_start,total_bytes')
-    .gte('hour_start', startUtc(period.today))
-    .lt('hour_start', startUtc(shiftDay(period.today, 1)))
-    .order('hour_start', { ascending: false })
-    .limit(1000)
-  if (error) {
-    console.error('RESOURCE_COST_OVERVIEW_RENDER_TODAY_ERROR:', error?.message || error)
-    return { total: null, complete: false }
+async function recentRenderByDay(database, period) {
+  const recentStart = shiftDay(period.today, -(RENDER_RECENT_DAYS - 1))
+  const firstDate = period.from_date > recentStart ? period.from_date : recentStart
+  if (firstDate >= period.end_exclusive) return new Map()
+  const all = []
+  for (let offset = 0; offset < RENDER_MAX_ROWS; offset += RENDER_PAGE_SIZE) {
+    const { data, error } = await database.from('render_bandwidth_hourly')
+      .select('service_id,hour_start,total_bytes')
+      .gte('hour_start', startUtc(firstDate))
+      .lt('hour_start', startUtc(period.end_exclusive))
+      .order('hour_start', { ascending: true })
+      .order('service_id', { ascending: true })
+      .range(offset, offset + RENDER_PAGE_SIZE - 1)
+    if (error) throw new Error('Cost Overview Render hourly history unavailable.', { cause: error })
+    if (!Array.isArray(data)) throw new Error('Cost Overview Render hourly history returned invalid data.')
+    all.push(...data)
+    if (data.length < RENDER_PAGE_SIZE) break
+    if (offset + RENDER_PAGE_SIZE >= RENDER_MAX_ROWS) {
+      throw new RangeError('Cost Overview Render hourly history exceeds the safe query limit.')
+    }
   }
-  if (!Array.isArray(data)) return { total: null, complete: false }
-  let total = 0
-  const ids = new Set()
-  for (const row of data) {
+  const seen = new Set()
+  const byDay = new Map()
+  const firstMs = Date.parse(startUtc(firstDate))
+  const lastMs = Date.parse(startUtc(period.end_exclusive))
+  for (const row of all) {
+    const hour = Date.parse(row.hour_start || '')
     const bytes = resourceCostVerifiedNumber(row.total_bytes)
-    if (bytes === null) return { total: null, complete: false }
-    const key = `${row.service_id || ''}:${row.hour_start || ''}`
-    if (ids.has(key)) return { total: null, complete: false }
-    ids.add(key)
-    total += bytes
+    const service = String(row.service_id || '').trim()
+    if (!service || !Number.isFinite(hour) || hour % HOUR_MS !== 0 ||
+      hour < firstMs || hour >= lastMs || bytes === null || !Number.isSafeInteger(bytes)) {
+      throw new Error('Cost Overview Render hourly history contains an invalid measurement.')
+    }
+    const key = `${service}:${hour}`
+    if (seen.has(key)) throw new Error('Cost Overview Render hourly history contains a duplicate service-hour.')
+    seen.add(key)
+    const day = dateFromMs(hour + OFFSET_MS)
+    const value = byDay.get(day) || { total: 0, observed_service_hours: 0, services: new Set() }
+    value.total += bytes
+    if (!Number.isSafeInteger(value.total)) throw new RangeError('Cost Overview Render daily bytes exceed safe precision.')
+    value.observed_service_hours += 1
+    value.services.add(service)
+    byDay.set(day, value)
   }
-  return { total: data.length && data.length < 1000 ? total : null, complete: data.length < 1000 }
+  return byDay
 }
 
 function summarySource(usage) {
@@ -185,13 +211,20 @@ function makeSource(observed, verifiedCost = null) {
   }
 }
 
-function makeDay(date, usage, snapshot, renderToday) {
+function makeDay(date, usage, snapshot, renderByDay, today) {
   const values = splitBySource(usage)
   const invoice = resourceCostVerifiedNumber(snapshot?.payload?.invoiced_cost_usd)
   const archivedRender = resourceCostVerifiedNumber(snapshot?.payload?.render_total_bytes)
-  const measuredRender = date === renderToday?.date
-    ? renderToday.total ?? archivedRender
-    : archivedRender
+  const archiveHours = resourceCostVerifiedNumber(snapshot?.payload?.render_observed_service_hours) ?? 0
+  const hourly = renderByDay.get(date)
+  const useHourly = Boolean(hourly?.observed_service_hours) &&
+    (archivedRender === null || hourly.observed_service_hours > archiveHours)
+  const measuredRender = useHourly ? hourly.total : archivedRender
+  const observedHours = useHourly ? hourly.observed_service_hours : archiveHours
+  const renderStatus = measuredRender === null ? 'missing'
+    : date === today ? 'in_progress'
+      : useHourly ? 'observed_partial'
+        : String(snapshot?.payload?.render_coverage || snapshot?.status || 'partial')
   return {
     date,
     label: date.slice(5),
@@ -208,6 +241,9 @@ function makeDay(date, usage, snapshot, renderToday) {
       recorded_snapshot: Boolean(snapshot),
       recorded_application: Boolean(values.all),
       recorded_render: measuredRender !== null,
+      render_status: renderStatus,
+      render_observed_service_hours: observedHours,
+      render_measurement_source: useHourly ? 'stored_hourly' : archivedRender !== null ? 'stored_snapshot' : 'missing',
       observed_usage_status: usage?.coverage?.status || 'missing',
       invoiced_cost: invoice === null ? 'unavailable' : 'recorded',
     },
@@ -243,6 +279,7 @@ function monthRows(days) {
         recorded_snapshot: rows.every((row) => row.coverage.recorded_snapshot),
         recorded_application: rows.every((row) => row.coverage.recorded_application),
         recorded_render: rows.every((row) => row.coverage.recorded_render),
+        render_status: rows.every((row) => row.coverage.render_status === 'complete') ? 'complete' : 'partial',
         invoiced_cost: sources.all.verified_cost_usd === null ? 'unavailable' : 'recorded',
       },
     }
@@ -251,15 +288,14 @@ function monthRows(days) {
 
 async function readOverview(period, dependencies = {}) {
   const database = dependencies.database || supabase
-  const [snapshots, dailyUsage, recent] = await Promise.all([
+  const [snapshots, dailyUsage, renderByDay] = await Promise.all([
     savedSnapshots(database, period),
     savedUsage(database, period),
-    recentRender(database, period),
+    recentRenderByDay(database, period),
   ])
   const snapshotsByDate = new Map(snapshots.map((row) => [row.snapshot_date, row]))
   const usageByDate = new Map(dailyUsage.map((row) => [row.summary_date, row]))
-  const render = recent ? { ...recent, date: period.today } : null
-  const days = period.dates.map((date) => makeDay(date, usageByDate.get(date), snapshotsByDate.get(date), render))
+  const days = period.dates.map((date) => makeDay(date, usageByDate.get(date), snapshotsByDate.get(date), renderByDay, period.today))
   const series = period.granularity === 'month' ? monthRows(days) : days
   const totals = Object.fromEntries(SOURCES.map((source) => [source,
     summarizeResourceCostSource(days, source, { complete: source === 'all' })]))
@@ -279,12 +315,15 @@ async function readOverview(period, dependencies = {}) {
       daily_snapshots: snapshots.length,
       daily_usage_summaries: dailyUsage.length,
       application_attribution: dailyUsage.length ? 'stored_grouped_metrics_partial' : 'not_available',
-      render_measurements: recent?.total !== null && recent?.total !== undefined ? 1 : 0,
+      render_measurements: days.filter((day) => day.coverage.recorded_render).length,
+      render_measurements_unit: 'calendar_days',
       attribution_method: 'stored_daily_aggregate_feature_proxy',
       verified_source_costs_available: false,
     },
     notes: [
       'Daily usage comes from persisted aggregated monitor records, never a live full report.',
+      'Recent Render daily totals are reconstructed from stored provider hourly measurements when they improve archived snapshots.',
+      'Older Render measurements require archived daily snapshots; missing hours are not inferred as zero.',
       'Web and Admin are API feature proxies, not verified traffic origin or bill attribution.',
       'Render bandwidth and observed application bytes are separate measurements and must not be added.',
       'Missing snapshots, incomplete monitored intervals, and unverified invoices remain unknown, never zero.',
