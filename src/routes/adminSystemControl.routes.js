@@ -361,13 +361,23 @@ router.get('/diagnostics/recent-errors', systemControlGuard, viewSystemControl, 
 
   for (const entry of samples) {
     const key = JSON.stringify([
-      entry.route, entry.http_status, entry.response_code || null,
-      entry.error_class, entry.provider, entry.target,
-    ])
+  entry.route,
+  entry.http_status,
+  entry.response_code || null,
+  entry.root_cause_code || null,
+  entry.diagnostic_stage || 'unknown',
+  Number(entry.provider_http_status || 0),
+  entry.error_class,
+  entry.provider,
+  entry.target,
+])
     const group = groups.get(key) || {
       route: entry.route,
       http_status: entry.http_status,
       response_code: entry.response_code || null,
+      root_cause_code: entry.root_cause_code || null,
+      diagnostic_stage: entry.diagnostic_stage || 'unknown',
+      provider_http_status: Number(entry.provider_http_status || 0),
       error_class: entry.error_class,
       provider: entry.provider,
       target: entry.target,
