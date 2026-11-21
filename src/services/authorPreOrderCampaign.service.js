@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { getAuthorCheckoutDeliverySettings } from '../controllers/authorStore.controller.js'
 import { readReaderClassificationCountry } from './readerClassificationCountrySource.service.js'
 import { preOrderError, preOrderUuid, parseAuthorPreOrderDraft, parseAuthorPreOrderListQuery } from './authorPreOrderValidation.service.js'
 
@@ -138,6 +139,46 @@ export async function getOwnedAuthorPreOrder(owner, campaignId) {
 
 export async function saveOwnedAuthorPreOrderDraft(owner, input, campaignId = null) {
   const payload = parseAuthorPreOrderDraft(input)
+
+  let deliveryCompanies
+
+  try {
+    deliveryCompanies = await getAuthorCheckoutDeliverySettings(owner.authorPageId)
+  } catch (error) {
+    console.error('PRE_ORDER_DELIVERY_SETTINGS_FAILED:', String(error?.message || error))
+    throw preOrderError(
+      'PRE_ORDER_DELIVERY_SETTINGS_UNAVAILABLE',
+      'Could not verify current delivery settings',
+      503
+    )
+  }
+
+  if (!Array.isArray(deliveryCompanies)) {
+    throw preOrderError(
+      'PRE_ORDER_DELIVERY_SETTINGS_UNAVAILABLE',
+      'Delivery settings are unavailable',
+      503
+    )
+  }
+
+  const availableKeys = new Set(
+    deliveryCompanies
+      .filter(company => company?.is_active !== false)
+      .map(company => String(company.company_key || ''))
+  )
+
+  const unavailableKeys = payload.delivery_company_keys.filter(
+    key => !availableKeys.has(key)
+  )
+
+  if (unavailableKeys.length) {
+    throw preOrderError(
+      'PRE_ORDER_DELIVERY_COMPANY_UNAVAILABLE',
+      'A selected delivery company is no longer available. Refresh your delivery settings.',
+      409
+    )
+  }
+
   const id = campaignId ? preOrderUuid(campaignId, 'campaign ID') : null
   const { data, error } = await supabase.rpc('author_preorder_save_draft', {
     p_author_page_id: owner.authorPageId,
