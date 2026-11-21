@@ -375,187 +375,84 @@ export async function getAdminStoryUpdateActivity(req, res) {
     const offset = normalizeActivityOffset(req.query.offset)
     const sortValue = cleanText(req.query.sort || 'episodes').toLowerCase()
     const sort = ACTIVITY_SORTS.includes(sortValue) ? sortValue : 'episodes'
-    const page = normalizePage(req.query.page)
+    const page = Math.min(normalizePage(req.query.page), 100000)
     const limit = normalizeLimit(req.query.limit)
-    const search = cleanText(req.query.q || req.query.search).toLowerCase()
+    const search = cleanText(req.query.q || req.query.search)
     const storyType = cleanText(req.query.story_type || req.query.storyType || 'all').toLowerCase()
     const language = getAdminStoryLanguage(req.query.language || 'all')
     const genre = cleanText(req.query.genre || 'all').toLowerCase()
     const range = getCambodiaPeriodRange(period, offset)
 
-    const { data: episodeRows, error: episodeError } = await supabase
-      .from('episodes')
-      .select('id, story_id, author_id, title, episode_number, first_published_at')
-      .eq('status', 'published')
-      .is('deleted_at', null)
-      .gte('first_published_at', range.start)
-      .lt('first_published_at', range.end)
-      .order('first_published_at', { ascending: false })
-
-    if (episodeError) throw episodeError
-
-    const rawEpisodes = episodeRows || []
-    const storyIds = [...new Set(rawEpisodes.map((episode) => episode.story_id).filter(Boolean))]
-
-    if (!storyIds.length) {
-      return res.status(200).json({
-        ok: true,
-        period: { key: period, offset, ...range, timezone: 'Asia/Phnom_Penh' },
-        summary: { active_authors: 0, updated_stories: 0, new_episodes: 0, top_author: null },
-        authors: [],
-        filter_options: { story_types: [], languages: [], genres: [] },
-        page: 1,
-        limit,
-        total: 0,
-        total_pages: 1,
-        has_next: false,
-        has_prev: false,
+    if (search.length > 120 || storyType.length > 60 || genre.length > 100) {
+      return res.status(400).json({
+        ok: false,
+        code: 'INVALID_STORY_UPDATE_FILTER',
+        message: 'Story Updates filter is too long',
       })
     }
 
-    const { data: storyRows, error: storyError } = await supabase
-      .from('stories')
-      .select('id, author_id, title, cover_url, story_type, story_language, main_genre, admin_visibility_status, deleted_at')
-      .in('id', storyIds)
-      .is('deleted_at', null)
+    const { data, error } = await supabase.rpc('get_admin_story_update_activity_v2', {
+      p_start_at: range.start,
+      p_end_at: range.end,
+      p_sort: sort,
+      p_page: page,
+      p_limit: limit,
+      p_search: search,
+      p_story_type: storyType,
+      p_language: language,
+      p_genre: genre,
+    })
 
-    if (storyError) throw storyError
+    if (error) throw error
 
-    const stories = storyRows || []
-    const storyMap = new Map(stories.map((story) => [story.id, story]))
-    const authors = await fetchAuthors(stories.map((story) => story.author_id))
-    const filterOptions = {
-      story_types: [...new Set(stories.map((story) => story.story_type).filter(Boolean))].sort(),
-      languages: [...new Set(stories.map((story) => story.story_language).filter(Boolean))].sort(),
-      genres: [...new Set(stories.map((story) => story.main_genre).filter(Boolean))].sort(),
+    if (
+      !data ||
+      typeof data !== 'object' ||
+      Array.isArray(data) ||
+      !data.summary ||
+      !Array.isArray(data.authors) ||
+      !data.filter_options ||
+      !Number.isSafeInteger(data.total) ||
+      !Number.isSafeInteger(data.page)
+    ) {
+      throw new Error('Invalid Story Updates RPC response')
     }
 
-    const filteredEpisodes = rawEpisodes.filter((episode) => {
-      const story = storyMap.get(episode.story_id)
-      const author = authors.get(story?.author_id || episode.author_id)
-      if (!story || !author) return false
-      if (storyType !== 'all' && String(story.story_type || '').toLowerCase() !== storyType) return false
-      if (language !== 'all' && normalizeStoryLanguage(story.story_language || '') !== language) return false
-      if (genre !== 'all' && String(story.main_genre || '').toLowerCase() !== genre) return false
-      if (!search) return true
-
-      const searchText = [
-        author.page_name,
-        author.page_username,
-        story.title,
-        story.id,
-        episode.title,
-      ].map((value) => String(value || '').toLowerCase()).join(' ')
-
-      return searchText.includes(search)
-    })
-
-    const authorActivity = new Map()
-
-    filteredEpisodes.forEach((episode) => {
-      const story = storyMap.get(episode.story_id)
-      const author = authors.get(story.author_id)
-      const publishedAt = episode.first_published_at
-      let activity = authorActivity.get(author.id)
-
-      if (!activity) {
-        activity = {
-          author: publicAuthor(author),
-          new_episodes: 0,
-          active_day_keys: new Set(),
-          story_map: new Map(),
-          last_update: publishedAt,
-        }
-        authorActivity.set(author.id, activity)
-      }
-
-      activity.new_episodes += 1
-      activity.active_day_keys.add(getCambodiaDayKey(publishedAt))
-      if (new Date(publishedAt) > new Date(activity.last_update)) activity.last_update = publishedAt
-
-      let storyActivity = activity.story_map.get(story.id)
-      if (!storyActivity) {
-        storyActivity = {
-          id: story.id,
-          title: story.title,
-          cover_url: story.cover_url || null,
-          story_type: story.story_type || 'novel',
-          story_language: story.story_language || '',
-          main_genre: story.main_genre || '',
-          admin_visibility_status: story.admin_visibility_status || 'active',
-          new_episodes: 0,
-          last_update: publishedAt,
-          latest_episode: null,
-        }
-        activity.story_map.set(story.id, storyActivity)
-      }
-
-      storyActivity.new_episodes += 1
-      if (!storyActivity.latest_episode || new Date(publishedAt) > new Date(storyActivity.last_update)) {
-        storyActivity.last_update = publishedAt
-        storyActivity.latest_episode = {
-          id: episode.id,
-          title: episode.title,
-          episode_number: Number(episode.episode_number || 0),
-          first_published_at: publishedAt,
-        }
-      }
-    })
-
-    const activityRows = [...authorActivity.values()].map((activity) => ({
-      author: activity.author,
-      stories_updated: activity.story_map.size,
-      new_episodes: activity.new_episodes,
-      active_days: [...activity.active_day_keys].filter(Boolean).length,
-      last_update: activity.last_update,
-      stories: [...activity.story_map.values()].sort((a, b) => new Date(b.last_update) - new Date(a.last_update)),
-    }))
-
-    const topAuthor = [...activityRows].sort(compareActivityAuthors('episodes'))[0] || null
-    activityRows.sort(compareActivityAuthors(sort))
-
-    const updatedStoryIds = new Set(filteredEpisodes.map((episode) => episode.story_id))
-    const total = activityRows.length
-    const totalPages = Math.max(1, Math.ceil(total / limit))
-    const safePage = Math.min(page, totalPages)
-    const from = (safePage - 1) * limit
-    const pagedAuthors = activityRows.slice(from, from + limit).map((activity, index) => ({
-      rank: from + index + 1,
-      ...activity,
-    }))
+    res.set('Cache-Control', 'private, no-store')
 
     return res.status(200).json({
       ok: true,
-      period: { key: period, offset, ...range, timezone: 'Asia/Phnom_Penh' },
-      summary: {
-        active_authors: total,
-        updated_stories: updatedStoryIds.size,
-        new_episodes: filteredEpisodes.length,
-        top_author: topAuthor ? {
-          author: topAuthor.author,
-          new_episodes: topAuthor.new_episodes,
-          active_days: topAuthor.active_days,
-        } : null,
+      period: {
+        key: period,
+        offset,
+        ...range,
+        timezone: 'Asia/Phnom_Penh',
       },
-      authors: pagedAuthors,
-      filter_options: filterOptions,
-      page: safePage,
-      limit,
-      total,
-      total_pages: totalPages,
-      has_next: safePage < totalPages,
-      has_prev: safePage > 1,
+      ...data,
     })
   } catch (error) {
-    console.error('GET ADMIN STORY UPDATE ACTIVITY ERROR:', error)
-    return res.status(500).json({
+    const invalid = error?.status === 400 || error?.code === '22023'
+
+    if (!invalid) {
+      console.error('GET ADMIN STORY UPDATE ACTIVITY ERROR:', {
+        message: error?.message || 'Unknown error',
+        code: error?.code || null,
+      })
+    }
+
+    res.set('Cache-Control', 'private, no-store')
+
+    return res.status(invalid ? 400 : 500).json({
       ok: false,
-      message: 'Failed to load story update activity',
-      error: error.message,
+      code: invalid
+        ? 'INVALID_STORY_UPDATE_FILTER'
+        : 'STORY_UPDATE_ACTIVITY_FAILED',
+      message: invalid
+        ? 'Invalid Story Updates filter'
+        : 'Failed to load story update activity',
     })
   }
 }
-
 export async function getAdminStoryPicker(
   req,
   res
