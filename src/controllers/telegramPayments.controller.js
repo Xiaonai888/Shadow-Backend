@@ -1136,7 +1136,13 @@ async function processAbaMessage(parsed, message) {
         ).slice(0, 1000),
       })
 
-      console.error('AUTO RELEASE TELEGRAM REPORT ERROR:', error)
+      console.error('AUTO RELEASE TELEGRAM REPORT ERROR:', {
+  message: error?.message,
+  cause: error?.cause?.message,
+  code: error?.cause?.code,
+  errno: error?.cause?.errno,
+  syscall: error?.cause?.syscall,
+})
     }
 
     return
