@@ -72,6 +72,7 @@ import { getAdminAuthorStoreWithdrawalNotifications } from '../controllers/admin
 import { validateAuthorStorePdf, deleteMyAuthorStoreTemporaryPdf } from '../controllers/authorStorePdfGuard.controller.js'
 import authorStoreBookProofRoutes from './authorStoreBookProof.routes.js'
 import authorStoreBookShipmentRoutes from './authorStoreBookShipment.routes.js'
+import authorStoreCustomDeliveryRoutes from './authorStoreCustomDelivery.routes.js'
 
 const router = express.Router()
 
@@ -247,5 +248,6 @@ router.get('/admin/stores/:authorPageId', requireAdmin, getAdminAuthorStoreStore
 
 router.use(authorStoreBookShipmentRoutes)
 router.use(authorStoreBookProofRoutes)
+router.use(authorStoreCustomDeliveryRoutes)
 
 export default router
