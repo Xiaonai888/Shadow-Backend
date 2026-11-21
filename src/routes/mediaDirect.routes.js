@@ -70,6 +70,7 @@ const CATEGORIES = Object.freeze({
   author_post_image: { scope: 'author', folder: 'author-posts/images', maxBytes: 5 * MB, trackQuota: true },
   author_store_cover: { scope: 'author', folder: 'author-store/covers', maxBytes: 5 * MB, trackQuota: true },
   author_store_gallery: { scope: 'author', folder: 'author-store/gallery', maxBytes: 5 * MB, trackQuota: true },
+  author_store_delivery_logo: { scope: 'author', folder: 'author-store/delivery-logos', maxBytes: 2 * MB, trackQuota: true },
   author_page_cover: { scope: 'author', folder: 'author-page/covers', maxBytes: 5 * MB, trackQuota: true },
   author_page_slide: { scope: 'author', folder: 'author-page/slides', maxBytes: 5 * MB, trackQuota: true },
   author_page_avatar: { scope: 'author', folder: 'author-page/avatars', maxBytes: 2 * MB, trackQuota: true },
@@ -149,6 +150,9 @@ function normalizeInput(req, role) {
   const extension = (policy.audio ? AUDIO_EXTENSIONS : MIME_EXTENSIONS)[mimeType]
   const fileSize = Number(req.body?.file_size)
   if (!extension) throw fail(415, 'DIRECT_UPLOAD_TYPE_INVALID', policy.audio ? 'Choose MP3, M4A, AAC, WAV, or WebM audio' : 'Only JPEG, PNG, or WebP images are allowed')
+  if (category === 'author_store_delivery_logo' && !['image/jpeg', 'image/webp'].includes(mimeType)) {
+    throw fail(415, 'DIRECT_UPLOAD_TYPE_INVALID', 'Company logo must be JPEG or WebP')
+  }
   if (!Number.isSafeInteger(fileSize) || fileSize < 16 || fileSize > Math.min(policy.maxBytes, MAX_FILE_BYTES)) {
     throw fail(413, 'DIRECT_UPLOAD_SIZE_INVALID', 'Image size is invalid or exceeds its limit')
   }
@@ -413,7 +417,9 @@ async function finalize(req, res, role) {
         mimeType: claims.mime,
         fileSize: claims.size,
         uploadedBy: owner,
-        sourceTable: claims.category.startsWith('author_store_') ? 'author_store_products' : 'author_page_posts',
+        sourceTable: claims.category === 'author_store_delivery_logo'
+          ? 'author_store_custom_delivery_companies'
+          : claims.category.startsWith('author_store_') ? 'author_store_products' : 'author_page_posts',
         ownerLabel: authorPage.page_name || authorPage.page_username || null,
       })
     }
