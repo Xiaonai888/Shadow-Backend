@@ -1,5 +1,11 @@
 import { publishPaymentStatus } from '../services/paymentEvents.service.js'
 import { supabase } from '../config/supabase.js'
+import {
+  describeTelegramReportError,
+  recordTelegramReportError,
+  resolveTelegramReportErrors,
+} from '../services/telegramReportErrorHistory.service.js'
+
 import { emitAdminIncomeChange } from '../services/adminIncomeEvents.service.js'
 import {
   createAuthorStorePaidNotificationsSafely,
@@ -1113,37 +1119,61 @@ async function processAbaMessage(parsed, message) {
       report_last_attempt_at: reportAttemptAt,
     })
 
+    
+    let response
     try {
-      const response = await replyTelegram(chatId, messageId, reportText)
+      response = await replyTelegram(chatId, messageId, reportText)
 
-      if (!response?.ok || response?.skipped) {
-        throw new Error(response?.description || 'Telegram report was not sent.')
+      if (!response?.ok || response?.skipped || !response?.result?.message_id) {
+        throw new Error('Telegram did not confirm report delivery')
       }
+    } catch (error) {
+      await recordTelegramReportError({
+        telegramPaymentId: telegramPayment.id,
+        attemptNo: Number(telegramPayment.report_attempts || 0) + 1,
+        stage: 'initial_send',
+        error,
+      })
 
+      await updateTelegramPayment(telegramPayment.id, {
+        report_status: 'failed',
+        report_last_error: describeTelegramReportError(error),
+      })
+
+      console.error('AUTO RELEASE TELEGRAM REPORT ERROR:', {
+        telegramPaymentId: telegramPayment.id,
+        message: describeTelegramReportError(error),
+      })
+      return
+    }
+
+    try {
       await updateTelegramPayment(telegramPayment.id, {
         report_status: 'sent',
         report_last_error: null,
         report_sent_at: new Date().toISOString(),
-        report_message_id: response?.result?.message_id
-          ? String(response.result.message_id)
-          : null,
-      })
-    } catch (error) {
-      await updateTelegramPayment(telegramPayment.id, {
-        report_status: 'failed',
-        report_last_error: String(
-          error?.message || error || 'Telegram send failed'
-        ).slice(0, 1000),
+        report_message_id: String(response.result.message_id),
       })
 
-      console.error('AUTO RELEASE TELEGRAM REPORT ERROR:', {
-  message: error?.message,
-  cause: error?.cause?.message,
-  code: error?.cause?.code,
-  errno: error?.cause?.errno,
-  syscall: error?.cause?.syscall,
-})
+      await resolveTelegramReportErrors({
+        telegramPaymentId: telegramPayment.id,
+        reportMessageId: response.result.message_id,
+      })
+    } catch (error) {
+      await recordTelegramReportError({
+        telegramPaymentId: telegramPayment.id,
+        attemptNo: Number(telegramPayment.report_attempts || 0) + 1,
+        stage: 'confirmation_save',
+        error,
+      })
+
+      console.error('TELEGRAM REPORT SENT BUT CONFIRMATION NOT SAVED:', {
+        telegramPaymentId: telegramPayment.id,
+        reportMessageId: String(response.result.message_id),
+        message: describeTelegramReportError(error),
+      })
     }
+
 
     return
   }
