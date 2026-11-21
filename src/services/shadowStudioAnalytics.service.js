@@ -2,6 +2,7 @@ import { supabase } from '../config/supabase.js'
 
 const VIDEO_FIELDS = 'id,title,video_url,thumbnail_url,published_at,view_count,video_type,duration_seconds,status,access_type'
 const MISSING = { available: false, value: null }
+const THIRTY_DAYS_MS = 30 * 86400000
 
 function raise(error) {
   if (error) throw error
@@ -12,9 +13,15 @@ function scalar(value) {
 }
 
 function numericOrNull(value) {
-  if (value == null) return null
+  if (value == null || value === '') return null
   const number = Number(value)
   return Number.isSafeInteger(number) && number >= 0 ? number : null
+}
+
+function positiveMeasurementOrNull(value) {
+  if (value == null || value === '') return null
+  const number = Number(value)
+  return Number.isFinite(number) && number >= 0 ? number : null
 }
 
 function coverage(row) {
@@ -73,7 +80,7 @@ async function enriched(video) {
 }
 
 export async function studioDashboard(ownerId) {
-  const [recent, window] = await Promise.all([
+  const [recent, window, advanced] = await Promise.all([
     supabase.from('fast_videos').select(VIDEO_FIELDS)
       .eq('user_id', ownerId).eq('status', 'published').eq('access_type', 'free')
       .not('published_at', 'is', null)
@@ -82,17 +89,39 @@ export async function studioDashboard(ownerId) {
       .not('video_url', 'ilike', '%/shorts/%')
       .order('published_at', { ascending: false }).order('id', { ascending: false }).limit(3),
     supabase.rpc('shadow_studio_creator_30d_views', { p_owner: ownerId }),
+    supabase.rpc('shadow_studio_advanced_summary', { p_owner: ownerId, p_days: 30, p_format: 'all' }),
   ])
   raise(recent.error)
   if (window.error) console.warn('[SHADOW_STUDIO_DASHBOARD_VIEWS_UNAVAILABLE]', window.error.code || 'UNKNOWN')
+  if (advanced.error) console.warn('[SHADOW_STUDIO_DASHBOARD_WATCH_UNAVAILABLE]', advanced.error.code || 'UNKNOWN')
+
   const row = window.error ? null : scalar(window.data)
+  const measuredPeriodViews = numericOrNull(row?.period_views)
+  const started = row?.tracking_started_at ? Date.parse(row.tracking_started_at) : NaN
+  const isTrackingWithinPeriod = Number.isFinite(started) && started >= Date.now() - THIRTY_DAYS_MS
+  const trackedViews = isTrackingWithinPeriod ? numericOrNull(row?.observed_views) : null
+  const views = measuredPeriodViews ?? trackedViews
+  const viewsBasis = measuredPeriodViews !== null
+    ? row?.complete === true ? 'complete_30d' : 'observed_30d'
+    : trackedViews !== null ? 'since_tracking_30d' : 'unavailable'
+
+  const advancedRow = advanced.error ? null : scalar(advanced.data)
+  const measuredWatchHours = advancedRow?.watch_time_hours?.available === true
+    ? positiveMeasurementOrNull(advancedRow.watch_time_hours.value)
+    : null
+  const watchSeconds = measuredWatchHours === null ? null : measuredWatchHours * 3600
   const videos = await Promise.all((recent.data || []).map(enriched))
+
   return {
     period_days: 30,
-    coverage: coverage(row),
+    coverage: { ...coverage(row), views_basis: viewsBasis },
     channel: {
-      views: row?.complete === true ? numericOrNull(row.period_views) : null,
+      views,
+      views_basis: viewsBasis,
       ...emptyMeasurements(),
+      watch_seconds: watchSeconds === null
+        ? MISSING
+        : { available: true, value: watchSeconds },
     },
     latest_long_videos: videos,
   }
