@@ -1,12 +1,12 @@
 import { supabase } from '../config/supabase.js'
+import { getAdminStoryLanguage } from '../services/adminStoryLanguage.service.js'
 
 const CAMBODIA_OFFSET_MS = 7 * 60 * 60 * 1000
 const ONE_DAY_MS = 24 * 60 * 60 * 1000
 const SNAPSHOT_DAYS = 365
 
-let cachedDay = ''
-let cachedSnapshot = null
-let inflight = null
+const cachedSnapshots = new Map()
+const inFlightSnapshots = new Map()
 
 function cambodiaToday() {
   return new Date(Date.now() + CAMBODIA_OFFSET_MS).toISOString().slice(0, 10)
@@ -38,48 +38,42 @@ function validateSnapshot(data, today) {
 }
 
 async function loadDailyGrowth(today) {
-  if (cachedDay === today && cachedSnapshot) return cachedSnapshot
-  if (inflight?.day === today) return inflight.promise
 
-  const promise = (async () => {
-    const { data, error } = await supabase.rpc('get_admin_story_growth_daily')
-    if (error) throw error
-    validateSnapshot(data, today)
-    const snapshot = {
-      as_of: data.as_of,
-      retention_days: SNAPSHOT_DAYS,
-      days: data.days,
-    }
-    cachedDay = today
-    cachedSnapshot = snapshot
-    return snapshot
-  })()
 
-  inflight = { day: today, promise }
-  try {
-    return await promise
-  } finally {
-    if (inflight?.promise === promise) inflight = null
-  }
-}
-
-export async function getAdminStoryGrowthDaily(_req, res) {
+export async function getAdminStoryGrowthDaily(req, res) {
   const today = cambodiaToday()
+
   try {
-    const snapshot = await loadDailyGrowth(today)
-    // Admin-only endpoint; the UI handles its own per-day session cache.
+    const language = getAdminStoryLanguage(req.query?.language || 'all')
+    const snapshot = await loadDailyGrowth(today, language)
+
     res.set('Cache-Control', 'private, no-store')
-    return res.status(200).json({ ok: true, ...snapshot })
-  } catch (error) {
-    console.error('[ADMIN_STORY_GROWTH_DAILY]', {
-      message: error?.message || 'Unknown error',
-      code: error?.code || null,
-      day: today,
+
+    return res.status(200).json({
+      ok: true,
+      ...snapshot,
     })
+  } catch (error) {
+    const invalidLanguage = error?.status === 400
+
+    if (!invalidLanguage) {
+      console.error('[ADMIN_STORY_GROWTH_DAILY]', {
+        message: error?.message || 'Unknown error',
+        code: error?.code || null,
+        day: today,
+      })
+    }
+
     res.set('Cache-Control', 'private, no-store')
-    return res.status(500).json({
+
+    return res.status(invalidLanguage ? 400 : 500).json({
       ok: false,
-      message: 'Failed to load Story Growth daily snapshot',
+      code: invalidLanguage
+        ? 'INVALID_STORY_LANGUAGE'
+        : 'ADMIN_STORY_GROWTH_FAILED',
+      message: invalidLanguage
+        ? 'Invalid Story Language'
+        : 'Failed to load Story Growth daily snapshot',
     })
   }
 }
