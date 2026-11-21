@@ -7,6 +7,7 @@ import { getSystemUsageAnomalySnapshot } from '../services/systemUsageAnomaly.se
 import { getSystemUsageRegressionState } from '../services/systemUsageRegression.service.js'
 import { getRecentRequestEvidence, getGuestRequestSnapshot, getHistoricalErrorEvidence, getPageRequestSnapshot } from '../services/trafficDiagnostic.service.js'
 import { getPassiveRequestSnapshot } from '../services/passiveRequestMonitor.service.js'
+import { getRequestOriginSnapshot } from '../services/requestOriginDiagnostics.service.js'
 import {
   listSystemUsageIncidents,
   getSystemUsageIncident,
@@ -243,6 +244,7 @@ router.get(
       guest_requests: getGuestRequestSnapshot(),
       page_requests: pageRequests,
       passive_request_monitor: getPassiveRequestSnapshot(),
+      request_origin_diagnostics: getRequestOriginSnapshot(),
       performance_diagnostics: getAdminPerformanceDiagnostics({
         evidence,
         pageRequests,
