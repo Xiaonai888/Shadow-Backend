@@ -18,11 +18,33 @@ function retryDue(row, now) {
   return now >= last + wait
 }
 
+
 function safeError(error) {
-  return String(error?.message || error || 'Telegram report failed')
+  const details = [
+    error?.message || String(error || 'Telegram report failed')
+  ]
+  const causes = [
+    error?.cause,
+    ...(Array.isArray(error?.cause?.errors)
+      ? error.cause.errors.slice(0, 3)
+      : [])
+  ]
+
+  for (const cause of causes) {
+    if (!cause) continue
+    details.push([
+      cause.message || String(cause),
+      cause.code && `code=${cause.code}`,
+      cause.errno && `errno=${cause.errno}`,
+      cause.syscall && `syscall=${cause.syscall}`
+    ].filter(Boolean).join(' '))
+  }
+
+  return details.join(' | ')
     .replace(/[\r\n\t]/g, ' ')
     .slice(0, 1000)
 }
+
 
 async function claimFailedReport(row) {
   const attemptedAt = new Date().toISOString()
