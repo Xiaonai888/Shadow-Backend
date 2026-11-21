@@ -1,6 +1,6 @@
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/
-const COMPANY_KEYS = new Set(['jnt', 'vet', 'custom'])
+const COMPANY_KEY_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/
 const MAX_BOOKS = 10
 
 export function preOrderError(code, message, statusCode = 400) {
@@ -119,7 +119,7 @@ export function parseAuthorPreOrderDraft(input) {
     }
   })
   const companies = data.delivery_company_keys
-  if (!Array.isArray(companies) || companies.length > 3 || companies.some(key => typeof key !== 'string' || !COMPANY_KEYS.has(key))) {
+  if (!Array.isArray(companies) || companies.length > 32 || companies.some(key => typeof key !== 'string' || !COMPANY_KEY_PATTERN.test(key))) {
     throw preOrderError('PRE_ORDER_DELIVERY_INVALID', 'Invalid delivery companies')
   }
   const open = date(data.open_at, 'Open date')
