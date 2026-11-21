@@ -13,8 +13,7 @@ function cambodiaToday() {
 }
 
 function previousDay(day) {
-  return new Date(Date.parse(`${day}T00:00:00Z`) - ONE_DAY_MS)
-    .toISOString().slice(0, 10)
+  return new Date(Date.parse(`${day}T00:00:00Z`) - ONE_DAY_MS).toISOString().slice(0, 10)
 }
 
 function validateSnapshot(data, today) {
@@ -37,8 +36,48 @@ function validateSnapshot(data, today) {
   }
 }
 
-async function loadDailyGrowth(today) {
+async function loadDailyGrowth(today, language) {
+  const cached = cachedSnapshots.get(language)
+  if (cached?.day === today) return cached.snapshot
 
+  const running = inFlightSnapshots.get(language)
+  if (running?.day === today) return running.promise
+
+  const promise = (async () => {
+    const { data, error } = language === 'all'
+      ? await supabase.rpc('get_admin_story_growth_daily')
+      : await supabase.rpc('get_admin_story_growth_language_daily', {
+          p_language: language,
+        })
+
+    if (error) throw error
+    validateSnapshot(data, today)
+
+    if (language !== 'all' && data.language !== language) {
+      throw new Error('Story Growth RPC returned the wrong language')
+    }
+
+    const snapshot = {
+      language,
+      as_of: data.as_of,
+      retention_days: SNAPSHOT_DAYS,
+      days: data.days,
+    }
+
+    cachedSnapshots.set(language, { day: today, snapshot })
+    return snapshot
+  })()
+
+  inFlightSnapshots.set(language, { day: today, promise })
+
+  try {
+    return await promise
+  } finally {
+    if (inFlightSnapshots.get(language)?.promise === promise) {
+      inFlightSnapshots.delete(language)
+    }
+  }
+}
 
 export async function getAdminStoryGrowthDaily(req, res) {
   const today = cambodiaToday()
