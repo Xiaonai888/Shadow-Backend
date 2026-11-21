@@ -1,0 +1,96 @@
+import {
+  evaluateHeavyJobAdmission,
+  getMemoryGuardSnapshot,
+} from '../memoryGuard.service.js'
+import { getResourcePolicy } from './resourcePolicies.js'
+
+function finiteNumber(value) {
+  const number = Number(value)
+  return Number.isFinite(number) && number >= 0 ? number : null
+}
+
+function response(policy, allowed, reason, memory, projectedMb, laneActive) {
+  return {
+    jobType: policy.jobType,
+    lane: policy.lane,
+    allowed,
+    reason,
+    action: allowed ? 'admit' : 'defer',
+    memory: {
+      usedMb: finiteNumber(memory?.container_total_mb),
+      limitMb: finiteNumber(memory?.container_limit_mb),
+      projectedMb: finiteNumber(projectedMb),
+      reserveMb: policy.safetyReserveMb,
+      estimatedJobMb: policy.estimatedJobMb,
+      blocked: Boolean(memory?.blocked),
+      critical: Boolean(memory?.critical),
+      emergency: Boolean(memory?.emergency),
+    },
+    activeInLane: laneActive,
+    laneLimit: policy.maxParallel,
+  }
+}
+
+export function computeResourceAdmission({
+  jobType,
+  memorySnapshot,
+  guardAdmission = null,
+  activeJobs = [],
+} = {}) {
+  const policy = getResourcePolicy(jobType)
+  const memory = memorySnapshot && typeof memorySnapshot === 'object'
+    ? memorySnapshot : null
+  const used = finiteNumber(memory?.container_total_mb)
+  const limit = finiteNumber(memory?.container_limit_mb)
+  const running = Array.isArray(activeJobs) ? activeJobs : []
+  const laneActive = running.filter((job) =>
+    job?.state === 'running' && job?.lane === policy.lane
+  ).length
+  const projected = used === null ? null : used + policy.estimatedJobMb + policy.safetyReserveMb
+
+  if (!policy.schedulable) {
+    return response(policy, false, 'UNREGISTERED_JOB', memory, projected, laneActive)
+  }
+  if (used === null || limit === null || limit <= 0) {
+    return response(policy, false, 'MEMORY_METRICS_UNAVAILABLE', memory, projected, laneActive)
+  }
+  if (memory.emergency) {
+    return response(policy, false, 'EMERGENCY_MEMORY', memory, projected, laneActive)
+  }
+  if (memory.critical) {
+    return response(policy, false, 'CRITICAL_MEMORY', memory, projected, laneActive)
+  }
+  if (guardAdmission && guardAdmission.allowed === false) {
+    return response(
+      policy,
+      false,
+      `EXISTING_MEMORY_GUARD_${String(guardAdmission.reason || 'DENIED').toUpperCase()}`,
+      memory,
+      projected,
+      laneActive
+    )
+  }
+  if (memory.blocked) {
+    return response(policy, false, 'MEMORY_PROTECT_ACTIVE', memory, projected, laneActive)
+  }
+  if (laneActive >= policy.maxParallel) {
+    return response(policy, false, 'LANE_AT_CAPACITY', memory, projected, laneActive)
+  }
+  if (projected >= limit) {
+    return response(policy, false, 'PROJECTED_MEMORY_EXCEEDS_LIMIT', memory, projected, laneActive)
+  }
+  return response(policy, true, 'SAFE_TO_START', memory, projected, laneActive)
+}
+
+export function evaluateResourceAdmission({ jobType, activeJobs = [] } = {}) {
+  const memorySnapshot = getMemoryGuardSnapshot()
+  const guardAdmission = ['manga_page_v2', 'story_image_pipeline'].includes(jobType)
+    ? evaluateHeavyJobAdmission({ jobType })
+    : null
+  return computeResourceAdmission({
+    jobType,
+    memorySnapshot,
+    guardAdmission,
+    activeJobs,
+  })
+}
