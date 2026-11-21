@@ -41,8 +41,14 @@ SELECT jsonb_build_object(
   'total_stories', COUNT(*),
   'active_stories', COUNT(*) FILTER (WHERE deleted_at IS NULL),
   'deleted_by_authors', COUNT(*) FILTER (WHERE deleted_at IS NOT NULL),
-  'restricted_stories', COUNT(*) FILTER (WHERE admin_visibility_status = 'restricted'),
-  'disabled_stories', COUNT(*) FILTER (WHERE admin_visibility_status = 'disabled'),
+  'restricted_stories', COUNT(*) FILTER (
+  WHERE deleted_at IS NULL
+    AND admin_visibility_status = 'restricted'
+),
+'disabled_stories', COUNT(*) FILTER (
+  WHERE deleted_at IS NULL
+    AND admin_visibility_status = 'disabled'
+),
   'warned_stories', COUNT(*) FILTER (WHERE coalesce(policy_warning_count, 0) > 0),
   'disabled_authors', (SELECT COUNT(*) FROM public.author_pages WHERE admin_status = 'disabled'),
   'new_stories', COUNT(*) FILTER (
