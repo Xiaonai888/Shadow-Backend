@@ -133,7 +133,7 @@ function mergeDeliverySettings(settings) {
   })
 }
 
-async function getAuthorCheckoutDeliverySettings(authorPageId) {
+export async function getAuthorCheckoutDeliverySettings(authorPageId) {
   const [standardResult, customResult] = await Promise.all([
     supabase
       .from('author_store_delivery_settings')
