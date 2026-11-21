@@ -130,27 +130,62 @@ export async function studioVideoAnalytics(ownerId, videoId) {
 }
 
 export async function studioRanking(ownerId, videoId) {
-  const video = await loadOwnerVideo(ownerId, videoId)
-  if (!video) return null
-  const { data, error } = await supabase.rpc('shadow_studio_rank_recent_long', {
-    p_owner: ownerId,
-    p_selected: videoId,
+  const selected = await loadOwnerVideo(ownerId, videoId)
+  if (!selected) return null
+
+  const [recent, comparison] = await Promise.all([
+    supabase.from('fast_videos').select(VIDEO_FIELDS)
+      .eq('user_id', ownerId).eq('status', 'published').eq('access_type', 'free')
+      .eq('studio_state', 'active').eq('video_type', 'long')
+      .not('published_at', 'is', null)
+      .not('video_url', 'ilike', '%/shorts/%')
+      .order('published_at', { ascending: false }).order('id', { ascending: false }).limit(10),
+    supabase.rpc('shadow_studio_rank_recent_long', { p_owner: ownerId, p_selected: videoId }),
+  ])
+  raise(recent.error)
+  const videos = Array.isArray(recent.data) ? recent.data : []
+  if (!videos.length) return null
+
+  if (comparison.error) {
+    console.warn('[SHADOW_STUDIO_RANKING_COMPARISON_UNAVAILABLE]', comparison.error.code || 'UNKNOWN')
+  }
+  const measured = !comparison.error && Array.isArray(comparison.data) ? comparison.data : []
+  const byId = new Map(measured.map(row => [String(row.video_id), row]))
+  const complete = numericOrNull(measured[0]?.age_minutes) !== null && measured.length >= videos.length && videos.every(video => {
+    const row = byId.get(String(video.id))
+    return row?.comparable === true && numericOrNull(row.measured_views) !== null
   })
-  raise(error)
-  const rows = Array.isArray(data) ? data : []
-  const complete = rows.length > 0 && rows.every(row => row.comparable === true)
+
+  const ranked = videos.map(video => {
+    const comparable = byId.get(String(video.id))
+    const lifetime = numericOrNull(video.view_count)
+    const sameAge = complete ? numericOrNull(comparable?.measured_views) : null
+    return {
+      id: video.id,
+      title: video.title,
+      thumbnail_url: video.thumbnail_url,
+      published_at: video.published_at,
+      view_count: lifetime,
+      views_at_equal_age: sameAge,
+      display_views: complete ? sameAge : lifetime,
+      highlighted: String(video.id) === String(videoId),
+    }
+  })
+
+  ranked.sort((a, b) => {
+    const left = a.display_views
+    const right = b.display_views
+    if (left === null && right !== null) return 1
+    if (right === null && left !== null) return -1
+    if (left !== null && right !== null && left !== right) return right - left
+    return new Date(b.published_at).getTime() - new Date(a.published_at).getTime() || String(b.id).localeCompare(String(a.id))
+  })
+
   return {
     selected_video_id: videoId,
-    age_minutes: rows[0]?.age_minutes ?? null,
+    age_minutes: complete ? numericOrNull(measured[0]?.age_minutes) : null,
     comparison_complete: complete,
-    ranking: rows.map(row => ({
-      id: row.video_id,
-      title: row.video_title,
-      thumbnail_url: row.thumbnail,
-      published_at: row.published_at,
-      views_at_equal_age: complete ? numericOrNull(row.measured_views) : null,
-      position: complete ? numericOrNull(row.rank_position) : null,
-      highlighted: row.video_id === videoId,
-    })),
+    view_basis: complete ? 'equal_age' : 'lifetime',
+    ranking: ranked.map((row, index) => ({ ...row, position: index + 1 })),
   }
 }
