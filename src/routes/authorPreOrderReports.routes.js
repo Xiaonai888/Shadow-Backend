@@ -8,6 +8,14 @@ import {
 
 const router = express.Router()
 
+const preAuthIpLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { ok: false, code: 'PRE_ORDER_REPORT_IP_RATE_LIMITED', message: 'Too many report requests from this IP' },
+})
+
 const readLimiter = rateLimit({
   windowMs: 60 * 1000,
   limit: 40,
@@ -26,8 +34,7 @@ const exportLimiter = rateLimit({
   message: { ok: false, code: 'PRE_ORDER_REPORT_EXPORT_LIMITED', message: 'Too many Excel exports' },
 })
 
-router.use(requireUser)
-router.get('/me/pre-order-reports/paid-orders', readLimiter, getMyAuthorPreOrderPaidOrders)
-router.get('/me/pre-order-reports/excel', readLimiter, exportLimiter, downloadMyAuthorPreOrderPaidOrdersExcel)
+router.get('/me/pre-order-reports/paid-orders', preAuthIpLimiter, requireUser, readLimiter, getMyAuthorPreOrderPaidOrders)
+router.get('/me/pre-order-reports/excel', preAuthIpLimiter, requireUser, readLimiter, exportLimiter, downloadMyAuthorPreOrderPaidOrdersExcel)
 
 export default router
