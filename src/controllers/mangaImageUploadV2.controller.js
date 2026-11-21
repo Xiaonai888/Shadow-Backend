@@ -5,7 +5,7 @@ import {
 import {
   wakeHeavyMediaWorkerCoordinator,
 } from '../services/heavyMediaWorkerCoordinator.service.js'
-
+import { getMangaQueuedJobDiagnostic } from '../services/mangaQueuedJobDiagnostics.service.js'
 function cleanText(value, maxLength = 300) {
   return String(value || '').trim().slice(0, maxLength)
 }
@@ -155,6 +155,9 @@ export async function getMangaPageImageV2JobStatus(req, res) {
       created_at: job.created_at || null,
       started_at: job.started_at || null,
       finished_at: job.finished_at || null,
+      queue_diagnostic: ['queued', 'processing'].includes(status)
+        ? getMangaQueuedJobDiagnostic(job)
+        : null,
     }
 
     if (status === 'done') {
