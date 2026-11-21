@@ -133,6 +133,76 @@ function mergeDeliverySettings(settings) {
   })
 }
 
+async function getAuthorCheckoutDeliverySettings(authorPageId) {
+  const [standardResult, customResult] = await Promise.all([
+    supabase
+      .from('author_store_delivery_settings')
+      .select('company_key,fee_usd,is_active')
+      .eq('author_page_id', authorPageId)
+      .in('company_key', ['jnt', 'vet'])
+      .limit(2),
+    supabase
+      .from('author_store_custom_delivery_companies')
+      .select('company_name,fee_usd,logo_url,is_active')
+      .eq('author_page_id', authorPageId)
+      .maybeSingle(),
+  ])
+
+  if (standardResult.error) throw standardResult.error
+  if (customResult.error) throw customResult.error
+
+  const standardMap = new Map(
+    (standardResult.data || []).map((setting) => [setting.company_key, setting])
+  )
+
+  const settings = DEFAULT_AUTHOR_STORE_DELIVERY_SETTINGS.map((original) => {
+    const saved = standardMap.get(original.company_key)
+    const fee = Number(saved?.fee_usd ?? original.fee_usd)
+
+    if (!Number.isFinite(fee) || fee < 0 || fee > 9999.99) {
+      throw new Error('Invalid saved delivery fee')
+    }
+
+    return {
+      ...publicDeliverySetting(original),
+      fee_usd: fee,
+      is_active: saved?.is_active !== false,
+      logo_url: '',
+    }
+  }).filter((setting) => setting.is_active)
+
+  const custom = customResult.data
+
+  if (custom?.is_active === true) {
+    const fee = Number(custom.fee_usd)
+    const name = String(custom.company_name || '').trim()
+    const logoUrl = String(custom.logo_url || '').trim()
+
+    if (
+      !name ||
+      name.length > 80 ||
+      !Number.isFinite(fee) ||
+      fee < 0 ||
+      fee > 9999.99 ||
+      !/^https:\/\//i.test(logoUrl)
+    ) {
+      throw new Error('Invalid custom delivery company settings')
+    }
+
+    settings.push({
+      company_key: 'custom',
+      company_name: name,
+      short_name: name,
+      fee_usd: fee,
+      is_active: true,
+      logo_url: logoUrl,
+      sort_order: 2,
+    })
+  }
+
+  return settings
+}
+
 function publicProduct(product) {
   if (!product) return null
 
@@ -1887,7 +1957,20 @@ export async function getPublicAuthorStoreProducts(req, res) {
         .eq('status', 'active')
         .maybeSingle()
       if (error) throw error
-      return res.status(200).json({ ok: true, products: data ? [publicProduct(data)] : [] })
+      const includeDelivery = req.query.include_delivery_settings === '1'
+
+const deliverySettings = includeDelivery && data
+  ? await getAuthorCheckoutDeliverySettings(authorPage.id)
+  : null
+
+return res.status(200).json({
+  ok: true,
+  products: data ? [publicProduct(data)] : [],
+  ...(deliverySettings ? {
+    author_page_id: authorPage.id,
+    delivery_settings: deliverySettings,
+  } : {}),
+})
     }
 
     const paginated = req.query.page !== undefined || req.query.limit !== undefined
@@ -2261,7 +2344,7 @@ const PAYWAY_HASH_ORDER = [
   'qr_image_template',
 ]
 
-const AUTHOR_STORE_DELIVERY_FEE_USD = 2
+
 const AUTHOR_STORE_PLATFORM_FEE_RATE = 0.10
 const AUTHOR_STORE_PROMO_FREE_LIMITS = {
   book: 50,
@@ -2776,6 +2859,12 @@ function createAuthorCartSignature(orderItems, deliveryCompany, authorPageId) {
     author_page_id: authorPageId,
     items,
     delivery_company_key: deliveryCompany?.key || deliveryCompany?.shortName || deliveryCompany?.name || '',
+delivery_company_snapshot: deliveryCompany ? {
+  name: deliveryCompany.name,
+  short_name: deliveryCompany.shortName,
+  fee_usd: deliveryCompany.fee,
+  logo_url: deliveryCompany.logo || '',
+} : null,
   }
 
   const discoverItems = orderItems.filter((item) => item.discover_promotion_snapshot)
@@ -3782,14 +3871,59 @@ export async function createAuthorStoreOrderPayment(req, res) {
     const promoUsedQuantities = await getAuthorStorePromoUsedQuantities(authorPageId)
     orderItems = applyAuthorStorePromoIncome(orderItems, promoUsedQuantities)
     const subtotal = Number(orderItems.reduce((total, item) => total + item.total_usd, 0).toFixed(2))
-    const deliveryFee = needsDelivery ? AUTHOR_STORE_DELIVERY_FEE_USD : 0
-    const total = Number((subtotal + deliveryFee).toFixed(2))
-    const income = sumAuthorStoreIncomeItems(orderItems)
+    const requestedDelivery = req.body?.delivery_company
 
-    const deliveryCompany = needsDelivery
-      ? (req.body.delivery_company || { key: 'jnt', name: 'J&T Express', shortName: 'J&T' })
-      : null
+if (
+  needsDelivery &&
+  requestedDelivery != null &&
+  (typeof requestedDelivery !== 'object' || Array.isArray(requestedDelivery))
+) {
+  return res.status(400).json({
+    ok: false,
+    code: 'DELIVERY_COMPANY_INVALID',
+    message: 'Invalid delivery company selection',
+  })
+}
 
+const requestedCompanyKey = String(
+  requestedDelivery?.key ??
+  requestedDelivery?.company_key ??
+  'jnt'
+).trim().toLowerCase()
+
+const availableCompanies = needsDelivery
+  ? await getAuthorCheckoutDeliverySettings(authorPageId)
+  : []
+
+const chosenCompany = needsDelivery
+  ? availableCompanies.find((company) => company.company_key === requestedCompanyKey)
+  : null
+
+if (needsDelivery && !chosenCompany) {
+  return res.status(400).json({
+    ok: false,
+    code: 'DELIVERY_COMPANY_UNAVAILABLE',
+    message: 'Selected delivery company is no longer available',
+  })
+}
+
+const deliveryFee = chosenCompany ? chosenCompany.fee_usd : 0
+const total = Number((subtotal + deliveryFee).toFixed(2))
+const income = sumAuthorStoreIncomeItems(orderItems)
+
+const deliveryCompany = chosenCompany
+  ? {
+      key: chosenCompany.company_key,
+      name: chosenCompany.company_name,
+      shortName: chosenCompany.short_name,
+      fee: chosenCompany.fee_usd,
+      logo: chosenCompany.logo_url || (
+        chosenCompany.company_key === 'jnt'
+          ? '/assets/Icons/J%26T.svg'
+          : '/assets/Icons/VET.svg'
+      ),
+    }
+  : null
     const cartSignature = createAuthorCartSignature(orderItems, deliveryCompany, authorPageId)
     const activeWindowStart = new Date(Date.now() - 20 * 60 * 1000).toISOString()
 
