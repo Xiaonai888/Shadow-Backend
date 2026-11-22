@@ -21,6 +21,7 @@ import {
   runSystemUsageRetention,
 } from './systemUsageRollup.service.js'
 import { flushResourceCostUploadAudit } from './resourceCostUploadAudit.service.js'
+import { summarizeStoredErrorEvidence } from './systemUsageHistoricalErrorEvidence.service.js'
 
 const MINUTE_MS = 60 * 1000
 const HOUR_MS = 60 * MINUTE_MS
@@ -2958,6 +2959,17 @@ export async function getSystemUsageHistory({
     })
   }
   const usageSummary = summarizeUsageHistory(persisted, liveMinutes, totals)
+  const liveErrorEvidence = liveStart < toMs
+    ? getHistoricalErrorEvidence({
+        from: new Date(liveStart).toISOString(),
+        to: toIso,
+      })
+    : []
+  const errorEvidenceHistory = summarizeStoredErrorEvidence(
+    stored,
+    liveErrorEvidence,
+    { fromMs, toMs, limit: 100 }
+  )
 
   const availableStart =
     series.length
@@ -3061,6 +3073,8 @@ export async function getSystemUsageHistory({
     rows,
     series: compactHistorySeries(series, toMs - fromMs),
     usage_summary: usageSummary,
+    error_diagnostics: errorEvidenceHistory.rows,
+    error_diagnostics_coverage: errorEvidenceHistory.coverage,
     page_requests: buildPageRequestHistory(stored, fromMs, toMs),
     passive_request_monitor: buildPassiveRequestHistory(stored, fromMs, toMs),
   }
