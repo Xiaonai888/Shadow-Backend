@@ -31,6 +31,10 @@ function entryPoint(route, feature) {
 function normalize(row) {
   const feature = safeLabel(row?.feature, 'unknown', 80).toLowerCase()
   const kind = safeLabel(row?.kind, 'unknown', 48).toLowerCase()
+  const rawDirection = String(row?.direction || '').trim().toLowerCase()
+  const direction = rawDirection === 'inbound' || rawDirection === 'outbound'
+    ? rawDirection
+    : kind === 'http_response' ? 'outbound' : 'unknown'
   const dependency = safeLabel(row?.dependency, 'UNKNOWN', 48).toUpperCase()
   const classification = safeLabel(row?.classification, 'exact_route', 32)
   const sourceMethod = safeLabel(row?.source_method, 'UNKNOWN', 16).toUpperCase()
@@ -50,14 +54,14 @@ function normalize(row) {
   const point = safeLabel(row?.entry_point, entryPoint(route, feature), 32)
   const inferred = route === 'OVERFLOW' || feature === 'overflow' ? 'monitor_overflow' : classification
   return {
-    feature, kind, dependency, route, target, entry_point: point,
+    feature, kind, direction, dependency, route, target, entry_point: point,
     classification: inferred,
     count: number(row?.count), bytes: number(row?.bytes), errors: number(row?.errors),
   }
 }
 
 function key(row) {
-  return [row.feature, row.kind, row.dependency, row.route, row.target, row.entry_point, row.classification].join('\u001f')
+  return [row.feature, row.kind, row.direction, row.dependency, row.route, row.target, row.entry_point, row.classification].join('\u001f')
 }
 
 function add(target, source) {
@@ -81,6 +85,7 @@ function collapsed(row, classification) {
   return {
     feature: classification === 'other_features' ? 'other_features' : row.feature,
     kind: row.kind,
+    direction: row.direction,
     dependency: row.dependency,
     route: classification === 'other_features' ? 'OTHER FEATURES' : 'OTHER ROUTES',
     target: 'MULTIPLE',
