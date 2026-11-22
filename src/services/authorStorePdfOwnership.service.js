@@ -2,7 +2,7 @@ import { supabase } from '../config/supabase.js'
 
 const MAX_PRODUCTS = 30
 const PAID_STATUSES = new Set(['confirmed', 'preparing', 'shipped', 'completed'])
-const ENDED_STATUSES = new Set(['cancelled', 'canceled', 'rejected', 'refunded', 'expired', 'failed', 'amount_mismatch'])
+const ENDED_STATUSES = new Set(['cancelled', 'canceled', 'rejected', 'refunded', 'failed', 'amount_mismatch'])
 
 function normalizedIds(values) {
   if (!Array.isArray(values) || !values.length || values.length > MAX_PRODUCTS) {
@@ -21,13 +21,23 @@ function normalizedIds(values) {
 }
 
 function normalizeOrder(order) {
+  const method = String(order.request_payload?.payment_method || '').toLowerCase()
   return {
     order_id: order.order_id || '',
     status: String(order.status || '').toLowerCase(),
     payment_status: String(order.payment_status || '').toLowerCase(),
     pdf_unlock_status: String(order.pdf_unlock_status || '').toLowerCase(),
+    payment_method: method.includes('binance') ? 'binance' : 'aba',
     created_at: order.created_at || null,
+    expires_at: order.expires_at || null,
   }
+}
+
+function isUnverifiedExpiredOrder(order, now) {
+  const expiration = Date.parse(String(order.expires_at || ''))
+  return Number.isFinite(expiration)
+    && expiration <= now
+    && String(order.payment_status || '').toLowerCase() !== 'paid'
 }
 
 export async function getAuthorStorePdfOwnership(buyerId, rawProductIds) {
@@ -68,7 +78,7 @@ export async function getAuthorStorePdfOwnership(buyerId, rawProductIds) {
       .in('product_id', activeIds),
     supabase
       .from('author_store_orders')
-      .select('id,order_id,status,payment_status,pdf_unlock_status,created_at,items:author_store_order_items!inner(product_id,product_type)')
+      .select('id,order_id,status,payment_status,pdf_unlock_status,created_at,expires_at,request_payload,items:author_store_order_items!inner(product_id,product_type)')
       .eq('buyer_id', userId)
       .in('items.product_id', activeIds)
       .order('created_at', { ascending: false })
@@ -83,12 +93,13 @@ export async function getAuthorStorePdfOwnership(buyerId, rawProductIds) {
   const { data: linkedOrders, error: linkedError } = grantedOrderIds.length
     ? await supabase
       .from('author_store_orders')
-      .select('id,order_id,status,payment_status,pdf_unlock_status,created_at')
+      .select('id,order_id,status,payment_status,pdf_unlock_status,created_at,expires_at,request_payload')
       .eq('buyer_id', userId)
       .in('id', grantedOrderIds)
     : { data: [], error: null }
   if (linkedError) throw linkedError
   const linkedMap = new Map((linkedOrders || []).map((order) => [String(order.id), order]))
+  const now = Date.now()
 
   for (const id of activeIds) {
     const itemOrders = orders.filter((order) => Array.isArray(order.items)
@@ -96,7 +107,7 @@ export async function getAuthorStorePdfOwnership(buyerId, rawProductIds) {
         && String(item.product_type || '').toLowerCase() === 'pdf'))
     const grant = grants.find((row) => String(row.product_id) === id)
     const linkedOrder = grant ? linkedMap.get(String(grant.order_id)) : null
-    const paidOrder = itemOrders.find((order) => order.payment_status === 'paid'
+    const paidOrder = itemOrders.find((order) => String(order.payment_status || '').toLowerCase() === 'paid'
       && PAID_STATUSES.has(String(order.status || '').toLowerCase())
       && String(order.pdf_unlock_status || '').toLowerCase() === 'unlocked')
     const anyPaid = itemOrders.find((order) => String(order.payment_status || '').toLowerCase() === 'paid')
@@ -116,7 +127,11 @@ export async function getAuthorStorePdfOwnership(buyerId, rawProductIds) {
     } else {
       const pending = itemOrders.find((order) => !ENDED_STATUSES.has(String(order.status || '').toLowerCase()))
       if (pending) {
-        state.set(id, { ...state.get(id), state: 'checking_payment', ...normalizeOrder(pending) })
+        state.set(id, {
+          ...state.get(id),
+          state: isUnverifiedExpiredOrder(pending, now) ? 'payment_recheck_required' : 'checking_payment',
+          ...normalizeOrder(pending),
+        })
       }
     }
   }
@@ -128,21 +143,25 @@ export function authorStorePdfCheckoutDecision(states) {
   if (!restricted.length) return null
   const purchased = restricted.filter((item) => item.state === 'purchased')
   const recovery = restricted.filter((item) => item.state === 'access_recovery')
+  const recheck = restricted.filter((item) => item.state === 'payment_recheck_required')
   const pending = restricted.filter((item) => item.state === 'checking_payment')
   const code = purchased.length ? 'PDF_ALREADY_PURCHASED'
     : recovery.length ? 'PDF_ACCESS_RECOVERY_REQUIRED'
-      : 'PDF_PAYMENT_PENDING'
+      : recheck.length ? 'PDF_PAYMENT_RECHECK_REQUIRED'
+        : 'PDF_PAYMENT_PENDING'
   const message = purchased.length
     ? 'You already own this PDF. Open it from your Library.'
     : recovery.length
       ? 'Your payment needs PDF access recovery. Do not pay again.'
-      : 'Your previous PDF payment is being checked. Do not pay again.'
+      : recheck.length
+        ? 'Your previous payment requires verification. Please do not pay again.'
+        : 'Your previous PDF payment is being checked. Do not pay again.'
   return {
     ok: false,
     code,
     message,
     library_path: '/library',
     products: restricted,
-    pending_order_id: pending[0]?.order_id || null,
+    pending_order_id: (recheck[0] || pending[0])?.order_id || null,
   }
 }
