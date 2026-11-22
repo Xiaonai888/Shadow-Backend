@@ -448,8 +448,18 @@ function summaryMarkdown(range, history, incidents, stats) {
     ])
   )
 
-    const errorTable = markdownTable(
-    ['Route', 'HTTP', 'Error Code', 'Stage', 'Provider', 'Provider HTTP', 'Count', 'Last seen'],
+  const errorTable = markdownTable(
+    [
+      'Route',
+      'HTTP',
+      'Error Code',
+      'Stage',
+      'Provider',
+      'Provider HTTP',
+      'Target',
+      'Count',
+      'Last seen',
+    ],
     (stats.error_diagnostics || []).map((item) => [
       item.route,
       item.http_status,
@@ -457,6 +467,7 @@ function summaryMarkdown(range, history, incidents, stats) {
       item.stage,
       item.provider,
       item.provider_http_status,
+      item.target || '-',
       item.count,
       item.last_seen_at,
     ])
@@ -532,9 +543,13 @@ function summaryMarkdown(range, history, incidents, stats) {
     '',
     targetTable,
     '',
-        '## Error Diagnostics (in memory only; last 2 hours maximum)',
+    '## Error Diagnostics (stored 15-minute evidence and live memory)',
     '',
-    'Grouped by route, status, error code and stage. Counts only cover currently retained in-memory evidence; server restarts clear this data.',
+    'Grouped by route, HTTP status, error code, stage and provider.',
+    '',
+    `Evidence coverage: ${safeNumber(stats.error_diagnostics_coverage?.stored_windows_with_error_field)} stored windows with evidence field; ${safeNumber(stats.error_diagnostics_coverage?.stored_windows_without_error_field)} without evidence field; ${safeNumber(stats.error_diagnostics_coverage?.distinct_error_groups)} error groups.`,
+    '',
+    'Diagnostics are bounded and may not include every error. Older snapshots without error evidence cannot be reconstructed.',
     '',
     errorTable,
     '',
@@ -919,10 +934,18 @@ async function buildReportBundle(from, to) {
   ])
 
   const requestEvidence = filterRecentEvidence(range)
-    const errorDiagnostics = getHistoricalErrorEvidence({
-    from: range.from,
-    to: range.to,
-  }).slice(0, 60).map((item) => ({
+
+  const historicalErrorEntries =
+    Array.isArray(history?.error_diagnostics)
+      ? history.error_diagnostics
+      : getHistoricalErrorEvidence({
+          from: range.from,
+          to: range.to,
+        })
+
+  const errorDiagnostics = historicalErrorEntries
+    .slice(0, 60)
+    .map((item) => ({
     route: String(item.route || 'UNKNOWN')
       .replace(/[^a-z0-9_/: .()-]/gi, '_')
       .slice(0, 160),
@@ -935,6 +958,9 @@ async function buildReportBundle(from, to) {
     provider: String(item.provider || 'APPLICATION')
       .replace(/[^a-z0-9_:-]/gi, '_').slice(0, 64),
     provider_http_status: safeNumber(item.provider_http_status) || '-',
+    target: String(item.target || '-')
+      .replace(/[^a-z0-9_/: .()-]/gi, '_')
+      .slice(0, 180),
     count: safeNumber(item.count),
     last_seen_at: iso(item.last_seen_at) || '-',
   }))
@@ -942,6 +968,8 @@ async function buildReportBundle(from, to) {
   const stats = {
     ...buildSummaryStats(history, incidents, requestEvidence),
     error_diagnostics: errorDiagnostics,
+    error_diagnostics_coverage:
+      history?.error_diagnostics_coverage || null,
   }
   const summaryMd = summaryMarkdown(
     range,
