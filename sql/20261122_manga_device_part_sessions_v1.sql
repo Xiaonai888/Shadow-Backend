@@ -15,9 +15,16 @@ create table if not exists public.manga_device_part_sessions (
     check (jsonb_typeof(manifest) = 'object')
 );
 
+alter table public.manga_device_part_sessions
+  add column if not exists temp_cleanup_completed_at timestamptz;
+
+create index if not exists manga_device_part_sessions_cleanup_due_idx
+  on public.manga_device_part_sessions (expires_at)
+  where temp_cleanup_completed_at is null
+    and status in ('pending', 'completed');
+
 create index if not exists manga_device_part_sessions_user_created_idx
   on public.manga_device_part_sessions (user_id, created_at desc);
-
 create index if not exists manga_device_part_sessions_status_expires_idx
   on public.manga_device_part_sessions (status, expires_at);
 
