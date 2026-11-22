@@ -4,7 +4,7 @@ import {
   assessAuthorPreOrderMultiVolumeTerminalEligibility,
   authorPreOrderMultiVolumeTerminalManualEnabled,
   requireAuthorPreOrderMultiVolumeTerminalManualEnabled,
-} from '../src/services/authorPreOrderMultiVolumeTerminalPolicy.service.js'
+} from '../services/authorPreOrderMultiVolumeTerminalPolicy.service.js'
 
 const NOW = Date.parse('2026-11-22T12:00:00.000Z')
 const iso = minutesAgo => new Date(NOW - minutesAgo * 60_000).toISOString()
