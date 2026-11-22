@@ -7,10 +7,15 @@ const RETRY_MAX_DELAY_MS = 6 * 60 * 60 * 1000
 const WORKER_RECOVERY_DELAY_MS = 15 * 60 * 1000
 const MIN_TIMER_DELAY_MS = 1000
 const MAX_TIMER_DELAY_MS = 24 * 60 * 60 * 1000
+const DEVICE_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000
+const DEVICE_CLEANUP_GRACE_MS = 24 * 60 * 60 * 1000
+const DEVICE_CLEANUP_BATCH_SIZE = 20
 
 let workerRunning = false
 let workerTimer = null
 let workerTimerDueAt = 0
+let deviceCleanupRunning = false
+let nextDeviceCleanupAt = 0
 
 function clean(value) {
   return String(value || '').trim()
@@ -174,6 +179,92 @@ async function loadDueRows() {
   return data || []
 }
 
+async function runMangaDevicePartsCleanupBatch() {
+  if (deviceCleanupRunning || process.env.MANGA_DEVICE_PARTS_ENABLED !== 'true') {
+    return { scanned: 0, cleaned: 0, failed: 0 }
+  }
+
+  deviceCleanupRunning = true
+
+  try {
+    const cutoff = new Date(Date.now() - DEVICE_CLEANUP_GRACE_MS).toISOString()
+    const { data, error } = await supabase
+      .from('manga_device_part_sessions')
+      .select('id,user_id,status,manifest,result')
+      .is('temp_cleanup_completed_at', null)
+      .in('status', ['pending', 'completed'])
+      .lte('expires_at', cutoff)
+      .order('expires_at', { ascending: true })
+      .limit(DEVICE_CLEANUP_BATCH_SIZE)
+
+    if (error) throw error
+
+    const rows = data || []
+    let cleaned = 0
+    let failed = 0
+
+    if (rows.length) {
+      const { deleteMangaDeviceTemporaryParts } = await import(
+        './mangaDevicePartsR2.service.js'
+      )
+
+      for (const row of rows) {
+        try {
+          const partCount = Array.isArray(row.manifest?.parts)
+            ? row.manifest.parts.length
+            : 0
+
+          if (partCount < 1 || partCount > 40 ||
+              (row.status === 'completed' && !row.result)) {
+            throw new Error('Invalid Manga cleanup session data')
+          }
+
+          await deleteMangaDeviceTemporaryParts({
+            owner: row.user_id,
+            sessionId: row.id,
+            partCount,
+          })
+
+          const { data: marked, error: markError } = await supabase
+            .from('manga_device_part_sessions')
+            .update({ temp_cleanup_completed_at: new Date().toISOString() })
+            .eq('id', row.id)
+            .eq('user_id', row.user_id)
+            .eq('status', row.status)
+            .is('temp_cleanup_completed_at', null)
+            .select('id')
+            .maybeSingle()
+
+          if (markError) throw markError
+          if (!marked) throw new Error('Manga cleanup session changed')
+          cleaned += 1
+        } catch (error) {
+          failed += 1
+          console.error('MANGA_DEVICE_EXPIRED_CLEANUP_FAILED:', JSON.stringify({
+            session: String(row.id || '').slice(-8),
+            code: String(error?.code || 'CLEANUP_FAILED'),
+            message: String(error?.message || error).slice(0, 200),
+          }))
+        }
+      }
+    }
+
+    nextDeviceCleanupAt = Date.now() + (
+      failed ? WORKER_RECOVERY_DELAY_MS :
+        rows.length === DEVICE_CLEANUP_BATCH_SIZE
+          ? RETRY_BASE_DELAY_MS
+          : DEVICE_CLEANUP_INTERVAL_MS
+    )
+
+    return { scanned: rows.length, cleaned, failed }
+  } catch (error) {
+    nextDeviceCleanupAt = Date.now() + WORKER_RECOVERY_DELAY_MS
+    throw error
+  } finally {
+    deviceCleanupRunning = false
+  }
+}
+
 async function scheduleNextQueuedRetry() {
   const { data, error } = await supabase
     .from('manga_r2_delete_retry_queue')
@@ -184,28 +275,29 @@ async function scheduleNextQueuedRetry() {
   if (error) throw error
 
   const nextRetryAt = data?.[0]?.next_retry_at
+  const parsedRetryAt = nextRetryAt
+    ? new Date(nextRetryAt).getTime()
+    : Number.POSITIVE_INFINITY
 
-  if (!nextRetryAt) {
+  const retryAtMs = nextRetryAt && !Number.isFinite(parsedRetryAt)
+    ? Date.now() + WORKER_RECOVERY_DELAY_MS
+    : parsedRetryAt
+
+  const cleanupAtMs = process.env.MANGA_DEVICE_PARTS_ENABLED === 'true'
+    ? nextDeviceCleanupAt || Date.now() + MIN_TIMER_DELAY_MS
+    : Number.POSITIVE_INFINITY
+
+  const nextAt = Math.min(retryAtMs, cleanupAtMs)
+
+  if (!Number.isFinite(nextAt)) {
     clearWorkerTimer()
     return null
   }
 
-  const retryAtMs = new Date(nextRetryAt).getTime()
-
-  if (!Number.isFinite(retryAtMs)) {
-    return armWorkerTimer(
-      WORKER_RECOVERY_DELAY_MS
-    )
-  }
-
   return armWorkerTimer(
-    Math.max(
-      MIN_TIMER_DELAY_MS,
-      retryAtMs - Date.now()
-    )
+    Math.max(MIN_TIMER_DELAY_MS, nextAt - Date.now())
   )
 }
-
 export async function runMangaR2DeleteRetryBatch() {
   if (workerRunning) {
     return {
