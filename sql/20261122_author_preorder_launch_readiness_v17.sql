@@ -36,10 +36,19 @@ begin
       ('notification_settlement_rpc', to_regprocedure('public.author_preorder_notification_settlement_verified(uuid,uuid)') is not null),
       ('notification_queue_rpc', to_regprocedure('public.author_preorder_queue_verified_paid_notifications(uuid)') is not null),
       ('notification_worker_rpc', to_regprocedure('public.author_preorder_deliver_inapp_notifications_safe(integer)') is not null),
-      ('notification_reference_unique_index', coalesce((
-        select idx.indisunique from pg_catalog.pg_index idx
-        where idx.indexrelid = to_regclass('public.author_preorder_paid_notification_ref_unique_idx')
-      ), false)),
+      ('notification_reference_unique_index', exists (
+        select 1
+        from pg_catalog.pg_constraint constraint_row
+        where constraint_row.conrelid = to_regclass('public.author_preorder_paid_notification_outbox')
+          and constraint_row.contype = 'u'
+          and (
+            select array_agg(attribute_row.attname order by column_row.ordinality)
+            from unnest(constraint_row.conkey) with ordinality as column_row(attnum, ordinality)
+            join pg_catalog.pg_attribute attribute_row
+              on attribute_row.attrelid = constraint_row.conrelid
+             and attribute_row.attnum = column_row.attnum
+          ) = array['order_id', 'recipient_role']::text[]
+      )),
       ('audit_rpc', to_regprocedure('public.author_preorder_record_reconciliation_event(uuid,text,text,text,text)') is not null),
       ('terminal_review_rpc', to_regprocedure('public.author_preorder_record_terminal_review(uuid,text,text)') is not null)
     ) as c(check_key, passed)
