@@ -3376,7 +3376,7 @@ export async function getPublicEpisodeById(
         context?.code ===
         'EPISODE_NOT_FOUND'
 
-            return res.status(404).json({
+      return res.status(404).json({
         ok: false,
         code: episodeMissing
           ? 'EPISODE_NOT_FOUND'
@@ -3385,9 +3385,9 @@ export async function getPublicEpisodeById(
           ? 'Episode not found'
           : 'Story not found',
       })
+    }
 
     const story = context.story
-
     if (
       story.is_shadow_exclusive &&
       story.exclusive_status !== 'approved'
@@ -3545,27 +3545,32 @@ export async function getPublicEpisodeById(
     const rootCode = String(
       error?.code || error?.name || 'UNKNOWN'
     )
+  } catch (error) {
+    const rootCode = String(
+      error?.code || error?.name || 'UNKNOWN'
+    )
       .replace(/[^A-Z0-9_]/gi, '_')
       .slice(0, 60)
 
     markRequestDiagnostic({
-      feature: 'qualified_episode_view',
-      stage: 'count_view_failed',
+      feature: 'public_episode_detail',
+      stage: 'episode_detail_failed',
       error_code: rootCode,
     })
 
     console.error(
-      'COUNT QUALIFIED EPISODE VIEW ERROR:',
+      'GET PUBLIC EPISODE ERROR:',
       error
     )
 
     return res.status(500).json({
       ok: false,
-      code: 'EPISODE_VIEW_COUNT_FAILED',
-      message: 'Failed to count view',
+      code: 'PUBLIC_EPISODE_DETAIL_FAILED',
+      message: 'Failed to load episode',
     })
   }
 }
+
 export async function countQualifiedEpisodeView(
   req,
   res
@@ -3719,7 +3724,19 @@ export async function countQualifiedEpisodeView(
       ok: true,
       view: viewResult,
     })
-  } catch (error) {
+   } catch (error) {
+    const rootCode = String(
+      error?.code || error?.name || 'UNKNOWN'
+    )
+      .replace(/[^A-Z0-9_]/gi, '_')
+      .slice(0, 60)
+
+    markRequestDiagnostic({
+      feature: 'qualified_episode_view',
+      stage: 'count_view_failed',
+      error_code: rootCode,
+    })
+
     console.error(
       'COUNT QUALIFIED EPISODE VIEW ERROR:',
       error
@@ -3727,9 +3744,8 @@ export async function countQualifiedEpisodeView(
 
     return res.status(500).json({
       ok: false,
-      message:
-        'Failed to count view',
-      error: error.message,
+      code: 'EPISODE_VIEW_COUNT_FAILED',
+      message: 'Failed to count view',
     })
   }
 }
