@@ -1,0 +1,113 @@
+name: Pre-order PostgreSQL Stock Guard Integration
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preorder-postgres-stock-guard-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  postgres-integration:
+    name: Test legacy and multi-volume holds in disposable PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: integration_only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGURL: postgresql://postgres:integration_only@127.0.0.1:5432/preorder_guard_ci
+      PGADMINURL: postgresql://postgres:integration_only@127.0.0.1:5432/postgres
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Ensure PostgreSQL client is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq postgresql-client
+          fi
+
+      - name: Validate integration fixture files
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in \
+            sql/20261122_author_preorder_cross_format_stock_guard_v18.sql \
+            src/tests/fixtures/authorPreOrderCrossFormatStockGuard.fixture.sql \
+            src/tests/sql/authorPreOrderCrossFormatStockGuard.integration.sql \
+            src/tests/authorPreOrderCrossFormatStockGuard.concurrent.sh \
+            src/tests/authorPreOrderCrossFormatStockGuard.test.mjs; do
+            if [[ ! -s "$file" ]]; then
+              echo "::error file=$file::Required test file is missing or empty"
+              exit 1
+            fi
+          done
+          bash -n src/tests/authorPreOrderCrossFormatStockGuard.concurrent.sh
+          node --check src/tests/authorPreOrderCrossFormatStockGuard.test.mjs
+
+      - name: Create disposable CI-only database
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -X -v ON_ERROR_STOP=1 "$PGADMINURL" -c 'create database preorder_guard_ci'
+
+      - name: Apply CI fixture and exact GitHub stock guard migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -X -v ON_ERROR_STOP=1 "$PGURL" -f src/tests/fixtures/authorPreOrderCrossFormatStockGuard.fixture.sql
+          psql -X -v ON_ERROR_STOP=1 "$PGURL" -f sql/20261122_author_preorder_cross_format_stock_guard_v18.sql
+
+      - name: Test legacy and multi-volume stock limits and status transitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -X -v ON_ERROR_STOP=1 "$PGURL" -f src/tests/sql/authorPreOrderCrossFormatStockGuard.integration.sql
+
+      - name: Test simultaneous transactions for overbooking
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash src/tests/authorPreOrderCrossFormatStockGuard.concurrent.sh
+
+      - name: Run existing stock guard static checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test src/tests/authorPreOrderCrossFormatStockGuard.test.mjs
+
+      - name: Record isolated integration test scope
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Pre-order PostgreSQL stock guard integration'
+            echo ''
+            echo 'A disposable PostgreSQL 16 service was used on this GitHub Actions runner.'
+            echo 'The stock guard migration was applied to a CI-only fixture database.'
+            echo 'No Supabase, ABA PayWay, production data, or deployment service was used.'
+            echo 'These tests do not prove that the complete production database migrations are applied.'
+          } >> "$GITHUB_STEP_SUMMARY"
