@@ -36,13 +36,35 @@ function pruneCache(now = Date.now()) {
   if (entries.size <= MAX_CACHE_ENTRIES) return
 
   for (const [key, entry] of entries) {
-    if (entries.size <= MAX_CACHE_ENTRIES) break
+    if (entries.size <= MAX_CACHE_ENTRIES) return
+    if (entry.request) continue
 
     if (
-      !entry.request &&
-      entry.expiresAt < now &&
+      entry.expiresAt <= now ||
       now - entry.lastAccessAt > STALE_ENTRY_GRACE_MS
     ) {
+      entries.delete(key)
+    }
+  }
+
+  if (entries.size <= MAX_CACHE_ENTRIES) return
+
+  const candidates = []
+
+  for (const [key, entry] of entries) {
+    if (!entry.request) {
+      candidates.push([key, entry.lastAccessAt])
+    }
+  }
+
+  candidates.sort((a, b) => a[1] - b[1])
+
+  for (const [key] of candidates) {
+    if (entries.size <= MAX_CACHE_ENTRIES) break
+
+    const entry = entries.get(key)
+
+    if (entry && !entry.request) {
       entries.delete(key)
     }
   }
