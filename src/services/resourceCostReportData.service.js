@@ -184,7 +184,7 @@ export async function getResourceCostReport({
     }
     return { service_id, expected_hours, observed_hours: expected_hours - missing_hour_utc.length, missing_hour_utc, incomplete_breakdown_hour_utc }
   })
-  return {
+  const report = {
     ...summary,
     accuracy: {
       ...summary.accuracy,
@@ -225,4 +225,11 @@ export async function getResourceCostReport({
       application: applicationCoverage,
     },
   }
+
+  Object.defineProperty(report, 'renderHourlyRows', {
+    value: validRenderRows,
+    enumerable: false,
+  })
+
+  return report
 }
