@@ -113,6 +113,13 @@ function parseExternalTarget(value) {
   }
 }
 
+function normalizeTrafficDirection(value, fallback = 'unknown') {
+  const direction = String(value || '').trim().toLowerCase()
+  return direction === 'inbound' || direction === 'outbound'
+    ? direction
+    : fallback
+}
+
 function normalizeSample(input = {}) {
   const kind = input.kind === 'external_request'
     ? 'external_request'
@@ -132,8 +139,9 @@ function normalizeSample(input = {}) {
     const route = splitRoute(source)
     const external = parseExternalTarget(target)
 
-    return {
+      return {
       kind,
+      direction: normalizeTrafficDirection(input.direction),
       feature: featureFromPath(route.source_path),
       ...route,
       ...external,
@@ -145,8 +153,9 @@ function normalizeSample(input = {}) {
 
   const route = splitRoute(rawKey)
 
-  return {
+    return {
     kind,
+    direction: normalizeTrafficDirection(input.direction, 'outbound'),
     feature: featureFromPath(route.source_path),
     ...route,
     dependency: 'CLIENT',
@@ -161,6 +170,7 @@ function normalizeSample(input = {}) {
 function metricKey(sample) {
   return [
     sample.kind,
+    sample.direction,
     sample.feature,
     sample.source_route,
     sample.dependency,
@@ -198,6 +208,7 @@ function addToWindow(window, sample) {
 
   const current = window.rows.get(key) || {
     kind: safeSample.kind,
+    direction: safeSample.direction,
     feature: safeSample.feature,
     source_route: safeSample.source_route,
     source_method: safeSample.source_method,
@@ -223,6 +234,7 @@ function snapshotRows(window) {
   const ranked = [...window.rows.values()]
     .map((row) => ({
       kind: row.kind,
+      direction: row.direction,
       feature: row.feature,
       source_route: row.source_route,
       source_method: row.source_method,
@@ -322,6 +334,7 @@ function captureMinuteArchive(window) {
   const rows = [...window.rows.values()]
     .map((row) => ({
       kind: row.kind,
+      direction: row.direction,
       feature: row.feature,
       source_route: row.source_route,
       source_method: row.source_method,
