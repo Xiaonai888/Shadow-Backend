@@ -54,10 +54,17 @@ function parseBoundary(value, endExclusive = false) {
 }
 
 function getDateRange(query) {
-  return {
-    from: parseBoundary(query.from, false),
-    to: parseBoundary(query.to, true),
+  const from = parseBoundary(query?.from, false)
+  const to = parseBoundary(query?.to, true)
+
+  if (from && to && Date.parse(to) <= Date.parse(from)) {
+    const error = new Error('Invalid date range')
+    error.statusCode = 400
+    error.code = 'INVALID_INCOME_DATE_RANGE'
+    throw error
   }
+
+  return { from, to }
 }
 
 function applyCreatedAtRange(query, range) {
@@ -763,16 +770,27 @@ export async function getAdminIncomeSummary(
       sources,
     })
   } catch (error) {
+    const invalidRange =
+      error?.statusCode === 400 &&
+      error?.message === 'Invalid date range'
+
+    const errorCode = invalidRange
+      ? 'INVALID_INCOME_DATE_RANGE'
+      : 'ADMIN_INCOME_SUMMARY_FAILED'
+
     markRequestDiagnostic({
       feature: 'admin_income_summary',
-      income_stage: 'error',
+      income_stage: invalidRange
+        ? 'date_validation'
+        : 'error',
       load_source: loadSource,
       client_instance:
         clientInstance || 'missing',
-      error_code:
-        error?.code ||
-        error?.name ||
-        'unknown',
+      error_code: invalidRange
+        ? errorCode
+        : String(error?.code || error?.name || 'UNKNOWN')
+            .replace(/[^a-zA-Z0-9_]/g, '_')
+            .slice(0, 60),
     })
 
     console.error(
@@ -780,11 +798,12 @@ export async function getAdminIncomeSummary(
       error
     )
 
-    return res.status(500).json({
+    return res.status(invalidRange ? 400 : 500).json({
       ok: false,
-      message:
-        error.message ||
-        'Failed to load admin income summary',
+      code: errorCode,
+      message: invalidRange
+        ? 'Invalid date range'
+        : 'Failed to load admin income summary',
     })
   }
 }
