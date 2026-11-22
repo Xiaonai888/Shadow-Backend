@@ -1,0 +1,81 @@
+name: Pre-order Safety Tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preorder-safety-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Check pre-order code and run unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out GitHub repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify all test and source files exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            tests/authorPreOrderLaunchReadinessPolicy.test.mjs
+            tests/authorPreOrderVolumeSelection.test.mjs
+            tests/authorPreOrderPaymentValidation.test.mjs
+            tests/authorPreOrderMultiVolumeTerminalPolicy.test.mjs
+            tests/authorPreOrderReconciliationOpsPolicy.test.mjs
+            src/services/authorPreOrderValidation.service.js
+            src/services/authorPreOrderLaunchReadinessPolicy.service.js
+            src/services/authorPreOrderVolumeSelection.service.js
+            src/services/authorPreOrderPaymentValidation.service.js
+            src/services/authorPreOrderMultiVolumeTerminalPolicy.service.js
+            src/services/authorPreOrderReconciliationOpsPolicy.service.js
+          )
+          for file in "${files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error file=$file::Required pre-order file is missing"
+              exit 1
+            fi
+            node --check "$file"
+          done
+
+      - name: Run pre-order unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test \
+            tests/authorPreOrderLaunchReadinessPolicy.test.mjs \
+            tests/authorPreOrderVolumeSelection.test.mjs \
+            tests/authorPreOrderPaymentValidation.test.mjs \
+            tests/authorPreOrderMultiVolumeTerminalPolicy.test.mjs \
+            tests/authorPreOrderReconciliationOpsPolicy.test.mjs \
+            2>&1 | tee "$RUNNER_TEMP/preorder-tests.log"
+
+      - name: Show test summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Shadow Pre-order safety tests'
+            echo ''
+            echo 'Only local code checks and Node.js unit tests were run.'
+            echo 'No database migrations, payment requests, stock updates, or deployments were performed.'
+            echo ''
+            if [[ -f "$RUNNER_TEMP/preorder-tests.log" ]]; then
+              echo '```text'
+              tail -n 16 "$RUNNER_TEMP/preorder-tests.log"
+              echo '```'
+            else
+              echo 'Tests did not start. Inspect the failed workflow step for missing files or syntax errors.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
