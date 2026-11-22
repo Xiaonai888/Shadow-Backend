@@ -180,8 +180,11 @@ begin
     select id
     from public.fast_videos
     where studio_state = 'active'
+      and platform = 'youtube'
       and youtube_health_state = 'unavailable'
+      and youtube_health_missing_count >= 2
       and youtube_unavailable_since <= v_now - interval '30 days'
+      and youtube_health_checked_at >= v_now - interval '48 hours'
     order by youtube_unavailable_since, id
     for update skip locked
     limit p_limit
