@@ -81,7 +81,7 @@ import { startAuthorCommentCleanup } from './src/services/authorCommentCleanup.s
 import { startAuthorPostCleanup } from './src/services/authorPostCleanup.service.js'
 import { startCommentTrashCleanup } from './src/services/commentTrashCleanup.service.js'
 import { startReaderLibraryTrashCleanup } from './src/services/readerLibraryTrashCleanup.service.js'
-import { startShadowYoutubeReelMonitor } from './src/services/youtubeReelAvailabilityMonitor.service.js'
+import { startStudioYoutubeHealthWorker } from './src/services/shadowStudioYoutubeHealthWorker.service.js'
 import fastRoutes from './src/routes/fast.routes.js'
 import studioAnalyticsRoutes from './src/routes/shadowStudioAnalytics.routes.js'
 import studioChannelAnalyticsRoutes from './src/routes/shadowStudioChannelAnalytics.routes.js'
@@ -91,7 +91,6 @@ import studioTrendsAnalyticsRoutes from './src/routes/shadowStudioTrendsAnalytic
 import studioVideoTypeRoutes from './src/routes/shadowStudioVideoType.routes.js'
 import studioContentPlaylistRoutes from './src/routes/shadowStudioContentPlaylists.routes.js'
 import studioMeRoutes from './src/routes/shadowStudioMe.routes.js'
-import { startShadowYoutubeReelMonitor } from './src/services/youtubeReelAvailabilityMonitor.service.js'
 import contentReportsRoutes from './src/routes/contentReports.routes.js'
 import adminReportsRoutes from './src/routes/adminReports.routes.js'
 import adminAuthorReviewsRoutes from './src/routes/adminAuthorReviews.routes.js'
@@ -1149,9 +1148,7 @@ app.listen(PORT, () => {
   startAuthorPostCleanup()
   startCommentTrashCleanup()
   startReaderLibraryTrashCleanup()
-  if (process.env.SHADOW_YOUTUBE_MONITOR_ENABLED === 'true') {
-    startShadowYoutubeReelMonitor()
-  }
+  startStudioYoutubeHealthWorker()
   startChatRetentionCleanup()
   startStorageMigrationCleanupScheduler()
   void startMangaR2DeleteRetryWorker()
@@ -1161,9 +1158,6 @@ app.listen(PORT, () => {
   if (process.env.MASS_MENTION_WORKER_ENABLED === 'true') startMassMentionWorker()
   startStoryEpisodePushScheduler()
   startSmartAdMaintenanceScheduler()
-  if (process.env.SHADOW_YOUTUBE_MONITOR_ENABLED === 'true') {
-    startShadowYoutubeReelMonitor()
-  }
   startBinanceUsdtAlertWorker()
   startTelegramMissingReportRecovery()
   startShadowReadEventDailySettlement()
