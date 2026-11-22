@@ -26,6 +26,10 @@ export function resourceCostAttributionReportRows(window, timeField = 'window_st
   const source = sourceRows(window)
   const rows = source.rows.map((row) => {
     const kind = String(row?.kind || 'unknown')
+    const rawDirection = String(row?.direction || '').trim().toLowerCase()
+    const direction = rawDirection === 'inbound' || rawDirection === 'outbound'
+      ? rawDirection
+      : kind === 'http_response' ? 'outbound' : 'unknown'
     const feature = String(row?.feature || 'unknown')
     const classification = String(row?.classification || (
       kind === 'unclassified' ? 'not_recorded' : source.detail === 'feature' ? 'feature_only' : source.detail
@@ -34,6 +38,7 @@ export function resourceCostAttributionReportRows(window, timeField = 'window_st
       hour_start: time,
       feature,
       kind,
+      direction,
       dependency: String(row?.dependency || 'UNKNOWN'),
       route: String(row?.route || row?.source_route || (source.detail === 'feature' ? 'FEATURE ONLY' : 'UNKNOWN')),
       target: String(row?.target || row?.target_path || 'MULTIPLE'),
@@ -53,7 +58,7 @@ export function resourceCostAttributionReportRows(window, timeField = 'window_st
     errors: Math.max(0, number(window?.errors) - errors),
   }
   if (missing.count || missing.bytes || missing.errors) rows.push({
-    hour_start: time, feature: 'unattributed', kind: 'unclassified', dependency: 'UNKNOWN',
+    hour_start: time, feature: 'unattributed', kind: 'unclassified', direction: 'unknown', dependency: 'UNKNOWN',
     route: 'NOT RECORDED', target: 'UNKNOWN', entry_point: 'unknown_entry',
     classification: 'not_recorded', ...missing,
   })
