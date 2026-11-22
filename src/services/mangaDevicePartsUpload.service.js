@@ -63,18 +63,64 @@ async function completedResponseWithCleanup(owner, sessionId, result) {
     partCount <= MANGA_DEVICE_PARTS_LIMITS.maxParts
   ) {
     setImmediate(() => {
-      void deleteMangaDeviceTemporaryParts({
-        owner,
-        sessionId,
-        partCount,
-      }).catch((error) => {
-        console.error(
-          'MANGA_DEVICE_TEMP_CLEANUP_FAILED:',
-          JSON.stringify({
-            session: String(sessionId).slice(-8),
-            code: String(error?.code || 'R2_DELETE_FAILED'),
-            message: String(error?.message || 'Cleanup failed').slice(0, 200),
+      void (async () => {
+        try {
+          await deleteMangaDeviceTemporaryParts({
+            owner,
+            sessionId,
+            partCount,
           })
+        } catch (error) {
+          console.error(
+            'MANGA_DEVICE_TEMP_CLEANUP_FAILED:',
+            JSON.stringify({
+              session: String(sessionId).slice(-8),
+              code: String(error?.code || 'R2_DELETE_FAILED'),
+              message: String(error?.message || 'Cleanup failed').slice(0, 200),
+            })
+          )
+
+          const publicUrl = String(process.env.R2_PUBLIC_URL || '')
+            .trim()
+            .replace(/\/+$/, '')
+
+          if (!/^https:\/\//i.test(publicUrl)) {
+            throw new Error('R2_PUBLIC_URL is missing for Manga cleanup retry')
+          }
+
+          const { deleteStoredMangaParts } = await import(
+            './mangaPageStorage.service.js'
+          )
+
+          const temporaryParts = Array.from(
+            { length: partCount },
+            (_, index) => ({
+              image_url: `${publicUrl}/${mangaDevicePartKeys(
+                owner,
+                sessionId,
+                index
+              ).temporary}`,
+            })
+          )
+
+          const retry = await deleteStoredMangaParts(temporaryParts)
+
+          if (retry.failed > 0 || retry.queue_failed > 0) {
+            console.warn(
+              'MANGA_DEVICE_TEMP_CLEANUP_RETRY:',
+              JSON.stringify({
+                session: String(sessionId).slice(-8),
+                failed: retry.failed,
+                queued: retry.queued,
+                queue_failed: retry.queue_failed,
+              })
+            )
+          }
+        }
+      })().catch((error) => {
+        console.error(
+          'MANGA_DEVICE_TEMP_CLEANUP_RETRY_ERROR:',
+          String(error?.message || error).slice(0, 200)
         )
       })
     })
