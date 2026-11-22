@@ -128,6 +128,7 @@ import { startBoostAnalyticsRetention } from './src/services/boostAnalyticsTrack
 import musicRoutes from './src/routes/music.routes.js'
 import { startMangaR2DeleteRetryWorker } from './src/services/mangaR2DeleteRetry.service.js'
 import { startHeavyMediaWorkerCoordinator } from './src/services/heavyMediaWorkerCoordinator.service.js'
+import { startResourceController } from './src/services/resourceController/resourceController.js'
 import { startAuthorStoryPushQueue } from './src/services/authorStoryPushQueue.service.js'
 import { startMassMentionWorker } from './src/services/massMentionWorker.service.js'
 import { startStoryEpisodePushScheduler } from './src/services/storyEpisodePushScheduler.js'
@@ -1149,6 +1150,7 @@ app.listen(PORT, () => {
   startChatRetentionCleanup()
   startStorageMigrationCleanupScheduler()
   void startMangaR2DeleteRetryWorker()
+  startResourceController()
   startHeavyMediaWorkerCoordinator()
   startAuthorStoryPushQueue()
   if (process.env.MASS_MENTION_WORKER_ENABLED === 'true') startMassMentionWorker()
