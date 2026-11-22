@@ -1,0 +1,124 @@
+name: Manga Device-first checks
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout Backend
+        uses: actions/checkout@v4
+        with:
+          path: Shadow-Backend
+
+      - name: Checkout Reader
+        uses: actions/checkout@v4
+        with:
+          repository: Xiaonai888/Web-React-2
+          ref: main
+          path: Web-React-2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify module syntax
+        run: |
+          node --check Shadow-Backend/src/services/mangaDevicePartsPolicy.service.js
+          node --check Shadow-Backend/src/services/mangaDevicePartsR2.service.js
+          node --check Shadow-Backend/src/services/mangaDevicePartsUpload.service.js
+          node --check Shadow-Backend/src/services/mangaR2DeleteRetry.service.js
+          node --check Web-React-2/src/utils/mangaDeviceFirstPolicy.js
+          node --check Web-React-2/src/utils/mangaDeviceCutPlanner.js
+          node --check Web-React-2/src/utils/mangaDevicePartProcessor.js
+
+      - name: Check Device-first policy and cut geometry
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { resolve } from 'node:path'
+          import { pathToFileURL } from 'node:url'
+          
+          const moduleUrl = (root, path) => pathToFileURL(resolve(root, path)).href
+          const backend = await import(moduleUrl('Shadow-Backend', 'src/services/mangaDevicePartsPolicy.service.js'))
+          const frontend = await import(moduleUrl('Web-React-2', 'src/utils/mangaDeviceFirstPolicy.js'))
+          const cutsModule = await import(moduleUrl('Web-React-2', 'src/utils/mangaDeviceCutPlanner.js'))
+          
+          const limits = backend.MANGA_DEVICE_PARTS_LIMITS
+          const policy = frontend.MANGA_DEVICE_POLICY
+          const validate = backend.validateMangaDevicePartsManifest
+          const plan = cutsModule.planMangaDeviceCuts
+          
+          assert.equal(limits.maxParts, policy.maximumParts)
+          assert.equal(limits.maxPartHeight, policy.maximumPartHeight)
+          assert.equal(limits.overlapPixels, policy.partOverlap)
+          assert.equal(limits.maxPartBytes, policy.maximumPartBytes)
+          assert.equal(limits.maxTotalBytes, policy.maximumOutputBytes)
+          assert.equal(limits.maxDevicePixels, policy.maxDevicePixels)
+          assert.equal(limits.maxOutputWidth, policy.outputWidth)
+          assert.ok(limits.signedUrlSeconds >= 600)
+          assert.ok(limits.signedUrlSeconds < limits.maxSessionSeconds)
+          console.log('PASS Policy limits agree between Backend and Reader')
+          
+          const makePart = (part, index, width = 400) => ({
+            partIndex: index,
+            top: part.top,
+            width,
+            height: part.height,
+            size: 1024,
+            quality: 0.82,
+          })
+          const makeManifest = (height, parts, width = 400) => ({
+            sourceWidth: width,
+            sourceHeight: height,
+            width,
+            height,
+            parts: parts.map((part, index) => makePart(part, index, width)),
+          })
+          
+          for (const height of [1, 399, 800, 2400, 2401, 3000, 3001, 4800, 10000, 30000]) {
+            const cuts = plan({ width: 400, height })
+            assert.ok(cuts.length >= 1 && cuts.length <= limits.maxParts)
+            const result = validate(makeManifest(height, cuts))
+            assert.equal(result.parts.length, cuts.length)
+            assert.equal(result.parts[0].top, 0)
+            assert.equal(result.parts.at(-1).top + result.parts.at(-1).height, height)
+          }
+          console.log('PASS Device cut geometry and 2px overlap: 10 heights')
+          
+          const forty = []
+          let previousEnd = 0
+          for (let index = 0; index < 40; index += 1) {
+            const height = index === 0 ? 750 : 752
+            const top = index === 0 ? 0 : previousEnd - 2
+            forty.push({ top, height })
+            previousEnd = top + height
+          }
+          assert.equal(previousEnd, 30000)
+          assert.equal(validate(makeManifest(30000, forty)).parts.length, 40)
+          assert.throws(
+            () => validate(makeManifest(30000, [...forty, { top: 29998, height: 2 }])),
+            (error) => error.code === 'MANGA_DEVICE_PART_COUNT_INVALID'
+          )
+          console.log('PASS 40 parts accepted; 41 rejected')
+          
+          const gap = makeManifest(4800, plan({ width: 400, height: 4800 }))
+          gap.parts[1].top += 1
+          gap.parts[1].height -= 1
+          assert.throws(() => validate(gap), (error) => error.code === 'MANGA_DEVICE_PART_GAP')
+          const oversized = makeManifest(1000, [{ top: 0, height: 1000 }], 1000)
+          oversized.sourceWidth = 5000
+          oversized.sourceHeight = 5000
+          assert.throws(
+            () => validate(oversized),
+            (error) => error.code === 'MANGA_DEVICE_SOURCE_TOO_LARGE'
+          )
+          console.log('PASS Invalid overlap and 25MP device input rejected')
+          console.log('PASS Manga Device-first pre-deploy checks complete')
+          NODE
