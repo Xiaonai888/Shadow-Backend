@@ -1,5 +1,69 @@
 const TELEGRAM_API_URL = 'https://api.telegram.org'
+const TELEGRAM_TIMEOUT_MS = 12000
 
+async function requestTelegram(botToken, method, payload) {
+  let response
+
+  try {
+    response = await fetch(
+      `${TELEGRAM_API_URL}/bot${botToken}/${method}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(TELEGRAM_TIMEOUT_MS),
+      }
+    )
+  } catch (cause) {
+    const timedOut =
+      cause?.name === 'TimeoutError' ||
+      cause?.name === 'AbortError'
+
+    const error = new Error(
+      timedOut
+        ? 'Telegram request timed out'
+        : 'Telegram network request failed'
+    )
+
+    error.code = timedOut
+      ? 'TELEGRAM_TIMEOUT'
+      : 'TELEGRAM_NETWORK_ERROR'
+
+    throw error
+  }
+
+  const data = await response.json().catch(() => null)
+
+  if (!data || typeof data !== 'object') {
+    const error = new Error('Invalid Telegram API response')
+    error.code = 'TELEGRAM_INVALID_RESPONSE'
+    error.statusCode = response.status
+    throw error
+  }
+
+  if (!response.ok || data.ok !== true) {
+    const status = Number(
+      data.error_code || response.status || 0
+    )
+
+    const error = new Error(
+      String(data.description || `Telegram ${method} failed`)
+        .slice(0, 240)
+    )
+
+    error.code = status
+      ? `TELEGRAM_HTTP_${status}`
+      : 'TELEGRAM_API_ERROR'
+
+    error.statusCode = response.status
+
+    throw error
+  }
+
+  return data
+}
 function isTelegramConfigured() {
   return Boolean(process.env.TELEGRAM_BOT_TOKEN)
 }
@@ -19,39 +83,26 @@ export function html(value) {
 }
 
 export async function callTelegram(method, payload) {
-  if (!isTelegramConfigured()) return { ok: false, skipped: true }
-
-  const response = await fetch(`${TELEGRAM_API_URL}/bot${process.env.TELEGRAM_BOT_TOKEN}/${method}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-
-  const data = await response.json().catch(() => ({}))
-
-  if (!response.ok || data.ok === false) {
-    throw new Error(data.description || `Telegram ${method} failed`)
+  if (!isTelegramConfigured()) {
+    return { ok: false, skipped: true }
   }
 
-  return data
+  return requestTelegram(
+    process.env.TELEGRAM_BOT_TOKEN,
+    method,
+    payload
+  )
 }
-
 export async function callAuthorStoreTelegram(method, payload) {
-  if (!isAuthorStoreTelegramConfigured()) return { ok: false, skipped: true }
-
-  const response = await fetch(`${TELEGRAM_API_URL}/bot${process.env.TELEGRAM_AUTHOR_STORE_BOT_TOKEN}/${method}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-
-  const data = await response.json().catch(() => ({}))
-
-  if (!response.ok || data.ok === false) {
-    throw new Error(data.description || `Author Store Telegram ${method} failed`)
+  if (!isAuthorStoreTelegramConfigured()) {
+    return { ok: false, skipped: true }
   }
 
-  return data
+  return requestTelegram(
+    process.env.TELEGRAM_AUTHOR_STORE_BOT_TOKEN,
+    method,
+    payload
+  )
 }
 
 export async function sendTelegramMessage(text, options = {}) {
