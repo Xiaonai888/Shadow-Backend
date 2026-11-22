@@ -1,9 +1,9 @@
-create or replace function public.purge_expired_chat_data()
-returns jsonb
-language plpgsql
-security definer
-set search_path = public
-as $$
+CREATE OR REPLACE FUNCTION public.purge_expired_chat_data()
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
 declare
   v_now timestamptz := now();
   v_message_ids uuid[];
@@ -60,6 +60,25 @@ begin
     and (
       c.legal_hold_at is null
       or c.legal_hold_released_at is not null
+    )
+    and not exists (
+      select 1
+      from public.chat_participants p
+      where p.conversation_id = c.id
+        and (
+          p.deleted_at is null
+          or coalesce(
+            p.retention_until,
+            p.deleted_at + interval '90 days'
+          ) > v_now
+        )
+    )
+    and not exists (
+      select 1
+      from public.chat_messages recent_message
+      where recent_message.conversation_id = c.id
+        and recent_message.created_at > c.cleared_for_all_at
+        and recent_message.created_at > v_now - interval '90 days'
     )
     and not exists (
       select 1
@@ -150,12 +169,26 @@ begin
     'closed_retention_records', v_closed_records
   );
 end;
-$$;
+$function$;
 
-revoke all
-on function public.purge_expired_chat_data()
-from public, anon, authenticated;
+REVOKE ALL
+ON FUNCTION public.purge_expired_chat_data()
+FROM PUBLIC, anon, authenticated;
 
-grant execute
-on function public.purge_expired_chat_data()
-to service_role;
+GRANT EXECUTE
+ON FUNCTION public.purge_expired_chat_data()
+TO service_role;
+
+SELECT
+  CASE
+    WHEN POSITION(
+      'from public.chat_participants p'
+      IN LOWER(pg_get_functiondef('public.purge_expired_chat_data()'::regprocedure))
+    ) > 0
+      AND POSITION(
+        'recent_message.created_at > c.cleared_for_all_at'
+        IN LOWER(pg_get_functiondef('public.purge_expired_chat_data()'::regprocedure))
+      ) > 0
+    THEN 'OK'
+    ELSE 'MISSING'
+  END AS reactivated_chat_cleanup_guard;
