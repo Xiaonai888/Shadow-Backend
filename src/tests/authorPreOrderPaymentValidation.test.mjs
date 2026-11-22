@@ -7,7 +7,7 @@ import {
   preOrderPaymentCents,
   preOrderPaymentCurrency,
   preOrderProviderPaidAt,
-} from '../src/services/authorPreOrderPaymentValidation.service.js'
+} from '../services/authorPreOrderPaymentValidation.service.js'
 
 test('payment amounts use integer cents, not floating point arithmetic', () => {
   for (const [amount, cents] of [
