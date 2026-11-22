@@ -508,18 +508,44 @@ function getMangaPageMediaUrls(pages = []) {
 async function cleanupStaleMangaMedia(previousPages = [], nextPages = []) {
   const previousUrls = getMangaPageMediaUrls(previousPages)
   const nextUrls = getMangaPageMediaUrls(nextPages)
-
   const staleUrls = [...previousUrls].filter(
     (url) => !nextUrls.has(url)
   )
 
   if (!staleUrls.length) return
 
+  const referencedUrls = new Set()
+  const batchSize = 20
+
+  for (let index = 0; index < staleUrls.length; index += batchSize) {
+    const batch = staleUrls.slice(index, index + batchSize)
+    const [
+      { data: partRows, error: partError },
+      { data: pageRows, error: pageError },
+    ] = await Promise.all([
+      supabase.from('episode_page_parts').select('image_url').in('image_url', batch),
+      supabase.from('episode_pages').select('image_url').in('image_url', batch),
+    ])
+
+    if (partError) throw partError
+    if (pageError) throw pageError
+
+    for (const row of [...(partRows || []), ...(pageRows || [])]) {
+      const url = cleanText(row?.image_url)
+      if (url) referencedUrls.add(url)
+    }
+  }
+
+  const removableUrls = staleUrls.filter(
+    (url) => !referencedUrls.has(url)
+  )
+
+  if (!removableUrls.length) return
+
   await deleteStoredMangaParts(
-    staleUrls.map((imageUrl) => ({ image_url: imageUrl }))
+    removableUrls.map((imageUrl) => ({ image_url: imageUrl }))
   )
 }
-
 async function saveEpisodePages({ episodeId, storyId, pages }) {
   const cleanPages = Array.isArray(pages) ? pages : []
   const previousPages = await getEpisodePages(episodeId)
