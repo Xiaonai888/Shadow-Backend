@@ -156,6 +156,55 @@ function routeAttributionRows(report) {
   )
 }
 
+function applicationHourlyCsvRows(report) {
+  const HOUR_MS = 3_600_000
+  const ICT_OFFSET_MS = 7 * HOUR_MS
+  const groups = new Map()
+  const count = (value) => {
+    const number = Number(value)
+    return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0
+  }
+
+  for (const row of Array.isArray(report.applicationHourlyRows) ? report.applicationHourlyRows : []) {
+    const timestamp = Date.parse(row?.hour_start || row?.started_at || '')
+    if (!Number.isFinite(timestamp)) continue
+
+    const hourMs = Math.floor(timestamp / HOUR_MS) * HOUR_MS
+    const hour = new Date(hourMs).toISOString()
+    const dimensions = {
+      feature: String(row?.feature || 'unknown'),
+      dependency: String(row?.dependency || 'UNKNOWN'),
+      kind: String(row?.kind || 'unknown'),
+      entry_point: String(row?.entry_point || 'unknown_entry'),
+      route: String(row?.route || 'UNKNOWN'),
+      target: String(row?.target || 'MULTIPLE'),
+      classification: String(row?.classification || 'unknown'),
+    }
+    const key = JSON.stringify([hour, ...Object.values(dimensions)])
+    const current = groups.get(key) || {
+      hour_start_utc: hour,
+      hour_start_ict: new Date(hourMs + ICT_OFFSET_MS)
+        .toISOString().slice(0, 16).replace('T', ' '),
+      ...dimensions,
+      observed_events: 0,
+      observed_bytes: 0,
+      observed_errors: 0,
+      coverage: report.sources?.application?.status || 'unknown',
+      note: 'Application-observed payload; not Render billed outbound. Direction and exact route coverage may be unknown.',
+    }
+    current.observed_events += count(row?.count)
+    current.observed_bytes += count(row?.bytes)
+    current.observed_errors += count(row?.errors)
+    groups.set(key, current)
+  }
+
+  return [...groups.values()].sort((first, second) =>
+    first.hour_start_utc.localeCompare(second.hour_start_utc) ||
+    second.observed_bytes - first.observed_bytes ||
+    first.route.localeCompare(second.route)
+  )
+}
+
 function renderHourlyCsvRows(report) {
   const HOUR_MS = 3_600_000
   const ICT_OFFSET_MS = 7 * HOUR_MS
@@ -248,7 +297,9 @@ function readme(report) {
     '',
     'Render bandwidth is sourced from stored Render provider measurements.',
     'RenderHourly.csv shows measured service-hours plus known missing mature hours (blank bytes are unknown, not zero).',
-    'Hourly provider values are not invoices and cannot identify the application route responsible for each byte.',
+        'Hourly provider values are not invoices and cannot identify the application route responsible for each byte.',
+    'ApplicationHourly.csv groups already-collected application measurements into UTC hourly buckets (and shows Cambodia time).',
+    'ApplicationHourly.csv is not Render billing: measured HTTP payload, external request sizes, and incoming traffic can differ from billed outbound; missing hours are unknown, not zero.',
     'Provider usage metrics, application request measurements, and upload audit counters must not be added to Render bytes.',
     'Cumulative metrics may omit the initial interval when no previous valid observation exists.',
     'Missing provider intervals and missing source breakdowns must not be treated as zero.',
@@ -357,7 +408,13 @@ export function createResourceCostDownload(report, format = 'full-zip') {
       'breakdown_gap_bytes', 'breakdown_excess_bytes', 'note',
     ]
     const entries = Object.values(files).concat([
-      ['RenderHourly.csv', csv(hourlyColumns, renderHourlyCsvRows(report))],
+           ['RenderHourly.csv', csv(hourlyColumns, renderHourlyCsvRows(report))],
+      ['ApplicationHourly.csv', csv([
+        'hour_start_utc', 'hour_start_ict', 'feature', 'dependency',
+        'kind', 'entry_point', 'route', 'target', 'classification',
+        'observed_events', 'observed_bytes', 'observed_errors',
+        'coverage', 'note',
+      ], applicationHourlyCsvRows(report))],
       ['README.txt', readme(report)],
     ])
     return {
