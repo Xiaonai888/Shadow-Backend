@@ -42,7 +42,7 @@ begin
         where constraint_row.conrelid = to_regclass('public.author_preorder_paid_notification_outbox')
           and constraint_row.contype = 'u'
           and (
-            select array_agg(attribute_row.attname order by column_row.ordinality)
+            select array_agg(attribute_row.attname::text order by column_row.ordinality)
             from unnest(constraint_row.conkey) with ordinality as column_row(attnum, ordinality)
             join pg_catalog.pg_attribute attribute_row
               on attribute_row.attrelid = constraint_row.conrelid
