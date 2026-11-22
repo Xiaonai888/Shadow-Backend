@@ -3541,11 +3541,7 @@ export async function getPublicEpisodeById(
           'qualified_view_required',
       },
     })
-  } catch (error) {
-    const rootCode = String(
-      error?.code || error?.name || 'UNKNOWN'
-    )
-  } catch (error) {
+    } catch (error) {
     const rootCode = String(
       error?.code || error?.name || 'UNKNOWN'
     )
