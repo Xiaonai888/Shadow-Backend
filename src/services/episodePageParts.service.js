@@ -1,7 +1,8 @@
 import { supabase } from '../config/supabase.js'
 import { assertR2MediaReference } from './mediaStoragePolicy.service.js'
 
-const MAX_PARTS_PER_PAGE = 10
+const MAX_PARTS_PER_PAGE = 40
+const PAGE_ID_BATCH_SIZE = 10
 
 function cleanText(value) {
   return String(value ?? '').trim()
@@ -27,9 +28,16 @@ export function cleanEpisodePageParts(
 ) {
   if (!Array.isArray(value)) return []
 
-  return value
-    .slice(0, MAX_PARTS_PER_PAGE)
-    .map((part, index) => ({
+  if (value.length > MAX_PARTS_PER_PAGE) {
+    const error = new Error(
+      `A Manga page cannot contain more than ${MAX_PARTS_PER_PAGE} image parts.`
+    )
+    error.code = 'EPISODE_PAGE_PARTS_LIMIT_EXCEEDED'
+    error.statusCode = 422
+    throw error
+  }
+
+  return value.map((part, index) => ({
       part_index: index,
       image_url: assertR2MediaReference(
         part?.image_url || part?.imageUrl,
@@ -65,17 +73,25 @@ export async function getEpisodePagePartsByPageIds(
 
   if (!ids.length) return []
 
-  const { data, error } = await supabase
-    .from('episode_page_parts')
-    .select(
-      'id, episode_page_id, part_index, image_url, storage_path, width, height, file_size, mime_type, created_at, updated_at'
-    )
-    .in('episode_page_id', ids)
-    .order('part_index', { ascending: true })
+  const rows = []
 
-  if (error) throw error
+  for (let index = 0; index < ids.length; index += PAGE_ID_BATCH_SIZE) {
+    const batch = ids.slice(index, index + PAGE_ID_BATCH_SIZE)
 
-  return data || []
+    const { data, error } = await supabase
+      .from('episode_page_parts')
+      .select(
+        'id, episode_page_id, part_index, image_url, storage_path, width, height, file_size, mime_type, created_at, updated_at'
+      )
+      .in('episode_page_id', batch)
+      .order('part_index', { ascending: true })
+
+    if (error) throw error
+
+    rows.push(...(data || []))
+  }
+
+  return rows
 }
 
 export async function attachEpisodePageParts(pages = []) {
@@ -106,6 +122,7 @@ export async function attachEpisodePageParts(pages = []) {
 export async function replaceEpisodePageParts({
   episodePageId,
   parts,
+  readBack = true,
 }) {
   const pageId = cleanText(episodePageId)
 
@@ -158,7 +175,9 @@ export async function replaceEpisodePageParts({
 
   if (staleError) throw staleError
 
-  return getEpisodePagePartsByPageIds([pageId])
+  return readBack
+    ? getEpisodePagePartsByPageIds([pageId])
+    : []
 }
 
 export async function syncEpisodePageParts({
@@ -195,6 +214,7 @@ export async function syncEpisodePageParts({
     await replaceEpisodePageParts({
       episodePageId: page.id,
       parts: requestedPage.parts,
+      readBack: false,
     })
   }
 
