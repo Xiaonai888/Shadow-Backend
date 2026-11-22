@@ -18,13 +18,12 @@ const COUNTER_FIELDS = [
 function asRows(rows) {
   if (!Array.isArray(rows)) throw new TypeError('Usage archive rows must be an array.')
   for (const row of rows) {
-    const identity = dimensions(row, includeDirection)
-    const fingerprint = JSON.stringify(identity)
+    if (!row || typeof row !== 'object' || Array.isArray(row)) {
+      throw new TypeError('Every usage archive row must be an object.')
     }
   }
   return rows
 }
-
 function metric(value, field) {
   if (value === undefined || value === null) return null
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -71,7 +70,7 @@ export function groupSystemUsageRows(sourceRows = [], { includeDirection = true 
   const groups = new Map()
 
   for (const row of rows) {
-    const identity = dimensions(row)
+    const identity = dimensions(row, includeDirection)
     const fingerprint = JSON.stringify(identity)
     let group = groups.get(fingerprint)
     if (!group) {
