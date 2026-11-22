@@ -75,6 +75,17 @@ const PUBLIC_STORY_LIST_SELECT = [
   'updated_at',
 ].join(', ')
 
+const COMPACT_TRENDING_STORY_SELECT = [
+  'id',
+  'title',
+  'cover_url',
+  'main_genre',
+  'is_adult',
+  'total_views',
+  'created_at',
+  'updated_at',
+].join(', ')
+
 const GENRE_QUICK_STORY_SELECT = [
   'id',
   'title',
@@ -1258,6 +1269,15 @@ export async function getPublicStories(req, res) {
       .trim()
       .toLowerCase()
 
+    const compactTrending =
+      String(req.query.view || '').trim().toLowerCase() === 'compact' &&
+      normalizedSort === 'trending' &&
+      !newArrivalsPagination &&
+      !genrePagination &&
+      Object.keys(req.query).every((key) =>
+        ['view', 'sort', 'limit', 'language'].includes(key)
+      )
+
     if (genrePagination && ['wait_free', 'fully_free', 'completed'].includes(genreFilter)) {
       const parsedCursor = genreCursor ? decodeGenreCursor(genreCursor) : null
 
@@ -1366,7 +1386,9 @@ export async function getPublicStories(req, res) {
     withReaderVisibleEpisodes(
       newArrivalsPagination
         ? newArrivalsSelect
-        : PUBLIC_STORY_LIST_SELECT
+        : compactTrending
+          ? COMPACT_TRENDING_STORY_SELECT
+          : PUBLIC_STORY_LIST_SELECT
     )
   )
   .eq('status', 'published')
@@ -1945,6 +1967,20 @@ nextQuery = requireReaderVisibleEpisode(nextQuery)
             ? newArrivalsOffset + stories.length
             : null,
         },
+      })
+    }
+
+    if (compactTrending) {
+      return res.status(200).json({
+        ok: true,
+        stories: stories.map((story) => ({
+          id: story.id,
+          title: story.title,
+          cover_url: story.cover_url,
+          main_genre: story.main_genre,
+          is_adult: story.is_adult,
+          total_views: story.total_views,
+        })),
       })
     }
 
