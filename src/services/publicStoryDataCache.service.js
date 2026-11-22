@@ -1,6 +1,9 @@
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 const PENDING_SCHEDULE_CACHE_TTL_MS = 2 * 1000
 const MAX_CACHE_ENTRIES = 200
+const MAX_CACHE_ENTRY_BYTES = 512 * 1024
+const MAX_CACHE_TOTAL_BYTES = 12 * 1024 * 1024
+const MAX_STORY_VERSION_ENTRIES = 2000
 
 const publicStoryDataCache = new Map()
 const publicStoryDataInFlight = new Map()
@@ -51,23 +54,55 @@ function isSafePublicResponse(
 }
 
 function setCacheEntry(key, entry) {
+  let bodyBytes
+
+  try {
+    bodyBytes = Buffer.byteLength(
+      JSON.stringify(entry.body)
+    )
+  } catch {
+    return false
+  }
+
+  if (
+    bodyBytes <= 0 ||
+    bodyBytes > MAX_CACHE_ENTRY_BYTES
+  ) {
+    return false
+  }
+
   if (publicStoryDataCache.has(key)) {
     publicStoryDataCache.delete(key)
   }
 
-  publicStoryDataCache.set(key, entry)
+  publicStoryDataCache.set(key, {
+    ...entry,
+    bodyBytes,
+  })
+
+  let totalBytes = 0
+
+  for (const value of publicStoryDataCache.values()) {
+    totalBytes += Number(value.bodyBytes || 0)
+  }
 
   while (
-    publicStoryDataCache.size >
-    MAX_CACHE_ENTRIES
+    publicStoryDataCache.size > MAX_CACHE_ENTRIES ||
+    totalBytes > MAX_CACHE_TOTAL_BYTES
   ) {
     const oldestKey =
       publicStoryDataCache.keys().next().value
 
-    if (!oldestKey) break
+    if (oldestKey === undefined) break
+
+    const oldest = publicStoryDataCache.get(oldestKey)
+
+    totalBytes -= Number(oldest?.bodyBytes || 0)
 
     publicStoryDataCache.delete(oldestKey)
   }
+
+  return true
 }
 
 function deleteStoryKeys(storyId) {
@@ -99,6 +134,14 @@ export function invalidatePublicStoryDataCache(
     normalizedStoryId,
     getStoryVersion(normalizedStoryId) + 1
   )
+
+  if (
+    publicStoryDataVersions.size >
+    MAX_STORY_VERSION_ENTRIES
+  ) {
+    publicStoryDataVersions.clear()
+    publicStoryDataGlobalVersion += 1
+  }
 }
 
 export function cachePublicStoryDataResponse(
