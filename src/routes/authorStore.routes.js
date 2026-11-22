@@ -12,6 +12,7 @@ import { unlink } from 'node:fs/promises'
 import { getMyAuthorStoreOfflinePdfGrant, getMyAuthorStorePurchasedPdf } from '../controllers/authorStoreOfflinePdf.controller.js'
 import { requireUnpurchasedAuthorStorePdf } from '../middleware/authorStorePdfCheckoutGuard.middleware.js'
 import { getMyAuthorStorePdfOwnership } from '../controllers/authorStorePdfOwnership.controller.js'
+import { recheckMyAuthorStorePdfPayment } from '../controllers/authorStorePdfPaymentRecovery.controller.js'
 import {
   createAuthorStoreOrder,
   createAuthorStoreOrderPayment,
@@ -207,6 +208,12 @@ const binancePdfStatusIpLimit = createIpLimiter({
   max: 120,
 })
 
+const pdfPaymentRecheckIpLimit = createIpLimiter({
+  key: 'author-store-pdf-payment-recheck-ip',
+  windowMs: 60 * 1000,
+  max: 6,
+})
+
 router.post('/orders', createOrderIpLimit, legacyAuthorBookCountryGate, createAuthorStoreOrder)
 // Use actual product types from the DB, never client-supplied 'product_type'.
 const authorStoreDigitalCountryGate = async (req, res, next) => {
@@ -239,6 +246,7 @@ router.get('/downloads/my', requireUser, getMyAuthorStoreReaderDownloads)
 router.get('/downloads/:productId/offline-grant', requireUser, getMyAuthorStoreOfflinePdfGrant)
 router.get('/downloads/:productId/pdf', requireUser, getMyAuthorStorePurchasedPdf)
 router.get('/orders/pdf-ownership', requireUser, getMyAuthorStorePdfOwnership)
+router.post('/orders/:orderId/recheck-pdf-payment', pdfPaymentRecheckIpLimit, requireUser, recheckMyAuthorStorePdfPayment)
 router.get('/orders/status/:orderId', requireUser, getAuthorStoreOrderStatus)
 router.post('/orders/callback', handleAuthorStoreAbaCallback)
 router.put('/me/products/:productId', requireUser, updateMyAuthorStoreProduct)
