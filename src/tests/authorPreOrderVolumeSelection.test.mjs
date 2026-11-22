@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseAuthorPreOrderVolumeSelection } from '../src/services/authorPreOrderVolumeSelection.service.js'
+import { parseAuthorPreOrderVolumeSelection } from '../services/authorPreOrderVolumeSelection.service.js'
 
 const BOOK_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const BOOK_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
