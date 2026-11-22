@@ -2661,6 +2661,8 @@ query =
 }
 
 export async function getPublicStoryById(req, res) {
+  let stage = 'story_lookup'
+
   try {
     const { storyId } = req.params
 
@@ -2675,8 +2677,15 @@ export async function getPublicStoryById(req, res) {
     const story = await getPublishedReadableStory(storyId)
 
     if (!story) {
+      markRequestDiagnostic({
+        feature: 'public_story_detail',
+        stage: 'story_not_found',
+        error_code: 'STORY_NOT_FOUND',
+      })
+
       return res.status(404).json({
         ok: false,
+        code: 'STORY_NOT_FOUND',
         message: 'Story not found',
       })
     }
@@ -2690,18 +2699,28 @@ if (!readableEpisodes?.publishedEpisodes?.length) {
   })
 }
 
-    if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
+        if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
+      markRequestDiagnostic({
+        feature: 'public_story_detail',
+        stage: 'exclusive_not_approved',
+        error_code: 'STORY_NOT_FOUND',
+      })
+
       return res.status(404).json({
         ok: false,
+        code: 'STORY_NOT_FOUND',
         message: 'Story not found',
       })
     }
 
+    stage = 'reader_age_access'
     const ageAccess = await getReaderAgeAccess(req)
 
-if (!isStoryVisibleToReader(story, ageAccess)) {
-  return hideAdultStory(res)
-}
+    if (!isStoryVisibleToReader(story, ageAccess)) {
+      return hideAdultStory(res)
+    }
+
+    stage = 'load_story_metadata'
 
     const [
   { data: slides, error: slidesError },
@@ -2725,12 +2744,25 @@ return res.status(200).json({
   story: publicStory(story, slides || [], authorPage, rankByViews),
 })
   } catch (error) {
+    const rootCode = String(
+      error?.code || error?.name || 'UNKNOWN'
+    )
+      .replace(/[^a-zA-Z0-9_]/g, '_')
+      .slice(0, 60)
+
+    markRequestDiagnostic({
+      feature: 'public_story_detail',
+      stage,
+      error_code: rootCode,
+      response_status: 500,
+    })
+
     console.error('GET PUBLIC STORY ERROR:', error)
 
     return res.status(500).json({
       ok: false,
+      code: 'PUBLIC_STORY_DETAIL_FAILED',
       message: 'Failed to load story',
-      error: error.message,
     })
   }
 }
@@ -2748,14 +2780,22 @@ export async function getPublicShadowExclusiveStoryById(req, res) {
       })
     }
 
+    stage = 'published_episodes'
     const readableEpisodes = await getStoryEpisodeAccess(storyId)
 
-if (!readableEpisodes?.publishedEpisodes?.length) {
-  return res.status(404).json({
-    ok: false,
-    message: 'Shadow Exclusive story not found',
-  })
-}
+    if (!readableEpisodes?.publishedEpisodes?.length) {
+      markRequestDiagnostic({
+        feature: 'public_story_detail',
+        stage: 'no_published_episodes',
+        error_code: 'STORY_NOT_FOUND',
+      })
+
+      return res.status(404).json({
+        ok: false,
+        code: 'STORY_NOT_FOUND',
+        message: 'Story not found',
+      })
+    }
 
     const [
   { data: slides, error: slidesError },
