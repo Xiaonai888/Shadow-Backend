@@ -2805,8 +2805,9 @@ export async function getPublicStoryEpisodes(req, res) {
     const story = await getPublishedReadableStory(storyId)
 
     if (!story) {
-      return res.status(404).json({
+            return res.status(404).json({
         ok: false,
+        code: 'STORY_NOT_FOUND',
         message: 'Story not found',
       })
     }
@@ -2815,8 +2816,9 @@ export async function getPublicStoryEpisodes(req, res) {
       story.is_shadow_exclusive &&
       story.exclusive_status !== 'approved'
     ) {
-      return res.status(404).json({
+            return res.status(404).json({
         ok: false,
+        code: 'STORY_NOT_FOUND',
         message: 'Story not found',
       })
     }
@@ -2922,12 +2924,17 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
       ),
     })
     } catch (error) {
+    const rootCode = String(
+      error?.code || error?.name || 'EPISODES_FAILED'
+    )
+      .replace(/[^a-zA-Z0-9_]/g, '_')
+      .slice(0, 60)
+
     markRequestDiagnostic({
       feature: 'public_story_episodes',
       stage,
-      error_code: String(
-        error?.code || error?.name || 'EPISODES_FAILED'
-      ).slice(0, 60),
+      error_code: rootCode,
+      response_status: 500,
     })
 
     console.error(
@@ -2937,8 +2944,8 @@ if (!isStoryVisibleToReader(story, ageAccess)) {
 
     return res.status(500).json({
       ok: false,
+      code: 'PUBLIC_STORY_EPISODES_FAILED',
       message: 'Failed to load episodes',
-      error: error.message,
     })
   }
 }
