@@ -12,6 +12,11 @@ import {
 } from './memoryGuard.service.js'
 import { recordSystemUsage } from './systemUsageMonitor.service.js'
 import { registerRuntimeInspectable } from './runtimeMemoryInspector.service.js'
+import {
+  markResourceJobStarted,
+  markResourceJobFinished,
+} from './resourceController/resourceController.js'
+import { recordResourceAdmissionDecision } from './resourceController/resourceTelemetry.js'
 
 const ACTIVE_DRAIN_DELAY_MS = 250
 const IDLE_SAFETY_CHECK_MS = 10 * 60 * 1000
@@ -204,10 +209,15 @@ function startClaimedWorker(job, workerId) {
     telemetryEvents: 0,
     telemetryBytes: 0,
     telemetryErrors: 0,
+    reportedOutcome: null,
   }
 
-  const startMemory = getMemoryGuardSnapshot()
+  markResourceJobStarted({
+    jobType: job.job_type,
+    jobId: job.id,
+  })
 
+  const startMemory = getMemoryGuardSnapshot()
   console.log(
     'MEMORY_JOB_START:',
     JSON.stringify({
@@ -279,6 +289,10 @@ function startClaimedWorker(job, workerId) {
     }
 
     if (message.type === 'done' || message.type === 'failed') {
+      if (activeWorker?.jobId === job.id) {
+        activeWorker.reportedOutcome = message.type
+      }
+
       console.log(
         'MEMORY_JOB_RESULT:',
         JSON.stringify({
@@ -371,6 +385,27 @@ function startClaimedWorker(job, workerId) {
       )
     }
 
+    const completed =
+      code === 0 &&
+      !timedOut &&
+      !emergencyStopped &&
+      activeWorker?.reportedOutcome === 'done'
+
+    markResourceJobFinished({
+      jobType: job.job_type,
+      jobId: job.id,
+      status: completed ? 'completed' : 'failed',
+      reason: completed
+        ? ''
+        : timedOut
+          ? 'MANGA_PROCESSING_TIMEOUT'
+          : emergencyStopped
+            ? 'MANGA_PROCESSING_MEMORY_LIMIT'
+            : activeWorker?.reportedOutcome === 'failed'
+              ? 'MANGA_PROCESSING_FAILED'
+              : 'MANGA_WORKER_EXITED',
+    })
+
     activeWorker = null
     scheduleNext(ACTIVE_DRAIN_DELAY_MS)
   })
@@ -396,6 +431,13 @@ async function runCoordinatorCycle() {
 
     if (!admission.allowed) {
       nextDelay = RETRY_CHECK_MS
+
+      recordResourceAdmissionDecision({
+        jobType: 'manga_page_v2',
+        jobId: 'scheduler',
+        allowed: false,
+        reason: admission.reason,
+      })
 
       console.warn(
         'MEMORY_GUARD_WAIT:',
