@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { getMemoryGuardSnapshot } from './memoryGuard.service.js'
+import { readResourceCgroupMemory } from './resourceController/resourceCgroupMemory.js'
 
 const MB = 1024 * 1024
 const SAMPLE_INTERVAL_MS = 2000
@@ -26,6 +27,9 @@ function mb(bytes) {
 
 function processSnapshot() {
   const memory = process.memoryUsage()
+  const cgroup = readResourceCgroupMemory({
+    processUsage: memory,
+  })
 
   return {
     rss_mb: mb(memory.rss),
@@ -33,6 +37,9 @@ function processSnapshot() {
     heap_total_mb: mb(memory.heapTotal),
     external_mb: mb(memory.external),
     array_buffers_mb: mb(memory.arrayBuffers),
+    cgroup_available: cgroup.available,
+    cgroup_source: cgroup.source,
+    cgroup: cgroup.container,
   }
 }
 
