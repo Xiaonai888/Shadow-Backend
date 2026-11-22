@@ -9,7 +9,7 @@ import {
   authorPreOrderReconciliationManualEnabled,
   requireAuthorPreOrderReconciliationManualEnabled,
   authorPreOrderReconciliationSafeErrorCode,
-} from '../src/services/authorPreOrderReconciliationOpsPolicy.service.js'
+} from '../services/authorPreOrderReconciliationOpsPolicy.service.js'
 
 test('limits enforce a small bounded batch and a ten-minute cooldown', () => {
   assert.equal(AUTHOR_PREORDER_RECON_OPS_MAX_BATCH, 10)
