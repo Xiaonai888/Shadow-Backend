@@ -29,11 +29,11 @@ jobs:
         run: |
           set -euo pipefail
           files=(
-            tests/authorPreOrderLaunchReadinessPolicy.test.mjs
-            tests/authorPreOrderVolumeSelection.test.mjs
-            tests/authorPreOrderPaymentValidation.test.mjs
-            tests/authorPreOrderMultiVolumeTerminalPolicy.test.mjs
-            tests/authorPreOrderReconciliationOpsPolicy.test.mjs
+            src/tests/authorPreOrderLaunchReadinessPolicy.test.mjs
+            src/tests/authorPreOrderVolumeSelection.test.mjs
+            src/tests/authorPreOrderPaymentValidation.test.mjs
+            src/tests/authorPreOrderMultiVolumeTerminalPolicy.test.mjs
+            src/tests/authorPreOrderReconciliationOpsPolicy.test.mjs
             src/services/authorPreOrderValidation.service.js
             src/services/authorPreOrderLaunchReadinessPolicy.service.js
             src/services/authorPreOrderVolumeSelection.service.js
@@ -54,11 +54,11 @@ jobs:
         run: |
           set -euo pipefail
           node --test \
-            tests/authorPreOrderLaunchReadinessPolicy.test.mjs \
-            tests/authorPreOrderVolumeSelection.test.mjs \
-            tests/authorPreOrderPaymentValidation.test.mjs \
-            tests/authorPreOrderMultiVolumeTerminalPolicy.test.mjs \
-            tests/authorPreOrderReconciliationOpsPolicy.test.mjs \
+            src/tests/authorPreOrderLaunchReadinessPolicy.test.mjs \
+            src/tests/authorPreOrderVolumeSelection.test.mjs \
+            src/tests/authorPreOrderPaymentValidation.test.mjs \
+            src/tests/authorPreOrderMultiVolumeTerminalPolicy.test.mjs \
+            src/tests/authorPreOrderReconciliationOpsPolicy.test.mjs \
             2>&1 | tee "$RUNNER_TEMP/preorder-tests.log"
 
       - name: Show test summary
