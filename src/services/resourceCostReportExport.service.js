@@ -156,6 +156,89 @@ function routeAttributionRows(report) {
   )
 }
 
+function renderHourlyCsvRows(report) {
+  const HOUR_MS = 3_600_000
+  const ICT_OFFSET_MS = 7 * HOUR_MS
+  const bytes = (value) => {
+    if (value === null || value === undefined || value === '') return null
+    const number = Number(value)
+    return Number.isSafeInteger(number) && number >= 0 ? number : null
+  }
+  const ictHour = (hour) =>
+    new Date(Date.parse(hour) + ICT_OFFSET_MS)
+      .toISOString().slice(0, 16).replace('T', ' ')
+  const fields = [
+    'http_response_bytes',
+    'service_initiated_bytes',
+    'websocket_response_bytes',
+    'private_link_bytes',
+  ]
+  const rows = new Map()
+  const reportEnd = Date.parse(report.period.to)
+
+  for (const item of Array.isArray(report.renderHourlyRows) ? report.renderHourlyRows : []) {
+    const serviceId = String(item?.service_id || '').trim()
+    const hour = String(item?.hour_start || '')
+    const hourMs = Date.parse(hour)
+    const total = bytes(item?.total_bytes)
+    if (!serviceId || !Number.isFinite(hourMs) || total === null) continue
+
+    const values = fields.map((field) => bytes(item[field]))
+    const completeBreakdown = item.breakdown_available === true &&
+      values.every((value) => value !== null)
+    const breakdownTotal = completeBreakdown
+      ? values.reduce((sum, value) => sum + value, 0)
+      : null
+    const inProgress = Number.isFinite(reportEnd) && hourMs + HOUR_MS > reportEnd
+
+    rows.set(`${serviceId}|${hour}`, {
+      hour_start_utc: hour,
+      hour_start_ict: ictHour(hour),
+      service_id: serviceId,
+      coverage: inProgress ? 'in_progress'
+        : !completeBreakdown ? 'incomplete_breakdown'
+          : breakdownTotal !== total ? 'breakdown_mismatch' : 'observed',
+      total_bytes: total,
+      http_response_bytes: values[0],
+      service_initiated_bytes: values[1],
+      websocket_response_bytes: values[2],
+      private_link_bytes: values[3],
+      breakdown_gap_bytes: completeBreakdown ? Math.max(0, total - breakdownTotal) : null,
+      breakdown_excess_bytes: completeBreakdown ? Math.max(0, breakdownTotal - total) : null,
+      note: 'Stored Render provider metrics, not invoice cost or application-route attribution.',
+    })
+  }
+
+  for (const diagnostic of report.sources?.render?.service_hour_diagnostics || []) {
+    const serviceId = String(diagnostic?.service_id || '').trim()
+    if (!serviceId) continue
+    for (const hour of diagnostic.missing_hour_utc || []) {
+      if (!Number.isFinite(Date.parse(hour))) continue
+      const key = `${serviceId}|${hour}`
+      if (rows.has(key)) continue
+      rows.set(key, {
+        hour_start_utc: hour,
+        hour_start_ict: ictHour(hour),
+        service_id: serviceId,
+        coverage: 'missing_hour',
+        total_bytes: null,
+        http_response_bytes: null,
+        service_initiated_bytes: null,
+        websocket_response_bytes: null,
+        private_link_bytes: null,
+        breakdown_gap_bytes: null,
+        breakdown_excess_bytes: null,
+        note: 'No stored provider measurement for this mature service-hour; unknown, not zero.',
+      })
+    }
+  }
+
+  return [...rows.values()].sort((a, b) =>
+    a.hour_start_utc.localeCompare(b.hour_start_utc) ||
+    a.service_id.localeCompare(b.service_id)
+  )
+}
+
 function readme(report) {
   return [
     'Shadow Resource & Cost Report',
@@ -164,6 +247,8 @@ function readme(report) {
     'Calendar: Asia/Phnom_Penh',
     '',
     'Render bandwidth is sourced from stored Render provider measurements.',
+    'RenderHourly.csv shows measured service-hours plus known missing mature hours (blank bytes are unknown, not zero).',
+    'Hourly provider values are not invoices and cannot identify the application route responsible for each byte.',
     'Provider usage metrics, application request measurements, and upload audit counters must not be added to Render bytes.',
     'Cumulative metrics may omit the initial interval when no previous valid observation exists.',
     'Missing provider intervals and missing source breakdowns must not be treated as zero.',
@@ -265,7 +350,16 @@ export function createResourceCostDownload(report, format = 'full-zip') {
   }
   const stamp = report.period.from.slice(0, 10).replaceAll('-', '')
   if (format === 'full-zip') {
-    const entries = Object.values(files).concat([['README.txt', readme(report)]])
+    const hourlyColumns = [
+      'hour_start_utc', 'hour_start_ict', 'service_id', 'coverage',
+      'total_bytes', 'http_response_bytes', 'service_initiated_bytes',
+      'websocket_response_bytes', 'private_link_bytes',
+      'breakdown_gap_bytes', 'breakdown_excess_bytes', 'note',
+    ]
+    const entries = Object.values(files).concat([
+      ['RenderHourly.csv', csv(hourlyColumns, renderHourlyCsvRows(report))],
+      ['README.txt', readme(report)],
+    ])
     return {
       filename: `shadow-resource-cost_${stamp}.zip`,
       contentType: 'application/zip',
