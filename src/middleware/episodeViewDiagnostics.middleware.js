@@ -103,7 +103,14 @@ function traceOperation(operation) {
       const isSlow = elapsed >= SLOW_MS
       const errorCode = safeLabel(body?.code || (status >= 500 ? 'HTTP_5XX' : 'none'))
       const expected4xx = [401, 403, 404, 423, 429].includes(status)
-      const isError = status >= 400 || body?.ok === false
+      const isExpectedLock =
+        status === 423 &&
+        body?.code === 'EPISODE_LOCKED' &&
+        (
+          (operation === 'episode_detail' && body?.locked === true) ||
+          operation === 'episode_view'
+        )
+      const isError = !isExpectedLock && (status >= 400 || body?.ok === false)
 
       state.totalMs += elapsed
       if (operation === 'episode_view') {
