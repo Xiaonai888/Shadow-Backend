@@ -90,6 +90,44 @@ function cloneProviderState() {
   return JSON.parse(JSON.stringify(providerState))
 }
 
+function compactProviderStateForSnapshot() {
+  const render = providerState.render || {}
+  const supabaseState = providerState.supabase || {}
+  const r2 = providerState.cloudflare_r2 || {}
+
+  return {
+    last_sync_at: providerState.last_sync_at || null,
+    next_sync_at: providerState.next_sync_at || null,
+    poll_requests: Number(providerState.poll_requests || 0),
+    poll_errors: Number(providerState.poll_errors || 0),
+    render: {
+      status: render.status || 'unknown',
+      checked_at: render.checked_at || null,
+      service_id: render.service_id || null,
+      provider_bytes: render.provider_bytes ?? null,
+      billing_breakdown: render.billing_breakdown || null,
+      hourly_history: render.hourly_history ? {
+        status: render.hourly_history.status || null,
+        saved: render.hourly_history.saved ?? null,
+      } : null,
+      error: render.error || null,
+    },
+    supabase: {
+      status: supabaseState.status || 'unknown',
+      checked_at: supabaseState.checked_at || null,
+      total_requests: supabaseState.total_requests ?? null,
+      error: supabaseState.error || null,
+    },
+    cloudflare_r2: {
+      status: r2.status || 'unknown',
+      checked_at: r2.checked_at || null,
+      storage_bytes: r2.storage?.total?.total_bytes ?? null,
+      operation_requests: r2.operations?.requests ?? null,
+      errors: Array.isArray(r2.errors) ? r2.errors.slice(0, 8) : [],
+    },
+    reconciliation: providerState.reconciliation || null,
+  }
+}
 function rowKey(row) {
   return [
     row.kind || 'unknown',
@@ -506,7 +544,7 @@ function buildSnapshot(now = Date.now()) {
       summary_rows: summarizeUsageMinutes(minutes).rows,
       resource_cost_attribution: buildResourceCostWindowAttribution(minutes),
       provider_reconciliation:
-        cloneProviderState(),
+        compactProviderStateForSnapshot(),
     },
   }
 }
