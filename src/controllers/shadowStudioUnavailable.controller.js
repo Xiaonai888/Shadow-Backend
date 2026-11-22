@@ -106,18 +106,6 @@ export async function replaceStudioUnavailableLink(req, res) {
   if (!owner) return
   const id = String(req.params.id || '')
   const candidate = String(req.body?.video_url || '').trim()
-  if (!UUID.test(id) || candidate.length > 500 || !parseShadowYoutubeId(candidate) ||
-    Object.keys(req.body || {}).some(key => key !== 'video_url')) {
-    return res.status(400).json({ ok: false, message: 'Enter a valid YouTube link.' })
-  }
-  try {
-    const row = await findOwnerVideo(owner, id)
-    if (!row) return res.status(404).json({ ok: false, message: 'Video no longer unavailable.' })
-export async function replaceStudioUnavailableLink(req, res) {
-  const owner = params(req, res)
-  if (!owner) return
-  const id = String(req.params.id || '')
-  const candidate = String(req.body?.video_url || '').trim()
   if (!UUID.test(id) || candidate.length > 500 || !studioYoutubeId(candidate) ||
       Object.keys(req.body || {}).some(key => key !== 'video_url')) {
     return res.status(400).json({ ok: false, message: 'Enter a valid YouTube link.' })
