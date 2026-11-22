@@ -98,7 +98,8 @@ function recordFiveXXDiagnostic(context, status, elapsedMs) {
     failure?.code || marker.error_code || context.response_error_code || `HTTP_${status}`
   )
   const stage = safeFiveXXStage(
-    marker.stage || marker.session_stage || marker.error_stage || marker.phase
+    marker.stage || marker.session_stage ||
+    marker.error_stage || marker.income_stage || marker.phase
   )
   const feature = safeFiveXXStage(marker.feature || 'unknown')
   const provider = safeFiveXXCode(failure?.provider || 'APPLICATION', 'APPLICATION')
@@ -938,7 +939,7 @@ function recordHistoricalErrorEvidence(
   )
   const diagnosticStage = safeFiveXXStage(
     marker?.stage || marker?.session_stage ||
-      marker?.error_stage || marker?.phase
+      marker?.error_stage || marker?.income_stage || marker?.phase
   )
   const sampleError =
     cleanHistoricalErrorText(
