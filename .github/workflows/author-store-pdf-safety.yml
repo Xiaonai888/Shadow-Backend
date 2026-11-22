@@ -1,0 +1,93 @@
+name: Author Store PDF Safety Tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/services/authorStorePdf*'
+      - 'src/middleware/authorStorePdf*'
+      - 'src/services/telegramMissingReportRecovery.service.js'
+      - 'src/tests/authorStorePdf*.test.mjs'
+      - '.github/workflows/author-store-pdf-safety.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/services/authorStorePdf*'
+      - 'src/middleware/authorStorePdf*'
+      - 'src/services/telegramMissingReportRecovery.service.js'
+      - 'src/tests/authorStorePdf*.test.mjs'
+      - '.github/workflows/author-store-pdf-safety.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: author-store-pdf-safety-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pdf-safety:
+    name: PDF checkout, ownership, ABA and Telegram safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Checkout Shadow Backend
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check all required PDF files and syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            src/services/authorStorePdfOwnership.service.js
+            src/middleware/authorStorePdfCheckoutGuard.middleware.js
+            src/services/authorStorePdfAbaVerify.service.js
+            src/services/telegramMissingReportRecovery.service.js
+            src/tests/authorStorePdfOwnership.test.mjs
+            src/tests/authorStorePdfCheckoutGuard.test.mjs
+            src/tests/authorStorePdfAbaVerify.test.mjs
+            src/tests/authorStorePdfTelegramRetry.test.mjs
+          )
+          for file in "${files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error file=$file::Missing required PDF safety file"
+              exit 1
+            fi
+            node --check "$file"
+          done
+
+      - name: Run PDF safety tests without secrets or database
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test \
+            src/tests/authorStorePdfOwnership.test.mjs \
+            src/tests/authorStorePdfCheckoutGuard.test.mjs \
+            src/tests/authorStorePdfAbaVerify.test.mjs \
+            src/tests/authorStorePdfTelegramRetry.test.mjs \
+            2>&1 | tee "$RUNNER_TEMP/pdf-safety-tests.log"
+
+      - name: Summarize safety checks
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Author Store PDF safety tests'
+            echo ''
+            echo 'These checks use mock payments and do not contact ABA, Binance, Telegram or Supabase.'
+            echo 'They do not deploy code or refund any payment.'
+            echo ''
+            if [[ -f "$RUNNER_TEMP/pdf-safety-tests.log" ]]; then
+              echo '```text'
+              tail -n 22 "$RUNNER_TEMP/pdf-safety-tests.log"
+              echo '```'
+            else
+              echo 'Tests did not begin. Inspect earlier steps.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
