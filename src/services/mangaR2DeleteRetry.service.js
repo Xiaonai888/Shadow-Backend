@@ -192,7 +192,7 @@ async function runMangaDevicePartsCleanupBatch() {
       .from('manga_device_part_sessions')
       .select('id,user_id,status,manifest,result')
       .is('temp_cleanup_completed_at', null)
-      .in('status', ['pending', 'completed'])
+      .in('status', ['pending', 'processing', 'completed'])
       .lte('expires_at', cutoff)
       .order('expires_at', { ascending: true })
       .limit(DEVICE_CLEANUP_BATCH_SIZE)
