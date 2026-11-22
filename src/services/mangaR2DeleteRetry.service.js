@@ -452,13 +452,36 @@ async function runWorkerAndReschedule() {
       await runMangaR2DeleteRetryBatch()
 
     if (
-      result.scanned ||
-      result.failed
-    ) {
+async function runWorkerAndReschedule() {
+  try {
+    const result = await runMangaR2DeleteRetryBatch()
+
+    if (result.scanned || result.failed) {
       console.log(
         'MANGA_R2_DELETE_RETRY:',
         JSON.stringify(result)
       )
+    }
+
+    if (
+      process.env.MANGA_DEVICE_PARTS_ENABLED === 'true' &&
+      Date.now() >= nextDeviceCleanupAt
+    ) {
+      try {
+        const cleanup = await runMangaDevicePartsCleanupBatch()
+
+        if (cleanup.scanned || cleanup.failed) {
+          console.log(
+            'MANGA_DEVICE_EXPIRED_CLEANUP:',
+            JSON.stringify(cleanup)
+          )
+        }
+      } catch (error) {
+        console.error(
+          'MANGA_DEVICE_EXPIRED_CLEANUP_ERROR:',
+          error
+        )
+      }
     }
 
     await scheduleNextQueuedRetry()
@@ -468,9 +491,7 @@ async function runWorkerAndReschedule() {
       error
     )
 
-    armWorkerTimer(
-      WORKER_RECOVERY_DELAY_MS
-    )
+    armWorkerTimer(WORKER_RECOVERY_DELAY_MS)
   }
 }
 
