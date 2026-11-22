@@ -22,6 +22,19 @@ function normalizeStoryLanguage(value) {
   return STORY_LANGUAGE_NAMES[String(value || '').trim().toLowerCase()] || ''
 }
 
+const READER_VISIBLE_EPISODE_EMBED =
+  'reader_visible_episodes:episodes!inner()'
+
+function requireReaderVisibleEpisode(query) {
+  return query
+    .eq('reader_visible_episodes.status', 'published')
+    .is('reader_visible_episodes.deleted_at', null)
+    .or(
+      `first_published_at.is.null,first_published_at.lte.${new Date().toISOString()}`,
+      { referencedTable: 'reader_visible_episodes' }
+    )
+}
+
 const VALID_TYPES = new Set([
   'all',
   'readers',
@@ -709,7 +722,7 @@ async function searchStories(
   const scanLimit =
     getScanLimit(limit, keyword)
   const select =
-    'id, author_id, user_id, title, story_type, story_language, main_genre, story_status, tags, description, is_adult, cover_url, landscape_thumbnail_url, status, access_type, total_episodes, total_views, total_likes, total_comments, created_at, updated_at'
+    `id, author_id, user_id, title, story_type, story_language, main_genre, story_status, tags, description, is_adult, cover_url, landscape_thumbnail_url, status, access_type, total_episodes, total_views, total_likes, total_comments, created_at, updated_at, ${READER_VISIBLE_EPISODE_EMBED}`
   const filter = makeIlikeFilter(
     [
       'title',
@@ -724,11 +737,13 @@ async function searchStories(
   )
 
   function baseQuery() {
-    let query = supabase
-      .from('stories')
-      .select(select)
-      .eq('status', 'published')
-      .is('deleted_at', null)
+  let query = supabase
+    .from('stories')
+    .select(select)
+    .eq('status', 'published')
+    .is('deleted_at', null)
+
+  query = requireReaderVisibleEpisode(query)
 
    query =
   applyAdultStoryVisibility(
@@ -1600,16 +1615,24 @@ async function buildDiscoverSearchPayload({
     if ((type === 'all' || type === 'stories') && storyCandidates.length === 0) {
       fallbackRequests.push((async () => {
         storyCandidates = await fuzzySearch(
-          'stories',
-          'title',
-          'id, author_id, user_id, title, story_type, story_language, main_genre, story_status, tags, description, is_adult, cover_url, landscape_thumbnail_url, status, access_type, total_episodes, total_views, total_likes, total_comments, created_at, updated_at',
-          (query) => {
-            let filtered = query.eq('status', 'published').is('deleted_at', null)
-            filtered = applyAdultStoryVisibility(filtered, ageAccess)
-            if (storySetting) filtered = filtered.contains('story_settings', [storySetting])
-            return filtered
-          }
-        )
+  'stories',
+  'title',
+  `id, author_id, user_id, title, story_type, story_language, main_genre, story_status, tags, description, is_adult, cover_url, landscape_thumbnail_url, status, access_type, total_episodes, total_views, total_likes, total_comments, created_at, updated_at, ${READER_VISIBLE_EPISODE_EMBED}`,
+  (query) => {
+    let filtered = query
+      .eq('status', 'published')
+      .is('deleted_at', null)
+
+    filtered = requireReaderVisibleEpisode(filtered)
+    filtered = applyAdultStoryVisibility(filtered, ageAccess)
+
+    if (storySetting) {
+      filtered = filtered.contains('story_settings', [storySetting])
+    }
+
+    return filtered
+  }
+)
       })())
     }
 
