@@ -1,4 +1,6 @@
 import { getRuntimeMemoryInspector } from '../services/runtimeMemoryInspector.service.js'
+import { getResourceSystemControlSnapshot } from '../services/resourceController/resourceSystemControlBridge.js'
+import { inspectResourceWorkerReadiness } from '../services/resourceController/resourceWorkerReadiness.js'
 import express from 'express'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { createRateLimit as rateLimit } from '../middleware/rateLimit.middleware.js'
@@ -254,6 +256,14 @@ router.get(
       regression: getSystemUsageRegressionState(),
       providers: getSystemUsageProviderState(),
       runtime: getRuntimeMemoryInspector(),
+      resource_controller: getResourceSystemControlSnapshot({
+        jobType: 'manga_page_v2',
+        eventLimit: 30,
+        conditionLimit: 20,
+      }),
+      manga_worker_readiness: inspectResourceWorkerReadiness({
+        jobType: 'manga_page_v2',
+      }),
     })
   }
 )
