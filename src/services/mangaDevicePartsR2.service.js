@@ -1,5 +1,6 @@
 import {
   CopyObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   S3Client,
@@ -156,5 +157,75 @@ export async function copyVerifiedMangaDevicePart({ owner, sessionId, part, chec
     file_size: part.size,
     mime_type: 'image/webp',
     quality: part.quality,
+  }
+}
+
+export async function deleteMangaDeviceTemporaryParts({
+  owner,
+  sessionId,
+  partCount,
+}) {
+  const safeOwner = String(owner || '').trim()
+  const safeSession = String(sessionId || '').trim()
+  const count = Number(partCount)
+
+  const uuidPattern =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+  if (
+    !uuidPattern.test(safeOwner) ||
+    !uuidPattern.test(safeSession) ||
+    !Number.isSafeInteger(count) ||
+    count < 1 ||
+    count > MANGA_DEVICE_PARTS_LIMITS.maxParts
+  ) {
+    throw mangaDevicePartsError(
+      422,
+      'MANGA_DEVICE_CLEANUP_INPUT_INVALID',
+      'Manga temporary cleanup parameters are invalid',
+      'cleanup'
+    )
+  }
+
+  const objects = Array.from(
+    { length: count },
+    (_, index) => ({
+      Key: mangaDevicePartKeys(
+        safeOwner,
+        safeSession,
+        index
+      ).temporary,
+    })
+  )
+
+  const cfg = config()
+
+  const response = await r2().send(
+    new DeleteObjectsCommand({
+      Bucket: cfg.bucket,
+      Delete: {
+        Objects: objects,
+        Quiet: true,
+      },
+    })
+  )
+
+  const errors = Array.isArray(response.Errors)
+    ? response.Errors
+    : []
+
+  if (errors.length > 0) {
+    throw mangaDevicePartsError(
+      503,
+      'MANGA_DEVICE_TEMP_CLEANUP_PARTIAL',
+      'Some temporary Manga parts could not be deleted',
+      'cleanup'
+    )
+  }
+
+  return {
+    requested: objects.length,
+    deleted: objects.length,
+    failed: 0,
   }
 }
