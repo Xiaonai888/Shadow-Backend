@@ -65,6 +65,10 @@ jobs:
               exit 1
             fi
           done
+          if ! grep -Fq 'PRE_ORDER_CI_GUARD_MISSING' src/tests/sql/authorPreOrderCrossFormatStockGuard.integration.sql || ! grep -Fq 'public.preorder_ci_expect_rejection' src/tests/sql/authorPreOrderCrossFormatStockGuard.integration.sql; then
+            echo "::error file=src/tests/sql/authorPreOrderCrossFormatStockGuard.integration.sql::Expected SQL test content is missing or replaced with another file type"
+            exit 1
+          fi
           bash -n src/tests/authorPreOrderCrossFormatStockGuard.concurrent.sh
           node --check src/tests/authorPreOrderCrossFormatStockGuard.test.mjs
 
@@ -73,6 +77,13 @@ jobs:
         run: |
           set -euo pipefail
           psql -X -v ON_ERROR_STOP=1 "$PGADMINURL" -c 'create database preorder_guard_ci'
+
+      - name: Create CI-only Supabase compatibility roles
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -X -v ON_ERROR_STOP=1 "$PGADMINURL" -c 'create role anon nologin'
+          psql -X -v ON_ERROR_STOP=1 "$PGADMINURL" -c 'create role authenticated nologin'
 
       - name: Apply CI fixture and exact GitHub stock guard migration
         shell: bash
