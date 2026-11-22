@@ -25,7 +25,7 @@ export function getResourceSystemControlSnapshot({
 
   return {
     generatedAt: new Date().toISOString(),
-    mode: 'passive_read_only_until_integrated',
+    mode: 'connected_monitoring_only',
     status: blocker ? 'attention' : 'observed',
     check: {
       jobType: String(jobType),
@@ -42,9 +42,9 @@ export function getResourceSystemControlSnapshot({
     policies: listResourcePolicies(),
     coverage: {
       runtime: runtime.available,
-      controllerLifecycleConnected: false,
-      workerEventsConnected: false,
-      adminEndpointConnected: false,
+      controllerLifecycleConnected: true,
+      workerEventsConnected: true,
+      adminEndpointConnected: true,
       persistentIncidentStorageConnected: false,
     },
   }
