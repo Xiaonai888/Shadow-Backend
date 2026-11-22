@@ -2,6 +2,8 @@ import { getReaderAgeAccess } from './storyAgeAccess.service.js'
 import { registerRuntimeInspectable } from './runtimeMemoryInspector.service.js'
 
 const MAX_CACHE_ENTRIES = 300
+const MAX_CACHE_ENTRY_BYTES = 1024 * 1024
+const MAX_CACHE_TOTAL_BYTES = 16 * 1024 * 1024
 const CACHE_TTL_MS = 60 * 1000
 const VIEW_SENSITIVE_INVALIDATION_MS = 20 * 1000
 
@@ -80,23 +82,54 @@ async function getCacheKey(req) {
 }
 
 function setCacheEntry(key, entry) {
+  let bodyBytes
+
+  try {
+    bodyBytes = Buffer.byteLength(
+      JSON.stringify(entry.body)
+    )
+  } catch {
+    return false
+  }
+
+  if (
+    bodyBytes <= 0 ||
+    bodyBytes > MAX_CACHE_ENTRY_BYTES
+  ) {
+    return false
+  }
+
   if (publicStoriesCache.has(key)) {
     publicStoriesCache.delete(key)
   }
 
-  publicStoriesCache.set(key, entry)
+  publicStoriesCache.set(key, {
+    ...entry,
+    bodyBytes,
+  })
+
+  let totalBytes = 0
+
+  for (const cached of publicStoriesCache.values()) {
+    totalBytes += Number(cached.bodyBytes || 0)
+  }
 
   while (
-    publicStoriesCache.size >
-    MAX_CACHE_ENTRIES
+    publicStoriesCache.size > MAX_CACHE_ENTRIES ||
+    totalBytes > MAX_CACHE_TOTAL_BYTES
   ) {
-    const oldestKey =
-      publicStoriesCache.keys().next().value
+    const oldestKey = publicStoriesCache.keys().next().value
 
-    if (!oldestKey) break
+    if (oldestKey === undefined) break
+
+    const oldest = publicStoriesCache.get(oldestKey)
+
+    totalBytes -= Number(oldest?.bodyBytes || 0)
 
     publicStoriesCache.delete(oldestKey)
   }
+
+  return true
 }
 
 function invalidateViewSensitiveEntries() {
