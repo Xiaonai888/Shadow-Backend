@@ -1,45 +1,69 @@
 import { supabase } from '../config/supabase.js'
 import { preOrderError, preOrderUuid } from './authorPreOrderValidation.service.js'
 
+const STOCK_RPC = 'author_preorder_stock_snapshot_multivolume'
+const MISSING_RPC_CODES = new Set(['PGRST202', '42883'])
+
+function invalidStock() {
+  throw preOrderError('PRE_ORDER_STOCK_SNAPSHOT_INCONSISTENT', 'Pre-order stock values are inconsistent', 503)
+}
+
+function inventoryNumber(value) {
+  if (value === null || value === undefined || typeof value === 'boolean' ||
+      typeof value === 'string' && !value.trim()) invalidStock()
+  const number = Number(value)
+  if (!Number.isSafeInteger(number) || number < 0) invalidStock()
+  return number
+}
+
+function checkedEdition(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item) ||
+      typeof item.enabled !== 'boolean') invalidStock()
+
+  const quota = inventoryNumber(item.quota)
+  const paidReserved = inventoryNumber(item.paid_reserved)
+  const pendingHeld = inventoryNumber(item.payment_pending_held)
+  const available = inventoryNumber(item.available)
+  const enabled = item.enabled
+
+  if (paidReserved + pendingHeld > quota ||
+      available !== (enabled ? quota - paidReserved - pendingHeld : 0)) {
+    invalidStock()
+  }
+
+  return {
+    enabled,
+    quota,
+    paid_reserved: paidReserved,
+    payment_pending_held: pendingHeld,
+    available,
+  }
+}
+
 export async function getAuthorPreOrderStockAvailability(campaignId) {
   const id = preOrderUuid(campaignId, 'campaign ID')
-  const { data, error } = await supabase.rpc('author_preorder_stock_snapshot', {
-    p_campaign_id: id,
-  })
+  const { data, error } = await supabase.rpc(STOCK_RPC, { p_campaign_id: id })
   if (error) {
     console.error('PRE_ORDER_STOCK_SNAPSHOT_FAILED:', String(error.code || 'unknown'))
+    if (MISSING_RPC_CODES.has(String(error.code || ''))) {
+      throw preOrderError('PRE_ORDER_STOCK_SNAPSHOT_MIGRATION_REQUIRED', 'Multi-volume stock snapshot has not been installed', 503)
+    }
     throw preOrderError('PRE_ORDER_STOCK_SNAPSHOT_UNAVAILABLE', 'Stock information is temporarily unavailable', 503)
   }
-  if (!Array.isArray(data)) {
+  if (!Array.isArray(data) || data.length > 10) {
     throw preOrderError('PRE_ORDER_STOCK_SNAPSHOT_INVALID', 'Stock response was invalid', 503)
   }
 
+  const seen = new Set()
   return data.map(book => {
-    const edition = kind => {
-      const item = book?.[kind]
-      const quota = Number(item?.quota)
-      const paidReserved = Number(item?.paid_reserved)
-      const pendingHeld = Number(item?.payment_pending_held)
-      const available = Number(item?.available)
-      if (![quota, paidReserved, pendingHeld, available].every(Number.isSafeInteger) ||
-          quota < 0 || paidReserved < 0 || pendingHeld < 0 || available < 0 ||
-          paidReserved + pendingHeld > quota ||
-          available !== (item?.enabled === true ? quota - paidReserved - pendingHeld : 0)) {
-        throw preOrderError('PRE_ORDER_STOCK_SNAPSHOT_INCONSISTENT', 'Pre-order stock values are inconsistent', 503)
-      }
-      return {
-        enabled: item.enabled === true,
-        quota,
-        paid_reserved: paidReserved,
-        payment_pending_held: pendingHeld,
-        available,
-      }
-    }
+    const bookId = preOrderUuid(book?.book_id, 'book ID').toLowerCase()
+    if (seen.has(bookId)) invalidStock()
+    seen.add(bookId)
     return {
-      book_id: preOrderUuid(book?.book_id, 'book ID'),
+      book_id: bookId,
       title: String(book?.title || ''),
-      standard: edition('standard'),
-      limited: edition('limited'),
+      standard: checkedEdition(book?.standard),
+      limited: checkedEdition(book?.limited),
       snapshot_only: true,
     }
   })
