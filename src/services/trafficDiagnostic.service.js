@@ -556,6 +556,7 @@ function add(map, key, bytes = 0, error = false, durationMs = 0) {
 
   recordSystemUsage({
     kind: map === outbound ? 'external_request' : 'http_response',
+    direction: 'outbound',
     key,
     bytes,
     error,
