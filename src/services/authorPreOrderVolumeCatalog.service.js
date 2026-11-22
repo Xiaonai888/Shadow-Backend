@@ -19,6 +19,9 @@ const BOOK_FIELDS = [
 function storageError(error, step) {
   if (!error) return
   console.error(`PRE_ORDER_VOLUME_${step}_DB:`, String(error.code || 'unknown'))
+  if (step === 'STOCK' && ['PGRST202', '42883'].includes(String(error.code || ''))) {
+    throw preOrderError('PRE_ORDER_VOLUME_STOCK_MIGRATION_REQUIRED', 'Multi-volume inventory snapshot has not been installed', 503)
+  }
   throw preOrderError('PRE_ORDER_VOLUME_STORAGE_UNAVAILABLE', 'Volume information is temporarily unavailable', 503)
 }
 
@@ -65,7 +68,7 @@ export async function getPublicAuthorPreOrderVolumeCatalog(campaignId, { include
   const [booksResult, stockResult] = await Promise.all([
     supabase.from('author_preorder_books').select(BOOK_FIELDS)
       .eq('campaign_id', id).order('position', { ascending: true }).limit(11),
-    supabase.rpc('author_preorder_stock_snapshot', { p_campaign_id: id }),
+    supabase.rpc('author_preorder_stock_snapshot_multivolume', { p_campaign_id: id }),
   ])
   storageError(booksResult.error, 'BOOKS')
   storageError(stockResult.error, 'STOCK')
