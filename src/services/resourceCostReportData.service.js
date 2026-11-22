@@ -231,5 +231,10 @@ export async function getResourceCostReport({
     enumerable: false,
   })
 
+  Object.defineProperty(report, 'applicationHourlyRows', {
+    value: applicationRows,
+    enumerable: false,
+  })
+
   return report
 }
