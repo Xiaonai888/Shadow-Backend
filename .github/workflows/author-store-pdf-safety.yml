@@ -54,13 +54,26 @@ jobs:
             src/tests/authorStorePdfAbaVerify.test.mjs
             src/tests/authorStorePdfTelegramRetry.test.mjs
           )
+          missing=()
           for file in "${files[@]}"; do
             if [[ ! -f "$file" ]]; then
-              echo "::error file=$file::Missing required PDF safety file"
-              exit 1
+              echo "::error file=$file::Missing required PDF safety file in commit ${GITHUB_SHA}"
+              missing+=("$file")
             fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            {
+              echo '## Missing PDF safety files'
+              echo ''
+              echo "Checked commit: \`${GITHUB_SHA}\`"
+              printf -- '- `%s`\n' "${missing[@]}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          for file in "${files[@]}"; do
             node --check "$file"
           done
+          echo "Validated ${#files[@]} PDF safety files in commit ${GITHUB_SHA}"
 
       - name: Run PDF safety tests without secrets or database
         shell: bash
