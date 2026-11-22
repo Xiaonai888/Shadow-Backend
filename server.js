@@ -81,6 +81,7 @@ import { startAuthorCommentCleanup } from './src/services/authorCommentCleanup.s
 import { startAuthorPostCleanup } from './src/services/authorPostCleanup.service.js'
 import { startCommentTrashCleanup } from './src/services/commentTrashCleanup.service.js'
 import { startReaderLibraryTrashCleanup } from './src/services/readerLibraryTrashCleanup.service.js'
+import { startShadowYoutubeReelMonitor } from './src/services/youtubeReelAvailabilityMonitor.service.js'
 import fastRoutes from './src/routes/fast.routes.js'
 import studioAnalyticsRoutes from './src/routes/shadowStudioAnalytics.routes.js'
 import studioChannelAnalyticsRoutes from './src/routes/shadowStudioChannelAnalytics.routes.js'
@@ -1147,6 +1148,9 @@ app.listen(PORT, () => {
   startAuthorPostCleanup()
   startCommentTrashCleanup()
   startReaderLibraryTrashCleanup()
+  if (process.env.SHADOW_YOUTUBE_MONITOR_ENABLED === 'true') {
+    startShadowYoutubeReelMonitor()
+  }
   startChatRetentionCleanup()
   startStorageMigrationCleanupScheduler()
   void startMangaR2DeleteRetryWorker()
