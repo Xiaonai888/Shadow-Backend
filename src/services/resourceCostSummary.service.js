@@ -279,14 +279,19 @@ function normalizeApplicationAttribution(rows, days) {
       const feature = String(row.feature || 'unknown')
       const dependency = String(row.dependency || 'UNKNOWN')
       const kind = String(row.kind || 'unknown')
+      const rawDirection = String(row.direction || '').trim().toLowerCase()
+      const direction = rawDirection === 'inbound' || rawDirection === 'outbound'
+        ? rawDirection
+        : kind === 'http_response' ? 'outbound' : 'unknown'
       const bytes = natural(row.bytes) ?? 0
       const events = natural(row.count) ?? 0
 
-      const key = [feature, dependency, kind].join('\u001f')
+      const key = [feature, dependency, kind, direction].join('\u001f')
       const current = sources.get(key) || {
         feature,
         dependency,
         kind,
+        direction,
         observed_bytes: 0,
         observed_events: 0,
       }
@@ -304,6 +309,7 @@ function normalizeApplicationAttribution(rows, days) {
         feature,
         dependency,
         kind,
+        direction,
         route,
         target,
         entry_point,
@@ -314,6 +320,7 @@ function normalizeApplicationAttribution(rows, days) {
         feature,
         dependency,
         kind,
+        direction,
         route,
         target,
         entry_point,
@@ -321,7 +328,6 @@ function normalizeApplicationAttribution(rows, days) {
         observed_bytes: 0,
         observed_events: 0,
       }
-
       routeCurrent.observed_bytes += bytes
       routeCurrent.observed_events += events
       routes.set(routeKey, routeCurrent)
