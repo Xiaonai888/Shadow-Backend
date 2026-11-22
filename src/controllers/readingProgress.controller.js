@@ -338,6 +338,7 @@ export async function getReadingProgress(req, res) {
     reportReadingProgressFailure('get', stage, error)
     return res.status(500).json({
       ok: false,
+      code: 'READING_PROGRESS_LOAD_FAILED',
       message: 'Failed to load reading progress',
     })
   }
@@ -348,9 +349,9 @@ export async function saveReadingProgress(req, res) {
   let stage = 'initializing'
   try {
     const userId = String(req.user?.user_id || '').trim()
-    const storyId = String(req.body.story_id || '').trim()
-    const episodeId = String(req.body.episode_id || '').trim()
-    const readingPercent = clampPercent(req.body.reading_percent)
+    const storyId = String(req.body?.story_id || '').trim()
+    const episodeId = String(req.body?.episode_id || '').trim()
+    const readingPercent = clampPercent(req.body?.reading_percent)
     const progressSource = String(
       req.headers['x-shadow-reading-progress-source'] ||
       req.body?.progress_source ||
@@ -364,8 +365,15 @@ export async function saveReadingProgress(req, res) {
     })
 
     if (!isUuid(storyId) || !isUuid(episodeId)) {
+      markRequestDiagnostic({
+        feature: 'reading_progress_save',
+        progress_stage: 'validate_ids',
+        error_code: 'READING_PROGRESS_INVALID_IDS',
+      })
+
       return res.status(400).json({
         ok: false,
+        code: 'READING_PROGRESS_INVALID_IDS',
         message: 'Valid story_id and episode_id are required',
       })
     }
@@ -388,6 +396,7 @@ export async function saveReadingProgress(req, res) {
 
       return res.status(404).json({
         ok: false,
+        code: 'READING_PROGRESS_TARGET_NOT_FOUND',
         message: 'Story or episode was not found',
       })
     }
@@ -402,6 +411,7 @@ export async function saveReadingProgress(req, res) {
     ) {
       return res.status(404).json({
         ok: false,
+        code: 'READING_PROGRESS_TARGET_NOT_FOUND',
         message: 'Story or episode was not found',
       })
     }
@@ -462,6 +472,7 @@ export async function saveReadingProgress(req, res) {
     reportReadingProgressFailure('save', stage, error)
     return res.status(500).json({
       ok: false,
+      code: 'READING_PROGRESS_SAVE_FAILED',
       message: 'Failed to save reading progress',
     })
   }
