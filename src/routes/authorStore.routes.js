@@ -10,6 +10,8 @@ import multer from 'multer'
 import os from 'node:os'
 import { unlink } from 'node:fs/promises'
 import { getMyAuthorStoreOfflinePdfGrant, getMyAuthorStorePurchasedPdf } from '../controllers/authorStoreOfflinePdf.controller.js'
+import { requireUnpurchasedAuthorStorePdf } from '../middleware/authorStorePdfCheckoutGuard.middleware.js'
+import { getMyAuthorStorePdfOwnership } from '../controllers/authorStorePdfOwnership.controller.js'
 import {
   createAuthorStoreOrder,
   createAuthorStoreOrderPayment,
@@ -226,9 +228,9 @@ const authorStoreDigitalCountryGate = async (req, res, next) => {
   }
 }
 
-router.post('/orders/create-payment', createOrderIpLimit, requireUser, authorBookCountryGate, authorStoreDigitalCountryGate, createAuthorStoreOrderPayment)
+router.post('/orders/create-payment', createOrderIpLimit, requireUser, authorBookCountryGate, authorStoreDigitalCountryGate, requireUnpurchasedAuthorStorePdf, createAuthorStoreOrderPayment)
 router.post('/orders/binance-pdf/checkout', createOrderIpLimit, requireUser,
-  requirePaymentCountry('pdfBinancePay'), createAuthorStoreBinancePdfCheckout)
+  requirePaymentCountry('pdfBinancePay'), requireUnpurchasedAuthorStorePdf, createAuthorStoreBinancePdfCheckout)
 router.get('/orders/binance-pdf/:purchaseId', binancePdfStatusIpLimit, requireUser, getAuthorStoreBinancePdfCheckout)
 router.get('/orders/my', requireUser, getMyAuthorStoreBuyerOrders)
 router.get('/orders/book-holds/my', requireUser, getMyAuthorStoreBuyerBookHoldStatuses)
@@ -236,6 +238,7 @@ router.post('/orders/:orderId/confirm-received', requireUser, confirmMyAuthorSto
 router.get('/downloads/my', requireUser, getMyAuthorStoreReaderDownloads)
 router.get('/downloads/:productId/offline-grant', requireUser, getMyAuthorStoreOfflinePdfGrant)
 router.get('/downloads/:productId/pdf', requireUser, getMyAuthorStorePurchasedPdf)
+router.get('/orders/pdf-ownership', requireUser, getMyAuthorStorePdfOwnership)
 router.get('/orders/status/:orderId', requireUser, getAuthorStoreOrderStatus)
 router.post('/orders/callback', handleAuthorStoreAbaCallback)
 router.put('/me/products/:productId', requireUser, updateMyAuthorStoreProduct)
