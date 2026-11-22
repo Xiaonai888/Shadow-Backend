@@ -2,7 +2,6 @@ import { supabase } from '../config/supabase.js'
 import { getAuthorCheckoutDeliverySettings } from '../controllers/authorStore.controller.js'
 import { preOrderError } from './authorPreOrderValidation.service.js'
 import { parsePublicPreOrderListQuery, preOrderUuid } from './authorPreOrderReaderValidation.service.js'
-import { getAuthorPreOrderPaymentAvailability } from './authorPreOrderPaymentAvailability.service.js'
 
 const AUTHOR = 'author:author_pages!inner(id,page_name,page_username,status)'
 const CAMPAIGN_FIELDS = [
@@ -38,6 +37,10 @@ function money(value, field) {
 }
 
 function inventoryNumber(value, field) {
+  if (value === null || value === undefined || typeof value === 'boolean' ||
+      typeof value === 'string' && !value.trim()) {
+    throw preOrderError('PRE_ORDER_READER_STOCK_INVALID', `Missing stored ${field}`, 503)
+  }
   const number = Number(value)
   if (!Number.isSafeInteger(number) || number < 0) {
     throw preOrderError('PRE_ORDER_READER_STOCK_INVALID', `Invalid stored ${field}`, 503)
@@ -54,18 +57,31 @@ function readableEdition(book, kind, snapshot) {
     throw preOrderError('PRE_ORDER_READER_STOCK_INVALID', 'Paid stock exceeds pre-order quota', 503)
   }
 
-  let pendingHeld = 0
-  if (snapshot) {
-    const edition = snapshot[kind]
-    pendingHeld = inventoryNumber(edition?.payment_pending_held, `${kind} held stock`)
-    if (edition?.enabled !== enabled ||
-        inventoryNumber(edition?.quota, `${kind} snapshot quota`) !== quota ||
-        inventoryNumber(edition?.paid_reserved, `${kind} snapshot paid stock`) !== paidReserved ||
-        paidReserved + pendingHeld > quota ||
-        inventoryNumber(edition?.available, `${kind} snapshot availability`) !==
-          (enabled ? quota - paidReserved - pendingHeld : 0)) {
-      throw preOrderError('PRE_ORDER_READER_STOCK_MISMATCH', 'Pre-order inventory snapshot disagrees with stored books', 503)
+  if (!snapshot) {
+    return {
+      enabled,
+      price_usd: price,
+      quota,
+      paid_reserved: paidReserved,
+      payment_pending_held: null,
+      available: null,
+      stock_verified: false,
     }
+  }
+
+  const edition = snapshot[kind]
+  if (!edition || typeof edition !== 'object' || Array.isArray(edition) ||
+      typeof edition.enabled !== 'boolean') {
+    throw preOrderError('PRE_ORDER_READER_STOCK_MISMATCH', 'Pre-order inventory snapshot is invalid', 503)
+  }
+  const pendingHeld = inventoryNumber(edition.payment_pending_held, `${kind} held stock`)
+  const available = inventoryNumber(edition.available, `${kind} snapshot availability`)
+  if (edition.enabled !== enabled ||
+      inventoryNumber(edition.quota, `${kind} snapshot quota`) !== quota ||
+      inventoryNumber(edition.paid_reserved, `${kind} snapshot paid stock`) !== paidReserved ||
+      paidReserved + pendingHeld > quota ||
+      available !== (enabled ? quota - paidReserved - pendingHeld : 0)) {
+    throw preOrderError('PRE_ORDER_READER_STOCK_MISMATCH', 'Pre-order inventory snapshot disagrees with stored books', 503)
   }
 
   return {
@@ -74,7 +90,8 @@ function readableEdition(book, kind, snapshot) {
     quota,
     paid_reserved: paidReserved,
     payment_pending_held: pendingHeld,
-    available: enabled ? quota - paidReserved - pendingHeld : 0,
+    available,
+    stock_verified: true,
   }
 }
 
@@ -150,9 +167,9 @@ async function getVerifiedStock(campaignId, expectedBooks) {
     p_campaign_id: campaignId,
   })
   if (error) {
-    const paymentEnabled = getAuthorPreOrderPaymentAvailability().payment_enabled === true
-    if (MISSING_RPC.has(String(error.code || '')) && !paymentEnabled) {
-      return null
+    console.error('PRE_ORDER_READER_STOCK_STORAGE:', String(error.code || 'unknown'))
+    if (MISSING_RPC.has(String(error.code || ''))) {
+      throw preOrderError('PRE_ORDER_READER_STOCK_MIGRATION_REQUIRED', 'Multi-volume inventory snapshot has not been installed', 503)
     }
     storageError(error, 'STOCK')
   }
