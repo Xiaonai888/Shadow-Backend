@@ -1,0 +1,72 @@
+name: Pre-order Cross-format Stock Guard Checks
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preorder-stock-guard-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Validate cross-format stock guard and pre-order unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify contract files
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in \
+            sql/20261122_author_preorder_cross_format_stock_guard_v18.sql \
+            src/tests/authorPreOrderCrossFormatStockGuard.test.mjs \
+            src/tests/authorPreOrderLaunchReadinessPolicy.test.mjs \
+            src/tests/authorPreOrderVolumeSelection.test.mjs \
+            src/tests/authorPreOrderPaymentValidation.test.mjs \
+            src/tests/authorPreOrderMultiVolumeTerminalPolicy.test.mjs \
+            src/tests/authorPreOrderReconciliationOpsPolicy.test.mjs; do
+            if [[ ! -f "$path" ]]; then
+              echo "::error file=$path::Required file is missing"
+              exit 1
+            fi
+          done
+          node --check src/tests/authorPreOrderCrossFormatStockGuard.test.mjs
+
+      - name: Run SQL structural checks and existing unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test \
+            src/tests/authorPreOrderCrossFormatStockGuard.test.mjs \
+            src/tests/authorPreOrderLaunchReadinessPolicy.test.mjs \
+            src/tests/authorPreOrderVolumeSelection.test.mjs \
+            src/tests/authorPreOrderPaymentValidation.test.mjs \
+            src/tests/authorPreOrderMultiVolumeTerminalPolicy.test.mjs \
+            src/tests/authorPreOrderReconciliationOpsPolicy.test.mjs \
+            2>&1 | tee "$RUNNER_TEMP/preorder-stock-guard-tests.log"
+
+      - name: Write summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Pre-order Cross-format Stock Guard Checks'
+            echo ''
+            echo 'Static contract tests and unit tests only. This workflow does not execute the SQL migration, connect to Supabase, verify ABA, or enable payment.'
+            if [[ -f "$RUNNER_TEMP/preorder-stock-guard-tests.log" ]]; then
+              echo '```text'
+              tail -n 15 "$RUNNER_TEMP/preorder-stock-guard-tests.log"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
