@@ -62,22 +62,22 @@ async function completedResponseWithCleanup(owner, sessionId, result) {
     partCount > 0 &&
     partCount <= MANGA_DEVICE_PARTS_LIMITS.maxParts
   ) {
-    try {
-      await deleteMangaDeviceTemporaryParts({
+    setImmediate(() => {
+      void deleteMangaDeviceTemporaryParts({
         owner,
         sessionId,
         partCount,
+      }).catch((error) => {
+        console.error(
+          'MANGA_DEVICE_TEMP_CLEANUP_FAILED:',
+          JSON.stringify({
+            session: String(sessionId).slice(-8),
+            code: String(error?.code || 'R2_DELETE_FAILED'),
+            message: String(error?.message || 'Cleanup failed').slice(0, 200),
+          })
+        )
       })
-    } catch (error) {
-      console.error(
-        'MANGA_DEVICE_TEMP_CLEANUP_FAILED:',
-        JSON.stringify({
-          session: String(sessionId).slice(-8),
-          code: String(error?.code || 'R2_DELETE_FAILED'),
-          message: String(error?.message || 'Cleanup failed').slice(0, 200),
-        })
-      )
-    }
+    })
   }
 
   return doneResponse(sessionId, result)
