@@ -7,6 +7,17 @@ function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
+function selectedQuantity(value) {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 1 && value <= 99 ? value : null
+  }
+  if (typeof value !== 'string') return null
+  const digits = value.trim()
+  if (!/^[0-9]{1,3}$/.test(digits)) return null
+  const quantity = Number(digits)
+  return quantity >= 1 && quantity <= 99 ? quantity : null
+}
+
 export function parseAuthorPreOrderVolumeSelection(input) {
   if (!isRecord(input) || !Array.isArray(input.items) ||
       input.items.length < 1 || input.items.length > 10) {
@@ -19,17 +30,17 @@ export function parseAuthorPreOrderVolumeSelection(input) {
       throw preOrderError('PRE_ORDER_VOLUME_ITEM_INVALID', `Invalid volume ${index + 1}`, 400)
     }
     const bookId = preOrderUuid(raw.book_id, 'volume ID').toLowerCase()
-    const edition = String(raw.edition || '').trim().toLowerCase()
-    const quantity = Number(raw.quantity)
-    if (!EDITIONS.has(edition) || !Number.isSafeInteger(quantity) ||
-        quantity < 1 || quantity > 99 || seen.has(bookId)) {
+    const edition = typeof raw.edition === 'string' ? raw.edition.trim().toLowerCase() : ''
+    const quantity = selectedQuantity(raw.quantity)
+    if (!EDITIONS.has(edition) || quantity === null || seen.has(bookId)) {
       throw preOrderError('PRE_ORDER_VOLUME_ITEM_INVALID', `Invalid or duplicate volume ${index + 1}`, 400)
     }
     seen.add(bookId)
     return { book_id: bookId, edition, quantity }
   })
 
-  const deliveryCompanyKey = String(input.delivery_company_key ?? '').trim().toLowerCase()
+  const deliveryCompanyKey = typeof input.delivery_company_key === 'string'
+    ? input.delivery_company_key.trim().toLowerCase() : ''
   if (!DELIVERY_KEY.test(deliveryCompanyKey)) {
     throw preOrderError('PRE_ORDER_VOLUME_DELIVERY_INVALID', 'Choose an available delivery company', 400)
   }
