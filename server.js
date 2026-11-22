@@ -91,6 +91,7 @@ import studioTrendsAnalyticsRoutes from './src/routes/shadowStudioTrendsAnalytic
 import studioVideoTypeRoutes from './src/routes/shadowStudioVideoType.routes.js'
 import studioContentPlaylistRoutes from './src/routes/shadowStudioContentPlaylists.routes.js'
 import studioMeRoutes from './src/routes/shadowStudioMe.routes.js'
+import { startShadowYoutubeReelMonitor } from './src/services/youtubeReelAvailabilityMonitor.service.js'
 import contentReportsRoutes from './src/routes/contentReports.routes.js'
 import adminReportsRoutes from './src/routes/adminReports.routes.js'
 import adminAuthorReviewsRoutes from './src/routes/adminAuthorReviews.routes.js'
@@ -1160,6 +1161,9 @@ app.listen(PORT, () => {
   if (process.env.MASS_MENTION_WORKER_ENABLED === 'true') startMassMentionWorker()
   startStoryEpisodePushScheduler()
   startSmartAdMaintenanceScheduler()
+  if (process.env.SHADOW_YOUTUBE_MONITOR_ENABLED === 'true') {
+    startShadowYoutubeReelMonitor()
+  }
   startBinanceUsdtAlertWorker()
   startTelegramMissingReportRecovery()
   startShadowReadEventDailySettlement()
