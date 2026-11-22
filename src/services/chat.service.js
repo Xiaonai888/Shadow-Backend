@@ -639,6 +639,20 @@ export async function buildConversationSummary(
             otherUser?.avatar_url || null,
         }
 
+  const isPendingReaderSender =
+    !isGroup &&
+    conversation.conversation_type === 'reader_reader' &&
+    conversation.request_status === 'pending' &&
+    String(conversation.created_by_user_id) ===
+      String(viewerParticipant.user_id)
+
+  const pendingMessagesSent = isPendingReaderSender
+    ? await getPendingReaderRequestCount(
+        conversation.id,
+        viewerParticipant.user_id
+      )
+    : null
+
   return {
     id: conversation.id,
     conversation_type:
@@ -667,8 +681,16 @@ export async function buildConversationSummary(
     latest_message: latestMessage,
     unread_count: unreadCount,
     can_send:
-      conversation.request_status ===
-      'accepted',
+      conversation.request_status === 'accepted' ||
+      (isPendingReaderSender &&
+        pendingMessagesSent < MAX_PENDING_READER_MESSAGES),
+    pending_message_limit: isPendingReaderSender
+      ? MAX_PENDING_READER_MESSAGES
+      : null,
+    pending_messages_sent: pendingMessagesSent,
+    pending_messages_remaining: isPendingReaderSender
+      ? Math.max(0, MAX_PENDING_READER_MESSAGES - pendingMessagesSent)
+      : null,
     can_decide:
       !isGroup &&
       conversation.request_status ===
@@ -770,6 +792,50 @@ function handleExistingRequestStatus(conversation) {
       'REQUEST_DECLINED',
       'This message request was declined'
     )
+  }
+}
+
+const MAX_PENDING_READER_MESSAGES = 5
+
+async function getPendingReaderRequestCount(conversationId, senderUserId) {
+  const { count, error } = await supabase
+    .from('chat_messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('conversation_id', conversationId)
+    .eq('sender_user_id', senderUserId)
+    .eq('is_request_message', true)
+
+  if (error) {
+    throw databaseFailure(error, 'Failed to count request messages')
+  }
+
+  return Number(count || 0)
+}
+
+async function reuseExistingReaderRequest(conversation, senderUserId, message) {
+  handleExistingRequestStatus(conversation)
+
+  const current = await getConversationSummaryForUser(
+    conversation.id,
+    senderUserId
+  )
+
+  if (!current.can_send) {
+    return { created: false, conversation: current }
+  }
+
+  await sendConversationMessage({
+    userId: senderUserId,
+    conversationId: conversation.id,
+    message,
+  })
+
+  return {
+    created: false,
+    conversation: await getConversationSummaryForUser(
+      conversation.id,
+      senderUserId
+    ),
   }
 }
 
@@ -1055,16 +1121,11 @@ export async function createReaderReaderRequest({
   const existing = await getExistingDirectConversation(directKey)
 
   if (existing) {
-    handleExistingRequestStatus(existing)
-
-    return {
-      created: false,
-      conversation:
-        await getConversationSummaryForUser(
-          existing.id,
-          safeSenderUserId
-        ),
-    }
+    return reuseExistingReaderRequest(
+      existing,
+      safeSenderUserId,
+      safeMessage
+    )
   }
 
     const allowed = await canStartReaderMessageRequest(
@@ -1099,16 +1160,11 @@ export async function createReaderReaderRequest({
         await getExistingDirectConversation(directKey)
 
       if (racedConversation) {
-        handleExistingRequestStatus(racedConversation)
-
-        return {
-          created: false,
-          conversation:
-            await getConversationSummaryForUser(
-              racedConversation.id,
-              safeSenderUserId
-            ),
-        }
+        return reuseExistingReaderRequest(
+          racedConversation,
+          safeSenderUserId,
+          safeMessage
+        )
       }
     }
 
@@ -1846,12 +1902,33 @@ export async function sendConversationMessage({
     safeUserId
   )
 
-  if (conversation.request_status === 'pending') {
+  const isPendingReaderSender =
+    conversation.request_status === 'pending' &&
+    conversation.conversation_type === 'reader_reader' &&
+    conversation.is_group !== true &&
+    String(conversation.created_by_user_id) === safeUserId
+
+  if (conversation.request_status === 'pending' && !isPendingReaderSender) {
     fail(
       409,
       'REQUEST_NOT_ACCEPTED',
-      'The recipient must accept this message request first'
+      'Only the original sender can send pending request messages'
     )
+  }
+
+  if (isPendingReaderSender) {
+    const sentCount = await getPendingReaderRequestCount(
+      conversation.id,
+      safeUserId
+    )
+
+    if (sentCount >= MAX_PENDING_READER_MESSAGES) {
+      fail(
+        409,
+        'REQUEST_MESSAGE_LIMIT_REACHED',
+        'You have sent 5 request messages. Wait for the recipient to accept.'
+      )
+    }
   }
 
   if (conversation.request_status === 'declined') {
@@ -1919,7 +1996,7 @@ export async function sendConversationMessage({
       sender_user_id: safeUserId,
       message_type: 'text',
       body: safeMessage,
-      is_request_message: false,
+      is_request_message: isPendingReaderSender,
     })
     .select(
       CHAT_MESSAGE_FIELDS
