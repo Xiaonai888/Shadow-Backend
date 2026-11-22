@@ -124,12 +124,20 @@ function uploadRows(report) {
   })))
 }
 
+function trafficDirection(row) {
+  const direction = String(row?.direction || '').trim().toLowerCase()
+  return direction === 'inbound' || direction === 'outbound'
+    ? direction
+    : row?.kind === 'http_response' ? 'outbound' : 'unknown'
+}
+
 function attributionRows(report) {
   return report.days.flatMap((day) => (day.application_attribution || []).map((row) => ({
     date: day.date,
     feature: row.feature,
     dependency: row.dependency,
     kind: row.kind,
+    direction: trafficDirection(row),
     observed_events: row.observed_events,
     observed_bytes: row.observed_bytes,
     coverage: report.sources?.application?.status || 'unknown',
@@ -144,6 +152,7 @@ function routeAttributionRows(report) {
       feature: row.feature,
       dependency: row.dependency,
       kind: row.kind,
+      direction: trafficDirection(row),
       entry_point: row.entry_point,
       route: row.route,
       target: row.target,
@@ -175,6 +184,7 @@ function applicationHourlyCsvRows(report) {
       feature: String(row?.feature || 'unknown'),
       dependency: String(row?.dependency || 'UNKNOWN'),
       kind: String(row?.kind || 'unknown'),
+      direction: trafficDirection(row),
       entry_point: String(row?.entry_point || 'unknown_entry'),
       route: String(row?.route || 'UNKNOWN'),
       target: String(row?.target || 'MULTIPLE'),
@@ -300,6 +310,7 @@ function readme(report) {
         'Hourly provider values are not invoices and cannot identify the application route responsible for each byte.',
     'ApplicationHourly.csv groups already-collected application measurements into UTC hourly buckets (and shows Cambodia time).',
     'ApplicationHourly.csv is not Render billing: measured HTTP payload, external request sizes, and incoming traffic can differ from billed outbound; missing hours are unknown, not zero.',
+    'Direction is inbound, outbound or unknown. Legacy or unmeasured external request direction stays unknown; application payload is not provider-billed traffic.',
     'Provider usage metrics, application request measurements, and upload audit counters must not be added to Render bytes.',
     'Cumulative metrics may omit the initial interval when no previous valid observation exists.',
     'Missing provider intervals and missing source breakdowns must not be treated as zero.',
@@ -391,9 +402,9 @@ export function createResourceCostDownload(report, format = 'full-zip') {
     'monthly-csv': ['Monthly.csv', csv(BREAKDOWN_COLUMNS, resourceCostBreakdownRows(report, 'month'))],
     'provider-csv': ['Providers.csv', csv(['date', 'provider', 'metric', 'scope', 'unit', 'kind', 'aggregation', 'value', 'samples', 'incomplete_samples', 'note'], providerRows(report))],
     'upload-csv': ['UploadRoutes.csv', csv(['date', 'feature', 'route', 'mode', 'attempts', 'successes', 'failures', 'ingress_bytes', 'egress_bytes', 'object_bytes', 'note'], uploadRows(report))],
-    'api-csv': ['ApiAttribution.csv', csv(['date', 'feature', 'dependency', 'kind', 'observed_events', 'observed_bytes', 'coverage', 'note'], attributionRows(report))],
+    'api-csv': ['ApiAttribution.csv', csv(['date', 'feature', 'dependency', 'kind', 'direction', 'observed_events', 'observed_bytes', 'coverage', 'note'], attributionRows(report))],
         'route-csv': ['RouteAttribution.csv', csv([
-      'date', 'feature', 'dependency', 'kind',
+      'date', 'feature', 'dependency', 'kind', 'direction',
       'entry_point', 'route', 'target', 'classification',
       'observed_events', 'observed_bytes', 'coverage', 'note',
     ], routeAttributionRows(report))],
@@ -411,7 +422,7 @@ export function createResourceCostDownload(report, format = 'full-zip') {
            ['RenderHourly.csv', csv(hourlyColumns, renderHourlyCsvRows(report))],
       ['ApplicationHourly.csv', csv([
         'hour_start_utc', 'hour_start_ict', 'feature', 'dependency',
-        'kind', 'entry_point', 'route', 'target', 'classification',
+        'kind', 'direction', 'entry_point', 'route', 'target', 'classification',
         'observed_events', 'observed_bytes', 'observed_errors',
         'coverage', 'note',
       ], applicationHourlyCsvRows(report))],
