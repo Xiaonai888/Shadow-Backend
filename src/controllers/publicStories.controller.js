@@ -3247,13 +3247,15 @@ export async function getPublicEpisodeById(
         context?.code ===
         'EPISODE_NOT_FOUND'
 
-      return res.status(404).json({
+            return res.status(404).json({
         ok: false,
+        code: episodeMissing
+          ? 'EPISODE_NOT_FOUND'
+          : 'STORY_NOT_FOUND',
         message: episodeMissing
           ? 'Episode not found'
           : 'Story not found',
       })
-    }
 
     const story = context.story
 
@@ -3263,6 +3265,7 @@ export async function getPublicEpisodeById(
     ) {
       return res.status(404).json({
         ok: false,
+        code: 'STORY_NOT_FOUND',
         message: 'Story not found',
       })
     }
@@ -3288,6 +3291,7 @@ export async function getPublicEpisodeById(
     ) {
       return res.status(404).json({
         ok: false,
+        code: 'EPISODE_NOT_FOUND',
         message: 'Episode not found',
       })
     }
@@ -3409,20 +3413,30 @@ export async function getPublicEpisodeById(
       },
     })
   } catch (error) {
+    const rootCode = String(
+      error?.code || error?.name || 'UNKNOWN'
+    )
+      .replace(/[^A-Z0-9_]/gi, '_')
+      .slice(0, 60)
+
+    markRequestDiagnostic({
+      feature: 'qualified_episode_view',
+      stage: 'count_view_failed',
+      error_code: rootCode,
+    })
+
     console.error(
-      'GET PUBLIC EPISODE ERROR:',
+      'COUNT QUALIFIED EPISODE VIEW ERROR:',
       error
     )
 
     return res.status(500).json({
       ok: false,
-      message:
-        'Failed to load episode',
-      error: error.message,
+      code: 'EPISODE_VIEW_COUNT_FAILED',
+      message: 'Failed to count view',
     })
   }
 }
-
 export async function countQualifiedEpisodeView(
   req,
   res
@@ -3435,11 +3449,10 @@ export async function countQualifiedEpisodeView(
     if (!user?.user_id) {
       return res.status(401).json({
         ok: false,
-        message:
-          'Please login to count view.',
+        code: 'EPISODE_VIEW_LOGIN_REQUIRED',
+        message: 'Please login to count view.',
       })
     }
-
     const context =
       await getPublicEpisodeReadContext({
         userId: user.user_id,
