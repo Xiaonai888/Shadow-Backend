@@ -1,120 +1,135 @@
-name: Pre-order PostgreSQL Stock Guard Integration
+do $$
+begin
+  if current_database() <> 'preorder_guard_ci'
+     or to_regprocedure('public.author_preorder_cross_format_stock_guard()') is null then
+    raise exception 'PRE_ORDER_CI_GUARD_MISSING';
+  end if;
+end;
+$$;
 
-on:
-  workflow_dispatch:
+create function public.preorder_ci_expect_rejection(p_statement text, p_code text)
+returns void
+language plpgsql
+as $$
+begin
+  begin
+    execute p_statement;
+    raise exception 'PRE_ORDER_CI_EXPECTED_REJECTION_MISSING';
+  exception when others then
+    if sqlerrm is distinct from p_code then
+      raise;
+    end if;
+  end;
+end;
+$$;
 
-permissions:
-  contents: read
+insert into public.author_preorder_books (
+  id,standard_enabled,standard_quota,standard_reserved,
+  limited_enabled,limited_quota,limited_reserved
+) values
+  ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',true,10,3,true,4,0),
+  ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',true,4,0,false,4,0),
+  ('cccccccc-cccc-4ccc-8ccc-cccccccccccc',false,20,0,true,3,0);
 
-concurrency:
-  group: preorder-postgres-stock-guard-${{ github.ref }}
-  cancel-in-progress: false
+insert into public.author_preorder_stock_holds (
+  order_id,book_id,edition,quantity,status
+) values (
+  '10000000-0000-4000-8000-000000000001',
+  'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','standard',4,'held'
+);
 
-jobs:
-  postgres-integration:
-    name: Test legacy and multi-volume holds in disposable PostgreSQL
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: integration_only
-          POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      PGURL: postgresql://postgres:integration_only@127.0.0.1:5432/preorder_guard_ci
-      PGADMINURL: postgresql://postgres:integration_only@127.0.0.1:5432/postgres
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+insert into public.author_preorder_volume_holds (
+  order_id,book_id,edition,quantity,status
+) values (
+  '20000000-0000-4000-8000-000000000001',
+  'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','standard',3,'held'
+);
 
-      - name: Set up Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
+select public.preorder_ci_expect_rejection(
+  $ci$insert into public.author_preorder_volume_holds
+  (order_id,book_id,edition,quantity,status) values
+  ('20000000-0000-4000-8000-000000000002',
+   'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','standard',1,'held')$ci$,
+  'PRE_ORDER_CROSS_FORMAT_STOCK_EXCEEDED'
+);
 
-      - name: Ensure PostgreSQL client is available
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v psql >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq postgresql-client
-          fi
+select public.preorder_ci_expect_rejection(
+  $ci$insert into public.author_preorder_stock_holds
+  (order_id,book_id,edition,quantity,status) values
+  ('10000000-0000-4000-8000-000000000002',
+   'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','standard',1,'held')$ci$,
+  'PRE_ORDER_CROSS_FORMAT_STOCK_EXCEEDED'
+);
 
-      - name: Validate integration fixture files
-        shell: bash
-        run: |
-          set -euo pipefail
-          for file in \
-            sql/20261122_author_preorder_cross_format_stock_guard_v18.sql \
-            src/tests/fixtures/authorPreOrderCrossFormatStockGuard.fixture.sql \
-            src/tests/sql/authorPreOrderCrossFormatStockGuard.integration.sql \
-            src/tests/authorPreOrderCrossFormatStockGuard.concurrent.sh \
-            src/tests/authorPreOrderCrossFormatStockGuard.test.mjs; do
-            if [[ ! -s "$file" ]]; then
-              echo "::error file=$file::Required test file is missing or empty"
-              exit 1
-            fi
-          done
-          bash -n src/tests/authorPreOrderCrossFormatStockGuard.concurrent.sh
-          node --check src/tests/authorPreOrderCrossFormatStockGuard.test.mjs
+select public.preorder_ci_expect_rejection(
+  $ci$update public.author_preorder_volume_holds set quantity=4
+  where order_id='20000000-0000-4000-8000-000000000001'
+    and book_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'$ci$,
+  'PRE_ORDER_CROSS_FORMAT_STOCK_EXCEEDED'
+);
 
-      - name: Create disposable CI-only database
-        shell: bash
-        run: |
-          set -euo pipefail
-          psql -X -v ON_ERROR_STOP=1 "$PGADMINURL" -c 'create database preorder_guard_ci'
+update public.author_preorder_volume_holds
+set quantity=3
+where order_id='20000000-0000-4000-8000-000000000001'
+  and book_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
-      - name: Create CI-only Supabase compatibility roles
-        shell: bash
-        run: |
-          set -euo pipefail
-          psql -X -v ON_ERROR_STOP=1 "$PGADMINURL" -c 'create role anon nologin'
-          psql -X -v ON_ERROR_STOP=1 "$PGADMINURL" -c 'create role authenticated nologin'
+insert into public.author_preorder_volume_holds (
+  order_id,book_id,edition,quantity,status
+) values (
+  '20000000-0000-4000-8000-000000000003',
+  'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','standard',4,'held'
+);
 
-      - name: Apply CI fixture and exact GitHub stock guard migration
-        shell: bash
-        run: |
-          set -euo pipefail
-          psql -X -v ON_ERROR_STOP=1 "$PGURL" -f src/tests/fixtures/authorPreOrderCrossFormatStockGuard.fixture.sql
-          psql -X -v ON_ERROR_STOP=1 "$PGURL" -f sql/20261122_author_preorder_cross_format_stock_guard_v18.sql
+select public.preorder_ci_expect_rejection(
+  $ci$insert into public.author_preorder_stock_holds
+  (order_id,book_id,edition,quantity,status) values
+  ('10000000-0000-4000-8000-000000000003',
+   'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','standard',1,'held')$ci$,
+  'PRE_ORDER_CROSS_FORMAT_STOCK_EXCEEDED'
+);
 
-      - name: Test legacy and multi-volume stock limits and status transitions
-        shell: bash
-        run: |
-          set -euo pipefail
-          psql -X -v ON_ERROR_STOP=1 "$PGURL" -f src/tests/sql/authorPreOrderCrossFormatStockGuard.integration.sql
+select public.preorder_ci_expect_rejection(
+  $ci$insert into public.author_preorder_volume_holds
+  (order_id,book_id,edition,quantity,status) values
+  ('20000000-0000-4000-8000-000000000004',
+   'cccccccc-cccc-4ccc-8ccc-cccccccccccc','standard',1,'held')$ci$,
+  'PRE_ORDER_CROSS_FORMAT_STOCK_EXCEEDED'
+);
 
-      - name: Test simultaneous transactions for overbooking
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash src/tests/authorPreOrderCrossFormatStockGuard.concurrent.sh
+select public.preorder_ci_expect_rejection(
+  $ci$insert into public.author_preorder_volume_holds
+  (order_id,book_id,edition,quantity,status) values
+  ('20000000-0000-4000-8000-000000000005',
+   'dddddddd-dddd-4ddd-8ddd-dddddddddddd','standard',1,'held')$ci$,
+  'PRE_ORDER_CROSS_FORMAT_BOOK_MISSING'
+);
 
-      - name: Run existing stock guard static checks
-        shell: bash
-        run: |
-          set -euo pipefail
-          node --test src/tests/authorPreOrderCrossFormatStockGuard.test.mjs
+update public.author_preorder_volume_holds set status='consumed'
+where order_id='20000000-0000-4000-8000-000000000001';
+update public.author_preorder_books set standard_reserved=6
+where id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
-      - name: Record isolated integration test scope
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo '## Pre-order PostgreSQL stock guard integration'
-            echo ''
-            echo 'A disposable PostgreSQL 16 service was used on this GitHub Actions runner.'
-            echo 'The stock guard migration was applied to a CI-only fixture database.'
-            echo 'No Supabase, ABA PayWay, production data, or deployment service was used.'
-            echo 'These tests do not prove that the complete production database migrations are applied.'
-          } >> "$GITHUB_STEP_SUMMARY"
+do $$
+declare
+  v_total bigint;
+  v_consumed integer;
+begin
+  select b.standard_reserved +
+    (select coalesce(sum(quantity),0) from public.author_preorder_stock_holds h
+     where h.book_id=b.id and h.edition='standard' and h.status='held') +
+    (select coalesce(sum(quantity),0) from public.author_preorder_volume_holds h
+     where h.book_id=b.id and h.edition='standard' and h.status='held')
+  into v_total
+  from public.author_preorder_books b
+  where b.id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+  select count(*) into v_consumed from public.author_preorder_volume_holds
+  where order_id='20000000-0000-4000-8000-000000000001' and status='consumed';
+
+  if v_total <> 10 or v_consumed <> 1 then
+    raise exception 'PRE_ORDER_CI_SETTLEMENT_INVARIANT_FAILED';
+  end if;
+end;
+$$;
+
+select 'PRE_ORDER_CI_SEQUENTIAL_STOCK_GUARD_PASSED' as result;
