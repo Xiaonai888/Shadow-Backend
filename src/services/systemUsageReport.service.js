@@ -453,6 +453,7 @@ function summaryMarkdown(range, history, incidents, stats) {
       'Route',
       'HTTP',
       'Error Code',
+      'Response Code',
       'Stage',
       'Provider',
       'Provider HTTP',
@@ -464,6 +465,7 @@ function summaryMarkdown(range, history, incidents, stats) {
       item.route,
       item.http_status,
       item.error_code,
+      item.response_code,
       item.stage,
       item.provider,
       item.provider_http_status,
@@ -951,8 +953,10 @@ async function buildReportBundle(from, to) {
       .slice(0, 160),
     http_status: safeNumber(item.http_status) || '-',
     error_code: String(
-      item.response_code || item.root_cause_code || `HTTP_${Number(item.http_status) || 0}`
+      item.root_cause_code || item.response_code || `HTTP_${Number(item.http_status) || 0}`
     ).replace(/[^a-z0-9_:-]/gi, '_').slice(0, 64),
+    response_code: String(item.response_code || '-')
+      .replace(/[^a-z0-9_:-]/gi, '_').slice(0, 64),
     stage: String(item.diagnostic_stage || 'unknown')
       .replace(/[^a-z0-9_:-]/gi, '_').slice(0, 64),
     provider: String(item.provider || 'APPLICATION')
