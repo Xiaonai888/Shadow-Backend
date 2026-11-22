@@ -448,12 +448,6 @@ export async function runMangaR2DeleteRetryBatch() {
 
 async function runWorkerAndReschedule() {
   try {
-    const result =
-      await runMangaR2DeleteRetryBatch()
-
-    if (
-async function runWorkerAndReschedule() {
-  try {
     const result = await runMangaR2DeleteRetryBatch()
 
     if (result.scanned || result.failed) {
