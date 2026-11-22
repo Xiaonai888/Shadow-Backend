@@ -1521,9 +1521,9 @@ export async function listSystemUsageIncidents(
   let query = supabase
     .from('system_usage_incidents')
     .select(
-      'id,status,severity,feature,source_route,dependency,first_seen_at,last_seen_at,fix_applied_at,verified_at,resolved_at,archived_at,recurrence_count,fix_summary,fix_commit,fix_version,verification_before,verification_after,resolution_summary,evidence'
+      'id,status,severity,feature,source_route,dependency,first_seen_at,last_seen_at,fix_applied_at,verified_at,resolved_at,archived_at,recurrence_count,fix_summary,fix_commit,fix_version,resolution_summary,evidence_classification:evidence->>classification,evidence_signals:evidence->signals,evidence_top_route:evidence->top_driver->>source_route'
     )
-
+  
   if (Number.isFinite(fromMs)) {
     query = query.gte(
       'last_seen_at',
@@ -1558,9 +1558,28 @@ export async function listSystemUsageIncidents(
 
   if (error) throw error
 
-  return data || []
-}
+  return (data || []).map((row) => {
+    const {
+      evidence_classification,
+      evidence_signals,
+      evidence_top_route,
+      ...incident
+    } = row
 
+    return {
+      ...incident,
+      evidence: {
+        classification: evidence_classification || null,
+        signals: Array.isArray(evidence_signals)
+          ? evidence_signals.slice(0, 12)
+          : [],
+        top_driver: evidence_top_route
+          ? { source_route: evidence_top_route }
+          : null,
+      },
+    }
+  })
+}
 
 export function getSystemUsageIncidentRuntime() {
   return {
