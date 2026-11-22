@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks'
-import { getHeapStatistics } from 'node:v8'
+import { getHeapStatistics, getHeapSpaceStatistics } from 'node:v8'
 import { getMemoryGuardSnapshot } from './memoryGuard.service.js'
+import { readResourceCgroupMemory } from './resourceController/resourceCgroupMemory.js'
 
 const MB = 1024 * 1024
 const inspectables = new Map()
@@ -94,7 +95,23 @@ export function registerRuntimeInspectable({
 export function getRuntimeMemoryInspector() {
   const memory = process.memoryUsage()
   const heap = getHeapStatistics()
+  const heapSpaces = getHeapSpaceStatistics()
   const guard = getMemoryGuardSnapshot()
+  const cgroup = readResourceCgroupMemory({
+    processUsage: memory,
+  })
+
+  const resources = typeof process.getActiveResourcesInfo === 'function'
+    ? process.getActiveResourcesInfo()
+    : []
+
+  const activeResourceCounts = {}
+
+  for (const name of resources) {
+    const key = String(name || 'Unknown').slice(0, 64)
+    activeResourceCounts[key] = (activeResourceCounts[key] || 0) + 1
+  }
+
   const heapUsedMb = mb(memory.heapUsed)
   const heapTotalMb = mb(memory.heapTotal)
   const rssMb = mb(memory.rss)
@@ -114,6 +131,14 @@ export function getRuntimeMemoryInspector() {
       non_heap_rss_estimate_mb: Number(
         Math.max(0, rssMb - heapTotalMb).toFixed(1)
       ),
+      v8_heap_spaces: heapSpaces.map((space) => ({
+        name: String(space.space_name),
+        used_mb: mb(space.space_used_size),
+        allocated_mb: mb(space.space_size),
+        physical_mb: mb(space.physical_space_size),
+      })),
+      active_resource_total: resources.length,
+      active_resource_counts: activeResourceCounts,
     },
     container: {
       total_mb: guard.container_total_mb,
@@ -121,6 +146,7 @@ export function getRuntimeMemoryInspector() {
       available_mb: guard.available_mb,
       usage_percent: guard.usage_percent,
       source: guard.container_source,
+      cgroup_breakdown: cgroup.container,
     },
     guard: {
       warning: guard.warning,
