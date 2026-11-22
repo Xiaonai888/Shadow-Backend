@@ -266,8 +266,16 @@ export function getPageRequestSnapshot(minutes = 60, bounds = null) {
 }
 
 function isExpectedEpisodeLock(context, res) {
+  const route = context?.route
+
+  const isEpisodeRead =
+    route === 'GET /api/public/stories/:id/episodes/:id'
+
+  const isEpisodeView =
+    route === 'POST /api/public/stories/:id/episodes/:id/view'
+
   return (
-    context?.route === 'GET /api/public/stories/:id/episodes/:id' &&
+    (isEpisodeRead || isEpisodeView) &&
     context?.expected_episode_locked === true &&
     Number(res.statusCode || 0) === 423 &&
     Number(context.external_errors || 0) === 0
@@ -1595,11 +1603,17 @@ export function trafficDiagnosticMiddleware(req, res, next) {
       }
     }
 
+        const isEpisodeRead =
+      sourceKey === 'GET /api/public/stories/:id/episodes/:id'
+
+    const isEpisodeView =
+      sourceKey === 'POST /api/public/stories/:id/episodes/:id/view'
+
     if (
-      sourceKey === 'GET /api/public/stories/:id/episodes/:id' &&
+      (isEpisodeRead || isEpisodeView) &&
       Number(res.statusCode || 0) === 423 &&
       body?.code === 'EPISODE_LOCKED' &&
-      body?.locked === true
+      (isEpisodeView || body?.locked === true)
     ) {
       context.expected_episode_locked = true
     }
