@@ -21,6 +21,8 @@ import {
 const TABLE = 'manga_device_part_sessions'
 const INIT_WINDOW_MS = 10 * 60 * 1000
 const MAX_SESSIONS_PER_WINDOW = 60
+const FINALIZE_LEASE_RENEW_PARTS = 5
+const cleanupInFlight = new Set()
 
 function databaseError(error) {
   const failure = mangaDevicePartsError(503, 'MANGA_DEVICE_DATABASE_UNAVAILABLE', 'Manga Device-first session storage is unavailable', 'storage')
@@ -28,10 +30,44 @@ function databaseError(error) {
   return failure
 }
 
+async function renewFinalizeLease(owner, sessionId, leaseToken) {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .update({ claimed_at: new Date().toISOString() })
+    .eq('id', sessionId)
+    .eq('user_id', owner)
+    .eq('status', 'processing')
+    .eq('processing_token', leaseToken)
+    .select('id')
+    .maybeSingle()
+
+  if (error) throw databaseError(error)
+  if (!data) {
+    throw mangaDevicePartsError(
+      409,
+      'MANGA_DEVICE_SESSION_LEASE_LOST',
+      'Manga session finalization lease is no longer held',
+      'finalize'
+    )
+  }
+}
+
+async function markTemporaryCleanupComplete(owner, sessionId) {
+  const { error } = await supabase
+    .from(TABLE)
+    .update({ temp_cleanup_completed_at: new Date().toISOString() })
+    .eq('id', sessionId)
+    .eq('user_id', owner)
+    .eq('status', 'completed')
+    .is('temp_cleanup_completed_at', null)
+
+  if (error) throw databaseError(error)
+}
+
 async function lookupSession(owner, sessionId) {
   const { data, error } = await supabase
     .from(TABLE)
-    .select('id,user_id,status,manifest,result,expires_at')
+    .select('id,user_id,status,manifest,result,expires_at,temp_cleanup_completed_at')
     .eq('id', sessionId)
     .eq('user_id', owner)
     .maybeSingle()
@@ -53,76 +89,80 @@ function doneResponse(sessionId, result) {
   }
 }
 
-async function completedResponseWithCleanup(owner, sessionId, result) {
+async function cleanupCompletedSession(owner, sessionId, partCount) {
+  try {
+    await deleteMangaDeviceTemporaryParts({ owner, sessionId, partCount })
+  } catch (error) {
+    console.error(
+      'MANGA_DEVICE_TEMP_CLEANUP_FAILED:',
+      JSON.stringify({
+        session: String(sessionId).slice(-8),
+        code: String(error?.code || 'R2_DELETE_FAILED'),
+        message: String(error?.message || 'Cleanup failed').slice(0, 200),
+      })
+    )
+
+    const publicUrl = String(process.env.R2_PUBLIC_URL || '')
+      .trim()
+      .replace(/\/+$/, '')
+    if (!/^https:\/\//i.test(publicUrl)) {
+      throw new Error('R2_PUBLIC_URL is missing for Manga cleanup retry')
+    }
+
+    const { deleteStoredMangaParts } = await import(
+      './mangaPageStorage.service.js'
+    )
+    const temporaryParts = Array.from({ length: partCount }, (_, index) => ({
+      image_url: `${publicUrl}/${mangaDevicePartKeys(owner, sessionId, index).temporary}`,
+    }))
+    const retry = await deleteStoredMangaParts(temporaryParts)
+    if (retry.failed > 0 || retry.queue_failed > 0) {
+      console.warn(
+        'MANGA_DEVICE_TEMP_CLEANUP_RETRY:',
+        JSON.stringify({
+          session: String(sessionId).slice(-8),
+          failed: retry.failed,
+          queued: retry.queued,
+          queue_failed: retry.queue_failed,
+        })
+      )
+    }
+    return
+  }
+
+  try {
+    await markTemporaryCleanupComplete(owner, sessionId)
+  } catch (error) {
+    console.error(
+      'MANGA_DEVICE_TEMP_CLEANUP_MARK_FAILED:',
+      String(error?.message || error).slice(0, 200)
+    )
+  }
+}
+
+async function completedResponseWithCleanup(owner, sessionId, result, cleanupAt = null) {
   const partCount = Array.isArray(result?.parts)
     ? result.parts.length
     : 0
 
   if (
+    !cleanupAt &&
+    !cleanupInFlight.has(sessionId) &&
     partCount > 0 &&
     partCount <= MANGA_DEVICE_PARTS_LIMITS.maxParts
   ) {
+    cleanupInFlight.add(sessionId)
     setImmediate(() => {
-      void (async () => {
-        try {
-          await deleteMangaDeviceTemporaryParts({
-            owner,
-            sessionId,
-            partCount,
-          })
-        } catch (error) {
+      void cleanupCompletedSession(owner, sessionId, partCount)
+        .catch((error) => {
           console.error(
-            'MANGA_DEVICE_TEMP_CLEANUP_FAILED:',
-            JSON.stringify({
-              session: String(sessionId).slice(-8),
-              code: String(error?.code || 'R2_DELETE_FAILED'),
-              message: String(error?.message || 'Cleanup failed').slice(0, 200),
-            })
+            'MANGA_DEVICE_TEMP_CLEANUP_RETRY_ERROR:',
+            String(error?.message || error).slice(0, 200)
           )
-
-          const publicUrl = String(process.env.R2_PUBLIC_URL || '')
-            .trim()
-            .replace(/\/+$/, '')
-
-          if (!/^https:\/\//i.test(publicUrl)) {
-            throw new Error('R2_PUBLIC_URL is missing for Manga cleanup retry')
-          }
-
-          const { deleteStoredMangaParts } = await import(
-            './mangaPageStorage.service.js'
-          )
-
-          const temporaryParts = Array.from(
-            { length: partCount },
-            (_, index) => ({
-              image_url: `${publicUrl}/${mangaDevicePartKeys(
-                owner,
-                sessionId,
-                index
-              ).temporary}`,
-            })
-          )
-
-          const retry = await deleteStoredMangaParts(temporaryParts)
-
-          if (retry.failed > 0 || retry.queue_failed > 0) {
-            console.warn(
-              'MANGA_DEVICE_TEMP_CLEANUP_RETRY:',
-              JSON.stringify({
-                session: String(sessionId).slice(-8),
-                failed: retry.failed,
-                queued: retry.queued,
-                queue_failed: retry.queue_failed,
-              })
-            )
-          }
-        }
-      })().catch((error) => {
-        console.error(
-          'MANGA_DEVICE_TEMP_CLEANUP_RETRY_ERROR:',
-          String(error?.message || error).slice(0, 200)
-        )
-      })
+        })
+        .finally(() => {
+          cleanupInFlight.delete(sessionId)
+        })
     })
   }
 
@@ -182,7 +222,7 @@ export async function finalizeMangaDevicePartsUploadSession({ userId, uploadToke
   let session = await lookupSession(owner, sessionId)
 
   if (session.status === 'completed' && session.result) {
-    return completedResponseWithCleanup(owner, sessionId, session.result)
+    return completedResponseWithCleanup(owner, sessionId, session.result, session.temp_cleanup_completed_at)
   }
   if (Date.parse(session.expires_at) <= Date.now()) {
     throw mangaDevicePartsError(410, 'MANGA_DEVICE_SESSION_EXPIRED', 'Manga upload session expired', 'finalize')
@@ -196,7 +236,7 @@ export async function finalizeMangaDevicePartsUploadSession({ userId, uploadToke
   if (!leaseToken) {
     session = await lookupSession(owner, sessionId)
     if (session.status === 'completed' && session.result) {
-      return completedResponseWithCleanup(owner, sessionId, session.result)
+      return completedResponseWithCleanup(owner, sessionId, session.result, session.temp_cleanup_completed_at)
     }
     throw mangaDevicePartsError(409, 'MANGA_DEVICE_SESSION_PROCESSING', 'Manga upload session is already being finalized', 'finalize')
   }
@@ -205,11 +245,17 @@ export async function finalizeMangaDevicePartsUploadSession({ userId, uploadToke
     const normalized = validateMangaDevicePartsManifest(session.manifest)
     const verified = []
     for (const part of normalized.parts) {
+      if (part.partIndex % FINALIZE_LEASE_RENEW_PARTS === 0) {
+        await renewFinalizeLease(owner, sessionId, leaseToken)
+      }
       verified.push(await verifyMangaDevicePart({ owner, sessionId, part }))
     }
 
     const parts = []
     for (const part of normalized.parts) {
+      if (part.partIndex % FINALIZE_LEASE_RENEW_PARTS === 0) {
+        await renewFinalizeLease(owner, sessionId, leaseToken)
+      }
       parts.push(await copyVerifiedMangaDevicePart({
         owner,
         sessionId,
