@@ -27,6 +27,7 @@ export async function listPublicFastVideos(req, res) {
       .eq('studio_state', 'active')
       .eq('access_type', 'free')
       .eq('platform', 'youtube')
+      .neq('youtube_visibility', 'unavailable')
 
     if (userId) query = query.eq('user_id', userId)
 
