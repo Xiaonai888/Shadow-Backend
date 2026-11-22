@@ -7,6 +7,10 @@ import {
   cancelMangaDirectUploadSession,
 } from '../services/mangaDirectUpload.service.js'
 import { wakeHeavyMediaWorkerCoordinator } from '../services/heavyMediaWorkerCoordinator.service.js'
+import {
+  createMangaDevicePartsUploadSession,
+  finalizeMangaDevicePartsUploadSession,
+} from '../services/mangaDevicePartsUpload.service.js'
 
 const router = express.Router()
 
@@ -79,5 +83,30 @@ router.post('/cancel', mangaDirectSessionLimit, requireUser, handleRoute(
     uploadToken: body.upload_token,
   })
 ))
+
+router.post(
+  '/device-parts/init',
+  mangaDirectSessionLimit,
+  requireUser,
+  handleRoute(
+    ({ userId, body }) => createMangaDevicePartsUploadSession({
+      userId,
+      manifest: body.manifest,
+    }),
+    201
+  )
+)
+
+router.post(
+  '/device-parts/finalize',
+  mangaDirectSessionLimit,
+  requireUser,
+  handleRoute(
+    ({ userId, body }) => finalizeMangaDevicePartsUploadSession({
+      userId,
+      uploadToken: body.upload_token,
+    })
+  )
+)
 
 export default router
