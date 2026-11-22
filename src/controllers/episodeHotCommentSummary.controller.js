@@ -12,11 +12,8 @@ export async function getEpisodeHotCommentSummary(req, res) {
       code: 'INVALID_EPISODE_ID',
       message: 'Valid episode ID is required',
     })
-  }
+  }  let stage = 'hot_summary_rpc'
 
-  let stage = 'hot_summary_rpc'
-
-  try {
   try {
     const { data, error } = await supabase.rpc(
       'get_episode_hot_comment_summary',
