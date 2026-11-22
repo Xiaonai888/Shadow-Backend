@@ -11,6 +11,11 @@ import {
   restoreStudioMeFromTrash,
   deleteStudioMeForever,
 } from '../controllers/shadowStudioMe.controller.js'
+import {
+  listStudioUnavailableVideos,
+  recheckStudioUnavailableVideo,
+  replaceStudioUnavailableLink,
+} from '../controllers/shadowStudioUnavailable.controller.js'
 
 const router = Router()
 const readLimit = rateLimit({
@@ -32,6 +37,9 @@ router.get('/summary', readLimit, requireUser, getStudioMeSummary)
 router.get('/videos', readLimit, requireUser, listStudioMeVideos)
 router.get('/archive', readLimit, requireUser, listStudioMeArchive)
 router.get('/trash', readLimit, requireUser, listStudioMeTrash)
+router.get('/unavailable', readLimit, requireUser, listStudioUnavailableVideos)
+router.post('/unavailable/:id/recheck', writeLimit, requireUser, recheckStudioUnavailableVideo)
+router.patch('/unavailable/:id/link', writeLimit, requireUser, replaceStudioUnavailableLink)
 router.patch('/videos/:id/archive', writeLimit, requireUser, setStudioMeArchived)
 router.delete('/videos/:id', writeLimit, requireUser, moveStudioMeToTrash)
 router.post('/trash/:id/restore', writeLimit, requireUser, restoreStudioMeFromTrash)
