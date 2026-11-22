@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {
   AUTHOR_PREORDER_LAUNCH_CHECK_KEYS,
   assessAuthorPreOrderLaunchReadiness,
-} from '../src/services/authorPreOrderLaunchReadinessPolicy.service.js'
+} from '../services/authorPreOrderLaunchReadinessPolicy.service.js'
 
 function snapshot(overrides = {}) {
   return {
