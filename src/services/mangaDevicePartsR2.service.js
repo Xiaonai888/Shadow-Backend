@@ -141,7 +141,7 @@ export async function copyVerifiedMangaDevicePart({ owner, sessionId, part, chec
   await r2().send(new CopyObjectCommand({
     Bucket: cfg.bucket,
     Key: final,
-    CopySource: `${encodeURIComponent(cfg.bucket)}/${temporary.split('/').map(encodeURIComponent).join('/')}`,
+    CopySource: `/${encodeURIComponent(cfg.bucket)}/${temporary.split('/').map(encodeURIComponent).join('/')}`,
     CopySourceIfMatch: checked.etag,
     MetadataDirective: 'REPLACE',
     ContentType: 'image/webp',
