@@ -15,6 +15,7 @@ import {
   mangaDevicePartKeys,
   verifyMangaDevicePart,
   copyVerifiedMangaDevicePart,
+  deleteMangaDeviceTemporaryParts,
 } from './mangaDevicePartsR2.service.js'
 
 const TABLE = 'manga_device_part_sessions'
@@ -50,6 +51,36 @@ function doneResponse(sessionId, result) {
     upload_id: sessionId,
     ...result,
   }
+}
+
+async function completedResponseWithCleanup(owner, sessionId, result) {
+  const partCount = Array.isArray(result?.parts)
+    ? result.parts.length
+    : 0
+
+  if (
+    partCount > 0 &&
+    partCount <= MANGA_DEVICE_PARTS_LIMITS.maxParts
+  ) {
+    try {
+      await deleteMangaDeviceTemporaryParts({
+        owner,
+        sessionId,
+        partCount,
+      })
+    } catch (error) {
+      console.error(
+        'MANGA_DEVICE_TEMP_CLEANUP_FAILED:',
+        JSON.stringify({
+          session: String(sessionId).slice(-8),
+          code: String(error?.code || 'R2_DELETE_FAILED'),
+          message: String(error?.message || 'Cleanup failed').slice(0, 200),
+        })
+      )
+    }
+  }
+
+  return doneResponse(sessionId, result)
 }
 
 export async function createMangaDevicePartsUploadSession({ userId, manifest }) {
@@ -105,7 +136,7 @@ export async function finalizeMangaDevicePartsUploadSession({ userId, uploadToke
   let session = await lookupSession(owner, sessionId)
 
   if (session.status === 'completed' && session.result) {
-    return doneResponse(sessionId, session.result)
+    return completedResponseWithCleanup(owner, sessionId, session.result)
   }
   if (Date.parse(session.expires_at) <= Date.now()) {
     throw mangaDevicePartsError(410, 'MANGA_DEVICE_SESSION_EXPIRED', 'Manga upload session expired', 'finalize')
@@ -119,7 +150,7 @@ export async function finalizeMangaDevicePartsUploadSession({ userId, uploadToke
   if (!leaseToken) {
     session = await lookupSession(owner, sessionId)
     if (session.status === 'completed' && session.result) {
-      return doneResponse(sessionId, session.result)
+      return completedResponseWithCleanup(owner, sessionId, session.result)
     }
     throw mangaDevicePartsError(409, 'MANGA_DEVICE_SESSION_PROCESSING', 'Manga upload session is already being finalized', 'finalize')
   }
@@ -176,7 +207,7 @@ export async function finalizeMangaDevicePartsUploadSession({ userId, uploadToke
     if (!data) {
       throw mangaDevicePartsError(409, 'MANGA_DEVICE_SESSION_LEASE_LOST', 'Manga session finalization lease is no longer held', 'finalize')
     }
-    return doneResponse(sessionId, result)
+    return completedResponseWithCleanup(owner, sessionId, result)
   } catch (error) {
     const { error: resetError } = await supabase
       .from(TABLE)
