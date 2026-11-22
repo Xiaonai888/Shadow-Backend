@@ -167,12 +167,66 @@ async function listFailedPdfReports(recipient, cutoff) {
 function eligiblePdfReport(row, now) {
   const reports = row.request_payload?.pdf_telegram_reports
   const itemRows = Array.isArray(row.items) ? row.items : []
-  const recipient = row.recipient
-  const report = reports?.[recipient]
+  const report = reports?.[row.recipient]
   if (report?.status !== 'failed' || !pdfRetryDue(report, reports, now)) return false
-  if (!itemRows.length || !itemRows.every((item) => String(item.product_type || '').toLowerCase() === 'pdf')) return false
-  if (recipient === 'author' && ['failed', 'sending'].includes(String(reports.admin?.status || ''))) return false
-  return true
+  return itemRows.length > 0 && itemRows.every((item) =>
+    String(item.product_type || '').toLowerCase() === 'pdf'
+  )
+}
+
+function uncertainPdfDelivery(error) {
+  const message = String(error || '').toLowerCase()
+  return /fetch failed|failed to fetch|network request failed|network error|econnreset|econnaborted|etimedout|timed out|timeout|socket hang up|connection reset|telegram_network_error|telegram_timeout/.test(message)
+}
+
+async function flagUnknownPdfDelivery(row) {
+  const now = new Date().toISOString()
+  const payload = row.request_payload || {}
+  const reports = payload.pdf_telegram_reports || {}
+  const recipients = ['admin', 'author'].filter((recipient) =>
+    reports[recipient]?.status === 'failed' &&
+    uncertainPdfDelivery(reports[recipient].error) &&
+    pdfRetryDue(reports[recipient], reports, Date.now())
+  )
+  if (!recipients.includes(row.recipient)) return []
+
+  const nextReports = { ...reports }
+  for (const recipient of recipients) {
+    const previous = reports[recipient]
+    const reason = `Telegram delivery unconfirmed: ${String(previous.error || 'network error').slice(0, 180)}. Check Telegram chat before any manual resend.`
+    nextReports[recipient] = {
+      ...previous,
+      status: 'review_required',
+      reviewed_at: now,
+      review_reason: 'delivery_unconfirmed',
+      error: reason,
+    }
+  }
+  const changes = {
+    request_payload: { ...payload, pdf_telegram_reports: nextReports },
+    updated_at: now,
+  }
+  if (recipients.includes('author')) {
+    changes.telegram_status = 'failed'
+    changes.telegram_error = nextReports.author.error
+  }
+  const { data, error } = await supabase
+    .from('author_store_orders')
+    .update(changes)
+    .eq('id', row.id)
+    .eq('updated_at', row.updated_at)
+    .eq('payment_status', 'paid')
+    .eq('pdf_unlock_status', 'unlocked')
+    .contains('request_payload', { pdf_telegram_reports: { [row.recipient]: { status: 'failed' } } })
+    .select('id')
+    .maybeSingle()
+  if (error) throw error
+  if (!data) {
+    console.warn('AUTHOR PDF TELEGRAM REVIEW CLAIM SKIPPED:', row.order_id, row.recipient)
+    return []
+  }
+  console.warn('AUTHOR PDF TELEGRAM DELIVERY UNKNOWN, MANUAL REVIEW:', row.order_id, recipients.join(','))
+  return recipients
 }
 
 function pdfReportMessage(order, authorPage) {
@@ -232,6 +286,7 @@ async function claimPdfReport(row) {
     .select('id,request_payload,updated_at')
     .maybeSingle()
   if (error) throw error
+  if (!data) console.warn('AUTHOR PDF TELEGRAM SEND CLAIM SKIPPED:', row.order_id, row.recipient)
   return data
 }
 
@@ -286,7 +341,11 @@ async function retrySinglePdfReport(row) {
   const recipient = row.recipient
   const chatId = recipient === 'admin' ? adminChatId : authorPage?.telegram_chat_id
   const tokenAvailable = recipient === 'admin' ? process.env.TELEGRAM_BOT_TOKEN : process.env.TELEGRAM_AUTHOR_STORE_BOT_TOKEN
-  if (!chatId || !tokenAvailable) return false
+  if (!chatId || !tokenAvailable) {
+    console.warn('AUTHOR PDF TELEGRAM RETRY CONFIG MISSING:', row.order_id, recipient,
+      !chatId ? 'chat_id' : 'bot_token')
+    return false
+  }
 
   const message = pdfReportMessage(row, authorPage)
   const claim = await claimPdfReport(row)
@@ -316,19 +375,37 @@ async function recoverFailedAuthorPdfReports() {
       listFailedPdfReports('admin', cutoff),
       listFailedPdfReports('author', cutoff),
     ])
-    const selected = new Map()
-    for (const row of [...adminRows, ...authorRows]) {
-      if (!selected.has(row.id)) selected.set(row.id, row)
+    const candidates = [...adminRows, ...authorRows]
+    const eligible = candidates.filter((row) => eligiblePdfReport(row, Date.now()))
+    if (candidates.length) {
+      console.info('AUTHOR PDF TELEGRAM RETRY SCAN:', {
+        admin_failed: adminRows.length,
+        author_failed: authorRows.length,
+        eligible: eligible.length,
+      })
     }
-    let attempts = 0
-    for (const row of selected.values()) {
-      if (attempts >= PDF_SEND_LIMIT) break
-      if (!eligiblePdfReport(row, Date.now())) continue
-      attempts += 1
+    let processed = 0
+    const reviewed = new Set()
+    for (const row of eligible) {
+      if (processed >= PDF_SEND_LIMIT) break
+      if (reviewed.has(`${row.id}:${row.recipient}`)) continue
       try {
-        await retrySinglePdfReport(row)
+        if (uncertainPdfDelivery(row.request_payload?.pdf_telegram_reports?.[row.recipient]?.error)) {
+          const flagged = await flagUnknownPdfDelivery(row)
+          for (const recipient of flagged) reviewed.add(`${row.id}:${recipient}`)
+          processed += flagged.length
+          continue
+        }
+        const send = row.recipient === 'admin'
+          ? Boolean(process.env.TELEGRAM_BOT_TOKEN)
+          : Boolean(process.env.TELEGRAM_AUTHOR_STORE_BOT_TOKEN)
+        if (!send) {
+          console.warn('AUTHOR PDF TELEGRAM RETRY BOT TOKEN MISSING:', row.order_id, row.recipient)
+          continue
+        }
+        if (await retrySinglePdfReport(row)) processed += 1
       } catch (error) {
-        console.error('AUTHOR PDF TELEGRAM RECOVERY ERROR:', row.order_id, safeError(error))
+        console.error('AUTHOR PDF TELEGRAM RECOVERY ERROR:', row.order_id, row.recipient, safeError(error))
       }
     }
   } catch (error) {
@@ -337,11 +414,13 @@ async function recoverFailedAuthorPdfReports() {
 }
 
 export async function recoverMissingTelegramReports() {
-  if (running || !process.env.TELEGRAM_BOT_TOKEN) return
+  if (running) return
+  if (!process.env.TELEGRAM_BOT_TOKEN && !process.env.TELEGRAM_AUTHOR_STORE_BOT_TOKEN) return
   running = true
 
   try {
     await recoverFailedAuthorPdfReports()
+    if (!process.env.TELEGRAM_BOT_TOKEN) return
     const { data: reports, error: listError } = await supabase
       .from('telegram_payments')
       .select('id,matched_payment_id,matched_user_id,report_text,report_attempts,report_last_attempt_at,telegram_chat_id,telegram_message_id')
@@ -396,6 +475,11 @@ export async function recoverMissingTelegramReports() {
 export function startTelegramMissingReportRecovery() {
   if (started) return
   started = true
+  console.info('TELEGRAM REPORT RECOVERY WORKER STARTED:', {
+    admin_bot_configured: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+    author_bot_configured: Boolean(process.env.TELEGRAM_AUTHOR_STORE_BOT_TOKEN),
+    pdf_scan_minutes: PDF_SCAN_INTERVAL_MS / 60000,
+  })
   const timer = setInterval(() => {
     void recoverMissingTelegramReports()
   }, POLL_MS)
