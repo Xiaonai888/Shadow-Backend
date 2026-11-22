@@ -1,7 +1,4 @@
 import dotenv from 'dotenv'
-import { TelegramClient } from 'telegram'
-import { NewMessage } from 'telegram/events/index.js'
-import { StringSession } from 'telegram/sessions/index.js'
 import { pathToFileURL } from 'node:url'
 
 dotenv.config()
@@ -127,6 +124,16 @@ export async function startTelegramUserListener() {
 
   const config = getConfig()
   validateConfig(config)
+
+  const [
+    { TelegramClient },
+    { NewMessage },
+    { StringSession },
+  ] = await Promise.all([
+    import('telegram'),
+    import('telegram/events/index.js'),
+    import('telegram/sessions/index.js'),
+  ])
 
   const client = new TelegramClient(new StringSession(config.stringSession), config.apiId, config.apiHash, {
     connectionRetries: 5,
