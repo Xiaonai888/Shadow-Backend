@@ -28,7 +28,7 @@ export async function listPublicFastVideos(req, res) {
       .eq('access_type', 'free')
       .eq('platform', 'youtube')
       .is('deleted_at', null)
-      .neq('youtube_visibility', 'unavailable')
+      .neq('youtube_health_state', 'unavailable')
 
     if (userId) query = query.eq('user_id', userId)
 
@@ -110,7 +110,7 @@ export async function getPublicFastVideo(req, res) {
       .eq('access_type', 'free')
       .eq('platform', 'youtube')
       .is('deleted_at', null)
-      .neq('youtube_visibility', 'unavailable')
+      .neq('youtube_health_state', 'unavailable')
       .maybeSingle()
 
     if (error) throw error
