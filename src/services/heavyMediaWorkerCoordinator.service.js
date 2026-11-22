@@ -96,6 +96,7 @@ function recordWorkerSystemUsage(message) {
         usage.kind === 'http_response'
           ? 'http_response'
           : 'external_request',
+      direction: usage.direction,
       key,
       bytes: bytesPerEvent,
       error: Boolean(usage.error),
