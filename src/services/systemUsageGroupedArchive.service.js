@@ -5,7 +5,7 @@ const VERSION = 1
 const MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
 const MAX_PAGE_SIZE = 100
 const DIMENSION_FIELDS = [
-  'provider', 'service_id', 'kind', 'feature', 'dependency',
+  'provider', 'service_id', 'kind', 'direction', 'feature', 'dependency',
   'source_route', 'source_method', 'source_path', 'operation_method',
   'target_path', 'route', 'upload_mode', 'traffic_source',
   'status', 'error_code', 'error_type', 'unit',
@@ -18,8 +18,8 @@ const COUNTER_FIELDS = [
 function asRows(rows) {
   if (!Array.isArray(rows)) throw new TypeError('Usage archive rows must be an array.')
   for (const row of rows) {
-    if (!row || typeof row !== 'object' || Array.isArray(row)) {
-      throw new TypeError('Every usage archive row must be an object.')
+    const identity = dimensions(row, includeDirection)
+    const fingerprint = JSON.stringify(identity)
     }
   }
   return rows
@@ -41,9 +41,13 @@ function addExact(a, b, field) {
   return value
 }
 
-function dimensions(row) {
+function dimensions(row, includeDirection = true) {
   return Object.fromEntries(DIMENSION_FIELDS
-    .filter((field) => row[field] !== undefined && row[field] !== null)
+    .filter((field) =>
+      (includeDirection || field !== 'direction') &&
+      row[field] !== undefined &&
+      row[field] !== null
+    )
     .map((field) => [field, String(row[field])]))
 }
 
@@ -62,7 +66,7 @@ function summarizeCounters(rows) {
   return counters
 }
 
-export function groupSystemUsageRows(sourceRows = []) {
+export function groupSystemUsageRows(sourceRows = [], { includeDirection = true } = {}) {
   const rows = asRows(sourceRows)
   const groups = new Map()
 
@@ -158,9 +162,12 @@ export function verifySystemUsageGroupArchive(compressed, manifest) {
       parsed.from !== manifest.from || parsed.to !== manifest.to) {
     throw new Error('Usage archive metadata mismatch.')
   }
-  const summary = groupSystemUsageRows(parsed.rows)
+  let summary = groupSystemUsageRows(parsed.rows)
   if (summary.group_count !== manifest.group_count) {
-    throw new Error('Usage archive group count mismatch.')
+    summary = groupSystemUsageRows(parsed.rows, { includeDirection: false })
+    if (summary.group_count !== manifest.group_count) {
+      throw new Error('Usage archive group count mismatch.')
+    }
   }
   return { ...parsed, summary }
 }
