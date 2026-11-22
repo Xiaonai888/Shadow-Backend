@@ -63,6 +63,8 @@ export async function listMyFastReels(req, res) {
       .select(VIDEO_FIELDS)
       .eq('user_id', userId)
       .eq('studio_state', 'active')
+      .is('deleted_at', null)
+      .neq('youtube_health_state', 'unavailable')
 
     if (mode === 'gallery') {
       query = query
@@ -158,19 +160,30 @@ export async function updateMyFastReel(req, res) {
   }
   try {
     const { data: current, error: readError } = await supabase.from('fast_videos')
-      .select('id,status,published_at,studio_state')
+      .select('id,status,published_at,studio_state,youtube_health_state')
       .eq('id', req.params.id).eq('user_id', userId).maybeSingle()
     if (readError) throw readError
     if (!current) return res.status(404).json({ ok: false, message: 'Reel not found' })
     if (current.studio_state !== 'active') return res.status(409).json({ ok: false, message: 'Restore this Reel before editing it' })
+    if (current.youtube_health_state === 'unavailable') {
+      return res.status(409).json({
+        ok: false,
+        message: 'Manage this video in Shadow Studio > Me > Unavailable Videos.',
+      })
+    }
     if (changes.status === 'published' && current.status !== 'published') {
       changes.published_at = new Date().toISOString()
     } else if (changes.status === 'draft') {
       changes.published_at = null
     }
     const { data, error } = await supabase.from('fast_videos')
-      .update(changes).eq('id', req.params.id).eq('user_id', userId).eq('studio_state', 'active')
-      .select(VIDEO_FIELDS).maybeSingle()
+      .update(changes)
+      .eq('id', req.params.id)
+      .eq('user_id', userId)
+      .eq('studio_state', 'active')
+      .neq('youtube_health_state', 'unavailable')
+      .select(VIDEO_FIELDS)
+      .maybeSingle()
     if (error) throw error
     if (!data) return res.status(409).json({ ok: false, message: 'Reel is no longer active' })
     res.set('Cache-Control', 'private, no-store')
