@@ -2,6 +2,7 @@ export const MANGA_DEVICE_PARTS_LIMITS = Object.freeze({
   maxSourceWidth: 8000,
   maxSourceHeight: 30000,
   maxSourcePixels: 120_000_000,
+  maxDevicePixels: 24_000_000,
   maxOutputWidth: 1440,
   maxOutputHeight: 30000,
   maxParts: 40,
@@ -10,7 +11,7 @@ export const MANGA_DEVICE_PARTS_LIMITS = Object.freeze({
   maxTotalBytes: 24 * 1024 * 1024,
   overlapPixels: 2,
   maxSessionSeconds: 30 * 60,
-  signedUrlSeconds: 5 * 60,
+  signedUrlSeconds: 20 * 60,
 })
 
 export function mangaDevicePartsError(statusCode, code, message, stage = 'device_parts') {
@@ -40,8 +41,24 @@ export function validateMangaDevicePartsManifest(input) {
   const limits = MANGA_DEVICE_PARTS_LIMITS
   const sourceWidth = integer(input.sourceWidth, 'sourceWidth', 1, limits.maxSourceWidth)
   const sourceHeight = integer(input.sourceHeight, 'sourceHeight', 1, limits.maxSourceHeight)
-  if (sourceWidth * sourceHeight > limits.maxSourcePixels) {
-    throw mangaDevicePartsError(422, 'MANGA_DEVICE_SOURCE_TOO_LARGE', 'Source Manga dimensions exceed limits', 'validate')
+  const sourcePixels = sourceWidth * sourceHeight
+
+  if (sourcePixels > limits.maxSourcePixels) {
+    throw mangaDevicePartsError(
+      422,
+      'MANGA_DEVICE_SOURCE_TOO_LARGE',
+      'Source Manga dimensions exceed limits',
+      'validate'
+    )
+  }
+
+  if (sourcePixels > limits.maxDevicePixels) {
+    throw mangaDevicePartsError(
+      422,
+      'MANGA_DEVICE_SOURCE_TOO_LARGE',
+      'This Manga image must use the existing server worker',
+      'validate'
+    )
   }
 
   const width = integer(input.width, 'width', 1, Math.min(sourceWidth, limits.maxOutputWidth))
