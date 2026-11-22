@@ -9,20 +9,28 @@ import { getPublicAuthorPreOrder } from './authorPreOrderPublicCatalog.service.j
 
 function normalizeCheckoutSelection(rawInput, record, parsed) {
   if (rawInput?.items !== undefined) {
-    const selection = parsed
+    if (rawInput.book_id !== undefined || rawInput.edition !== undefined ||
+        rawInput.quantity !== undefined) {
+      throw preOrderError('PRE_ORDER_CHECKOUT_SELECTION_CONFLICT',
+        'Use either volume items or a single-volume selection', 400)
+    }
     return {
-      items: selection.items,
-      deliveryKey: selection.delivery_company_key,
-      signed: selection.signature_requested,
+      items: parsed.items,
+      deliveryKey: parsed.delivery_company_key,
+      signed: parsed.signature_requested,
     }
   }
 
   const legacy = parsed
+  const books = Array.isArray(record?.books)
+    ? record.books
+    : record?.book ? [record.book] : []
   const selectedBookId = rawInput?.book_id === undefined
-    ? record.book?.id
+    ? books.length === 1 ? books[0]?.id : null
     : preOrderUuid(rawInput.book_id, 'selected volume ID')
   if (!selectedBookId) {
-    throw preOrderError('PRE_ORDER_READER_VOLUME_MISSING', 'No volume is available for checkout', 503)
+    throw preOrderError('PRE_ORDER_VOLUME_SELECTION_REQUIRED',
+      'Choose a volume before requesting a checkout quote', 409)
   }
   return {
     items: [{
@@ -54,6 +62,10 @@ export async function quoteAuthorPreOrder(campaignId, rawInput) {
   if (record?.status !== 'active' || !Number.isFinite(opens) ||
       !Number.isFinite(closes) || now < opens || now >= closes) {
     throw preOrderError('PRE_ORDER_READER_NOT_OPEN', 'Pre-order is not open for checkout', 409)
+  }
+  if (record.stock_snapshot_complete !== true) {
+    throw preOrderError('PRE_ORDER_READER_STOCK_UNVERIFIED',
+      'A verified stock snapshot is required before quoting pre-orders', 503)
   }
 
   const selection = normalizeCheckoutSelection(rawInput, record, parsed)
