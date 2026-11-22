@@ -821,9 +821,19 @@ async function reuseExistingReaderRequest(conversation, senderUserId, message) {
   )
 
   if (!current.can_send) {
+    if (
+      conversation.request_status === 'pending' &&
+      String(conversation.created_by_user_id) === String(senderUserId)
+    ) {
+      fail(
+        409,
+        'REQUEST_MESSAGE_LIMIT_REACHED',
+        'You have sent 5 request messages. Wait for the recipient to accept.'
+      )
+    }
+
     return { created: false, conversation: current }
   }
-
   await sendConversationMessage({
     userId: senderUserId,
     conversationId: conversation.id,
