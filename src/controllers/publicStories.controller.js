@@ -98,6 +98,23 @@ const NEW_ARRIVALS_STORY_LIST_SELECT = [
   'total_episodes',
 ].join(', ')
 
+const READER_VISIBLE_EPISODE_EMBED =
+  'reader_visible_episodes:episodes!inner()'
+
+function withReaderVisibleEpisodes(columns) {
+  return `${columns}, ${READER_VISIBLE_EPISODE_EMBED}`
+}
+
+function requireReaderVisibleEpisode(query) {
+  return query
+    .eq('reader_visible_episodes.status', 'published')
+    .is('reader_visible_episodes.deleted_at', null)
+    .or(
+      `first_published_at.is.null,first_published_at.lte.${new Date().toISOString()}`,
+      { referencedTable: 'reader_visible_episodes' }
+    )
+}
+
 function publicAuthorPage(page) {
   if (!page) return null
 
@@ -1278,11 +1295,16 @@ export async function getPublicStories(req, res) {
         if (ids.length) {
           const { data: fetched, error: storyError } = await supabase
             .from('stories')
-            .select(GENRE_QUICK_STORY_SELECT)
-            .in('id', ids)
-            .eq('status', 'published')
-            .is('deleted_at', null)
-  
+            .select(withReaderVisibleEpisodes(GENRE_QUICK_STORY_SELECT))
+.in('id', ids)
+.eq('status', 'published')
+.is('deleted_at', null)
+.eq('reader_visible_episodes.status', 'published')
+.is('reader_visible_episodes.deleted_at', null)
+.or(
+  `first_published_at.is.null,first_published_at.lte.${new Date().toISOString()}`,
+  { referencedTable: 'reader_visible_episodes' }
+)
           if (storyError) throw storyError
           storyRows = fetched || []
         }
@@ -1339,17 +1361,21 @@ export async function getPublicStories(req, res) {
               : `${NEW_ARRIVALS_STORY_LIST_SELECT}, created_at, updated_at, total_likes, total_views, total_comments`
 
       let nextQuery = supabase
-        .from('stories')
-        .select(
-          newArrivalsPagination
-            ? newArrivalsSelect
-            : PUBLIC_STORY_LIST_SELECT
-        )
-        .eq('status', 'published')
-        .is('deleted_at', null)
-        .or(
-          'is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false'
-        )
+  .from('stories')
+  .select(
+    withReaderVisibleEpisodes(
+      newArrivalsPagination
+        ? newArrivalsSelect
+        : PUBLIC_STORY_LIST_SELECT
+    )
+  )
+  .eq('status', 'published')
+  .is('deleted_at', null)
+  .or(
+    'is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false'
+  )
+
+nextQuery = requireReaderVisibleEpisode(nextQuery)
 
      if (rankingOnly) {
   nextQuery = nextQuery.or(
@@ -1527,8 +1553,8 @@ export async function getPublicStories(req, res) {
         }
 
         let fuzzyQuery = supabase
-          .from('stories')
-          .select(PUBLIC_STORY_LIST_SELECT)
+  .from('stories')
+  .select(withReaderVisibleEpisodes(PUBLIC_STORY_LIST_SELECT))
           .eq('status', 'published')
           .is('deleted_at', null)
           .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false')
@@ -1536,8 +1562,8 @@ export async function getPublicStories(req, res) {
           .order('total_views', { ascending: false })
           .limit(80)
 
+        fuzzyQuery = requireReaderVisibleEpisode(fuzzyQuery)
         fuzzyQuery = applyAdultStoryVisibility(fuzzyQuery, ageAccess)
-
         if (['novel', 'manga', 'chat_story'].includes(storyType)) {
           fuzzyQuery = fuzzyQuery.eq('story_type', storyType)
         }
@@ -2060,9 +2086,9 @@ export async function getPublicStoryRecommendations(
       await getReaderAgeAccess(req)
 
     const buildBaseQuery = (limit) => {
-      let query = supabase
-        .from('stories')
-        .select(PUBLIC_STORY_LIST_SELECT)
+  let query = supabase
+    .from('stories')
+    .select(withReaderVisibleEpisodes(PUBLIC_STORY_LIST_SELECT))
         .eq('status', 'published')
         .is('deleted_at', null)
         .or(
@@ -2071,10 +2097,11 @@ export async function getPublicStoryRecommendations(
         .neq('id', storyId)
         .limit(limit)
 
-      query = applyAdultStoryVisibility(
-        query,
-        ageAccess
-      )
+      query = requireReaderVisibleEpisode(query)
+query = applyAdultStoryVisibility(
+  query,
+  ageAccess
+)
 
       if (storySetting) {
         query = query.contains(
@@ -2408,7 +2435,7 @@ export async function getPublicShadowExclusiveStories(
 
     let query = supabase
       .from('stories')
-      .select(PUBLIC_STORY_LIST_SELECT)
+      .select(withReaderVisibleEpisodes(PUBLIC_STORY_LIST_SELECT))
       .eq(
         'status',
         'published'
@@ -2427,11 +2454,12 @@ export async function getPublicShadowExclusiveStories(
       )
       .limit(queryLimit)
 
-    query =
-      applyAdultStoryVisibility(
-        query,
-        ageAccess
-      )
+   query = requireReaderVisibleEpisode(query)
+query =
+  applyAdultStoryVisibility(
+    query,
+    ageAccess
+  )
 
     if (storySetting) {
       query = query.contains(
@@ -2653,6 +2681,15 @@ export async function getPublicStoryById(req, res) {
       })
     }
 
+    const readableEpisodes = await getStoryEpisodeAccess(storyId)
+
+if (!readableEpisodes?.publishedEpisodes?.length) {
+  return res.status(404).json({
+    ok: false,
+    message: 'Story not found',
+  })
+}
+
     if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
       return res.status(404).json({
         ok: false,
@@ -2710,6 +2747,15 @@ export async function getPublicShadowExclusiveStoryById(req, res) {
         message: 'Shadow Exclusive story not found',
       })
     }
+
+    const readableEpisodes = await getStoryEpisodeAccess(storyId)
+
+if (!readableEpisodes?.publishedEpisodes?.length) {
+  return res.status(404).json({
+    ok: false,
+    message: 'Shadow Exclusive story not found',
+  })
+}
 
     const [
   { data: slides, error: slidesError },
