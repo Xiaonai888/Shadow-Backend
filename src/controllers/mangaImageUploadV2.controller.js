@@ -239,10 +239,22 @@ export async function cleanupTemporaryMangaPartsV2(req, res) {
   const ownedPrefix =
     `${publicBaseUrl}/episode-content/${userId}/manga-v2/`
 
-  if (urls.some((url) =>
-  !url.startsWith(ownedPrefix) ||
-  !/^[A-Za-z0-9_-]+\.webp$/.test(url.slice(ownedPrefix.length))
-)) {
+  const legacyPartPattern = /^[A-Za-z0-9_-]+\.webp$/
+  const devicePartPattern =
+    /^device\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/part-0[0-3][0-9]\.webp$/i
+
+  const invalidUrl = urls.some((url) => {
+    if (!url.startsWith(ownedPrefix)) return true
+
+    const relativePath = url.slice(ownedPrefix.length)
+
+    return (
+      !legacyPartPattern.test(relativePath) &&
+      !devicePartPattern.test(relativePath)
+    )
+  })
+
+  if (invalidUrl) {
     return res.status(400).json({
       ok: false,
       code: 'INVALID_MANGA_CLEANUP_URL',
