@@ -48,16 +48,42 @@ function paged(res, rows, limit, offset) {
 export async function getStudioMeSummary(req, res) {
   const owner = userId(req, res)
   if (!owner) return
+
   try {
-    const { data, error } = await supabase.rpc('shadow_studio_me_summary', { p_owner: owner })
-    if (error) throw error
+    const countVideos = () => supabase
+      .from('fast_videos')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', owner)
+      .eq('studio_state', 'active')
+      .is('deleted_at', null)
+      .neq('youtube_health_state', 'unavailable')
+
+    const [totalResult, longResult, shortResult] = await Promise.all([
+      countVideos(),
+      countVideos().or('video_type.neq.short,video_type.is.null'),
+      countVideos().eq('video_type', 'short'),
+    ])
+
+    for (const result of [totalResult, longResult, shortResult]) {
+      if (result.error) throw result.error
+      if (!Number.isSafeInteger(result.count)) {
+        throw new Error('Invalid Studio video count')
+      }
+    }
+
     res.set('Cache-Control', 'private, no-store')
-    return res.json({ ok: true, totals: data || { total: 0, long: 0, short: 0 } })
+    return res.json({
+      ok: true,
+      totals: {
+        total: totalResult.count,
+        long: longResult.count,
+        short: shortResult.count,
+      },
+    })
   } catch (error) {
     return failure(res, error, 'SUMMARY')
   }
 }
-
 export async function listStudioMeVideos(req, res) {
   const owner = userId(req, res)
   if (!owner) return
@@ -73,8 +99,10 @@ export async function listStudioMeVideos(req, res) {
       .select(VIDEO_FIELDS)
       .eq('user_id', owner)
       .eq('studio_state', 'active')
+      .is('deleted_at', null)
+      .neq('youtube_health_state', 'unavailable')
     if (kind === 'short') query = query.eq('video_type', 'short')
-    if (kind === 'long') query = query.or('video_type.eq.long,video_type.is.null')
+    if (kind === 'long') query = query.or('video_type.neq.short,video_type.is.null')
     if (search) query = query.ilike('title', `%${search.replace(/[\\%_]/g, '\\$&')}%`)
     const { data, error } = await query
       .order('published_at', { ascending: false, nullsFirst: false })
