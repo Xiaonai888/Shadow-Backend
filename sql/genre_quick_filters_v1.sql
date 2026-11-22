@@ -152,13 +152,14 @@ begin
         and eligible.free_count = eligible.published_count as ranked_fully_free,
       eligible.next_free_at is not null as ranked_wait_free
     from eligible
-    where (
-      (p_mode = 'wait_free' and eligible.next_free_at is not null)
-      or (p_mode = 'fully_free' and eligible.is_completed
-          and eligible.published_count > 0
-          and eligible.free_count = eligible.published_count)
-      or (p_mode = 'completed' and eligible.is_completed)
-    )
+    where eligible.published_count > 0
+      and (
+        (p_mode = 'wait_free' and eligible.next_free_at is not null)
+        or (p_mode = 'fully_free' and eligible.is_completed
+            and eligible.published_count > 0
+            and eligible.free_count = eligible.published_count)
+        or (p_mode = 'completed' and eligible.is_completed)
+      )
   )
   select
     ranked.ranked_story_id,
