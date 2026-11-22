@@ -122,3 +122,13 @@ jobs:
           console.log('PASS Invalid overlap and 25MP device input rejected')
           console.log('PASS Manga Device-first pre-deploy checks complete')
           NODE
+
+      - name: Run all three Device-first unit and integration-contract tests
+        working-directory: Shadow-Backend
+        env:
+          MANGA_READER_ROOT: ${{ github.workspace }}/Web-React-2
+        run: |
+          node --test \
+            src/tests/mangaDeviceManifestPolicy.test.mjs \
+            src/tests/mangaDeviceCutGeometry.test.mjs \
+            src/tests/mangaDevicePipelineContracts.test.mjs
