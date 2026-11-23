@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
 import { getCurrentDiscoverSpecialPromotionsForLanguage } from '../services/discoverSpecialPromotionLanguage.service.js'
+import { normalizeDiscoverPromotionLanguage } from '../services/discoverPromotionLanguageRotation.service.js'
 import { getSmartAdReaderHash, SmartAdRequestError } from '../services/smartAdTracking.service.js'
 import { authorizeSmartPromotionPurchase } from '../services/smartPromotionPurchaseGuard.service.js'
 import { SmartPromotionOfferError } from '../services/smartPromotionOfferToken.service.js'
