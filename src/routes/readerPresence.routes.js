@@ -1,6 +1,7 @@
 import express from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { heartbeatReaderPresence } from '../controllers/readerPresence.controller.js'
+import { readerPresenceWriteGate } from '../middleware/readerPresenceWriteGate.middleware.js'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { requireUser } from '../middleware/user.middleware.js'
 
@@ -163,6 +164,7 @@ router.post(
   readerPresenceSafetyLimit,
   requireUser,
   readerPresenceRateLimit,
+  readerPresenceWriteGate,
   heartbeatReaderPresence
 )
 
