@@ -23,7 +23,7 @@ export async function selectSmartPdfPromotion({
   if (!total) return empty()
   const pages = Math.ceil(total / SMART_PDF_POLICY.pageSize)
   const start = smartPdfStableHash(`${readerHash}:${window.rotation_key}:${selectedLanguage}`) % pages
-  const offersById = new Map()
+  const eligibleById = new Map()
   for (let offset = 0; offset < Math.min(SMART_PDF_POLICY.maxCandidatePages, pages); offset += 1) {
     const page = await readSmartPdfCandidatePage({
       language: selectedLanguage,
@@ -32,30 +32,34 @@ export async function selectSmartPdfPromotion({
       db, now,
     })
     for (const record of page.records) {
+      if (eligibleById.has(record.product_id)) continue
       const offer = priceSmartPdfCandidate(record, { window })
-      if (offer && !offersById.has(offer.product_id)) offersById.set(offer.product_id, offer)
+      if (offer) eligibleById.set(offer.product_id, { record, offer })
     }
-    if (offersById.size >= MAX_SELECTED) break
+    if (eligibleById.size >= MAX_SELECTED) break
   }
-  if (!offersById.size) return empty()
+  if (!eligibleById.size) return empty()
   const [recentExposure, exposureTotals] = await Promise.all([
     readSmartPdfRecentExposure(readerHash, { db, now }),
-    readSmartPdfExposureTotals([...offersById.keys()], { db, now }),
+    readSmartPdfExposureTotals([...eligibleById.keys()], { db, now }),
   ])
   const ranked = selectSmartPdfCandidates({
-    candidates: [...offersById.values()],
+    candidates: [...eligibleById.values()].map((entry) => entry.record),
     readerKey: readerHash,
     slotKey: window.rotation_key,
     interests,
     recentExposure,
     exposureTotals,
     excludedProductIds,
-    limit: Math.min(MAX_SELECTED, offersById.size),
+    limit: Math.min(MAX_SELECTED, eligibleById.size),
     now,
   })
   const chosen = []
   if (!readerId) {
-    chosen.push(...ranked.slice(0, SMART_PDF_POLICY.maxRecommendations))
+    for (const record of ranked.slice(0, SMART_PDF_POLICY.maxRecommendations)) {
+      const offer = eligibleById.get(record.product_id)?.offer
+      if (offer) chosen.push(offer)
+    }
   } else {
     for (let offset = 0; offset < ranked.length && chosen.length < SMART_PDF_POLICY.maxRecommendations; offset += SMART_PDF_POLICY.ownershipBatchSize) {
       const batch = ranked.slice(offset, offset + SMART_PDF_POLICY.ownershipBatchSize)
@@ -63,9 +67,11 @@ export async function selectSmartPdfPromotion({
       const available = new Set((Array.isArray(states) ? states : [])
         .filter((item) => item.product_type === 'pdf' && item.state === 'available')
         .map((item) => String(item.product_id)))
-      for (const item of batch) {
-        if (!available.has(item.product_id)) continue
-        chosen.push(item)
+      for (const record of batch) {
+        if (!available.has(record.product_id)) continue
+        const offer = eligibleById.get(record.product_id)?.offer
+        if (!offer) continue
+        chosen.push(offer)
         if (chosen.length >= SMART_PDF_POLICY.maxRecommendations) break
       }
     }
