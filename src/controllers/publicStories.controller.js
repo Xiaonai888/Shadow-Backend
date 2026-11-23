@@ -1278,6 +1278,15 @@ export async function getPublicStories(req, res) {
         ['view', 'sort', 'limit', 'language'].includes(key)
       )
 
+    const compactCardView =
+      String(req.query.view || '').trim().toLowerCase() === 'card' &&
+      ['latest', 'new', 'updated'].includes(normalizedSort) &&
+      !newArrivalsPagination &&
+      !genrePagination &&
+      Object.keys(req.query).every((key) =>
+        ['view', 'sort', 'limit', 'genre'].includes(key)
+      )
+
     if (genrePagination && ['wait_free', 'fully_free', 'completed'].includes(genreFilter)) {
       const parsedCursor = genreCursor ? decodeGenreCursor(genreCursor) : null
 
@@ -1388,7 +1397,9 @@ export async function getPublicStories(req, res) {
         ? newArrivalsSelect
         : compactTrending
           ? COMPACT_TRENDING_STORY_SELECT
-          : PUBLIC_STORY_LIST_SELECT
+          : compactCardView
+            ? 'id,title,cover_url,main_genre,total_episodes,created_at'
+            : PUBLIC_STORY_LIST_SELECT
     )
   )
   .eq('status', 'published')
@@ -1980,6 +1991,20 @@ nextQuery = requireReaderVisibleEpisode(nextQuery)
           main_genre: story.main_genre,
           is_adult: story.is_adult,
           total_views: story.total_views,
+        })),
+      })
+    }
+
+        if (compactCardView) {
+      return res.status(200).json({
+        ok: true,
+        stories: stories.map((story) => ({
+          id: story.id,
+          title: story.title,
+          cover_url: story.cover_url,
+          main_genre: story.main_genre,
+          total_episodes: story.total_episodes,
+          created_at: story.created_at,
         })),
       })
     }
