@@ -11,6 +11,17 @@ const PLACEMENTS = new Set(['discover', 'opening', 'freeUnlock', 'me'])
 const STATS_TTL_MS = 60000
 const MAX_STATS_CACHE = 4000
 const statsCache = new Map()
+const seenRequests = new WeakMap()
+const exposureRequests = new WeakMap()
+
+function pendingRequests(store, db) {
+  let entries = store.get(db)
+  if (!entries) {
+    entries = new Map()
+    store.set(db, entries)
+  }
+  return entries
+}
 
 export class SmartAdRequestError extends Error {
   constructor(message, status = 400) {
@@ -71,19 +82,33 @@ export function resolveSmartAdEventSlot(value, now = Date.now()) {
 }
 
 export async function readSmartAdSeenHistory(readerHash, slotKey, { db = supabase } = {}) {
-  const { data, error } = await db.from('smart_ad_reader_exposure')
-    .select('story_id')
-    .eq('reader_hash', readerHash)
-    .eq('slot_key', slotKey)
-    .limit(SMART_AD_POLICY.maxCapacity)
-  if (error) throw error
-  return (data || []).map((row) => String(row.story_id))
+  const pending = pendingRequests(seenRequests, db)
+  const key = `${readerHash}:${slotKey}`
+  let request = pending.get(key)
+  if (!request) {
+    request = (async () => {
+      const { data, error } = await db.from('smart_ad_reader_exposure')
+        .select('story_id')
+        .eq('reader_hash', readerHash)
+        .eq('slot_key', slotKey)
+        .limit(SMART_AD_POLICY.maxCapacity)
+      if (error) throw error
+      return (data || []).map((row) => String(row.story_id))
+    })()
+    pending.set(key, request)
+  }
+  try {
+    return [...await request]
+  } finally {
+    if (pending.get(key) === request) pending.delete(key)
+  }
 }
 
 export async function readSmartAdExposureTotals(storyIds, { db = supabase, now = Date.now() } = {}) {
   const ids = [...new Set((Array.isArray(storyIds) ? storyIds : []).map(String))]
   const response = {}
   const missing = []
+  const pending = pendingRequests(exposureRequests, db)
   for (const id of ids) {
     const item = statsCache.get(id)
     if (item && item.expiresAt > now) response[id] = item.value
@@ -91,16 +116,38 @@ export async function readSmartAdExposureTotals(storyIds, { db = supabase, now =
   }
   for (let start = 0; start < missing.length; start += 100) {
     const chunk = missing.slice(start, start + 100)
-    const { data, error } = await db.from('smart_ad_story_exposure_totals')
-      .select('story_id,impressions,clicks').in('story_id', chunk)
-    if (error) throw error
-    const result = new Map((data || []).map((row) => [String(row.story_id), row]))
-    for (const id of chunk) {
-      const row = result.get(id)
-      const value = { impressions: Number(row?.impressions || 0), clicks: Number(row?.clicks || 0) }
-      response[id] = value
-      if (statsCache.size >= MAX_STATS_CACHE) statsCache.delete(statsCache.keys().next().value)
-      statsCache.set(id, { value, expiresAt: now + STATS_TTL_MS })
+    const newIds = chunk.filter((id) => !pending.has(id))
+    if (newIds.length) {
+      const batch = (async () => {
+        const { data, error } = await db.from('smart_ad_story_exposure_totals')
+          .select('story_id,impressions,clicks').in('story_id', newIds)
+        if (error) throw error
+        return new Map((data || []).map((row) => [String(row.story_id), row]))
+      })()
+      for (const id of newIds) {
+        const request = batch.then((rows) => {
+          const row = rows.get(id)
+          const value = {
+            impressions: Number(row?.impressions || 0),
+            clicks: Number(row?.clicks || 0),
+          }
+          if (pending.get(id) === request) {
+            if (statsCache.size >= MAX_STATS_CACHE) statsCache.delete(statsCache.keys().next().value)
+            statsCache.set(id, { value, expiresAt: Date.now() + STATS_TTL_MS })
+            pending.delete(id)
+          }
+          return value
+        }, (error) => {
+          if (pending.get(id) === request) pending.delete(id)
+          throw error
+        })
+        pending.set(id, request)
+      }
+    }
+    const requests = chunk.map((id) => pending.get(id))
+    const values = await Promise.all(requests)
+    for (let index = 0; index < chunk.length; index += 1) {
+      response[chunk[index]] = values[index]
     }
   }
   return response
@@ -120,7 +167,11 @@ export async function recordSmartAdEvents({
     p_story_ids: ids,
   })
   if (error) throw error
-  for (const id of ids) statsCache.delete(id)
+  const pending = pendingRequests(exposureRequests, db)
+  for (const id of ids) {
+    statsCache.delete(id)
+    pending.delete(id)
+  }
   const item = Array.isArray(data) ? data[0] : data
   if (Number(item?.new_impressions || 0) > 0) {
     invalidateSmartAdRecentHistory(readerHash, { db })
