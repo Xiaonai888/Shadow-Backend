@@ -3,7 +3,7 @@ import { getSmartAdReaderHash, SmartAdRequestError } from '../services/smartAdTr
 import { parseSmartPromotionRequest, SmartPromotionInputError } from '../services/smartPromotionRequest.service.js'
 import { getSmartPromotionRotation } from '../services/smartPromotionDelivery.service.js'
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function getReaderIdentity(req) {
   const readerHash = getSmartAdReaderHash(req)
