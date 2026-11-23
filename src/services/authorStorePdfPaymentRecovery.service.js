@@ -5,6 +5,48 @@ import { sendAuthorStorePdfCompletedReports } from '../controllers/authorStore.c
 
 const PAID_STATUSES = new Set(['confirmed', 'preparing', 'shipped', 'completed'])
 const ORDER_ID = /^A[A-Z0-9]{8,19}$/
+const RECHECK_CACHE_LIMIT = 256
+const rechecksInFlight = new Map()
+const recentPendingRechecks = new Map()
+const ABA_VERIFY_CODES = new Set([
+  'ABA_PDF_VERIFY_CONFIG',
+  'ABA_PDF_VERIFY_URL',
+  'ABA_PDF_VERIFY_MISMATCH',
+  'ABA_PDF_VERIFY_HTTP',
+])
+
+function abaVerificationErrorCode(error) {
+  const code = String(error?.code || '').toUpperCase()
+  if (ABA_VERIFY_CODES.has(code)) return code
+  const name = String(error?.name || '')
+  if (name === 'TimeoutError' || code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT') {
+    return 'ABA_PDF_VERIFY_TIMEOUT'
+  }
+  return 'ABA_PDF_VERIFY_NETWORK'
+}
+
+function abaRetrySeconds(code) {
+  return code === 'ABA_PDF_VERIFY_CONFIG' || code === 'ABA_PDF_VERIFY_URL'
+    || code === 'ABA_PDF_VERIFY_MISMATCH' ? 60 : 20
+}
+
+function pendingRecheckTtlMs(result) {
+  if (result?.state === 'verification_unavailable') {
+    return Math.min(60000, Math.max(5000, Number(result.retry_after_seconds || 20) * 1000))
+  }
+  if (result?.state === 'checking_payment') return 3000
+  if (result?.state === 'payment_recheck_required') return 3000
+  return 0
+}
+
+function pruneRecheckCache(now = Date.now()) {
+  for (const [key, value] of recentPendingRechecks) {
+    if (value.expires_at <= now) recentPendingRechecks.delete(key)
+  }
+  while (recentPendingRechecks.size > RECHECK_CACHE_LIMIT) {
+    recentPendingRechecks.delete(recentPendingRechecks.keys().next().value)
+  }
+}
 
 function isPaid(order) {
   return String(order?.payment_status || '').toLowerCase() === 'paid'
@@ -172,7 +214,7 @@ async function checkBinance(order) {
   })
 }
 
-export async function recheckAuthorStorePdfOrder(buyerId, orderId) {
+async function recheckAuthorStorePdfOrderUncached(buyerId, orderId) {
   const userId = String(buyerId || '').trim()
   const publicId = String(orderId || '').trim()
   if (!userId || !ORDER_ID.test(publicId)) {
@@ -195,8 +237,14 @@ export async function recheckAuthorStorePdfOrder(buyerId, orderId) {
   try {
     verified = await verifyAuthorStorePdfAbaPayment(order)
   } catch (error) {
-    console.error('AUTHOR PDF ABA RECHECK UNAVAILABLE:', error?.code || 'NETWORK', String(error?.message || error).slice(0, 160))
-    return publicResult(order, 'verification_unavailable')
+    const code = abaVerificationErrorCode(error)
+    console.error('AUTHOR PDF ABA RECHECK UNAVAILABLE:', code)
+    return publicResult(order, 'verification_unavailable', {
+      code,
+      verification_source: 'aba_payway',
+      diagnostic_stage: 'verify_transaction',
+      retry_after_seconds: abaRetrySeconds(code),
+    })
   }
   if (!verified.verified) {
     const expired = Date.parse(order.expires_at || '') <= Date.now()
@@ -223,4 +271,44 @@ export async function recheckAuthorStorePdfOrder(buyerId, orderId) {
   order = claimed || await readPdfOrder(userId, publicId)
   if (!isPaid(order)) return publicResult(order, 'payment_recheck_required')
   return finalizePaidPdfOrder(order)
+}
+
+
+export async function recheckAuthorStorePdfOrder(buyerId, orderId) {
+  const userId = String(buyerId || '').trim()
+  const publicId = String(orderId || '').trim()
+  if (!userId || !ORDER_ID.test(publicId)) {
+    const error = new Error('Invalid PDF order')
+    error.statusCode = 400
+    throw error
+  }
+
+  const key = `${userId}:${publicId}`
+  const now = Date.now()
+  pruneRecheckCache(now)
+
+  const pending = rechecksInFlight.get(key)
+  if (pending) return pending
+
+  const cached = recentPendingRechecks.get(key)
+  if (cached && cached.expires_at > now) return { ...cached.result }
+  if (cached) recentPendingRechecks.delete(key)
+
+  const promise = recheckAuthorStorePdfOrderUncached(userId, publicId)
+  rechecksInFlight.set(key, promise)
+  try {
+    const result = await promise
+    const ttlMs = pendingRecheckTtlMs(result)
+    if (ttlMs > 0) {
+      recentPendingRechecks.delete(key)
+      recentPendingRechecks.set(key, {
+        result,
+        expires_at: Date.now() + ttlMs,
+      })
+      pruneRecheckCache()
+    }
+    return result
+  } finally {
+    if (rechecksInFlight.get(key) === promise) rechecksInFlight.delete(key)
+  }
 }
