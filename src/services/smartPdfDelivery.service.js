@@ -50,19 +50,23 @@ export async function selectSmartPdfPromotion({
     interests,
     recentExposure,
     exposureTotals,
-    excludedProductIds,
     limit: Math.min(MAX_SELECTED, eligibleById.size),
     now,
   })
+  const previouslyShown = new Set(excludedProductIds.map((id) => String(id).toLowerCase()))
+  const ordered = [
+    ...ranked.filter((record) => !previouslyShown.has(record.product_id)),
+    ...ranked.filter((record) => previouslyShown.has(record.product_id)),
+  ]
   const chosen = []
   if (!readerId) {
-    for (const record of ranked.slice(0, SMART_PDF_POLICY.maxRecommendations)) {
+    for (const record of ordered.slice(0, SMART_PDF_POLICY.maxRecommendations)) {
       const offer = eligibleById.get(record.product_id)?.offer
       if (offer) chosen.push(offer)
     }
   } else {
-    for (let offset = 0; offset < ranked.length && chosen.length < SMART_PDF_POLICY.maxRecommendations; offset += SMART_PDF_POLICY.ownershipBatchSize) {
-      const batch = ranked.slice(offset, offset + SMART_PDF_POLICY.ownershipBatchSize)
+    for (let offset = 0; offset < ordered.length && chosen.length < SMART_PDF_POLICY.maxRecommendations; offset += SMART_PDF_POLICY.ownershipBatchSize) {
+      const batch = ordered.slice(offset, offset + SMART_PDF_POLICY.ownershipBatchSize)
       const states = await getAuthorStorePdfOwnership(readerId, batch.map((item) => item.product_id))
       const available = new Set((Array.isArray(states) ? states : [])
         .filter((item) => item.product_type === 'pdf' && item.state === 'available')
