@@ -4,6 +4,14 @@ import { createAuthorStorePaidNotificationsSafely } from './authorStorePageNotif
 import { sendAuthorStorePdfCompletedReports } from '../controllers/authorStore.controller.js'
 
 const PAID_STATUSES = new Set(['confirmed', 'preparing', 'shipped', 'completed'])
+const BLOCKED_RECOVERY_STATUSES = new Set([
+  'refunded',
+  'rejected',
+  'cancelled',
+  'canceled',
+  'amount_mismatch',
+  'failed',
+])
 const ORDER_ID = /^A[A-Z0-9]{8,19}$/
 const RECHECK_CACHE_LIMIT = 256
 const rechecksInFlight = new Map()
@@ -50,6 +58,14 @@ function pruneRecheckCache(now = Date.now()) {
 
 function isPaid(order) {
   return String(order?.payment_status || '').toLowerCase() === 'paid'
+}
+
+function isRecoveryBlocked(order) {
+  return ['status', 'order_status', 'payment_status'].some((field) =>
+    BLOCKED_RECOVERY_STATUSES.has(
+      String(order?.[field] || '').toLowerCase()
+    )
+  )
 }
 
 function isUnlocked(order) {
@@ -148,6 +164,12 @@ async function ensurePdfGrants(order) {
 }
 
 async function finalizePaidPdfOrder(order) {
+  if (!isPaid(order) || isRecoveryBlocked(order)) {
+    return publicResult(order, 'payment_recheck_required', {
+      code: 'PDF_RECOVERY_BLOCKED',
+    })
+  }
+
   const complete = await ensurePdfGrants(order)
   if (!complete) return publicResult(order, 'access_recovery')
   if (isUnlocked(order)) return publicResult(order, 'purchased')
@@ -223,6 +245,13 @@ async function recheckAuthorStorePdfOrderUncached(buyerId, orderId) {
     throw error
   }
   let order = await readPdfOrder(userId, publicId)
+
+  if (isRecoveryBlocked(order)) {
+    return publicResult(order, 'payment_recheck_required', {
+      code: 'PDF_RECOVERY_BLOCKED',
+    })
+  }
+
   const binance = String(order.request_payload?.payment_method || '').toLowerCase().includes('binance')
     || Boolean(order.request_payload?.binance_purchase_id)
 
