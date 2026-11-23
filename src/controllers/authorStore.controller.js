@@ -5013,9 +5013,11 @@ function publicBinancePdfCheckout(row, paidOrder = null, receiverVerified = fals
 
 function publicBinancePdfError(res, err) {
   const code = String(err?.code || err?.message || '')
+
   if (err?.statusCode === 409 && ['SMART_PDF_PROMOTION_INVALID', 'AUTHOR_STORE_PROMOTION_CHANGED'].includes(String(err?.code || ''))) {
-  return res.status(409).json({ ok: false, code: String(err.code), message: String(err.message || 'PDF promotion has changed.') })
-}
+    return res.status(409).json({ ok: false, code: String(err.code), message: String(err.message || 'PDF promotion has changed.') })
+  }
+
   if (code.includes('BINANCE_PDF_ACTIVE') || code.includes('duplicate key value')) {
     return res.status(409).json({ ok: false, code: 'BINANCE_ACTIVE_CHECKOUT', message: 'A Binance checkout is already active. Complete or ask Admin to review it first.' })
   }
