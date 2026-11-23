@@ -476,6 +476,76 @@ function recentProviderMinutes(source, now = Date.now()) {
   )
 }
 
+function packUsageRows(rows) {
+  if (!Array.isArray(rows) || rows.length < 4) return rows
+
+  const fields = [...new Set(
+    rows.flatMap((row) => Object.keys(row || {}))
+  )]
+
+  return {
+    format: 'columns-v1',
+    fields,
+    values: rows.map((row) =>
+      fields.map((field) => row?.[field] ?? null)
+    ),
+  }
+}
+
+function unpackUsageRows(value) {
+  if (Array.isArray(value)) return value
+
+  if (
+    value?.format !== 'columns-v1' ||
+    !Array.isArray(value.fields) ||
+    !Array.isArray(value.values)
+  ) {
+    return value
+  }
+
+  return value.values.map((values) =>
+    Object.fromEntries(
+      value.fields.map((field, index) => [
+        field,
+        values[index] ?? null,
+      ])
+    )
+  )
+}
+
+function packUsageSnapshotPayload(payload) {
+  return {
+    ...payload,
+    version: 4,
+    page_requests: {
+      ...payload.page_requests,
+      pages: packUsageRows(payload.page_requests?.pages),
+      routes: packUsageRows(payload.page_requests?.routes),
+    },
+    passive_request_monitor: {
+      ...payload.passive_request_monitor,
+      rows: packUsageRows(payload.passive_request_monitor?.rows),
+    },
+  }
+}
+
+function unpackUsageSnapshotPayload(payload) {
+  if (!payload || typeof payload !== 'object') return payload
+
+  return {
+    ...payload,
+    page_requests: {
+      ...payload.page_requests,
+      pages: unpackUsageRows(payload.page_requests?.pages),
+      routes: unpackUsageRows(payload.page_requests?.routes),
+    },
+    passive_request_monitor: {
+      ...payload.passive_request_monitor,
+      rows: unpackUsageRows(payload.passive_request_monitor?.rows),
+    },
+  }
+}
+
 function buildSnapshot(now = Date.now()) {
   const source = getSystemUsageSnapshot()
   const windowEnd = alignedWindowEnd(now)
@@ -2320,7 +2390,7 @@ export async function persistSystemUsageSnapshot() {
             snapshot.totals.count,
           bytes: snapshot.totals.bytes,
           errors: snapshot.totals.errors,
-          payload: snapshot.payload,
+          payload: packUsageSnapshotPayload(snapshot.payload),
         },
         {
           onConflict:
@@ -2386,7 +2456,12 @@ async function loadStoredHistory(
       ? data
       : []
 
-    rows.push(...page)
+        rows.push(
+      ...page.map((row) => ({
+        ...row,
+        payload: unpackUsageSnapshotPayload(row.payload),
+      }))
+    )
 
     if (
       page.length < HISTORY_PAGE_SIZE ||
