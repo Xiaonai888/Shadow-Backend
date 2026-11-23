@@ -4,9 +4,10 @@ import { recordSmartPdfEvents } from '../services/smartPdfExposure.service.js'
 import { normalizeSmartPdfLanguage } from '../services/smartPdfPolicy.service.js'
 import { getSmartPdfReaderIdentity, SmartPdfRequestError } from '../services/smartPdfReaderIdentity.service.js'
 import { attachSmartPdfOfferTokens } from '../services/smartPdfOfferToken.service.js'
+import { attachSmartPdfEventProofs, verifySmartPdfEventProof } from '../services/smartPdfEventProof.service.js'
 
 const PLACEMENTS = new Set(['stories', 'manga', 'discover'])
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_EXCLUSIONS = 90
 
 function privateResponse(res) {
@@ -93,7 +94,11 @@ export async function postSmartPdfPromotionSelection(req, res) {
       readerId: readerIdentity.readerId,
       placement,
     })
-    return res.json({ ...signed, placement })
+    const secured = attachSmartPdfEventProofs(signed, {
+      readerHash: readerIdentity.readerHash,
+      placement,
+    })
+    return res.json({ ...secured, placement })
   } catch (error) {
     return fail(res, error)
   }
@@ -108,12 +113,26 @@ export async function postSmartPdfPromotionEvents(req, res) {
     if (eventType !== 'impression' && eventType !== 'click') {
       throw new SmartPdfRequestError('Invalid PDF promotion event')
     }
+    const productIds = productIdsOf(req.body?.product_ids)
+    const eventProofs = req.body?.event_proofs
+    if (!Array.isArray(eventProofs) || eventProofs.length !== productIds.length) {
+      throw new SmartPdfRequestError('PDF tracking proof is required')
+    }
+    const rotationKey = String(req.body?.rotation_key || '')
+    for (let index = 0; index < productIds.length; index += 1) {
+      verifySmartPdfEventProof(eventProofs[index], {
+        readerHash: readerIdentity.readerHash,
+        placement,
+        productId: productIds[index],
+        rotationKey,
+      })
+    }
     const outcome = await recordSmartPdfEvents({
       readerHash: readerIdentity.readerHash,
       placement,
       eventType,
-      productIds: productIdsOf(req.body?.product_ids),
-      rotationKey: String(req.body?.rotation_key || ''),
+      productIds,
+      rotationKey,
     })
     return res.json({ ok: true, ...outcome })
   } catch (error) {
