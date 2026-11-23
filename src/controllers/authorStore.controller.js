@@ -4158,7 +4158,7 @@ return res.status(201).json({
 
 const isDuplicatePdf =
   String(error?.code || '') === '23505' &&
-  /PDF_ALREADY_PURCHASED|PDF_EXISTING_ORDER/.test(
+     /PDF_ALREADY_PURCHASED|PDF_EXISTING_ORDER|PDF_PAYMENT_EXISTS_CHECK_PREVIOUS_ORDER/.test(
     String(error?.message || '')
   )
 
