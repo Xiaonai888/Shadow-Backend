@@ -2,6 +2,8 @@ import { supabase } from '../config/supabase.js'
 
 export const FREE_PUBLISHED_EPISODE_LIMIT = 5
 
+const EPISODE_ACCESS_PENDING_LIMIT = 256
+const episodeAccessPending = new Map()
 function safeNumber(value, fallback = 0) {
   const number = Number(value)
   return Number.isFinite(number) ? number : fallback
@@ -120,17 +122,46 @@ export async function getStoryEpisodeAccess(
   now = Date.now(),
   freeLimit = FREE_PUBLISHED_EPISODE_LIMIT
 ) {
-  const { data, error } = await supabase
-    .from('episodes')
-    .select(
-      'id, story_id, author_id, user_id, title, episode_number, status, is_locked, is_free_published, published_at, first_published_at, created_at, deleted_at'
+  const key = String(storyId || '').trim()
+
+  let request = episodeAccessPending.get(key)
+
+  if (!request) {
+    request = (async () => {
+      const { data, error } = await supabase
+        .from('episodes')
+        .select(
+          'id, story_id, author_id, user_id, title, episode_number, status, is_locked, is_free_published, published_at, first_published_at, created_at, deleted_at'
+        )
+        .eq('story_id', storyId)
+        .is('deleted_at', null)
+        .order('episode_number', { ascending: true })
+        .order('created_at', { ascending: true })
+
+      if (error) throw error
+
+      return data || []
+    })()
+
+    if (
+      key &&
+      episodeAccessPending.size < EPISODE_ACCESS_PENDING_LIMIT
+    ) {
+      episodeAccessPending.set(key, request)
+    }
+  }
+
+  try {
+    const episodes = await request
+
+    return buildEpisodeAccess(
+      episodes,
+      now,
+      freeLimit
     )
-    .eq('story_id', storyId)
-    .is('deleted_at', null)
-    .order('episode_number', { ascending: true })
-    .order('created_at', { ascending: true })
-
-  if (error) throw error
-
-  return buildEpisodeAccess(data || [], now, freeLimit)
+  } finally {
+    if (episodeAccessPending.get(key) === request) {
+      episodeAccessPending.delete(key)
+    }
+  }
 }
