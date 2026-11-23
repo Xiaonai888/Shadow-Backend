@@ -3,9 +3,10 @@ import { selectSmartPdfPromotion } from '../services/smartPdfDelivery.service.js
 import { recordSmartPdfEvents } from '../services/smartPdfExposure.service.js'
 import { normalizeSmartPdfLanguage } from '../services/smartPdfPolicy.service.js'
 import { getSmartPdfReaderIdentity, SmartPdfRequestError } from '../services/smartPdfReaderIdentity.service.js'
+import { attachSmartPdfOfferTokens } from '../services/smartPdfOfferToken.service.js'
 
 const PLACEMENTS = new Set(['stories', 'manga', 'discover'])
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MAX_EXCLUSIONS = 90
 
 function privateResponse(res) {
@@ -14,7 +15,7 @@ function privateResponse(res) {
 
 function fail(res, error) {
   if (error instanceof SmartPdfRequestError || Number.isInteger(error?.statusCode) && error.statusCode >= 400 && error.statusCode < 500) {
-    return res.status(error.statusCode || 400).json({ ok: false, message: error.message })
+    return res.status(error.statusCode || 400).json({ ok: false, message: error.message, ...(error.code ? { code: error.code } : {}) })
   }
   console.error('SMART_PDF_API_ERROR:', String(error?.message || error))
   return res.status(503).json({ ok: false, message: 'Smart PDF Promotion is temporarily unavailable' })
@@ -88,7 +89,11 @@ export async function postSmartPdfPromotionSelection(req, res) {
       interests: interestsOf(req.body?.interests),
       excludedProductIds: excludedOf(req.body?.exclude_product_ids),
     })
-    return res.json({ ...result, placement })
+    const signed = attachSmartPdfOfferTokens(result, {
+      readerId: readerIdentity.readerId,
+      placement,
+    })
+    return res.json({ ...signed, placement })
   } catch (error) {
     return fail(res, error)
   }
