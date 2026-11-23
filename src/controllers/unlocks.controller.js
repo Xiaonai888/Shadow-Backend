@@ -2061,18 +2061,28 @@ export async function unlockEpisodePackageWithDiamonds(
       const metadata =
         transactions[0]?.metadata || {}
 
+      let accountingPending = false
+
+    try {
       await recordDiamondUnlockAccountingWithRetry({
         purchaseKey,
         userId,
         storyId,
-        episodes,
-        transactions,
-        transactionAmount:
-          completedPurchase.request.amount,
-        unlockScope:
-          completedPurchase.request.unlock_scope,
+        episodes: episodesToUnlock,
+        transactions: purchase.transactions,
+        transactionAmount: price,
+        unlockScope: 'all_released',
         metadata,
       })
+    } catch (accountingError) {
+      accountingPending = true
+
+      console.error('SPECIAL_PROMOTION_ACCOUNTING_PENDING', {
+        purchase_key: purchaseKey,
+        story_id: storyId,
+        error: String(accountingError?.message || 'Accounting failed'),
+      })
+    }
 
       invalidateReadGateUnlockCache({
         userId,
@@ -3145,9 +3155,10 @@ if (personalized) {
       }
     }
 
-    return res.status(200).json({
+       return res.status(accountingPending ? 202 : 200).json({
       ok: true,
       unlocked: true,
+      accounting_pending: accountingPending,
       idempotent: purchase.idempotent,
       unlocked_count: purchase.unlocks.length,
       unlocked_episode_ids: purchase.unlocks.map((unlock) => unlock.episode_id),
