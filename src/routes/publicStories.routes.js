@@ -1,5 +1,6 @@
 import express from 'express'
 import jwt from 'jsonwebtoken'
+import { gzipSync } from 'node:zlib'
 import { createHash } from 'node:crypto'
 import { getLatestPublicEpisodes } from '../controllers/latestEpisodes.controller.js'
 import { getActiveDiscoverSpecialPromotion } from '../controllers/discoverSpecialPromotion.controller.js'
@@ -456,6 +457,80 @@ router.get(
   getPublicStoryById
 )
 
+function compressEpisodeJsonResponse(req, res, next) {
+  if (req.method !== 'GET') return next()
+
+  res.vary('Accept-Encoding')
+
+  const acceptsGzip = String(req.headers['accept-encoding'] || '')
+    .split(',')
+    .some((option) => {
+      const [encoding, ...attributes] = option.trim().split(';')
+
+      if (encoding.trim().toLowerCase() !== 'gzip') return false
+
+      const quality = attributes.find((attribute) =>
+        /^q\s*=/i.test(attribute.trim())
+      )
+
+      if (!quality) return true
+
+      const value = Number(quality.split('=')[1])
+      return Number.isFinite(value) && value > 0
+    })
+
+  if (!acceptsGzip) return next()
+
+  const originalSend = res.send
+
+  res.send = function compressedEpisodeJsonSend(body) {
+    if (
+      res.headersSent ||
+      res.statusCode !== 200 ||
+      typeof body !== 'string' ||
+      res.getHeader('Content-Encoding') ||
+      !String(res.getHeader('Content-Type') || '')
+        .toLowerCase()
+        .includes('application/json')
+    ) {
+      return originalSend.call(this, body)
+    }
+
+    const rawBytes = Buffer.byteLength(body)
+
+    if (
+      rawBytes < 1024 ||
+      rawBytes > 2 * 1024 * 1024
+    ) {
+      return originalSend.call(this, body)
+    }
+
+    try {
+      const compressed = gzipSync(Buffer.from(body), {
+        level: 1,
+      })
+
+      if (compressed.length + 64 >= rawBytes) {
+        return originalSend.call(this, body)
+      }
+
+      res.setHeader('Content-Encoding', 'gzip')
+      res.removeHeader('Content-Length')
+
+      return originalSend.call(this, compressed)
+    } catch {
+      return originalSend.call(this, body)
+    }
+  }
+
+  return next()
+}
+
+router.use(
+  '/stories/:storyId/episodes',
+  compressEpisodeJsonResponse
+)
+
 router.get(
   '/stories/:storyId/episodes',
   traceReaderEpisodeList,
@@ -463,7 +538,6 @@ router.get(
   cachePublicStoryDataResponse('episodes'),
   getPublicStoryEpisodes
 )
-
 function personalizeStoryEpisodeList(req, res, next) {
   const authorization = String(req.headers.authorization || '')
   const token = authorization.startsWith('Bearer ')
