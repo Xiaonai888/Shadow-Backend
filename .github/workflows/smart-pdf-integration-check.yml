@@ -1,0 +1,42 @@
+name: Smart PDF Integration Validation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'server.js'
+      - 'src/controllers/authorStore.controller.js'
+      - 'src/controllers/smartPdf.controller.js'
+      - 'src/routes/smartPdf.routes.js'
+      - 'src/services/discoverAuthorStoreCheckoutPricing.service.js'
+      - 'src/services/smartPdfOfferToken.service.js'
+      - 'src/services/smartPdfCheckoutGuard.service.js'
+      - 'src/tests/smartPdfIntegration.validation.test.mjs'
+      - 'src/tests/smartPdfOfferToken.validation.test.mjs'
+      - 'sql/20261123_smart_pdf_exposure.sql'
+      - 'sql/20261123_smart_pdf_exposure_verify.sql'
+      - 'sql/20261123_smart_pdf_eligible_candidates_verify.sql'
+
+permissions:
+  contents: read
+
+jobs:
+  integration-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax validation
+        run: |
+          node --check server.js
+          node --check src/controllers/authorStore.controller.js
+          node --check src/controllers/smartPdf.controller.js
+          node --check src/routes/smartPdf.routes.js
+          node --check src/services/discoverAuthorStoreCheckoutPricing.service.js
+          node --check src/services/smartPdfOfferToken.service.js
+          node --check src/services/smartPdfCheckoutGuard.service.js
+          node --check src/tests/smartPdfIntegration.validation.test.mjs
+      - name: Smart PDF offer and integration tests
+        run: node --test src/tests/smartPdfOfferToken.validation.test.mjs src/tests/smartPdfIntegration.validation.test.mjs
