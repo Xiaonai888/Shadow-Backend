@@ -112,13 +112,21 @@ export async function getAuthorStorePdfOwnership(buyerId, rawProductIds) {
       && String(order.pdf_unlock_status || '').toLowerCase() === 'unlocked')
     const anyPaid = itemOrders.find((order) => String(order.payment_status || '').toLowerCase() === 'paid')
 
-    if (grant && linkedOrder
+    const linkedOrderIsValid = Boolean(linkedOrder
       && String(linkedOrder.payment_status || '').toLowerCase() === 'paid'
       && PAID_STATUSES.has(String(linkedOrder.status || '').toLowerCase())
-      && String(linkedOrder.pdf_unlock_status || '').toLowerCase() === 'unlocked') {
-      state.set(id, { ...state.get(id), state: 'purchased', ...normalizeOrder(linkedOrder) })
+      && String(linkedOrder.pdf_unlock_status || '').toLowerCase() === 'unlocked')
+
+    const ownedOrder = linkedOrderIsValid ? linkedOrder : paidOrder
+
+    if (grant && ownedOrder) {
+      state.set(id, {
+        ...state.get(id),
+        state: 'purchased',
+        ...normalizeOrder(ownedOrder),
+      })
     } else if (grant || paidOrder || anyPaid) {
-      const source = linkedOrder || paidOrder || anyPaid
+      const source = paidOrder || anyPaid || linkedOrder
       state.set(id, {
         ...state.get(id),
         state: 'access_recovery',
