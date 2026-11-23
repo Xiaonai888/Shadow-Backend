@@ -974,7 +974,15 @@ async function syncTransition() {
 
   try {
     if (status === 'active') {
-      await openOrReopen(snapshot)
+      const fingerprint = buildFingerprint(snapshot)
+
+      if (
+        previous !== 'active' ||
+        !activeIncidentId ||
+        activeFingerprint !== fingerprint
+      ) {
+        await openOrReopen(snapshot)
+      }
 
       const protection =
         await activateProtection(snapshot)
