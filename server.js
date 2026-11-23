@@ -41,6 +41,7 @@ import chatRoutes from './src/routes/chat.routes.js'
 import adminNotificationsRoutes from './src/routes/adminNotifications.routes.js'
 import advertisementsRoutes from './src/routes/advertisements.routes.js'
 import smartAdRoutes from './src/routes/smartAd.routes.js'
+import smartPdfRoutes from './src/routes/smartPdf.routes.js'
 import smartPromotionRoutes from './src/routes/smartPromotion.routes.js'
 import smartAdAdminRoutes from './src/routes/smartAdAdmin.routes.js'
 import googleAdsSettingsRoutes from './src/routes/googleAdsSettings.routes.js'
@@ -1021,6 +1022,7 @@ app.use('/api/admin/chat-story-library', adminChatStoryLibraryRoutes)
 app.use('/api/admin/ranking', adminRankingRoutes)
 app.use('/api/advertisements', advertisementsRoutes)
 app.use('/api/smart-ads', smartAdRoutes)
+app.use('/api/smart-pdf', smartPdfRoutes)
 app.use('/api/smart-promotions', smartPromotionRoutes)
 app.use('/api/admin/smart-ads', smartAdAdminRoutes)
 app.use('/api/google-ads', googleAdsSettingsRoutes)
