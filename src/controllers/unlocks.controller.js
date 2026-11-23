@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto'
 import { supabase } from '../config/supabase.js'
 import { getCurrentDiscoverSpecialPromotionsForLanguage } from '../services/discoverSpecialPromotionLanguage.service.js'
-import { normalizeDiscoverPromotionLanguage } from '../services/discoverPromotionLanguageRotation.service.js'
+import { getSmartAdReaderHash, SmartAdRequestError } from '../services/smartAdTracking.service.js'
+import { authorizeSmartPromotionPurchase } from '../services/smartPromotionPurchaseGuard.service.js'
+import { SmartPromotionOfferError } from '../services/smartPromotionOfferToken.service.js'
 import { createAuthorEarningsFromDiamondUnlock } from '../services/authorRevenue.service.js'
 import { createStoryReadingIncome } from '../services/storyReadingIncome.service.js'
 import { recordReaderBoostInterest } from '../services/boostAnalyticsTracking.service.js'
@@ -2851,12 +2853,24 @@ export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
       })
     }
 
-    const { getCurrentDiscoverSpecialPromotions } = await import('./discoverSpecialPromotion.controller.js')
-    const rotation = requestedLanguage
-      ? await getCurrentDiscoverSpecialPromotionsForLanguage(requestedLanguage)
-      : await getCurrentDiscoverSpecialPromotions()
-    const offer = rotation.promotions.find((item) => String(item.story_id) === storyId)
-
+    const personalized = Object.prototype.hasOwnProperty.call(req.body || {}, 'offer_token')
+let offer
+if (personalized) {
+  offer = await authorizeSmartPromotionPurchase({
+    readerHash: getSmartAdReaderHash(req),
+    readerId: userId,
+    storyId,
+    storyLanguage: actualLanguage,
+    offerToken: req.body.offer_token,
+    expectedPrice: req.body?.expected_price_diamonds,
+  })
+} else {
+  const { getCurrentDiscoverSpecialPromotions } = await import('./discoverSpecialPromotion.controller.js')
+  const rotation = requestedLanguage
+    ? await getCurrentDiscoverSpecialPromotionsForLanguage(requestedLanguage)
+    : await getCurrentDiscoverSpecialPromotions()
+  offer = rotation.promotions.find((item) => String(item.story_id) === storyId)
+}
     if (!offer || Date.now() >= new Date(offer.expires_at).getTime()) {
       return res.status(409).json({
         ok: false,
@@ -3139,8 +3153,23 @@ export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
       spent_diamonds: price,
       wallet: publicWallet(purchase.wallet),
     })
-  } catch (error) {
-    console.error('UNLOCK DISCOVER SPECIAL PROMOTION ERROR:', error)
+} catch (error) {
+  if (error instanceof SmartPromotionOfferError) {
+    return res.status(error.status).json({
+      ok: false,
+      code: error.code,
+      message: error.message,
+      ...error.details,
+    })
+  }
+  if (error instanceof SmartAdRequestError) {
+    return res.status(error.status).json({
+      ok: false,
+      code: 'READER_AUTH_INVALID',
+      message: error.message,
+    })
+  }
+  console.error('UNLOCK DISCOVER SPECIAL PROMOTION ERROR:', error)
     const message = String(error?.message || '')
 
     if (message.includes('INSUFFICIENT_DIAMONDS')) {
