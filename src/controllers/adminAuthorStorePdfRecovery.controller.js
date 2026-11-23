@@ -20,9 +20,84 @@ function safeText(value, max = 100) {
   return String(value || '').trim().slice(0, max)
 }
 
+
 function searchValue(raw) {
   return safeText(raw, 80).replace(/^@+/, '').replace(/[,()%*;"\\:]/g, ' ').trim()
 }
+
+const PDF_DATE_RANGE_MS = {
+  '1h': 60 * 60 * 1000,
+  '6h': 6 * 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
+}
+
+function invalidPdfDateRange() {
+  const error = new Error('Invalid PDF recovery date range')
+  error.statusCode = 400
+  throw error
+}
+
+function readPdfDateRange(raw = {}) {
+  const range = safeText(raw.range || 'all', 20).toLowerCase()
+  const now = Date.now()
+  const khOffset = 7 * 60 * 60 * 1000
+
+  if (range === 'all') return { range, from: '', to: '' }
+
+  if (range === 'custom') {
+    const from = safeText(raw.from, 50)
+    const to = safeText(raw.to, 50)
+    const iso = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/
+    const start = Date.parse(from)
+    const end = Date.parse(to)
+
+    if (!iso.test(from) || !iso.test(to) || !Number.isFinite(start)
+      || !Number.isFinite(end) || start >= end || end > now + 60000) {
+      invalidPdfDateRange()
+    }
+
+    return {
+      range,
+      from: new Date(start).toISOString(),
+      to: new Date(end).toISOString(),
+    }
+  }
+
+  if (range === 'today' || range === 'month') {
+    const kh = new Date(now + khOffset)
+    const day = range === 'month' ? 1 : kh.getUTCDate()
+    const start = Date.UTC(
+      kh.getUTCFullYear(),
+      kh.getUTCMonth(),
+      day
+    ) - khOffset
+
+    return {
+      range,
+      from: new Date(start).toISOString(),
+      to: new Date(now).toISOString(),
+    }
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(PDF_DATE_RANGE_MS, range)) {
+    invalidPdfDateRange()
+  }
+
+  return {
+    range,
+    from: new Date(now - PDF_DATE_RANGE_MS[range]).toISOString(),
+    to: new Date(now).toISOString(),
+  }
+}
+
+function filterPdfCreatedAt(query, dateRange) {
+  if (dateRange.from) query = query.gte('created_at', dateRange.from)
+  if (dateRange.to) query = query.lte('created_at', dateRange.to)
+  return query
+}
+
 
 function pdfItems(order) {
   return (Array.isArray(order?.items) ? order.items : []).filter((item) =>
@@ -118,8 +193,13 @@ export async function listAdminAuthorStorePdfRecovery(req, res) {
     if (!SEARCH_STATUSES.has(status) || (rawSearch && !q)) {
       return res.status(400).json({ ok: false, message: 'Invalid PDF recovery filter' })
     }
+
+    const dateRange = readPdfDateRange(req.query)
     let query = supabase.from('author_store_pdf_recovery_index_v1').select(ORDER_FIELDS)
       .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+    query = filterPdfCreatedAt(query, dateRange)
+
 
     if (q) {
       const [usersResult, itemResult] = await Promise.all([
@@ -200,9 +280,15 @@ export async function getAdminAuthorStorePdfRecoveryDetail(req, res) {
 export async function listAdminAuthorStorePdfRecoveryHistory(req, res) {
   try {
     const page = Math.min(Math.max(Number.parseInt(req.query.page, 10) || 1, 1), 100000)
+
+    const dateRange = readPdfDateRange(req.query)
     const start = (page - 1) * 10
-    const { data, error } = await supabase.from('author_store_pdf_recovery_actions').select('*')
-      .order('created_at', { ascending: false }).range(start, start + 10)
+    let query = supabase.from('author_store_pdf_recovery_actions').select('*')
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+    query = filterPdfCreatedAt(query, dateRange)
+    const { data, error } = await query.range(start, start + 10)
+
     if (error) throw error
     res.set('Cache-Control', 'private, no-store')
     return res.status(200).json({ ok: true, page, limit: 10, items: (data || []).slice(0, 10), has_next: (data || []).length > 10 })
