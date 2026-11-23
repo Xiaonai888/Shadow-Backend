@@ -10,6 +10,18 @@ import {
 } from '../controllers/adminAuthorStorePdfRecovery.controller.js'
 
 const router = express.Router()
+const readIpLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+})
+const writeIpLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 20,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+})
 const readLimit = rateLimit({
   windowMs: 60 * 1000,
   limit: 60,
@@ -25,11 +37,10 @@ const writeLimit = rateLimit({
   keyGenerator: (req) => String(req.admin?.admin_id || req.admin?.id || ipKeyGenerator(req.ip)),
 })
 
-router.use(requireAdmin)
-router.get('/', readLimit, listAdminAuthorStorePdfRecovery)
-router.get('/history', readLimit, listAdminAuthorStorePdfRecoveryHistory)
-router.get('/:orderId', readLimit, getAdminAuthorStorePdfRecoveryDetail)
-router.post('/:orderId/recover', writeLimit, recoverAdminAuthorStorePdfOrder)
-router.post('/:orderId/manual-confirm', writeLimit, manuallyConfirmAdminAuthorStorePdfPayment)
+router.get('/', readIpLimit, requireAdmin, readLimit, listAdminAuthorStorePdfRecovery)
+router.get('/history', readIpLimit, requireAdmin, readLimit, listAdminAuthorStorePdfRecoveryHistory)
+router.get('/:orderId', readIpLimit, requireAdmin, readLimit, getAdminAuthorStorePdfRecoveryDetail)
+router.post('/:orderId/recover', writeIpLimit, requireAdmin, writeLimit, recoverAdminAuthorStorePdfOrder)
+router.post('/:orderId/manual-confirm', writeIpLimit, requireAdmin, writeLimit, manuallyConfirmAdminAuthorStorePdfPayment)
 
 export default router
