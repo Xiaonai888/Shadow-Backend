@@ -174,6 +174,7 @@ export async function recordSmartAdEvents({
   }
   const item = Array.isArray(data) ? data[0] : data
   if (Number(item?.new_impressions || 0) > 0) {
+    pendingRequests(seenRequests, db).delete(`${readerHash}:${slotKey}`)
     invalidateSmartAdRecentHistory(readerHash, { db })
   }
   return {
