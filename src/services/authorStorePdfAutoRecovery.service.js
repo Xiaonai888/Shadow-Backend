@@ -12,8 +12,10 @@ import { html, sendTelegramMessage } from './telegram.service.js'
 const INTERVAL_MS = 10 * 60 * 1000
 const MAX_CANDIDATES_PER_QUERY = 80
 const MAX_RECOVERIES_PER_SCAN = 12
+const RECOVERY_SCAN_PAGE_SIZE = 30
 let running = false
 let started = false
+let recoveryScanOffset = 0
 
 function validPdfOnlyOrder(order) {
   const items = Array.isArray(order?.items) ? order.items : []
@@ -57,10 +59,18 @@ async function getCandidates() {
     .from('author_store_pdf_recovery_index_v1')
     .select('id')
     .eq('delivery_status', 'needs_recovery')
-    .eq('pdf_unlock_status', 'unlocked')
     .order('created_at', { ascending: false })
-    .limit(30)
+    .range(
+      recoveryScanOffset,
+      recoveryScanOffset + RECOVERY_SCAN_PAGE_SIZE - 1
+    )
+
   if (missingGrantResult.error) throw missingGrantResult.error
+
+  recoveryScanOffset =
+    (missingGrantResult.data || []).length < RECOVERY_SCAN_PAGE_SIZE
+      ? 0
+      : recoveryScanOffset + RECOVERY_SCAN_PAGE_SIZE
   const missingGrantIds = (missingGrantResult.data || []).map((row) => row.id).filter(Boolean)
   const missingGrantOrders = missingGrantIds.length
     ? await supabase.from('author_store_orders').select(fields).in('id', missingGrantIds)
