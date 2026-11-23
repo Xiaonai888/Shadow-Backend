@@ -184,7 +184,7 @@ export async function runAuthorStorePdfRecoverySweep() {
 }
 
 export function startAuthorStorePdfAutoRecovery() {
-  if (started || process.env.AUTHOR_STORE_PDF_AUTO_RECOVERY_ENABLED !== 'true') return
+  if (started || process.env.AUTHOR_STORE_PDF_AUTO_RECOVERY_ENABLED === 'false') return
   started = true
   const timer = setInterval(() => {
     void runAuthorStorePdfRecoverySweep()
