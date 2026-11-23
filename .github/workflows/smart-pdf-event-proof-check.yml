@@ -1,0 +1,35 @@
+name: Smart PDF Event Proof Validation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/services/smartPdfEventProof.service.js'
+      - 'src/tests/smartPdfEventProof.validation.test.mjs'
+      - 'src/controllers/smartPdf.controller.js'
+      - '.github/workflows/smart-pdf-event-proof-check.yml'
+  pull_request:
+    paths:
+      - 'src/services/smartPdfEventProof.service.js'
+      - 'src/tests/smartPdfEventProof.validation.test.mjs'
+      - 'src/controllers/smartPdf.controller.js'
+      - '.github/workflows/smart-pdf-event-proof-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-event-proofs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate event-proof and API syntax
+        run: |
+          node --check src/services/smartPdfEventProof.service.js
+          node --check src/controllers/smartPdf.controller.js
+          node --check src/tests/smartPdfEventProof.validation.test.mjs
+      - name: Validate signed event proofs
+        run: node --test src/tests/smartPdfEventProof.validation.test.mjs
