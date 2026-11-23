@@ -1,3 +1,4 @@
+import jwt from 'jsonwebtoken'
 import { smartAdCambodiaSlot } from '../services/smartAdEligibility.service.js'
 import { readSmartAdPoolState } from '../services/smartAdPool.service.js'
 import { selectSmartAdBatch, resolveSmartAdEpisodeOne } from '../services/smartAdDelivery.service.js'
@@ -21,6 +22,13 @@ function noStore(res) {
   res.setHeader('Cache-Control', 'private, no-store')
 }
 
+function verifiedReaderId(req) {
+  const authorization = String(req.headers?.authorization || '')
+  if (!authorization.startsWith('Bearer ')) return ''
+  const payload = jwt.verify(authorization.slice(7), String(process.env.JWT_SECRET || ''))
+  return payload?.type === 'reader' ? String(payload.user_id || '') : ''
+}
+
 export async function getSmartAdVersion(req, res) {
   noStore(res)
   try {
@@ -41,9 +49,11 @@ export async function postSmartAdSelection(req, res) {
   noStore(res)
   try {
     const readerHash = getSmartAdReaderHash(req)
+    const readerId = verifiedReaderId(req)
     const placement = requireSmartAdPlacement(req.body?.placement)
     const result = await selectSmartAdBatch({
       readerHash,
+      readerId,
       placement,
       storyLanguage: req.body?.story_language ?? 'km',
       cursor: req.body?.cursor,
