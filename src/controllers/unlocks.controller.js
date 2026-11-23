@@ -2063,26 +2063,20 @@ export async function unlockEpisodePackageWithDiamonds(
 
       let accountingPending = false
 
-    try {
+    
       await recordDiamondUnlockAccountingWithRetry({
         purchaseKey,
         userId,
         storyId,
-        episodes: episodesToUnlock,
-        transactions: purchase.transactions,
-        transactionAmount: price,
-        unlockScope: 'all_released',
+        episodes,
+        transactions,
+        transactionAmount:
+          completedPurchase.request.amount,
+        unlockScope:
+          completedPurchase.request.unlock_scope,
         metadata,
       })
-    } catch (accountingError) {
-      accountingPending = true
 
-      console.error('SPECIAL_PROMOTION_ACCOUNTING_PENDING', {
-        purchase_key: purchaseKey,
-        story_id: storyId,
-        error: String(accountingError?.message || 'Accounting failed'),
-      })
-    }
 
       invalidateReadGateUnlockCache({
         userId,
@@ -2238,16 +2232,29 @@ reader_tier: tier,
         metadata,
       })
 
-    await recordDiamondUnlockAccountingWithRetry({
-      purchaseKey,
-      userId,
-      storyId,
-      episodes: episodesToUnlock,
-      transactions: purchase.transactions,
-      transactionAmount: option.price,
-      unlockScope: rule.unlock_scope,
-      metadata,
-    })
+
+    let accountingPending = false
+
+    try {
+      await recordDiamondUnlockAccountingWithRetry({
+        purchaseKey,
+        userId,
+        storyId,
+        episodes: episodesToUnlock,
+        transactions: purchase.transactions,
+        transactionAmount: price,
+        unlockScope: 'all_released',
+        metadata,
+      })
+    } catch (accountingError) {
+      accountingPending = true
+
+      console.error('SPECIAL_PROMOTION_ACCOUNTING_PENDING', {
+        purchase_key: purchaseKey,
+        story_id: storyId,
+        error: String(accountingError?.message || 'Accounting failed'),
+      })
+    }
 
     const reader =
       await getReaderProfileSafely(userId)
