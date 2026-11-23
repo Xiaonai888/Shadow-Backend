@@ -2689,7 +2689,12 @@ function buildAuthorStorePayWayPayload({ orderId, amount, user, phone, payItems 
     'https://shadow-backend-kucw.onrender.com/api/author-store/orders/callback'
 
   const returnParams = JSON.stringify({ order_id: orderId, type: 'author_store_order' })
-  const lifetime = Number(process.env.ABA_PAYWAY_LIFETIME || 3)
+  const configuredLifetime = Number(process.env.ABA_PAYWAY_LIFETIME)
+  const lifetime = Number.isFinite(configuredLifetime) &&
+  configuredLifetime >= 3 &&
+  configuredLifetime <= 30
+    ? Math.floor(configuredLifetime)
+    : 15
 
   const payload = {
     req_time: getUtcReqTime(),
@@ -2706,7 +2711,7 @@ function buildAuthorStorePayWayPayload({ orderId, amount, user, phone, payItems 
     callback_url: base64(callbackUrl),
     currency: process.env.ABA_PAYWAY_CURRENCY || 'USD',
     return_params: returnParams,
-    lifetime: Math.max(3, lifetime),
+    lifetime,
     qr_image_template: process.env.ABA_PAYWAY_QR_TEMPLATE || 'template3_color',
   }
 
@@ -2718,23 +2723,18 @@ async function callPayWayGenerateQr(payload) {
   const hash = createPayWayHash(payload)
 
   if (!payload.merchant_id || !process.env.ABA_PAYWAY_API_KEY) {
-    return {
-      configured: false,
-      qr_string: '',
-      qr_image: '',
-      deeplink: '',
-      checkout_url: '',
-      aba_transaction_id: '',
-      raw: { message: 'ABA PayWay QR API is not configured' },
-    }
-  }
+  const error = new Error('ABA PayWay credentials are not configured')
+  error.statusCode = 503
+  error.code = 'ABA_PAYWAY_NOT_CONFIGURED'
+  throw error
+}
 
   const response = await fetch(qrUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...payload, hash }),
-  })
-
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ ...payload, hash }),
+  signal: AbortSignal.timeout(10000),
+})
   const text = await response.text()
   let data = {}
 
@@ -2748,10 +2748,33 @@ async function callPayWayGenerateQr(payload) {
     throw new Error(data.message || data.error || 'ABA PayWay QR generation failed')
   }
 
-  return {
-    configured: true,
-    ...extractQrResponse(data),
-  }
+  const payment = extractQrResponse(data)
+
+const qrImage = String(payment.qr_image || '').trim()
+const checkoutUrl = String(payment.checkout_url || '').trim()
+const deeplink = String(payment.deeplink || '').trim()
+
+const hasQrImage =
+  /^data:image\/png;base64,/i.test(qrImage) ||
+  /^https:\/\//i.test(qrImage) ||
+  /^[A-Za-z0-9+/=\s]+$/.test(qrImage)
+
+const hasPaymentLink =
+  /^https:\/\//i.test(checkoutUrl) ||
+  /^https:\/\//i.test(deeplink) ||
+  /^abamobilebank:\/\//i.test(deeplink)
+
+if (!hasQrImage && !hasPaymentLink) {
+  const error = new Error('ABA PayWay returned no usable payment QR or link')
+  error.statusCode = 503
+  error.code = 'ABA_PAYWAY_QR_UNAVAILABLE'
+  throw error
+}
+
+return {
+  configured: true,
+  ...payment,
+}
 }
 
 async function verifyAuthorStorePayWayPayment(order) {
@@ -3940,12 +3963,17 @@ const deliveryCompany = chosenCompany
 
     if (currentOrderError) throw currentOrderError
 
-   if (
+  if (
   currentOrder &&
   Date.parse(currentOrder.expires_at || '') > Date.now() + 10000 &&
   currentOrder.payment_status === 'pending' &&
   Number(currentOrder.total_usd) === total &&
-  Number(currentOrder.delivery_fee_usd || 0) === deliveryFee
+  Number(currentOrder.delivery_fee_usd || 0) === deliveryFee &&
+  (
+    Boolean(String(currentOrder.qr_image || '').trim()) ||
+    /^https:\/\//i.test(String(currentOrder.checkout_url || '')) ||
+    /^(https:|abamobilebank:)\/\//i.test(String(currentOrder.deeplink || ''))
+  )
 ) {
       return res.status(200).json({
         ok: true,
@@ -4063,10 +4091,13 @@ const deliveryCompany = chosenCompany
     })
   } catch (error) {
     console.error('CREATE AUTHOR STORE ORDER PAYMENT ERROR:', error)
-    return res.status(error.statusCode === 409 ? 409 : 500).json({
-      ok: false,
-      message: error.message || 'Failed to create Author Store payment',
-    })
+    return res.status(
+  [409, 503].includes(error.statusCode) ? error.statusCode : 500
+).json({
+  ok: false,
+  code: error.code || 'AUTHOR_STORE_PAYMENT_FAILED',
+  message: error.message || 'Failed to create Author Store payment',
+})
   }
 }
 
