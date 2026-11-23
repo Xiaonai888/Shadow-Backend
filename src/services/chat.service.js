@@ -639,19 +639,17 @@ export async function buildConversationSummary(
             otherUser?.avatar_url || null,
         }
 
-  const isPendingReaderSender =
-    !isGroup &&
+  const readerQuota = !isGroup && !preloaded &&
     conversation.conversation_type === 'reader_reader' &&
-    conversation.request_status === 'pending' &&
-    String(conversation.created_by_user_id) ===
-      String(viewerParticipant.user_id)
-
-  const pendingMessagesSent = isPendingReaderSender
-    ? await getPendingReaderRequestCount(
+    ['pending', 'accepted'].includes(conversation.request_status)
+    ? await getReaderChatQuota(
         conversation.id,
         viewerParticipant.user_id
       )
     : null
+
+  const isFirstReplyLimit = readerQuota?.mode === 'first_reply'
+  const isDailyUnansweredLimit = readerQuota?.mode === 'daily_unanswered'
 
   return {
     id: conversation.id,
@@ -680,17 +678,32 @@ export async function buildConversationSummary(
     counterpart,
     latest_message: latestMessage,
     unread_count: unreadCount,
-    can_send:
-      conversation.request_status === 'accepted' ||
-      (isPendingReaderSender &&
-        pendingMessagesSent < MAX_PENDING_READER_MESSAGES),
-    pending_message_limit: isPendingReaderSender
-      ? MAX_PENDING_READER_MESSAGES
+    can_send: readerQuota
+      ? readerQuota.can_send === true
+      : conversation.request_status === 'accepted',
+    pending_message_limit: isFirstReplyLimit
+      ? Number(readerQuota.limit)
       : null,
-    pending_messages_sent: pendingMessagesSent,
-    pending_messages_remaining: isPendingReaderSender
-      ? Math.max(0, MAX_PENDING_READER_MESSAGES - pendingMessagesSent)
+    pending_messages_sent: isFirstReplyLimit
+      ? Number(readerQuota.sent)
       : null,
+    pending_messages_remaining: isFirstReplyLimit
+      ? Number(readerQuota.remaining)
+      : null,
+    daily_unanswered_limit: isDailyUnansweredLimit
+      ? Number(readerQuota.limit)
+      : null,
+    daily_unanswered_sent: isDailyUnansweredLimit
+      ? Number(readerQuota.sent)
+      : null,
+    daily_unanswered_remaining: isDailyUnansweredLimit
+      ? Number(readerQuota.remaining)
+      : null,
+    chat_send_limit_mode: readerQuota?.mode || null,
+    chat_send_limit: readerQuota?.limit ?? null,
+    chat_send_sent: readerQuota?.sent ?? null,
+    chat_send_remaining: readerQuota?.remaining ?? null,
+    chat_send_next_reset_at: readerQuota?.next_reset_at || null,
     can_decide:
       !isGroup &&
       conversation.request_status ===
@@ -795,21 +808,52 @@ function handleExistingRequestStatus(conversation) {
   }
 }
 
-const MAX_PENDING_READER_MESSAGES = 5
-
-async function getPendingReaderRequestCount(conversationId, senderUserId) {
-  const { count, error } = await supabase
-    .from('chat_messages')
-    .select('id', { count: 'exact', head: true })
-    .eq('conversation_id', conversationId)
-    .eq('sender_user_id', senderUserId)
-    .eq('is_request_message', true)
+async function getReaderChatQuota(conversationId, userId) {
+  const { data, error } = await supabase.rpc(
+    'shadow_chat_sender_quota_v1',
+    {
+      p_conversation_id: conversationId,
+      p_sender_user_id: userId,
+    }
+  )
 
   if (error) {
-    throw databaseFailure(error, 'Failed to count request messages')
+    throw databaseFailure(error, 'Failed to load chat send limit')
   }
 
-  return Number(count || 0)
+  return data || null
+}
+
+function chatWriteFailure(error, fallback) {
+  const detail = [error?.message, error?.details, error?.hint]
+    .filter(Boolean)
+    .join(' ')
+
+  if (detail.includes('FIRST_REPLY_5_MESSAGE_LIMIT')) {
+    return new ChatServiceError(
+      409,
+      'FIRST_REPLY_5_MESSAGE_LIMIT',
+      'You have sent 5 messages. Wait for a reply before sending more.'
+    )
+  }
+
+  if (detail.includes('DAILY_UNANSWERED_20_MESSAGE_LIMIT')) {
+    return new ChatServiceError(
+      409,
+      'DAILY_UNANSWERED_20_MESSAGE_LIMIT',
+      'You have sent 20 messages without a reply. Wait for a reply or the next day.'
+    )
+  }
+
+  if (detail.includes('REQUEST_NOT_ACCEPTED')) {
+    return new ChatServiceError(
+      409,
+      'REQUEST_NOT_ACCEPTED',
+      'The recipient must accept your request before replying.'
+    )
+  }
+
+  return databaseFailure(error, fallback)
 }
 
 async function reuseExistingReaderRequest(conversation, senderUserId, message) {
@@ -821,19 +865,27 @@ async function reuseExistingReaderRequest(conversation, senderUserId, message) {
   )
 
   if (!current.can_send) {
-    if (
-      conversation.request_status === 'pending' &&
-      String(conversation.created_by_user_id) === String(senderUserId)
-    ) {
+    if (Number(current.chat_send_remaining) <= 0 &&
+        current.chat_send_limit_mode === 'first_reply') {
       fail(
         409,
-        'REQUEST_MESSAGE_LIMIT_REACHED',
-        'You have sent 5 request messages. Wait for the recipient to accept.'
+        'FIRST_REPLY_5_MESSAGE_LIMIT',
+        'You have sent 5 messages. Wait for a reply before sending more.'
+      )
+    }
+
+    if (Number(current.chat_send_remaining) <= 0 &&
+        current.chat_send_limit_mode === 'daily_unanswered') {
+      fail(
+        409,
+        'DAILY_UNANSWERED_20_MESSAGE_LIMIT',
+        'You have sent 20 messages without a reply. Wait for a reply or the next day.'
       )
     }
 
     return { created: false, conversation: current }
   }
+
   await sendConversationMessage({
     userId: senderUserId,
     conversationId: conversation.id,
@@ -1926,21 +1978,6 @@ export async function sendConversationMessage({
     )
   }
 
-  if (isPendingReaderSender) {
-    const sentCount = await getPendingReaderRequestCount(
-      conversation.id,
-      safeUserId
-    )
-
-    if (sentCount >= MAX_PENDING_READER_MESSAGES) {
-      fail(
-        409,
-        'REQUEST_MESSAGE_LIMIT_REACHED',
-        'You have sent 5 request messages. Wait for the recipient to accept.'
-      )
-    }
-  }
-
   if (conversation.request_status === 'declined') {
     fail(
       403,
@@ -2006,7 +2043,7 @@ export async function sendConversationMessage({
       sender_user_id: safeUserId,
       message_type: 'text',
       body: safeMessage,
-      is_request_message: isPendingReaderSender,
+      is_request_message: false,
     })
     .select(
       CHAT_MESSAGE_FIELDS
@@ -2014,10 +2051,7 @@ export async function sendConversationMessage({
     .single()
 
   if (error) {
-    throw databaseFailure(
-      error,
-      'Failed to send message'
-    )
+    throw chatWriteFailure(error, 'Failed to send message')
   }
 
   const { error: restoreError } =
@@ -2212,10 +2246,7 @@ export async function sendConversationAttachment({
       attachmentUrl
     ).catch(() => {})
 
-    throw databaseFailure(
-      error,
-      'Failed to send attachment'
-    )
+    throw chatWriteFailure(error, 'Failed to send attachment')
   }
 
   const { error: restoreError } =
