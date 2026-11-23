@@ -1,8 +1,9 @@
 import { supabase } from '../config/supabase.js'
 
 const MAX_PRODUCTS = 30
+const PDF_PAYMENT_WINDOW_MS = 15 * 60 * 1000
 const PAID_STATUSES = new Set(['confirmed', 'preparing', 'shipped', 'completed'])
-const ENDED_STATUSES = new Set(['cancelled', 'canceled', 'rejected', 'refunded', 'failed', 'amount_mismatch'])
+const ENDED_STATUSES = new Set(['cancelled', 'canceled', 'rejected', 'refunded', 'failed', 'amount_mismatch', 'expired'])
 
 function normalizedIds(values) {
   if (!Array.isArray(values) || !values.length || values.length > MAX_PRODUCTS) {
@@ -33,11 +34,19 @@ function normalizeOrder(order) {
   }
 }
 
+function pdfPendingDeadline(order) {
+  const expiry = Date.parse(String(order?.expires_at || ''))
+  const created = Date.parse(String(order?.created_at || ''))
+  const minDeadline = Number.isFinite(created) ? created + PDF_PAYMENT_WINDOW_MS : NaN
+  if (!Number.isFinite(expiry) && !Number.isFinite(minDeadline)) return NaN
+  return Math.max(Number.isFinite(expiry) ? expiry : 0, Number.isFinite(minDeadline) ? minDeadline : 0)
+}
+
 function isUnverifiedExpiredOrder(order, now) {
-  const expiration = Date.parse(String(order.expires_at || ''))
-  return Number.isFinite(expiration)
-    && expiration <= now
-    && String(order.payment_status || '').toLowerCase() !== 'paid'
+  if (String(order?.status || '').toLowerCase() !== 'waiting_payment' ||
+      String(order?.payment_status || '').toLowerCase() !== 'pending') return false
+  const deadline = pdfPendingDeadline(order)
+  return Number.isFinite(deadline) && deadline <= now
 }
 
 export async function getAuthorStorePdfOwnership(buyerId, rawProductIds) {
@@ -133,11 +142,14 @@ export async function getAuthorStorePdfOwnership(buyerId, rawProductIds) {
         ...(source ? normalizeOrder(source) : {}),
       })
     } else {
-      const pending = itemOrders.find((order) => !ENDED_STATUSES.has(String(order.status || '').toLowerCase()))
+      const pending = itemOrders.find((order) => {
+        if (ENDED_STATUSES.has(String(order.status || '').toLowerCase())) return false
+        return !isUnverifiedExpiredOrder(order, now)
+      })
       if (pending) {
         state.set(id, {
           ...state.get(id),
-          state: isUnverifiedExpiredOrder(pending, now) ? 'payment_recheck_required' : 'checking_payment',
+          state: 'checking_payment',
           ...normalizeOrder(pending),
         })
       }
