@@ -2061,7 +2061,7 @@ export async function unlockEpisodePackageWithDiamonds(
       const metadata =
         transactions[0]?.metadata || {}
 
-      await recordDiamondUnlockAccountingWithRetry({្
+      await recordDiamondUnlockAccountingWithRetry({
         purchaseKey,
         userId,
         storyId,
@@ -2073,7 +2073,6 @@ export async function unlockEpisodePackageWithDiamonds(
           completedPurchase.request.unlock_scope,
         metadata,
       })
-
 
       invalidateReadGateUnlockCache({
         userId,
@@ -2230,40 +2229,16 @@ reader_tier: tier,
       })
 
 
-    let accountingPending = false
-
-    try {
-      let accountingPending = false
-
-    try {
-      await recordDiamondUnlockAccountingWithRetry({
-        purchaseKey,
-        userId,
-        storyId,
-        episodes: episodesToUnlock,
-        transactions: purchase.transactions,
-        transactionAmount: price,
-        unlockScope: 'all_released',
-        metadata,
-      })
-    } catch (accountingError) {
-      accountingPending = true
-
-      console.error('SPECIAL_PROMOTION_ACCOUNTING_PENDING', {
-        purchase_key: purchaseKey,
-        story_id: storyId,
-        error: String(accountingError?.message || 'Accounting failed'),
-      })
-    }
-    } catch (accountingError) {
-      accountingPending = true
-
-      console.error('SPECIAL_PROMOTION_ACCOUNTING_PENDING', {
-        purchase_key: purchaseKey,
-        story_id: storyId,
-        error: String(accountingError?.message || 'Accounting failed'),
-      })
-    }
+    await recordDiamondUnlockAccountingWithRetry({
+      purchaseKey,
+      userId,
+      storyId,
+      episodes: episodesToUnlock,
+      transactions: purchase.transactions,
+      transactionAmount: option.price,
+      unlockScope: rule.unlock_scope,
+      metadata,
+    })
 
     const reader =
       await getReaderProfileSafely(userId)
@@ -2856,6 +2831,58 @@ export async function unlockEpisodeWithAd(req, res) {
   }
 }
 
+function buildSpecialPromotionPurchaseKey({ userId, storyId, episodes }) {
+  return createHash('sha256')
+    .update(
+      ['discover-special-promotion-v1', userId, storyId,
+        ...episodes.map((episode) => String(episode.id)).sort()].join(':')
+    )
+    .digest('hex')
+}
+
+async function respondToCompletedSpecialPromotion({ userId, storyId, purchaseKey, previousPurchase, res }) {
+  let accountingPending = false
+
+  try {
+    await recordDiamondUnlockAccountingWithRetry({
+      purchaseKey,
+      userId,
+      storyId,
+      episodes: previousPurchase.transactions.map((transaction) => ({
+        id: transaction.episode_id,
+        author_id: transaction.author_id,
+      })),
+      transactions: previousPurchase.transactions,
+      transactionAmount: Number(previousPurchase.request.amount),
+      unlockScope: previousPurchase.request.unlock_scope,
+      metadata: previousPurchase.transactions[0]?.metadata || {},
+    })
+  } catch (accountingError) {
+    accountingPending = true
+    console.error('SPECIAL_PROMOTION_ACCOUNTING_PENDING', {
+      purchase_key: purchaseKey,
+      story_id: storyId,
+      error: String(accountingError?.message || 'Accounting failed'),
+    })
+  }
+
+  invalidateReadGateUnlockCache({
+    userId,
+    storyId,
+    episodeIds: previousPurchase.unlocks.map((unlock) => unlock.episode_id),
+  })
+
+  return res.status(accountingPending ? 202 : 200).json({
+    ok: true,
+    unlocked: true,
+    idempotent: true,
+    accounting_pending: accountingPending,
+    unlocked_count: previousPurchase.unlocks.length,
+    unlocked_episode_ids: previousPurchase.unlocks.map((unlock) => unlock.episode_id),
+    wallet: publicWallet(previousPurchase.wallet),
+  })
+}
+
 export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
   const userId = req.user?.user_id
   const storyId = String(req.params?.storyId || '').trim()
@@ -2883,14 +2910,37 @@ export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
     const personalized = Object.prototype.hasOwnProperty.call(req.body || {}, 'offer_token')
 let offer
 if (personalized) {
-  offer = await authorizeSmartPromotionPurchase({
-    readerHash: getSmartAdReaderHash(req),
-    readerId: userId,
-    storyId,
-    storyLanguage: actualLanguage,
-    offerToken: req.body.offer_token,
-    expectedPrice: req.body?.expected_price_diamonds,
-  })
+  try {
+    offer = await authorizeSmartPromotionPurchase({
+      readerHash: getSmartAdReaderHash(req),
+      readerId: userId,
+      storyId,
+      storyLanguage: actualLanguage,
+      offerToken: req.body.offer_token,
+      expectedPrice: req.body?.expected_price_diamonds,
+    })
+  } catch (error) {
+    if (error instanceof SmartPromotionOfferError && error.code === 'PROMOTION_CHANGED') {
+      const previousAccess = await getStoryEpisodeAccess(storyId)
+      const previousEligibleEpisodes = previousAccess.publishedEpisodes.filter(
+        (episode) => episode.is_locked && !previousAccess.freePublishedEpisodeIds.has(String(episode.id))
+      )
+      if (previousEligibleEpisodes.length >= 5) {
+        const previousKey = buildSpecialPromotionPurchaseKey({
+          userId,
+          storyId,
+          episodes: previousEligibleEpisodes,
+        })
+        const previous = await getCompletedDiamondPurchase({ userId, purchaseKey: previousKey })
+        if (previous) {
+          return respondToCompletedSpecialPromotion({
+            userId, storyId, purchaseKey: previousKey, previousPurchase: previous, res,
+          })
+        }
+      }
+    }
+    throw error
+  }
 } else {
   const { getCurrentDiscoverSpecialPromotions } = await import('./discoverSpecialPromotion.controller.js')
   const rotation = requestedLanguage
@@ -2982,41 +3032,17 @@ if (personalized) {
       })
     }
 
-    const purchaseKey = createHash('sha256')
-      .update(
-        ['discover-special-promotion-v1', userId, storyId, ...eligibleEpisodes.map((episode) => String(episode.id)).sort()].join(':')
-      )
-      .digest('hex')
+    const purchaseKey = buildSpecialPromotionPurchaseKey({
+      userId,
+      storyId,
+      episodes: eligibleEpisodes,
+    })
 
     const previousPurchase = await getCompletedDiamondPurchase({ userId, purchaseKey })
 
     if (previousPurchase) {
-      await recordDiamondUnlockAccountingWithRetry({
-        purchaseKey,
-        userId,
-        storyId,
-        episodes: previousPurchase.transactions.map((transaction) => ({
-          id: transaction.episode_id,
-          author_id: transaction.author_id,
-        })),
-        transactions: previousPurchase.transactions,
-        transactionAmount: Number(previousPurchase.request.amount),
-        unlockScope: previousPurchase.request.unlock_scope,
-        metadata: previousPurchase.transactions[0]?.metadata || {},
-      })
-
-      invalidateReadGateUnlockCache({
-        userId,
-        storyId,
-        episodeIds: previousPurchase.unlocks.map((unlock) => unlock.episode_id),
-      })
-
-      return res.status(200).json({
-        ok: true,
-        idempotent: true,
-        unlocked_count: previousPurchase.unlocks.length,
-        unlocked_episode_ids: previousPurchase.unlocks.map((unlock) => unlock.episode_id),
-        wallet: publicWallet(previousPurchase.wallet),
+      return respondToCompletedSpecialPromotion({
+        userId, storyId, purchaseKey, previousPurchase, res,
       })
     }
 
@@ -3132,16 +3158,27 @@ if (personalized) {
       metadata,
     })
 
-    await recordDiamondUnlockAccountingWithRetry({
-      purchaseKey,
-      userId,
-      storyId,
-      episodes: episodesToUnlock,
-      transactions: purchase.transactions,
-      transactionAmount: price,
-      unlockScope: 'all_released',
-      metadata,
-    })
+    let accountingPending = false
+
+    try {
+      await recordDiamondUnlockAccountingWithRetry({
+        purchaseKey,
+        userId,
+        storyId,
+        episodes: episodesToUnlock,
+        transactions: purchase.transactions,
+        transactionAmount: price,
+        unlockScope: 'all_released',
+        metadata,
+      })
+    } catch (accountingError) {
+      accountingPending = true
+      console.error('SPECIAL_PROMOTION_ACCOUNTING_PENDING', {
+        purchase_key: purchaseKey,
+        story_id: storyId,
+        error: String(accountingError?.message || 'Accounting failed'),
+      })
+    }
 
     if (purchase.unlocks.length && !purchase.idempotent) {
       const reader = await getReaderProfileSafely(userId)
@@ -3171,7 +3208,7 @@ if (personalized) {
       }
     }
 
-       return res.status(accountingPending ? 202 : 200).json({
+    return res.status(accountingPending ? 202 : 200).json({
       ok: true,
       unlocked: true,
       accounting_pending: accountingPending,
