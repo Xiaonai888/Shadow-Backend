@@ -22,10 +22,28 @@ jobs:
   validate-offer:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Verify required Smart PDF files
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            src/services/smartPdfOfferToken.service.js
+            src/services/smartPdfCheckoutGuard.service.js
+            src/tests/smartPdfOfferToken.validation.test.mjs
+          )
+          for file in "${files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error file=$file::Required Smart PDF file is missing from this commit. Commit all Smart PDF files before running validation."
+              exit 1
+            fi
+            echo "Found: $file"
+          done
       - name: Validate JavaScript syntax
         run: |
           node --check src/services/smartPdfOfferToken.service.js
