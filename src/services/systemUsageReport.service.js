@@ -170,6 +170,214 @@ function diagnosticMeaning(label) {
   return 'No database fanout evidence in the selected range.'
 }
 
+
+function safeDiagnosticText(value, limit = 180) {
+  return String(value ?? '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .trim()
+    .slice(0, limit)
+}
+
+function safeDiagnosticPath(value, allowQuery = false) {
+  const raw = safeDiagnosticText(value, 300)
+  const separator = raw.indexOf('?')
+  const path = (separator < 0 ? raw : raw.slice(0, separator))
+    .replace(/(\/orders\/(?:status\/)?)\w[^/\s]*/gi, '$1:id')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, ':id')
+    .replace(/\b[a-f0-9]{24,}\b/gi, ':id')
+    .replace(/\b[a-z0-9_-]{48,}\b/gi, ':id')
+    .replace(/\/\d{6,}(?=\/|$)/g, '/:id')
+    .slice(0, 160)
+
+  if (!allowQuery || separator < 0) return path
+
+  const safeParams = []
+  for (const param of raw.slice(separator + 1).split('&')) {
+    const equal = param.indexOf('=')
+    if (equal <= 0) continue
+    const key = param.slice(0, equal).toLowerCase()
+    const value = param.slice(equal + 1)
+    if (!['sort', 'cache', 'status'].includes(key)) continue
+    if (!/^[a-z0-9_-]{1,32}$/i.test(value)) continue
+    safeParams.push(`${key}=${value}`)
+    if (safeParams.length >= 3) break
+  }
+  return `${path}${safeParams.length ? `?${safeParams.join('&')}` : ''}`.slice(0, 180)
+}
+
+function diagnosticSignal(item) {
+  const status = safeNumber(item.http_status)
+  const upstream = safeNumber(item.provider_http_status)
+  const route = String(item.route || '')
+  const code = `${item.error_code || ''} ${item.response_code || ''}`.toUpperCase()
+  const payment = /PDF|PAYMENT|CHECKOUT|BINANCE|ABA/.test(route.toUpperCase())
+  const serverError = status >= 500 || upstream >= 500
+
+  if (serverError && payment) {
+    return {
+      priority: 'urgent',
+      signal: 'Payment route returned a server or provider error; cause not proven',
+      next_check: 'Inspect provider verification logs and payment ledger; preserve idempotency and prevent duplicate unlock.',
+      category: 'payment_verification_failure',
+    }
+  }
+
+  if (/57014|QUERY_CANCELED|QUERY_CANCELLED|STATEMENT_TIMEOUT/.test(code)) {
+    return {
+      priority: 'high',
+      signal: 'Database query cancelled or timed out (inferred from error code)',
+      next_check: 'Inspect Supabase slow SQL, locks, execution time and statement_timeout.',
+      category: 'database_query_cancelled',
+    }
+  }
+
+  if (serverError && (status === 503 || upstream === 503 || upstream === 502 || upstream === 504)) {
+    return {
+      priority: 'high',
+      signal: 'Service unavailable or upstream failure; specific cause not yet established',
+      next_check: 'Check dependency status, server logs, timeout and retry/backoff evidence.',
+      category: 'service_unavailable',
+    }
+  }
+
+  if (serverError) {
+    return {
+      priority: 'high',
+      signal: 'Server-side failure observed; root cause needs logs',
+      next_check: 'Check handler logs, dependency errors and request trace for this route.',
+      category: 'server_failure',
+    }
+  }
+
+  if (status === 429 || upstream === 429) {
+    return {
+      priority: 'medium',
+      signal: 'Request was rate limited; may be expected protection',
+      next_check: 'Compare legitimate traffic with rate-limit policy before changing limits.',
+      category: 'rate_limited',
+    }
+  }
+
+  if (status === 408 || upstream === 408) {
+    return {
+      priority: 'medium',
+      signal: 'Request timed out; origin of timeout not established',
+      next_check: 'Inspect request duration and the upstream that exceeded its timeout.',
+      category: 'request_timeout',
+    }
+  }
+
+  if (status === 401 || status === 403) {
+    return {
+      priority: 'low',
+      signal: 'Authentication or permission rejection; may be expected',
+      next_check: 'Confirm permission rules and user-facing behavior if the rejection is unexpected.',
+      category: 'authentication_or_permission',
+    }
+  }
+
+  if (status === 404) {
+    return {
+      priority: 'low',
+      signal: 'Resource not found; may be expected',
+      next_check: 'Check link targets and deleted or unpublished resources if users are affected.',
+      category: 'not_found',
+    }
+  }
+
+  return {
+    priority: status >= 400 || upstream >= 400 ? 'medium' : 'low',
+    signal: 'An error was recorded; stored evidence does not identify a verified cause',
+    next_check: 'Inspect relevant application and provider logs for this route and time.',
+    category: 'unclassified_error',
+  }
+}
+
+const ERROR_PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3 }
+
+function buildActionableErrorDiagnostics(entries = [], limit = 60) {
+  return (Array.isArray(entries) ? entries : [])
+    .map((item) => {
+      const route = safeDiagnosticPath(item.route || 'UNKNOWN', true)
+      const httpStatus = safeNumber(item.http_status)
+      const providerStatus = safeNumber(item.provider_http_status)
+      const errorCode = safeDiagnosticText(
+        item.root_cause_code || item.response_code || `HTTP_${httpStatus}`,
+        64
+      ).replace(/[^a-z0-9_:-]/gi, '_')
+      const responseCode = safeDiagnosticText(item.response_code || '-', 64)
+        .replace(/[^a-z0-9_:-]/gi, '_')
+      const signal = diagnosticSignal({
+        route,
+        http_status: httpStatus,
+        provider_http_status: providerStatus,
+        error_code: errorCode,
+        response_code: responseCode,
+      })
+      return {
+        route,
+        http_status: httpStatus || '-',
+        error_code: errorCode,
+        response_code: responseCode,
+        stage: safeDiagnosticText(item.diagnostic_stage || 'unknown', 64)
+          .replace(/[^a-z0-9_:-]/gi, '_'),
+        provider: safeDiagnosticText(item.provider || 'APPLICATION', 64)
+          .replace(/[^a-z0-9_:-]/gi, '_'),
+        provider_http_status: providerStatus || '-',
+        target: safeDiagnosticPath(item.target || '-'),
+        count: safeNumber(item.count),
+        windows_seen: safeNumber(item.windows_seen) || 1,
+        first_seen_at: iso(item.first_seen_at || item.window_start),
+        last_seen_at: iso(item.last_seen_at),
+        priority: signal.priority,
+        signal: signal.signal,
+        next_check: signal.next_check,
+        category: signal.category,
+        stage_is_unknown: !item.diagnostic_stage || item.diagnostic_stage === 'unknown',
+      }
+    })
+    .sort((a, b) =>
+      ERROR_PRIORITY_ORDER[a.priority] - ERROR_PRIORITY_ORDER[b.priority] ||
+      b.count - a.count ||
+      String(b.last_seen_at || '').localeCompare(String(a.last_seen_at || ''))
+    )
+    .slice(0, limit)
+}
+
+function summarizeActionableErrorDiagnostics(rows, availableEntries, coverage) {
+  const listed = Array.isArray(rows) ? rows : []
+  const all = Array.isArray(availableEntries) ? availableEntries : []
+  return {
+    available_groups: Math.max(all.length, safeNumber(coverage?.distinct_error_groups)),
+    displayed_groups: listed.length,
+    capped: all.length > listed.length || coverage?.detail_capped === true,
+    high_priority_groups_displayed: listed.filter((item) =>
+      item.priority === 'urgent' || item.priority === 'high'
+    ).length,
+    unknown_stage_groups_displayed: listed.filter((item) => item.stage_is_unknown).length,
+    displayed_bounded_error_events: listed.reduce((sum, item) => sum + item.count, 0),
+    note: 'Evidence is bounded, may overlap total error counters, and is not proof of root cause.',
+  }
+}
+
+function buildFanoutCandidates(routes = []) {
+  return (Array.isArray(routes) ? routes : [])
+    .filter((route) =>
+      safeNumber(route.http_requests) > 0 &&
+      safeNumber(route.supabase_calls) >= 8 &&
+      safeNumber(route.supabase_per_http) >= 8
+    )
+    .slice(0, 20)
+    .map((route) => ({
+      route: safeDiagnosticPath(route.route || 'UNKNOWN', true),
+      http_requests: safeNumber(route.http_requests),
+      supabase_calls: safeNumber(route.supabase_calls),
+      supabase_per_http: safeNumber(route.supabase_per_http),
+      errors: safeNumber(route.errors),
+      signal: 'Elevated DB calls per HTTP; this does not establish a loop.',
+    }))
+}
+
 function targetKey(row) {
   return [
     String(row.dependency || 'UNKNOWN').toUpperCase(),
@@ -450,28 +658,43 @@ function summaryMarkdown(range, history, incidents, stats) {
 
   const errorTable = markdownTable(
     [
+      'Priority',
       'Route',
       'HTTP',
       'Error Code',
-      'Response Code',
       'Stage',
       'Provider',
-      'Provider HTTP',
-      'Target',
       'Count',
+      'Windows',
       'Last seen',
     ],
     (stats.error_diagnostics || []).map((item) => [
+      item.priority,
       item.route,
       item.http_status,
       item.error_code,
-      item.response_code,
       item.stage,
       item.provider,
-      item.provider_http_status,
-      item.target || '-',
       item.count,
+      item.windows_seen,
       item.last_seen_at,
+    ])
+  )
+
+  const errorActionsTable = markdownTable(
+    ['Priority', 'Route', 'Observed signal', 'Recommended check'],
+    (stats.error_diagnostics || []).filter((item) =>
+      item.priority === 'urgent' || item.priority === 'high'
+    ).slice(0, 20).map((item) => [
+      item.priority, item.route, item.signal, item.next_check,
+    ])
+  )
+
+  const fanoutTable = markdownTable(
+    ['Route', 'HTTP', 'Supabase', 'DB/HTTP', 'Errors'],
+    (stats.fanout_candidates || []).map((item) => [
+      item.route, item.http_requests, item.supabase_calls,
+      item.supabase_per_http, item.errors,
     ])
   )
 
@@ -547,13 +770,22 @@ function summaryMarkdown(range, history, incidents, stats) {
     '',
     '## Error Diagnostics (stored 15-minute evidence and live memory)',
     '',
-    'Grouped by route, HTTP status, error code, stage and provider.',
+    'Errors are prioritized for investigation and grouped by route and error signature across available time windows.',
     '',
-    `Evidence coverage: ${safeNumber(stats.error_diagnostics_coverage?.stored_windows_with_error_field)} stored windows with evidence field; ${safeNumber(stats.error_diagnostics_coverage?.stored_windows_without_error_field)} without evidence field; ${safeNumber(stats.error_diagnostics_coverage?.distinct_error_groups)} error groups.`,
+    `Evidence coverage: ${stats.error_diagnostics_coverage ? safeNumber(stats.error_diagnostics_coverage.stored_windows_with_error_field) : 'unknown'} stored windows with evidence; ${stats.error_diagnostics_coverage ? safeNumber(stats.error_diagnostics_coverage.stored_windows_without_error_field) : 'unknown'} without evidence; ${safeNumber(stats.error_diagnostics_summary?.available_groups)} available groups; ${safeNumber(stats.error_diagnostics_summary?.displayed_groups)} shown.`,
+    `High-priority groups shown: ${safeNumber(stats.error_diagnostics_summary?.high_priority_groups_displayed)}; unknown diagnostic stages shown: ${safeNumber(stats.error_diagnostics_summary?.unknown_stage_groups_displayed)}; details capped: ${stats.error_diagnostics_summary?.capped ? 'Yes' : 'No'}.`,
     '',
-    'Diagnostics are bounded and may not include every error. Older snapshots without error evidence cannot be reconstructed.',
+    'Counts are bounded diagnostic observations, not complete error totals. A suggested cause or check is an inference, not proof. Older snapshots without evidence cannot be reconstructed.',
     '',
     errorTable,
+    '',
+    '## High-priority Error Investigation',
+    '',
+    errorActionsTable,
+    '',
+    '## Elevated Database Fanout (not proof of a loop)',
+    '',
+    fanoutTable,
     '',
     '## Recent Per-Request Evidence (in memory only)',
     '',
@@ -562,7 +794,7 @@ function summaryMarkdown(range, history, incidents, stats) {
   ].join('\n')
 }
 
-function problemsMarkdown(range, incidents) {
+function problemsMarkdown(range, incidents, stats = {}) {
   const table = markdownTable(
     [
       'ID',
@@ -588,11 +820,45 @@ function problemsMarkdown(range, incidents) {
     ])
   )
 
+  const errorSignals = markdownTable(
+    ['Priority', 'Route', 'HTTP', 'Error Code', 'Provider', 'Provider HTTP', 'Count', 'Signal', 'Next Check'],
+    (stats.error_diagnostics || []).filter((item) =>
+      item.priority === 'urgent' || item.priority === 'high' || item.priority === 'medium'
+    ).slice(0, 40).map((item) => [
+      item.priority, item.route, item.http_status, item.error_code,
+      item.provider, item.provider_http_status, item.count, item.signal, item.next_check,
+    ])
+  )
+
+  const fanoutSignals = markdownTable(
+    ['Route', 'HTTP', 'Supabase', 'DB/HTTP', 'Errors'],
+    (stats.fanout_candidates || []).map((item) => [
+      item.route, item.http_requests, item.supabase_calls,
+      item.supabase_per_http, item.errors,
+    ])
+  )
+
   return [
     '# Shadow System Control — Problems Report',
     '',
     `Generated: ${new Date().toISOString()}`,
     `Range: ${range.from} → ${range.to}`,
+    '',
+    '## Prioritized Error Evidence',
+    '',
+    'Derived from available stored diagnostics; possible explanations are not verified root causes.',
+    '',
+    errorSignals,
+    '',
+    '## Database Fanout Candidates',
+    '',
+    'High DB/HTTP is not by itself evidence of polling or a loop. Missing bounded route details can hide candidates.',
+    '',
+    fanoutSignals,
+    '',
+    `Unclassified measured events: ${stats.usage_summary?.totals?.unclassified_events == null ? 'unknown' : safeNumber(stats.usage_summary.totals.unclassified_events)}. These cannot be safely assigned to a specific route without additional evidence.`,
+    '',
+    '## Recorded Incidents',
     '',
     table,
     '',
@@ -945,35 +1211,18 @@ async function buildReportBundle(from, to) {
           to: range.to,
         })
 
-  const errorDiagnostics = historicalErrorEntries
-    .slice(0, 60)
-    .map((item) => ({
-    route: String(item.route || 'UNKNOWN')
-      .replace(/[^a-z0-9_/: .()-]/gi, '_')
-      .slice(0, 160),
-    http_status: safeNumber(item.http_status) || '-',
-    error_code: String(
-      item.root_cause_code || item.response_code || `HTTP_${Number(item.http_status) || 0}`
-    ).replace(/[^a-z0-9_:-]/gi, '_').slice(0, 64),
-    response_code: String(item.response_code || '-')
-      .replace(/[^a-z0-9_:-]/gi, '_').slice(0, 64),
-    stage: String(item.diagnostic_stage || 'unknown')
-      .replace(/[^a-z0-9_:-]/gi, '_').slice(0, 64),
-    provider: String(item.provider || 'APPLICATION')
-      .replace(/[^a-z0-9_:-]/gi, '_').slice(0, 64),
-    provider_http_status: safeNumber(item.provider_http_status) || '-',
-    target: String(item.target || '-')
-      .replace(/[^a-z0-9_/: .()-]/gi, '_')
-      .slice(0, 180),
-    count: safeNumber(item.count),
-    last_seen_at: iso(item.last_seen_at) || '-',
-  }))
+  const errorDiagnostics = buildActionableErrorDiagnostics(historicalErrorEntries, 60)
+  const baseStats = buildSummaryStats(history, incidents, requestEvidence)
+  const errorCoverage = history?.error_diagnostics_coverage || null
 
   const stats = {
-    ...buildSummaryStats(history, incidents, requestEvidence),
+    ...baseStats,
     error_diagnostics: errorDiagnostics,
-    error_diagnostics_coverage:
-      history?.error_diagnostics_coverage || null,
+    error_diagnostics_coverage: errorCoverage,
+    error_diagnostics_summary: summarizeActionableErrorDiagnostics(
+      errorDiagnostics, historicalErrorEntries, errorCoverage
+    ),
+    fanout_candidates: buildFanoutCandidates(baseStats.routes),
   }
   const summaryMd = summaryMarkdown(
     range,
@@ -981,7 +1230,7 @@ async function buildReportBundle(from, to) {
     incidents,
     stats
   )
-  const problemsMd = problemsMarkdown(range, incidents)
+  const problemsMd = problemsMarkdown(range, incidents, stats)
   const csv = usageCsv(history)
   const json = evidenceJson(
     range,
