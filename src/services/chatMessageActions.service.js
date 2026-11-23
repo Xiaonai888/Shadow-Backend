@@ -702,13 +702,13 @@ export async function listPinnedMessages({
   userId,
   conversationId,
 }) {
-  const {
+    const {
     conversation,
+    participant,
   } = await getConversationAccess({
     conversationId,
     userId,
   })
-
   const { data: pins, error } =
     await supabase
       .from('chat_message_pins')
@@ -745,11 +745,20 @@ export async function listPinnedMessages({
       (pin) => pin.message_id
     ),
   })
+  const cutoffTime = Math.max(
+    new Date(participant?.cleared_at || 0).getTime() || 0,
+    new Date(conversation?.cleared_for_all_at || 0).getTime() || 0
+  )
   const messageMap = new Map(
-    messages.map((message) => [
-      String(message.id),
-      message,
-    ])
+    messages
+      .filter((message) =>
+        !cutoffTime ||
+        new Date(message.created_at).getTime() > cutoffTime
+      )
+      .map((message) => [
+        String(message.id),
+        message,
+      ])
   )
 
   return pins
