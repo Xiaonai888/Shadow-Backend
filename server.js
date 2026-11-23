@@ -136,6 +136,7 @@ import { startStoryEpisodePushScheduler } from './src/services/storyEpisodePushS
 import { startSmartAdMaintenanceScheduler } from './src/services/smartAdMaintenance.service.js'
 import { startBinanceUsdtAlertWorker } from './src/services/binanceUsdtAlertWorker.service.js'
 import { startTelegramMissingReportRecovery } from './src/services/telegramMissingReportRecovery.service.js'
+import { startAuthorStorePdfAutoRecovery } from './src/services/authorStorePdfAutoRecovery.service.js'
 import { startShadowReadEventDailySettlement } from './src/services/shadowReadEventDailySettlement.service.js'
 import { startShadowReadEventAutoCycle } from './src/services/shadowReadEventAutoCycle.service.js'
 import {
@@ -1160,6 +1161,7 @@ app.listen(PORT, () => {
   startSmartAdMaintenanceScheduler()
   startBinanceUsdtAlertWorker()
   startTelegramMissingReportRecovery()
+  startAuthorStorePdfAutoRecovery()
   startShadowReadEventDailySettlement()
   startShadowReadEventAutoCycle()
   startMemoryIncidentMonitor()
