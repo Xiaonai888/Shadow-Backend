@@ -3862,7 +3862,7 @@ export async function createAuthorStoreOrderPayment(req, res) {
 
     const builtOrder = await buildAuthorStoreOrderItems(req.body.items)
     const authorPageId = builtOrder.authorPageId
-    let orderItems = await applyDiscoverAuthorStoreCheckoutPrices(req.body.items, builtOrder.orderItems)
+    let orderItems = await applyDiscoverAuthorStoreCheckoutPrices(req.body.items, builtOrder.orderItems, { readerId: userId })
     const needsDelivery = orderItems.some((item) => String(item.product_type || '').toLowerCase() === 'book')
 
     if (needsDelivery && (!buyerProfile?.phone_number || !buyerProfile?.delivery_address)) {
@@ -5012,7 +5012,9 @@ function publicBinancePdfCheckout(row, paidOrder = null, receiverVerified = fals
 }
 
 function publicBinancePdfError(res, err) {
-  const code = String(err?.code || err?.message || '')
+  if (err?.statusCode === 409 && ['SMART_PDF_PROMOTION_INVALID', 'AUTHOR_STORE_PROMOTION_CHANGED'].includes(String(err?.code || ''))) {
+  return res.status(409).json({ ok: false, code: String(err.code), message: String(err.message || 'PDF promotion has changed.') })
+}
   if (code.includes('BINANCE_PDF_ACTIVE') || code.includes('duplicate key value')) {
     return res.status(409).json({ ok: false, code: 'BINANCE_ACTIVE_CHECKOUT', message: 'A Binance checkout is already active. Complete or ask Admin to review it first.' })
   }
@@ -5050,7 +5052,7 @@ export async function createAuthorStoreBinancePdfCheckout(req, res) {
     if (duplicates !== 1) return res.status(409).json({ ok: false, code: 'BINANCE_UID_NOT_UNIQUE', message: 'Binance UID is not unique.' })
 
     const built = await buildAuthorStoreOrderItems(req.body?.items)
-    let orderItems = await applyDiscoverAuthorStoreCheckoutPrices(req.body?.items, built.orderItems)
+    let orderItems = await applyDiscoverAuthorStoreCheckoutPrices(req.body?.items, built.orderItems, { readerId: userId })
     if (!orderItems.length || !orderItems.every(i => String(i.product_type || '').toLowerCase() === 'pdf')) {
       return res.status(400).json({ ok: false, code: 'PDF_ONLY', message: 'Binance PDF checkout only accepts digital PDF books.' })
     }
