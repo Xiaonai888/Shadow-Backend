@@ -255,16 +255,37 @@ async function recheckAuthorStorePdfOrderUncached(buyerId, orderId) {
   const binance = String(order.request_payload?.payment_method || '').toLowerCase().includes('binance')
     || Boolean(order.request_payload?.binance_purchase_id)
 
+
   if (isUnlocked(order)) return finalizePaidPdfOrder(order)
   if (binance) return checkBinance(order)
   if (isPaid(order)) return finalizePaidPdfOrder(order)
-  if (order.status !== 'waiting_payment' || String(order.payment_status || '').toLowerCase() !== 'pending') {
+
+  if (
+    order.status !== 'waiting_payment' ||
+    String(order.payment_status || '').toLowerCase() !== 'pending'
+  ) {
     return publicResult(order, 'payment_recheck_required')
+  }
+
+  const isSharedAbaLink =
+    String(order.request_payload?.payment_method || '').toLowerCase() === 'aba_payment_link' ||
+    String(order.aba_payload?.mode || '').toLowerCase() === 'shared_aba_payment_link'
+
+  if (isSharedAbaLink) {
+    const expiresAt = Date.parse(String(order.expires_at || ''))
+    const expired = Number.isFinite(expiresAt) && expiresAt <= Date.now()
+
+    return publicResult(
+      order,
+      expired ? 'payment_recheck_required' : 'checking_payment',
+      { verification_source: 'telegram_aba_bot' }
+    )
   }
 
   let verified
   try {
     verified = await verifyAuthorStorePdfAbaPayment(order)
+
   } catch (error) {
     const code = abaVerificationErrorCode(error)
     console.error('AUTHOR PDF ABA RECHECK UNAVAILABLE:', code)
