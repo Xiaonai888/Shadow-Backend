@@ -3042,7 +3042,7 @@ if (personalized) {
     if (confirmedPrice !== price) {
       return res.status(409).json({
         ok: false,
-        code: 'PRICE_CONFIRMATION_REQUIRED',
+        code: personalized ? 'PROMOTION_PRICE_CHANGED' : 'PRICE_CONFIRMATION_REQUIRED',
         message: 'Please confirm the current price before purchasing',
         locked_episode_count: episodesToUnlock.length,
         original_price_diamonds: originalPrice,
