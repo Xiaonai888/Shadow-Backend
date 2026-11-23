@@ -3860,7 +3860,25 @@ updated_at: new Date().toISOString(),
   .insert(promoOrderItems.map((item) => ({ ...item, order_id: order.id })))
   .select()
 
-    if (itemsError) throw itemsError
+    if (itemsError) {
+  const { error: markError } = await supabase
+    .from('author_store_orders')
+    .update({
+      status: 'failed',
+      order_status: 'failed',
+      payment_status: 'failed',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', order.id)
+    .eq('status', 'waiting_payment')
+    .eq('payment_status', 'pending')
+
+  if (markError) {
+    console.error('AUTHOR STORE FAILED ORDER UPDATE:', markError)
+  }
+
+  throw itemsError
+}
 
     return res.status(201).json({
       ok: true,
@@ -4091,12 +4109,27 @@ const deliveryCompany = chosenCompany
     })
   } catch (error) {
     console.error('CREATE AUTHOR STORE ORDER PAYMENT ERROR:', error)
-    return res.status(
-  [409, 503].includes(error.statusCode) ? error.statusCode : 500
+
+const isDuplicatePdf =
+  String(error?.code || '') === '23505' &&
+  /PDF_ALREADY_PURCHASED|PDF_EXISTING_ORDER/.test(
+    String(error?.message || '')
+  )
+
+return res.status(
+  isDuplicatePdf ? 409
+    : [409, 503].includes(error.statusCode) ? error.statusCode
+    : 500
 ).json({
   ok: false,
-  code: error.code || 'AUTHOR_STORE_PAYMENT_FAILED',
-  message: error.message || 'Failed to create Author Store payment',
+  code: isDuplicatePdf
+    ? String(error.message).includes('PDF_ALREADY_PURCHASED')
+      ? 'PDF_ALREADY_PURCHASED'
+      : 'PDF_PAYMENT_PENDING'
+    : error.code || 'AUTHOR_STORE_PAYMENT_FAILED',
+  message: isDuplicatePdf
+    ? 'This PDF already has a purchase or existing order. Please check your Library or previous payment.'
+    : error.message || 'Failed to create Author Store payment',
 })
   }
 }
@@ -5044,6 +5077,20 @@ function publicBinancePdfCheckout(row, paidOrder = null, receiverVerified = fals
 
 function publicBinancePdfError(res, err) {
   const code = String(err?.code || err?.message || '')
+const duplicateMessage = String(err?.message || '')
+
+if (
+  code === '23505' &&
+  /PDF_ALREADY_PURCHASED|PDF_EXISTING_ORDER/.test(duplicateMessage)
+) {
+  return res.status(409).json({
+    ok: false,
+    code: duplicateMessage.includes('PDF_ALREADY_PURCHASED')
+      ? 'PDF_ALREADY_PURCHASED'
+      : 'PDF_PAYMENT_PENDING',
+    message: 'This PDF already has a purchase or existing payment. Do not pay again.',
+  })
+}
 
   if (err?.statusCode === 409 && ['SMART_PDF_PROMOTION_INVALID', 'AUTHOR_STORE_PROMOTION_CHANGED'].includes(String(err?.code || ''))) {
     return res.status(409).json({ ok: false, code: String(err.code), message: String(err.message || 'PDF promotion has changed.') })
