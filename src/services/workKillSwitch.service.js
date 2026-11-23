@@ -227,20 +227,32 @@ async function disableExpiredRecord(record) {
   }
 }
 
+
 export async function reloadActiveWorkKillSwitches() {
-  const { data, error } = await supabase
+  const { data, error, status, statusText } = await supabase
     .from('work_kill_switches')
+
     .select(
       'id,fingerprint,target_type,source,method,path,enabled,mode,reason,incident_id,activated_at,deactivated_at,expires_at,activation_count,blocked_requests,last_triggered_at,created_by,updated_by,created_at,updated_at'
     )
     .eq('enabled', true)
     .order('updated_at', { ascending: false })
+
     .limit(ACTIVE_SWITCH_LIMIT)
 
-  if (error) throw error
+  if (error) {
+    const failure = new Error(error.message || 'Failed to load active work kill switches')
+    failure.code = error.code || null
+    failure.status = status || error.status || null
+    failure.statusText = statusText || null
+    failure.details = error.details || null
+    failure.hint = error.hint || null
+    throw failure
+  }
 
   const next = new Map()
   const now = Date.now()
+
 
   for (const record of Array.isArray(data) ? data : []) {
     if (!record?.id) continue
