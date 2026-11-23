@@ -5012,6 +5012,7 @@ function publicBinancePdfCheckout(row, paidOrder = null, receiverVerified = fals
 }
 
 function publicBinancePdfError(res, err) {
+  const code = String(err?.code || err?.message || '')
   if (err?.statusCode === 409 && ['SMART_PDF_PROMOTION_INVALID', 'AUTHOR_STORE_PROMOTION_CHANGED'].includes(String(err?.code || ''))) {
   return res.status(409).json({ ok: false, code: String(err.code), message: String(err.message || 'PDF promotion has changed.') })
 }
