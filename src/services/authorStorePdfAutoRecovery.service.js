@@ -111,7 +111,7 @@ async function maybeAlertAdmin(order, job, result) {
     `Buyer: <code>${html(order.buyer_id)}</code>`,
     `Payment: <b>PAID</b>`,
     `PDF: <b>${html(result)}</b>`,
-    'Review in Admin → Payment Recovery → PDF Recovery.',
+    'Review in Admin → PDF Recovery.',
   ].join('\n')
   try {
     const response = await sendTelegramMessage(text, { chat_id: chatId })
