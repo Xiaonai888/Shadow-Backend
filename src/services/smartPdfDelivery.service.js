@@ -68,11 +68,11 @@ export async function selectSmartPdfPromotion({
     for (let offset = 0; offset < ordered.length && chosen.length < SMART_PDF_POLICY.maxRecommendations; offset += SMART_PDF_POLICY.ownershipBatchSize) {
       const batch = ordered.slice(offset, offset + SMART_PDF_POLICY.ownershipBatchSize)
       const states = await getAuthorStorePdfOwnership(readerId, batch.map((item) => item.product_id))
-      const available = new Set((Array.isArray(states) ? states : [])
-        .filter((item) => item.product_type === 'pdf' && item.state === 'available')
+      const visible = new Set((Array.isArray(states) ? states : [])
+        .filter((item) => item.product_type === 'pdf' && item.state !== 'purchased')
         .map((item) => String(item.product_id)))
       for (const record of batch) {
-        if (!available.has(record.product_id)) continue
+        if (!visible.has(record.product_id)) continue
         const offer = eligibleById.get(record.product_id)?.offer
         if (!offer) continue
         chosen.push(offer)
