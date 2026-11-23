@@ -5,6 +5,8 @@ const MAX_CACHE_ENTRIES = 300
 const MAX_CACHE_ENTRY_BYTES = 1024 * 1024
 const MAX_CACHE_TOTAL_BYTES = 16 * 1024 * 1024
 const CACHE_TTL_MS = 60 * 1000
+const POPULAR_STALE_GRACE_MS = 2 * 60 * 1000
+const POPULAR_ORIGIN_RETRY_MS = 15 * 1000
 const VIEW_SENSITIVE_INVALIDATION_MS = 20 * 1000
 
 const VIEW_SENSITIVE_SORTS = new Set([
@@ -21,6 +23,10 @@ let publicStoriesCacheVersion = 0
 let publicStoriesViewSensitiveVersion = 0
 let lastViewSensitiveInvalidationAt = 0
 let viewSensitiveInvalidationTimer = null
+let staleFallbacks = 0
+let skippedOriginQueries = 0
+let originFailuresWithStale = 0
+let lastStaleFallbackAt = null
 
 function getCacheTtlMs(req, body = null) {
   const filter = String(req?.query?.genre_filter || '').trim().toLowerCase()
@@ -45,6 +51,22 @@ function getRequestSort(req) {
   return String(req?.query?.sort || 'latest')
     .trim()
     .toLowerCase()
+}
+
+function canUseStalePopularCache(req) {
+  return getRequestSort(req) === 'popular' &&
+    String(req?.query?.genre_filter || '').trim() === '' &&
+    String(req?.query?.genre_pagination || '') !== '1'
+}
+
+function sendStalePopularCache(res, entry, originStatus) {
+  staleFallbacks += 1
+  lastStaleFallbackAt = new Date().toISOString()
+  res.setHeader('X-Shadow-Public-Stories-Cache', 'STALE')
+  res.setHeader('X-Shadow-Public-Stories-Origin-Status', String(originStatus || 500))
+  res.setHeader('Cache-Control', 'private, no-store')
+  res.setHeader('Warning', '110 - "Response is Stale"')
+  return res.status(entry.statusCode || 200).json(entry.body)
 }
 
 function isViewSensitiveRequest(req) {
@@ -205,19 +227,21 @@ export async function cachePublicStoriesResponse(
     return next(error)
   }
 
-  const cached =
-    publicStoriesCache.get(key)
+  const cached = publicStoriesCache.get(key)
+  const now = Date.now()
+  const age = cached ? now - Number(cached.cachedAt || 0) : Infinity
+  const ttl = Number(cached?.ttlMs || CACHE_TTL_MS)
+  const grace = canUseStalePopularCache(req) ? POPULAR_STALE_GRACE_MS : 0
 
-  if (
-    cached &&
-    Date.now() - Number(cached.cachedAt || 0) >
-      Number(cached.ttlMs || CACHE_TTL_MS)
-  ) {
+  if (cached && (age < 0 || age > ttl + grace)) {
     publicStoriesCache.delete(key)
   }
 
-  const freshCached =
-    publicStoriesCache.get(key)
+  const retainedCache = publicStoriesCache.get(key)
+  const freshCached = retainedCache && age <= ttl ? retainedCache : null
+  const staleCached = retainedCache && age > ttl && age <= ttl + grace
+    ? retainedCache
+    : null
 
   if (freshCached) {
     publicStoriesCache.delete(key)
@@ -233,6 +257,15 @@ export async function cachePublicStoriesResponse(
       .json(freshCached.body)
   }
 
+  if (staleCached && now < Number(staleCached.originRetryAfter || 0)) {
+    skippedOriginQueries += 1
+    return sendStalePopularCache(
+      res,
+      staleCached,
+      staleCached.originFailureStatus
+    )
+  }
+
   const existingInFlight =
     publicStoriesInFlight.get(key)
 
@@ -246,6 +279,9 @@ export async function cachePublicStoriesResponse(
       if (res.headersSent) return
 
       if (entry) {
+        if (entry.isStaleFallback) {
+          return sendStalePopularCache(res, entry, entry.originFailureStatus)
+        }
         return res
           .status(entry.statusCode || 200)
           .json(entry.body)
@@ -323,6 +359,32 @@ export async function cachePublicStoriesResponse(
       publicStoriesViewSensitiveVersion ===
         requestViewSensitiveVersion
 
+    const originStatus = Number(res.statusCode || 0)
+
+    if (
+      originStatus >= 500 &&
+      staleCached &&
+      publicStoriesCache.get(key) === staleCached &&
+      Date.now() - Number(staleCached.cachedAt || 0) <=
+        Number(staleCached.ttlMs || CACHE_TTL_MS) + POPULAR_STALE_GRACE_MS &&
+      globalVersionMatches &&
+      viewSensitiveVersionMatches
+    ) {
+      staleCached.originRetryAfter = Date.now() + POPULAR_ORIGIN_RETRY_MS
+      staleCached.originFailureStatus = originStatus
+      originFailuresWithStale += 1
+      console.warn('PUBLIC STORIES CACHE FALLBACK:', getRequestSort(req), originStatus)
+      settleInFlight({ ...staleCached, isStaleFallback: true })
+      staleFallbacks += 1
+      lastStaleFallbackAt = new Date().toISOString()
+      res.setHeader('X-Shadow-Public-Stories-Cache', 'STALE')
+      res.setHeader('X-Shadow-Public-Stories-Origin-Status', String(originStatus))
+      res.setHeader('Cache-Control', 'private, no-store')
+      res.setHeader('Warning', '110 - "Response is Stale"')
+      res.status(200)
+      return originalJson(staleCached.body)
+    }
+
     if (
       res.statusCode >= 200 &&
       res.statusCode < 300 &&
@@ -363,5 +425,11 @@ registerRuntimeInspectable({
     ttl_seconds: CACHE_TTL_MS / 1000,
     cache_version: publicStoriesCacheVersion,
     view_sensitive_version: publicStoriesViewSensitiveVersion,
+    popular_stale_grace_seconds: POPULAR_STALE_GRACE_MS / 1000,
+    popular_origin_retry_seconds: POPULAR_ORIGIN_RETRY_MS / 1000,
+    stale_fallbacks: staleFallbacks,
+    skipped_origin_queries: skippedOriginQueries,
+    origin_failures_with_stale: originFailuresWithStale,
+    last_stale_fallback_at: lastStaleFallbackAt,
   }),
 })
