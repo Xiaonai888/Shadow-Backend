@@ -1,5 +1,6 @@
 import express from 'express'
 import { rateLimit } from 'express-rate-limit'
+import { requireUser } from '../middleware/user.middleware.js'
 import {
   getSmartPdfPromotionVersion,
   postSmartPdfPromotionSelection,
@@ -32,8 +33,13 @@ const eventLimit = rateLimit({
   message: { ok: false, message: 'Too many PDF promotion requests' },
 })
 
+function verifyReaderSessionIfPresent(req, res, next) {
+  if (req.headers?.authorization) return requireUser(req, res, next)
+  return next()
+}
+
 router.get('/version', versionLimit, getSmartPdfPromotionVersion)
-router.post('/select', selectionLimit, postSmartPdfPromotionSelection)
-router.post('/events', eventLimit, postSmartPdfPromotionEvents)
+router.post('/select', selectionLimit, verifyReaderSessionIfPresent, postSmartPdfPromotionSelection)
+router.post('/events', eventLimit, verifyReaderSessionIfPresent, postSmartPdfPromotionEvents)
 
 export default router
