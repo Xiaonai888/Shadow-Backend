@@ -9,6 +9,7 @@ import {
   recordSmartPromotionSelections,
 } from './smartPromotionReaderState.service.js'
 import { selectSmartPromotionOffers } from './smartPromotionSelection.service.js'
+import { createSmartPromotionOfferToken } from './smartPromotionOfferToken.service.js'
 
 const MAX_CANDIDATES = 160
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -126,6 +127,15 @@ export async function getSmartPromotionRotation({
     id: `special-${offer.story_id}`,
     slot_start_at: slot.starts_at,
     expires_at: slot.next_rotation_at,
+    offer_token: createSmartPromotionOfferToken({
+      readerHash,
+      storyId: offer.story_id,
+      language,
+      slotKey: slot.slot_key,
+      expiresAt: slot.next_rotation_at,
+      price: offer.discounted_price_diamonds,
+      lockedCount: offer.locked_episode_count,
+    }, { now }),
   }))
   if (promotions.length) {
     await recordSelections(readerHash, slot.slot_key, promotions.map((offer) => offer.story_id), { db, now })
