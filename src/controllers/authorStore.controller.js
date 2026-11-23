@@ -4017,16 +4017,42 @@ const deliveryCompany = chosenCompany
     }
 
     const amount = formatUsd(total)
-    const payload = buildAuthorStorePayWayPayload({
-      orderId,
-      amount,
-      user,
-      phone: buyerProfile?.phone_number || '',
-      payItems,
-    })
+    
+const payload = {
+  ...buildAuthorStorePayWayPayload({
+    orderId,
+    amount,
+    user,
+    phone: buyerProfile?.phone_number || '',
+    payItems,
+  }),
+  lifetime: 15,
+  payment_method: 'aba_payment_link',
+}
 
-    const aba = await callPayWayGenerateQr(payload)
-    const expiresAt = new Date(Date.now() + Number(payload.lifetime) * 60 * 1000).toISOString()
+const sharedPaymentLink = String(
+  process.env.ABA_PAYMENT_LINK_URL ||
+  'https://link.payway.com.kh/ABAPAYnw446278Y'
+).trim()
+
+if (!/^https:\/\/link\.payway\.com\.kh\/\S+$/i.test(sharedPaymentLink)) {
+  const error = new Error('Shared ABA PayWay link is invalid')
+  error.statusCode = 503
+  error.code = 'ABA_PAYWAY_LINK_UNAVAILABLE'
+  throw error
+}
+
+const aba = {
+  configured: true,
+  aba_transaction_id: '',
+  qr_string: '',
+  qr_image: '',
+  checkout_url: sharedPaymentLink,
+  deeplink: '',
+  raw: { mode: 'shared_aba_payment_link' },
+}
+
+const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString()
 
     const { data: order, error: orderError } = await supabase
       .from('author_store_orders')
@@ -4100,13 +4126,33 @@ const deliveryCompany = chosenCompany
     author_income_usd: item.author_income_usd,
       })))
 
-    if (itemsError) throw itemsError
-
-    return res.status(201).json({
-      ok: true,
-      configured: aba.configured,
-      order: publicAuthorPaymentOrder(order),
+    
+if (itemsError) {
+  const { error: markError } = await supabase
+    .from('author_store_orders')
+    .update({
+      status: 'failed',
+      order_status: 'failed',
+      payment_status: 'failed',
+      updated_at: new Date().toISOString(),
     })
+    .eq('id', order.id)
+    .eq('status', 'waiting_payment')
+    .eq('payment_status', 'pending')
+
+  if (markError) {
+    console.error('AUTHOR STORE FAILED PAYMENT ORDER UPDATE:', markError)
+  }
+
+  throw itemsError
+}
+
+return res.status(201).json({
+  ok: true,
+  configured: aba.configured,
+  order: publicAuthorPaymentOrder(order),
+})
+
   } catch (error) {
     console.error('CREATE AUTHOR STORE ORDER PAYMENT ERROR:', error)
 
