@@ -7,6 +7,10 @@ import { readSmartAdRecentHistory } from './smartAdRecentHistory.service.js'
 import { smartAdCambodiaSlot, SMART_AD_POLICY } from './smartAdEligibility.service.js'
 import { normalizeStoryLanguage } from './ads/storyLanguageFilter.service.js'
 import {
+  classifySmartAdReaderProgress,
+  readSmartAdReaderProgress,
+} from './smartAdReaderProgress.service.js'
+import {
   readSmartAdSeenHistory,
   readSmartAdExposureTotals,
   requireSmartAdPlacement,
@@ -54,7 +58,7 @@ function excludedIds(value) {
 }
 
 export async function selectSmartAdBatch({
-  readerHash, placement, cursor = '0', queueIndex = 0,
+  readerHash, readerId = '', placement, cursor = '0', queueIndex = 0,
   storyLanguage = 'km',
   interests = {}, excludeStoryIds = [], cooldownStoryIds = [], db = supabase, now = Date.now(),
 } = {}) {
@@ -76,22 +80,46 @@ export async function selectSmartAdBatch({
   ])
   const hardExcluded = new Set([...seenInSlot, ...exclusions, ...cooldown])
   const candidates = new Map()
+  const statuses = new Map()
   const pages = []
   let unseenCount = 0
   let next = String(offset)
   let endOfPool = false
+  let progressAvailable = Boolean(readerId)
 
   for (let i = 0; i < MAX_PAGES_PER_SELECTION; i += 1) {
     const pageStart = next
     const page = await readSmartAdActiveCatalogPage({
       cursor: pageStart, limit: PAGE_SIZE, storyLanguage: language, db, now,
     })
+    const eligiblePageStories = (page.stories || []).filter((story) => {
+      const id = String(story?.story_id || '').toLowerCase()
+      return UUID.test(id) && story.first_episode_id && !hardExcluded.has(id) && !candidates.has(id)
+    })
+    let progress = new Map()
+    if (progressAvailable && eligiblePageStories.length) {
+      try {
+        progress = await readSmartAdReaderProgress(
+          readerId, eligiblePageStories.map((story) => story.story_id), { db },
+        )
+      } catch (error) {
+        progressAvailable = false
+        console.error('SMART_AD_READER_PROGRESS_FAILED:', {
+          code: String(error?.code || 'UNKNOWN').slice(0, 50),
+          message: String(error?.message || 'Read failed').slice(0, 160),
+        })
+      }
+    }
+
     const unseen = []
-    for (const story of page.stories || []) {
-      const id = String(story?.story_id || '')
-      if (!id || !story?.first_episode_id || hardExcluded.has(id) || candidates.has(id)) continue
+    for (const story of eligiblePageStories) {
+      const id = String(story.story_id).toLowerCase()
       candidates.set(id, story)
-      if (!recentHistory.has(id)) {
+      const status = progressAvailable
+        ? classifySmartAdReaderProgress(story, progress.get(id), now)
+        : 'unread'
+      statuses.set(id, status)
+      if (!recentHistory.has(id) && status !== 'cooldown' && status !== 'replay') {
         unseen.push(id)
         unseenCount += 1
       }
@@ -106,24 +134,47 @@ export async function selectSmartAdBatch({
     if (unseenCount >= 35) break
   }
 
-  const unseenIds = [...candidates.keys()].filter((id) => !recentHistory.has(id))
+  const countLimit = placement === 'opening' || placement === 'me' ? 1 : 10
+  const unseenIds = [...candidates.keys()].filter((id) =>
+    !recentHistory.has(id) && statuses.get(id) !== 'cooldown' && statuses.get(id) !== 'replay')
   const exposure = await readSmartAdExposureTotals(unseenIds, { db, now })
   const seed = `${readerHash}:${placement}:${slot.slot_key}:${queueIndex}`
-  const ads = selectDiverseSmartAdCandidates({
-    candidates: [...candidates.values()],
-    limit: placement === 'opening' || placement === 'me' ? 1 : 10,
-    hardExcludedIds: [...hardExcluded],
-    recentHistory,
-    seed,
-    now,
-    shortShare: SMART_AD_POLICY.shortExposureShare,
-    allowRecentFallback: endOfPool,
-    preferredScore: (story) => scoreSmartAd(story, {
-      interests: cleanedInterests, exposure, seed, now,
-    }),
+  const preferredScore = (story) => scoreSmartAd(story, {
+    interests: cleanedInterests, exposure, seed, now,
   })
-  const chosen = new Set(ads.map((story) => String(story.story_id)))
-  const unusedPage = pages.find((page) => page.unseen.some((id) => !chosen.has(id)))
+  const ads = []
+  const selected = new Set()
+  const groups = progressAvailable
+    ? [
+      [...candidates.values()].filter((story) => statuses.get(String(story.story_id).toLowerCase()) === 'unread'),
+      [...candidates.values()].filter((story) => statuses.get(String(story.story_id).toLowerCase()) === 'in_progress'),
+      ...(endOfPool ? [[...candidates.values()].filter((story) =>
+        statuses.get(String(story.story_id).toLowerCase()) === 'replay')] : []),
+    ]
+    : [[...candidates.values()]]
+
+  for (const stories of groups) {
+    if (ads.length >= countLimit) break
+    const batch = selectDiverseSmartAdCandidates({
+      candidates: stories,
+      limit: countLimit - ads.length,
+      hardExcludedIds: [...hardExcluded, ...selected],
+      recentHistory,
+      seed,
+      now,
+      shortShare: SMART_AD_POLICY.shortExposureShare,
+      allowRecentFallback: endOfPool,
+      preferredScore,
+    })
+    for (const story of batch) {
+      const id = String(story.story_id).toLowerCase()
+      if (selected.has(id)) continue
+      selected.add(id)
+      ads.push(story)
+    }
+  }
+
+  const unusedPage = pages.find((page) => page.unseen.some((id) => !selected.has(id)))
   const nextCursor = unusedPage ? unusedPage.cursor : next
 
   return {
