@@ -68,7 +68,10 @@ import {
 } from '../controllers/authorStoreSalesReports.controller.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireAuthorStorePhysicalBookCountry } from '../middleware/authorStorePhysicalBookGuard.middleware.js'
-import { isReaderClassificationCountryPolicyEnabled } from '../services/readerClassificationCountrySource.service.js'
+import {
+  isReaderClassificationCountryPolicyEnabled,
+  readReaderClassificationCountry,
+} from '../services/readerClassificationCountrySource.service.js'
 import { createRateLimit as createIpLimiter } from '../middleware/rateLimit.middleware.js'
 import { requireAdmin } from '../middleware/auth.middleware.js'
 import { getAdminAuthorStoreWithdrawalNotifications } from '../controllers/adminAuthorStoreWithdrawalNotifications.controller.js'
@@ -232,19 +235,116 @@ router.post('/orders', createOrderIpLimit, legacyAuthorBookCountryGate, createAu
 const authorStoreDigitalCountryGate = async (req, res, next) => {
   try {
     const items = Array.isArray(req.body?.items) ? req.body.items : []
-    const ids = [...new Set(items.map(i => String(i?.id || i?.product_id || i?.productId || '').trim()).filter(Boolean))]
-    if (!ids.length || ids.length > 30) return res.status(400).json({ ok: false, message: 'Invalid cart items' })
-    const { data, error } = await supabase.from('author_store_products')
-      .select('id,product_type').in('id', ids)
+
+    const ids = [...new Set(
+      items
+        .map(item => String(item?.id || item?.product_id || item?.productId || '').trim())
+        .filter(Boolean)
+    )]
+
+    if (!ids.length || ids.length > 30) {
+      return res.status(400).json({
+        ok: false,
+        code: 'INVALID_CART',
+        message: 'Invalid cart items',
+      })
+    }
+
+    const { data, error } = await supabase
+      .from('author_store_products')
+      .select('id,product_type')
+      .in('id', ids)
+
     if (error) throw error
-    if (data?.length !== ids.length) return res.status(400).json({ ok: false, message: 'Invalid cart products' })
-    if (data.some(item => item.product_type === 'pdf')) {
+
+    if (!Array.isArray(data) || data.length !== ids.length) {
+      return res.status(400).json({
+        ok: false,
+        code: 'INVALID_CART_PRODUCTS',
+        message: 'Invalid cart products',
+      })
+    }
+
+    const hasBook = data.some(
+      item => String(item.product_type || '').toLowerCase() !== 'pdf'
+    )
+
+    const hasPdf = data.some(
+      item => String(item.product_type || '').toLowerCase() === 'pdf'
+    )
+
+    if (hasBook && !isReaderClassificationCountryPolicyEnabled()) {
+      const userId = req.user?.user_id
+      const savedCountry = await readReaderClassificationCountry(userId)
+
+      if (savedCountry?.verified !== true) {
+        return res.status(403).json({
+          ok: false,
+          code: 'BOOK_COUNTRY_REQUIRED',
+          message: 'A verified country is required to purchase printed books',
+        })
+      }
+
+      const { data: exception, error: exceptionError } = await supabase
+        .from('shadow_country_user_exceptions')
+        .select('mode,overrides,expires_at')
+        .eq('user_id', userId)
+        .maybeSingle()
+
+      if (exceptionError) throw exceptionError
+
+      const activeException = exception &&
+        (!exception.expires_at || Date.parse(exception.expires_at) > Date.now())
+          ? exception
+          : null
+
+      const blockedByAdmin =
+        activeException?.mode === 'custom' &&
+        (
+          activeException.overrides?.physicalBooks === 'block' ||
+          activeException.overrides?.payway === 'block'
+        )
+
+      const allowedByException = Boolean(
+        activeException &&
+        (
+          activeException.mode === 'all_eligible' ||
+          activeException.mode === 'cambodia_experience' ||
+          (
+            activeException.mode === 'custom' &&
+            activeException.overrides?.physicalBooks === 'allow'
+          )
+        )
+      )
+
+      if (
+        blockedByAdmin ||
+        (savedCountry.country !== 'KH' && !allowedByException)
+      ) {
+        return res.status(403).json({
+          ok: false,
+          code: 'BOOK_COUNTRY_BLOCKED',
+          message: 'Printed books are unavailable for your country',
+        })
+      }
+    }
+
+    if (hasPdf) {
       return requirePaymentCountry('pdfPayway')(req, res, next)
     }
+
     return next()
   } catch (error) {
-    console.error('AUTHOR STORE PDF COUNTRY GATE ERROR:', error?.message || error)
-    return res.status(503).json({ ok: false, message: 'Could not verify PDF country permissions' })
+    console.error(
+      'AUTHOR STORE CHECKOUT COUNTRY ERROR:',
+      String(error?.message || error)
+    )
+
+    return res.status(503).json({
+      ok: false,
+      code: 'CHECKOUT_COUNTRY_UNAVAILABLE',
+      message: 'Could not verify checkout country permissions',
+    })
   }
 }
 
