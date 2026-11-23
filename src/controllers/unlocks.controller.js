@@ -2061,10 +2061,7 @@ export async function unlockEpisodePackageWithDiamonds(
       const metadata =
         transactions[0]?.metadata || {}
 
-      let accountingPending = false
-
-    
-      await recordDiamondUnlockAccountingWithRetry({
+      await recordDiamondUnlockAccountingWithRetry({្
         purchaseKey,
         userId,
         storyId,
@@ -2236,6 +2233,9 @@ reader_tier: tier,
     let accountingPending = false
 
     try {
+      let accountingPending = false
+
+    try {
       await recordDiamondUnlockAccountingWithRetry({
         purchaseKey,
         userId,
@@ -2246,6 +2246,15 @@ reader_tier: tier,
         unlockScope: 'all_released',
         metadata,
       })
+    } catch (accountingError) {
+      accountingPending = true
+
+      console.error('SPECIAL_PROMOTION_ACCOUNTING_PENDING', {
+        purchase_key: purchaseKey,
+        story_id: storyId,
+        error: String(accountingError?.message || 'Accounting failed'),
+      })
+    }
     } catch (accountingError) {
       accountingPending = true
 
