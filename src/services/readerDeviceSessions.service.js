@@ -249,11 +249,13 @@ export async function validateReaderDeviceSession(decoded) {
         return cacheInvalidSession('READER_SESSION_REVOKED')
       }
 
+      const deviceTouchCutoff = new Date(nowMs - 15 * 60 * 1000).toISOString()
       const { error: deviceError } = await supabase
         .from('reader_devices')
         .update({ last_seen_at: now })
         .eq('id', decoded.device_id)
         .eq('user_id', decoded.user_id)
+        .or(`last_seen_at.is.null,last_seen_at.lt.${deviceTouchCutoff}`)
 
       if (deviceError) throw deviceError
     }
