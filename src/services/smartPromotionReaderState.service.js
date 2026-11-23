@@ -1,6 +1,6 @@
 import { supabase } from '../config/supabase.js'
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const READER_HASH = /^[0-9a-f]{64}$/
 const SLOT = /^\d{4}-\d{2}-\d{2}T(?:00|06|12|18):00$/
 const LOOKBACK_MS = 7 * 86400000
