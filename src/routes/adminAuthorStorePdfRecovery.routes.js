@@ -8,6 +8,7 @@ import {
   manuallyConfirmAdminAuthorStorePdfPayment,
   recoverAdminAuthorStorePdfOrder,
 } from '../controllers/adminAuthorStorePdfRecovery.controller.js'
+import { listAdminAuthorStorePdfManualReleaseHistory } from '../controllers/adminAuthorStorePdfManualHistory.controller.js'
 
 const router = express.Router()
 const readIpLimit = rateLimit({
@@ -39,6 +40,8 @@ const writeLimit = rateLimit({
 
 router.get('/', readIpLimit, requireAdmin, readLimit, listAdminAuthorStorePdfRecovery)
 router.get('/history', readIpLimit, requireAdmin, readLimit, listAdminAuthorStorePdfRecoveryHistory)
+router.get('/history', readIpLimit, requireAdmin, readLimit, listAdminAuthorStorePdfRecoveryHistory)
+router.get('/manual-history', readIpLimit, requireAdmin, readLimit, listAdminAuthorStorePdfManualReleaseHistory)
 router.get('/:orderId', readIpLimit, requireAdmin, readLimit, getAdminAuthorStorePdfRecoveryDetail)
 router.post('/:orderId/recover', writeIpLimit, requireAdmin, writeLimit, recoverAdminAuthorStorePdfOrder)
 router.post('/:orderId/manual-confirm', writeIpLimit, requireAdmin, writeLimit, manuallyConfirmAdminAuthorStorePdfPayment)
