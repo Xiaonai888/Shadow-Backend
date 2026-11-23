@@ -1,5 +1,6 @@
 import { getCurrentDiscoverAuthorStorePromotions } from '../controllers/discoverAuthorStorePromotion.controller.js'
 import { getCurrentDiscoverPdfPromotionsForLanguage } from './discoverPdfPromotionLanguage.service.js'
+import { applySmartPdfOfferCheckout, hasSmartPdfOfferMarker } from './smartPdfCheckoutGuard.service.js'
 
 function productIdOf(item) {
   return String(item?.id || item?.product_id || item?.productId || '').trim()
@@ -29,12 +30,13 @@ function promotionChanged() {
   return error
 }
 
-export async function applyDiscoverAuthorStoreCheckoutPrices(cartItems, orderItems) {
+export async function applyDiscoverAuthorStoreCheckoutPrices(cartItems, orderItems, { readerId = '' } = {}) {
   const requestedItems = Array.isArray(cartItems)
     ? cartItems.filter((item) => productIdOf(item))
     : []
 
-  if (!requestedItems.some(hasPromotionMarker)) return orderItems
+  const hasAnyPromotion = requestedItems.some((item) => hasPromotionMarker(item) || hasSmartPdfOfferMarker(item))
+  if (!hasAnyPromotion) return orderItems
   if (!Array.isArray(orderItems) || requestedItems.length !== orderItems.length) {
     throw promotionChanged()
   }
@@ -43,16 +45,16 @@ export async function applyDiscoverAuthorStoreCheckoutPrices(cartItems, orderIte
     Object.prototype.hasOwnProperty.call(item, 'discover_promotion_story_language')
 
   if (requestedItems.some((item) =>
-    hasLanguageMarker(item) &&
+    !hasSmartPdfOfferMarker(item) && hasLanguageMarker(item) &&
     (!hasPromotionMarker(item) ||
       String(item.discover_promotion_story_language || '') !== 'km')
   )) throw promotionChanged()
 
   const needsLegacy = requestedItems.some((item) =>
-    hasPromotionMarker(item) && !hasLanguageMarker(item)
+    hasPromotionMarker(item) && !hasSmartPdfOfferMarker(item) && !hasLanguageMarker(item)
   )
   const needsKhmer = requestedItems.some((item) =>
-    hasPromotionMarker(item) && hasLanguageMarker(item)
+    hasPromotionMarker(item) && !hasSmartPdfOfferMarker(item) && hasLanguageMarker(item)
   )
 
   const [legacyRotation, khmerRotation] = await Promise.all([
@@ -64,13 +66,23 @@ export async function applyDiscoverAuthorStoreCheckoutPrices(cartItems, orderIte
     rotation && (!Number.isFinite(rotation.expiresAt) || Date.now() >= rotation.expiresAt)
   )) throw promotionChanged()
 
-  return orderItems.map((orderItem, index) => {
+  const priced = []
+  for (let index = 0; index < orderItems.length; index += 1) {
+    const orderItem = orderItems[index]
     const requested = requestedItems[index]
     if (productIdOf(requested) !== String(orderItem.product_id)) {
       throw promotionChanged()
     }
 
-    if (!hasPromotionMarker(requested)) return orderItem
+    if (hasSmartPdfOfferMarker(requested)) {
+      priced.push(await applySmartPdfOfferCheckout(requested, orderItem, { readerId }))
+      continue
+    }
+
+    if (!hasPromotionMarker(requested)) {
+      priced.push(orderItem)
+      continue
+    }
 
     const rotation = hasLanguageMarker(requested) ? khmerRotation : legacyRotation
     const expiresAt = Number(rotation?.expiresAt)
@@ -108,7 +120,7 @@ export async function applyDiscoverAuthorStoreCheckoutPrices(cartItems, orderIte
     }
 
     const unitPrice = promotionPrice / 100
-    return {
+    priced.push({
       ...orderItem,
       unit_price_usd: unitPrice,
       total_usd: Number((unitPrice * Number(orderItem.quantity)).toFixed(2)),
@@ -123,10 +135,10 @@ export async function applyDiscoverAuthorStoreCheckoutPrices(cartItems, orderIte
           : 'discover',
         rotation_key: String(rotation.rotation_key),
       },
-    }
-  })
+    })
+  }
+  return priced
 }
-
 
 export function buildAuthorStoreCheckoutAttribution(orderItems) {
   const items = (Array.isArray(orderItems) ? orderItems : []).map((item) => {
