@@ -118,6 +118,13 @@ function withReaderVisibleEpisodes(columns) {
 
 function requireReaderVisibleEpisode(query) {
   return query
+    .eq('reader_visible_episodes.status', 'published')
+    .is('reader_visible_episodes.deleted_at', null)
+    .or(
+      `first_published_at.is.null,first_published_at.lte.${new Date().toISOString()}`,
+      { referencedTable: 'reader_visible_episodes' }
+    )
+    .limit(1, { referencedTable: 'reader_visible_episodes' })
 }
 
 function publicAuthorPage(page) {
@@ -1317,17 +1324,11 @@ export async function getPublicStories(req, res) {
   
         if (ids.length) {
           const { data: fetched, error: storyError } = await supabase
-        .from('shadow_reader_visible_stories_v1')
-.select(GENRE_QUICK_STORY_SELECT)
-.in('id', ids)
-.eq('status', 'published')
-.is('deleted_at', null)
-.eq('reader_visible_episodes.status', 'published')
-.is('reader_visible_episodes.deleted_at', null)
-.or(
-  `first_published_at.is.null,first_published_at.lte.${new Date().toISOString()}`,
-  { referencedTable: 'reader_visible_episodes' }
-)
+            .from('shadow_reader_visible_stories_v1')
+            .select(GENRE_QUICK_STORY_SELECT)
+            .in('id', ids)
+            .eq('status', 'published')
+            .is('deleted_at', null)
           if (storyError) throw storyError
           storyRows = fetched || []
         }
