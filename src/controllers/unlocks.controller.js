@@ -9,6 +9,7 @@ import { createAuthorEarningsFromDiamondUnlock } from '../services/authorRevenue
 import { createStoryReadingIncome } from '../services/storyReadingIncome.service.js'
 import { recordReaderBoostInterest } from '../services/boostAnalyticsTracking.service.js'
 import { createAuthorStoryNotificationSafely } from '../services/authorStoryNotifications.service.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 import {
   applyEpisodeAccess,
   getStoryEpisodeAccess,
@@ -2892,6 +2893,8 @@ export async function unlockDiscoverSpecialPromotionWithDiamonds(req, res) {
   if (!userId || !storyId) {
     return res.status(401).json({ ok: false, message: 'Login required' })
   }
+
+   let diagnosticStage = 'load_story'
 
   try {
     const story = await getStory(storyId)
