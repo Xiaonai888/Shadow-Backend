@@ -1,3 +1,7 @@
+import {
+  unlockStaffAccounts,
+  requireStaffAccountsPasskey,
+} from '../middleware/adminStaffAccountsPasskey.middleware.js'
 import express from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
@@ -216,7 +220,7 @@ function canManageTarget(req, account) {
 
   return { ok: true }
 }
-
+router.post('/unlock', viewAccounts, adminAccountsWriteLimit, unlockStaffAccounts)
 router.get('/roles', viewAccounts, adminAccountsReadLimit, async (req, res) => {
   try {
     const roles = await loadAvailableRoles()
@@ -380,6 +384,7 @@ router.post(
 router.patch(
   '/:accountId',
   manageAccounts,
+  requireStaffAccountsPasskey,
   adminAccountsWriteLimit,
   observeAccountSecurityMutation,
   accountMutationGate,
