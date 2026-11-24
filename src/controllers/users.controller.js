@@ -4,6 +4,9 @@ import { supabase } from '../config/supabase.js'
 import { createReaderDeviceSession } from '../services/readerDeviceSessions.service.js'
 import { getReaderSecuritySettings, createReaderEmailChallenge, consumeReaderEmailChallenge, verifyReaderPinForUser } from '../services/readerSecurity.service.js'
 import { recordReaderLoginIssue } from '../services/readerLoginIssueMonitor.service.js'
+import lifecycleServiceModule from '../services/accountLifecycle.service.cjs'
+
+const accountLifecycle = lifecycleServiceModule.createAccountLifecycleService(supabase)
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase()
@@ -501,7 +504,16 @@ export async function loginUser(req, res) {
       })
     }
     verifiedUserId = data.id
-    const settings = await getReaderSecuritySettings(data.id)
+
+if (!(await accountLifecycle.canAccess(data.id))) {
+  return res.status(403).json({
+    ok: false,
+    code: 'ACCOUNT_ACCESS_DISABLED',
+    message: 'Account is no longer active',
+  })
+}
+
+const settings = await getReaderSecuritySettings(data.id)
     const emailRequired = Boolean(settings.email_2fa_enabled)
     const pinRequired = Boolean(settings.pin_hash)
 
@@ -647,7 +659,16 @@ export async function verifyReaderLogin(req, res) {
       return res.status(401).json({ ok: false, code: 'READER_LOGIN_CHALLENGE_INVALID' })
     }
     verifiedUserId = user.id
-    const settings = await getReaderSecuritySettings(user.id)
+
+if (!(await accountLifecycle.canAccess(user.id))) {
+  return res.status(403).json({
+    ok: false,
+    code: 'ACCOUNT_ACCESS_DISABLED',
+    message: 'Account is no longer active',
+  })
+}
+
+const settings = await getReaderSecuritySettings(user.id)
     if (settings.email_2fa_enabled && !challenge.email_code_hash) {
       recordReaderLoginIssue({ userId: verifiedUserId, code: 'READER_LOGIN_RESTART_REQUIRED', source: 'VERIFY' })
       return res.status(401).json({ ok: false, code: 'READER_LOGIN_RESTART_REQUIRED' })
