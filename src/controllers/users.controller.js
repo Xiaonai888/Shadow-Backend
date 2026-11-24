@@ -4,6 +4,7 @@ import { supabase } from '../config/supabase.js'
 import { createReaderDeviceSession } from '../services/readerDeviceSessions.service.js'
 import { getReaderSecuritySettings, createReaderEmailChallenge, consumeReaderEmailChallenge, verifyReaderPinForUser } from '../services/readerSecurity.service.js'
 import { recordReaderLoginIssue } from '../services/readerLoginIssueMonitor.service.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 import lifecycleServiceModule from '../services/accountLifecycle.service.cjs'
 
 const accountLifecycle = lifecycleServiceModule.createAccountLifecycleService(supabase)
@@ -278,9 +279,21 @@ async function isFollowingUser(followerUserId, followingUserId) {
   return Boolean(data)
 }
 
+function diagnosticAuthErrorCode(error, fallback) {
+  const code = String(error?.code || '').trim().toUpperCase()
+  return /^[A-Z0-9_:-]{1,64}$/.test(code) ? code : fallback
+}
+
 export async function registerUser(req, res) {
+  const mark = (stage, errorCode) => markRequestDiagnostic({
+    feature: 'reader_register',
+    stage,
+    ...(errorCode ? { error_code: errorCode } : {}),
+  })
+  mark('validate_request')
   try {
     if (!process.env.JWT_SECRET) {
+      mark('configuration', 'JWT_SECRET_MISSING')
       return res.status(500).json({
         ok: false,
         message: 'JWT_SECRET is missing',
@@ -297,6 +310,7 @@ export async function registerUser(req, res) {
     const customGender = String(req.body.custom_gender || req.body.customGender || '').trim() || null
 
     if (!name || !username || !email || !password || !confirmPassword || !dateOfBirth || !gender) {
+      mark('validate_required_fields', 'REGISTER_REQUIRED_FIELDS')
       return res.status(400).json({
         ok: false,
         message: 'Please fill in all required fields',
@@ -304,6 +318,7 @@ export async function registerUser(req, res) {
     }
 
     if (!isValidEmail(email)) {
+      mark('validate_email', 'REGISTER_EMAIL_INVALID')
       return res.status(400).json({
         ok: false,
         message: 'Email is not valid',
@@ -311,6 +326,7 @@ export async function registerUser(req, res) {
     }
 
     if (!isAllowedEmail(email)) {
+  mark('validate_email_domain', 'REGISTER_EMAIL_DOMAIN_NOT_ALLOWED')
   return res.status(400).json({
     ok: false,
     message: 'Only Gmail, Yahoo, Outlook, Hotmail, and iCloud accounts are allowed',
@@ -318,6 +334,7 @@ export async function registerUser(req, res) {
 }
 
     if (username.length < 3 || username.length > 30) {
+  mark('validate_username', 'REGISTER_USERNAME_LENGTH')
   return res.status(400).json({
     ok: false,
     message: 'Username must be 3–30 characters.',
@@ -325,6 +342,7 @@ export async function registerUser(req, res) {
 }
 
 if (!/^[A-Za-z0-9_]+$/.test(username)) {
+  mark('validate_username', 'REGISTER_USERNAME_FORMAT')
   return res.status(400).json({
     ok: false,
     message: 'Username can only contain English letters, numbers, and underscores.',
@@ -332,6 +350,7 @@ if (!/^[A-Za-z0-9_]+$/.test(username)) {
 }
 
     if (password.length < 6) {
+      mark('validate_password', 'REGISTER_PASSWORD_TOO_SHORT')
       return res.status(400).json({
         ok: false,
         message: 'Password must be at least 6 characters',
@@ -339,6 +358,7 @@ if (!/^[A-Za-z0-9_]+$/.test(username)) {
     }
 
     if (password !== confirmPassword) {
+      mark('validate_password', 'REGISTER_PASSWORD_MISMATCH')
       return res.status(400).json({
         ok: false,
         message: 'Password and confirm password do not match',
@@ -346,6 +366,7 @@ if (!/^[A-Za-z0-9_]+$/.test(username)) {
     }
 
     if (!['female', 'male', 'custom'].includes(gender)) {
+      mark('validate_gender', 'REGISTER_GENDER_INVALID')
       return res.status(400).json({
         ok: false,
         message: 'Gender is not valid',
@@ -353,6 +374,7 @@ if (!/^[A-Za-z0-9_]+$/.test(username)) {
     }
 
     if (gender === 'custom' && !customGender) {
+      mark('validate_gender', 'REGISTER_CUSTOM_GENDER_REQUIRED')
       return res.status(400).json({
         ok: false,
         message: 'Please select custom gender',
@@ -362,12 +384,14 @@ if (!/^[A-Za-z0-9_]+$/.test(username)) {
     const age = calculateAge(dateOfBirth)
 
     if (age === null || age < 0) {
+      mark('validate_birth_date', 'REGISTER_BIRTH_DATE_INVALID')
       return res.status(400).json({
         ok: false,
         message: 'Date of birth is not valid',
       })
     }
 
+    mark('check_existing_account')
     const [
   { data: existingEmail, error: emailLookupError },
   { data: existingUsername, error: usernameLookupError },
@@ -388,6 +412,7 @@ if (emailLookupError) throw emailLookupError
 if (usernameLookupError) throw usernameLookupError
 
 if (existingEmail) {
+  mark('check_existing_account', 'REGISTER_EMAIL_EXISTS')
   return res.status(409).json({
     ok: false,
     message: 'Email already exists',
@@ -395,14 +420,17 @@ if (existingEmail) {
 }
 
 if (existingUsername) {
+  mark('check_existing_account', 'REGISTER_USERNAME_EXISTS')
   return res.status(409).json({
     ok: false,
     message: 'This username is already taken.',
   })
 }
 
+    mark('hash_password')
     const passwordHash = hashPassword(password)
 
+    mark('insert_account')
     const { data, error } = await supabase
       .from('users')
       .insert({
@@ -429,11 +457,13 @@ if (existingUsername) {
 
     if (error) throw error
 
+    mark('create_device_session')
     const session = await createReaderDeviceSession({
       req,
       userId: data.id,
       deviceKey: req.body.deviceKey,
     })
+    mark('issue_token')
     const token = createUserToken(data, session)
 
     return res.status(200).json({
@@ -444,6 +474,7 @@ if (existingUsername) {
     })
 
   } catch (error) {
+    markRequestDiagnostic({ error_code: diagnosticAuthErrorCode(error, 'REGISTER_FAILED') })
     console.error('REGISTER USER ERROR:', error)
 
     return res.status(500).json({
@@ -455,10 +486,17 @@ if (existingUsername) {
 }
 
 export async function loginUser(req, res) {
+  const mark = (stage, errorCode) => markRequestDiagnostic({
+    feature: 'reader_login',
+    stage,
+    ...(errorCode ? { error_code: errorCode } : {}),
+  })
+  mark('validate_request')
   let verifiedUserId = ''
   try {
     if (!process.env.JWT_SECRET) {
       recordReaderLoginIssue({ code: 'LOGIN_OTHER', source: 'LOGIN' })
+      mark('configuration', 'JWT_SECRET_MISSING')
       return res.status(500).json({
         ok: false,
         message: 'JWT_SECRET is missing',
@@ -470,6 +508,7 @@ export async function loginUser(req, res) {
 
     if (!identifier || !password) {
       recordReaderLoginIssue({ code: 'LOGIN_OTHER', source: 'LOGIN' })
+      mark('validate_required_fields', 'LOGIN_REQUIRED_FIELDS')
       return res.status(400).json({
         ok: false,
         message: 'Email/username and password are required',
@@ -492,12 +531,15 @@ export async function loginUser(req, res) {
       )
     }
 
+    mark('lookup_account')
     const { data, error } = await query.maybeSingle()
 
     if (error) throw error
 
+    mark('verify_credentials')
     if (!data || !verifyPassword(password, data.password_hash)) {
       recordReaderLoginIssue({ code: 'INVALID_CREDENTIALS', source: 'LOGIN' })
+      mark('verify_credentials', 'INVALID_CREDENTIALS')
       return res.status(401).json({
         ok: false,
         message: 'Email, username, or password is incorrect',
@@ -505,7 +547,9 @@ export async function loginUser(req, res) {
     }
     verifiedUserId = data.id
 
+mark('check_account_access')
 if (!(await accountLifecycle.canAccess(data.id))) {
+  mark('check_account_access', 'ACCOUNT_ACCESS_DISABLED')
   return res.status(403).json({
     ok: false,
     code: 'ACCOUNT_ACCESS_DISABLED',
@@ -513,6 +557,7 @@ if (!(await accountLifecycle.canAccess(data.id))) {
   })
 }
 
+mark('load_security_settings')
 const settings = await getReaderSecuritySettings(data.id)
     const emailRequired = Boolean(settings.email_2fa_enabled)
     const pinRequired = Boolean(settings.pin_hash)
@@ -522,6 +567,7 @@ const settings = await getReaderSecuritySettings(data.id)
       const deviceKey = /^[a-f0-9]{64}$/.test(suppliedKey)
         ? suppliedKey
         : crypto.randomBytes(32).toString('hex')
+      mark('check_challenge_limit')
       const { count, error: countError } = await supabase
         .from('reader_security_challenges')
         .select('id', { count: 'exact', head: true })
@@ -531,6 +577,7 @@ const settings = await getReaderSecuritySettings(data.id)
       if (countError) throw countError
       if (Number(count || 0) >= 5) {
         recordReaderLoginIssue({ userId: verifiedUserId, code: 'READER_LOGIN_CHALLENGE_LIMIT', source: 'LOGIN' })
+        mark('check_challenge_limit', 'READER_LOGIN_CHALLENGE_LIMIT')
         return res.status(429).json({
           ok: false,
           code: 'READER_LOGIN_CHALLENGE_LIMIT',
@@ -541,6 +588,7 @@ const settings = await getReaderSecuritySettings(data.id)
       let challengeId
       let expiresAt
       if (emailRequired) {
+        mark('create_email_challenge')
         const result = await createReaderEmailChallenge({
           userId: data.id,
           email: data.email,
@@ -552,6 +600,7 @@ const settings = await getReaderSecuritySettings(data.id)
       } else {
         challengeId = crypto.randomUUID()
         expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString()
+        mark('create_pin_challenge')
         const { error: challengeError } = await supabase
           .from('reader_security_challenges')
           .insert({
@@ -575,11 +624,13 @@ const settings = await getReaderSecuritySettings(data.id)
       })
     }
 
+    mark('create_device_session')
     const session = await createReaderDeviceSession({
       req,
       userId: data.id,
       deviceKey: req.body.deviceKey,
     })
+    mark('issue_token')
     const token = createUserToken(data, session)
 
     return res.status(200).json({
@@ -590,6 +641,7 @@ const settings = await getReaderSecuritySettings(data.id)
     })
 
   } catch (error) {
+    markRequestDiagnostic({ error_code: diagnosticAuthErrorCode(error, 'LOGIN_FAILED') })
     recordReaderLoginIssue({
       userId: verifiedUserId,
       code: error.code || 'LOGIN_OTHER',
@@ -617,6 +669,12 @@ const settings = await getReaderSecuritySettings(data.id)
 
 
 export async function verifyReaderLogin(req, res) {
+  const mark = (stage, errorCode) => markRequestDiagnostic({
+    feature: 'reader_login_verify',
+    stage,
+    ...(errorCode ? { error_code: errorCode } : {}),
+  })
+  mark('validate_request')
   let verifiedUserId = ''
   try {
     const challengeId = String(req.body?.challenge_id || '')
@@ -629,6 +687,7 @@ export async function verifyReaderLogin(req, res) {
       return res.status(400).json({ ok: false, code: 'READER_LOGIN_CHALLENGE_INVALID' })
     }
 
+    mark('lookup_login_challenge')
     const { data: challenge, error: challengeError } = await supabase
       .from('reader_security_challenges')
       .select('id,user_id,email_code_hash,device_key_hash,expires_at,consumed_at')
@@ -642,6 +701,7 @@ export async function verifyReaderLogin(req, res) {
       recordReaderLoginIssue({ code: 'READER_LOGIN_CHALLENGE_EXPIRED', source: 'VERIFY' })
       return res.status(401).json({ ok: false, code: 'READER_LOGIN_CHALLENGE_EXPIRED' })
     }
+    mark('verify_device_key')
     const actualKeyHash = crypto.createHash('sha256').update(deviceKey).digest('hex')
     if (!crypto.timingSafeEqual(
       Buffer.from(actualKeyHash, 'hex'),
@@ -651,6 +711,7 @@ export async function verifyReaderLogin(req, res) {
       return res.status(401).json({ ok: false, code: 'READER_LOGIN_DEVICE_MISMATCH' })
     }
 
+    mark('lookup_account')
     const { data: user, error: userError } = await supabase.from('users')
       .select('*').eq('id', challenge.user_id).eq('is_active', true).maybeSingle()
     if (userError) throw userError
@@ -660,6 +721,7 @@ export async function verifyReaderLogin(req, res) {
     }
     verifiedUserId = user.id
 
+mark('check_account_access')
 if (!(await accountLifecycle.canAccess(user.id))) {
   return res.status(403).json({
     ok: false,
@@ -668,11 +730,13 @@ if (!(await accountLifecycle.canAccess(user.id))) {
   })
 }
 
+mark('load_security_settings')
 const settings = await getReaderSecuritySettings(user.id)
     if (settings.email_2fa_enabled && !challenge.email_code_hash) {
       recordReaderLoginIssue({ userId: verifiedUserId, code: 'READER_LOGIN_RESTART_REQUIRED', source: 'VERIFY' })
       return res.status(401).json({ ok: false, code: 'READER_LOGIN_RESTART_REQUIRED' })
     }
+    mark('verify_pin')
     if (settings.pin_hash) {
       if (!/^(?:\d{4}|\d{6})$/.test(pin)) {
         recordReaderLoginIssue({ userId: verifiedUserId, code: 'READER_PIN_INVALID_FORMAT', source: 'VERIFY' })
@@ -691,6 +755,7 @@ const settings = await getReaderSecuritySettings(user.id)
     }
 
     if (challenge.email_code_hash) {
+      mark('verify_email_code')
       const verified = await consumeReaderEmailChallenge({
         userId: user.id,
         challengeId,
@@ -703,6 +768,7 @@ const settings = await getReaderSecuritySettings(user.id)
         return res.status(401).json({ ok: false, code: verified.code, message: 'Invalid or expired email code.' })
       }
     } else {
+      mark('consume_login_challenge')
       const { data: consumed, error: consumeError } = await supabase
         .from('reader_security_challenges')
         .update({ consumed_at: new Date().toISOString() })
@@ -720,10 +786,13 @@ const settings = await getReaderSecuritySettings(user.id)
       }
     }
 
+    mark('create_device_session')
     const session = await createReaderDeviceSession({ req, userId: user.id, deviceKey })
+    mark('issue_token')
     const token = createUserToken(user, session)
     return res.status(200).json({ ok: true, token, user: publicUser(user), deviceKey: session.deviceKey })
   } catch (error) {
+    markRequestDiagnostic({ error_code: diagnosticAuthErrorCode(error, 'READER_LOGIN_VERIFICATION_UNAVAILABLE') })
     recordReaderLoginIssue({
       userId: verifiedUserId,
       code: error.code === 'READER_SESSION_LIMIT_REACHED'
