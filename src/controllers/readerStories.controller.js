@@ -11,6 +11,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3'
 import { supabase } from '../config/supabase.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 import {
   invalidateDiscoverStorySharedCache,
 } from '../services/discoverStorySharedCache.service.js'
@@ -50,6 +51,9 @@ const WORKER_TIMEOUT_MS = 3 * 60 * 1000
 const ADMISSION_TIMEOUT_MS = 5 * 60 * 1000
 const ADMISSION_POLL_MS = 1000
 const ESTIMATED_IMAGE_WORKER_MB = 140
+const IMAGE_QUEUE_LIMIT = 4
+const IMAGE_QUEUE_WAIT_MS = 30 * 1000
+const IMAGE_RETRY_AFTER_SECONDS = 30
 const DEFAULT_READER_STORY_PAGE_SIZE = 30
 const MAX_READER_STORY_PAGE_SIZE = 100
 const MAX_READER_STORY_PAGE = 10000
@@ -70,7 +74,8 @@ const STORY_IMAGE_WORKER_PATH = fileURLToPath(
 )
 
 let r2Client = null
-let imageProcessingTail = Promise.resolve()
+const imageProcessingQueue = []
+let imageProcessingActive = false
 
 function getR2Client() {
   if (r2Client) return r2Client
@@ -341,11 +346,33 @@ function getSafeExtension(file) {
   return EXTENSION_BY_MIME[mimeType] || 'bin'
 }
 
-async function waitForImageWorkerAdmission() {
+function imageBusyError(stage, reason, admission = null) {
+  const error = new Error('Image processing is temporarily busy. Please retry shortly.')
+  error.statusCode = 503
+  error.code = 'STORY_IMAGE_PROCESSING_BUSY'
+  error.diagnosticStage = stage
+  error.busyReason = reason
+  error.admission = admission
+  return error
+}
+
+function imageRequestClosedError() {
+  const error = new Error('Reader story upload request was closed')
+  error.code = 'STORY_IMAGE_REQUEST_CLOSED'
+  error.diagnosticStage = 'image_request_closed'
+  return error
+}
+
+function assertImageRequestOpen(res) {
+  if (res?.destroyed || res?.writableEnded) throw imageRequestClosedError()
+}
+
+async function waitForImageWorkerAdmission(res) {
   const startedAt = Date.now()
   let lastAdmission = null
 
   while (Date.now() - startedAt < ADMISSION_TIMEOUT_MS) {
+    assertImageRequestOpen(res)
     lastAdmission = evaluateHeavyJobAdmission({
       jobType: 'reader_story_image',
       estimatedJobMb: ESTIMATED_IMAGE_WORKER_MB,
@@ -358,13 +385,8 @@ async function waitForImageWorkerAdmission() {
     await sleep(ADMISSION_POLL_MS)
   }
 
-  const error = new Error(
-    'Image processing is temporarily busy. Please retry shortly.'
-  )
-  error.statusCode = 503
-  error.code = 'STORY_IMAGE_PROCESSING_BUSY'
-  error.admission = lastAdmission
-  throw error
+  assertImageRequestOpen(res)
+  throw imageBusyError('image_admission', 'admission_timeout', lastAdmission)
 }
 
 function runImageWorker(inputPath, outputPath) {
@@ -433,8 +455,9 @@ function runImageWorker(inputPath, outputPath) {
   })
 }
 
-async function optimizeStoryImage(file) {
-  await waitForImageWorkerAdmission()
+async function optimizeStoryImage(file, res) {
+  await waitForImageWorkerAdmission(res)
+  assertImageRequestOpen(res)
 
   const outputPath = path.join(
     os.tmpdir(),
@@ -443,6 +466,7 @@ async function optimizeStoryImage(file) {
 
   try {
     await runImageWorker(file.path, outputPath)
+    assertImageRequestOpen(res)
     const outputStat = await stat(outputPath)
 
     if (!outputStat.isFile() || outputStat.size <= 0) {
@@ -468,27 +492,66 @@ async function optimizeStoryImage(file) {
     }
   } catch (error) {
     await unlink(outputPath).catch(() => {})
+    if (!error.diagnosticStage) error.diagnosticStage = 'image_worker'
     throw error
   }
 }
 
-function enqueueImageOptimization(file) {
-  const job = imageProcessingTail.then(
-    () => optimizeStoryImage(file),
-    () => optimizeStoryImage(file)
-  )
+function drainImageProcessingQueue() {
+  if (imageProcessingActive) return
+  const job = imageProcessingQueue.shift()
+  if (!job) return
 
-  imageProcessingTail = job.then(
-    () => undefined,
-    () => undefined
-  )
-
-  return job
+  job.detach()
+  imageProcessingActive = true
+  Promise.resolve()
+    .then(() => optimizeStoryImage(job.file, job.res))
+    .then(job.resolve, job.reject)
+    .finally(() => {
+      imageProcessingActive = false
+      drainImageProcessingQueue()
+    })
 }
 
-async function prepareStoryMedia(file, mediaType) {
+function enqueueImageOptimization(file, res) {
+  assertImageRequestOpen(res)
+  if (imageProcessingQueue.length >= IMAGE_QUEUE_LIMIT) {
+    return Promise.reject(imageBusyError('image_queue', 'queue_full'))
+  }
+
+  return new Promise((resolve, reject) => {
+    let timer
+    const remove = (error) => {
+      const index = imageProcessingQueue.indexOf(job)
+      if (index === -1) return
+      imageProcessingQueue.splice(index, 1)
+      job.detach()
+      reject(error)
+    }
+    const onClose = () => remove(imageRequestClosedError())
+    const job = {
+      file,
+      res,
+      resolve,
+      reject,
+      detach() {
+        clearTimeout(timer)
+        res?.removeListener('close', onClose)
+      },
+    }
+    imageProcessingQueue.push(job)
+    timer = setTimeout(() => {
+      remove(imageBusyError('image_queue', 'queue_wait_timeout'))
+    }, IMAGE_QUEUE_WAIT_MS)
+    timer.unref?.()
+    res?.once('close', onClose)
+    drainImageProcessingQueue()
+  })
+}
+
+async function prepareStoryMedia(file, mediaType, res) {
   if (mediaType === 'image') {
-    return enqueueImageOptimization(file)
+    return enqueueImageOptimization(file, res)
   }
 
   return {
@@ -821,12 +884,15 @@ export async function createMyReaderStory(req, res) {
   let uploaded = null
   let createdStory = null
   let preparedMedia = null
+  let stage = 'cleanup'
+  let mediaType = null
 
   try {
     await cleanupSafely()
 
     const userId = req.user?.user_id
-    const mediaType = await validateMedia(req.file)
+    stage = 'validate_media'
+    mediaType = await validateMedia(req.file)
     const caption = String(req.body.caption || '').trim()
     const allowMessages = normalizeBoolean(
       req.body.allow_messages,
@@ -848,6 +914,7 @@ export async function createMyReaderStory(req, res) {
       })
     }
 
+    stage = 'load_reader'
     const reader = await getReader(userId)
 
     if (!reader) {
@@ -857,11 +924,15 @@ export async function createMyReaderStory(req, res) {
       })
     }
 
+    stage = 'prepare_media'
     preparedMedia = await prepareStoryMedia(
       req.file,
-      mediaType
+      mediaType,
+      res
     )
 
+    if (mediaType === 'image') assertImageRequestOpen(res)
+    stage = 'upload_r2'
     uploaded = await uploadMedia(
       userId,
       preparedMedia,
@@ -873,6 +944,7 @@ export async function createMyReaderStory(req, res) {
       createdAt.getTime() + STORY_DURATION_MS
     )
 
+    stage = 'insert_story'
     const { data, error } = await supabase
       .from('reader_stories')
       .insert({
@@ -895,6 +967,7 @@ export async function createMyReaderStory(req, res) {
     if (error) throw error
 
     createdStory = data
+    stage = 'invalidate_cache'
     invalidateDiscoverStorySharedCache()
 
     return res.status(201).json({
@@ -906,6 +979,29 @@ export async function createMyReaderStory(req, res) {
       ),
     })
   } catch (error) {
+    const admission = error?.admission
+    const safeCode = String(error?.code || 'READER_STORY_CREATE_FAILED')
+      .replace(/[^a-zA-Z0-9_:-]/g, '_').slice(0, 64)
+    const diagnostic = {
+      feature: 'reader_story_create',
+      stage: error?.diagnosticStage || stage,
+      error_code: safeCode,
+      media_type: mediaType || 'unknown',
+      busy_reason: error?.busyReason,
+      admission_reason: typeof admission?.reason === 'string'
+        ? admission.reason.replace(/[^a-zA-Z0-9_:-]/g, '_').slice(0, 80)
+        : undefined,
+      rss_mb: admission?.rss_mb,
+      container_total_mb: admission?.container_total_mb,
+      container_limit_mb: admission?.container_limit_mb,
+      projected_mb: admission?.projected_mb,
+      estimated_job_mb: ESTIMATED_IMAGE_WORKER_MB,
+      queue_waiting: imageProcessingQueue.length,
+      worker_active: imageProcessingActive,
+      response_status: error.statusCode || 500,
+    }
+    markRequestDiagnostic(diagnostic)
+
     if (createdStory?.id) {
       try {
         await supabase
@@ -921,10 +1017,14 @@ export async function createMyReaderStory(req, res) {
       } catch {}
     }
 
-    console.error(
-      'CREATE READER STORY ERROR:',
-      error
-    )
+    if (res.destroyed || res.writableEnded) return
+
+    if (error.code === 'STORY_IMAGE_PROCESSING_BUSY' || error.code === 'STORY_IMAGE_PROCESSING_TIMEOUT') {
+      res.set('Retry-After', String(IMAGE_RETRY_AFTER_SECONDS))
+      console.warn('READER STORY IMAGE BUSY:', JSON.stringify(diagnostic))
+    } else {
+      console.error('CREATE READER STORY ERROR:', safeCode, diagnostic.stage)
+    }
 
     return res
       .status(error.statusCode || 500)
