@@ -197,7 +197,9 @@ function reportReadingProgressFailure(operation, stage, error) {
   const code = String(error?.code || error?.name || 'UNKNOWN').slice(0, 60)
   markRequestDiagnostic({
     feature: `reading_progress_${operation}`,
+    stage,
     progress_stage: stage,
+    handler: operation === 'get' ? 'getReadingProgress' : 'saveReadingProgress',
     error_code: code,
     error_source: error?.code ? 'supabase' : 'backend',
   })
@@ -324,6 +326,7 @@ export async function getReadingProgress(req, res) {
         const story = storyMap.get(String(row.story_id))
         const episode = episodeMap.get(String(row.episode_id))
         if (!story || !episode) return null
+        if (String(episode.story_id) !== String(row.story_id)) return null
         return {
           ...row,
           total_episodes: Math.max(1, Number(story.total_episodes || row.total_episodes || 1)),
@@ -367,8 +370,11 @@ export async function saveReadingProgress(req, res) {
     if (!isUuid(storyId) || !isUuid(episodeId)) {
       markRequestDiagnostic({
         feature: 'reading_progress_save',
+        stage: 'validate_ids',
         progress_stage: 'validate_ids',
+        handler: 'saveReadingProgress',
         error_code: 'READING_PROGRESS_INVALID_IDS',
+        save_result: 'invalid_ids',
       })
 
       return res.status(400).json({
@@ -390,8 +396,24 @@ export async function saveReadingProgress(req, res) {
     })
 
     if (!story || !episode) {
+      const reason = target.validationPath === 'embedded_join' && !episode
+        ? 'published_story_episode_pair_unavailable'
+        : !story && !episode
+          ? 'story_and_episode_unavailable'
+          : !story
+            ? 'story_unavailable'
+            : 'episode_unavailable'
+
       markRequestDiagnostic({
+        feature: 'reading_progress_save',
+        stage,
+        progress_stage: stage,
+        handler: 'saveReadingProgress',
+        error_code: 'READING_PROGRESS_TARGET_NOT_FOUND',
         save_result: 'story_or_episode_not_found',
+        target_reason: reason,
+        story_found: Boolean(story),
+        episode_found: Boolean(episode),
       })
 
       return res.status(404).json({
@@ -409,6 +431,16 @@ export async function saveReadingProgress(req, res) {
         await getReaderAgeAccess(req)
       )
     ) {
+      markRequestDiagnostic({
+        feature: 'reading_progress_save',
+        stage,
+        progress_stage: stage,
+        handler: 'saveReadingProgress',
+        error_code: 'READING_PROGRESS_TARGET_NOT_FOUND',
+        save_result: 'age_access_restricted',
+        target_reason: 'age_access_restricted',
+      })
+
       return res.status(404).json({
         ok: false,
         code: 'READING_PROGRESS_TARGET_NOT_FOUND',
