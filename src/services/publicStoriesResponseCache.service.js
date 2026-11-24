@@ -276,7 +276,7 @@ export async function cachePublicStoriesResponse(
     )
 
     existingInFlight.then((entry) => {
-      if (res.headersSent) return
+      if (res.headersSent || res.writableEnded || res.destroyed) return
 
       if (entry) {
         if (entry.isStaleFallback) {
@@ -400,6 +400,13 @@ export async function cachePublicStoriesResponse(
       }
 
       setCacheEntry(key, entry)
+    }
+
+    if (originStatus >= 500 && originStatus < 600 && body?.message === 'Failed to load stories' && globalVersionMatches && viewSensitiveVersionMatches) {
+      entry = {
+        statusCode: originStatus,
+        body: { ok: false, message: body.message, error: /statement timeout/i.test(String(body.error || '')) ? 'canceling statement due to statement timeout' : 'Failed to load stories' },
+      }
     }
 
     settleInFlight(entry)
