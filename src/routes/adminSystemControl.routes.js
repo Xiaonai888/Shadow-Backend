@@ -27,6 +27,8 @@ import { generateSystemUsageReport } from '../services/systemUsageReport.service
 import { getAdminPerformanceDiagnostics } from '../services/adminPerformanceDiagnostics.service.js'
 import { getImageLoadDiagnosticsSnapshot } from './imageLoadDiagnostics.routes.js'
 import { readSharedSystemControlProviderUsage } from '../services/sharedMonitoring/sharedMonitoringSystemControl.service.js'
+import databaseIoRoutes from './databaseIo.routes.js'
+import databaseIoDownloadRoutes from './databaseIoDownload.routes.js'
 
 const router = express.Router()
 const viewSystemControl = requireAdminPermission('system_control.view')
@@ -656,5 +658,8 @@ router.post(
     }
   }
 )
+
+router.use('/database-io/download', databaseIoDownloadRoutes)
+router.use('/database-io', databaseIoRoutes)
 
 export default router
