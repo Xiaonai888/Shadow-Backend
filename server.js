@@ -120,6 +120,10 @@ import shadowReadEventRewardsRoutes from './src/routes/shadowReadEventRewards.ro
 import shadowReadEventRoutes from './src/routes/shadowReadEvent.routes.js'
 import adminRolesRoutes from './src/routes/adminRoles.routes.js'
 import adminAccountsRoutes from './src/routes/adminAccounts.routes.js'
+import lifecycleServiceModule from './src/services/accountLifecycle.service.cjs'
+import lifecycleRouterModule from './src/routes/deletedAccounts.routes.cjs'
+import { supabase as lifecycleSupabase } from './src/config/supabase.js'
+import { requireAdminPermission as lifecycleAdminPermission } from './src/middleware/adminPermission.middleware.js'
 import adminSupportChatRoutes from './src/routes/adminSupportChat.routes.js'
 import adminSupportChatActionsRoutes from './src/routes/adminSupportChatActions.routes.js'
 import adminSupportChatFoldersRoutes from './src/routes/adminSupportChatFolders.routes.js'
@@ -1082,6 +1086,25 @@ app.use('/api/read-event/rewards', shadowReadEventRewardsRoutes)
 app.use('/api/read-event', shadowReadEventRoutes)
 app.use('/api/admin/roles', adminRolesRoutes)
 app.use('/api/admin/accounts', adminAccountsRoutes)
+const accountLifecycle = lifecycleServiceModule.createAccountLifecycleService(lifecycleSupabase)
+
+const requireLifecycleOwner = (req, res, next) => {
+  if (req.admin?.role !== 'owner') {
+    return res.status(403).json({ error: 'OWNER_REQUIRED' })
+  }
+  next()
+}
+
+app.use('/api/admin/deleted-accounts', lifecycleRouterModule.createDeletedAccountsRouter({
+  express,
+  lifecycle: accountLifecycle,
+  requireAdmin: [lifecycleAdminPermission('accounts.view'), requireLifecycleOwner].reduceRight(
+    (next, middleware) => (req, res, done) => middleware(req, res, () => next(req, res, done)),
+    (req, res, done) => done()
+  ),
+  requireRecoveryPermission: requireLifecycleOwner,
+  getVerifiedAdminId: req => String(req.admin?.admin_id || '')
+}))
 app.use('/api/admin/support-chat', adminSupportChatRoutes)
 app.use('/api/admin/support-chat', adminSupportChatActionsRoutes)
 app.use('/api/admin/support-chat', adminSupportChatFoldersRoutes)
