@@ -62,7 +62,8 @@ function setup(orders = [], grants = [], products = [
 for (const [name, orders, grants, expected] of [
   ['no prior checkout', [], [], 'available'],
   ['pending payment', [order()], [], 'checking_payment'],
-  ['expired unpaid payment', [order({ expires_at: oneHourAgo })], [], 'payment_recheck_required'],
+  ['expired unpaid payment', [order({ created_at: oneHourAgo, expires_at: new Date(Date.parse(oneHourAgo) + 15 * 60 * 1000).toISOString() })], [], 'available'],
+  ['premature expiry cannot shorten the 15 minute payment window', [order({ expires_at: oneHourAgo })], [], 'checking_payment'],
   ['paid but access not granted', [order({ status: 'confirmed', payment_status: 'paid' })], [], 'access_recovery'],
   ['paid order with grant', [order({ status: 'confirmed', payment_status: 'paid', pdf_unlock_status: 'unlocked' })], [{ buyer_id: buyer, product_id: pdf, order_id: orderDbId }], 'purchased'],
   ['paid but missing linked order', [], [{ buyer_id: buyer, product_id: pdf, order_id: orderDbId }], 'access_recovery'],
