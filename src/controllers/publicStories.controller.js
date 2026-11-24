@@ -119,11 +119,13 @@ function withReaderVisibleEpisodes(columns) {
 function requireReaderVisibleEpisode(query) {
   return query
     .eq('reader_visible_episodes.status', 'published')
-    .is('reader_visible_episodes.deleted_at', null)
-    .or(
-      `first_published_at.is.null,first_published_at.lte.${new Date().toISOString()}`,
-      { referencedTable: 'reader_visible_episodes' }
-    )
+.is('reader_visible_episodes.deleted_at', null)
+.or(
+  `first_published_at.is.null,first_published_at.lte.${new Date().toISOString()}`,
+  { referencedTable: 'reader_visible_episodes' }
+)
+.limit(1, { referencedTable: 'reader_visible_episodes' })
+    .limit(1, { referencedTable: 'reader_visible_episodes' })
 }
 
 function publicAuthorPage(page) {
