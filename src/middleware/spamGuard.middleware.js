@@ -21,6 +21,7 @@ const READER_CACHE_MAX_SKIPS = 30
 const READER_CACHE_MAX_BURST = 4
 const READER_CACHE_MAX_KEYS = 2048
 const readerReadCache = new Map()
+const REQUEST_GUARD_PASS_CACHE = Symbol('shadowSpamGuardPassCache')
 
 function readerCacheKey(identity) {
   return `${identity.guardKey}|${identity.ipAddress || ''}`
@@ -680,6 +681,32 @@ export function createSpamGuard({
 
     if (!identity.guardKey) return next()
 
+    const passKey = JSON.stringify([
+      safeScope,
+      safeThreshold,
+      safeWindowSeconds,
+      safeIpFallbackMultiplier,
+      req.method,
+      requestPath,
+      identity.guardKey,
+      identity.ipAddress,
+    ])
+
+    const previousPass = req[REQUEST_GUARD_PASS_CACHE]?.get(passKey)
+
+    if (previousPass) {
+      req.spamGuard = { ...previousPass }
+
+      markRequestDiagnostic({
+        guard_scope: safeScope,
+        guard_cache_state: 'same_request_dedupe',
+        guard_rpc_calls: 0,
+        guard_result: 'allowed',
+      })
+
+      return next()
+    }
+
     const cachedRestriction = readCachedRestriction(safeScope, identity)
 
     if (cachedRestriction) {
@@ -707,12 +734,22 @@ export function createSpamGuard({
     }
 
     if (canUseReaderCache(safeScope, req, identity)) {
+      if (!req[REQUEST_GUARD_PASS_CACHE]) {
+        req[REQUEST_GUARD_PASS_CACHE] = new Map()
+      }
+
+      req[REQUEST_GUARD_PASS_CACHE].set(
+        passKey,
+        { ...req.spamGuard }
+      )
+
       markRequestDiagnostic({
         guard_scope: safeScope,
         guard_cache_state: 'allowed_cache',
         guard_rpc_calls: 0,
         guard_result: 'allowed',
       })
+
       return next()
     }
 
@@ -786,7 +823,18 @@ export function createSpamGuard({
         identityType: effectiveIdentityType,
       })
 
-      if (result.allowed !== false) return next()
+            if (result.allowed !== false) {
+        if (!req[REQUEST_GUARD_PASS_CACHE]) {
+          req[REQUEST_GUARD_PASS_CACHE] = new Map()
+        }
+
+        req[REQUEST_GUARD_PASS_CACHE].set(
+          passKey,
+          { ...req.spamGuard }
+        )
+
+        return next()
+      }
 
       const resolved = resolveRestriction(result)
 
