@@ -221,7 +221,7 @@ function canManageTarget(req, account) {
   return { ok: true }
 }
 router.post('/unlock', viewAccounts, adminAccountsWriteLimit, unlockStaffAccounts)
-router.get('/roles', viewAccounts, adminAccountsReadLimit, async (req, res) => {
+router.get('/roles', viewAccounts, adminAccountsReadLimit, requireStaffAccountsPasskey, async (req, res) => {
   try {
     const roles = await loadAvailableRoles()
 
@@ -239,7 +239,7 @@ router.get('/roles', viewAccounts, adminAccountsReadLimit, async (req, res) => {
   }
 })
 
-router.get('/', viewAccounts, adminAccountsReadLimit, async (req, res) => {
+router.get('/', viewAccounts, adminAccountsReadLimit, requireStaffAccountsPasskey, async (req, res) => {
   try {
     const accounts = await loadAccounts()
 
@@ -262,6 +262,7 @@ router.post(
   '/',
   manageAccounts,
   adminAccountsWriteLimit,
+  requireStaffAccountsPasskey,
   observeAccountSecurityMutation,
   accountMutationGate,
   async (req, res) => {
@@ -384,8 +385,8 @@ router.post(
 router.patch(
   '/:accountId',
   manageAccounts,
-  requireStaffAccountsPasskey,
   adminAccountsWriteLimit,
+  requireStaffAccountsPasskey,
   observeAccountSecurityMutation,
   accountMutationGate,
   async (req, res) => {
