@@ -380,6 +380,7 @@ const corsOptions = {
   allowedHeaders: [
     'Content-Type',
     'Authorization',
+    'X-Staff-Accounts-Unlock',
     'X-Admin-Name',
     'X-Admin-Actor',
     'X-Admin-Id',
