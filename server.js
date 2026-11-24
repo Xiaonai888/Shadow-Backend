@@ -158,6 +158,7 @@ import adminWorkRoutes from './src/routes/adminWork.routes.js'
 import adminSystemControlRoutes from './src/routes/adminSystemControl.routes.js'
 import adminResourceCostRoutes from './src/routes/adminResourceCost.routes.js'
 import { startSystemUsagePersistence } from './src/services/systemUsagePersistence.service.js'
+import { startDatabaseIoMonitor } from './src/services/databaseIoMonitor.service.js'
 import { startSystemUsageAnomalyDetector } from './src/services/systemUsageAnomaly.service.js'
 import { startSystemUsageIncidentService } from './src/services/systemUsageIncident.service.js'
 import { startSystemUsageRegressionWatch } from './src/services/systemUsageRegression.service.js'
@@ -1195,6 +1196,7 @@ app.listen(PORT, () => {
   startMemoryIncidentMonitor()
   startWorkDetectorMonitor()
   startSystemUsagePersistence()
+  startDatabaseIoMonitor()
   startSystemUsageAnomalyDetector()
   startSystemUsageIncidentService()
   startSystemUsageRegressionWatch()
