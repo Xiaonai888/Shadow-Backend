@@ -36,7 +36,6 @@ const adminAccountsWriteLimit = rateLimit({
   keyGenerator: adminAccountsIdentity,
   message: { ok: false, code: 'ADMIN_ACCOUNTS_WRITE_RATE_LIMIT', message: 'Too many account changes. Please retry shortly.' },
 })
-router.use(adminAccountsPreAuthLimit)
 const accountMutationGate = createSecurityGate({
   gateId: 'admin_account_mutation',
   roles: ['owner', 'admin', 'staff'],
@@ -220,49 +219,67 @@ function canManageTarget(req, account) {
 
   return { ok: true }
 }
-router.post('/unlock', viewAccounts, adminAccountsWriteLimit, unlockStaffAccounts)
-router.get('/roles', viewAccounts, adminAccountsReadLimit, requireStaffAccountsPasskey, async (req, res) => {
-  try {
-    const roles = await loadAvailableRoles()
+router.post(
+  '/unlock',
+  adminAccountsPreAuthLimit,
+  viewAccounts,
+  adminAccountsWriteLimit,
+  unlockStaffAccounts
+)
+router.get(
+  '/roles',
+  adminAccountsPreAuthLimit,
+  viewAccounts,
+  adminAccountsReadLimit,
+  async (req, res) => {
+    try {
+      const roles = await loadAvailableRoles()
 
-    return res.status(200).json({
-      ok: true,
-      roles,
-    })
-  } catch (error) {
-    console.error('GET ACCOUNT ROLES ERROR:', error)
+      return res.status(200).json({
+        ok: true,
+        roles,
+      })
+    } catch (error) {
+      console.error('GET ACCOUNT ROLES ERROR:', error)
 
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load saved roles',
-    })
+      return res.status(500).json({
+        ok: false,
+        message: 'Failed to load saved roles',
+      })
+    }
   }
-})
+)
 
-router.get('/', viewAccounts, adminAccountsReadLimit, requireStaffAccountsPasskey, async (req, res) => {
-  try {
-    const accounts = await loadAccounts()
+router.get(
+  '/',
+  adminAccountsPreAuthLimit,
+  viewAccounts,
+  adminAccountsReadLimit,
+  async (req, res) => {
+    try {
+      const accounts = await loadAccounts()
 
-    return res.status(200).json({
-      ok: true,
-      accounts,
-      total: accounts.length,
-    })
-  } catch (error) {
-    console.error('GET ADMIN ACCOUNTS ERROR:', error)
+      return res.status(200).json({
+        ok: true,
+        accounts,
+        total: accounts.length,
+      })
+    } catch (error) {
+      console.error('GET ADMIN ACCOUNTS ERROR:', error)
 
-    return res.status(500).json({
-      ok: false,
-      message: 'Failed to load staff accounts',
-    })
+      return res.status(500).json({
+        ok: false,
+        message: 'Failed to load staff accounts',
+      })
+    }
   }
-})
+)
 
 router.post(
   '/',
+  adminAccountsPreAuthLimit,
   manageAccounts,
   adminAccountsWriteLimit,
-  requireStaffAccountsPasskey,
   observeAccountSecurityMutation,
   accountMutationGate,
   async (req, res) => {
@@ -384,9 +401,10 @@ router.post(
 
 router.patch(
   '/:accountId',
+  adminAccountsPreAuthLimit,
   manageAccounts,
-  adminAccountsWriteLimit,
   requireStaffAccountsPasskey,
+  adminAccountsWriteLimit,
   observeAccountSecurityMutation,
   accountMutationGate,
   async (req, res) => {
