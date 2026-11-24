@@ -42,6 +42,7 @@ import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { rateLimit } from 'express-rate-limit'
 import { invalidatePublicStoriesCache } from '../services/publicStoriesResponseCache.service.js'
 import { verifyPasswordResetCode } from '../controllers/readerPasswordResetVerify.controller.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 
 const router = express.Router()
 
@@ -157,9 +158,26 @@ function invalidatePublicStoriesAfterMutation(req, res, next) {
   next()
 }
 
-router.post('/register', readerRegisterLimit, readerAuthSafetyLimit, verifyTurnstile, registerUser)
-router.post('/login', readerLoginLimit, readerAuthSafetyLimit, loginUser)
-router.post('/login/verify', readerLoginLimit, readerAuthSafetyLimit, verifyReaderLogin)
+function authDiagnosticStage(feature, stage) {
+  return (req, res, next) => {
+    markRequestDiagnostic({ feature, stage })
+    next()
+  }
+}
+
+router.post('/register',
+  authDiagnosticStage('reader_register', 'register_rate_limit'), readerRegisterLimit,
+  authDiagnosticStage('reader_register', 'auth_safety_rate_limit'), readerAuthSafetyLimit,
+  authDiagnosticStage('reader_register', 'turnstile_verification'), verifyTurnstile,
+  registerUser)
+router.post('/login',
+  authDiagnosticStage('reader_login', 'login_rate_limit'), readerLoginLimit,
+  authDiagnosticStage('reader_login', 'auth_safety_rate_limit'), readerAuthSafetyLimit,
+  loginUser)
+router.post('/login/verify',
+  authDiagnosticStage('reader_login_verify', 'login_rate_limit'), readerLoginLimit,
+  authDiagnosticStage('reader_login_verify', 'auth_safety_rate_limit'), readerAuthSafetyLimit,
+  verifyReaderLogin)
 router.post('/forgot-password', readerPasswordRequestLimit, readerAuthSafetyLimit, requestPasswordReset)
 router.post('/verify-reset-code', readerAuthSafetyLimit, readerPasswordResetLimit, verifyPasswordResetCode)
 router.post('/reset-password', readerPasswordResetLimit, readerAuthSafetyLimit, resetPassword)
