@@ -2379,7 +2379,8 @@ export async function getUserFollowers(req, res) {
 
     let query = supabase
       .from('user_follows')
-      .select('follower:users!user_follows_follower_user_id_fkey(id, name, username, avatar_url, bio, work, location, is_author)', { count: 'exact' })
+      .select('follower:users!user_follows_follower_user_id_fkey!inner(id, name, username, avatar_url, bio, work, location, is_author)', { count: 'exact' })
+      .eq('follower.is_active', true)
       .eq('following_user_id', targetUser.id)
       .order('created_at', { ascending: false })
 
@@ -2443,7 +2444,8 @@ export async function getUserFollowing(req, res) {
 
     let query = supabase
       .from('user_follows')
-      .select('following:users!user_follows_following_user_id_fkey(id, name, username, avatar_url, bio, work, location, is_author)', { count: 'exact' })
+      .select('following:users!user_follows_following_user_id_fkey!inner(id, name, username, avatar_url, bio, work, location, is_author)', { count: 'exact' })
+      .eq('following.is_active', true)
       .eq('follower_user_id', targetUser.id)
       .order('created_at', { ascending: false })
 
