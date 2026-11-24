@@ -213,4 +213,39 @@ Do not claim a Missing rate limiting alert is fixed just because a limiter varia
 - After changing code, review the complete diff and run applicable syntax checks, tests, build/startup validation, and affected consumer checks. Verify the security scan covers the new commit before claiming the alert is closed. Zero open CodeQL alerts does not guarantee complete application security.
 
 
+## Safe Maintenance & Security Update Standard
+
+- Verify the actual problem before modifying code.
+- Treat automated security alerts as findings that require investigation, not automatic instructions to modify code.
+- Verify installed dependency versions, official advisories, actual usage, exploit conditions, and production exposure.
+- Prioritize confirmed risks and document reasons for deferring valid security alerts.
+- Inspect affected routes, controllers, services, middleware, database functions, and API consumers before editing.
+- Apply the smallest effective change and complete related fixes together.
+- Prefer compatible security patches. Major dependency upgrades require compatibility review and explicit approval.
+- Never blindly merge Dependabot updates or run forced audit fixes.
+- Keep package.json and package-lock.json synchronized.
+- Do not introduce unnecessary dependencies, services, background workers, or infrastructure costs.
+- Do not replace working systems or refactor unrelated code without a demonstrated need.
+- Never weaken security controls or dismiss valid alerts merely to reduce alert counts.
+- Verify affected functionality, compatibility, and available tests before deployment.
+- Report test results, remaining risks, and rollback requirements.
+- Stop and report uncertainty when required source code or verification is unavailable.
+
+## Backend & Data Integrity Protection
+
+- Preserve existing API contracts and compatibility with Web-React-2 and AdminDashboard.
+- Preserve authentication, authorization, sessions, Passkey verification, and access controls.
+- Preserve payment verification, wallet balances, purchases, rewards, and episode unlocking rules.
+- Protect financial operations against duplicate execution, race conditions, and unauthorized modifications.
+- Preserve database integrity, transactions, RLS policies, GRANT permissions, and existing data.
+- Never execute destructive database migrations without explicit approval, backup, and rollback preparation.
+- Avoid unnecessary database queries, polling, retry loops, and repeated API requests.
+- Reuse existing caching, rate limits, and background processing mechanisms when appropriate.
+- Evaluate changes affecting RAM, CPU, Disk IO, bandwidth, and infrastructure costs.
+- Prefer bounded processing and prevent uncontrolled concurrency.
+- Preserve client-side processing and direct storage uploads where appropriate.
+- Never expose credentials, access tokens, payment secrets, or sensitive user data in logs or API responses.
+- Verify affected routes, controllers, services, and database operations before marking changes complete.
+- Never deploy unverified changes directly to production.
+
 
