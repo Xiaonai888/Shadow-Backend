@@ -62,6 +62,20 @@ function safeFiveXXStage(value) {
     .slice(0, 64) || 'unknown'
 }
 
+function resolveDiagnosticStage(context) {
+  const marker = context?.diagnostic_marker || {}
+  const candidates = [
+    marker.stage, marker.session_stage, marker.error_stage,
+    marker.income_stage, marker.phase, marker.progress_stage,
+    marker.access_stage, marker.reaction_stage, context?.response_error_stage,
+  ]
+  for (const value of candidates) {
+    const stage = safeFiveXXStage(value)
+    if (stage !== 'unknown') return stage
+  }
+  return 'unknown'
+}
+
 function flushFiveXXDiagnostics(now = Date.now()) {
   const newWindowStart =
     Math.floor(now / FIVE_XX_LOG_WINDOW_MS) * FIVE_XX_LOG_WINDOW_MS
@@ -97,10 +111,7 @@ function recordFiveXXDiagnostic(context, status, elapsedMs) {
   const errorCode = safeFiveXXCode(
     failure?.code || marker.error_code || context.response_error_code || `HTTP_${status}`
   )
-  const stage = safeFiveXXStage(
-    marker.stage || marker.session_stage ||
-    marker.error_stage || marker.income_stage || marker.phase
-  )
+  const stage = resolveDiagnosticStage(context)
   const feature = safeFiveXXStage(marker.feature || 'unknown')
   const provider = safeFiveXXCode(failure?.provider || 'APPLICATION', 'APPLICATION')
   const target = String(failure?.target || context.route).slice(0, 180)
@@ -938,10 +949,7 @@ function recordHistoricalErrorEvidence(
     firstFailure?.code || marker?.error_code || responseCode ||
       `HTTP_${status}`
   )
-  const diagnosticStage = safeFiveXXStage(
-    marker?.stage || marker?.session_stage ||
-      marker?.error_stage || marker?.income_stage || marker?.phase
-  )
+  const diagnosticStage = resolveDiagnosticStage(context)
   const sampleError =
     cleanHistoricalErrorText(
       ([401, 403].includes(status)
@@ -1154,6 +1162,10 @@ function logRequestEvidence(req, res, context, elapsedMs) {
     cache: ['HIT', 'MISS', 'WAIT'].includes(cacheState) ? cacheState : 'NONE',
     diagnostic_kind: diagnosticKind,
     diagnostic_marker: diagnosticMarker,
+    diagnostic_stage: resolveDiagnosticStage(context),
+    root_cause_code: failed || firstExternalFailure
+      ? safeFiveXXCode(firstExternalFailure?.code || diagnosticMarker?.error_code || context.response_error_code || `HTTP_${status}`)
+      : null,
     evidence_semantics: 'single_http_request_not_loop_proof',
     observed_external_calls: context.external_calls,
     observed_supabase_calls: supabaseCalls,
@@ -1583,6 +1595,7 @@ export function trafficDiagnosticMiddleware(req, res, next) {
     diagnostic_marker: null,
     expected_episode_locked: false,
     response_error_code: '',
+    response_error_stage: '',
     response_error_message: '',
   }
 
@@ -1590,6 +1603,9 @@ export function trafficDiagnosticMiddleware(req, res, next) {
   res.json = (body) => {
     const status = Number(res.statusCode || 0)
     if (status >= 400 && status < 600) {
+      if (typeof body?.stage === 'string' && /^[a-zA-Z0-9_:-]{1,64}$/.test(body.stage)) {
+        context.response_error_stage = body.stage
+      }
       if (typeof body?.code === 'string') {
         const code = body.code.trim()
         if (code.length <= 64 && /^[A-Z][A-Z0-9_]*$/.test(code)) {
