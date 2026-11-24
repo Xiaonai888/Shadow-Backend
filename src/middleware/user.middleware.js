@@ -1,3 +1,7 @@
+import { supabase } from '../config/supabase.js'
+import lifecycleServiceModule from '../services/accountLifecycle.service.cjs'
+
+const accountLifecycle = lifecycleServiceModule.createAccountLifecycleService(supabase)
 import jwt from 'jsonwebtoken'
 import { validateReaderDeviceSession } from '../services/readerDeviceSessions.service.js'
 import { recordReaderLoginIssue } from '../services/readerLoginIssueMonitor.service.js'
@@ -80,6 +84,23 @@ export async function requireUser(req, res, next) {
         message: 'Reader session is invalid or expired',
       })
     }
+    try {
+  const allowed = await accountLifecycle.canAccess(decoded.user_id)
+
+  if (!allowed) {
+    return res.status(403).json({
+      ok: false,
+      code: 'ACCOUNT_ACCESS_DISABLED',
+      message: 'Account is no longer active',
+    })
+  }
+} catch {
+  return res.status(503).json({
+    ok: false,
+    code: 'ACCOUNT_LIFECYCLE_UNAVAILABLE',
+    message: 'Account verification is temporarily unavailable',
+  })
+}
 
     const now = Math.floor(Date.now() / 1000)
 
