@@ -118,14 +118,6 @@ function withReaderVisibleEpisodes(columns) {
 
 function requireReaderVisibleEpisode(query) {
   return query
-    .eq('reader_visible_episodes.status', 'published')
-.is('reader_visible_episodes.deleted_at', null)
-.or(
-  `first_published_at.is.null,first_published_at.lte.${new Date().toISOString()}`,
-  { referencedTable: 'reader_visible_episodes' }
-)
-.limit(1, { referencedTable: 'reader_visible_episodes' })
-    .limit(1, { referencedTable: 'reader_visible_episodes' })
 }
 
 function publicAuthorPage(page) {
@@ -1325,8 +1317,8 @@ export async function getPublicStories(req, res) {
   
         if (ids.length) {
           const { data: fetched, error: storyError } = await supabase
-            .from('stories')
-            .select(withReaderVisibleEpisodes(GENRE_QUICK_STORY_SELECT))
+        .from('shadow_reader_visible_stories_v1')
+.select(GENRE_QUICK_STORY_SELECT)
 .in('id', ids)
 .eq('status', 'published')
 .is('deleted_at', null)
@@ -1392,17 +1384,15 @@ export async function getPublicStories(req, res) {
               : `${NEW_ARRIVALS_STORY_LIST_SELECT}, created_at, updated_at, total_likes, total_views, total_comments`
 
       let nextQuery = supabase
-  .from('stories')
+  .from('shadow_reader_visible_stories_v1')
   .select(
-    withReaderVisibleEpisodes(
-      newArrivalsPagination
-        ? newArrivalsSelect
-        : compactTrending
-          ? COMPACT_TRENDING_STORY_SELECT
-          : compactCardView
-            ? 'id,title,cover_url,main_genre,total_episodes,created_at'
-            : PUBLIC_STORY_LIST_SELECT
-    )
+    newArrivalsPagination
+      ? newArrivalsSelect
+      : compactTrending
+        ? COMPACT_TRENDING_STORY_SELECT
+        : compactCardView
+          ? 'id,title,cover_url,main_genre,total_episodes,created_at'
+          : PUBLIC_STORY_LIST_SELECT
   )
   .eq('status', 'published')
   .is('deleted_at', null)
@@ -1410,7 +1400,7 @@ export async function getPublicStories(req, res) {
     'is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false'
   )
 
-nextQuery = requireReaderVisibleEpisode(nextQuery)
+
 
      if (rankingOnly) {
   nextQuery = nextQuery.or(
@@ -1588,8 +1578,8 @@ nextQuery = requireReaderVisibleEpisode(nextQuery)
         }
 
         let fuzzyQuery = supabase
-  .from('stories')
-  .select(withReaderVisibleEpisodes(PUBLIC_STORY_LIST_SELECT))
+  .from('shadow_reader_visible_stories_v1')
+  .select(PUBLIC_STORY_LIST_SELECT)
           .eq('status', 'published')
           .is('deleted_at', null)
           .or('is_shadow_exclusive.is.null,is_shadow_exclusive.eq.false')
@@ -1597,7 +1587,7 @@ nextQuery = requireReaderVisibleEpisode(nextQuery)
           .order('total_views', { ascending: false })
           .limit(80)
 
-        fuzzyQuery = requireReaderVisibleEpisode(fuzzyQuery)
+        
         fuzzyQuery = applyAdultStoryVisibility(fuzzyQuery, ageAccess)
         if (['novel', 'manga', 'chat_story'].includes(storyType)) {
           fuzzyQuery = fuzzyQuery.eq('story_type', storyType)
@@ -2150,8 +2140,8 @@ export async function getPublicStoryRecommendations(
 
     const buildBaseQuery = (limit) => {
   let query = supabase
-    .from('stories')
-    .select(withReaderVisibleEpisodes(PUBLIC_STORY_LIST_SELECT))
+.from('shadow_reader_visible_stories_v1')
+.select(PUBLIC_STORY_LIST_SELECT)
         .eq('status', 'published')
         .is('deleted_at', null)
         .or(
@@ -2160,7 +2150,7 @@ export async function getPublicStoryRecommendations(
         .neq('id', storyId)
         .limit(limit)
 
-      query = requireReaderVisibleEpisode(query)
+      
 query = applyAdultStoryVisibility(
   query,
   ageAccess
