@@ -3617,8 +3617,16 @@ export async function countQualifiedEpisodeView(
         context?.code ===
         'EPISODE_NOT_FOUND'
 
+      const code = episodeMissing ? 'EPISODE_NOT_FOUND' : 'STORY_NOT_FOUND'
+      markRequestDiagnostic({
+        feature: 'qualified_episode_view',
+        stage: !context ? 'read_context_missing' : episodeMissing ? 'read_context_episode_missing' : 'read_context_story_unavailable',
+        error_code: code,
+        response_status: 404,
+      })
       return res.status(404).json({
         ok: false,
+        code,
         message: episodeMissing
           ? 'Episode not found'
           : 'Story not found',
@@ -3631,8 +3639,15 @@ export async function countQualifiedEpisodeView(
       story.is_shadow_exclusive &&
       story.exclusive_status !== 'approved'
     ) {
+      markRequestDiagnostic({
+        feature: 'qualified_episode_view',
+        stage: 'exclusive_not_approved',
+        error_code: 'STORY_NOT_FOUND',
+        response_status: 404,
+      })
       return res.status(404).json({
         ok: false,
+        code: 'STORY_NOT_FOUND',
         message: 'Story not found',
       })
     }
@@ -3644,8 +3659,15 @@ export async function countQualifiedEpisodeView(
       !episode ||
       !isPublicEpisode(episode)
     ) {
+      markRequestDiagnostic({
+        feature: 'qualified_episode_view',
+        stage: !episode ? 'episode_missing' : 'episode_not_public',
+        error_code: 'EPISODE_NOT_FOUND',
+        response_status: 404,
+      })
       return res.status(404).json({
         ok: false,
+        code: 'EPISODE_NOT_FOUND',
         message: 'Episode not found',
       })
     }
