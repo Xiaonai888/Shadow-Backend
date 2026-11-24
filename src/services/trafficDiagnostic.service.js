@@ -4,6 +4,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import jwt from 'jsonwebtoken'
 import { recordSystemUsage } from './systemUsageMonitor.service.js'
 import { observePassiveRequest } from './passiveRequestMonitor.service.js'
+import { enableDatabaseIoTrafficEvidence, recordDatabaseIoTraffic } from './databaseIoTrafficEvidence.service.js'
 
 const ENABLED =
   String(process.env.TRAFFIC_DIAGNOSTIC_ENABLED ?? 'true')
@@ -1389,6 +1390,7 @@ if (!response.ok) {
         })
       }
 
+      if (provider === 'SUPABASE') recordDatabaseIoTraffic({ kind: 'supabase', route: context?.route || 'BACKGROUND', target, status: response.status, durationMs: elapsedMs })
       recordDependency(
         context,
         target,
@@ -1421,6 +1423,7 @@ if (!response.ok) {
         }
       )
 
+      if (provider === 'SUPABASE') recordDatabaseIoTraffic({ kind: 'supabase', route: context?.route || 'BACKGROUND', target, status: 0, durationMs: elapsedMs })
       recordDependency(
         context,
         target,
@@ -1501,10 +1504,11 @@ function installHttpDiagnostic(moduleObject) {
       return nativeEnd(chunk, encoding, callback)
     }
 
-    const record = (error = false) => {
+    const record = (error = false, status = 0) => {
       if (recorded) return
       recorded = true
       const elapsedMs = Date.now() - startedAt
+      if (target.startsWith('SUPABASE ')) recordDatabaseIoTraffic({ kind: 'supabase', route: context?.route || 'BACKGROUND', target, status, durationMs: elapsedMs })
       recordDependency(context, target, error, elapsedMs)
       add(outbound, key, writtenBytes, error, elapsedMs)
     }
@@ -1531,7 +1535,7 @@ function installHttpDiagnostic(moduleObject) {
         )
       }
 
-      record(failed)
+      record(failed, status)
     })
     request.once('error', (error) => {
       recordExternalFailure(
@@ -1724,6 +1728,7 @@ export function trafficDiagnosticMiddleware(req, res, next) {
       })
     }
 
+    recordDatabaseIoTraffic({ kind: 'http', route: context.route, status: closeReason === 'finish' ? res.statusCode : 0, durationMs: elapsedMs })
     trackGuestRequest(req, res, context, elapsedMs, responseBytes)
     trackPageRequest(req, res, context, elapsedMs, responseBytes)
     try { observePassiveRequest(req, res, context, { responseBytes }) } catch {}
@@ -1756,6 +1761,7 @@ export function trafficDiagnosticMiddleware(req, res, next) {
 }
 
 if (ENABLED) {
+  enableDatabaseIoTrafficEvidence()
   installFetchDiagnostic()
   installHttpDiagnostic(http)
   installHttpDiagnostic(https)
