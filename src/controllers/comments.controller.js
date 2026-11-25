@@ -24,6 +24,7 @@ import {
 
 import { loadBatchedReplyPage } from '../services/commentReplyBatch.service.js'
 import { enqueueCommentCreate } from '../services/commentCreateMicroBatcher.service.js'
+import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 
 async function loadReplyPage(args) {
   return loadBatchedReplyPage(args)
@@ -3458,32 +3459,39 @@ export async function getMyCommentActivities(
       })
     }
 
-    const {
-      data: user,
-      error: userError,
-    } = await supabase
-      .from('users')
-      .select(
-        'id, username, name'
-      )
-      .eq('id', userId)
-      .maybeSingle()
+    let user = null
+let ownedStories = []
 
-    if (userError) {
-      throw userError
-    }
+const needsUser = filter === 'mentions'
+const needsOwnedStories = !['replies', 'mentions'].includes(filter)
 
-    const {
-      data: ownedStories,
-      error: ownedStoriesError,
-    } = await supabase
-      .from('stories')
-      .select('id')
-      .eq('user_id', userId)
+markRequestDiagnostic({
+  feature: 'comment_activities',
+  activity_filter: ['mine', 'all', 'story', 'replies', 'mentions'].includes(filter) ? filter : 'other',
+  user_lookup_required: needsUser,
+  owned_stories_lookup_required: needsOwnedStories,
+})
 
-    if (ownedStoriesError) {
-      throw ownedStoriesError
-    }
+if (needsUser) {
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, username, name')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (error) throw error
+  user = data
+}
+
+if (needsOwnedStories) {
+  const { data, error } = await supabase
+    .from('stories')
+    .select('id')
+    .eq('user_id', userId)
+
+  if (error) throw error
+  ownedStories = data || []
+}
 
     const ownedStoryIds =
       (ownedStories || [])
