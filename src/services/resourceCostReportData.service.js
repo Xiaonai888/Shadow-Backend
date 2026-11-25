@@ -45,7 +45,8 @@ export function summarizeMangaDirectJobs(jobs = []) {
   let duplicates = 0
   let verifiedJobs = 0
   for (const job of jobs) {
-    if (job?.job_type !== 'manga_page_v2' || job?.payload?.intake !== 'r2_direct') continue
+        const intake = job?.payload?.intake ?? job?.intake
+    if (job?.job_type !== 'manga_page_v2' || intake !== 'r2_direct') continue
     const id = String(job.id || '')
     const created = Date.parse(job.created_at || '')
     if (!id || !Number.isFinite(created)) {
@@ -58,7 +59,7 @@ export function summarizeMangaDirectJobs(jobs = []) {
     }
     seen.add(id)
     const hour = new Date(Math.floor(created / HOUR_MS) * HOUR_MS).toISOString()
-    const size = Number(job.payload?.source_bytes)
+    const size = Number(job.payload?.source_bytes ?? job.source_bytes)
     const validSize = Number.isSafeInteger(size) && size > 0
     if (!validSize) unknownSize += 1
     const key = hour
@@ -124,7 +125,7 @@ export async function getResourceCostReport({
       asOf,
     }, { client: database }),
     fetchAll(database, 'resource_cost_upload_hourly', uploadFields, 'hour_start', range.from, end, { tieBreakers: ['feature', 'route', 'upload_mode'] }),
-    fetchAll(database, 'heavy_media_jobs', 'id,job_type,created_at,payload', 'created_at', range.from, end, { jobType: 'manga_page_v2', tieBreakers: ['id'] }),
+    fetchAll(database, 'heavy_media_jobs', 'id,job_type,created_at,intake:payload->intake,source_bytes:payload->source_bytes', 'created_at', range.from, end, { jobType: 'manga_page_v2', tieBreakers: ['id'] }),
     includeApplication
       ? readSharedMonitoringApplication({ from: range.from, to: end, asOf }, { client: database })
       : Promise.resolve(null),
