@@ -6,6 +6,7 @@ import {
 
 const AUDIENCE = 'international'
 const SETTING_KEY = 'main'
+const SMART_AUTO_AVAILABLE = process.env.TASK_CENTER_SMART_AUTO_ENABLED === 'true'
 const MAX_MISSIONS = 2
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -87,6 +88,7 @@ function responseData(settings, rows) {
     audience: AUDIENCE,
     settings: {
       reading_mission_mode: settings.international_reading_mission_mode || 'manual',
+      smart_auto_available: SMART_AUTO_AVAILABLE,
       auto_last_rotation_date: settings.international_auto_last_rotation_date || null,
       auto_last_rotated_at: settings.international_auto_last_rotated_at || null,
     },
@@ -120,7 +122,7 @@ function sendError(res, operation, error) {
 
 async function requireManualMode(res) {
   const settings = await getSettings()
-  if (settings.international_reading_mission_mode === 'auto') {
+  if (['auto', 'smart_auto'].includes(settings.international_reading_mission_mode)) {
     res.status(409).json({
       ok: false,
       code: 'INTERNATIONAL_MANUAL_MODE_REQUIRED',
@@ -179,7 +181,11 @@ export async function createAdminInternationalReadingMission(req, res) {
 
 export async function updateAdminInternationalReadingMission(req, res) {
   try {
-    if (!(await requireManualMode(res))) return
+    const settings = await getSettings()
+    const mode = settings.international_reading_mission_mode
+    if (mode === 'auto') {
+      return res.status(409).json({ ok: false, code: 'INTERNATIONAL_MANUAL_MODE_REQUIRED', message: 'Switch International Reading Mission to Manual mode before changing missions.' })
+    }
     const missionId = text(req.params.missionId)
     if (!UUID_PATTERN.test(missionId)) {
       return res.status(400).json({ ok: false, code: 'INVALID_MISSION_ID', message: 'Invalid mission id.' })
@@ -197,9 +203,17 @@ export async function updateAdminInternationalReadingMission(req, res) {
       return res.status(404).json({ ok: false, code: 'MISSION_NOT_FOUND', message: 'International mission not found.' })
     }
 
+    const requested = missionPayload({ ...existing, ...(req.body || {}) }, existing.sort_order || 0)
+    const payload = mode === 'smart_auto' ? {
+      reward_coins: requested.reward_coins,
+      target_minutes: requested.target_minutes,
+      title: `Read ${requested.target_minutes} minutes`,
+      updated_at: requested.updated_at,
+    } : requested
+
     const { data, error } = await supabase
       .from('task_center_reading_missions')
-      .update(missionPayload({ ...existing, ...(req.body || {}) }, existing.sort_order || 0))
+      .update(payload)
       .eq('id', missionId)
       .eq('audience', AUDIENCE)
       .select('*')
@@ -255,11 +269,15 @@ export async function deleteAdminInternationalReadingMission(req, res) {
 export async function updateAdminInternationalReadingMissionMode(req, res) {
   const mode = String(req.body?.mode || '').trim().toLowerCase()
 
-  if (!['manual', 'auto'].includes(mode)) {
+  if (!['manual', 'auto', 'smart_auto'].includes(mode)) {
     return res.status(400).json({
       ok: false,
       code: 'INVALID_INTERNATIONAL_MODE',
     })
+  }
+
+  if (mode === 'smart_auto' && !SMART_AUTO_AVAILABLE) {
+    return res.status(409).json({ ok: false, code: 'SMART_AUTO_NOT_ENABLED', message: 'Smart Auto integration is not enabled' })
   }
 
   try {
@@ -267,7 +285,7 @@ export async function updateAdminInternationalReadingMissionMode(req, res) {
     const previousMode =
       previous.international_reading_mission_mode || 'manual'
 
-    if (mode === 'auto') {
+    if (mode === 'auto' || mode === 'smart_auto') {
       const missions = await getRows()
 
       if (missions.length !== MAX_MISSIONS) {
@@ -318,6 +336,7 @@ export async function updateAdminInternationalReadingMissionMode(req, res) {
       throw error
     }
 
+    if (changed && (mode === 'smart_auto' || previousMode === 'smart_auto')) invalidateActiveSessionMissionsCache()
     const settings = await getSettings()
     const rows = await getRows()
 
@@ -333,6 +352,10 @@ export async function updateAdminInternationalReadingMissionMode(req, res) {
 
 export async function rotateAdminInternationalReadingMissions(req, res) {
   try {
+    const settings = await getSettings()
+    if (settings.international_reading_mission_mode === 'smart_auto') {
+      return res.status(409).json({ ok: false, message: 'Smart Auto does not use daily rotation' })
+    }
     const result = await rotateTaskCenterInternationalAutoStories({
       force: req.body?.force === true,
     })
