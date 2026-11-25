@@ -366,11 +366,14 @@ async function finalize(req, res, role, publishStory = false) {
   assertRolloutEnabled()
   const owner = actor(req, role)
   const claims = verifyToken(req.body?.upload_token, owner, role)
-    if (
+  if (
     publishStory &&
     !['reader_story_image', 'author_story_image'].includes(claims.category)
   ) {
     throw fail(403, 'DIRECT_UPLOAD_CATEGORY_DENIED', 'Invalid Story image category')
+  }
+  if (publishStory && claims.size > Math.floor(1.5 * MB)) {
+    throw fail(413, 'STORY_IMAGE_MISMATCH', 'Story image must be 1.5 MB or smaller')
   }
   if (finalizing.has(claims.key)) throw fail(409, 'DIRECT_UPLOAD_IN_PROGRESS', 'Upload is already being finalized')
   finalizing.add(claims.key)
@@ -390,15 +393,14 @@ async function finalize(req, res, role, publishStory = false) {
         await verifyAudioHeader(claims.key, claims.mime, claims.size, head.ETag)
       } else {
         if (publishStory && !head.ETag) {
-  throw fail(409, 'DIRECT_UPLOAD_FILE_CHANGED', 'Image could not be verified')
-}
-
-await verifyImageHeader(
-  claims.key,
-  claims.mime,
-  claims.size,
-  publishStory ? head.ETag : null
-)
+          throw fail(409, 'DIRECT_UPLOAD_FILE_CHANGED', 'Image could not be verified')
+        }
+        await verifyImageHeader(
+          claims.key,
+          claims.mime,
+          claims.size,
+          publishStory ? head.ETag : null
+        )
       }
     } catch (error) {
       if (['DIRECT_UPLOAD_IMAGE_INVALID', 'DIRECT_UPLOAD_AUDIO_INVALID'].includes(error?.code)) await deleteObject(claims.key).catch(() => {})
@@ -412,6 +414,14 @@ await verifyImageHeader(
       if (claims.category === 'author_page_avatar') await assertAuthorAvatarUploadAllowed(authorPage.id)
       if (claims.policy.trackQuota) await assertAuthorStorageAvailable(authorPage.id, claims.size)
     }
+    const preparedStory = publishStory
+      ? await prepareDirectStoryImagePublish({
+          owner,
+          claims,
+          authorPage,
+          body: req.body,
+        })
+      : null
     const storageOwner = authorPage?.id || owner
     finalKey = `${claims.policy.folder}/${storageOwner}/${Date.now()}-${randomUUID()}.${claims.extension}`
     const source = `${encodeURIComponent(c.bucket)}/${claims.key.split('/').map(encodeURIComponent).join('/')}`
@@ -419,13 +429,23 @@ await verifyImageHeader(
       Bucket: c.bucket,
       Key: finalKey,
       CopySource: source,
-      ...(claims.policy.audio ? { CopySourceIfMatch: head.ETag } : {}),
+      ...((claims.policy.audio || publishStory) ? { CopySourceIfMatch: head.ETag } : {}),
       MetadataDirective: 'REPLACE',
       ContentType: claims.mime,
-            CacheControl: ['reader_story_image', 'author_story_image'].includes(claims.category) ? 'public, max-age=86400' : 'public, max-age=31536000, immutable',
+      CacheControl: ['reader_story_image', 'author_story_image'].includes(claims.category) ? 'public, max-age=86400' : 'public, max-age=31536000, immutable',
     }))
     copied = true
     const publicUrl = `${c.publicUrl}/${finalKey}`
+    if (preparedStory) {
+      const story = await publishDirectStoryImage({
+        prepared: preparedStory,
+        finalKey,
+        publicUrl,
+      })
+      copied = false
+      await deleteObject(claims.key).catch(() => {})
+      return res.status(201).json({ ok: true, story })
+    }
     let asset = null
     if (claims.policy.trackQuota && authorPage) {
       asset = await recordAuthorR2Asset({
@@ -468,7 +488,9 @@ await verifyImageHeader(
       } : {}),
     })
   } catch (error) {
-    if (copied && finalKey) await deleteObject(finalKey).catch(() => {})
+    if (copied && finalKey && !error?.preserveStoryImage) {
+      await deleteObject(finalKey).catch(() => {})
+    }
     if (error?.name === 'NotFound' || error?.$metadata?.httpStatusCode === 404) {
       throw fail(404, 'DIRECT_UPLOAD_NOT_FOUND', 'Uploaded file could not be found')
     }
@@ -496,6 +518,12 @@ function safeHandler(handler, role) {
 
 router.post('/user/init', requireUser, mediaDirectRateLimit, safeHandler(initiate, 'user'))
 router.post('/user/finalize', requireUser, mediaDirectRateLimit, safeHandler(finalize, 'user'))
+router.post(
+  '/user/story/finalize',
+  requireUser,
+  mediaDirectRateLimit,
+  safeHandler((req, res, role) => finalize(req, res, role, true), 'user')
+)
 router.post('/admin/init', requireAdmin, mediaDirectRateLimit, safeHandler(initiate, 'admin'))
 router.post('/admin/finalize', requireAdmin, mediaDirectRateLimit, safeHandler(finalize, 'admin'))
 
