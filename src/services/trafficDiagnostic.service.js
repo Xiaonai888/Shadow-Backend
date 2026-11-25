@@ -819,6 +819,12 @@ function historicalErrorClass(
   status,
   context
 ) {
+  const marker = context?.diagnostic_marker
+  if (
+    Number(status) >= 400 &&
+    marker?.endpoint === 'GET /api/public/stories/:storyId' &&
+    marker?.responsible_party === 'ADMIN'
+  ) return 'internal_error'
   if (
     Number(status) >= 500 ||
     Number(
@@ -1067,7 +1073,12 @@ function logRequestEvidence(req, res, context, elapsedMs) {
   }
   const sseResponse =
     isSseResponse(res)
-  const failed = [401, 403, 429].includes(status) || status >= 500 || context.external_errors > 0
+ const storySystemFailure =
+  status >= 400 &&
+  context.diagnostic_marker?.endpoint === 'GET /api/public/stories/:storyId' &&
+  context.diagnostic_marker?.responsible_party === 'ADMIN'
+
+const failed = storySystemFailure || [401, 403, 429].includes(status) || status >= 500 || context.external_errors > 0
   const expensive = context.external_calls >= 8 ||
     (
       !sseResponse &&
