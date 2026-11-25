@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { getMemoryGuardSnapshot } from './memoryGuard.service.js'
 import { readResourceCgroupMemory } from './resourceController/resourceCgroupMemory.js'
+import { sampleRuntimeMemoryGrowth } from './runtimeMemoryGrowth.service.js'
+import { captureRuntimeMemoryEvidence } from './runtimeMemoryEvidence.service.js'
+import { getRuntimeMemoryInspector } from './runtimeMemoryInspector.service.js'
+import { getResourceTelemetrySnapshot } from './resourceController/resourceTelemetry.js'
 
 const MB = 1024 * 1024
 const SAMPLE_INTERVAL_MS = 2000
@@ -20,6 +24,11 @@ let monitorStarted = false
 let currentLevelMb = 0
 let lastHighLogAt = 0
 let lastLoggedTotalMb = 0
+let lastContextAt = -Infinity
+let lastEvidenceErrorAt = -Infinity
+const CONTEXT_REPEAT_MS = 60000
+const MAX_CONTEXT_ROUTE_GROUPS = 24
+const MAX_CONTEXT_REQUEST_SCAN = 512
 
 function mb(bytes) {
   return Number((Number(bytes || 0) / MB).toFixed(1))
@@ -174,6 +183,57 @@ function candidateSource(active, recent) {
   }
 }
 
+function activeRouteSummary(now) {
+  const groups = new Map()
+  let scanned = 0
+  for (const item of activeRequests.values()) {
+    if (++scanned > MAX_CONTEXT_REQUEST_SCAN) break
+    const path = item.path
+      .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, ':id')
+      .replace(/\/\d+(?=\/|$)/g, '/:id')
+    const route = `${item.method} ${path}`.slice(0, 120)
+    let group = groups.get(route)
+    if (!group) {
+      if (groups.size >= MAX_CONTEXT_ROUTE_GROUPS) continue
+      group = { route, count: 0, oldest_age_ms: 0 }
+      groups.set(route, group)
+    }
+    group.count++
+    group.oldest_age_ms = Math.max(group.oldest_age_ms, now - item.started_at_ms, 0)
+  }
+  return [...groups.values()].sort((a, b) => b.count - a.count || b.oldest_age_ms - a.oldest_age_ms)
+}
+
+function reportEvidenceError(error, now) {
+  if (now - lastEvidenceErrorAt < CONTEXT_REPEAT_MS) return
+  lastEvidenceErrorAt = now
+  console.warn('MEMORY_EVIDENCE_ERROR', JSON.stringify({
+    error_name: String(error?.name || 'Error').slice(0, 80),
+  }))
+}
+
+function captureIncidentContext(reason, now, force = false) {
+  if (!force && now - lastContextAt < CONTEXT_REPEAT_MS) return
+  lastContextAt = now
+  try {
+    const context = captureRuntimeMemoryEvidence({
+      reason,
+      now,
+      runtime: getRuntimeMemoryInspector(),
+      telemetry: getResourceTelemetrySnapshot({ eventLimit: 16 }),
+      activeRoutes: activeRouteSummary(now),
+      activeRequestCount: activeRequests.size,
+    })
+    if (context) console.warn('MEMORY_RUNTIME_CONTEXT', JSON.stringify({
+      ...context,
+      route_scan_limited: activeRequests.size > MAX_CONTEXT_REQUEST_SCAN,
+      route_group_capacity: MAX_CONTEXT_ROUTE_GROUPS,
+    }))
+  } catch (error) {
+    reportEvidenceError(error, now)
+  }
+}
+
 function emitIncident(reason, snapshot) {
   const now = Date.now()
   const active = compactActive(now)
@@ -298,6 +358,25 @@ export function startMemoryIncidentMonitor() {
     const snapshot = getMemoryGuardSnapshot()
     const level = currentLevel(snapshot.container_total_mb)
     const now = Date.now()
+    let growth = null
+
+    try {
+      growth = sampleRuntimeMemoryGrowth({
+        guard: snapshot,
+        readProcess: processSnapshot,
+        now,
+      })
+    } catch (error) {
+      reportEvidenceError(error, now)
+    }
+
+    if (growth) {
+      captureIncidentContext(`growth:${growth.reasons.join(',')}`, now, true)
+    } else if (level > currentLevelMb && level >= 350) {
+      captureIncidentContext(`threshold_up:${level}`, now, true)
+    } else if (snapshot.container_total_mb >= 350) {
+      captureIncidentContext('high_memory_context', now)
+    }
 
     if (level !== currentLevelMb) {
       const direction =
