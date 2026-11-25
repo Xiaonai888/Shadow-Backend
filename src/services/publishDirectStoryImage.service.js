@@ -17,28 +17,6 @@ export function validateDirectStoryPublishInput(body) {
   return { caption, allowMessages: body?.allow_messages !== false }
 }
 
-  const ownerId = isAuthor ? authorPage?.id : owner
-
-  if (!ownerId) {
-    throw fail(403, 'AUTHOR_PAGE_REQUIRED', 'Active author page required')
-  }
-
-  const offset = 7 * 60 * 60 * 1000
-  const day = new Date(Date.now() + offset)
-  day.setUTCHours(0, 0, 0, 0)
-
-  const { count, error: countError } = await supabase
-    .from(isAuthor ? 'author_page_stories' : 'reader_stories')
-    .select('id', { count: 'exact', head: true })
-    .eq(isAuthor ? 'author_page_id' : 'user_id', ownerId)
-    .gte('created_at', new Date(day.getTime() - offset).toISOString())
-
-  if (countError) throw countError
-
-  if (Number(count || 0) >= 10) {
-    throw fail(429, 'STORY_DAILY_LIMIT_REACHED', 'You can share up to 10 stories per day.')
-  }
-
 export async function prepareDirectStoryImagePublish({ owner, claims, authorPage, body }) {
   const isAuthor = claims.category === 'author_story_image'
   if (!isAuthor && claims.category !== 'reader_story_image') {
@@ -52,10 +30,23 @@ export async function prepareDirectStoryImagePublish({ owner, claims, authorPage
   if (!IMAGE_TYPES.has(claims.mime) || !Number.isSafeInteger(size) || size < 16 || size > MAX_BYTES) {
     throw fail(400, 'STORY_IMAGE_MISMATCH', 'Invalid Story image')
   }
+  if (isAuthor && (!authorPage?.id || authorPage.id !== claims.author_page_id)) {
+    throw fail(403, 'AUTHOR_PAGE_REQUIRED', 'Active author page required')
+  }
+  const ownerId = isAuthor ? authorPage.id : owner
+  const offset = 7 * 60 * 60 * 1000
+  const day = new Date(Date.now() + offset)
+  day.setUTCHours(0, 0, 0, 0)
+  const { count, error: countError } = await supabase
+    .from(isAuthor ? 'author_page_stories' : 'reader_stories')
+    .select('id', { count: 'exact', head: true })
+    .eq(isAuthor ? 'author_page_id' : 'user_id', ownerId)
+    .gte('created_at', new Date(day.getTime() - offset).toISOString())
+  if (countError) throw countError
+  if (Number(count || 0) >= 10) {
+    throw fail(429, 'STORY_DAILY_LIMIT_REACHED', 'You can share up to 10 stories per day.')
+  }
   if (isAuthor) {
-    if (!authorPage?.id || authorPage.id !== claims.author_page_id) {
-      throw fail(403, 'AUTHOR_PAGE_REQUIRED', 'Active author page required')
-    }
     await assertAuthorStorageAvailable(authorPage.id, size)
     return { ...input, owner, isAuthor, authorPage, mime: claims.mime, size }
   }
