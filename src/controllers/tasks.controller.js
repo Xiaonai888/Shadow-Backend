@@ -2,7 +2,7 @@ import { supabase } from '../config/supabase.js'
 import { ensureTaskCenterAutoRotation } from '../services/taskCenterAuto.service.js'
 import { ensureTaskCenterInternationalAutoRotation } from '../services/taskCenterInternationalAuto.service.js'
 import { recordWeeklyReadingEpisode } from './weeklyReading.controller.js'
-import { getActiveSessionMissions } from '../services/taskCenterMissionCache.service.js'
+import { getTaskCenterMissionMode, getReaderSessionMissionCatalog, recordReaderSmartAutoDelivery, invalidateReaderSmartAutoState } from '../services/taskCenterMissionCache.service.js'
 import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 import { queueReadingRewardEvent } from '../services/readingRewardEventQueue.service.js'
 import { getTaskCenterDailyStoryAssignment } from '../services/taskCenterDailyStoryAssignment.service.js'
@@ -99,10 +99,54 @@ async function getReaderMissionAudience(userId, fresh = false) {
 
   readerMissionAudienceCache.set(userId, {
     audience,
+    storyLanguage: data.story_language || 'km',
     expiresAt: Date.now() + READER_AUDIENCE_TTL,
   })
 
   return audience
+}
+
+async function getReaderMissionCatalog(userId, { audience, allowSelection = false, cached = false } = {}) {
+  const group = audience || await getReaderMissionAudience(userId)
+  return getReaderSessionMissionCatalog({
+    userId,
+    audience: group,
+    storyLanguage: readerMissionAudienceCache.get(userId)?.storyLanguage || 'km',
+    allowSelection,
+    cached,
+  })
+}
+
+function smartAutoCurrentProgress(progress) {
+  if (!progress?.updated_at) return null
+  const updated = new Date(progress.updated_at)
+  return Number.isFinite(updated.getTime()) && getPhnomPenhDateKey(updated) === getPhnomPenhDateKey() ? progress : null
+}
+
+async function getSmartAutoProgress(userId, mission) {
+  const { data, error } = await supabase.from('reader_reading_mission_progress')
+    .select('*').eq('user_id', userId).eq('mission_id', mission.id).maybeSingle()
+  if (error) throw error
+  return smartAutoCurrentProgress(data)
+}
+
+async function runSmartAutoMissionAction({ userId, mission, storyId = null, action, seconds = 0 }) {
+  const { data, error } = await supabase.rpc('task_center_smart_auto_action_v1', {
+    p_user_id: userId,
+    p_mission_id: mission.id,
+    p_story_id: storyId,
+    p_action: action,
+    p_seconds: seconds,
+  })
+  if (error) throw error
+  if (!data || typeof data.ok !== 'boolean') throw new Error('Invalid Smart Auto action result')
+  if (!data.ok || data.state_changed || action === 'claim') invalidateReaderSmartAutoState(userId)
+  return data
+}
+
+function sendSmartAutoActionError(res, result, mission) {
+  const status = [400, 404, 409, 410].includes(result.status) ? result.status : 409
+  return res.status(status).json({ ok: false, message: result.message || 'Reading mission has changed', ...(result.progress ? { mission: publicReadingMissionProgress(mission, result.progress) } : {}) })
 }
 
 function getPhnomPenhDateKey(date = new Date()) {
@@ -296,6 +340,7 @@ function getMissionTargetSeconds(mission) {
 }
 
 function missionMatchesStory(mission, storyId) {
+  if (mission?.smart_auto) return Boolean(storyId && String(mission.smart_story_id) === String(storyId))
   const link = String(mission?.story_link || '').trim()
   const cleanStoryId = String(storyId || '').trim()
 
@@ -443,7 +488,11 @@ async function getOrCreateReadingReward(userId) {
   return data
 }
 
-async function getActiveReadingMission(missionId, audience) {
+async function getActiveReadingMission(missionId, audience, userId) {
+  if (await getTaskCenterMissionMode(audience) === 'smart_auto') {
+    const { missions } = await getReaderMissionCatalog(userId, { audience })
+    return missions.find(mission => String(mission.id) === missionId) || null
+  }
   const { data, error } = await supabase
     .from('task_center_reading_missions')
     .select('*')
@@ -533,12 +582,18 @@ async function getOrCreateReadingMissionProgress(
   return data
 }
 
-async function getReaderReadingMissions(userId) {
-  const audience = await getReaderMissionAudience(userId)
-  const missions = await getActiveSessionMissions(audience)
-  const missionList = missions || []
-
-  if (missionList.length === 0) return []
+async function getReaderReadingMissions(userId, allowSelection = false) {
+  const catalog = await getReaderMissionCatalog(userId, { allowSelection })
+  const missionList = catalog.missions || []
+  const smartAuto = catalog.mode === 'smart_auto'
+  const withRequiredCount = (list) => {
+    if (smartAuto) {
+      Object.defineProperty(list, 'requiredCount', { value: catalog.requiredCount })
+      if (catalog.delivery) Object.defineProperty(list, 'smartAutoDelivery', { value: catalog.delivery })
+    }
+    return list
+  }
+  if (missionList.length === 0) return withRequiredCount([])
 
   const { data: progressRows, error } = await supabase
     .from('reader_reading_mission_progress')
@@ -560,6 +615,10 @@ async function getReaderReadingMissions(userId) {
     progressByMission.set(missionId, row)
   }
 
+  if (smartAuto) {
+    return withRequiredCount(missionList.map(mission => publicReadingMissionProgress(mission, smartAutoCurrentProgress(progressByMission.get(String(mission.id))))))
+  }
+
   return Promise.all(
     missionList.map(async (mission) => {
       const progress = await getOrCreateReadingMissionProgress(
@@ -572,6 +631,17 @@ async function getReaderReadingMissions(userId) {
       return publicReadingMissionProgress(mission, progress)
     })
   )
+}
+
+function recordSmartAutoAfterResponse(res, userId, missions) {
+  if (!missions?.smartAutoDelivery || typeof res.once !== 'function') return
+  res.once('finish', () => {
+    if (res.statusCode === 200) {
+      void recordReaderSmartAutoDelivery(userId, missions.smartAutoDelivery).catch(error => {
+        console.error('TASK_CENTER_SMART_AUTO_DELIVERY_ERROR:', String(error?.code || error?.message || 'UNKNOWN').slice(0, 160))
+      })
+    }
+  })
 }
 
 function buildDailyVoteRewardState({
@@ -596,7 +666,7 @@ function buildDailyVoteRewardState({
     Number(readingReward.active_seconds || 0) >=
     Number(readingReward.target_seconds || 1800)
 
-  const totalMissions = missionList.length + 2
+  const totalMissions = Math.max(missionList.length, Number(missionList.requiredCount) || 0) + 2
 
   const completedMissions =
     Number(checkInCompleted) +
@@ -671,10 +741,12 @@ export async function getTaskOverview(req, res) {
       try {
       const audience = await getReaderMissionAudience(userId)
 
-      if (audience === 'international') {
-        await ensureTaskCenterInternationalAutoRotation()
-      } else {
-        await ensureTaskCenterAutoRotation()
+      if (await getTaskCenterMissionMode(audience) !== 'smart_auto') {
+        if (audience === 'international') {
+          await ensureTaskCenterInternationalAutoRotation()
+        } else {
+          await ensureTaskCenterAutoRotation()
+        }
       }
     } catch (error) {
       console.error('TASK CENTER AUTO CATCH-UP ERROR:', error)
@@ -697,7 +769,7 @@ export async function getTaskOverview(req, res) {
       getCheckInRow(userId),
       getOrCreateRewardChest(userId),
       getOrCreateReadingReward(userId),
-      getReaderReadingMissions(userId),
+      getReaderReadingMissions(userId, true),
       supabase
         .from('reader_daily_vote_rewards')
         .select('*')
@@ -728,6 +800,10 @@ export async function getTaskOverview(req, res) {
         ? readingRewardResult.value
         : null
 
+    if (readingMissionsResult.status === 'rejected' && await getTaskCenterMissionMode(await getReaderMissionAudience(userId)) === 'smart_auto') {
+      throw readingMissionsResult.reason
+    }
+
     const readingMissions =
       readingMissionsResult.status === 'fulfilled'
         ? readingMissionsResult.value
@@ -754,6 +830,7 @@ export async function getTaskOverview(req, res) {
       rewardDate: todayKey,
     })
 
+    recordSmartAutoAfterResponse(res, userId, readingMissions)
     return res.status(200).json({
       ok: true,
       wallet: publicWallet(wallet),
@@ -1271,16 +1348,19 @@ export async function getReadingMissions(req, res) {
         try {
       const audience = await getReaderMissionAudience(userId)
 
-      if (audience === 'international') {
-        await ensureTaskCenterInternationalAutoRotation()
-      } else {
-        await ensureTaskCenterAutoRotation()
+      if (await getTaskCenterMissionMode(audience) !== 'smart_auto') {
+        if (audience === 'international') {
+          await ensureTaskCenterInternationalAutoRotation()
+        } else {
+          await ensureTaskCenterAutoRotation()
+        }
       }
     } catch (error) {
       console.error('TASK CENTER AUTO CATCH-UP ERROR:', error)
     }
 
-    const missions = await getReaderReadingMissions(userId)
+    const missions = await getReaderReadingMissions(userId, true)
+    recordSmartAutoAfterResponse(res, userId, missions)
 
     return res.status(200).json({
       ok: true,
@@ -1307,13 +1387,13 @@ export async function getReadingMission(req, res) {
     }
 
     const audience = await getReaderMissionAudience(userId, true)
-    const mission = await getActiveReadingMission(missionId, audience)
+    const mission = await getActiveReadingMission(missionId, audience, userId)
 
     if (!mission) {
       return res.status(404).json({ ok: false, message: 'Reading mission not found' })
     }
 
-    const progress = await getOrCreateReadingMissionProgress(userId, mission)
+    const progress = mission.smart_auto ? await getSmartAutoProgress(userId, mission) : await getOrCreateReadingMissionProgress(userId, mission)
 
     return res.status(200).json({
       ok: true,
@@ -1343,7 +1423,7 @@ export async function trackReadingMissionProgress(req, res) {
     }
 
     const audience = await getReaderMissionAudience(userId, true)
-    const mission = await getActiveReadingMission(missionId, audience)
+    const mission = await getActiveReadingMission(missionId, audience, userId)
 
     if (!mission) {
       return res.status(404).json({ ok: false, message: 'Reading mission not found' })
@@ -1356,6 +1436,12 @@ export async function trackReadingMissionProgress(req, res) {
       })
     }
 
+    if (mission.smart_auto) {
+      if (!Number.isInteger(secondsToAdd) || secondsToAdd < 1) return res.status(400).json({ ok: false, message: 'Reading seconds must be greater than zero' })
+      const result = await runSmartAutoMissionAction({ userId, mission, storyId, action: 'track', seconds: secondsToAdd })
+      if (!result.ok) return sendSmartAutoActionError(res, result, mission)
+      return res.status(200).json({ ok: true, mission: publicReadingMissionProgress(mission, result.progress) })
+    }
     const progress = await getOrCreateReadingMissionProgress(userId, mission, storyId)
     const targetSeconds = getMissionTargetSeconds(mission)
     const currentSeconds = Math.min(targetSeconds, Math.max(0, Number(progress.active_seconds || 0)))
@@ -1409,12 +1495,27 @@ export async function claimReadingMissionReward(req, res) {
     }
 
     const audience = await getReaderMissionAudience(userId, true)
-    const mission = await getActiveReadingMission(missionId, audience)
+    const mission = await getActiveReadingMission(missionId, audience, userId)
 
     if (!mission) {
       return res.status(404).json({ ok: false, message: 'Reading mission not found' })
     }
 
+    if (mission.smart_auto) {
+      await getOrCreateWallet(userId)
+      const result = await runSmartAutoMissionAction({ userId, mission, action: 'claim' })
+      if (!result.ok) return sendSmartAutoActionError(res, result, mission)
+      const rewardCoins = Number(result.reward_coins || 0)
+      return res.status(200).json({
+        ok: true,
+        wallet: publicWallet(result.wallet),
+        mission: publicReadingMissionProgress(mission, result.progress),
+        missions: await getReaderReadingMissions(userId),
+        reward: { coins: rewardCoins, gems: rewardCoins },
+        history_item: result.history_item ? publicHistoryItem(result.history_item) : null,
+        message: 'Reading mission reward claimed',
+      })
+    }
     const progress = await getOrCreateReadingMissionProgress(userId, mission)
     const publicProgress = publicReadingMissionProgress(mission, progress)
 
@@ -2020,8 +2121,9 @@ export async function trackReadingSessionProgress(req, res) {
           const audience =
   await getReaderMissionAudience(userId)
 
-const missions =
-  await getActiveSessionMissions(audience)
+const missionCatalog = await getReaderMissionCatalog(userId, { audience, cached: true })
+          const missions = missionCatalog.missions
+          const smartAuto = missionCatalog.mode === 'smart_auto'
 
           const matchingMissions =
             (missions || []).filter(
@@ -2039,7 +2141,7 @@ const missions =
             data: progressRows,
             error: progressRowsError,
           } =
-            matchingMissions.length
+            matchingMissions.length && !smartAuto
               ? await supabase
                   .from(
                     'reader_reading_mission_progress'
@@ -2065,8 +2167,13 @@ const missions =
             throw progressRowsError
           }
 
-          const updatedMissions =
-            await updateReadingMissionProgressBatch({
+          const updatedMissions = smartAuto
+            ? (await Promise.all(matchingMissions.map(async mission => {
+                const result = await runSmartAutoMissionAction({ userId, mission, storyId, action: 'track', seconds: secondsToAdd })
+                if (!result.ok) return null
+                return publicReadingMissionProgress(mission, result.progress)
+              }))).filter(Boolean)
+            : await updateReadingMissionProgressBatch({
               userId,
               storyId,
               missions:
