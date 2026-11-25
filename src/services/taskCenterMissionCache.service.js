@@ -275,10 +275,11 @@ async function assignSmartMissions({ userId, audience, storyLanguage, templates,
     keep.sort((a, b) => a.sortOrder - b.sortOrder || a.slotId.localeCompare(b.slotId))
     const dailyIds = [...assigned]
     if (dailyIds.length > 8 || keep.length > 2) throw new Error('Smart Auto mission limit exceeded')
-    if (JSON.stringify(todayEntries) !== JSON.stringify(keep) || JSON.stringify(dailyAssignedIds) !== JSON.stringify(dailyIds) || previous.length !== todayEntries.length) {
-      await tx.save({ now, window, missions: keep, dailyAssignedIds: dailyIds })
-    }
-    return { missions: keep, daily_assigned_ids: dailyIds, day_start_ms: window.dayStart, requiredCount: templates.length }
+    const changed = JSON.stringify(todayEntries) !== JSON.stringify(keep) || JSON.stringify(dailyAssignedIds) !== JSON.stringify(dailyIds) || previous.length !== todayEntries.length
+if (changed) {
+  await tx.save({ now, window, missions: keep, dailyAssignedIds: dailyIds })
+}
+return { missions: keep, daily_assigned_ids: dailyIds, day_start_ms: window.dayStart, requiredCount: templates.length, progressRows: changed ? undefined : (progressResult.data || []) }
   })
 }
 
@@ -311,6 +312,7 @@ export async function getReaderSessionMissionCatalog({ userId, audience, storyLa
   const now = Date.now()
   const window = getWindow(now)
   let state
+  let progressRows
   if (allowSelection) {
     const key = `${userId}:${audience}:${storyLanguage}:${window.start}`
     if (!assignmentRequests.has(key)) {
@@ -318,7 +320,10 @@ export async function getReaderSessionMissionCatalog({ userId, audience, storyLa
         .finally(() => assignmentRequests.delete(key))
       assignmentRequests.set(key, pending)
     }
-    state = await assignmentRequests.get(key)
+    const result = await assignmentRequests.get(key)
+const { progressRows: rows, ...stateResult } = result
+state = stateResult
+progressRows = rows
     if (!state.groupChanged) {
       rememberState(userId, state, window)
     }
@@ -328,7 +333,7 @@ export async function getReaderSessionMissionCatalog({ userId, audience, storyLa
   const missions = publicStateMissions(state, templates, audience)
   const visibleSlotIds = new Set(missions.map(mission => String(mission.id)))
   const delivery = allowSelection ? { now, missions: (state?.missions || []).filter(entry => entry.audience === audience && visibleSlotIds.has(String(entry.slotId))) } : null
-  return { mode, missions, requiredCount: templates.length, delivery }
+  return { mode, missions, requiredCount: templates.length, delivery, progressRows }
 }
 
 export async function recordReaderSmartAutoDelivery(userId, delivery) {
