@@ -2723,108 +2723,124 @@ query =
 
 export async function getPublicStoryById(req, res) {
   let stage = 'story_lookup'
+  const referenceId = req.shadowTraceId || null
+
+  const fail = (status, code, message, source, responsible, diagnosticCode = code, rootCode = null) => {
+    markRequestDiagnostic({
+      feature: 'public_story_detail',
+      stage,
+      error_code: diagnosticCode,
+      root_error_code: rootCode,
+      error_source: source,
+      responsible_party: responsible,
+      response_status: status,
+      reference_id: referenceId,
+      endpoint: 'GET /api/public/stories/:storyId',
+      file_path: 'src/controllers/publicStories.controller.js',
+      expected_handler: 'getPublicStoryById',
+    })
+
+    return res.status(status).json({
+      ok: false,
+      code,
+      message,
+      diagnostic_code: diagnosticCode,
+      error_source: source,
+      responsible_party: responsible,
+      reference_id: referenceId,
+    })
+  }
 
   try {
     const { storyId } = req.params
 
     if (!isValidStoryUuid(storyId)) {
-      return res.status(400).json({
-        ok: false,
-        code: 'INVALID_STORY_ID',
-        message: 'Invalid story ID.',
-      })
+      stage = 'invalid_story_id'
+      return fail(400, 'INVALID_STORY_ID', 'Invalid story ID.', 'REQUEST', 'UNKNOWN')
     }
 
     const story = await getPublishedReadableStory(storyId)
 
     if (!story) {
-      markRequestDiagnostic({
-        feature: 'public_story_detail',
-        stage: 'story_not_found',
-        error_code: 'STORY_NOT_FOUND',
-      })
-
-      return res.status(404).json({
-        ok: false,
-        code: 'STORY_NOT_FOUND',
-        message: 'Story not found',
-      })
+      stage = 'story_not_found'
+      return fail(404, 'STORY_NOT_FOUND', 'Story not found', 'CONTENT', 'NONE')
     }
 
+    stage = 'load_episode_access'
     const readableEpisodes = await getStoryEpisodeAccess(storyId)
 
-if (!readableEpisodes?.publishedEpisodes?.length) {
-  return res.status(404).json({
-    ok: false,
-    message: 'Story not found',
-  })
-}
+    if (!readableEpisodes?.publishedEpisodes?.length) {
+      stage = 'no_published_episodes'
+      return fail(404, 'STORY_NOT_FOUND', 'Story not found', 'CONTENT', 'NONE')
+    }
 
-        if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
-      markRequestDiagnostic({
-        feature: 'public_story_detail',
-        stage: 'exclusive_not_approved',
-        error_code: 'STORY_NOT_FOUND',
-      })
-
-      return res.status(404).json({
-        ok: false,
-        code: 'STORY_NOT_FOUND',
-        message: 'Story not found',
-      })
+    if (story.is_shadow_exclusive && story.exclusive_status !== 'approved') {
+      stage = 'exclusive_not_approved'
+      return fail(404, 'STORY_NOT_FOUND', 'Story not found', 'CONTENT', 'NONE')
     }
 
     stage = 'reader_age_access'
     const ageAccess = await getReaderAgeAccess(req)
 
     if (!isStoryVisibleToReader(story, ageAccess)) {
+      markRequestDiagnostic({
+        error_source: 'ACCESS',
+        responsible_party: 'READER',
+        reference_id: referenceId,
+        endpoint: 'GET /api/public/stories/:storyId',
+      })
       return hideAdultStory(res)
     }
 
     stage = 'load_story_metadata'
-
     const [
-  { data: slides, error: slidesError },
-  authorPage,
-  rankByViews,
-] = await Promise.all([
-  supabase
-    .from('story_carousel_slides')
-    .select('*')
-    .eq('story_id', storyId)
-    .eq('is_active', true)
-    .order('sort_order', { ascending: true }),
-  getAuthorPageById(story.author_id),
-  getStoryRankByViews(story),
-])
+      { data: slides, error: slidesError },
+      authorPage,
+      rankByViews,
+    ] = await Promise.all([
+      supabase
+        .from('story_carousel_slides')
+        .select('*')
+        .eq('story_id', storyId)
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true }),
+      getAuthorPageById(story.author_id),
+      getStoryRankByViews(story),
+    ])
 
-if (slidesError) throw slidesError
+    if (slidesError) throw slidesError
 
-return res.status(200).json({
-  ok: true,
-  story: publicStory(story, slides || [], authorPage, rankByViews),
-})
+    return res.status(200).json({
+      ok: true,
+      story: publicStory(story, slides || [], authorPage, rankByViews),
+    })
   } catch (error) {
-    const rootCode = String(
-      error?.code || error?.name || 'UNKNOWN'
-    )
-      .replace(/[^a-zA-Z0-9_]/g, '_')
-      .slice(0, 60)
+    const rawCode = String(error?.code || '').toUpperCase()
+    const rootCode = /^[A-Z0-9_]{1,60}$/.test(rawCode) ? rawCode : 'UNKNOWN'
+    let source = 'UNKNOWN'
+    let diagnosticCode = 'STORY_DETAIL_ERROR_UNKNOWN'
 
-    markRequestDiagnostic({
-      feature: 'public_story_detail',
-      stage,
-      error_code: rootCode,
-      response_status: 500,
-    })
+    if (rootCode === '57014') {
+      source = 'DATABASE'
+      diagnosticCode = 'STORY_DATABASE_QUERY_CANCELLED'
+    } else if (/^08[A-Z0-9]{3}$/.test(rootCode) || ['PGRST000', 'PGRST001'].includes(rootCode)) {
+      source = 'DATABASE'
+      diagnosticCode = 'STORY_DATABASE_CONNECTION_FAILED'
+    } else if (rootCode === 'PGRST002') {
+      source = 'DATABASE'
+      diagnosticCode = 'STORY_DATABASE_SCHEMA_UNAVAILABLE'
+    } else if (rootCode === 'PGRST003') {
+      source = 'DATABASE'
+      diagnosticCode = 'STORY_DATABASE_POOL_TIMEOUT'
+    } else if (rootCode === '42501') {
+      source = 'DATABASE'
+      diagnosticCode = 'STORY_DATABASE_PERMISSION_DENIED'
+    } else if (error instanceof ReferenceError || error instanceof SyntaxError) {
+      source = 'BACKEND'
+      diagnosticCode = 'STORY_CONTROLLER_FAILED'
+    }
 
-    console.error('GET PUBLIC STORY ERROR:', error)
-
-    return res.status(500).json({
-      ok: false,
-      code: 'PUBLIC_STORY_DETAIL_FAILED',
-      message: 'Failed to load story',
-    })
+    return fail(500, 'PUBLIC_STORY_DETAIL_FAILED', 'Failed to load story', source, 'ADMIN', diagnosticCode, rootCode)
   }
 }
 
