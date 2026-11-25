@@ -15,6 +15,16 @@ export function formatDatabaseIoReport(report) {
     if(!rows.length)out.push('No positive measured values in retained data.')
     for(const r of rows)out.push(`- ${clean(r.feature)}: ${format(k,r[k])}`)
   }
+  const queryRankings = report.query_rankings
+  if (queryRankings) {
+    out.push('', '## Top 10 observed queries by metric', 'Rankings sum retained query observations in selected intervals only. They are not complete range totals or physical disk IO.', `Intervals with query evidence: ${number(queryRankings.intervals_with_queries)}; distinct observed queries: ${number(queryRankings.distinct_observed_queries)}`)
+    for (const k of fields) {
+      out.push('', `### ${k}`)
+      const rows = queryRankings.rankings?.[k] || []
+      if (!rows.length) out.push('No positive measured values in retained query evidence.')
+      for (const [i, q] of rows.entries()) out.push(`${i + 1}. ${clean(q.query_key)} | ${clean(q.feature)} | ${format(k,q[k])} | calls ${number(q.calls)} | observed intervals ${number(q.observed_intervals)} | identifiers ${clean(q.targets?.join(', '))}`)
+    }
+  }
   out.push('','## Detailed evidence (selected intervals)')
   for(const r of report.details) {
     out.push('',`### ${clean(r.from)} to ${clean(r.to)}`,`Status: ${clean(r.status)}; traffic: ${clean(r.traffic_evidence?.status)}`)
