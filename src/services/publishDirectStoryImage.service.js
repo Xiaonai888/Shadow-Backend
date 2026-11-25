@@ -4,7 +4,7 @@ import { assertAuthorStorageAvailable, recordAuthorR2Asset } from './authorStora
 import { invalidateDiscoverStorySharedCache } from './discoverStorySharedCache.service.js'
 
 const IMAGE_TYPES = new Map([['image/jpeg', 'jpg'], ['image/png', 'png'], ['image/webp', 'webp']])
-const MAX_BYTES = 5 * 1024 * 1024
+const MAX_BYTES = Math.floor(1.5 * 1024 * 1024)
 const DURATION_MS = 24 * 60 * 60 * 1000
 
 function fail(statusCode, code, message) {
@@ -16,6 +16,28 @@ export function validateDirectStoryPublishInput(body) {
   if (caption.length > 200) throw fail(400, 'STORY_CAPTION_TOO_LONG', 'Caption must be 200 characters or fewer')
   return { caption, allowMessages: body?.allow_messages !== false }
 }
+
+  const ownerId = isAuthor ? authorPage?.id : owner
+
+  if (!ownerId) {
+    throw fail(403, 'AUTHOR_PAGE_REQUIRED', 'Active author page required')
+  }
+
+  const offset = 7 * 60 * 60 * 1000
+  const day = new Date(Date.now() + offset)
+  day.setUTCHours(0, 0, 0, 0)
+
+  const { count, error: countError } = await supabase
+    .from(isAuthor ? 'author_page_stories' : 'reader_stories')
+    .select('id', { count: 'exact', head: true })
+    .eq(isAuthor ? 'author_page_id' : 'user_id', ownerId)
+    .gte('created_at', new Date(day.getTime() - offset).toISOString())
+
+  if (countError) throw countError
+
+  if (Number(count || 0) >= 10) {
+    throw fail(429, 'STORY_DAILY_LIMIT_REACHED', 'You can share up to 10 stories per day.')
+  }
 
 export async function prepareDirectStoryImagePublish({ owner, claims, authorPage, body }) {
   const isAuthor = claims.category === 'author_story_image'
