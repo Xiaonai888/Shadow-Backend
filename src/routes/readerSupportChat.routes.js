@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { rateLimit } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
+import { notifyReaderSupportMessage } from '../services/adminSupportNotificationEvents.service.js'
 
 const router = express.Router()
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -133,7 +134,8 @@ router.post('/mine/messages', preAuthLimit, requireUser, writeLimit, async (req,
       return unavailable(res, error)
     }
     res.set('Cache-Control', 'no-store')
-    return res.status(data?.created ? 201 : 200).json(data)
+    void notifyReaderSupportMessage(supabase, data, req.user.user_id).catch(() => {})
+return res.status(data?.created ? 201 : 200).json(data)
   } catch (error) {
     return unavailable(res, error)
   }
@@ -158,7 +160,8 @@ router.post('/mine/messages/:messageId/reply', preAuthLimit, requireUser, writeL
     })
     if (error) return actionError(res, error)
     res.set('Cache-Control', 'no-store')
-    return res.status(data?.created ? 201 : 200).json(data)
+    void notifyReaderSupportMessage(supabase, data, req.user.user_id).catch(() => {})
+return res.status(data?.created ? 201 : 200).json(data)
   } catch (error) {
     return unavailable(res, error)
   }
