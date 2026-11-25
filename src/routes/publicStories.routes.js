@@ -440,22 +440,23 @@ router.get(
   publicStoriesListReadSpamGuard,
   getPublicStories
 )
-router.get('/weekly-updates', getPublicWeeklyUpdates)
-router.get('/story-updates', getPublicStoryUpdates)
-router.get('/shadow-exclusive/stories', getPublicShadowExclusiveStories)
+router.get('/weekly-updates', compressEpisodeJsonResponse, getPublicWeeklyUpdates)
+router.get('/story-updates', compressEpisodeJsonResponse, getPublicStoryUpdates)
+router.get('/shadow-exclusive/stories', compressEpisodeJsonResponse, getPublicShadowExclusiveStories)
 router.get('/shadow-exclusive/stories/:storyId', getPublicShadowExclusiveStoryById)
 
 router.get(
   '/stories/:storyId/recommendations',
   traceStoryRecommendationFailures,
+  compressEpisodeJsonResponse,
   cachePublicStoryRecommendations,
   getPublicStoryRecommendations
 )
 
 router.get(
-  '/stories/:storyId',
+    '/stories/:storyId',
+  compressEpisodeJsonResponse,
   cachePublicStoryDataResponse('detail'),
-  getPublicStoryById
 )
 
 function compressEpisodeJsonResponse(req, res, next) {
