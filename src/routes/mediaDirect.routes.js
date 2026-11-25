@@ -1,3 +1,7 @@
+import {
+  prepareDirectStoryImagePublish,
+  publishDirectStoryImage,
+} from '../services/publishDirectStoryImage.service.js'
 import express from 'express'
 import { randomUUID } from 'node:crypto'
 import jwt from 'jsonwebtoken'
@@ -168,7 +172,7 @@ function normalizeInput(req, role) {
 async function authorPageFor(userId) {
   const { data, error } = await supabase
     .from('author_pages')
-    .select('id, page_name, page_username')
+    .select('id, page_name, page_username, avatar_url')
     .eq('user_id', userId)
     .eq('status', 'active')
     .maybeSingle()
@@ -299,11 +303,12 @@ function verifyToken(token, owner, role) {
   return { ...claims, category, policy, extension }
 }
 
-async function verifyImageHeader(key, mime, expectedSize) {
+async function verifyImageHeader(key, mime, expectedSize, etag = null) {
   const response = await r2().send(new GetObjectCommand({
     Bucket: config().bucket,
     Key: key,
     Range: 'bytes=0-31',
+    ...(etag ? { IfMatch: etag } : {}),
   }))
   const bytes = Buffer.from(await response.Body.transformToByteArray())
   const isJpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
@@ -357,10 +362,16 @@ async function initiate(req, res, role) {
   })
 }
 
-async function finalize(req, res, role) {
+async function finalize(req, res, role, publishStory = false) {
   assertRolloutEnabled()
   const owner = actor(req, role)
   const claims = verifyToken(req.body?.upload_token, owner, role)
+    if (
+    publishStory &&
+    !['reader_story_image', 'author_story_image'].includes(claims.category)
+  ) {
+    throw fail(403, 'DIRECT_UPLOAD_CATEGORY_DENIED', 'Invalid Story image category')
+  }
   if (finalizing.has(claims.key)) throw fail(409, 'DIRECT_UPLOAD_IN_PROGRESS', 'Upload is already being finalized')
   finalizing.add(claims.key)
   let finalKey = ''
@@ -378,7 +389,16 @@ async function finalize(req, res, role) {
         if (!head.ETag) throw fail(409, 'DIRECT_UPLOAD_FILE_CHANGED', 'Upload could not be verified; retry the upload')
         await verifyAudioHeader(claims.key, claims.mime, claims.size, head.ETag)
       } else {
-        await verifyImageHeader(claims.key, claims.mime, claims.size)
+        if (publishStory && !head.ETag) {
+  throw fail(409, 'DIRECT_UPLOAD_FILE_CHANGED', 'Image could not be verified')
+}
+
+await verifyImageHeader(
+  claims.key,
+  claims.mime,
+  claims.size,
+  publishStory ? head.ETag : null
+)
       }
     } catch (error) {
       if (['DIRECT_UPLOAD_IMAGE_INVALID', 'DIRECT_UPLOAD_AUDIO_INVALID'].includes(error?.code)) await deleteObject(claims.key).catch(() => {})
