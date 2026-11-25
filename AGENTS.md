@@ -3,6 +3,36 @@
 ## Scope
 These rules apply to the entire `Shadow-Backend` repository.
 
+## Critical Protected Route — Public Story Detail
+
+The following block in `src/routes/publicStories.routes.js` is production-critical and MUST remain unchanged.
+
+```js
+router.get(
+  '/stories/:storyId',
+  compressEpisodeJsonResponse,
+  cachePublicStoryDataResponse('detail'),
+  getPublicStoryById
+)
+```
+
+- MUST NOT modify, remove, replace, move, reorder, or refactor this block.
+- MUST preserve `getPublicStoryById`, its import, middleware order, route registration, and API contract.
+- MUST NOT indirectly break `GET /api/public/stories/:storyId`.
+- This restriction applies to all maintenance, security fixes, CodeQL fixes, performance optimization, caching, compression, and resource-cost reduction.
+- Any exception requires explicit authorization from the repository owner.
+- Before completing related changes, inspect the diff and verify that the protected block remains identical.
+- Test story detail access on both cold and warm cache. A successful story list request does not prove story detail access works.
+- If verification is unavailable, report it. Do not claim the endpoint is working.
+
+### Known Production Regression (2026-11-25)
+
+Commit: `dd20771751b7befcba07055b6bd9058b53093724`
+
+Accidental removal of `getPublicStoryById` caused HTTP 404 "Route not found" and prevented readers from opening stories.
+
+Never repeat this regression.
+
 ## Mandatory AI Startup Rule
 Before creating, modifying, or reviewing backend code:
 1. Read this `AGENTS.md`.
