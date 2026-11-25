@@ -432,6 +432,7 @@ router.get('/apps', async (req, res) => {
 router.get(
   '/stories',
   tracePublicStoryListFailures,
+  compressEpisodeJsonResponse,
   publicStoriesListCacheHitLimit,
   limitNewArrivalsReadBudget,
   cachePublicStoriesResponse,
