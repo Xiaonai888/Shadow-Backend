@@ -454,9 +454,10 @@ router.get(
 )
 
 router.get(
-    '/stories/:storyId',
+  '/stories/:storyId',
   compressEpisodeJsonResponse,
   cachePublicStoryDataResponse('detail'),
+  getPublicStoryById
 )
 
 function compressEpisodeJsonResponse(req, res, next) {
