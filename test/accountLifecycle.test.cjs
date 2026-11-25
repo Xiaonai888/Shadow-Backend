@@ -25,7 +25,7 @@ test('list sends expected arguments and rejects invalid input', async () => {
     const calls = [];
     const lifecycle = service({ data: { items: [], total: 0 } }, calls);
     await lifecycle.list({ page: '2', status: 'recoverable' });
-    assert.deepEqual(calls[0], { name: 'shadow_deleted_accounts_list', args: { p_search: '', p_page: 2, p_status: 'recoverable' } });
+    assert.deepEqual(calls[0], { name: 'shadow_deleted_accounts_list_v2', args: { p_search: '', p_page: 2, p_status: 'recoverable', p_date_from: null, p_date_to: null } });
     await assert.rejects(lifecycle.list({ page: 0 }), { status: 400 });
 });
 
