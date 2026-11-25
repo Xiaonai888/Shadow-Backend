@@ -4,6 +4,7 @@ import { buildSystemUsageOptimizationAdvisor } from './systemUsageOptimizationAd
 import { setWorkKillSwitch } from './workKillSwitch.service.js'
 
 const CHECK_MS = 15 * 1000
+const EVIDENCE_SAVE_MS = 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
 const FULL_EVIDENCE_RETENTION_MS = 180 * DAY_MS
 const SUMMARY_RETENTION_MS = 3 * 365 * DAY_MS
@@ -44,6 +45,8 @@ let activeFingerprint = null
 let activeProtection = null
 let activeAdvisor = null
 let syncing = false
+let lastEvidenceWrite = null
+let pendingOpenEvidence = false
 
 function clean(value, maxLength = 500) {
   return String(value || '').trim().slice(0, maxLength)
@@ -809,9 +812,31 @@ async function releaseProtection(
 
 async function updateOpenEvidence(
   snapshot,
-  protection
+  protection,
+  force = false
 ) {
   if (!activeIncidentId) return
+
+  const evidenceKey = JSON.stringify([
+    activeIncidentId,
+    normalizeSeverity(snapshot?.severity),
+    snapshot?.classification,
+    protection?.status,
+    protection?.method,
+    protection?.path,
+    protection?.expires_at,
+    protection?.plan?.reason,
+    protection?.error,
+  ])
+
+  if (
+    !force &&
+    lastEvidenceWrite?.key === evidenceKey &&
+    Date.now() - lastEvidenceWrite.at < EVIDENCE_SAVE_MS
+  ) {
+    pendingOpenEvidence = true
+    return
+  }
 
   activeAdvisor =
     buildSystemUsageOptimizationAdvisor(snapshot)
@@ -835,6 +860,8 @@ async function updateOpenEvidence(
     .eq('id', activeIncidentId)
 
   if (error) throw error
+  lastEvidenceWrite = { key: evidenceKey, at: Date.now() }
+  pendingOpenEvidence = false
 }
 
 async function updateInvestigating(snapshot) {
@@ -964,7 +991,9 @@ async function syncTransition() {
 
   if (
     signature === lastSignature &&
-    status === lastStatus
+    status === lastStatus &&
+    !(status === 'active' && pendingOpenEvidence &&
+      Date.now() - (lastEvidenceWrite?.at || 0) >= EVIDENCE_SAVE_MS)
   ) {
     return
   }
@@ -989,7 +1018,8 @@ async function syncTransition() {
 
       await updateOpenEvidence(
         snapshot,
-        protection
+        protection,
+        previous !== 'active'
       )
     } else if (
       status === 'recovery' &&
