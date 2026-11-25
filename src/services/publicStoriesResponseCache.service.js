@@ -100,8 +100,10 @@ async function getCacheKey(req) {
   return JSON.stringify({
     scope: await getRequestScope(req),
     query: entries,
+    rotationDay: getRequestSort(req) === 'trending_daily'
+      ? new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10)
+      : undefined,
   })
-}
 
 function setCacheEntry(key, entry) {
   let bodyBytes
@@ -219,8 +221,11 @@ export async function cachePublicStoriesResponse(
   res,
   next
 ) {
-  let key
+  if (getRequestSort(req) === 'trending_daily') {
+    res.setHeader('Cache-Control', 'private, no-store')
+  }
 
+  let key
   try {
     key = await getCacheKey(req)
   } catch (error) {
