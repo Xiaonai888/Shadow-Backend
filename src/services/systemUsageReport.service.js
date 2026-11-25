@@ -1,6 +1,8 @@
 import { supabase } from '../config/supabase.js'
 import { getSystemUsageHistory } from './systemUsagePersistence.service.js'
 import { getRecentRequestEvidence, getHistoricalErrorEvidence } from './trafficDiagnostic.service.js'
+import { getRuntimeMemoryGrowthSnapshot } from './runtimeMemoryGrowth.service.js'
+import { getRuntimeMemoryEvidenceSnapshot } from './runtimeMemoryEvidence.service.js'
 
 const REPORT_MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000
 const INCIDENT_PAGE_SIZE = 500
@@ -1405,7 +1407,9 @@ export async function generateSystemUsageReport({
       { name: 'Problems.md', data: bundle.problemsMd },
       { name: 'Problems.pdf', data: problemsPdf },
       { name: 'Evidence.json', data: bundle.json },
-      ...databaseIoEntries,
+      { name: 'MemoryGrowth.json', data: JSON.stringify(getRuntimeMemoryGrowthSnapshot()) },
+      { name: 'MemoryEvidence.json', data: JSON.stringify(getRuntimeMemoryEvidenceSnapshot()) },
+...databaseIoEntries,
     ]),
   }
 }
