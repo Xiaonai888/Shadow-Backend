@@ -11,7 +11,7 @@ let autoDeleteRunning = false
 
 async function writeSystemLog(result) {
   try {
-    await supabase.from('chat_admin_access_logs').insert({
+    const { error } = await supabase.from('chat_admin_access_logs').insert({
       admin_id: 'system:retention-cleanup',
       admin_role: 'system',
       conversation_id: null,
@@ -21,7 +21,8 @@ async function writeSystemLog(result) {
       ip_address: null,
       user_agent: null,
       metadata: { result },
-    })
+})
+if (error) throw error
   } catch (error) {
     console.warn(
       'CHAT RETENTION CLEANUP LOG WARNING:',
@@ -38,7 +39,7 @@ async function writeAutoDeleteLog(result) {
   }
 
   try {
-    await supabase.from('chat_admin_access_logs').insert({
+    const { error } = await supabase.from('chat_admin_access_logs').insert({
       admin_id: 'system:auto-delete',
       admin_role: 'system',
       conversation_id: null,
@@ -165,15 +166,27 @@ export function startChatRetentionCleanup() {
   }
 
   if (autoDeleteEnabled) {
-    const autoDeleteStartTimer = setTimeout(() => {
-      runChatAutoDeleteCleanup()
-    }, AUTO_DELETE_START_DELAY_MS)
+  let failureCount = 0
 
-    const autoDeleteInterval = setInterval(() => {
-      runChatAutoDeleteCleanup()
-    }, AUTO_DELETE_INTERVAL_MS)
+  const scheduleAutoDelete = (delay) => {
+    const timer = setTimeout(async () => {
+      const result = await runChatAutoDeleteCleanup()
 
-    autoDeleteStartTimer.unref?.()
-    autoDeleteInterval.unref?.()
+      failureCount = result?.ok === false
+        ? Math.min(failureCount + 1, 3)
+        : 0
+
+      const nextDelay = Math.min(
+        5 * 60 * 1000,
+        AUTO_DELETE_INTERVAL_MS * 2 ** failureCount
+      )
+
+      scheduleAutoDelete(nextDelay)
+    }, delay)
+
+    timer.unref?.()
   }
+
+  scheduleAutoDelete(AUTO_DELETE_START_DELAY_MS)
+}
 }
