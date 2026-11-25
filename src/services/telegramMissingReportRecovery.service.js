@@ -1,6 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { replyTelegram, sendTelegramMessage, sendAuthorStoreTelegramMessage, html } from './telegram.service.js'
 import { buildAuthorStoreAttributionReportLines } from '../controllers/authorStore.controller.js'
+import { recordTelegramReportError, resolveTelegramReportErrors } from './telegramReportErrorHistory.service.js'
 
 const POLL_MS = 2 * 60 * 1000
 const MIN_RETRY_MS = 2 * 60 * 1000
@@ -110,6 +111,12 @@ async function deliverFailedReport(row) {
       throw new Error('Telegram did not confirm report delivery')
     }
   } catch (sendError) {
+    await recordTelegramReportError({
+      telegramPaymentId: claim.id,
+      attemptNo: claim.report_attempts,
+      stage: 'retry_send',
+      error: sendError
+    })
     await restoreFailedReport(claim, sendError)
     console.warn('TELEGRAM MISSING REPORT SEND FAILED:', claim.id, safeError(sendError))
     return false
@@ -133,9 +140,20 @@ async function deliverFailedReport(row) {
     .maybeSingle()
 
   if (saveError || !saved) {
+    await recordTelegramReportError({
+      telegramPaymentId: claim.id,
+      attemptNo: claim.report_attempts,
+      stage: 'confirmation_save',
+      error: saveError || new Error('No matching pending report')
+    })
     console.error('TELEGRAM REPORT SENT BUT CONFIRMATION NOT SAVED:', claim.id, safeError(saveError || 'No matching pending report'))
     return false
   }
+
+  await resolveTelegramReportErrors({
+    telegramPaymentId: claim.id,
+    reportMessageId: response.result.message_id
+  })
 
   console.info('TELEGRAM MISSING REPORT RECOVERED:', claim.id)
   return true
