@@ -6,6 +6,7 @@ import { rotateTaskCenterInternationalAutoStories } from '../services/taskCenter
 import { invalidateActiveSessionMissionsCache } from '../services/taskCenterMissionCache.service.js'
 
 const SETTING_KEY = 'main'
+const SMART_AUTO_AVAILABLE = process.env.TASK_CENTER_SMART_AUTO_ENABLED === 'true'
 
 
 function buildTaskCenterVersion(settingsRow, missionRows = []) {
@@ -225,6 +226,7 @@ export async function getAdminTaskCenterSettings(req, res) {
       settings: {
         ...publicSettings(row),
         reading_mission_mode: row?.reading_mission_mode || 'manual',
+        smart_auto_available: SMART_AUTO_AVAILABLE,
         auto_last_rotation_date: row?.auto_last_rotation_date || null,
         auto_last_rotated_at: row?.auto_last_rotated_at || null,
         reading_missions: readingMissions,
@@ -352,7 +354,7 @@ export async function getAdminReadingMissions(req, res) {
 export async function createAdminReadingMission(req, res) {
   try {
     const settingsRow = await getSettingsRow()
-if (String(settingsRow?.reading_mission_mode || 'manual') === 'auto') {
+if (['auto', 'smart_auto'].includes(settingsRow?.reading_mission_mode)) {
   return res.status(409).json({
     ok: false,
     message: 'Switch to Manual mode before adding missions',
@@ -419,7 +421,7 @@ export async function updateAdminReadingMission(req, res) {
     const requestedPayload = buildReadingMissionPayload(req.body, 0)
     let payload = requestedPayload
 
-    if (String(settingsRow?.reading_mission_mode || 'manual') === 'auto') {
+    if (['auto', 'smart_auto'].includes(settingsRow?.reading_mission_mode)) {
       const { data: existingMission, error: existingError } = await supabase
         .from('task_center_reading_missions')
         .select('*')
@@ -463,7 +465,7 @@ export async function updateAdminReadingMission(req, res) {
       reading_missions: readingMissions,
       missions: readingMissions,
       message:
-        String(settingsRow?.reading_mission_mode || 'manual') === 'auto'
+        ['auto', 'smart_auto'].includes(settingsRow?.reading_mission_mode)
           ? 'Auto mission reward and minutes updated'
           : 'Reading mission updated',
     })
@@ -482,7 +484,7 @@ export async function updateAdminReadingMission(req, res) {
 export async function deleteAdminReadingMission(req, res) {
   try {
     const settingsRow = await getSettingsRow()
-if (String(settingsRow?.reading_mission_mode || 'manual') === 'auto') {
+if (['auto', 'smart_auto'].includes(settingsRow?.reading_mission_mode)) {
   return res.status(409).json({
     ok: false,
     message: 'Switch to Manual mode before deleting missions',
@@ -547,16 +549,20 @@ export async function updateAdminReadingMissionMode(req, res) {
   try {
     const mode = String(req.body?.mode || '').trim().toLowerCase()
 
-    if (!['manual', 'auto'].includes(mode)) {
+    if (!['manual', 'auto', 'smart_auto'].includes(mode)) {
       return res.status(400).json({
         ok: false,
-        message: 'Reading mission mode must be manual or auto',
+        message: 'Reading mission mode must be manual, auto or smart_auto',
       })
     }
 
-    await getSettingsRow()
+    if (mode === 'smart_auto' && !SMART_AUTO_AVAILABLE) {
+      return res.status(409).json({ ok: false, message: 'Smart Auto integration is not enabled' })
+    }
 
-    if (mode === 'auto') {
+    const previousSettings = await getSettingsRow()
+
+    if (mode === 'auto' || mode === 'smart_auto') {
       const missions = await getReadingMissionRows()
 
       if (missions.length !== 2) {
@@ -578,6 +584,8 @@ export async function updateAdminReadingMissionMode(req, res) {
 
     if (error) throw error
 
+    if (previousSettings.reading_mission_mode !== mode && (mode === 'smart_auto' || previousSettings.reading_mission_mode === 'smart_auto')) invalidateActiveSessionMissionsCache()
+
     const rotation = mode === 'auto'
       ? await rotateTaskCenterAutoStories()
       : null
@@ -590,11 +598,12 @@ export async function updateAdminReadingMissionMode(req, res) {
       settings: {
         ...publicSettings(settings),
         reading_mission_mode: settings.reading_mission_mode || 'manual',
+        smart_auto_available: SMART_AUTO_AVAILABLE,
         auto_last_rotation_date: settings.auto_last_rotation_date || null,
         auto_last_rotated_at: settings.auto_last_rotated_at || null,
       },
       rotation,
-      message: mode === 'auto' ? 'Auto reading mission enabled' : 'Manual reading mission enabled',
+      message: mode === 'smart_auto' ? 'Smart Auto reading mission enabled' : mode === 'auto' ? 'Auto reading mission enabled' : 'Manual reading mission enabled',
     })
   } catch (error) {
     console.error('UPDATE ADMIN READING MISSION MODE ERROR:', error)
@@ -609,6 +618,10 @@ export async function updateAdminReadingMissionMode(req, res) {
 
 export async function rotateAdminTaskCenterAutoStories(req, res) {
   try {
+    const settings = await getSettingsRow()
+    if (settings.reading_mission_mode === 'smart_auto') {
+      return res.status(409).json({ ok: false, message: 'Smart Auto does not use daily rotation' })
+    }
     const result = await rotateTaskCenterAutoStories({
       force: Boolean(req.body?.force),
     })
