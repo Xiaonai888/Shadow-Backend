@@ -2,6 +2,40 @@ import { supabase } from '../config/supabase.js'
 import { getReaderAgeAccess } from '../services/storyAgeAccess.service.js'
 import { markRequestDiagnostic } from '../services/trafficDiagnostic.service.js'
 
+
+const storyUpdatesPending = new Map()
+const STORY_UPDATES_PENDING_LIMIT = 32
+
+async function loadStoryUpdates(params) {
+  const key = JSON.stringify([getCambodiaDateKey(), params])
+  const existing = storyUpdatesPending.get(key)
+
+  if (existing) {
+    markRequestDiagnostic({ story_updates_rpc_source: 'shared' })
+    return existing
+  }
+
+  markRequestDiagnostic({ story_updates_rpc_source: 'database' })
+
+  if (storyUpdatesPending.size >= STORY_UPDATES_PENDING_LIMIT) {
+    return supabase.rpc('get_public_story_updates', params)
+  }
+
+  const pending = Promise.resolve().then(() =>
+    supabase.rpc('get_public_story_updates', params)
+  )
+
+  storyUpdatesPending.set(key, pending)
+
+  try {
+    return await pending
+  } finally {
+    if (storyUpdatesPending.get(key) === pending) {
+      storyUpdatesPending.delete(key)
+    }
+  }
+}
+
 function normalizePositiveInteger(value, fallback, max) {
   const number = Number(value)
 
@@ -52,9 +86,8 @@ export async function getPublicStoryUpdates(req, res) {
 
        stage = 'story_updates_rpc'
     const rpcStartedAt = Date.now()
-    const { data, error } = await supabase.rpc(
-      'get_public_story_updates',
-      {
+    const { data, error } = await loadStoryUpdates(
+  {
         p_language: language,
         p_story_type: storyType,
         p_include_adult: Boolean(
