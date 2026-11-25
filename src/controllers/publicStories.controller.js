@@ -2002,6 +2002,13 @@ export async function getPublicStories(req, res) {
       })
     }
 
+    if (req.query.view === 'tile' && ['popular', 'discover_more'].includes(normalizedSort) && !genrePagination && !newArrivalsPagination) {
+      return res.status(200).json({
+        ok: true,
+        stories: stories.map(({ id, title, cover_url, main_genre, total_likes, total_episodes, is_adult }) => ({ id, title, cover_url, main_genre, total_likes, total_episodes, is_adult })),
+      })
+    }
+
     const authorIds = [
       ...new Set(
         stories
