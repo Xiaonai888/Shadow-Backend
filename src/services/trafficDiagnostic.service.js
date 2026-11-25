@@ -413,6 +413,7 @@ function bytesOf(value, encoding) {
 function normalizePath(value) {
   if (/^\/rest\/v1\/rpc\/[a-z][a-z0-9_]{0,79}$/.test(String(value || ''))) return String(value)
   return String(value || '/')
+    .replace(/bot\d+(?::|%3a)[A-Za-z0-9_-]+/gi, 'bot[redacted]')
     .split('?')[0]
     .split('/')
     .map((part) => {
@@ -602,6 +603,7 @@ function recordDependency(context, target, failed, durationMs = 0) {
 
 function cleanExternalFailureText(value) {
   return String(value ?? '')
+    .replace(/bot\d+(?::|%3a)[A-Za-z0-9_-]+/gi, 'bot[redacted]')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, MAX_EXTERNAL_FAILURE_TEXT)
@@ -802,6 +804,7 @@ function cleanHistoricalErrorText(
   maxLength = 180
 ) {
   return String(value ?? '')
+    .replace(/bot\d+(?::|%3a)[A-Za-z0-9_-]+/gi, 'bot[redacted]')
     .replace(
       /Bearer\s+\S+/gi,
       'Bearer [redacted]'
