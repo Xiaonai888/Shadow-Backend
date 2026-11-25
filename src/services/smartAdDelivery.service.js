@@ -57,12 +57,14 @@ function excludedIds(value) {
   return ids
 }
 
-export async function selectSmartAdBatch({
+async function selectSmartAdBatchInternal({
   readerHash, readerId = '', placement, cursor = '0', queueIndex = 0,
   storyLanguage = 'km',
   interests = {}, excludeStoryIds = [], cooldownStoryIds = [], db = supabase, now = Date.now(),
-} = {}) {
-  requireSmartAdPlacement(placement)
+} = {}, taskLimit = null) {
+  const taskCenter = taskLimit !== null
+  if (!taskCenter) requireSmartAdPlacement(placement)
+  if (taskCenter && (!readerId || ![1, 2].includes(taskLimit))) throw new SmartAdRequestError('Invalid Task Center selection')
   const language = normalizeStoryLanguage(storyLanguage)
   if (!language) throw new SmartAdRequestError('Invalid Story Language')
   const offset = cursorOffset(cursor)
@@ -103,6 +105,7 @@ export async function selectSmartAdBatch({
           readerId, eligiblePageStories.map((story) => story.story_id), { db },
         )
       } catch (error) {
+        if (taskCenter) throw error
         progressAvailable = false
         console.error('SMART_AD_READER_PROGRESS_FAILED:', {
           code: String(error?.code || 'UNKNOWN').slice(0, 50),
@@ -134,7 +137,7 @@ export async function selectSmartAdBatch({
     if (unseenCount >= 35) break
   }
 
-  const countLimit = placement === 'opening' || placement === 'me' ? 1 : 10
+  const countLimit = taskCenter ? taskLimit : placement === 'opening' || placement === 'me' ? 1 : 10
   const unseenIds = [...candidates.keys()].filter((id) =>
     !recentHistory.has(id) && statuses.get(id) !== 'cooldown' && statuses.get(id) !== 'replay')
   const exposure = await readSmartAdExposureTotals(unseenIds, { db, now })
@@ -148,7 +151,7 @@ export async function selectSmartAdBatch({
     ? [
       [...candidates.values()].filter((story) => statuses.get(String(story.story_id).toLowerCase()) === 'unread'),
       [...candidates.values()].filter((story) => statuses.get(String(story.story_id).toLowerCase()) === 'in_progress'),
-      ...(endOfPool ? [[...candidates.values()].filter((story) =>
+      ...(!taskCenter && endOfPool ? [[...candidates.values()].filter((story) =>
         statuses.get(String(story.story_id).toLowerCase()) === 'replay')] : []),
     ]
     : [[...candidates.values()]]
@@ -175,7 +178,7 @@ export async function selectSmartAdBatch({
   }
 
   const unusedPage = pages.find((page) => page.unseen.some((id) => !selected.has(id)))
-  const nextCursor = unusedPage ? unusedPage.cursor : next
+  const nextCursor = taskCenter && ads.length < countLimit ? next : unusedPage ? unusedPage.cursor : next
 
   return {
     ok: true,
@@ -190,6 +193,18 @@ export async function selectSmartAdBatch({
     exhausted: endOfPool && nextCursor === null,
     loop_existing_queue: placement === 'freeUnlock',
   }
+}
+
+export async function selectSmartAdBatch(options = {}) {
+  return selectSmartAdBatchInternal(options)
+}
+
+export async function selectTaskCenterSmartAdBatch({ limit = 2, ...options } = {}) {
+  if (![1, 2].includes(limit)) throw new SmartAdRequestError('Invalid Task Center selection limit')
+  const first = await selectSmartAdBatchInternal({ ...options, placement: 'taskCenter' }, limit)
+  if (first.ads.length >= limit || first.exhausted || first.next_cursor === null || String(first.next_cursor) === String(options.cursor ?? '0')) return first
+  const second = await selectSmartAdBatchInternal({ ...options, placement: 'taskCenter', cursor: first.next_cursor, excludeStoryIds: [...(options.excludeStoryIds || []), ...first.ads.map(ad => ad.story_id)] }, limit - first.ads.length)
+  return { ...second, ads: [...first.ads, ...second.ads].slice(0, limit) }
 }
 
 export async function resolveSmartAdEpisodeOne(storyId, { db = supabase, now = Date.now() } = {}) {
