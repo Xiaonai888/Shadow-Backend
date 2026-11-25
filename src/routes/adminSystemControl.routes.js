@@ -29,6 +29,8 @@ import { getImageLoadDiagnosticsSnapshot } from './imageLoadDiagnostics.routes.j
 import { readSharedSystemControlProviderUsage } from '../services/sharedMonitoring/sharedMonitoringSystemControl.service.js'
 import databaseIoRoutes from './databaseIo.routes.js'
 import databaseIoDownloadRoutes from './databaseIoDownload.routes.js'
+import { getRuntimeMemoryGrowthSnapshot } from '../services/runtimeMemoryGrowth.service.js'
+import { getRuntimeMemoryEvidenceSnapshot } from '../services/runtimeMemoryEvidence.service.js'
 
 const router = express.Router()
 const viewSystemControl = requireAdminPermission('system_control.view')
@@ -257,7 +259,11 @@ router.get(
       anomaly: getSystemUsageAnomalySnapshot(),
       regression: getSystemUsageRegressionState(),
       providers: getSystemUsageProviderState(),
-      runtime: getRuntimeMemoryInspector(),
+      runtime: {
+  ...getRuntimeMemoryInspector(),
+  memory_growth: getRuntimeMemoryGrowthSnapshot(),
+  memory_evidence: getRuntimeMemoryEvidenceSnapshot(),
+},
       resource_controller: getResourceSystemControlSnapshot({
         jobType: 'manga_page_v2',
         eventLimit: 30,
