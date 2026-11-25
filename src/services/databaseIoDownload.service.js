@@ -36,6 +36,42 @@ function selectDetails(rows) {
   for(const r of [...rows].reverse()) {if(map.size>=LIMIT) break;map.set(r.id,r)}
   return [...map.values()].slice(0,LIMIT)
 }
+function rankObservedQueries(details) {
+  const queries = new Map()
+  let intervalsWithQueries = 0
+  for (const interval of details) {
+    if (interval.status === 'detail_unavailable') continue
+    const seen = new Set()
+    for (const query of interval.top_queries || []) {
+      const key = typeof query?.query_key === 'string' || typeof query?.query_key === 'number'
+        ? String(query.query_key).trim() : ''
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      const row = queries.get(key) || {
+        query_key: key,
+        feature: query.feature || 'unknown',
+        targets: [],
+        observed_intervals: 0,
+        ...blank(),
+      }
+      row.observed_intervals++
+      if (row.feature !== (query.feature || 'unknown')) row.feature = 'mixed'
+      row.targets = [...new Set([...row.targets, ...(Array.isArray(query.targets) ? query.targets.filter(t => typeof t === 'string') : [])])].slice(0, 12)
+      add(row, query)
+      queries.set(key, row)
+    }
+    if (seen.size) intervalsWithQueries++
+  }
+  const rows = [...queries.values()]
+  return {
+    scope: 'retained_top_queries_in_selected_intervals_only',
+    intervals_with_queries: intervalsWithQueries,
+    distinct_observed_queries: rows.length,
+    limit_per_metric: 10,
+    rankings: Object.fromEntries(RANK.map(k => [k, rows.filter(r => (r[k] ?? 0) > 0).sort((a,b) => b[k] - a[k] || a.query_key.localeCompare(b.query_key)).slice(0,10)])),
+  }
+}
+
 export async function buildDatabaseIoDownload(range) {
   if(busy) return null
   busy=true
@@ -73,6 +109,6 @@ export async function buildDatabaseIoDownload(range) {
     })
     const featureRows=[...features].map(([feature,v])=>({feature,...v}))
     const rankings=Object.fromEntries(RANK.map(k=>[k,[...featureRows].filter(r=>(r[k]??0)>0).sort((a,b)=>b[k]-a[k]).slice(0,15)]))
-    return {version:1,mode:'monitoring_only',generated_at:new Date().toISOString(),range:{from:new Date(range.from).toISOString(),to:new Date(range.to).toISOString()},state:report.state,totals,features:featureRows,rankings,days,archive_coverage:archiveCoverage,coverage:{accepted_intervals:accepted.length,partial_intervals:partial,baseline_missing:missing,excluded_boundary_intervals:boundary,excluded_overlaps:overlaps,covered_seconds:covered,uncovered_seconds:Math.max(0,(range.to-range.from)/1000-covered),detail_selected:selected.length,detail_available:details.filter(r=>r.status!=='detail_unavailable').length},details,interpretation:report.interpretation,limitations:['Provider Disk IO Balance is not measured. PostgreSQL buffer reads, writes and WAL are not additive physical disk usage.','Feature and route associations are candidates, not proof of root cause.','Detailed evidence is a bounded selection of peak and recent intervals, not every interval.','High call frequency or errors alone do not prove a loop. No automatic remediation.']}
+    return {version:1,mode:'monitoring_only',generated_at:new Date().toISOString(),range:{from:new Date(range.from).toISOString(),to:new Date(range.to).toISOString()},state:report.state,totals,features:featureRows,rankings,query_rankings:rankObservedQueries(details),days,archive_coverage:archiveCoverage,coverage:{accepted_intervals:accepted.length,partial_intervals:partial,baseline_missing:missing,excluded_boundary_intervals:boundary,excluded_overlaps:overlaps,covered_seconds:covered,uncovered_seconds:Math.max(0,(range.to-range.from)/1000-covered),detail_selected:selected.length,detail_available:details.filter(r=>r.status!=='detail_unavailable').length},details,interpretation:report.interpretation,limitations:['Provider Disk IO Balance is not measured. PostgreSQL buffer reads, writes and WAL are not additive physical disk usage.','Feature and route associations are candidates, not proof of root cause.','Detailed evidence is a bounded selection of peak and recent intervals, not every interval.','High call frequency or errors alone do not prove a loop. No automatic remediation.']}
   } finally {busy=false}
 }
