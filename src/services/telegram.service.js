@@ -31,6 +31,20 @@ async function requestTelegram(botToken, method, payload) {
       ? 'TELEGRAM_TIMEOUT'
       : 'TELEGRAM_NETWORK_ERROR'
 
+    const root = cause?.cause || cause
+    const clean = (value) => String(value ?? '').replace(/\b\d+(?::|%3a)[A-Za-z0-9_-]+/gi, '[REDACTED]').replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]').slice(0, 500)
+    const detail = (item) => ({
+      name: clean(item?.name),
+      message: clean(item?.message),
+      code: clean(item?.code),
+      errno: clean(item?.errno),
+      syscall: clean(item?.syscall)
+    })
+    error.cause = {
+      ...detail(root),
+      errors: Array.isArray(root?.errors) ? root.errors.slice(0, 3).map(detail) : []
+    }
+
     throw error
   }
 
