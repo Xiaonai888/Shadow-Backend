@@ -579,6 +579,7 @@ function personalizeStoryEpisodeList(req, res, next) {
           .eq('user_id', viewer.user_id)
           .eq('story_id', req.params.storyId)
           .eq('unlock_status', 'active')
+          .or(`expires_at.is.null,expires_at.gt.${new Date(now).toISOString()}`)
           .order('episode_id', { ascending: true })
           .range(offset, offset + batchSize - 1)
 
