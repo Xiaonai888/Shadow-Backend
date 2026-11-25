@@ -3,6 +3,7 @@ import { randomUUID, createHash } from 'node:crypto'
 import { rateLimit } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
+import { notifyAdminSupportConversationAction } from '../services/adminSupportNotificationEvents.service.js'
 
 const router = express.Router()
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -161,7 +162,8 @@ router.patch('/conversations/:conversationId/action', preAuthLimit, manage, writ
     })
     if (error) return rpcFailure(res, error)
     res.set('Cache-Control', 'no-store')
-    return res.json(data)
+    notifyAdminSupportConversationAction(data, conversation, { action, value })
+return res.json(data)
   } catch (error) {
     return unavailable(res, error)
   }
