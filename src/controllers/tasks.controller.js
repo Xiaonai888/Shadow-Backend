@@ -37,6 +37,40 @@ const MAX_MISSION_EVENT_SECONDS = 30
 
 const readingSessionLocks = new Map()
 const shadowReadEventScoreCache = new Map()
+const completedDailyRewardCache = new Map()
+const COMPLETED_DAILY_REWARD_TTL_MS = 60 * 1000
+const COMPLETED_DAILY_REWARD_CACHE_LIMIT = 1000
+
+async function getReadingSessionDailyReward(userId, rewardDate, seconds) {
+  const key = `${userId}:${rewardDate}`
+  const cached = completedDailyRewardCache.get(key)
+  if (cached && cached.expiresAt > Date.now()) {
+    return { reward: cached.reward, secondsAdded: 0, cacheHit: true }
+  }
+
+  completedDailyRewardCache.delete(key)
+  const result = await recordReadingRewardSession({
+    userId,
+    rewardDate,
+    seconds,
+    getOrCreateReadingReward,
+  })
+
+  if (
+    result.reward?.reward_date === rewardDate &&
+    publicReadingReward(result.reward).done_today
+  ) {
+    if (completedDailyRewardCache.size >= COMPLETED_DAILY_REWARD_CACHE_LIMIT) {
+      completedDailyRewardCache.delete(completedDailyRewardCache.keys().next().value)
+    }
+    completedDailyRewardCache.set(key, {
+      reward: result.reward,
+      expiresAt: Date.now() + COMPLETED_DAILY_REWARD_TTL_MS,
+    })
+  }
+
+  return { ...result, cacheHit: false }
+}
 
 async function withReadingSessionLock(userId, callback) {
   const previous = readingSessionLocks.get(userId) || Promise.resolve()
@@ -1987,6 +2021,7 @@ export async function trackReadingSessionProgress(req, res) {
     matching_missions: 0,
     claimable_missions: 0,
     daily_seconds_added: 0,
+    daily_reward_cache_hit: false,
     daily_done: false,
     missions_done: false,
     weekly_attempted: false,
@@ -2015,10 +2050,9 @@ export async function trackReadingSessionProgress(req, res) {
         0
       )
     )
-    const secondsToAdd = Math.min(
-      MAX_MISSION_EVENT_SECONDS,
-      Math.max(0, requestedSeconds)
-    )
+    const secondsToAdd = Number.isFinite(requestedSeconds)
+      ? Math.min(MAX_MISSION_EVENT_SECONDS, Math.max(0, requestedSeconds))
+      : 0
 
     markRequestDiagnostic({
       feature: 'reading_session_progress',
@@ -2084,12 +2118,13 @@ export async function trackReadingSessionProgress(req, res) {
           const now =
             new Date().toISOString()
           const dailyResult =
-            await recordReadingRewardSession({
+            await getReadingSessionDailyReward(
               userId,
-              rewardDate: getPhnomPenhDateKey(),
-              seconds: secondsToAdd,
-              getOrCreateReadingReward,
-            })
+              getPhnomPenhDateKey(),
+              secondsToAdd
+            )
+
+          diagnostic.daily_reward_cache_hit = dailyResult.cacheHit
 
           const updatedDailyReward =
             dailyResult.reward
