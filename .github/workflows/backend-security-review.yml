@@ -1,10 +1,10 @@
-name: Backend Security Review
+name: Backend Final Security Candidate
 
 on:
   workflow_dispatch:
     inputs:
       node_version:
-        description: Node.js version used on Render
+        description: Node.js version used for development and CI (22 or newer)
         required: true
         default: '22'
         type: string
@@ -15,7 +15,7 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     env:
       CI: 'true'
       npm_config_registry: https://registry.npmjs.org/
@@ -26,65 +26,107 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
-      - name: Review current and compatible candidate dependencies
+      - name: Prepare and validate development-only candidate
         shell: bash
         run: |
-          set -eu
-          report="$RUNNER_TEMP/backend-security-review"
+          set -euo pipefail
+          report="$RUNNER_TEMP/backend-final-security-candidate"
           mkdir -p "$report/before" "$report/candidate"
+          export REPORT_DIR="$report"
           cp package.json package-lock.json "$report/before/"
           { git rev-parse HEAD; node --version; npm --version; } > "$report/environment.txt"
-          audit() {
-            local name="$1"
-            shift
-            local rc=0
-            npm audit --json "$@" > "$report/$name.json" 2> "$report/$name.stderr.txt" || rc=$?
-            printf '%s\n' "$rc" > "$report/$name.exit.txt"
-          }
-          audit before-all
-          audit before-production --omit=dev
-          rc=0
-          npm ci --ignore-scripts --no-audit --no-fund > "$report/before-install.txt" 2>&1 || rc=$?
-          printf '%s\n' "$rc" > "$report/before-install.exit.txt"
-          if [ "$rc" -ne 0 ]; then
-            echo 'Baseline install failed; no candidate generated.' > "$report/status.txt"
+          echo 'Candidate not approved; review checks pending.' > "$report/status.txt"
+          node -e 'if (Number(process.versions.node.split(".")[0]) < 22) process.exit(1)'
+          git ls-files | grep -Ei '(^|/)(nodemon\.json|\.nodemonignore|\.nodemonrc(\..*)?)$' > "$report/nodemon-config.txt" || test "$?" -eq 1
+          git grep -il nodemon -- . ':!package.json' ':!package-lock.json' ':!.github/workflows/backend-security-review.yml' ':!*.md' > "$report/nodemon-references.txt" || test "$?" -eq 1
+          if [ -s "$report/nodemon-config.txt" ] || [ -s "$report/nodemon-references.txt" ]; then
+            echo 'Existing nodemon configuration or references require manual review.' > "$report/status.txt"
             exit 1
           fi
-          rc=0
-          git ls-files -z -- '*.js' '*.mjs' '*.cjs' | xargs -0 -r -n 1 node --check > "$report/source-syntax.txt" 2>&1 || rc=$?
-          printf '%s\n' "$rc" > "$report/source-syntax.exit.txt"
-          if [ "$rc" -ne 0 ]; then
-            echo 'Baseline syntax failed; no candidate generated.' > "$report/status.txt"
-            exit 1
-          fi
-          rc=0
-          npm audit fix --package-lock-only --ignore-scripts --no-fund --json > "$report/fix.json" 2> "$report/fix.stderr.txt" || rc=$?
-          printf '%s\n' "$rc" > "$report/fix.exit.txt"
-          cp package.json package-lock.json "$report/candidate/"
-          git diff -- package.json package-lock.json > "$report/dependency.diff"
-          REPORT_DIR="$report" node --input-type=module <<'JS'
+          node --input-type=module <<'JS'
           import fs from 'node:fs';
-          const dir = process.env.REPORT_DIR;
-          const before = JSON.parse(fs.readFileSync(`${dir}/before/package-lock.json`, 'utf8')).packages;
-          const after = JSON.parse(fs.readFileSync(`${dir}/candidate/package-lock.json`, 'utf8')).packages;
-          const changes = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(key => key && before[key]?.version !== after[key]?.version).map(key => ({ path: key, before: before[key]?.version ?? null, after: after[key]?.version ?? null }));
-          fs.writeFileSync(`${dir}/version-changes.json`, JSON.stringify(changes, null, 2));
+          const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          if (p.scripts?.dev !== 'nodemon server.js' || p.scripts?.start !== 'node server.js' || !p.devDependencies?.nodemon || p.dependencies?.nodemon || p.nodemonConfig) throw new Error('Unexpected manifest; review required');
           JS
-          audit after-all
-          audit after-production --omit=dev
-          rc=0
-          npm ci --ignore-scripts --no-audit --no-fund > "$report/candidate-install.txt" 2>&1 || rc=$?
-          printf '%s\n' "$rc" > "$report/candidate-install.exit.txt"
-          if [ "$rc" -ne 0 ]; then
-            echo 'Candidate install failed; do not apply.' > "$report/status.txt"
-            exit 1
-          fi
-          echo 'Candidate collected for review only. Native lifecycle scripts and server runtime not tested.' > "$report/status.txt"
-      - name: Upload review artifact
+          npm ci --ignore-scripts --no-audit --no-fund > "$report/before-install.txt" 2>&1
+          npm pkg set 'scripts.dev=node --watch server.js'
+          npm uninstall nodemon --save-dev --package-lock-only --ignore-scripts --no-audit --no-fund > "$report/patch.txt" 2>&1
+          git diff -- package.json package-lock.json > "$report/dependency.diff"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const dir = process.env.REPORT_DIR;
+          const read = path => JSON.parse(fs.readFileSync(path, 'utf8'));
+          const beforeManifest = read(`${dir}/before/package.json`);
+          const afterManifest = read('package.json');
+          const expected = structuredClone(beforeManifest);
+          expected.scripts.dev = 'node --watch server.js';
+          delete expected.devDependencies.nodemon;
+          if (!Object.keys(expected.devDependencies).length && !afterManifest.devDependencies) delete expected.devDependencies;
+          assert.deepEqual(afterManifest, expected, 'Unexpected manifest change');
+          const before = read(`${dir}/before/package-lock.json`).packages;
+          const after = read('package-lock.json').packages;
+          const changes = [];
+          for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+            if (!key) continue;
+            const a = before[key], b = after[key];
+            if (!a || !b || a.version !== b.version) changes.push({path:key,before:a?.version??null,after:b?.version??null});
+            if (!a || (a && !b && a.dev !== true)) throw new Error(`Unexpected new or removed production package: ${key}`);
+            if (a && b) {
+              for (const field of ['version','resolved','integrity','dependencies','optionalDependencies','peerDependencies','engines','dev','optional']) assert.deepEqual(b[field],a[field],`${key}: ${field} changed`);
+            }
+          }
+          assert.ok(!Object.keys(after).some(k => /(?:^|\/)node_modules\/(nodemon|minimatch)$/.test(k)), 'Vulnerable development dependency still installed');
+          fs.writeFileSync(`${dir}/version-changes.json`, JSON.stringify(changes,null,2));
+          JS
+          npm ci --ignore-scripts --no-audit --no-fund > "$report/candidate-install.txt" 2>&1
+          git ls-files -z -- '*.js' '*.mjs' '*.cjs' | xargs -0 -r -n 1 node --check > "$report/source-syntax.txt" 2>&1
+          python3 - <<'PY' > "$report/watch-test.txt" 2>&1
+          import pathlib, subprocess, tempfile, time, os, signal
+          with tempfile.TemporaryDirectory() as folder:
+              p = pathlib.Path(folder) / 'watch-test.mjs'
+              log = pathlib.Path(folder) / 'watch.log'
+              p.write_text('console.log("WATCH_FIRST"); setInterval(() => {}, 1000);')
+              with log.open('w') as out:
+                  proc = subprocess.Popen(['node', '--watch', str(p)], stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+                  try:
+                      def wait_for(value):
+                          for _ in range(100):
+                              if value in log.read_text(): return
+                              if proc.poll() is not None: break
+                              time.sleep(0.1)
+                          raise RuntimeError(f'Missing {value}: {log.read_text()}')
+                      wait_for('WATCH_FIRST')
+                      time.sleep(1)
+                      p.write_text('console.log("WATCH_SECOND"); setInterval(() => {}, 1000);')
+                      wait_for('WATCH_SECOND')
+                      print('Node watch restart test passed.')
+                  finally:
+                      try: os.killpg(proc.pid, signal.SIGTERM)
+                      except ProcessLookupError: pass
+                      proc.wait(timeout=5)
+          PY
+          all_rc=0
+          prod_rc=0
+          npm audit --json > "$report/after-all.json" 2> "$report/after-all.stderr.txt" || all_rc=$?
+          npm audit --omit=dev --json > "$report/after-production.json" 2> "$report/after-production.stderr.txt" || prod_rc=$?
+          printf '%s\n' "$all_rc" > "$report/after-all.exit.txt"
+          printf '%s\n' "$prod_rc" > "$report/after-production.exit.txt"
+          test "$all_rc" -eq 0 && test "$prod_rc" -eq 0
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          for (const name of ['after-all','after-production']) {
+            const audit = JSON.parse(fs.readFileSync(`${process.env.REPORT_DIR}/${name}.json`,'utf8'));
+            if (audit.error || audit.metadata?.vulnerabilities?.total !== 0) throw new Error(`Audit failed: ${name}`);
+          }
+          JS
+          cp package.json package-lock.json "$report/candidate/"
+          echo 'Candidate passed dependency checks, audit, syntax and isolated watch restart. Native install scripts and application runtime were not tested.' > "$report/status.txt"
+      - name: Upload candidate review
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backend-security-review
-          path: ${{ runner.temp }}/backend-security-review/
+          name: backend-final-security-candidate
+          path: ${{ runner.temp }}/backend-final-security-candidate/
           if-no-files-found: error
           retention-days: 7
