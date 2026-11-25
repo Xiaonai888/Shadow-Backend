@@ -215,6 +215,15 @@ function diagnosticSignal(item) {
   const payment = /PDF|PAYMENT|CHECKOUT|BINANCE|ABA/.test(route.toUpperCase())
   const serverError = status >= 500 || upstream >= 500
 
+if (status === 404 && /STORY_ROUTE_MISSING|STORY_HANDLER_MISSING|STORY_ROUTE_CHAIN_UNEXPECTED|STORY_ROUTE_FALLTHROUGH|STORY_ROUTE_DIAGNOSTIC_UNKNOWN/.test(code)) {
+  return {
+    priority: 'urgent',
+    signal: 'Backend story route failure. Admin action required.',
+    next_check: 'Inspect src/routes/publicStories.routes.js and getPublicStoryById. Compare with the last working commit.',
+    category: 'critical_story_route_failure',
+  }
+}
+
   if (serverError && payment) {
     return {
       priority: 'urgent',
