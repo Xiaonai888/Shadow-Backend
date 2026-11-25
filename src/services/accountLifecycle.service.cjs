@@ -43,11 +43,13 @@ function createAccountLifecycleService(supabase) {
             if (typeof data !== 'boolean') throw new LifecycleError(503, 'ACCOUNT_LIFECYCLE_UNAVAILABLE');
             return data;
         },
-        async list({ search = '', page = 1, status = 'all' } = {}) {
+        async list({ search = '', page = 1, status = 'all', dateFrom = '', dateTo = '' } = {}) {
             if (typeof search !== 'string' || search.length > 254 || !STATUSES.has(status) || !/^[0-9]+$/.test(String(page)) || !Number.isSafeInteger(Number(page)) || Number(page) < 1 || Number(page) > 100000) {
                 throw new LifecycleError(400, 'INVALID_LIST_PARAMETERS');
             }
-            const data = await rpc('shadow_deleted_accounts_list', { p_search: search.trim(), p_page: Number(page), p_status: status });
+            const validDate = value => value === '' || (typeof value === 'string' && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(value) && !value.startsWith('0000-') && Number.isFinite(Date.parse(value + 'T00:00:00Z')) && new Date(value + 'T00:00:00Z').toISOString().slice(0, 10) === value);
+if (!validDate(dateFrom) || !validDate(dateTo) || (dateFrom && dateTo && dateFrom > dateTo)) throw new LifecycleError(400, 'INVALID_DATE_RANGE');
+const data = await rpc('shadow_deleted_accounts_list_v2', { p_search: search.trim(), p_page: Number(page), p_status: status, p_date_from: dateFrom || null, p_date_to: dateTo || null });
             if (!data || !Array.isArray(data.items)) throw new LifecycleError(503, 'ACCOUNT_LIFECYCLE_UNAVAILABLE');
             return data;
         },
