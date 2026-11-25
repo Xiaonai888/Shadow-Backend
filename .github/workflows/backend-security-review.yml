@@ -1,0 +1,90 @@
+name: Backend Security Review
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_version:
+        description: Node.js version used on Render
+        required: true
+        default: '22'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+      npm_config_registry: https://registry.npmjs.org/
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+      - name: Review current and compatible candidate dependencies
+        shell: bash
+        run: |
+          set -eu
+          report="$RUNNER_TEMP/backend-security-review"
+          mkdir -p "$report/before" "$report/candidate"
+          cp package.json package-lock.json "$report/before/"
+          { git rev-parse HEAD; node --version; npm --version; } > "$report/environment.txt"
+          audit() {
+            local name="$1"
+            shift
+            local rc=0
+            npm audit --json "$@" > "$report/$name.json" 2> "$report/$name.stderr.txt" || rc=$?
+            printf '%s\n' "$rc" > "$report/$name.exit.txt"
+          }
+          audit before-all
+          audit before-production --omit=dev
+          rc=0
+          npm ci --ignore-scripts --no-audit --no-fund > "$report/before-install.txt" 2>&1 || rc=$?
+          printf '%s\n' "$rc" > "$report/before-install.exit.txt"
+          if [ "$rc" -ne 0 ]; then
+            echo 'Baseline install failed; no candidate generated.' > "$report/status.txt"
+            exit 1
+          fi
+          rc=0
+          git ls-files -z -- '*.js' '*.mjs' '*.cjs' | xargs -0 -r -n 1 node --check > "$report/source-syntax.txt" 2>&1 || rc=$?
+          printf '%s\n' "$rc" > "$report/source-syntax.exit.txt"
+          if [ "$rc" -ne 0 ]; then
+            echo 'Baseline syntax failed; no candidate generated.' > "$report/status.txt"
+            exit 1
+          fi
+          rc=0
+          npm audit fix --package-lock-only --ignore-scripts --no-fund --json > "$report/fix.json" 2> "$report/fix.stderr.txt" || rc=$?
+          printf '%s\n' "$rc" > "$report/fix.exit.txt"
+          cp package.json package-lock.json "$report/candidate/"
+          git diff -- package.json package-lock.json > "$report/dependency.diff"
+          REPORT_DIR="$report" node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const dir = process.env.REPORT_DIR;
+          const before = JSON.parse(fs.readFileSync(`${dir}/before/package-lock.json`, 'utf8')).packages;
+          const after = JSON.parse(fs.readFileSync(`${dir}/candidate/package-lock.json`, 'utf8')).packages;
+          const changes = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter(key => key && before[key]?.version !== after[key]?.version).map(key => ({ path: key, before: before[key]?.version ?? null, after: after[key]?.version ?? null }));
+          fs.writeFileSync(`${dir}/version-changes.json`, JSON.stringify(changes, null, 2));
+          JS
+          audit after-all
+          audit after-production --omit=dev
+          rc=0
+          npm ci --ignore-scripts --no-audit --no-fund > "$report/candidate-install.txt" 2>&1 || rc=$?
+          printf '%s\n' "$rc" > "$report/candidate-install.exit.txt"
+          if [ "$rc" -ne 0 ]; then
+            echo 'Candidate install failed; do not apply.' > "$report/status.txt"
+            exit 1
+          fi
+          echo 'Candidate collected for review only. Native lifecycle scripts and server runtime not tested.' > "$report/status.txt"
+      - name: Upload review artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-security-review
+          path: ${{ runner.temp }}/backend-security-review/
+          if-no-files-found: error
+          retention-days: 7
