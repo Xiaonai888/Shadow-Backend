@@ -1256,6 +1256,41 @@ function reportName(prefix, range, extension) {
   )}.${extension}`
 }
 
+async function buildDatabaseIoZipEntries(range) {
+  let report = null
+  let status = 'unavailable'
+  let reason = 'Database IO evidence could not be prepared.'
+  const from = Date.parse(range.from)
+  const to = Date.parse(range.to)
+  if (to - from > 30 * 24 * 60 * 60 * 1000) {
+    status = 'unsupported_range'
+    reason = 'Database IO download supports up to 30 days. The system report range was not shortened.'
+  } else {
+    try {
+      const { buildDatabaseIoDownload } = await import('./databaseIoDownload.service.js')
+      const { formatDatabaseIoReport } = await import('./databaseIoReportFormat.service.js')
+      report = await buildDatabaseIoDownload({ from, to })
+      if (report) {
+        const covered = Number(report.coverage?.covered_seconds || 0)
+        const incomplete = Number(report.coverage?.uncovered_seconds || 0) > 0 || Number(report.coverage?.partial_intervals || 0) > 0 || Number(report.coverage?.detail_available || 0) < Number(report.coverage?.detail_selected || 0)
+        status = covered <= 0 ? 'no_covered_intervals' : incomplete ? 'partial' : 'available'
+        return [
+          { name: 'DatabaseIO.md', data: `Export status: ${status}\n\n${formatDatabaseIoReport(report)}` },
+          { name: 'DatabaseIO.json', data: JSON.stringify({ ...report, export_status: status }, null, 2) },
+        ]
+      }
+      status = 'busy'
+      reason = 'Another Database IO report is being prepared. Download again later.'
+    } catch (error) {
+      console.warn('SYSTEM_REPORT_DATABASE_IO_UNAVAILABLE', String(error?.code || error?.name || 'UNKNOWN').slice(0, 80))
+    }
+  }
+  return [
+    { name: 'DatabaseIO.md', data: `# Shadow Database IO Evidence Report\n\nExport status: ${status}\n\nUTC range: ${range.from} to ${range.to}\n\n${reason}\n\nUnavailable metrics are not zero.\n` },
+    { name: 'DatabaseIO.json', data: JSON.stringify({ version: 1, mode: 'monitoring_only', export_status: status, range: { from: range.from, to: range.to }, reason, totals: null }, null, 2) },
+  ]
+}
+
 export async function generateSystemUsageReport({
   type,
   from,
@@ -1353,6 +1388,7 @@ export async function generateSystemUsageReport({
 
   const summaryPdf = createPdf(bundle.summaryMd)
   const problemsPdf = createPdf(bundle.problemsMd)
+  const databaseIoEntries = await buildDatabaseIoZipEntries(bundle.range)
 
   return {
     filename: reportName(
@@ -1369,6 +1405,7 @@ export async function generateSystemUsageReport({
       { name: 'Problems.md', data: bundle.problemsMd },
       { name: 'Problems.pdf', data: problemsPdf },
       { name: 'Evidence.json', data: bundle.json },
+      ...databaseIoEntries,
     ]),
   }
 }
