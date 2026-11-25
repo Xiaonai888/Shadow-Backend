@@ -1,8 +1,10 @@
 import { supabase } from '../config/supabase.js'
 import { assertR2MediaReference } from './mediaStoragePolicy.service.js'
+import { markRequestDiagnostic } from './trafficDiagnostic.service.js'
 
 const MAX_PARTS_PER_PAGE = 40
-const PAGE_ID_BATCH_SIZE = 10
+const PAGE_ID_BATCH_SIZE = 20
+const PARTS_READ_LIMIT = 400
 
 function cleanText(value) {
   return String(value ?? '').trim()
@@ -73,23 +75,42 @@ export async function getEpisodePagePartsByPageIds(
 
   if (!ids.length) return []
 
-  const rows = []
+const rows = []
+let queryCount = 0
 
-  for (let index = 0; index < ids.length; index += PAGE_ID_BATCH_SIZE) {
-    const batch = ids.slice(index, index + PAGE_ID_BATCH_SIZE)
+for (let index = 0; index < ids.length; index += PAGE_ID_BATCH_SIZE) {
+  const batch = ids.slice(index, index + PAGE_ID_BATCH_SIZE)
+  let offset = 0
+
+  while (true) {
+    queryCount += 1
 
     const { data, error } = await supabase
       .from('episode_page_parts')
-      .select(
-        'id, episode_page_id, part_index, image_url, storage_path, width, height, file_size, mime_type, created_at, updated_at'
-      )
+      .select('id, episode_page_id, part_index, image_url, storage_path, width, height, file_size, mime_type, created_at, updated_at')
       .in('episode_page_id', batch)
       .order('part_index', { ascending: true })
+      .order('id', { ascending: true })
+      .range(offset, offset + PARTS_READ_LIMIT - 1)
 
     if (error) throw error
 
-    rows.push(...(data || []))
+    const items = data || []
+    rows.push(...items)
+
+    if (items.length < PARTS_READ_LIMIT) break
+
+    offset += PARTS_READ_LIMIT
   }
+}
+
+markRequestDiagnostic({
+  manga_parts_page_count: ids.length,
+  manga_parts_query_count: queryCount,
+  manga_parts_row_count: rows.length,
+})
+
+return rows
 
   return rows
 }
