@@ -26,6 +26,7 @@ import {
 } from '../services/publicGenrePagination.service.js'
 import { isRelationshipGroup, normalizeRelationshipTag } from '../utils/storyRelationshipGroups.js'
 import { makeSmartSearchOrFilter } from '../services/smartSearchCore.service.js'
+import { getTrendingStoryPool } from '../services/trendingStoryPool.service.js'
 
 function resolveRelationshipGroup(value) {
   if (!isRelationshipGroup(value)) return ''
@@ -1254,6 +1255,30 @@ export async function getPublicStories(req, res) {
 
     const ageAccess =
       await getReaderAgeAccess(req)
+
+    if (normalizedSort === 'trending_daily') {
+      try {
+        const result = await getTrendingStoryPool({
+          language: language || 'Khmer',
+          storyType,
+          ageAccess,
+        })
+
+        return res.status(200).json({
+          ok: true,
+          ...result,
+        })
+      } catch (error) {
+        if (error.code === 'INVALID_TRENDING_SCOPE') {
+          return res.status(400).json({
+            ok: false,
+            message: error.message,
+          })
+        }
+
+        throw error
+      }
+    }
 
     const rankingOnly =
       String(req.query.ranking || '') === '1'
