@@ -61,7 +61,19 @@ export function getSmartAdReaderHash(req) {
     }
     identity = `visitor:${visitor}`
   }
+  return hashSmartAdIdentity(identity, secret)
+}
+
+function hashSmartAdIdentity(identity, secret) {
   return createHmac('sha256', secret).update(`shadow-smart-ad:v1:${identity}`).digest('hex')
+}
+
+export function getSmartAdReaderHashForUserId(userId) {
+  const secret = String(process.env.JWT_SECRET || '')
+  if (!secret) throw new Error('JWT_SECRET must be configured')
+  const id = String(userId || '').trim()
+  if (!UUID.test(id)) throw new SmartAdRequestError('Invalid reader ID')
+  return hashSmartAdIdentity(`reader:${id}`, secret)
 }
 
 export function validateSmartAdStoryIds(value, max = 10) {
@@ -153,10 +165,10 @@ export async function readSmartAdExposureTotals(storyIds, { db = supabase, now =
   return response
 }
 
-export async function recordSmartAdEvents({
+async function recordSmartAdEventsInternal({
   readerHash, slotKey, placement, type, storyIds, db = supabase,
-}) {
-  requireSmartAdPlacement(placement)
+}, taskCenter = false) {
+  if (!taskCenter) requireSmartAdPlacement(placement)
   if (!EVENT_TYPES.has(type)) throw new SmartAdRequestError('Unknown Smart Ad event type')
   const ids = validateSmartAdStoryIds(storyIds)
   const { data, error } = await db.rpc('smart_ad_record_events_v1', {
@@ -182,4 +194,12 @@ export async function recordSmartAdEvents({
     new_impressions: Number(item?.new_impressions || 0),
     new_clicks: Number(item?.new_clicks || 0),
   }
+}
+
+export async function recordSmartAdEvents(options) {
+  return recordSmartAdEventsInternal(options)
+}
+
+export async function recordTaskCenterSmartAdImpressions({ readerHash, slotKey, storyIds, db = supabase }) {
+  return recordSmartAdEventsInternal({ readerHash, slotKey, storyIds, db, placement: 'taskCenter', type: 'impression' }, true)
 }
