@@ -15,6 +15,8 @@ import storiesRoutes from './src/routes/stories.routes.js'
 import storyMediaRoutes from './src/routes/storyMedia.routes.js'
 import mangaDirectUploadRoutes from './src/routes/mangaDirectUpload.routes.js'
 import publicStoriesRoutes from './src/routes/publicStories.routes.js'
+import { getPublicStoryById } from './src/controllers/publicStories.controller.js'
+import { inspectStoryDetailRoute, respondToStoryDetailFallthrough } from './src/services/storyDetailDiagnostics.service.js'
 import adminExclusiveRoutes from './src/routes/adminExclusive.routes.js'
 import genresRoutes from './src/routes/genres.routes.js'
 import commentsRoutes from './src/routes/comments.routes.js'
@@ -1131,6 +1133,7 @@ app.use('/api/admin/resource-cost', adminResourceCostRoutes)
 app.use('/api/story-episode-push', storyEpisodePushWakeRoutes)
 app.use('/api/media-direct', mediaUploadRouteSpamGuard, mediaDirectRoutes)
 app.use((req, res) => {
+  if (respondToStoryDetailFallthrough(req, res, publicStoriesRoutes, getPublicStoryById, markRequestDiagnostic)) return
   res.status(404).json({ ok: false, message: 'Route not found' })
 })
 
@@ -1162,6 +1165,12 @@ app.use((error, req, res, next) => {
     message: 'Internal server error',
   })
 })
+
+const storyRouteIssue = inspectStoryDetailRoute(publicStoriesRoutes, getPublicStoryById)
+
+if (storyRouteIssue) {
+  console.error('CRITICAL_STORY_ROUTE', storyRouteIssue)
+}
 
 const PORT = process.env.PORT || 5000
 
