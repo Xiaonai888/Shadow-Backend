@@ -629,11 +629,14 @@ async function getReaderReadingMissions(userId, allowSelection = false) {
   }
   if (missionList.length === 0) return withRequiredCount([])
 
-  const { data: progressRows, error } = await supabase
-    .from('reader_reading_mission_progress')
-    .select('*')
-    .eq('user_id', userId)
-    .in('mission_id', missionList.map((mission) => mission.id))
+  const missionIds = missionList.map(mission => String(mission.id))
+const reuseProgress = smartAuto && Array.isArray(catalog.progressRows)
+
+const { data: progressRows, error } = reuseProgress
+  ? { data: catalog.progressRows.filter(row => missionIds.includes(String(row.mission_id))), error: null }
+  : await supabase.from('reader_reading_mission_progress').select('*').eq('user_id', userId).in('mission_id', missionIds)
+
+markRequestDiagnostic({ task_mission_progress_source: reuseProgress ? 'reused' : 'database' })
 
   if (error) throw error
 
