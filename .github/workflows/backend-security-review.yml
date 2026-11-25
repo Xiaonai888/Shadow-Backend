@@ -1,10 +1,10 @@
-name: Backend Final Security Candidate
+name: Backend Multer Security Candidate
 
 on:
   workflow_dispatch:
     inputs:
       node_version:
-        description: Node.js version used for development and CI (22 or newer)
+        description: Node.js version used on Render
         required: true
         default: '22'
         type: string
@@ -26,107 +26,116 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node_version }}
-      - name: Prepare and validate development-only candidate
+      - name: Inventory and prepare candidate
         shell: bash
         run: |
           set -euo pipefail
-          report="$RUNNER_TEMP/backend-final-security-candidate"
+          report="$RUNNER_TEMP/backend-multer-security-candidate"
           mkdir -p "$report/before" "$report/candidate"
           export REPORT_DIR="$report"
+          echo 'Review incomplete; do not deploy.' > "$report/status.txt"
           cp package.json package-lock.json "$report/before/"
           { git rev-parse HEAD; node --version; npm --version; } > "$report/environment.txt"
-          echo 'Candidate not approved; review checks pending.' > "$report/status.txt"
-          node -e 'if (Number(process.versions.node.split(".")[0]) < 22) process.exit(1)'
-          git ls-files | grep -Ei '(^|/)(nodemon\.json|\.nodemonignore|\.nodemonrc(\..*)?)$' > "$report/nodemon-config.txt" || test "$?" -eq 1
-          git grep -il nodemon -- . ':!package.json' ':!package-lock.json' ':!.github/workflows/backend-security-review.yml' ':!*.md' > "$report/nodemon-references.txt" || test "$?" -eq 1
-          if [ -s "$report/nodemon-config.txt" ] || [ -s "$report/nodemon-references.txt" ]; then
-            echo 'Existing nodemon configuration or references require manual review.' > "$report/status.txt"
-            exit 1
-          fi
-          node --input-type=module <<'JS'
-          import fs from 'node:fs';
-          const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          if (p.scripts?.dev !== 'nodemon server.js' || p.scripts?.start !== 'node server.js' || !p.devDependencies?.nodemon || p.dependencies?.nodemon || p.nodemonConfig) throw new Error('Unexpected manifest; review required');
-          JS
-          npm ci --ignore-scripts --no-audit --no-fund > "$report/before-install.txt" 2>&1
-          npm pkg set 'scripts.dev=node --watch server.js'
-          npm uninstall nodemon --save-dev --package-lock-only --ignore-scripts --no-audit --no-fund > "$report/patch.txt" 2>&1
+          git grep -ilE 'multer|\.diskStorage\(|\.memoryStorage\(|fileFilter|LIMIT_FILE_SIZE' -- '*.js' '*.mjs' '*.cjs' '*.ts' > "$report/upload-source-files.txt" || test "$?" -eq 1
+          npm install --save-exact multer@2.5.0 --package-lock-only --ignore-scripts --no-audit --no-fund > "$report/patch.txt" 2>&1
           git diff -- package.json package-lock.json > "$report/dependency.diff"
           node --input-type=module <<'JS'
           import fs from 'node:fs';
           import assert from 'node:assert/strict';
+          const read = p => JSON.parse(fs.readFileSync(p, 'utf8'));
           const dir = process.env.REPORT_DIR;
-          const read = path => JSON.parse(fs.readFileSync(path, 'utf8'));
-          const beforeManifest = read(`${dir}/before/package.json`);
-          const afterManifest = read('package.json');
-          const expected = structuredClone(beforeManifest);
-          expected.scripts.dev = 'node --watch server.js';
-          delete expected.devDependencies.nodemon;
-          if (!Object.keys(expected.devDependencies).length && !afterManifest.devDependencies) delete expected.devDependencies;
-          assert.deepEqual(afterManifest, expected, 'Unexpected manifest change');
-          const before = read(`${dir}/before/package-lock.json`).packages;
-          const after = read('package-lock.json').packages;
-          const changes = [];
-          for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
-            if (!key) continue;
-            const a = before[key], b = after[key];
-            if (!a || !b || a.version !== b.version) changes.push({path:key,before:a?.version??null,after:b?.version??null});
-            if (!a || (a && !b && a.dev !== true)) throw new Error(`Unexpected new or removed production package: ${key}`);
-            if (a && b) {
-              for (const field of ['version','resolved','integrity','dependencies','optionalDependencies','peerDependencies','engines','dev','optional']) assert.deepEqual(b[field],a[field],`${key}: ${field} changed`);
-            }
+          const prior = read(`${dir}/before/package.json`);
+          const next = read('package.json');
+          assert.ok(prior.dependencies?.multer);
+          prior.dependencies.multer = '2.5.0';
+          assert.deepEqual(next, prior, 'Unexpected manifest changes');
+          const a = read(`${dir}/before/package-lock.json`).packages;
+          const b = read('package-lock.json').packages;
+          assert.equal(b['node_modules/multer'].version, '2.5.0');
+          for (const name of Object.keys({...next.dependencies, ...next.devDependencies})) {
+            if (name === 'multer') continue;
+            const key = `node_modules/${name}`;
+            assert.equal(b[key]?.version, a[key]?.version, `Unrelated direct dependency changed: ${name}`);
+            assert.equal(b[key]?.integrity, a[key]?.integrity, `Unrelated direct dependency integrity changed: ${name}`);
           }
-          assert.ok(!Object.keys(after).some(k => /(?:^|\/)node_modules\/(nodemon|minimatch)$/.test(k)), 'Vulnerable development dependency still installed');
+          const changes = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(k=>k && (a[k]?.version!==b[k]?.version || a[k]?.integrity!==b[k]?.integrity)).map(k=>({path:k,before:a[k]?.version??null,after:b[k]?.version??null}));
           fs.writeFileSync(`${dir}/version-changes.json`, JSON.stringify(changes,null,2));
           JS
-          npm ci --ignore-scripts --no-audit --no-fund > "$report/candidate-install.txt" 2>&1
+          npm ci --ignore-scripts --no-audit --no-fund > "$report/install.txt" 2>&1
           git ls-files -z -- '*.js' '*.mjs' '*.cjs' | xargs -0 -r -n 1 node --check > "$report/source-syntax.txt" 2>&1
-          python3 - <<'PY' > "$report/watch-test.txt" 2>&1
-          import pathlib, subprocess, tempfile, time, os, signal
-          with tempfile.TemporaryDirectory() as folder:
-              p = pathlib.Path(folder) / 'watch-test.mjs'
-              log = pathlib.Path(folder) / 'watch.log'
-              p.write_text('console.log("WATCH_FIRST"); setInterval(() => {}, 1000);')
-              with log.open('w') as out:
-                  proc = subprocess.Popen(['node', '--watch', str(p)], stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
-                  try:
-                      def wait_for(value):
-                          for _ in range(100):
-                              if value in log.read_text(): return
-                              if proc.poll() is not None: break
-                              time.sleep(0.1)
-                          raise RuntimeError(f'Missing {value}: {log.read_text()}')
-                      wait_for('WATCH_FIRST')
-                      time.sleep(1)
-                      p.write_text('console.log("WATCH_SECOND"); setInterval(() => {}, 1000);')
-                      wait_for('WATCH_SECOND')
-                      print('Node watch restart test passed.')
-                  finally:
-                      try: os.killpg(proc.pid, signal.SIGTERM)
-                      except ProcessLookupError: pass
-                      proc.wait(timeout=5)
-          PY
+          node --input-type=module <<'JS' > "$report/upload-test.txt" 2>&1
+          import express from 'express';
+          import multer from 'multer';
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs/promises';
+          import os from 'node:os';
+          import path from 'node:path';
+          import {once} from 'node:events';
+          const dir = await fs.mkdtemp(path.join(os.tmpdir(),'multer-check-'));
+          const app = express();
+          const limits = {fileSize: 1024, files: 2, fields: 3, parts: 6};
+          const filter = (req,file,cb) => cb(null,file.mimetype === 'text/plain');
+          const disk = multer({dest:dir,limits,fileFilter:filter});
+          const memory = multer({storage:multer.memoryStorage(),limits,fileFilter:filter});
+          app.post('/disk',disk.single('file'),async(req,res,next)=>{
+            try {
+              if (!req.file) return res.status(400).json({code:'NO_FILE'});
+              const content=await fs.readFile(req.file.path,'utf8');
+              await fs.unlink(req.file.path);
+              res.json({content,field:req.body.title});
+            } catch(e){next(e);}
+          });
+          app.post('/array',memory.array('files',2),(req,res)=>res.json({count:req.files.length,contents:req.files.map(f=>f.buffer.toString())}));
+          app.post('/fields',memory.fields([{name:'cover',maxCount:1}]),(req,res)=>res.json({content:req.files.cover[0].buffer.toString()}));
+          app.post('/none',memory.none(),(req,res)=>res.json({title:req.body.title}));
+          app.use((err,req,res,next)=>res.status(err instanceof multer.MulterError?400:500).json({code:err.code||'ERROR'}));
+          const server=app.listen(0,'127.0.0.1');
+          await once(server,'listening');
+          const url=`http://127.0.0.1:${server.address().port}`;
+          async function send(route, entries, status, expected){
+            const form=new FormData();
+            for(const [key,value,type] of entries) type?form.append(key,new Blob([value],{type}),'sample.txt'):form.append(key,value);
+            const res=await fetch(url+route,{method:'POST',body:form,signal:AbortSignal.timeout(5000)});
+            assert.equal(res.status,status);
+            assert.deepEqual(await res.json(),expected);
+          }
+          try {
+            await send('/disk',[['title','test'],['file','hello','text/plain']],200,{content:'hello',field:'test'});
+            await send('/disk',[['file','x'.repeat(2048),'text/plain']],400,{code:'LIMIT_FILE_SIZE'});
+            await send('/disk',[['wrong','hello','text/plain']],400,{code:'LIMIT_UNEXPECTED_FILE'});
+            await send('/disk',[['file','hello','application/octet-stream']],400,{code:'NO_FILE'});
+            await send('/array',[['files','a','text/plain'],['files','b','text/plain']],200,{count:2,contents:['a','b']});
+            await send('/fields',[['cover','hello','text/plain']],200,{content:'hello'});
+            await send('/none',[['title','hello']],200,{title:'hello'});
+            assert.deepEqual(await fs.readdir(dir),[],'Temporary files were not cleaned up');
+            console.log('7 isolated multipart cases and disk cleanup passed.');
+          } finally {
+            server.closeAllConnections();
+            await new Promise(resolve=>server.close(resolve));
+            await fs.rm(dir,{recursive:true,force:true});
+          }
+          JS
           all_rc=0
           prod_rc=0
-          npm audit --json > "$report/after-all.json" 2> "$report/after-all.stderr.txt" || all_rc=$?
-          npm audit --omit=dev --json > "$report/after-production.json" 2> "$report/after-production.stderr.txt" || prod_rc=$?
-          printf '%s\n' "$all_rc" > "$report/after-all.exit.txt"
-          printf '%s\n' "$prod_rc" > "$report/after-production.exit.txt"
+          npm audit --json > "$report/audit-all.json" 2> "$report/audit-all.stderr.txt" || all_rc=$?
+          npm audit --omit=dev --json > "$report/audit-production.json" 2> "$report/audit-production.stderr.txt" || prod_rc=$?
+          printf '%s\n' "$all_rc" > "$report/audit-all.exit.txt"
+          printf '%s\n' "$prod_rc" > "$report/audit-production.exit.txt"
           test "$all_rc" -eq 0 && test "$prod_rc" -eq 0
           node --input-type=module <<'JS'
           import fs from 'node:fs';
-          for (const name of ['after-all','after-production']) {
-            const audit = JSON.parse(fs.readFileSync(`${process.env.REPORT_DIR}/${name}.json`,'utf8'));
-            if (audit.error || audit.metadata?.vulnerabilities?.total !== 0) throw new Error(`Audit failed: ${name}`);
+          for (const name of ['audit-all','audit-production']) {
+            const a=JSON.parse(fs.readFileSync(`${process.env.REPORT_DIR}/${name}.json`,'utf8'));
+            if(a.error || a.metadata?.vulnerabilities?.total!==0) throw new Error(`Audit failed: ${name}`);
           }
           JS
           cp package.json package-lock.json "$report/candidate/"
-          echo 'Candidate passed dependency checks, audit, syntax and isolated watch restart. Native install scripts and application runtime were not tested.' > "$report/status.txt"
-      - name: Upload candidate review
+          echo 'Candidate passed isolated multipart tests, dependency checks, syntax and npm audit. Actual application routes, native install scripts, Render runtime and Dependabot remain unverified.' > "$report/status.txt"
+      - name: Upload review
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backend-final-security-candidate
-          path: ${{ runner.temp }}/backend-final-security-candidate/
+          name: backend-multer-security-candidate
+          path: ${{ runner.temp }}/backend-multer-security-candidate/
           if-no-files-found: error
           retention-days: 7
