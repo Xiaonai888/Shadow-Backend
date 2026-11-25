@@ -32,7 +32,7 @@ function createDeletedAccountsRouter({ express, lifecycle, requireAdmin, require
         deletedAccountsPreAuthLimit,
         requireAdmin,
         noStore,
-        handler(req => lifecycle.list({ search: req.query.search, page: req.query.page, status: req.query.status }))
+        handler(req => lifecycle.list({ search: req.query.search, page: req.query.page, status: req.query.status, dateFrom: req.query.dateFrom, dateTo: req.query.dateTo }))
     );
     router.get(
         '/:recordId',
