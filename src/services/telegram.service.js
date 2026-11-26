@@ -1,210 +1,41 @@
-const TELEGRAM_API_URL = 'https://api.telegram.org'
-const TELEGRAM_TIMEOUT_MS = 12000
-
-async function requestTelegram(botToken, method, payload) {
-  let response
-
+export class PromotionTelegramError extends Error {
+  constructor(message, { status = null, retryAfter = null, uncertain = false } = {}) {
+    super(message)
+    this.name = 'PromotionTelegramError'
+    this.status = status
+    this.retryAfter = retryAfter
+    this.uncertain = uncertain
+  }
+}
+export async function sendPromotionPhoto({ token, chatId, message, fileId, fetchImpl = globalThis.fetch }) {
+  const secret = String(token || '').trim()
+  const channel = String(chatId || '').trim()
+  if (!/^\d+:[A-Za-z0-9_-]+$/.test(secret)) throw new PromotionTelegramError('Missing or invalid promotion bot token')
+  if (!/^(-100\d+|@[A-Za-z0-9_]{5,})$/.test(channel)) throw new PromotionTelegramError('Invalid promotion channel')
+  if (!message?.photo || typeof message.caption !== 'string' || message.caption.length > 1000 || !message.reply_markup) throw new PromotionTelegramError('Invalid promotion payload')
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15000)
   try {
-    response = await fetch(
-      `${TELEGRAM_API_URL}/bot${botToken}/${method}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(TELEGRAM_TIMEOUT_MS),
-      }
-    )
-  } catch (cause) {
-    const timedOut =
-      cause?.name === 'TimeoutError' ||
-      cause?.name === 'AbortError'
-
-    const error = new Error(
-      timedOut
-        ? 'Telegram request timed out'
-        : 'Telegram network request failed'
-    )
-
-    error.code = timedOut
-      ? 'TELEGRAM_TIMEOUT'
-      : 'TELEGRAM_NETWORK_ERROR'
-
-    const root = cause?.cause || cause
-    const clean = (value) => String(value ?? '').replace(/\b\d+(?::|%3a)[A-Za-z0-9_-]+/gi, '[REDACTED]').replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]').slice(0, 500)
-    const detail = (item) => ({
-      name: clean(item?.name),
-      message: clean(item?.message),
-      code: clean(item?.code),
-      errno: clean(item?.errno),
-      syscall: clean(item?.syscall)
-    })
-    error.cause = {
-      ...detail(root),
-      errors: Array.isArray(root?.errors) ? root.errors.slice(0, 3).map(detail) : []
+    let response, data
+    try {
+      response = await fetchImpl(`https://api.telegram.org/bot${secret}/sendPhoto`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+        body: JSON.stringify({ chat_id: channel, photo: fileId || message.photo, caption: message.caption, reply_markup: message.reply_markup }),
+      })
+      data = await response.json()
+    } catch {
+      throw new PromotionTelegramError('Telegram delivery result unknown', { uncertain: true })
     }
-
-    throw error
-  }
-
-  const data = await response.json().catch(() => null)
-
-  if (!data || typeof data !== 'object') {
-    const error = new Error('Invalid Telegram API response')
-    error.code = 'TELEGRAM_INVALID_RESPONSE'
-    error.statusCode = response.status
-    throw error
-  }
-
-  if (!response.ok || data.ok !== true) {
-    const status = Number(
-      data.error_code || response.status || 0
-    )
-
-    const error = new Error(
-      String(data.description || `Telegram ${method} failed`)
-        .slice(0, 240)
-    )
-
-    error.code = status
-      ? `TELEGRAM_HTTP_${status}`
-      : 'TELEGRAM_API_ERROR'
-
-    error.statusCode = response.status
-
-    throw error
-  }
-
-  return data
-}
-function isTelegramConfigured() {
-  return Boolean(process.env.TELEGRAM_BOT_TOKEN)
-}
-
-function isAuthorStoreTelegramConfigured() {
-  return Boolean(process.env.TELEGRAM_AUTHOR_STORE_BOT_TOKEN)
-}
-function escapeHtml(value) {
-  return String(value || '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-}
-
-export function html(value) {
-  return escapeHtml(value)
-}
-
-export async function callTelegram(method, payload) {
-  if (!isTelegramConfigured()) {
-    return { ok: false, skipped: true }
-  }
-
-  return requestTelegram(
-    process.env.TELEGRAM_BOT_TOKEN,
-    method,
-    payload
-  )
-}
-export async function callAuthorStoreTelegram(method, payload) {
-  if (!isAuthorStoreTelegramConfigured()) {
-    return { ok: false, skipped: true }
-  }
-
-  return requestTelegram(
-    process.env.TELEGRAM_AUTHOR_STORE_BOT_TOKEN,
-    method,
-    payload
-  )
-}
-
-export async function sendTelegramMessage(text, options = {}) {
-  const chatId = options.chat_id || process.env.TELEGRAM_ADMIN_CHAT_ID
-  if (!chatId) return { ok: false, skipped: true }
-
-  return callTelegram('sendMessage', {
-    chat_id: chatId,
-    text,
-    parse_mode: 'HTML',
-    disable_web_page_preview: false,
-    reply_to_message_id: options.reply_to_message_id,
-    allow_sending_without_reply: true,
-    reply_markup: options.reply_markup,
-  })
-}
-
-export async function sendAuthorStoreTelegramMessage(text, options = {}) {
-  const chatId = options.chat_id
-  if (!chatId) return { ok: false, skipped: true }
-
-  return callAuthorStoreTelegram('sendMessage', {
-    chat_id: chatId,
-    text,
-    parse_mode: 'HTML',
-    disable_web_page_preview: false,
-    reply_to_message_id: options.reply_to_message_id,
-    allow_sending_without_reply: true,
-    reply_markup: options.reply_markup,
-  })
-}
-
-export async function replyTelegram(chatId, messageId, text, options = {}) {
-  return sendTelegramMessage(text, {
-    chat_id: chatId,
-    reply_to_message_id: messageId,
-    reply_markup: options.reply_markup,
-  })
-}
-
-export async function editTelegramMessage(chatId, messageId, text, options = {}) {
-  return callTelegram('editMessageText', {
-    chat_id: chatId,
-    message_id: messageId,
-    text,
-    parse_mode: 'HTML',
-    disable_web_page_preview: false,
-    reply_markup: options.reply_markup,
-  })
-}
-
-export async function answerCallbackQuery(callbackQueryId, text, showAlert = false) {
-  return callTelegram('answerCallbackQuery', {
-    callback_query_id: callbackQueryId,
-    text,
-    show_alert: showAlert,
-  })
-}
-
-export async function answerAuthorStoreCallbackQuery(callbackQueryId, text, showAlert = false) {
-  return callAuthorStoreTelegram('answerCallbackQuery', {
-    callback_query_id: callbackQueryId,
-    text,
-    show_alert: showAlert,
-  })
-}
-
-export async function editAuthorStoreTelegramMessage(chatId, messageId, text, options = {}) {
-  return callAuthorStoreTelegram('editMessageText', {
-    chat_id: chatId,
-    message_id: messageId,
-    text,
-    parse_mode: 'HTML',
-    disable_web_page_preview: false,
-    reply_markup: options.reply_markup,
-  })
-}
-
-export function reviewKeyboard(paymentId) {
-  return {
-    inline_keyboard: [
-      [
-        { text: '✅ Approve', callback_data: `pay_ok:${paymentId}` },
-        { text: '❌ Reject', callback_data: `pay_no:${paymentId}` },
-      ],
-      [
-        { text: '🔎 Open Admin', url: process.env.ADMIN_PAYMENT_URL || 'https://admin.shadowerabook.site/payment' },
-      ],
-    ],
+    if (!response.ok || data?.ok !== true) {
+      const status = Number(data?.error_code || response.status) || null
+      const retryAfter = Number(data?.parameters?.retry_after)
+      throw new PromotionTelegramError(`Telegram sendPhoto rejected (${status ?? 'unknown'})`, { status, retryAfter: Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null, uncertain: !status || status >= 500 })
+    }
+    const result = data.result
+    if (!Number.isSafeInteger(result?.message_id)) throw new PromotionTelegramError('Telegram message ID missing', { uncertain: true })
+    const photo = Array.isArray(result.photo) ? result.photo.at(-1) : null
+    return { messageId: result.message_id, fileId: photo?.file_id || null, chatId: String(result.chat?.id ?? channel) }
+  } finally {
+    clearTimeout(timer)
   }
 }
