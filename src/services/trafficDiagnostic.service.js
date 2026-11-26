@@ -1422,13 +1422,20 @@ if (!response.ok) {
     } catch (error) {
       const elapsedMs = Date.now() - startedAt
 
+      const causeCodes = provider === 'TELEGRAM'
+        ? [error?.cause, ...(Array.isArray(error?.cause?.errors) ? error.cause.errors.slice(0, 3) : []), error]
+          .map((item) => String(item?.code || ''))
+          .filter((code) => /^[A-Z][A-Z0-9_]{1,63}$/.test(code))
+        : []
+
       recordExternalFailure(
         context,
         {
           provider,
           target,
           status: 0,
-          code: 'FETCH_REJECTED',
+          code: causeCodes[0] || 'FETCH_REJECTED',
+          details: [...new Set(causeCodes)].join(', '),
           message:
             error?.message ||
             'External fetch failed',
