@@ -1,3 +1,4 @@
+import { normalizePdfUpdateNote } from '../services/authorStorePdfVersion.service.js'
 import { supabase } from '../config/supabase.js'
 import {
   assertAuthorStorageAvailable,
@@ -7,6 +8,7 @@ import {
 import {
   deletePrivatePdfFromR2,
   uploadPrivatePdfToR2,
+  getPrivatePdfFromR2,
 } from '../services/privatePdfStorage.service.js'
 
 async function getMyActiveAuthorPage(userId) {
@@ -262,6 +264,12 @@ export async function attachMyAuthorStorePrivatePdf(req, res) {
     }
 
     const oldStorageKey = cleanText(product.pdf_storage_key)
+    const uploadedFile = await getPrivatePdfFromR2(storageKey)
+    const verifiedSize = Number(uploadedFile.ContentLength)
+    uploadedFile.Body?.destroy?.()
+    if (verifiedSize !== fileSizeBytes || uploadedFile.ContentType !== 'application/pdf') {
+      return res.status(409).json({ ok: false, message: 'PDF verification failed' })
+    }
 
     const { data: updatedProduct, error: updateError } = await supabase
       .from('author_store_products')
@@ -273,13 +281,14 @@ export async function attachMyAuthorStorePrivatePdf(req, res) {
         pdf_mime_type: 'application/pdf',
         pdf_file_size_bytes: fileSizeBytes,
         pdf_file_name: fileName,
+        pdf_update_note: normalizePdfUpdateNote(req.body.pdf_update_note),
         access_rule: ['Download after payment', 'Read online only', 'Download and read online'].includes(product.access_rule) ? product.access_rule : 'Read online only',
         updated_at: new Date().toISOString(),
       })
       .eq('id', productId)
       .eq('author_page_id', authorPage.id)
       .eq('user_id', userId)
-      .select('id, pdf_file_name, pdf_storage_provider, pdf_is_private, pdf_mime_type, pdf_file_size_bytes, access_rule')
+      .select('id, pdf_file_name, pdf_storage_provider, pdf_is_private, pdf_mime_type, pdf_file_size_bytes, access_rule, pdf_version, pdf_updated_at, pdf_update_note')
       .single()
 
     if (updateError) throw updateError
