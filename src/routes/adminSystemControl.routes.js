@@ -9,6 +9,7 @@ import { getSystemUsageAnomalySnapshot } from '../services/systemUsageAnomaly.se
 import { getSystemUsageRegressionState } from '../services/systemUsageRegression.service.js'
 import { getRecentRequestEvidence, getGuestRequestSnapshot, getHistoricalErrorEvidence, getPageRequestSnapshot } from '../services/trafficDiagnostic.service.js'
 import { getPassiveRequestSnapshot } from '../services/passiveRequestMonitor.service.js'
+import { getResourceOptimizationSnapshot } from '../services/resourceOptimizationSnapshot.service.js'
 import { getRequestOriginSnapshot } from '../services/requestOriginDiagnostics.service.js'
 import {
   listSystemUsageIncidents,
@@ -669,5 +670,12 @@ router.post(
 router.use('/database-io/download', databaseIoDownloadRoutes)
 router.use('/database-io', databaseIoRoutes)
 router.use('/telegram-promotion', systemControlGuard, viewSystemControl, telegramPromotionMonitorRoutes)
+
+router.get('/optimization-advisor', systemControlGuard, viewSystemControl, (req, res) => {
+  return res.status(200).json({
+    ok: true,
+    optimization: getResourceOptimizationSnapshot({ limit: 40 }),
+  })
+})
 
 export default router
