@@ -560,7 +560,8 @@ async function getUnreadCount(
 export async function buildConversationSummary(
   conversation,
   viewerParticipant,
-  preloaded = null
+  preloaded = null,
+  loadedLatestMessage = undefined
 ) {
   const isGroup =
     conversation.is_group === true
@@ -582,7 +583,9 @@ export async function buildConversationSummary(
         ? Promise.resolve(preloaded.authorPages.get(String(conversation.author_page_id)) || null)
         : getAuthorPage(conversation.author_page_id)
       : Promise.resolve(null),
-    getLatestMessage(conversation, viewerParticipant),
+    loadedLatestMessage !== undefined
+  ? Promise.resolve(loadedLatestMessage)
+  : getLatestMessage(conversation, viewerParticipant),
     getUnreadCount(conversation, viewerParticipant),
     isGroup
       ? getConversationParticipantCount(conversation.id)
@@ -1934,10 +1937,16 @@ export async function getConversationMessages({
   }
 
   return {
-    conversation:
+        conversation:
       await buildConversationSummary(
         conversation,
-        participant
+        participant,
+        null,
+        isInitialPage
+          ? messages.length
+            ? formatDeletedMessage(messages[messages.length - 1])
+            : null
+          : undefined
       ),
     messages: formattedMessages,
     selection_limit: 100,
