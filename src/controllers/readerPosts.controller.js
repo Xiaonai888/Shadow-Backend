@@ -2303,17 +2303,6 @@ async function readSocialEchoPosts({
   const linkedReaderPostIdSet =
     new Set(linkedReaderPostIds)
 
-  const [
-    storyResult,
-    episodeResult,
-    readerPostResult,
-    authorPostResult,
-    promotionResult,
-  ] = await Promise.all([
-    storyIds.length
-      ? supabase
-          .from('stories')
-          .select(
   const episodeRequest = episodeIds.length
     ? Promise.resolve(
         supabase
@@ -2406,7 +2395,7 @@ async function readSocialEchoPosts({
 
   const episodes =
     episodeResult.data || []
-const stories = storyResult.data || []
+  const stories = storyResult.data || []
   const authorPageIds = uniqueStrings(
     stories.map((story) =>
       story.author_id
