@@ -3,12 +3,22 @@ import { buildResourceCostSummary } from './resourceCostSummary.service.js'
 import { readSharedMonitoringRender } from './sharedMonitoring/sharedMonitoringRender.service.js'
 import { readSharedMonitoringProviders } from './sharedMonitoring/sharedMonitoringProviders.service.js'
 import { readSharedMonitoringApplication } from './sharedMonitoring/sharedMonitoringApplication.service.js'
+import { getMemoryGuardSnapshot } from './memoryGuard.service.js'
 
 const HOUR_MS = 3_600_000
 const DAY_MS = 86_400_000
 const PAGE_SIZE = 750
 const MAX_ROWS_PER_SOURCE = 30_000
 const MAX_DAYS = 31
+
+function assertReportMemory() {
+  const snapshot = getMemoryGuardSnapshot()
+  if (!snapshot.blocked && !snapshot.critical && !snapshot.emergency && !snapshot.active_manga_upload && snapshot.available_mb > 64) return
+  const error = new Error('Resource & Cost report is temporarily busy. Please retry shortly.')
+  error.code = 'RESOURCE_COST_BUSY'
+  error.reason = snapshot.active_manga_upload ? 'manga_upload_active' : 'report_memory_pressure'
+  throw error
+}
 
 async function clientOrDefault(client) {
   if (client) return client
@@ -19,6 +29,7 @@ async function clientOrDefault(client) {
 async function fetchAll(client, table, columns, timeField, from, to, options = {}) {
   const rows = []
   for (let offset = 0; offset < MAX_ROWS_PER_SOURCE; offset += PAGE_SIZE) {
+    if (options.checkMemory) options.checkMemory()
     let query = client.from(table)
       .select(columns)
       .gte(timeField, from)
@@ -32,6 +43,7 @@ async function fetchAll(client, table, columns, timeField, from, to, options = {
     if (error) throw new Error(`${table}: ${error.message || String(error)}`)
     if (!Array.isArray(data)) throw new Error(`${table}: invalid database response.`)
     rows.push(...data)
+    if (options.checkMemory) options.checkMemory()
     if (data.length < PAGE_SIZE) return rows
   }
   throw new Error(`${table}: report row limit reached; reduce the date range. Nothing was silently omitted.`)
@@ -45,7 +57,7 @@ export function summarizeMangaDirectJobs(jobs = []) {
   let duplicates = 0
   let verifiedJobs = 0
   for (const job of jobs) {
-        const intake = job?.payload?.intake ?? job?.intake
+    const intake = job?.payload?.intake ?? job?.intake
     if (job?.job_type !== 'manga_page_v2' || intake !== 'r2_direct') continue
     const id = String(job.id || '')
     const created = Date.parse(job.created_at || '')
@@ -111,29 +123,34 @@ export async function getResourceCostReport({
   if (time <= start) throw new RangeError('The reporting period must begin before the current time.')
   const end = new Date(time).toISOString()
   const database = await clientOrDefault(dependencies.client)
+  const checkMemory = dependencies.checkMemory ?? (includeApplication && !dependencies.client ? assertReportMemory : null)
   const uploadFields = 'hour_start,feature,route,upload_mode,attempts,successes,failures,ingress_bytes,egress_bytes,object_bytes'
-  const [sharedRender, sharedProviders, storedUploadRows, directMangaJobs, sharedApplication] = await Promise.all([
-    readSharedMonitoringRender({
-      from: range.from,
-      to: end,
-      asOf,
-      serviceIds: detectedServices(serviceIds),
-    }, { client: database }),
-    readSharedMonitoringProviders({
-      from: range.from,
-      to: end,
-      asOf,
-    }, { client: database }),
-    fetchAll(database, 'resource_cost_upload_hourly', uploadFields, 'hour_start', range.from, end, { tieBreakers: ['feature', 'route', 'upload_mode'] }),
-    fetchAll(database, 'heavy_media_jobs', 'id,job_type,created_at,intake:payload->intake,source_bytes:payload->source_bytes', 'created_at', range.from, end, { jobType: 'manga_page_v2', tieBreakers: ['id'] }),
-    includeApplication
-      ? readSharedMonitoringApplication({ from: range.from, to: end, asOf }, { client: database })
-      : Promise.resolve(null),
-  ])
+  if (checkMemory) checkMemory()
+  const sharedRender = await readSharedMonitoringRender({
+    from: range.from,
+    to: end,
+    asOf,
+    serviceIds: detectedServices(serviceIds),
+  }, { client: database })
+  if (checkMemory) checkMemory()
+  const sharedProviders = await readSharedMonitoringProviders({
+    from: range.from,
+    to: end,
+    asOf,
+  }, { client: database })
+  if (checkMemory) checkMemory()
+  const storedUploadRows = await fetchAll(database, 'resource_cost_upload_hourly', uploadFields, 'hour_start', range.from, end, { tieBreakers: ['feature', 'route', 'upload_mode'], checkMemory })
+  let directMangaJobs = await fetchAll(database, 'heavy_media_jobs', 'id,job_type,created_at,intake:payload->intake,source_bytes:payload->source_bytes', 'created_at', range.from, end, { jobType: 'manga_page_v2', tieBreakers: ['id'], checkMemory })
+  const directManga = summarizeMangaDirectJobs(directMangaJobs)
+  directMangaJobs = null
+  if (checkMemory) checkMemory()
+  const sharedApplication = includeApplication
+    ? await readSharedMonitoringApplication({ from: range.from, to: end, asOf }, { client: database, checkMemory })
+    : null
+  if (checkMemory) checkMemory()
 
   const renderRows = sharedRender.rows
   const providerRows = sharedProviders.rows
-  const directManga = summarizeMangaDirectJobs(directMangaJobs)
   const existingDirectHours = new Set(storedUploadRows.filter((row) =>
     row.upload_mode === 'direct' && row.route === 'story_media.manga_direct'
   ).map((row) => row.hour_start))
@@ -165,6 +182,7 @@ export async function getResourceCostReport({
     uploadRows,
     applicationRows,
   })
+  if (checkMemory) checkMemory()
   const validRenderRows = renderRows.filter((row) => {
     const hour = Date.parse(row?.hour_start || '')
     const bytes = row?.total_bytes
