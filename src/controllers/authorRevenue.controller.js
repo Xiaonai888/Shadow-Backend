@@ -2295,10 +2295,11 @@ async function getMyAuthorIncomeUncached(
         }
       ),
       getAuthorIncomeRecordData({
-        authorId: authorPage.id,
-        period: req.query.record_period,
-        date: req.query.record_date,
-      }),
+  authorId: authorPage.id,
+  period: req.query.record_period,
+  date: req.query.record_date,
+  previousMonth: getPreviousMonthKey(),
+}),
       getAuthor100PercentEventState(
         authorPage.id
       ),
@@ -2357,9 +2358,9 @@ async function getMyAuthorIncomeUncached(
       getPrimaryPaymentMethod(
         authorPage.id
       ),
-      sumAuthorIncome({
-        authorId: authorPage.id,
-      }),
+      incomeRecordData.incomeTotals ?? sumAuthorIncome({
+  authorId: authorPage.id,
+}),
       getRecentEarnings(authorPage.id),
       getTopSupporters(userId),
       getMonthlyEarnings(userId),
