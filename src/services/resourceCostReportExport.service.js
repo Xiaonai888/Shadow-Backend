@@ -480,8 +480,8 @@ export function createResourceCostDownload(report, format = 'full-zip') {
   }
 }
 
-export async function prepareResourceCostDownload(report, format = 'full-zip', { checkpoint } = {}) {
+export async function prepareResourceCostDownload(report, format = 'full-zip', { checkpoint, onProgress } = {}) {
   const { filename, contentType, zip, entries } = exportEntries(report, format)
-  const file = await prepareResourceCostFile({ entries, zip, checkpoint })
+  const file = await prepareResourceCostFile({ entries, zip, checkpoint, onProgress })
   return { filename, contentType, ...file }
 }
