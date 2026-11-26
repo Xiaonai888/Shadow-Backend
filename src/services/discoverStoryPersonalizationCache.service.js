@@ -66,11 +66,7 @@ async function readStoryCreatorMaps(authorStoryIds, readerStoryIds) {
   }
 }
 
-async function loadInteractionHistory(userId) {
-  const historyStart = new Date(
-    Date.now() -
-      HISTORY_DAYS * 24 * 60 * 60 * 1000
-  ).toISOString()
+async function loadInteractionHistoryLegacy(userId, historyStart) {
 
   const [authorViewsResult, readerViewsResult] =
     await Promise.all([
@@ -140,6 +136,54 @@ async function loadInteractionHistory(userId) {
       readerViews,
       readerStoryToCreator
     ),
+  }
+}
+
+function parseCreatorCounts(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid Discover story history counts')
+  }
+
+  const entries = Object.entries(value)
+  let total = 0
+
+  for (const [, count] of entries) {
+    if (!Number.isSafeInteger(count) || count < 1) {
+      throw new Error('Invalid Discover story view count')
+    }
+    total += count
+  }
+
+  if (total > MAX_HISTORY_ROWS) {
+    throw new Error('Discover story history count limit exceeded')
+  }
+
+  return new Map(entries)
+}
+
+async function loadInteractionHistory(userId) {
+  const historyStart = new Date(
+    Date.now() -
+      HISTORY_DAYS * 24 * 60 * 60 * 1000
+  ).toISOString()
+
+  const { data, error } = await supabase.rpc(
+    'get_discover_story_history_counts_v1',
+    {
+      p_user_id: userId,
+      p_history_start: historyStart,
+    }
+  )
+
+  if (error?.code === 'PGRST202') {
+    return loadInteractionHistoryLegacy(userId, historyStart)
+  }
+
+  if (error) throw error
+
+  return {
+    authorViewCounts: parseCreatorCounts(data?.author_view_counts),
+    readerViewCounts: parseCreatorCounts(data?.reader_view_counts),
   }
 }
 
