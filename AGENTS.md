@@ -3,6 +3,116 @@
 ## Scope
 These rules apply to the entire `Shadow-Backend` repository.
 
+## Mandatory Change Isolation & Regression Gate (2026-11-25)
+
+These rules are mandatory for all AI-assisted development, bug fixes, security updates, dependency upgrades, performance optimization, refactoring, and maintenance.
+
+This section takes precedence over any instruction that could permit broad, rushed, or grouped changes. Existing security and protected-feature rules remain mandatory.
+
+### Strict Change Isolation
+
+- Work on ONE confirmed problem or ONE requested feature at a time.
+- Never combine independent bug fixes, features, optimizations, or security updates into a single patch or deployment.
+- Never upgrade multiple major dependencies at the same time.
+- Never sacrifice application stability to finish work faster or reduce security alert counts.
+- Modify only the files and direct dependencies required for the current task.
+- Multiple files may be changed together only when strictly necessary for the same functionality. Do not create broken intermediate states.
+- Do not modify unrelated working code or perform unnecessary cleanup, refactoring, or repository-wide changes.
+- Never remove existing functions, imports, exports, routes, middleware, callbacks, or fallback behavior without verifying their purpose and obtaining explicit owner approval when removal is required.
+
+### Mandatory Before Editing
+
+- Read the latest AGENTS.md and current source files.
+- Identify the exact problem and verify its real cause. Never modify code based solely on assumptions or automated warnings.
+- Inspect affected dependencies and existing consumers.
+- Identify potential regressions before implementing changes.
+- Record a known-good commit or rollback point and keep the change isolated in a reviewable branch or commit.
+- Establish a functional baseline for the affected feature.
+- Preserve existing business logic, security controls, API contracts, UI behavior, and working features.
+
+### Dependency and Security Updates
+
+- Review one dependency group at a time.
+- Verify installed versions, official advisories, actual usage, and compatibility.
+- Major dependency upgrades require explicit owner approval and migration review.
+- Never blindly run npm audit fix, npm audit fix --force, or mass npm update.
+- Never blindly merge Dependabot pull requests.
+- Never regenerate the entire lockfile without a verified reason.
+- Preserve unrelated dependency versions and existing overrides.
+- Keep package.json and package-lock.json synchronized.
+- Never prioritize zero security alerts over actual application functionality.
+- Prioritize urgent confirmed vulnerabilities using isolated, reviewed fixes. Document any temporary mitigation and remaining risk.
+- Never suppress genuine security alerts or weaken security controls.
+
+### Mandatory Regression Testing
+
+- Test the affected existing functionality before and after each isolated change.
+- Test normal behavior, error handling, and relevant edge cases.
+- Verify affected shared components, routes, services, and API consumers.
+- Run relevant syntax, build, security, and functional regression checks.
+- Use isolated or staging environments for testing whenever available.
+- Never perform tests that unintentionally modify production payments, user data, or storage.
+- Passing syntax checks or production build does NOT prove application functionality.
+- Zero npm audit, Dependabot, or CodeQL alerts does NOT prove application functionality.
+- Isolated dependency tests do NOT replace real application regression tests.
+- Never report 100% completion while required functional or runtime tests remain unverified.
+
+### Backend-Specific Regression Gate
+
+- Preserve every explicitly protected route, including the Public Story Detail route documented below.
+- Verify actual route registration, HTTP methods, middleware order, authentication, authorization, rate limits, and API response contracts before and after changes.
+- Inspect affected Web-React-2 and AdminDashboard consumers. Test affected navigation and API workflows rather than assuming a successful server startup proves compatibility.
+- For affected cache paths, test cold cache, warm cache, and invalidation without increasing unnecessary requests.
+- For affected payments, wallets, purchases, unlocks, recovery, and webhooks, verify authorization, idempotency, existing balance rules, and failure handling with isolated test data.
+- For affected media uploads, verify existing direct Cloudflare upload, client-side compression, server fallback, size limits, and temporary-file cleanup without changing unrelated upload behavior.
+- For affected workers, native dependencies, or resource-sensitive paths, verify runtime compatibility and compare relevant RAM, CPU, request volume, Disk IO, and bandwidth against the baseline. Do not introduce uncontrolled workers or retry loops.
+- Do not change production database records, RLS, GRANT permissions, financial data, or storage as a testing shortcut.
+
+### Mandatory Step-by-Step Workflow
+
+1. Inspect the current code.
+2. Verify the actual problem.
+3. Identify the smallest safe change.
+4. Record the rollback point.
+5. Implement only the current change.
+6. Review the complete diff.
+7. Run relevant automated checks.
+8. Verify affected existing functionality.
+9. Report actual results and remaining risks.
+10. Stop and wait for owner approval and required verification before starting the next independent change.
+
+The owner's "Done, next" confirms that the previous instruction was carried out. It does not prove regression tests passed or authorize skipping verification.
+
+### Regression and Rollback Protection
+
+- If an existing feature breaks, immediately stop subsequent changes.
+- Identify the exact commit and code difference responsible for the regression.
+- Compare against the last known-good implementation.
+- Restore or repair only the responsible change with owner approval.
+- Never blindly roll back unrelated working changes.
+- Never introduce additional speculative fixes while investigating a regression.
+- Never merge or deploy an unverified candidate.
+- If staging is unavailable, disclose the limitation and obtain explicit approval for a controlled release with a rollback plan.
+
+### Mandatory Reporting
+
+For every change, report:
+
+- Exact file paths.
+- Reason for the change.
+- What was changed.
+- Existing functionality that must remain unchanged.
+- Tests actually performed.
+- Tests passed, failed, or not performed.
+- Remaining risks.
+- Rollback point.
+
+Never invent test results or claim that untested functionality works.
+
+If required source code, verification, or approval is unavailable, STOP and report the blocker.
+
+Application stability, data integrity, security, and preservation of existing functionality always take priority over development speed.
+
 ## Critical Protected Route — Public Story Detail
 
 The following block in `src/routes/publicStories.routes.js` is production-critical and MUST remain unchanged.
@@ -250,7 +360,7 @@ Do not claim a Missing rate limiting alert is fixed just because a limiter varia
 - Verify installed dependency versions, official advisories, actual usage, exploit conditions, and production exposure.
 - Prioritize confirmed risks and document reasons for deferring valid security alerts.
 - Inspect affected routes, controllers, services, middleware, database functions, and API consumers before editing.
-- Apply the smallest effective change and complete related fixes together.
+- Apply the smallest effective change for one confirmed problem at a time. Follow the Mandatory Change Isolation & Regression Gate. Never batch independent fixes.
 - Prefer compatible security patches. Major dependency upgrades require compatibility review and explicit approval.
 - Never blindly merge Dependabot updates or run forced audit fixes.
 - Keep package.json and package-lock.json synchronized.
