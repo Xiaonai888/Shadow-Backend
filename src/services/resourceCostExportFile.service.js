@@ -42,7 +42,7 @@ async function* chunks(parts) {
   if (length) yield Buffer.concat(pending, length)
 }
 
-export async function prepareResourceCostFile({ entries, zip = false, checkpoint = () => {} }) {
+export async function prepareResourceCostFile({ entries, zip = false, checkpoint = () => {}, onProgress = () => {} }) {
   if (!Array.isArray(entries) || entries.length < 1 || entries.length > 32 || (!zip && entries.length !== 1)) throw new TypeError('Invalid report entries.')
   if (new Set(entries.map(entry => entry[0])).size !== entries.length) throw new TypeError('Duplicate report entry name.')
   await checkpoint()
@@ -52,6 +52,7 @@ export async function prepareResourceCostFile({ entries, zip = false, checkpoint
   let file
   let offset = 0
   const central = []
+  let completed = 0
   try {
     file = await open(path, 'wx', 0o600)
     const write = async (buffer) => {
@@ -106,6 +107,8 @@ export async function prepareResourceCostFile({ entries, zip = false, checkpoint
         header.writeUInt32LE(start, 42)
         central.push(header, filename)
       }
+      completed += 1
+      await onProgress({ completed, total: entries.length })
     }
     if (zip) {
       const directoryStart = offset
