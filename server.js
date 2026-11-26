@@ -136,7 +136,7 @@ import { adminSupportSeenRoutes, readerSupportSeenRoutes } from './src/routes/ad
 import adminSupportMessageActionsRoutes from './src/routes/adminSupportMessageActions.routes.js'
 import { adminSupportBlockRoutes, readerSupportBlockRoutes } from './src/routes/adminSupportBlock.routes.js'
 import { adminSupportImagesRoutes, readerSupportImagesRoutes } from './src/routes/supportChatImages.routes.js'
-import { readerSupportPinsRoutes } from './src/routes/supportChatPins.routes.js'
+import { readerSupportPinsRoutes, adminSupportPinsRoutes } from './src/routes/supportChatPins.routes.js'
 import adminSearchInsightsRoutes from './src/routes/adminSearchInsights.routes.js'
 import adminBoostInsightsRoutes from './src/routes/adminBoostInsights.routes.js'
 import adminAuthorAdsRoutes from './src/routes/adminAuthorAds.routes.js'
@@ -1126,6 +1126,7 @@ app.use('/api/admin/support-chat', adminSupportSeenRoutes)
 app.use('/api/admin/support-chat', adminSupportMessageActionsRoutes)
 app.use('/api/admin/support-chat', adminSupportBlockRoutes)
 app.use('/api/admin/support-chat', adminSupportImagesRoutes)
+app.use('/api/admin/support-chat', adminSupportPinsRoutes)
 app.use('/api/reader/support-chat', readerSupportChatRoutes)
 app.use('/api/reader/support-chat', readerSupportSeenRoutes)
 app.use('/api/reader/support-chat', readerSupportBlockRoutes)
