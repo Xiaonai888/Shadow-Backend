@@ -1,13 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { getSupportNotificationCount, getSupportNotifications, parseSupportNotificationPage } from '../src/services/adminSupportNotification.service.js'
+import { getSupportNotificationCount, getSupportNotifications, parseSupportNotificationPage, parseSupportNotificationFilter } from '../src/services/adminSupportNotification.service.js'
 
 function database(responses) {
   const calls = []
   return { calls, from(table) {
     const response = responses[table]
     const query = { then(resolve, reject) { return Promise.resolve(response).then(resolve, reject) } }
-    for (const method of ['select', 'neq', 'gt', 'eq', 'order', 'range', 'in', 'limit']) {
+    for (const method of ['select', 'neq', 'gt', 'eq', 'order', 'range', 'in', 'limit', 'not']) {
       query[method] = (...args) => { calls.push([table, method, ...args]); return query }
     }
     return query
@@ -58,4 +58,21 @@ test('database failures do not produce misleading zero count', async () => {
   const db = database({ [table]: { error: new Error('offline') } })
   await assert.rejects(getSupportNotificationCount(db, owner), /offline/)
   await assert.rejects(getSupportNotifications(db, owner, 1), /offline/)
+})
+
+
+test('history includes read conversations and remains scoped to staff', async () => {
+  const db = database({ [table]: { data: [{ id: 'chat-1', reader_user_id: 'r', unread_for_admin: 0, last_reader_message_at: '2026-11-25T00:00:00Z', last_message_at: '2026-11-26T00:00:00Z' }] }, users: { data: [] } })
+  const data = await getSupportNotifications(db, staff, 1, 'all')
+  assert.equal(data.notifications[0].is_read, true)
+  assert.equal(data.notifications[0].last_activity_at, '2026-11-25T00:00:00Z')
+  assert.ok(db.calls.some(c => c[1] === 'not' && c[2] === 'last_reader_message_at'))
+  assert.ok(db.calls.some(c => c[1] === 'eq' && c[3] === 'staff-a'))
+  assert.ok(!db.calls.some(c => c[1] === 'gt'))
+})
+
+test('filter validation rejects non-string and unknown filters', () => {
+  assert.equal(parseSupportNotificationFilter(undefined), 'unread')
+  assert.equal(parseSupportNotificationFilter('all'), 'all')
+  for (const input of [[], null, 'invalid', 1]) assert.equal(parseSupportNotificationFilter(input), null)
 })
