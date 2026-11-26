@@ -124,6 +124,7 @@ export async function getResourceCostReport({
   const end = new Date(time).toISOString()
   const database = await clientOrDefault(dependencies.client)
   const checkMemory = dependencies.checkMemory ?? (includeApplication && !dependencies.client ? assertReportMemory : null)
+  const progress = typeof dependencies.onProgress === 'function' ? dependencies.onProgress : () => {}
   const uploadFields = 'hour_start,feature,route,upload_mode,attempts,successes,failures,ingress_bytes,egress_bytes,object_bytes'
   if (checkMemory) checkMemory()
   const sharedRender = await readSharedMonitoringRender({
@@ -133,22 +134,27 @@ export async function getResourceCostReport({
     serviceIds: detectedServices(serviceIds),
   }, { client: database })
   if (checkMemory) checkMemory()
+  progress('render_collected', 10)
   const sharedProviders = await readSharedMonitoringProviders({
     from: range.from,
     to: end,
     asOf,
   }, { client: database })
   if (checkMemory) checkMemory()
+  progress('providers_collected', 20)
   const storedUploadRows = await fetchAll(database, 'resource_cost_upload_hourly', uploadFields, 'hour_start', range.from, end, { tieBreakers: ['feature', 'route', 'upload_mode'], checkMemory })
+  progress('upload_collected', 30)
   let directMangaJobs = await fetchAll(database, 'heavy_media_jobs', 'id,job_type,created_at,intake:payload->intake,source_bytes:payload->source_bytes', 'created_at', range.from, end, { jobType: 'manga_page_v2', tieBreakers: ['id'], checkMemory })
   const directManga = summarizeMangaDirectJobs(directMangaJobs)
   directMangaJobs = null
   if (checkMemory) checkMemory()
+  progress('media_collected', 40)
   const sharedApplication = includeApplication
     ? await readSharedMonitoringApplication({ from: range.from, to: end, asOf }, { client: database, checkMemory })
     : null
   if (checkMemory) checkMemory()
 
+  progress('application_collected', 50)
   const renderRows = sharedRender.rows
   const providerRows = sharedProviders.rows
   const existingDirectHours = new Set(storedUploadRows.filter((row) =>
@@ -255,5 +261,6 @@ export async function getResourceCostReport({
     enumerable: false,
   })
 
+  progress('summary_complete', 60)
   return report
 }
