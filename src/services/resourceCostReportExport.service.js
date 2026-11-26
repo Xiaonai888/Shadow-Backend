@@ -1,3 +1,5 @@
+import { prepareResourceCostFile } from './resourceCostExportFile.service.js'
+
 const DAY_MS = 86_400_000
 
 function validReport(report) {
@@ -13,10 +15,9 @@ function safeCell(value) {
   return `"${guarded.replaceAll('"', '""')}"`
 }
 
-function csv(columns, rows) {
-  const lines = [columns.map(safeCell).join(',')]
-  for (const row of rows) lines.push(columns.map((key) => safeCell(row[key])).join(','))
-  return `\uFEFF${lines.join('\r\n')}\r\n`
+function* csvParts(columns, rows) {
+  yield `\uFEFF${columns.map(safeCell).join(',')}\r\n`
+  for (const row of rows) yield `${columns.map((key) => safeCell(row[key])).join(',')}\r\n`
 }
 
 function dateGroup(date, frequency) {
@@ -92,8 +93,8 @@ export function resourceCostBreakdownRows(report, frequency = 'day') {
   return [...grouped.values()].sort((a, b) => a.period.localeCompare(b.period))
 }
 
-function providerRows(report) {
-  return report.days.flatMap((day) => (day.provider_metrics || []).map((metric) => ({
+function* providerRows(report) {
+  for (const day of report.days) for (const metric of day.provider_metrics || []) yield {
     date: day.date,
     provider: metric.provider,
     metric: metric.metric,
@@ -105,11 +106,11 @@ function providerRows(report) {
     samples: metric.samples,
     incomplete_samples: metric.incomplete_samples,
     note: metric.aggregation === 'delta' ? 'Delta belongs to observation day; actual network timing can differ.' : metric.aggregation === 'latest' ? 'Latest gauge reading, not daily usage.' : 'Measured interval; see source coverage.',
-  })))
+  }
 }
 
-function uploadRows(report) {
-  return report.days.flatMap((day) => (day.upload_audit?.by_route || []).map((route) => ({
+function* uploadRows(report) {
+  for (const day of report.days) for (const route of day.upload_audit?.by_route || []) yield {
     date: day.date,
     feature: route.feature,
     route: route.route,
@@ -121,7 +122,7 @@ function uploadRows(report) {
     egress_bytes: route.egress_bytes,
     object_bytes: route.object_bytes,
     note: 'Application audit counters, not authoritative provider billing.',
-  })))
+  }
 }
 
 function trafficDirection(row) {
@@ -131,8 +132,8 @@ function trafficDirection(row) {
     : row?.kind === 'http_response' ? 'outbound' : 'unknown'
 }
 
-function attributionRows(report) {
-  return report.days.flatMap((day) => (day.application_attribution || []).map((row) => ({
+function* attributionRows(report) {
+  for (const day of report.days) for (const row of day.application_attribution || []) yield {
     date: day.date,
     feature: row.feature,
     dependency: row.dependency,
@@ -142,27 +143,25 @@ function attributionRows(report) {
     observed_bytes: row.observed_bytes,
     coverage: report.sources?.application?.status || 'unknown',
     note: 'Top recorded application rows only; not complete external/network billing.',
-  })))
+  }
 }
 
-function routeAttributionRows(report) {
-  return report.days.flatMap((day) =>
-    (day.route_attribution || []).map((row) => ({
-      date: day.date,
-      feature: row.feature,
-      dependency: row.dependency,
-      kind: row.kind,
-      direction: trafficDirection(row),
-      entry_point: row.entry_point,
-      route: row.route,
-      target: row.target,
-      classification: row.classification,
-      observed_events: row.observed_events,
-      observed_bytes: row.observed_bytes,
-      coverage: report.sources?.application?.status || 'unknown',
-      note: 'Observed API usage, not invoice cost. Grouped or historical data may lack exact routes.',
-    }))
-  )
+function* routeAttributionRows(report) {
+  for (const day of report.days) for (const row of day.route_attribution || []) yield {
+    date: day.date,
+    feature: row.feature,
+    dependency: row.dependency,
+    kind: row.kind,
+    direction: trafficDirection(row),
+    entry_point: row.entry_point,
+    route: row.route,
+    target: row.target,
+    classification: row.classification,
+    observed_events: row.observed_events,
+    observed_bytes: row.observed_bytes,
+    coverage: report.sources?.application?.status || 'unknown',
+    note: 'Observed API usage, not invoice cost. Grouped or historical data may lack exact routes.',
+  }
 }
 
 function applicationHourlyCsvRows(report) {
@@ -307,7 +306,7 @@ function readme(report) {
     '',
     'Render bandwidth is sourced from stored Render provider measurements.',
     'RenderHourly.csv shows measured service-hours plus known missing mature hours (blank bytes are unknown, not zero).',
-        'Hourly provider values are not invoices and cannot identify the application route responsible for each byte.',
+    'Hourly provider values are not invoices and cannot identify the application route responsible for each byte.',
     'ApplicationHourly.csv groups already-collected application measurements into UTC hourly buckets (and shows Cambodia time).',
     'ApplicationHourly.csv is not Render billing: measured HTTP payload, external request sizes, and incoming traffic can differ from billed outbound; missing hours are unknown, not zero.',
     'Direction is inbound, outbound or unknown. Legacy or unmeasured external request direction stays unknown; application payload is not provider-billed traffic.',
@@ -388,27 +387,54 @@ function makeZip(files) {
   return Buffer.concat([...local, ...central, end])
 }
 
-export function createResourceCostDownload(report, format = 'full-zip') {
+function* jsonParts(value, depth = 0) {
+  if (value === null || typeof value !== 'object') {
+    yield JSON.stringify(value) ?? 'null'
+    return
+  }
+  if (typeof value.toJSON === 'function') {
+    yield* jsonParts(value.toJSON(), depth)
+    return
+  }
+  const indent = '  '.repeat(depth + 1)
+  const closing = '  '.repeat(depth)
+  const array = Array.isArray(value)
+  yield array ? '[' : '{'
+  let first = true
+  if (array) {
+    for (const item of value) {
+      yield `${first ? '\n' : ',\n'}${indent}`
+      yield* jsonParts(item, depth + 1)
+      first = false
+    }
+  } else {
+    for (const key of Object.keys(value)) {
+      const item = value[key]
+      if (item === undefined || typeof item === 'function' || typeof item === 'symbol') continue
+      yield `${first ? '\n' : ',\n'}${indent}${JSON.stringify(key)}: `
+      yield* jsonParts(item, depth + 1)
+      first = false
+    }
+  }
+  if (!first) yield `\n${closing}`
+  yield array ? ']' : '}'
+}
+
+function exportEntries(report, format) {
   validReport(report)
-    const valid = new Set([
-    'daily-csv', 'weekly-csv', 'monthly-csv',
-    'provider-csv', 'upload-csv', 'api-csv',
-    'route-csv', 'evidence-json', 'full-zip',
-  ])
-  if (!valid.has(format)) throw new TypeError('Unsupported Resource & Cost export format.')
   const files = {
-    'daily-csv': ['Daily.csv', csv(BREAKDOWN_COLUMNS, resourceCostBreakdownRows(report, 'day'))],
-    'weekly-csv': ['Weekly.csv', csv(BREAKDOWN_COLUMNS, resourceCostBreakdownRows(report, 'week'))],
-    'monthly-csv': ['Monthly.csv', csv(BREAKDOWN_COLUMNS, resourceCostBreakdownRows(report, 'month'))],
-    'provider-csv': ['Providers.csv', csv(['date', 'provider', 'metric', 'scope', 'unit', 'kind', 'aggregation', 'value', 'samples', 'incomplete_samples', 'note'], providerRows(report))],
-    'upload-csv': ['UploadRoutes.csv', csv(['date', 'feature', 'route', 'mode', 'attempts', 'successes', 'failures', 'ingress_bytes', 'egress_bytes', 'object_bytes', 'note'], uploadRows(report))],
-    'api-csv': ['ApiAttribution.csv', csv(['date', 'feature', 'dependency', 'kind', 'direction', 'observed_events', 'observed_bytes', 'coverage', 'note'], attributionRows(report))],
-        'route-csv': ['RouteAttribution.csv', csv([
+    'daily-csv': ['Daily.csv', () => csvParts(BREAKDOWN_COLUMNS, resourceCostBreakdownRows(report, 'day'))],
+    'weekly-csv': ['Weekly.csv', () => csvParts(BREAKDOWN_COLUMNS, resourceCostBreakdownRows(report, 'week'))],
+    'monthly-csv': ['Monthly.csv', () => csvParts(BREAKDOWN_COLUMNS, resourceCostBreakdownRows(report, 'month'))],
+    'provider-csv': ['Providers.csv', () => csvParts(['date', 'provider', 'metric', 'scope', 'unit', 'kind', 'aggregation', 'value', 'samples', 'incomplete_samples', 'note'], providerRows(report))],
+    'upload-csv': ['UploadRoutes.csv', () => csvParts(['date', 'feature', 'route', 'mode', 'attempts', 'successes', 'failures', 'ingress_bytes', 'egress_bytes', 'object_bytes', 'note'], uploadRows(report))],
+    'api-csv': ['ApiAttribution.csv', () => csvParts(['date', 'feature', 'dependency', 'kind', 'direction', 'observed_events', 'observed_bytes', 'coverage', 'note'], attributionRows(report))],
+    'route-csv': ['RouteAttribution.csv', () => csvParts([
       'date', 'feature', 'dependency', 'kind', 'direction',
       'entry_point', 'route', 'target', 'classification',
       'observed_events', 'observed_bytes', 'coverage', 'note',
     ], routeAttributionRows(report))],
-    'evidence-json': ['Evidence.json', JSON.stringify(report, null, 2)],
+    'evidence-json': ['Evidence.json', () => jsonParts(report)],
   }
   const stamp = report.period.from.slice(0, 10).replaceAll('-', '')
   if (format === 'full-zip') {
@@ -418,26 +444,44 @@ export function createResourceCostDownload(report, format = 'full-zip') {
       'websocket_response_bytes', 'private_link_bytes',
       'breakdown_gap_bytes', 'breakdown_excess_bytes', 'note',
     ]
-    const entries = Object.values(files).concat([
-           ['RenderHourly.csv', csv(hourlyColumns, renderHourlyCsvRows(report))],
-      ['ApplicationHourly.csv', csv([
-        'hour_start_utc', 'hour_start_ict', 'feature', 'dependency',
-        'kind', 'direction', 'entry_point', 'route', 'target', 'classification',
-        'observed_events', 'observed_bytes', 'observed_errors',
-        'coverage', 'note',
-      ], applicationHourlyCsvRows(report))],
-      ['README.txt', readme(report)],
-    ])
     return {
       filename: `shadow-resource-cost_${stamp}.zip`,
       contentType: 'application/zip',
-      body: makeZip(entries),
+      zip: true,
+      entries: Object.values(files).concat([
+        ['RenderHourly.csv', () => csvParts(hourlyColumns, renderHourlyCsvRows(report))],
+        ['ApplicationHourly.csv', () => csvParts([
+          'hour_start_utc', 'hour_start_ict', 'feature', 'dependency',
+          'kind', 'direction', 'entry_point', 'route', 'target', 'classification',
+          'observed_events', 'observed_bytes', 'observed_errors',
+          'coverage', 'note',
+        ], applicationHourlyCsvRows(report))],
+        ['README.txt', () => [readme(report)]],
+      ]),
     }
   }
-  const [name, contents] = files[format]
+  if (!Object.hasOwn(files, format)) throw new TypeError('Unsupported Resource & Cost export format.')
+  const entry = files[format]
   return {
-    filename: `shadow-resource-cost_${stamp}_${name}`,
+    filename: `shadow-resource-cost_${stamp}_${entry[0]}`,
     contentType: format === 'evidence-json' ? 'application/json; charset=utf-8' : 'text/csv; charset=utf-8',
-    body: Buffer.from(contents, 'utf8'),
+    zip: false,
+    entries: [entry],
   }
+}
+
+export function createResourceCostDownload(report, format = 'full-zip') {
+  const { filename, contentType, zip, entries } = exportEntries(report, format)
+  const files = entries.map(([name, parts]) => [name, [...parts()].join('')])
+  return {
+    filename,
+    contentType,
+    body: zip ? makeZip(files) : Buffer.from(files[0][1], 'utf8'),
+  }
+}
+
+export async function prepareResourceCostDownload(report, format = 'full-zip', { checkpoint } = {}) {
+  const { filename, contentType, zip, entries } = exportEntries(report, format)
+  const file = await prepareResourceCostFile({ entries, zip, checkpoint })
+  return { filename, contentType, ...file }
 }
