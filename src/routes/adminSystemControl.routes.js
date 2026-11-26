@@ -28,6 +28,7 @@ import { getAdminPerformanceDiagnostics } from '../services/adminPerformanceDiag
 import { getImageLoadDiagnosticsSnapshot } from './imageLoadDiagnostics.routes.js'
 import { readSharedSystemControlProviderUsage } from '../services/sharedMonitoring/sharedMonitoringSystemControl.service.js'
 import databaseIoRoutes from './databaseIo.routes.js'
+import telegramPromotionMonitorRoutes from './telegramPromotionMonitor.routes.js'
 import databaseIoDownloadRoutes from './databaseIoDownload.routes.js'
 import { getRuntimeMemoryGrowthSnapshot } from '../services/runtimeMemoryGrowth.service.js'
 import { getRuntimeMemoryEvidenceSnapshot } from '../services/runtimeMemoryEvidence.service.js'
@@ -667,5 +668,6 @@ router.post(
 
 router.use('/database-io/download', databaseIoDownloadRoutes)
 router.use('/database-io', databaseIoRoutes)
+router.use('/telegram-promotion', systemControlGuard, viewSystemControl, telegramPromotionMonitorRoutes)
 
 export default router
