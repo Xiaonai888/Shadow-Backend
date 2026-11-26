@@ -362,6 +362,7 @@ export async function getAuthorIncomeRecordData({
   authorId,
   period,
   date,
+  previousMonth = null,
 }) {
   const today = cambodiaDateParts()
   const todayText = [
@@ -380,6 +381,87 @@ export async function getAuthorIncomeRecordData({
   )
 
   const summaryStartTime = Math.min(
+      if (previousMonth) {
+    const toBounds = range => ({
+      start: range.startIso,
+      end: range.endIso,
+    })
+
+    const { data, error } = await supabase.rpc(
+      'get_author_income_dashboard_totals_v1',
+      {
+        p_author_id: authorId,
+        p_previous_month: previousMonth,
+        p_ranges: {
+          day: toBounds(todayRange),
+          week: toBounds(weekRange),
+          month: toBounds(monthRange),
+          year: toBounds(yearRange),
+          selected: toBounds(selectedRange),
+        },
+      }
+    )
+
+    if (!error) {
+      const fields = [
+        'today_usd',
+        'this_week_usd',
+        'this_month_usd',
+        'this_year_usd',
+        'total_usd',
+        'last_month_usd',
+        'selected_usd',
+        'selected_diamonds',
+        'selected_unlock_count',
+        'selected_gift_count',
+        'selected_record_count',
+      ]
+
+      if (!data || !fields.every(key =>
+        typeof data[key] === 'number' && Number.isFinite(data[key])
+      )) {
+        throw new Error('Invalid author income dashboard totals')
+      }
+
+      if (![
+        'selected_unlock_count',
+        'selected_gift_count',
+        'selected_record_count',
+      ].every(key => Number.isSafeInteger(data[key]) && data[key] >= 0)) {
+        throw new Error('Invalid author income record counts')
+      }
+
+      const selectedRecordRows = await fetchRecordRows(authorId, selectedRange)
+      const selectedRecords = await enrichRecords(selectedRecordRows)
+
+      return {
+        incomeTotals: {
+          totalUsd: data.total_usd,
+          lastMonthUsd: data.last_month_usd,
+        },
+        summary: {
+          today_usd: data.today_usd,
+          this_week_usd: data.this_week_usd,
+          this_month_usd: data.this_month_usd,
+          this_year_usd: data.this_year_usd,
+        },
+        record: {
+          period: selectedRange.period,
+          label: dateLabel(selectedRange),
+          total_usd: data.selected_usd,
+          total_diamonds: data.selected_diamonds,
+          unlock_count: data.selected_unlock_count,
+          gift_count: data.selected_gift_count,
+          records: selectedRecords,
+          has_more: data.selected_record_count > selectedRecordRows.length,
+        },
+      }
+    }
+
+    if (error.code !== 'PGRST202') throw error
+  }
+
+
     new Date(todayRange.startIso).getTime(),
     new Date(weekRange.startIso).getTime(),
     new Date(monthRange.startIso).getTime(),
