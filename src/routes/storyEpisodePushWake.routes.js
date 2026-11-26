@@ -1,6 +1,7 @@
 import express from 'express'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { wakeStoryEpisodePushScheduler } from '../services/storyEpisodePushScheduler.js'
+import { wakeTelegramPromotionScheduler } from '../services/telegramPromotion/runtime.service.js'
 
 const router = express.Router()
 
@@ -20,6 +21,7 @@ router.post('/wake', (req, res) => {
   }
 
   const scheduled = wakeStoryEpisodePushScheduler()
+  wakeTelegramPromotionScheduler()
   return res.status(202).json({ ok: true, scheduled })
 })
 
