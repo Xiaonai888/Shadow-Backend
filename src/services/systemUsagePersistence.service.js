@@ -11,6 +11,7 @@ import { persistSystemUsageGroupedArchive } from './systemUsageArchivePipeline.s
 import { listSystemUsageArchiveIndex } from './systemUsageArchiveIndex.service.js'
 import { buildResourceCostWindowAttribution } from './resourceCostAttributionWindow.service.js'
 import { getPassiveRequestSnapshot } from './passiveRequestMonitor.service.js'
+import { getResourceOptimizationEvidenceSnapshot } from './resourceOptimizationEvidence.service.js'
 import {
   getHistoricalErrorEvidence,
   getPageRequestSnapshot,
@@ -609,6 +610,12 @@ function buildSnapshot(now = Date.now()) {
         }),
         persistence: 'stored_15_minute_snapshot',
       },
+      resource_optimization: getResourceOptimizationEvidenceSnapshot({
+        now,
+        from: windowStart,
+        to: windowEnd,
+        limit: 10,
+      }),
       monitor: source.monitor,
       top_rows: aggregateRows(minutes),
       summary_rows: summarizeUsageMinutes(minutes).rows,
