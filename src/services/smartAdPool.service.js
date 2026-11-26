@@ -1,5 +1,5 @@
 import { supabase } from '../config/supabase.js'
-import { readSmartAdCandidatePage, readSmartAdCatalogByIds } from './smartAdCatalog.service.js'
+import { readSmartAdCandidatePage, readSmartAdCatalogByIds, enrichSmartAdCandidates, STORY_SELECT } from './smartAdCatalog.service.js'
 import { SMART_AD_POLICY, clampSmartAdCapacity } from './smartAdEligibility.service.js'
 import {
   normalizeStoryLanguage,
@@ -138,12 +138,16 @@ export async function readSmartAdActiveCatalogPage({
   if (inFlightPages.has(key)) return inFlightPages.get(key)
   const promise = (async () => {
     const rows = verify(await db.from('smart_ad_active_pool')
-      .select('story_id,stories!inner(story_language)')
+      .select(`story_id,stories!inner(${STORY_SELECT})`)
       .ilike('stories.story_language', STORY_LANGUAGE_LABELS[language])
       .order('priority_score', { ascending: false })
       .order('story_id', { ascending: true })
       .range(offset, offset + take - 1), 'Smart Ad language catalog IDs')
-    const eligible = await readSmartAdCatalogByIds(rows.map((row) => row.story_id), { db, now, includeMedia })
+    const sourceStories = rows.map(row => row.stories)
+if (sourceStories.some((story, index) => !story || String(story.id) !== String(rows[index].story_id))) {
+  throw new Error('Invalid Smart Ad catalog relationship')
+}
+const eligible = await enrichSmartAdCandidates(sourceStories, { db, now, includeMedia })
     const stories = filterAutoAdStoriesByLanguage(eligible, language)
     const result = {
       ok: true, stories: stories.map((story) => ({
