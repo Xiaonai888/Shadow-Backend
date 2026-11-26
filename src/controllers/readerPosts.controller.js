@@ -2314,26 +2314,47 @@ async function readSocialEchoPosts({
       ? supabase
           .from('stories')
           .select(
-            'id, author_id, user_id, title, cover_url, landscape_thumbnail_url, main_genre, status, deleted_at'
-          )
-          .in('id', storyIds)
-          .is('deleted_at', null)
-      : Promise.resolve({
-          data: [],
-          error: null,
-        }),
-    episodeIds.length
-      ? supabase
+  const episodeRequest = episodeIds.length
+    ? Promise.resolve(
+        supabase
           .from('episodes')
           .select(
             'id, story_id, title, episode_number, cover_url, published_at, status, deleted_at'
           )
           .in('id', episodeIds)
           .is('deleted_at', null)
-      : Promise.resolve({
-          data: [],
-          error: null,
-        }),
+      )
+    : Promise.resolve({ data: [], error: null })
+
+  const storyRequest = episodeRequest.then((result) => {
+    if (result.error) throw result.error
+
+    const ids = uniqueStrings([
+      ...storyIds,
+      ...(result.data || []).map((episode) => episode.story_id),
+    ])
+
+    if (!ids.length) return { data: [], error: null }
+
+    return supabase
+      .from('stories')
+      .select(
+        'id, author_id, user_id, title, cover_url, landscape_thumbnail_url, main_genre, status, deleted_at'
+      )
+      .in('id', ids)
+      .is('deleted_at', null)
+  })
+
+  const [
+    storyResult,
+    episodeResult,
+    readerPostResult,
+    authorPostResult,
+    promotionResult,
+  ] = await Promise.all([
+    storyRequest,
+    episodeRequest,
+
     combinedReaderPostIds.length
       ? supabase
           .from('reader_posts')
@@ -2385,43 +2406,7 @@ async function readSocialEchoPosts({
 
   const episodes =
     episodeResult.data || []
-  const episodeStoryIds = uniqueStrings(
-    episodes.map((episode) =>
-      episode.story_id
-    )
-  )
-  let stories =
-    storyResult.data || []
-  const loadedStoryIds = new Set(
-    stories.map((story) =>
-      String(story.id)
-    )
-  )
-  const missingStoryIds =
-    episodeStoryIds.filter(
-      (id) => !loadedStoryIds.has(id)
-    )
-
-  if (missingStoryIds.length) {
-    const {
-      data: extraStories,
-      error,
-    } = await supabase
-      .from('stories')
-      .select(
-        'id, author_id, user_id, title, cover_url, landscape_thumbnail_url, main_genre, status, deleted_at'
-      )
-      .in('id', missingStoryIds)
-      .is('deleted_at', null)
-
-    if (error) throw error
-
-    stories = [
-      ...stories,
-      ...(extraStories || []),
-    ]
-  }
-
+const stories = storyResult.data || []
   const authorPageIds = uniqueStrings(
     stories.map((story) =>
       story.author_id
