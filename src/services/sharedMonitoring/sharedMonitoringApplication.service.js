@@ -4,12 +4,13 @@ import { readSharedMonitoringRows } from './sharedMonitoringRows.service.js'
 
 const HOUR_MS = 3_600_000
 const DAY_MS = 86_400_000
+const APPLICATION_PAGE_SIZE = 50
 
 export async function readSharedMonitoringApplication({
   from,
   to,
   asOf = new Date(),
-} = {}, { client = null } = {}) {
+} = {}, { client = null, checkMemory = null } = {}) {
   const requested = resourceCostRange(from, to, 31)
   const start = resourceCostTimestamp(requested.from)
   const end = Math.min(resourceCostTimestamp(requested.to), resourceCostTimestamp(asOf))
@@ -20,34 +21,45 @@ export async function readSharedMonitoringApplication({
   const sourceTypes = []
   let windows = 0
 
+  const consumePage = (timeField) => (page) => {
+    for (const item of page) {
+      if (checkMemory) checkMemory()
+      for (const row of resourceCostAttributionReportRows(item, timeField)) rows.push(row)
+    }
+    windows += page.length
+    if (checkMemory) checkMemory()
+  }
+
   if (start < cutoff) {
     const archiveEnd = Math.min(cutoff, end)
     if (archiveEnd > start) {
-      const archived = await readSharedMonitoringRows({
+      await readSharedMonitoringRows({
         table: 'system_usage_rollups',
         columns: 'granularity,bucket_start,bucket_end,request_count,bytes,payload',
         timeField: 'bucket_start',
         from: requested.from,
         to: new Date(archiveEnd).toISOString(),
         filters: { granularity: 'hour' },
+        pageSize: APPLICATION_PAGE_SIZE,
+        beforePage: checkMemory,
+        onPage: consumePage('bucket_start'),
       }, client)
-      for (const item of archived) rows.push(...resourceCostAttributionReportRows(item, 'bucket_start'))
-      windows += archived.length
       sourceTypes.push('hourly_rollup')
     }
   }
 
   const liveStart = Math.max(start, cutoff)
   if (end > liveStart) {
-    const snapshots = await readSharedMonitoringRows({
+    await readSharedMonitoringRows({
       table: 'system_usage_snapshots',
       columns: 'window_start,window_end,request_count,bytes,payload',
       timeField: 'window_start',
       from: new Date(liveStart).toISOString(),
       to: new Date(end).toISOString(),
+      pageSize: APPLICATION_PAGE_SIZE,
+      beforePage: checkMemory,
+      onPage: consumePage('window_start'),
     }, client)
-    for (const item of snapshots) rows.push(...resourceCostAttributionReportRows(item, 'window_start'))
-    windows += snapshots.length
     sourceTypes.push('15_minute_snapshots')
   }
 
