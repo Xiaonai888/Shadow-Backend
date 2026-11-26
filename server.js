@@ -132,6 +132,7 @@ import adminSupportChatFoldersRoutes from './src/routes/adminSupportChatFolders.
 import readerSupportChatRoutes from './src/routes/readerSupportChat.routes.js'
 import adminSupportNotificationRoutes from './src/routes/adminSupportNotification.routes.js'
 import adminSupportNotificationStreamRoutes from './src/routes/adminSupportNotificationStream.routes.js'
+import { adminSupportSeenRoutes } from './src/routes/adminSupportSeen.routes.js'
 import adminSearchInsightsRoutes from './src/routes/adminSearchInsights.routes.js'
 import adminBoostInsightsRoutes from './src/routes/adminBoostInsights.routes.js'
 import adminAuthorAdsRoutes from './src/routes/adminAuthorAds.routes.js'
@@ -1115,6 +1116,7 @@ app.use('/api/admin/support-chat', adminSupportChatActionsRoutes)
 app.use('/api/admin/support-chat', adminSupportChatFoldersRoutes)
 app.use('/api/admin/support-chat', adminSupportNotificationRoutes)
 app.use('/api/admin/support-chat', adminSupportNotificationStreamRoutes)
+app.use('/api/admin/support-chat', adminSupportSeenRoutes)
 app.use('/api/reader/support-chat', readerSupportChatRoutes)
 app.use('/api/admin/search-insights', adminSearchInsightsRoutes)
 app.use('/api/admin/boost', adminBoostInsightsRoutes)
