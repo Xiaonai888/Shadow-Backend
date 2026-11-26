@@ -52,22 +52,27 @@ async function findUnreadStories(storyIds, userId, todayStart, now) {
 
   for (let i = 0; i < storyIds.length; i += BATCH_SIZE) {
     const ids = storyIds.slice(i, i + BATCH_SIZE)
-    const [episodes, progress] = await Promise.all([
-      loadAllRows(() => supabase
-        .from('episodes')
-        .select('story_id, episode_number, published_at, created_at')
-        .in('story_id', ids)
-        .eq('status', 'published')
-        .is('deleted_at', null)
-        .or(
-          `and(published_at.gte.${todayStart},published_at.lte.${now}),and(published_at.is.null,created_at.gte.${todayStart},created_at.lte.${now})`
-        )),
-      loadAllRows(() => supabase
-        .from('reading_progress')
-        .select('story_id, episode_number, last_read_at')
-        .eq('user_id', userId)
-        .in('story_id', ids)),
-    ])
+    const episodes = await loadAllRows(() => supabase
+      .from('episodes')
+      .select('story_id, episode_number, published_at, created_at')
+      .in('story_id', ids)
+      .eq('status', 'published')
+      .is('deleted_at', null)
+      .or(
+        `and(published_at.gte.${todayStart},published_at.lte.${now}),and(published_at.is.null,created_at.gte.${todayStart},created_at.lte.${now})`
+      ))
+
+    if (!episodes.length) continue
+
+    const updatedStoryIds = [...new Set(
+      episodes.map((episode) => String(episode.story_id))
+    )]
+
+    const progress = await loadAllRows(() => supabase
+      .from('reading_progress')
+      .select('story_id, episode_number, last_read_at')
+      .eq('user_id', userId)
+      .in('story_id', updatedStoryIds))
 
     const progressByStory = new Map(
       progress.map((row) => [String(row.story_id), row])
