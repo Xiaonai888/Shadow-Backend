@@ -136,6 +136,7 @@ import { adminSupportSeenRoutes, readerSupportSeenRoutes } from './src/routes/ad
 import adminSupportMessageActionsRoutes from './src/routes/adminSupportMessageActions.routes.js'
 import { adminSupportBlockRoutes, readerSupportBlockRoutes } from './src/routes/adminSupportBlock.routes.js'
 import { adminSupportImagesRoutes, readerSupportImagesRoutes } from './src/routes/supportChatImages.routes.js'
+import { readerSupportPinsRoutes } from './src/routes/supportChatPins.routes.js'
 import adminSearchInsightsRoutes from './src/routes/adminSearchInsights.routes.js'
 import adminBoostInsightsRoutes from './src/routes/adminBoostInsights.routes.js'
 import adminAuthorAdsRoutes from './src/routes/adminAuthorAds.routes.js'
@@ -1129,6 +1130,7 @@ app.use('/api/reader/support-chat', readerSupportChatRoutes)
 app.use('/api/reader/support-chat', readerSupportSeenRoutes)
 app.use('/api/reader/support-chat', readerSupportBlockRoutes)
 app.use('/api/reader/support-chat', readerSupportImagesRoutes)
+app.use('/api/reader/support-chat', readerSupportPinsRoutes)
 app.use('/api/admin/search-insights', adminSearchInsightsRoutes)
 app.use('/api/admin/boost', adminBoostInsightsRoutes)
 app.use('/api/admin/author-ads', adminAuthorAdsRoutes)
