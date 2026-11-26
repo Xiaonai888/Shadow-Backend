@@ -12,6 +12,7 @@ import { listSystemUsageArchiveIndex } from './systemUsageArchiveIndex.service.j
 import { buildResourceCostWindowAttribution } from './resourceCostAttributionWindow.service.js'
 import { getPassiveRequestSnapshot } from './passiveRequestMonitor.service.js'
 import { getResourceOptimizationEvidenceSnapshot } from './resourceOptimizationEvidence.service.js'
+import { buildResourceOptimizationHistory } from './resourceOptimizationHistory.service.js'
 import {
   getHistoricalErrorEvidence,
   getPageRequestSnapshot,
@@ -3197,6 +3198,9 @@ export async function getSystemUsageHistory({
     error_diagnostics_coverage: errorEvidenceHistory.coverage,
     page_requests: buildPageRequestHistory(stored, fromMs, toMs),
     passive_request_monitor: buildPassiveRequestHistory(stored, fromMs, toMs),
+    resource_optimization: toMs > fromMs
+      ? buildResourceOptimizationHistory(stored, fromMs, toMs)
+      : null,
   }
 }
 
