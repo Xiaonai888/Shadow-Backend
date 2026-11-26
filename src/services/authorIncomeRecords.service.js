@@ -380,8 +380,7 @@ export async function getAuthorIncomeRecordData({
     date || todayText
   )
 
-  const summaryStartTime = Math.min(
-      if (previousMonth) {
+  if (previousMonth) {
     const toBounds = range => ({
       start: range.startIso,
       end: range.endIso,
@@ -462,6 +461,7 @@ export async function getAuthorIncomeRecordData({
   }
 
 
+      const summaryStartTime = Math.min(
     new Date(todayRange.startIso).getTime(),
     new Date(weekRange.startIso).getTime(),
     new Date(monthRange.startIso).getTime(),
