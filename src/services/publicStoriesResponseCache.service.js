@@ -104,6 +104,7 @@ async function getCacheKey(req) {
       ? new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10)
       : undefined,
   })
+}
 
 function setCacheEntry(key, entry) {
   let bodyBytes
