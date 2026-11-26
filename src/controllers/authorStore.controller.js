@@ -15,6 +15,7 @@ const PRODUCT_TYPES = new Set(['book', 'pdf'])
 const PRODUCT_STATUSES = new Set(['draft', 'active', 'hidden'])
 import { handleCallbackQuery } from './telegramPayments.controller.js'
 import { applyDiscoverAuthorStoreCheckoutPrices, buildAuthorStoreCheckoutAttribution } from '../services/discoverAuthorStoreCheckoutPricing.service.js'
+import { enrichPurchasedPdfVersions } from '../services/authorStorePdfVersion.service.js'
 
 function normalizePageUsername(username) {
   return String(username || '')
@@ -244,6 +245,9 @@ function publicProduct(product) {
     pre_order: Boolean(product.pre_order),
     pdf_file_url: product.pdf_file_url || '',
     pdf_file_name: product.pdf_file_name || '',
+    pdf_version: product.pdf_version || 0,
+    pdf_updated_at: product.pdf_updated_at || null,
+    pdf_update_note: product.pdf_update_note || '',
     page_count: Number(product.page_count || 0),
     access_rule: product.access_rule || '',
     created_at: product.created_at,
@@ -270,7 +274,7 @@ export async function getMyAuthorStoreReaderDownloads(req, res) {
 
     return res.status(200).json({
       ok: true,
-      downloads: data || [],
+      downloads: await enrichPurchasedPdfVersions(supabase, data || []),
     })
   } catch (error) {
     console.error('GET MY AUTHOR STORE READER DOWNLOADS ERROR:', error)
