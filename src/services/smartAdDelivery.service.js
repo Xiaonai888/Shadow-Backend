@@ -92,8 +92,9 @@ async function selectSmartAdBatchInternal({
   for (let i = 0; i < MAX_PAGES_PER_SELECTION; i += 1) {
     const pageStart = next
     const page = await readSmartAdActiveCatalogPage({
-      cursor: pageStart, limit: PAGE_SIZE, storyLanguage: language, db, now,
-    })
+  cursor: pageStart, limit: PAGE_SIZE, storyLanguage: language, db, now,
+  includeMedia: !taskCenter,
+})
     const eligiblePageStories = (page.stories || []).filter((story) => {
       const id = String(story?.story_id || '').toLowerCase()
       return UUID.test(id) && story.first_episode_id && !hardExcluded.has(id) && !candidates.has(id)
