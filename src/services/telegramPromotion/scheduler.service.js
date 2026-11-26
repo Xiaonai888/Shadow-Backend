@@ -1,4 +1,4 @@
-import { duePromotionSlots } from './selection.service.js'
+import { nextRecoveryCheckpoint, recoverablePromotionSlots } from './recoveryClock.service.js'
 import { prepareUpdateEvents } from './storySource.service.js'
 
 const IDLE = 10 * 60000
@@ -23,7 +23,7 @@ export function nextPromotionSlot(schedule, now = Date.now()) {
   }
   return next
 }
-export function createPromotionScheduler({queue,source,candidates,worker,recovery,enabled=()=>false,token=()=>'',onError=()=>{},clock=Date.now,prepare=prepareUpdateEvents}) {
+export function createPromotionScheduler({queue,source,candidates,worker,recovery,enabled=()=>false,token=()=>'',onError=()=>{},clock=Date.now,prepare=prepareUpdateEvents,monitor=null}) {
   if (![queue,source,candidates,worker,recovery].every(Boolean)) throw new TypeError('Missing scheduler dependencies')
   let running=false,started=false,timer=null,timerDue=Infinity,wakePending=false,failures=0
   const attemptedSlots=new Map()
@@ -35,8 +35,15 @@ export function createPromotionScheduler({queue,source,candidates,worker,recover
     let next=now+IDLE
     let errorCount=0
     for (const [key,entry] of attemptedSlots) if (entry.expiresAt<=now) attemptedSlots.delete(key)
-    const settingsList=(await queue.settings()).filter(canSend)
+    const settingsList=(await queue.settings()).filter(settings=>settings?.enabled)
+    const heartbeat=async(language,ok,error=null)=>{
+      try { await monitor?.heartbeat(language,ok,error) } catch(error) { report(error,language) }
+    }
     for (const settings of settingsList) {
+      if (!canSend(settings)) {
+        await heartbeat(settings.language,false,'Missing channel or bot token')
+        continue
+      }
       try {
         const restored=await recovery.step(settings,clock())
         if (restored.more) next=Math.min(next,clock()+RECOVERY_CONTINUE)
@@ -50,7 +57,7 @@ export function createPromotionScheduler({queue,source,candidates,worker,recover
         const blocked=Boolean(due.update_waiting || pendingEvent || restored.more)
         if (!blocked) {
           let attempted=false
-          for (const slot of duePromotionSlots(settings.schedule,current)) {
+          for (const slot of recoverablePromotionSlots(settings.schedule,current,settings.enabled_at ?? null)) {
             const key=`${settings.language}:${slot.slotKey}`
             const prior=attemptedSlots.get(key)
             if (prior?.retryAt>current) { next=Math.min(next,prior.retryAt); continue }
@@ -74,8 +81,9 @@ export function createPromotionScheduler({queue,source,candidates,worker,recover
         else next=Math.min(next,eventDue)
         if (sendDue>end) next=Math.min(next,sendDue)
         else if (!pendingEvent && !restored.more || due.update_ready) next=Math.min(next,end+RECOVERY_CONTINUE)
-        next=Math.min(next,nextPromotionSlot(settings.schedule,end))
-      } catch(error) { errorCount++; report(error,settings.language) }
+        next=Math.min(next,nextPromotionSlot(settings.schedule,end),nextRecoveryCheckpoint(end))
+        await heartbeat(settings.language,true)
+      } catch(error) { errorCount++; report(error,settings.language); await heartbeat(settings.language,false,error) }
     }
     if (errorCount) throw new Error(`${errorCount} promotion language cycle(s) failed`)
     return Math.max(MIN,Math.min(IDLE,next-clock()))

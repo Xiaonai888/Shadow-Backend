@@ -5,6 +5,7 @@ import { createPromotionCandidates } from './candidates.service.js'
 import { createPromotionWorker } from './worker.service.js'
 import { createPromotionRecovery } from './recovery.service.js'
 import { createPromotionScheduler } from './scheduler.service.js'
+import { createPromotionMonitor } from './monitoring.service.js'
 
 const enabled=()=>process.env.TELEGRAM_PROMOTION_ENABLED==='true'
 const token=language=>String(process.env[`TELEGRAM_PROMOTION_BOT_TOKEN_${String(language).toUpperCase()}`] || process.env.TELEGRAM_PROMOTION_BOT_TOKEN || '').trim()
@@ -14,7 +15,8 @@ const source=createPromotionStorySource(supabase)
 const candidates=createPromotionCandidates(supabase,source)
 const recovery=createPromotionRecovery(supabase,source)
 const worker=createPromotionWorker({queue,candidates,token,onError})
-const scheduler=createPromotionScheduler({queue,source,candidates,worker,recovery,enabled,token,onError})
+const monitor=createPromotionMonitor(supabase,{onError})
+const scheduler=createPromotionScheduler({queue,source,candidates,worker,recovery,enabled,token,onError,monitor})
 export const startTelegramPromotionScheduler=()=>scheduler.start()
 export const wakeTelegramPromotionScheduler=()=>scheduler.wake()
 export const stopTelegramPromotionScheduler=()=>scheduler.stop()

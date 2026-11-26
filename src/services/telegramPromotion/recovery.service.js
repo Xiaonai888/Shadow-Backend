@@ -1,5 +1,6 @@
+import { recoveryCheckpointDue, nextRecoveryCheckpoint } from './recoveryClock.service.js'
+
 const DAY = 86400000
-const RECOVERY_INTERVAL = 6 * 3600000
 const OVERLAP = DAY
 
 function timestamp(value) {
@@ -20,7 +21,7 @@ export function planRecovery(state, settings, now = Date.now()) {
     return { from, to, after: state.cursor_at && state.cursor_id ? { first_published_at: state.cursor_at, episode_id: state.cursor_id } : null }
   }
   const completed = timestamp(state?.completed_through)
-  if (completed !== null && completed >= enabledAt && now - completed < RECOVERY_INTERVAL) return null
+  if (!recoveryCheckpointDue(state?.completed_through, settings.enabled_at, now)) return null
   const lower = Math.max(start, completed === null || completed < enabledAt ? start : completed - OVERLAP)
   return now > lower ? { from: lower, to: now, after: null } : null
 }
@@ -38,14 +39,14 @@ export function createPromotionRecovery(db, source) {
       const plan = planRecovery(state, settings, now)
       if (!plan) {
         const completed = timestamp(state.completed_through)
-        nextChecks.set(settings.language, { enabledAt: settings.enabled_at, nextAt: completed === null ? now + 60000 : Math.max(now + 60000, completed + RECOVERY_INTERVAL) })
+        nextChecks.set(settings.language, { enabledAt: settings.enabled_at, nextAt: completed === null ? now + 60000 : nextRecoveryCheckpoint(now) })
         return { more: false, added: 0 }
       }
       const page = await source.reconcilePage({ language: settings.language, ...plan })
       const patch = { revision: Number(state.revision) + 1, updated_at: iso(now), window_from: page.next ? iso(plan.from) : null, window_to: page.next ? iso(plan.to) : null, cursor_at: page.next?.first_published_at ?? null, cursor_id: page.next?.episode_id ?? null }
       if (!page.next) patch.completed_through = iso(plan.to)
       const saved = result(await db.from('telegram_promotion_recovery').update(patch).eq('language', settings.language).eq('revision', state.revision).select('language').maybeSingle())
-      if (saved && !page.next) nextChecks.set(settings.language, { enabledAt: settings.enabled_at, nextAt: plan.to + RECOVERY_INTERVAL })
+      if (saved && !page.next) nextChecks.set(settings.language, { enabledAt: settings.enabled_at, nextAt: nextRecoveryCheckpoint(plan.to) })
       return { more: Boolean(page.next) || !saved, added: page.added }
     },
   }
