@@ -983,11 +983,35 @@ async function countAdUnlocksToday(userId) {
   return Number(count || 0)
 }
 
-async function getGemLimitStatus({ userId, storyId, tier, rules }) {
-  const [dailyUsed, monthlyStoryUsed] = await Promise.all([
-    countGemUnlocksToday(userId),
-    countGemUnlocksThisMonthForStory({ userId, storyId }),
-  ])
+async function getEpisodeUnlockStatusCounts({ userId, storyId }) {
+  const now = new Date()
+  const { data, error } = await supabase.rpc('get_episode_unlock_status_counts_v1', {
+    p_user_id: userId,
+    p_story_id: storyId,
+    p_day_start: startOfTodayIso(now),
+    p_month_start: startOfMonthIso(now),
+  })
+
+  if (error) throw error
+
+  if (!data || ![
+    data.daily_gem_used,
+    data.monthly_story_gem_used,
+    data.daily_ad_used,
+  ].every(value => Number.isSafeInteger(value) && value >= 0)) {
+    throw new Error('Invalid episode unlock status counts')
+  }
+
+  return data
+}
+
+async function getGemLimitStatus({ userId, storyId, tier, rules, statusCounts = null }) {
+  const [dailyUsed, monthlyStoryUsed] = statusCounts
+    ? [statusCounts.daily_gem_used, statusCounts.monthly_story_gem_used]
+    : await Promise.all([
+        countGemUnlocksToday(userId),
+        countGemUnlocksThisMonthForStory({ userId, storyId }),
+      ])
 
   const dailyLimit = getGemDailyLimit(rules, tier)
   const monthlyStoryLimit = getGemMonthlyStoryLimit(rules, tier)
@@ -1014,6 +1038,7 @@ async function getUnlockStatusPayload({
   storyId,
   episodeId,
   tier = 'standard',
+  includeStatusCounts = false,
 }) {
   const [
     rules,
@@ -1094,15 +1119,22 @@ async function getUnlockStatusPayload({
     rules,
     tier
   )
+  const statusCounts = includeStatusCounts
+    ? await getEpisodeUnlockStatusCounts({ userId, storyId })
+    : null
+
   const gemLimits = await getGemLimitStatus({
     userId,
     storyId,
     tier: tier === 'premium' ? 'standard' : tier,
     rules,
+    statusCounts,
   })
 
   return {
     notFound: false,
+    adUsedToday: statusCounts?.daily_ad_used,
+
     rules,
     story,
     episode,
@@ -1775,7 +1807,13 @@ export async function getEpisodeUnlockStatus(req, res) {
     const { storyId, episodeId } = req.params
     const tier = getReaderTier(req)
 
-    const payload = await getUnlockStatusPayload({ userId, storyId, episodeId, tier })
+    const payload = await getUnlockStatusPayload({
+  userId,
+  storyId,
+  episodeId,
+  tier,
+  includeStatusCounts: true,
+})
 
     if (payload.notFound) {
       return res.status(404).json({
@@ -1784,7 +1822,7 @@ export async function getEpisodeUnlockStatus(req, res) {
       })
     }
 
-    const adUsedToday = await countAdUnlocksToday(userId)
+    const adUsedToday = payload.adUsedToday
     const adRemainingToday = Math.max(
       0,
       AD_DAILY_LIMIT - adUsedToday
