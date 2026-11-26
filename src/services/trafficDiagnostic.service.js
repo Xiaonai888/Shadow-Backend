@@ -4,6 +4,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import jwt from 'jsonwebtoken'
 import { recordSystemUsage } from './systemUsageMonitor.service.js'
 import { observePassiveRequest } from './passiveRequestMonitor.service.js'
+import { observeResourceOptimizationHttp, observeResourceOptimizationSupabaseRead } from './resourceOptimizationEvidence.service.js'
 import { enableDatabaseIoTrafficEvidence, recordDatabaseIoTraffic } from './databaseIoTrafficEvidence.service.js'
 
 const ENABLED =
@@ -1381,6 +1382,17 @@ function installFetchDiagnostic() {
       const response = await nativeFetch(input, init)
       const elapsedMs = Date.now() - startedAt
       if (provider === 'SUPABASE') observeSupabaseRows(context, response)
+      if (provider === 'SUPABASE' && context && method === 'GET' && response.ok) {
+  try {
+    observeResourceOptimizationSupabaseRead({
+      url: url.href,
+      method,
+      headers: init.headers ?? (input instanceof Request ? input.headers : undefined),
+      context,
+      status: response.status,
+    })
+  } catch {}
+}
 
 if (provider === 'SUPABASE' && elapsedMs >= 2500) {
   const minute = Math.floor(Date.now() / 60000)
@@ -1753,6 +1765,19 @@ export function trafficDiagnosticMiddleware(req, res, next) {
     trackGuestRequest(req, res, context, elapsedMs, responseBytes)
     trackPageRequest(req, res, context, elapsedMs, responseBytes)
     try { observePassiveRequest(req, res, context, { responseBytes }) } catch {}
+    try {
+  const cacheState = String(
+    res.getHeader('X-Shadow-Public-Stories-Cache') ||
+    res.getHeader('X-Shadow-Recommendations-Cache') ||
+    'UNKNOWN'
+  ).toUpperCase()
+
+  observeResourceOptimizationHttp(req, res, context, {
+    responseBytes,
+    closeReason,
+    cacheState: cacheState === 'WAIT' ? 'COALESCED' : cacheState,
+  })
+} catch {}
 
     logRequestEvidence(
       req,
