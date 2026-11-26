@@ -4,7 +4,9 @@ import { supabase } from '../config/supabase.js'
 const EVENT_TYPES = new Set([
   'js_error', 'promise_rejection', 'script_load_failure',
   'long_task', 'event_loop_delay', 'slow_api', 'slow_boot',
+  'ui_popup_issue',
 ])
+
 const PAGE_GROUPS = new Set([
   'HOME', 'DISCOVER', 'READ', 'STORY', 'MANGA', 'FAST',
   'STORE', 'MINE', 'AUTHOR', 'CHAT', 'OTHER',
@@ -12,7 +14,7 @@ const PAGE_GROUPS = new Set([
 const BROWSERS = new Set(['EDGE', 'SAMSUNG', 'CHROME', 'FIREFOX', 'SAFARI', 'OTHER'])
 const SYSTEMS = new Set(['ANDROID', 'IOS', 'WINDOWS', 'MACOS', 'LINUX', 'OTHER'])
 const DEVICES = new Set(['MOBILE', 'TABLET', 'DESKTOP'])
-const CRITICAL = new Set(['js_error', 'promise_rejection', 'script_load_failure'])
+const CRITICAL = new Set(['js_error', 'promise_rejection', 'script_load_failure', 'ui_popup_issue'])
 const QUEUE_LIMIT = 600
 const BATCH_LIMIT = 120
 const FLUSH_DELAY_MS = 30000
@@ -47,7 +49,9 @@ function validEvent(event, sampled) {
     (sampled || CRITICAL.has(event.type)) &&
     PAGE_GROUPS.has(event.page) &&
     typeof event.code === 'string' &&
-    (event.code === '' || /^E-[0-9A-F]{8}$/.test(event.code)) &&
+    (event.type === 'ui_popup_issue'
+  ? /^(EL|SC|PC)_(BG|TOKEN)_MISSING$/.test(event.code)
+  : (event.code === '' || /^E-[0-9A-F]{8}$/.test(event.code))) &&
     Number.isSafeInteger(event.metric_ms) &&
     event.metric_ms >= 0 && event.metric_ms <= 60000
 }
