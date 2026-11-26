@@ -9,6 +9,8 @@ import { prepareResourceCostDownload } from '../services/resourceCostReportExpor
 import { getResourceCostHealth } from '../services/resourceCostHealth.service.js'
 import { getResourceCostYesterdaySnapshot } from '../services/resourceCostYesterdaySnapshot.service.js'
 import { getResourceCostOverview } from '../services/resourceCostOverview.service.js'
+import { startResourceCostJob, getResourceCostJob, acquireResourceCostJobDownload, deleteResourceCostJob } from '../services/resourceCostReportJob.service.js'
+import { resourceCostRange } from '../services/resourceCostMath.service.js'
 import { evaluateHeavyJobAdmission } from '../services/memoryGuard.service.js'
 
 const router = express.Router()
@@ -123,16 +125,17 @@ async function withHeavyReport(res, work) {
   }
 }
 
-async function reportFor(query, now = new Date()) {
+async function reportFor(query, now = new Date(), onProgress) {
   const period = parsePeriod(query, now)
   const key = `${period.mode}|${period.from}|${period.to}`
   const admission = ensureReportMemory(SUMMARY_ESTIMATE_MB)
   if (reportCache?.key === key && reportCache.expiresAt > Date.now()) {
+    onProgress?.('summary_cached', 60)
     return { report: reportCache.report, cached: true, ttlSeconds: Math.ceil((reportCache.expiresAt - Date.now()) / 1000) }
   }
   clearReportCache()
   ensureReportMemory(BUILD_ESTIMATE_MB)
-  const report = await getResourceCostReport({ from: period.from, to: period.to, asOf: now })
+  const report = await getResourceCostReport({ from: period.from, to: period.to, asOf: now }, { onProgress })
   const after = ensureReportMemory(SUMMARY_ESTIMATE_MB)
   if (!admission.warning && !after.warning &&
       Array.isArray(report.applicationHourlyRows) && report.applicationHourlyRows.length <= MAX_CACHED_APPLICATION_ROWS) {
@@ -154,6 +157,9 @@ function respondError(res, error) {
       message: error.message,
       retry_after_seconds: RETRY_AFTER_SECONDS,
     })
+  }
+  if (['RESOURCE_COST_JOB_NOT_FOUND', 'RESOURCE_COST_JOB_NOT_READY'].includes(error?.code)) {
+    return res.status(error.code === 'RESOURCE_COST_JOB_NOT_FOUND' ? 404 : 409).json({ ok: false, code: error.code, message: error.message })
   }
   const invalid = error instanceof RangeError || error instanceof TypeError
   if (!invalid) console.error('RESOURCE_COST_REPORT_ERROR:', error?.message || error)
@@ -250,6 +256,88 @@ router.get('/download', resourceCostGuard, viewResourceCost, async (req, res) =>
         await file.cleanup().catch(error => console.error('RESOURCE_COST_EXPORT_CLEANUP_ERROR:', error?.code || 'UNKNOWN'))
       }
     })
+  } catch (error) {
+    return respondError(res, error)
+  }
+})
+
+function jobOwner(req) {
+  return String(req.admin?.admin_id || '')
+}
+
+router.post('/report-jobs', resourceCostGuard, viewResourceCost, (req, res) => {
+  try {
+    const now = new Date()
+    const query = req.body || {}
+    const format = String(query.format || 'full-zip').trim().toLowerCase()
+    if (!allowedFormats.has(format)) throw new RangeError('Unsupported report format.')
+    const period = parsePeriod(query, now)
+    const range = resourceCostRange(period.from, period.to, 31)
+    if (Date.parse(range.from) >= now.getTime()) throw new RangeError('The reporting period must begin before the current time.')
+    const key = `${period.mode}|${range.from}|${range.to}|${format}`
+    const result = startResourceCostJob({
+      owner: jobOwner(req), key, format,
+      admit: () => {
+        if (reportActive) throw busyError('report_in_progress')
+        ensureReportMemory(BUILD_ESTIMATE_MB)
+      },
+      run: async (update) => {
+        reportActive = true
+        let file
+        try {
+          const { report } = await reportFor({ period: period.mode, from: range.from, to: range.to }, now, update)
+          update('building_file', 60)
+          ensureReportMemory(DOWNLOAD_ESTIMATE_MB)
+          file = await prepareResourceCostDownload(report, format, {
+            checkpoint: () => ensureReportMemory(DOWNLOAD_ESTIMATE_MB),
+            onProgress: ({ completed, total }) => update('building_file', 60 + 38 * completed / total),
+          })
+          return file
+        } catch (error) {
+          if (file) await file.cleanup().catch(() => {})
+          throw error
+        } finally {
+          reportActive = false
+        }
+      },
+    })
+    return res.status(result.reused && result.job.download_ready ? 200 : 202).json({ ok: true, ...result })
+  } catch (error) {
+    return respondError(res, error)
+  }
+})
+
+router.get('/report-jobs/:jobId', resourceCostGuard, viewResourceCost, (req, res) => {
+  try {
+    return res.json({ ok: true, job: getResourceCostJob(jobOwner(req), req.params.jobId) })
+  } catch (error) {
+    return respondError(res, error)
+  }
+})
+
+router.get('/report-jobs/:jobId/download', resourceCostGuard, viewResourceCost, async (req, res) => {
+  try {
+    return await withHeavyReport(res, async () => {
+      const { file, release } = acquireResourceCostJobDownload(jobOwner(req), req.params.jobId)
+      try {
+        const filename = String(file.filename).replace(/[^a-zA-Z0-9._-]/g, '_')
+        res.set('Content-Type', file.contentType)
+        res.set('Content-Disposition', `attachment; filename="${filename}"`)
+        res.set('Content-Length', String(file.size))
+        res.status(200)
+        await pipeline(createReadStream(file.path, { highWaterMark: 64 * 1024 }), res)
+      } finally {
+        release()
+      }
+    })
+  } catch (error) {
+    return respondError(res, error)
+  }
+})
+
+router.delete('/report-jobs/:jobId', resourceCostGuard, viewResourceCost, (req, res) => {
+  try {
+    return res.json({ ok: true, ...deleteResourceCostJob(jobOwner(req), req.params.jobId) })
   } catch (error) {
     return respondError(res, error)
   }
