@@ -257,6 +257,7 @@ function publicProduct(product) {
 }
 
 export async function getMyAuthorStoreReaderDownloads(req, res) {
+  res.set('Cache-Control', 'private, no-store')
   try {
     const userId = req.user?.user_id || req.user?.id
 
