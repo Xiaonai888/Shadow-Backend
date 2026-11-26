@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { getSupportNotificationCount, getSupportNotifications, parseSupportNotificationPage, parseSupportNotificationFilter } from '../src/services/adminSupportNotification.service.js'
+import { getSupportNotificationCount, getSupportNotifications, parseSupportNotificationPage, parseSupportNotificationFilter, parseSupportMutedIds } from '../src/services/adminSupportNotification.service.js'
 
 function database(responses) {
   const calls = []
@@ -75,4 +75,24 @@ test('filter validation rejects non-string and unknown filters', () => {
   assert.equal(parseSupportNotificationFilter(undefined), 'unread')
   assert.equal(parseSupportNotificationFilter('all'), 'all')
   for (const input of [[], null, 'invalid', 1]) assert.equal(parseSupportNotificationFilter(input), null)
+})
+
+const mutedId = 'a0000000-0000-4000-8000-000000000001'
+test('mute query validates and deduplicates bounded UUIDs', () => {
+  assert.deepEqual(parseSupportMutedIds(undefined), [])
+  assert.deepEqual(parseSupportMutedIds(`${mutedId},${mutedId.toUpperCase()}`), [mutedId])
+  for (const value of [[], 'x', `${mutedId})`, Array(41).fill(mutedId).join(',')]) assert.equal(parseSupportMutedIds(value), null)
+})
+test('mute excludes only unread count and list, without relaxing assignment scope', async () => {
+  const db = database({ [table]: { count: 0, data: [] } })
+  await getSupportNotificationCount(db, staff, [mutedId])
+  assert.ok(db.calls.some(c => c[1] === 'not' && c[2] === 'id' && c[3] === 'in' && c[4] === `(${mutedId})`))
+  assert.ok(db.calls.some(c => c[1] === 'eq' && c[2] === 'assigned_admin_id'))
+  db.calls.length = 0
+  await getSupportNotifications(db, staff, 1, 'unread', [mutedId])
+  assert.ok(db.calls.some(c => c[1] === 'not' && c[2] === 'id'))
+  db.calls.length = 0
+  await getSupportNotifications(db, staff, 1, 'all', [mutedId])
+  assert.ok(!db.calls.some(c => c[1] === 'not' && c[2] === 'id'))
+  await assert.rejects(getSupportNotificationCount(db, owner, ['bad']), /Invalid muted/)
 })
