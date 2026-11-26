@@ -125,14 +125,14 @@ export async function refreshSmartAdPool({
 }
 
 export async function readSmartAdActiveCatalogPage({
-  cursor = 0, limit = 50, storyLanguage = 'km', db = supabase, now = Date.now(),
+  cursor = 0, limit = 50, storyLanguage = 'km', db = supabase, now = Date.now(), includeMedia = true,
 } = {}) {
   const language = normalizeStoryLanguage(storyLanguage)
   if (!language) throw new TypeError('Invalid Story Language')
   const offset = Math.max(0, Math.floor(Number(cursor) || 0))
   const take = Math.max(1, Math.min(PAGE, Math.floor(Number(limit) || 50)))
   const state = await readSmartAdPoolState({ db })
-  const key = `${localEpoch}:${state.catalog_version}:${language}:${offset}:${take}`
+  const key = `${localEpoch}:${state.catalog_version}:${language}:${offset}:${take}:${includeMedia ? 'full' : 'lite'}`
   const cached = catalogPageCache.get(key)
   if (cached && cached.expiresAt > now) return cached.value
   if (inFlightPages.has(key)) return inFlightPages.get(key)
@@ -143,7 +143,7 @@ export async function readSmartAdActiveCatalogPage({
       .order('priority_score', { ascending: false })
       .order('story_id', { ascending: true })
       .range(offset, offset + take - 1), 'Smart Ad language catalog IDs')
-    const eligible = await readSmartAdCatalogByIds(rows.map((row) => row.story_id), { db, now })
+    const eligible = await readSmartAdCatalogByIds(rows.map((row) => row.story_id), { db, now, includeMedia })
     const stories = filterAutoAdStoriesByLanguage(eligible, language)
     const result = {
       ok: true, stories: stories.map((story) => ({
