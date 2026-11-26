@@ -5,10 +5,13 @@ import { signSupportImageUrl } from './supportChatPrivateR2Signing.service.js'
 let client
 
 function config() {
+  const privateAccessKeyId = String(process.env.R2_PRIVATE_ACCESS_KEY_ID || '').trim()
+  const privateSecretAccessKey = String(process.env.R2_PRIVATE_SECRET_ACCESS_KEY || '').trim()
+  if (Boolean(privateAccessKeyId) !== Boolean(privateSecretAccessKey)) throw new Error('Incomplete private R2 credentials')
   const value = {
     accountId: String(process.env.R2_ACCOUNT_ID || '').trim(),
-    accessKeyId: String(process.env.R2_PRIVATE_ACCESS_KEY_ID || '').trim(),
-    secretAccessKey: String(process.env.R2_PRIVATE_SECRET_ACCESS_KEY || '').trim(),
+    accessKeyId: privateAccessKeyId || String(process.env.R2_ACCESS_KEY_ID || '').trim(),
+    secretAccessKey: privateSecretAccessKey || String(process.env.R2_SECRET_ACCESS_KEY || '').trim(),
     bucket: String(process.env.R2_PRIVATE_BUCKET_NAME || '').trim(),
   }
   if (!value.accountId || !value.accessKeyId || !value.secretAccessKey || !value.bucket || value.bucket === String(process.env.R2_BUCKET_NAME || '').trim()) throw new Error('Dedicated private R2 bucket required')
