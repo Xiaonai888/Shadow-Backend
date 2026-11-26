@@ -30,14 +30,62 @@ test('excerpt caps, markup and graphemes', () => {
   assert.equal(extractPromotionText('😀'.repeat(100), { budget: 8 }), '😀😀...')
   assert.equal(extractPromotionText('abc'), '')
 })
-test('five languages, original cover, caption cap and four links', () => {
+test('five languages: Update Today has original cover, bounded caption, bold title and four embedded links in two rows', () => {
   for (const language of ['Khmer', 'English', 'Chinese', 'Korean', 'Japanese']) {
-    const message = buildPromotionMessage({ ...options, language, story: { ...story, story_language: language } })
+    const message = buildPromotionMessage({ ...options, language, authorName: 'Dara', story: { ...story, story_language: language } })
     assert.ok(message.caption.length <= 1000)
-    assert.ok(message.caption.endsWith('...'))
     assert.equal(message.photo, story.cover_url)
-    assert.equal(message.reply_markup.inline_keyboard.flat().length, 4)
-    assert.equal(message.reply_markup.inline_keyboard[0][0].url, 'https://www.shadowerabook.site/story/story1')
+    assert.deepEqual(message.reply_markup.inline_keyboard, [])
+    const [bold, ...links] = message.caption_entities
+    const visible = e => message.caption.slice(e.offset, e.offset + e.length)
+    assert.equal(bold.type, 'bold')
+    assert.equal(visible(bold), story.title)
+    assert.equal(links.length, 4)
+    assert.ok(links.every(e => e.type === 'text_link'))
+    assert.deepEqual(links.map(e => e.url), ['https://www.shadowerabook.site/story/story1', 'https://www.shadowerabook.site/register', 'https://www.shadowerabook.site/install', 'https://youtu.be/gMUvBCkkPHQ?si=ZZKdPMcLuX6KzE2i'])
+    assert.ok(message.caption.slice(0, links[0].offset).trimEnd().endsWith('...'))
+    assert.equal(message.caption.slice(links[0].offset), `${visible(links[0])}  ${visible(links[1])}\n${visible(links[2])}  ${visible(links[3])}`)
+    assert.ok(message.caption.includes('✍️ Dara · '))
+    assert.ok(!message.caption.includes('https://'))
+    if (language === 'Khmer') assert.equal(message.caption.slice(links[0].offset), '📖 អានរឿងបន្ត  👤 បង្កើតគណនី\n📲 ដំឡើងកម្មវិធី  🎬 របៀបប្រើប្រាស់')
+  }
+})
+test('optional promotions retain legacy caption and all four buttons in every language', () => {
+  for (const language of ['Khmer', 'English', 'Chinese', 'Korean', 'Japanese']) {
+    for (const kind of ['completed', 'short', 'trending', 'author']) {
+      const m = buildPromotionMessage({ ...options, kind, language, story: { ...story, story_language: language }, authorName: 'Dara' })
+      assert.ok(m.caption.length <= 1000)
+      assert.ok(m.caption.endsWith('...'))
+      assert.deepEqual(m.reply_markup.inline_keyboard.map(row => row.length), [1, 2, 1])
+      assert.equal(m.reply_markup.inline_keyboard[0][0].url, 'https://www.shadowerabook.site/story/story1')
+      assert.equal(m.caption_entities, undefined)
+    }
+  }
+})
+test('Update Today entities use UTF-16 offsets even for emoji and literal markup characters', () => {
+  const title = '😀 A < B & C'
+  const m = buildPromotionMessage({ ...options, story: { ...story, title }, authorName: 'A & B', content: '<p>😀 &amp; &lt;x&gt; abcdefghijklmnopqrstuvwxyz</p>'.repeat(50), links: { register: 'https://example.com/register?a=1&b=2' } })
+  assert.equal(m.caption.slice(m.caption_entities[0].offset, m.caption_entities[0].offset + m.caption_entities[0].length), title)
+  assert.equal(m.caption_entities[2].url, 'https://example.com/register?a=1&b=2')
+  assert.equal(m.caption.slice(m.caption_entities[2].offset, m.caption_entities[2].offset + m.caption_entities[2].length), '👤 បង្កើតគណនី')
+  assert.ok(m.caption.length <= 1000)
+})
+test('Telegram wire payload omits buttons only for entity-based Update Today', async () => {
+  for (const kind of ['update', 'completed', 'short', 'trending', 'author']) {
+    const message = buildPromotionMessage({ ...options, kind })
+    await sendPromotionPhoto({ token: '123:fake', chatId: '-10012345', message, fetchImpl: async (_, request) => {
+      const payload = JSON.parse(request.body)
+      assert.equal(payload.caption, message.caption)
+      assert.equal(payload.parse_mode, undefined)
+      if (kind === 'update') {
+        assert.equal(payload.reply_markup, undefined)
+        assert.deepEqual(payload.caption_entities, message.caption_entities)
+      } else {
+        assert.deepEqual(payload.reply_markup, message.reply_markup)
+        assert.equal(payload.caption_entities, undefined)
+      }
+      return { ok: true, json: async () => ({ ok: true, result: { message_id: 1 } }) }
+    } })
   }
 })
 test('Telegram mock send, file id and unknown delivery handling', async () => {
