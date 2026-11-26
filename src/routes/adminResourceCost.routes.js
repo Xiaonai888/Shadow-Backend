@@ -1,9 +1,11 @@
 import express from 'express'
+import { createReadStream } from 'node:fs'
+import { pipeline } from 'node:stream/promises'
 import { createRateLimit } from '../middleware/rateLimit.middleware.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { resourceCostCalendarPeriod } from '../services/resourceCostSummary.service.js'
 import { getResourceCostReport } from '../services/resourceCostReportData.service.js'
-import { createResourceCostDownload } from '../services/resourceCostReportExport.service.js'
+import { prepareResourceCostDownload } from '../services/resourceCostReportExport.service.js'
 import { getResourceCostHealth } from '../services/resourceCostHealth.service.js'
 import { getResourceCostYesterdaySnapshot } from '../services/resourceCostYesterdaySnapshot.service.js'
 import { getResourceCostOverview } from '../services/resourceCostOverview.service.js'
@@ -229,12 +231,24 @@ router.get('/download', resourceCostGuard, viewResourceCost, async (req, res) =>
       const { report } = await reportFor(req.query)
       if (res.destroyed) return
       ensureReportMemory(DOWNLOAD_ESTIMATE_MB)
-      const file = createResourceCostDownload(report, format)
-      const filename = String(file.filename || 'shadow-resource-cost.zip').replace(/[^a-zA-Z0-9._-]/g, '_')
-      res.set('Content-Type', file.contentType)
-      res.set('Content-Disposition', `attachment; filename="${filename}"`)
-      res.set('Content-Length', String(file.body.length))
-      return res.status(200).send(file.body)
+      const file = await prepareResourceCostDownload(report, format, {
+        checkpoint: () => {
+          if (res.destroyed) throw busyError('client_disconnected')
+          ensureReportMemory(DOWNLOAD_ESTIMATE_MB)
+        },
+      })
+      try {
+        if (res.destroyed) return
+        ensureReportMemory(DOWNLOAD_ESTIMATE_MB)
+        const filename = String(file.filename || 'shadow-resource-cost.zip').replace(/[^a-zA-Z0-9._-]/g, '_')
+        res.set('Content-Type', file.contentType)
+        res.set('Content-Disposition', `attachment; filename="${filename}"`)
+        res.set('Content-Length', String(file.size))
+        res.status(200)
+        await pipeline(createReadStream(file.path, { highWaterMark: 64 * 1024 }), res)
+      } finally {
+        await file.cleanup().catch(error => console.error('RESOURCE_COST_EXPORT_CLEANUP_ERROR:', error?.code || 'UNKNOWN'))
+      }
     })
   } catch (error) {
     return respondError(res, error)
