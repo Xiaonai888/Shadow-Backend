@@ -1,7 +1,7 @@
 import { supabase } from '../config/supabase.js'
 import { evaluateSmartAdEligibility } from './smartAdEligibility.service.js'
 
-const STORY_SELECT = [
+export const STORY_SELECT = [
   'id', 'title', 'story_type', 'story_status', 'status', 'deleted_at',
   'admin_visibility_status', 'is_adult', 'is_shadow_exclusive', 'exclusive_status',
   'author_id', 'description', 'main_genre', 'tags', 'cover_url', 'story_language',
