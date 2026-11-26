@@ -1,6 +1,7 @@
 import express from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { wakeStoryEpisodePushScheduler } from '../services/storyEpisodePushScheduler.js'
+import { wakeTelegramPromotionScheduler } from '../services/telegramPromotion/runtime.service.js'
 import {
   createEpisode,
   createStory,
@@ -116,6 +117,7 @@ function invalidateMyStoriesAfterMutation(req, res, next) {
         req.body?.status === 'published'
       ) {
         wakeStoryEpisodePushScheduler()
+        wakeTelegramPromotionScheduler()
       }
     }
   })
