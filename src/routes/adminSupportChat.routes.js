@@ -95,6 +95,11 @@ router.get('/conversations', preAuthLimit, viewChat, inboxLimit, async (req, res
     return problem(res, 400, 'ADMIN_CHAT_INVALID_FILTER', 'Invalid inbox filter')
   }
 
+  const conversationId = req.query.conversation_id
+if (conversationId !== undefined && (typeof conversationId !== 'string' || !UUID.test(conversationId))) {
+  return problem(res, 400, 'ADMIN_CHAT_INVALID_ID', 'Invalid conversation ID')
+}
+
   const pageInput = req.query.page
   if (pageInput !== undefined && (typeof pageInput !== 'string' || !/^[1-9]\d{0,4}$/.test(pageInput))) {
     return problem(res, 400, 'ADMIN_CHAT_INVALID_PAGE', 'Invalid page number')
@@ -126,6 +131,7 @@ router.get('/conversations', preAuthLimit, viewChat, inboxLimit, async (req, res
       query = query.eq('assigned_admin_id', String(req.admin.admin_id))
     }
 
+    if (conversationId) query = query.eq('id', conversationId)
     const { data, error } = await query.range(start, start + PAGE_SIZE)
     if (error) throw error
     const hasMore = (data || []).length > PAGE_SIZE
