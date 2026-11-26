@@ -1112,9 +1112,7 @@ const failed = storySystemFailure || [401, 403, 429].includes(status) || status 
     res.getHeader('X-Shadow-Recommendations-Cache') || 'NONE'
   ).toUpperCase()
   const targets = buildTargetEvidence(context)
-  const supabaseCalls = targets
-    .filter((item) => item.target.startsWith('SUPABASE '))
-    .reduce((sum, item) => sum + item.count, 0)
+  const supabaseCalls = Number(context.supabase_calls || 0)
   const externalFailures =
     Array.isArray(context.external_failures)
       ? context.external_failures
@@ -1164,8 +1162,12 @@ const failed = storySystemFailure || [401, 403, 429].includes(status) || status 
               : 'expensive_request')
 
   const evidence = {
-    request_id: context.request_id,
-    time: new Date().toISOString(),
+  request_id: context.request_id,
+  time: new Date().toISOString(),
+  deployed_commit: /^[a-f0-9]{7,64}$/i.test(process.env.RENDER_GIT_COMMIT || '')
+    ? process.env.RENDER_GIT_COMMIT
+    : 'unknown',
+  process_uptime_seconds: Math.floor(process.uptime()),
     route: context.route,
     page: context.page,
     observed_supabase_rows: context.supabase_observed_rows,
