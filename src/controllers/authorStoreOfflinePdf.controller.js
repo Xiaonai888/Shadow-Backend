@@ -1,61 +1,72 @@
 import { supabase } from '../config/supabase.js'
 import { getPrivatePdfFromR2 } from '../services/privatePdfStorage.service.js'
+import { normalizePdfVersion, setPurchasedPdfVersionHeader } from '../services/authorStorePdfVersion.service.js'
+
+async function getPaidPdf(buyerId, productId) {
+  const { data: purchase, error: purchaseError } = await supabase
+    .from('author_store_reader_downloads')
+    .select('product_id, order_id, title, access_rule')
+    .eq('buyer_id', buyerId)
+    .eq('product_id', productId)
+    .maybeSingle()
+  if (purchaseError) throw purchaseError
+  if (!purchase?.order_id) return { status: 403, message: 'Confirmed purchase required' }
+
+  const { data: order, error: orderError } = await supabase
+    .from('author_store_orders')
+    .select('id, status, order_status, payment_status, pdf_unlock_status')
+    .eq('id', purchase.order_id)
+    .eq('buyer_id', buyerId)
+    .maybeSingle()
+  if (orderError) throw orderError
+  const orderStatus = String(order?.status || order?.order_status || '').toLowerCase()
+  if (!order || !['confirmed', 'preparing', 'shipped', 'completed'].includes(orderStatus) || String(order.payment_status || '').toLowerCase() !== 'paid' || String(order.pdf_unlock_status || '').toLowerCase() !== 'unlocked') {
+    return { status: 403, message: 'Confirmed paid purchase required' }
+  }
+
+  const { data: product, error: productError } = await supabase
+    .from('author_store_products')
+    .select('id, author_page_id, product_type, pdf_is_private, pdf_storage_key, pdf_file_url, pdf_file_name, access_rule, pdf_version')
+    .eq('id', productId)
+    .maybeSingle()
+  if (productError) throw productError
+  if (!product || product.product_type !== 'pdf') return { status: 404, message: 'PDF is not available' }
+  return { purchase, product }
+}
+
+function canDownloadPdf(product) {
+  const rule = String(product.access_rule || '').trim()
+  return rule === 'Download after payment' || rule === 'Download and read online'
+}
+
+function validPrivateKey(product) {
+  const key = String(product.pdf_storage_key || '')
+  return Boolean(product.author_page_id && key.startsWith(`author-private-pdfs/${product.author_page_id}/`))
+}
 
 export async function getMyAuthorStoreOfflinePdfGrant(req, res) {
-  res.set('Cache-Control', 'no-store')
+  res.set('Cache-Control', 'private, no-store')
   const buyerId = String(req.user?.user_id || req.user?.id || '').trim()
   const productId = String(req.params.productId || '').trim()
   if (!buyerId) return res.status(401).json({ ok: false, message: 'Sign in required' })
   if (!productId) return res.status(400).json({ ok: false, message: 'PDF ID is required' })
 
   try {
-    const { data: purchase, error: purchaseError } = await supabase
-      .from('author_store_reader_downloads')
-      .select('product_id, order_id, pdf_file_url, title, access_rule')
-      .eq('buyer_id', buyerId)
-      .eq('product_id', productId)
-      .maybeSingle()
-    if (purchaseError) throw purchaseError
-    if (!purchase?.order_id) return res.status(403).json({ ok: false, message: 'Confirmed purchase required' })
-
-    const { data: order, error: orderError } = await supabase
-      .from('author_store_orders')
-      .select('id, status, order_status, payment_status, pdf_unlock_status')
-      .eq('id', purchase.order_id)
-      .eq('buyer_id', buyerId)
-      .maybeSingle()
-    if (orderError) throw orderError
-    const orderStatus = String(order?.status || order?.order_status || '').toLowerCase()
-    if (!order || !['confirmed', 'preparing', 'shipped', 'completed'].includes(orderStatus)
-      || String(order.payment_status || '').toLowerCase() !== 'paid'
-      || String(order.pdf_unlock_status || '').toLowerCase() !== 'unlocked') {
-      return res.status(403).json({ ok: false, message: 'Confirmed paid PDF unlock required' })
+    const access = await getPaidPdf(buyerId, productId)
+    if (access.status) return res.status(access.status).json({ ok: false, message: access.message })
+    const { product, purchase } = access
+    if (!canDownloadPdf(product)) return res.status(403).json({ ok: false, message: 'Offline PDF saving is not permitted for this product' })
+    const isPrivate = product.pdf_is_private === true
+    const pdfUrl = isPrivate ? '' : String(product.pdf_file_url || '').trim()
+    if (isPrivate ? !validPrivateKey(product) : !/^https:\/\//i.test(pdfUrl)) {
+      return res.status(409).json({ ok: false, message: 'An offline-readable PDF is not available' })
     }
-
-    const { data: product, error: productError } = await supabase
-      .from('author_store_products')
-      .select('id, product_type, pdf_file_url, access_rule')
-      .eq('id', productId)
-      .maybeSingle()
-    if (productError) throw productError
-    if (!product || product.product_type !== 'pdf') {
-      return res.status(404).json({ ok: false, message: 'PDF is not available' })
-    }
-
-    const rule = String(product.access_rule || purchase.access_rule || '').toLowerCase().replace(/[_-]/g, ' ')
-    const permitsFileSaving = /\bdownload\b/.test(rule) && !/\b(?:no|not|without)\s+download\b/.test(rule)
-    if (!permitsFileSaving) {
-      return res.status(403).json({ ok: false, message: 'Offline PDF saving is not permitted for this product' })
-    }
-
-    const pdfUrl = String(product.pdf_file_url || purchase.pdf_file_url || '').trim()
-    if (!/^https:\/\//i.test(pdfUrl)) {
-      return res.status(409).json({ ok: false, message: 'An offline-readable PDF URL is not available' })
-    }
-
+    const version = normalizePdfVersion(product.pdf_version)
     return res.status(200).json({
       ok: true,
       pdf_url: pdfUrl,
+      pdf_is_private: isPrivate,
+      pdf_version: version,
       title: purchase.title || 'PDF',
       grant: {
         account_id: buyerId,
@@ -63,6 +74,7 @@ export async function getMyAuthorStoreOfflinePdfGrant(req, res) {
         access_type: 'permanent',
         offline_allowed: true,
         expires_at: null,
+        pdf_version: version,
       },
     })
   } catch (error) {
@@ -82,52 +94,16 @@ export async function getMyAuthorStorePurchasedPdf(req, res) {
   if (mode !== 'read' && mode !== 'download') return res.status(400).json({ ok: false, message: 'Invalid PDF access mode' })
 
   try {
-    const { data: purchase, error: purchaseError } = await supabase
-      .from('author_store_reader_downloads')
-      .select('product_id, order_id')
-      .eq('buyer_id', buyerId)
-      .eq('product_id', productId)
-      .maybeSingle()
-    if (purchaseError) throw purchaseError
-    if (!purchase?.order_id) return res.status(403).json({ ok: false, message: 'Confirmed purchase required' })
-
-    const { data: order, error: orderError } = await supabase
-      .from('author_store_orders')
-      .select('id, status, order_status, payment_status, pdf_unlock_status')
-      .eq('id', purchase.order_id)
-      .eq('buyer_id', buyerId)
-      .maybeSingle()
-    if (orderError) throw orderError
-    const orderStatus = String(order?.status || order?.order_status || '').toLowerCase()
-    if (!order || !['confirmed', 'preparing', 'shipped', 'completed'].includes(orderStatus) || String(order.payment_status || '').toLowerCase() !== 'paid' || String(order.pdf_unlock_status || '').toLowerCase() !== 'unlocked') {
-      return res.status(403).json({ ok: false, message: 'Confirmed paid purchase required' })
-    }
-
-    const { data: product, error: productError } = await supabase
-      .from('author_store_products')
-      .select('id, author_page_id, product_type, pdf_is_private, pdf_storage_key, pdf_file_name, access_rule')
-      .eq('id', productId)
-      .maybeSingle()
-    if (productError) throw productError
-    if (!product || product.product_type !== 'pdf' || product.pdf_is_private !== true) {
-      return res.status(404).json({ ok: false, message: 'Private PDF is not available' })
-    }
-
-    const rule = String(product.access_rule || '').trim()
-    const canDownload = rule === 'Download after payment' || rule === 'Download and read online'
-    if (mode === 'download' && !canDownload) {
-      return res.status(403).json({ ok: false, message: 'This PDF download mode is not permitted' })
-    }
-
-    const key = String(product.pdf_storage_key || '')
-    if (!product.author_page_id || !key.startsWith(`author-private-pdfs/${product.author_page_id}/`)) {
-      return res.status(404).json({ ok: false, message: 'PDF file is not available' })
-    }
-
-    const file = await getPrivatePdfFromR2(key)
+    const access = await getPaidPdf(buyerId, productId)
+    if (access.status) return res.status(access.status).json({ ok: false, message: access.message })
+    const { product } = access
+    if (mode === 'download' && !canDownloadPdf(product)) return res.status(403).json({ ok: false, message: 'This PDF download mode is not permitted' })
+    if (product.pdf_is_private !== true || !validPrivateKey(product)) return res.status(404).json({ ok: false, message: 'Private PDF is not available' })
+    const file = await getPrivatePdfFromR2(String(product.pdf_storage_key))
     const body = file?.Body
     if (typeof body?.pipe !== 'function') throw new Error('Private PDF stream is unavailable')
     const fileName = String(product.pdf_file_name || 'document.pdf').split(/[\\/]/).pop().replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 120) || 'document.pdf'
+    setPurchasedPdfVersionHeader(res, product.pdf_version)
     res.set('Content-Type', 'application/pdf')
     res.set('Content-Disposition', `${mode === 'download' ? 'attachment' : 'inline'}; filename="${fileName.replace(/"/g, '')}"`)
     if (Number.isSafeInteger(file.ContentLength) && file.ContentLength > 0) res.set('Content-Length', String(file.ContentLength))
