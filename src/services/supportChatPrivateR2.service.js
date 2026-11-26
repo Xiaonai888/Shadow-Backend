@@ -12,9 +12,9 @@ function config() {
     accountId: String(process.env.R2_ACCOUNT_ID || '').trim(),
     accessKeyId: privateAccessKeyId || String(process.env.R2_ACCESS_KEY_ID || '').trim(),
     secretAccessKey: privateSecretAccessKey || String(process.env.R2_SECRET_ACCESS_KEY || '').trim(),
-    bucket: String(process.env.R2_PRIVATE_BUCKET_NAME || '').trim(),
+    bucket: String(process.env.R2_SUPPORT_CHAT_BUCKET_NAME || '').trim(),
   }
-  if (!value.accountId || !value.accessKeyId || !value.secretAccessKey || !value.bucket || value.bucket === String(process.env.R2_BUCKET_NAME || '').trim()) throw new Error('Dedicated private R2 bucket required')
+  if (!value.accountId || !value.accessKeyId || !value.secretAccessKey || !value.bucket || [process.env.R2_BUCKET_NAME, process.env.R2_PRIVATE_BUCKET_NAME].some(name => value.bucket === String(name || '').trim())) throw new Error('Dedicated support chat R2 bucket required')
   return value
 }
 
