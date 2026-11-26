@@ -42,6 +42,9 @@ function unavailable(res, error) {
 
 function actionError(res, error) {
   const detail = String(error?.message || '').toLowerCase()
+  if (detail.includes('support_chat_blocked')) {
+  return problem(res, 403, 'SUPPORT_CHAT_BLOCKED', 'You cannot send messages to Shadow Support')
+}
   if (detail.includes('archived')) {
     return problem(res, 409, 'READER_SUPPORT_ARCHIVED', 'This support chat is archived')
   }
@@ -127,12 +130,7 @@ router.post('/mine/messages', preAuthLimit, requireUser, writeLimit, async (req,
       p_message_id: requestId,
       p_conversation_id: null,
     })
-    if (error) {
-      if (String(error.message || '').toLowerCase().includes('archived')) {
-        return problem(res, 409, 'READER_SUPPORT_ARCHIVED', 'This support chat is archived')
-      }
-      return unavailable(res, error)
-    }
+    if (error) return actionError(res, error)
     res.set('Cache-Control', 'no-store')
     void notifyReaderSupportMessage(supabase, data, req.user.user_id).catch(() => {})
 return res.status(data?.created ? 201 : 200).json(data)
