@@ -147,6 +147,8 @@ import { startResourceController } from './src/services/resourceController/resou
 import { startAuthorStoryPushQueue } from './src/services/authorStoryPushQueue.service.js'
 import { startMassMentionWorker } from './src/services/massMentionWorker.service.js'
 import { startStoryEpisodePushScheduler } from './src/services/storyEpisodePushScheduler.js'
+import { startTelegramPromotionScheduler } from './src/services/telegramPromotion/runtime.service.js'
+import adminTelegramPromotionRoutes from './src/routes/adminTelegramPromotion.routes.js'
 import { startSmartAdMaintenanceScheduler } from './src/services/smartAdMaintenance.service.js'
 import { startBinanceUsdtAlertWorker } from './src/services/binanceUsdtAlertWorker.service.js'
 import { startTelegramMissingReportRecovery } from './src/services/telegramMissingReportRecovery.service.js'
@@ -1130,6 +1132,7 @@ app.use('/api/reader/support-chat', readerSupportImagesRoutes)
 app.use('/api/admin/search-insights', adminSearchInsightsRoutes)
 app.use('/api/admin/boost', adminBoostInsightsRoutes)
 app.use('/api/admin/author-ads', adminAuthorAdsRoutes)
+app.use('/api/admin/telegram-promotion', adminTelegramPromotionRoutes)
 app.use('/api/music', musicRoutes)
 app.use('/api/story-translation', storyTranslationSpamGuard, storyTranslationRoutes)
 app.use('/api/shadow-docs/review-ai', shadowDocsReviewAIRoutes)
@@ -1211,6 +1214,7 @@ app.listen(PORT, () => {
   startAuthorStoryPushQueue()
   if (process.env.MASS_MENTION_WORKER_ENABLED === 'true') startMassMentionWorker()
   startStoryEpisodePushScheduler()
+  startTelegramPromotionScheduler()
   startSmartAdMaintenanceScheduler()
   startBinanceUsdtAlertWorker()
   startTelegramMissingReportRecovery()
