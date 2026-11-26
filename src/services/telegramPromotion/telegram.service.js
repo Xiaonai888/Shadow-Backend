@@ -17,10 +17,16 @@ export async function sendPromotionPhoto({ token, chatId, message, fileId, fetch
   const timer = setTimeout(() => controller.abort(), 15000)
   try {
     let response, data
+    const payload = { chat_id: channel, photo: fileId || message.photo, caption: message.caption }
+    if (Array.isArray(message.caption_entities) && message.caption_entities.length && Array.isArray(message.reply_markup.inline_keyboard) && !message.reply_markup.inline_keyboard.length) {
+      payload.caption_entities = message.caption_entities
+    } else {
+      payload.reply_markup = message.reply_markup
+    }
     try {
       response = await fetchImpl(`https://api.telegram.org/bot${secret}/sendPhoto`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-        body: JSON.stringify({ chat_id: channel, photo: fileId || message.photo, caption: message.caption, reply_markup: message.reply_markup }),
+        body: JSON.stringify(payload),
       })
       data = await response.json()
     } catch {
