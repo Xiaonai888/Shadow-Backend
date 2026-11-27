@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import { orderPaymentReportIdentityLines } from '../services/telegram.service.js'
 import { supabase } from '../config/supabase.js'
 import { verifyStoreOwnerPin, storeReceiptPath } from './adminAuthorStoreWithdrawalWorkflow.controller.js'
 import {
@@ -3098,7 +3099,7 @@ function authorStoreBookOrderKeyboard(order) {
   }
 }
 
-function buildAuthorStoreBookOrderTelegramMessage(order, authorPage) {
+async function buildAuthorStoreBookOrderTelegramMessage(order, authorPage) {
   const items = Array.isArray(order?.items) ? order.items : []
   const bookItems = items.filter((item) => String(item.product_type || item.type || '').toLowerCase() === 'book')
   const buyerProfile = order.buyer_profile || {}
@@ -3132,6 +3133,7 @@ function buildAuthorStoreBookOrderTelegramMessage(order, authorPage) {
     trxId ? `🧾 Trx ID: <code>${html(trxId)}</code>` : '',
     '',
     `👤 Buyer: <b>${html(buyerName)}</b>`,
+...await orderPaymentReportIdentityLines(supabase, order),
     buyerPhone ? `📞 Phone: <code>${html(buyerPhone)}</code>` : '',
     buyerTelegram ? `💬 Telegram: ${html(buyerTelegram)}` : '',
     buyerFacebook ? `🔗 Facebook: ${html(buyerFacebook)}` : '',
@@ -3229,7 +3231,7 @@ async function handleAuthorStorePrepareCallback(callbackQuery) {
     await editAuthorStoreTelegramMessage(
       chatId,
       messageId,
-      buildAuthorStoreBookOrderTelegramMessage(result.order, result.authorPage),
+      await buildAuthorStoreBookOrderTelegramMessage(result.order, result.authorPage),
       {
         reply_markup: authorStoreBookOrderKeyboard(result.order),
       }
@@ -3260,7 +3262,7 @@ export async function sendAuthorStoreBookOrderTelegram(order) {
     return { sent: false, reason: 'telegram_not_linked' }
   }
 
-  await sendTelegramMessageWithRetry(buildAuthorStoreBookOrderTelegramMessage(order, authorPage), {
+  await sendTelegramMessageWithRetry(await buildAuthorStoreBookOrderTelegramMessage(order, authorPage), {
     chat_id: String(authorPage.telegram_chat_id),
     reply_markup: authorStoreBookOrderKeyboard(order),
   })
@@ -3309,7 +3311,8 @@ async function sendAuthorStoreAdminOrderReviewAlert(order) {
     ...productLines,
     '',
     '<b>Reader</b>',
-    `Name: ${html(buyerName)}`,
+   `Order buyer: ${html(buyerName)}`,
+...await orderPaymentReportIdentityLines(supabase, order),
     `Phone: ${html(buyerPhone)}`,
     `Address: ${html(buyerAddress)}`,
     '',
@@ -3383,7 +3386,8 @@ export async function sendAuthorStorePdfCompletedReports(order) {
     `💵 Amount: <b>${html(moneyFormatAttribution(order.total_usd || order.total_amount))}</b>`,
     order.aba_transaction_id ? `🧾 Trx ID: <code>${html(order.aba_transaction_id)}</code>` : '',
     '',
-    `👤 Buyer: <b>${html(buyer.name || order.buyer_name || order.buyer_id || 'Reader')}</b>`,
+   `👤 Buyer: <b>${html(buyer.name || order.buyer_name || order.buyer_id || 'Reader')}</b>`,
+...await orderPaymentReportIdentityLines(supabase, order),
     buyer.phone_number || order.buyer_phone ? `📞 Phone: <code>${html(buyer.phone_number || order.buyer_phone)}</code>` : '',
     '',
     '<b>PDF:</b>',
