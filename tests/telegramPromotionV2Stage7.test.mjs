@@ -1,0 +1,25 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import {buildStoryPromotionV2,createPromotionMessageBuilderV2,updateStatusV2} from '../src/services/telegramPromotion/messageV2.service.js'
+import {createPromotionStatusSourceV2} from '../src/services/telegramPromotion/statusSourceV2.service.js'
+const story={id:'11111111-1111-4111-8111-111111111111',title:'រឿងសាកល្បង 🌙',story_language:'Khmer',story_type:'novel',story_status:'Ongoing',cover_url:'https://example.com/cover.jpg'}
+const episode={id:'22222222-2222-4222-8222-222222222222',story_id:story.id,title:'ភាគទី១',content:Array.from({length:60},(_,i)=>`<p>បន្ទាត់ ${i} sample reading text.</p>`).join('')}
+const args={story,episode,language:'km',authorName:'អ្នកនិពន្ធ'}
+const preview={photos:[1,2,3].map(i=>`https://example.com/${i}.jpg`),coveragePercent:29}
+const safeCoverUrl='https://example.com/reviewed-cover.jpg'
+const status={storyId:story.id,episodeId:episode.id,firstEpisode:true,justCompleted:false}
+function ranges(m){for(const e of m.caption_entities)assert.ok(e.offset>=0&&e.length>0&&e.offset+e.length<=m.caption.length)}
+test('update uses embedded links and bold UTF16 title',()=>{const m=buildStoryPromotionV2(args);assert.ok(m.caption.startsWith('🔔 Update Today · Novel'));assert.equal(m.caption_entities.filter(e=>e.type==='text_link').length,4);const e=m.caption_entities[0];assert.equal(m.caption.slice(e.offset,e.offset+e.length),story.title);assert.ok(m.caption.length<=960);ranges(m)})
+test('solo keeps four buttons and 15 lines maximum',()=>{const m=buildStoryPromotionV2({...args,postType:'solo',topic:'hidden'});assert.equal(m.reply_markup.inline_keyboard.flat().length,4);assert.ok(m.caption.includes('ស្នាដៃ'));assert.ok(m.caption.split('\n').filter(l=>l.startsWith('បន្ទាត់')).length<=15)})
+test('new story only verified first episode',()=>{assert.ok(buildStoryPromotionV2({...args,statusContext:status}).caption.startsWith('🆕 New Story'));assert.equal(updateStatusV2({...args,statusContext:{...status,episodeId:'wrong'}}),'update')})
+test('completed label requires confirmed transition and completed status',()=>{assert.ok(buildStoryPromotionV2({...args,story:{...story,story_status:'Completed'},statusContext:{...status,justCompleted:true}}).caption.startsWith('✅ Just Completed'));assert.equal(updateStatusV2({...args,story:{...story,story_status:'Completed'}}),'update')})
+test('manga album links only on first image',()=>{const m=buildStoryPromotionV2({...args,story:{...story,story_type:'manga'},mangaPreview:preview});assert.equal(m.media.length,3);assert.equal(m.media[0].caption_entities.filter(e=>e.type==='text_link').length,4);assert.equal(m.media[1].caption,undefined);assert.ok(!m.media[0].caption.includes('sample reading'));ranges(m.media[0])})
+test('manga over 30 percent falls back to cover',()=>{const m=buildStoryPromotionV2({...args,story:{...story,story_type:'manga'},mangaPreview:{...preview,coveragePercent:31}});assert.equal(m.photo,story.cover_url);assert.equal(m.media,undefined)})
+test('adult episode without reviewed safe cover not published',()=>{assert.equal(buildStoryPromotionV2({...args,episode:{...episode,is_adult:true}}),null)})
+test('adult episode safe fallback no unapproved excerpt',()=>{const m=buildStoryPromotionV2({...args,episode:{...episode,is_adult:true},safeCoverUrl});assert.equal(m.photo,safeCoverUrl);assert.ok(!m.caption.includes('sample reading'));assert.ok(m.caption.includes('🔞'));assert.ok(!m.caption_entities.some(e=>e.type==='spoiler'))})
+test('reviewed adult excerpt receives exact spoiler entity',()=>{const m=buildStoryPromotionV2({...args,episode:{...episode,is_adult:true},safeCoverUrl,approvedPublicPreview:true});const e=m.caption_entities.find(e=>e.type==='spoiler');assert.ok(e);assert.ok(m.caption.slice(e.offset,e.offset+e.length).includes('sample reading'));ranges(m)})
+test('adult story normal episode does not get spoiler',()=>{const m=buildStoryPromotionV2({...args,story:{...story,is_adult:true},safeCoverUrl});assert.ok(m.caption.includes('sample reading'));assert.ok(!m.caption_entities.some(e=>e.type==='spoiler'))})
+test('reviewed adult manga spoiler on all images',()=>{const m=buildStoryPromotionV2({...args,story:{...story,story_type:'manga'},episode:{...episode,is_adult:true},mangaPreview:preview,approvedPublicPreview:true});assert.ok(m.media.every(x=>x.has_spoiler===true))})
+test('wrong language rejected',()=>{assert.throws(()=>buildStoryPromotionV2({...args,language:'en'}),/Invalid/)})
+test('status RPC uses exact IDs',async()=>{const source=createPromotionStatusSourceV2({rpc:async(name,params)=>{assert.equal(name,'telegram_promotion_v2_story_status');assert.equal(params.p_episode_id,episode.id);return {data:status}}});assert.deepEqual(await source.status(story.id,episode.id),status)})
+test('builder does not fetch adult manga metadata without approval',async()=>{const b=createPromotionMessageBuilderV2({source:{mangaPreview:async()=>{throw Error('unexpected fetch')}},safeCoverUrl});const m=await b.build({...args,story:{...story,story_type:'manga'},episode:{...episode,is_adult:true}});assert.equal(m.photo,safeCoverUrl)})
