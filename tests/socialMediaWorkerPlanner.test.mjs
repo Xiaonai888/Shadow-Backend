@@ -2,6 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {createSocialPromotionPlanner} from '../src/services/socialMedia/socialPromotionPlanner.service.js'
 import {createSocialPromotionWorker} from '../src/services/socialMedia/socialPromotionWorker.service.js'
+import {createSocialPromotionQueue} from '../src/services/socialMedia/socialPromotionQueue.service.js'
+import {createSocialPromotionExceptions} from '../src/services/socialMedia/socialPromotionExceptions.service.js'
 import {createSocialPromotionWorkerStore} from '../src/services/socialMedia/socialPromotionWorkerStore.service.js'
 const uid=n=>`00000000-0000-0000-0000-${String(n).padStart(12,'0')}`
 const rule={id:uid(1),owner_type:'admin',owner_id:'shadow',connection_id:uid(2),language:'ja',source_topic:'solo',selection_mode:'smart',story_ids:[],author_ids:[],story_types:[],enabled:true,updated_at:'2026-11-27T00:00:00Z'}
@@ -11,7 +13,7 @@ const job={id:uid(5),worker_claim_id:uid(6),rule_id:rule.id,connection_id:rule.c
 const items=[{story_id:uid(3),episode_id:uid(4)}]
 function plan(overrides={}){
   const calls=[]
-  const defaults={source:{candidatePage:async args=>{calls.push(['source',args]);return {scanned:1,candidates:[row]}}},selection:{group:()=>({stories:[]}),solo:({candidates})=>candidates},chooseCaption:()=>null,queue:{history:async args=>{calls.push(['history',args]);return {history:[],captionHistory:[]}},enqueue:async args=>{calls.push(['enqueue',args]);return {state:'queued',jobId:job.id}}},updateSource:{candidates:async()=>[row]}}
+  const defaults={exceptions:{allowedStoryIds:async ids=>new Set(ids)},source:{candidatePage:async args=>{calls.push(['source',args]);return {scanned:1,candidates:[row]}}},selection:{group:()=>({stories:[]}),solo:({candidates})=>candidates},chooseCaption:()=>null,queue:{history:async args=>{calls.push(['history',args]);return {history:[],captionHistory:[]}},enqueue:async args=>{calls.push(['enqueue',args]);return {state:'queued',jobId:job.id}}},updateSource:{candidates:async()=>[row]}}
   return {planner:createSocialPromotionPlanner({...defaults,...overrides}),calls}
 }
 function worker(platform='facebook',overrides={}){
@@ -31,3 +33,9 @@ test('Instagram polls at most three times, no publish if not ready',async()=>{le
 test('Instagram pending then published',async()=>{let n=0;const {worker:w}=worker('instagram',{publishInstagramContainer:async()=>++n===1?{state:'pending'}:{state:'published',postId:'123'}});assert.equal((await w.run()).state,'published');assert.equal(n,2)})
 test('worker prevents overlapping runs',async()=>{let release;const {worker:w}=worker('facebook',{publishFacebook:()=>new Promise(r=>release=r)});const first=w.run();assert.equal((await w.run()).state,'busy');while(!release)await new Promise(r=>setImmediate(r));release({postId:'1'});assert.equal((await first).state,'published')})
 test('store finalization is fenced by claim ID',async()=>{const calls=[];const store=createSocialPromotionWorkerStore({rpc:async(name,args)=>{calls.push([name,args]);return {data:false}}});await assert.rejects(store.finish(job,'published',{postId:'123'}),/CLAIM_LOST/);assert.equal(calls[0][1].p_claim_id,job.worker_claim_id)})
+
+test('blocked story is removed before history and enqueue',async()=>{const {planner,calls}=plan({exceptions:{allowedStoryIds:async()=>new Set()}});assert.equal((await planner.plan({rule,slot})).state,'empty');assert.deepEqual(calls.map(x=>x[0]),['source'])})
+test('update candidates are filtered before enqueue too',async()=>{const {planner,calls}=plan({exceptions:{allowedStoryIds:async()=>new Set()}});assert.equal((await planner.plan({rule:{...rule,source_topic:'update'},slot})).state,'empty');assert.equal(calls.length,0)})
+test('one batched filter removes every blocked story before selection',async()=>{let count=0;const other={story:{id:uid(7),cover_url:'https://cdn.domain.com/b.jpg'},episode:{id:uid(8)}};const {planner,calls}=plan({source:{candidatePage:async()=>({scanned:2,candidates:[row,other]})},exceptions:createSocialPromotionExceptions({rpc:async(name,args)=>{count++;assert.equal(name,'social_promotion_allowed_stories_v6');assert.deepEqual(args.p_story_ids,[uid(3),uid(7)]);return {data:[uid(7)]}}})});assert.equal((await planner.plan({rule,slot})).state,'queued');assert.equal(count,1);assert.deepEqual(calls[0][1].storyIds,[uid(7)]);assert.equal(calls[1][1].items[0].storyId,uid(7))})
+test('exception RPC failure stops planning without enqueue',async()=>{const {planner,calls}=plan({exceptions:createSocialPromotionExceptions({rpc:async()=>({error:{code:'XX000'}})})});await assert.rejects(planner.plan({rule,slot}),/DATABASE_FAILED/);assert.deepEqual(calls.map(x=>x[0]),['source'])})
+test('database race guard yields ineligible or daily limit only for known errors',async()=>{const args={ruleId:rule.id,revision:rule.updated_at,slot,kind:'solo',items:[{storyId:uid(3),episodeId:uid(4)}]};for(const [message,state] of [['SOCIAL_EXCEPTION_BLOCKED','ineligible'],['SOCIAL_ACCOUNT_DAILY_LIMIT','daily_limit']]){const q=createSocialPromotionQueue({rpc:async()=>({error:{code:'23514',message}})});assert.deepEqual(await q.enqueue(args),{state})}const q=createSocialPromotionQueue({rpc:async()=>({error:{code:'23514',message:'other'}})});await assert.rejects(q.enqueue(args),/ENQUEUE_FAILED/)})
