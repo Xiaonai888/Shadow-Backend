@@ -45,7 +45,7 @@ test('five languages: Update Today has original cover, bounded caption, bold tit
     assert.deepEqual(links.map(e => e.url), ['https://www.shadowerabook.site/story/story1', 'https://www.shadowerabook.site/register', 'https://www.shadowerabook.site/install', 'https://youtu.be/gMUvBCkkPHQ?si=ZZKdPMcLuX6KzE2i'])
     assert.ok(message.caption.slice(0, links[0].offset).trimEnd().endsWith('...'))
     assert.equal(message.caption.slice(links[0].offset), `${visible(links[0])}  ${visible(links[1])}\n${visible(links[2])}  ${visible(links[3])}`)
-    assert.ok(message.caption.includes('✍️ Dara · '))
+    assert.ok(message.caption.includes('\n\n✍️ Dara\n\n'))
     assert.ok(!message.caption.includes('https://'))
     if (language === 'Khmer') assert.equal(message.caption.slice(links[0].offset), '📖 អានរឿងបន្ត  👤 បង្កើតគណនី\n📲 ដំឡើងកម្មវិធី  🎬 របៀបប្រើប្រាស់')
   }
