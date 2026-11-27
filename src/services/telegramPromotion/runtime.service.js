@@ -9,7 +9,9 @@ import { createPromotionMonitor } from './monitoring.service.js'
 import { createPromotionAlertDelivery } from './alertDelivery.service.js'
 import { sendTelegramMessage } from '../telegram.service.js'
 
-const enabled=()=>process.env.TELEGRAM_PROMOTION_ENABLED==='true'
+const v2Requested=process.env.TELEGRAM_PROMOTION_V2_ENABLED==='true'
+let v2=null
+const enabled=()=>process.env.TELEGRAM_PROMOTION_ENABLED==='true'&&(!v2Requested||v2!==null)
 const token=language=>String(process.env[`TELEGRAM_PROMOTION_BOT_TOKEN_${String(language).toUpperCase()}`] || process.env.TELEGRAM_PROMOTION_BOT_TOKEN || '').trim()
 const onError=event=>console.error('TELEGRAM_PROMOTION_ERROR',JSON.stringify(event))
 const queue=createPromotionQueue(supabase)
@@ -29,7 +31,15 @@ const monitor={...healthMonitor,async heartbeat(...args){
   void alerts.pulse()
   return result
 }}
-const scheduler=createPromotionScheduler({queue,source,candidates,worker,recovery,enabled,token,onError,monitor})
+if(v2Requested){
+  try{
+    const {createPromotionIntegrationV2}=await import('./integrationV2.service.js')
+    v2=createPromotionIntegrationV2({db:supabase,queue,source,candidates,token,onError,safeCoverUrl:process.env.TELEGRAM_PROMOTION_SAFE_COVER_URL||null})
+  }catch(error){
+    onError({code:'TELEGRAM_PROMOTION_V2_INIT_FAILED',message:String(error?.message||'Initialization failed').replace(/\b\d+:[A-Za-z0-9_-]{10,}\b/g,'[redacted]').slice(0,300)})
+  }
+}
+const scheduler=createPromotionScheduler({queue,source,candidates,worker,recovery,enabled,token,onError,monitor,v2})
 export const startTelegramPromotionScheduler=()=>scheduler.start()
 export const wakeTelegramPromotionScheduler=()=>scheduler.wake()
 export const stopTelegramPromotionScheduler=()=>scheduler.stop()
