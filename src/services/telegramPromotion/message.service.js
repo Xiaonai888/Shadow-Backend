@@ -23,7 +23,10 @@ function httpsUrl(value, base) {
   return url.href
 }
 function buildUpdateMessage({ story, episode, lang, copy, authorName, links, content }) {
-  const [heading, ...labels] = UPDATE_COPY[lang]
+  const [baseHeading, ...labels] = UPDATE_COPY[lang]
+  const storyTypes = { novel: 'Novel', chat_story: 'Chat Story', manga: 'Manga' }
+  const storyType = storyTypes[String(story.story_type || 'novel').trim().toLowerCase()]
+  const heading = storyType ? `${baseHeading} · ${storyType}` : baseHeading
   const title = clean(story.title, 180)
   const author = clean(authorName, 80)
   const episodeLabel = clean(episode.title, 180)
