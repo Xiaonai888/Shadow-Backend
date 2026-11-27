@@ -4,7 +4,8 @@ import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { requireCambodianAuthorPreOrderOwner, getOwnedAuthorPreOrder } from '../services/authorPreOrderCampaign.service.js'
 import { prepareAuthorPreOrderReview } from '../services/authorPreOrderOrderPreparation.service.js'
-import { shadowAiConfig, shadowAiError } from '../services/shadowAi/shadowAiPolicy.js'
+import { shadowAiError } from '../services/shadowAi/shadowAiPolicy.js'
+import { shadowLocalRuntimeConfig } from '../services/shadowAi/local/shadowLocalRuntimeConfig.js'
 import { runShadowAi } from '../services/shadowAi/shadowAiUsage.service.js'
 import { shadowAiPreOrderContext as contextService } from '../services/shadowAi/shadowAiPreOrderCatalog.service.js'
 import { createShadowPreOrderBooking } from '../services/shadowAi/shadowAiPreOrderBooking.service.js'
@@ -27,7 +28,7 @@ const reader=limiter(20,req=>String(req.user.user_id))
 const writes=limiter(6,req=>String(req.user.user_id))
 const actor=req=>req.user.user_id
 async function enabled() {
-  shadowAiConfig()
+  shadowLocalRuntimeConfig()
   const {data,error}=await supabase.from('shadow_ai_settings').select('enabled,preorder_enabled').eq('id',1).maybeSingle().abortSignal(AbortSignal.timeout(5000))
   if(error) throw shadowAiError('SHADOW_AI_SETTINGS_UNAVAILABLE','AI settings are unavailable')
   if(data?.enabled!==true || data?.preorder_enabled!==true) throw shadowAiError('SHADOW_AI_DISABLED','AI is disabled')
