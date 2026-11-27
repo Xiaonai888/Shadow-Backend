@@ -5,6 +5,7 @@ import { createPromotionStatusSourceV2 } from '../telegramPromotion/statusSource
 import { adaptSocialPromotionPost } from './platformPostAdapter.service.js'
 import { createSocialPromotionQueue } from './socialPromotionQueue.service.js'
 import { createSocialPromotionWorkerStore } from './socialPromotionWorkerStore.service.js'
+import { createSocialPromotionExceptions } from './socialPromotionExceptions.service.js'
 import { createSocialPromotionPlanner } from './socialPromotionPlanner.service.js'
 import { createSocialPromotionWorker } from './socialPromotionWorker.service.js'
 import { createSocialPromotionContentSource } from './socialPromotionContentSource.service.js'
@@ -20,7 +21,7 @@ export function createSocialPromotionIntegration({db,decryptToken,prepareMedia,c
   const store=createSocialPromotionWorkerStore(db)
   const statusSource=createPromotionStatusSourceV2(db)
   const loadPost=createSocialPromotionPostLoader({freshSource,sharedSource:source,postContent:sharedSocialPostContent,adaptPost:adaptSocialPromotionPost,statusSource,clock})
-  const planner=createSocialPromotionPlanner({source,selection:sharedSelection,chooseCaption:chooseSharedCaption,queue,updateSource:freshSource})
+  const planner=createSocialPromotionPlanner({source,selection:sharedSelection,chooseCaption:chooseSharedCaption,queue,updateSource:freshSource,exceptions:createSocialPromotionExceptions(db)})
   const worker=createSocialPromotionWorker({store,loadPost,decryptToken,prepareMedia,publishFacebook:publishFacebookPromotion,prepareInstagram:prepareInstagramPromotion,createInstagramCarousel,publishInstagramContainer})
   return {
     plan(options){return planner.plan({...options,now:clock()})},
