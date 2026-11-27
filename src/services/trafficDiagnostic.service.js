@@ -18,6 +18,9 @@ const MAX_KEYS_PER_MAP = 500
 const inbound = new Map()
 const outbound = new Map()
 const requestContext = new AsyncLocalStorage()
+export function runOutsideRequestDiagnostics(callback) {
+  return requestContext.exit(callback)
+}
 const TRACE_SLOW_MS = 1500
 const TRACE_MAX_ERRORS_PER_MINUTE = 8
 const TRACE_MAX_EXPENSIVE_PER_MINUTE = 4
