@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createSocialPromotionConnectionStore } from '../src/services/socialMedia/socialPromotionConnectionStore.service.js'
 import { createSocialPromotionAdmin } from '../src/services/socialMedia/socialPromotionAdmin.service.js'
-import { encryptSocialToken } from '../src/services/socialMedia/tokenVault.service.js'
+import { encryptSocialToken, decryptSocialToken } from '../src/services/socialMedia/tokenVault.service.js'
 
 const id='10000000-0000-4000-8000-000000000001'
 const clock=()=>Date.parse('2026-11-27T12:00:00Z')
@@ -42,11 +42,18 @@ test('instagram is bound to verified account and linked page',async()=>{
   assert.equal(calls.find(x=>x[0]==='upsert')[1].token_ciphertext,'encrypted-instagram')
   await assert.rejects(store(db,{verifyInstagram:async()=>({platform:'instagram',externalId:'456',linkedPageId:'789',displayName:'Other'})}).connect({...input,platform:'instagram',instagramId:'456'}),/IDENTITY_MISMATCH/)
 })
-test('current production vault refuses Instagram without saving credential',async()=>{
+test('Instagram connection encrypts credential and isolates it from Facebook',async()=>{
   process.env.SOCIAL_MEDIA_TOKEN_KEY='a'.repeat(64)
-  const {db,calls}=mock(row)
-  await assert.rejects(store(db,{encryptToken:encryptSocialToken}).connect({...input,platform:'instagram',instagramId:'456'}),/VAULT_UNAVAILABLE/)
-  assert.equal(calls.length,0)
+  const {db,calls}=mock({...row,platform:'instagram',external_id:'456'})
+  const result=await store(db,{encryptToken:encryptSocialToken}).connect({...input,platform:'instagram',instagramId:'456'})
+  const written=calls.find(x=>x[0]==='upsert')[1]
+  const context={ownerType:'admin',ownerId:'shadow',platform:'instagram',externalId:'456'}
+  assert.equal(decryptSocialToken(written.token_ciphertext,context),input.token)
+  assert.throws(()=>decryptSocialToken(written.token_ciphertext,{...context,platform:'facebook'}),/DECRYPT_FAILED/)
+  assert.throws(()=>decryptSocialToken(written.token_ciphertext,{...context,externalId:'789'}),/DECRYPT_FAILED/)
+  assert.equal(result.platform,'instagram')
+  assert.equal(Object.hasOwn(result,'token_ciphertext'),false)
+  assert.ok(!JSON.stringify(calls).includes(input.token))
 })
 test('revocation removes local token and restricts owner',async()=>{
   const {db,calls}=mock({...row,status:'revoked'})
