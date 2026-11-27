@@ -167,6 +167,8 @@ import adminGameSettingsRoutes from './src/routes/adminGameSettings.routes.js'
 import adminWorkRoutes from './src/routes/adminWork.routes.js'
 import adminSystemControlRoutes from './src/routes/adminSystemControl.routes.js'
 import adminResourceCostRoutes from './src/routes/adminResourceCost.routes.js'
+import shadowAiPreOrderRoutes from './src/routes/shadowAiPreOrder.routes.js'
+import adminShadowAiRoutes from './src/routes/adminShadowAi.routes.js'
 import { startSystemUsagePersistence } from './src/services/systemUsagePersistence.service.js'
 import { startDatabaseIoMonitor } from './src/services/databaseIoMonitor.service.js'
 import { startSystemUsageAnomalyDetector } from './src/services/systemUsageAnomaly.service.js'
@@ -1154,6 +1156,8 @@ app.use('/api/admin/reader-health', readerHealthAdminRoutes)
 app.use('/api/admin/story-creation-errors', storyCreationErrorAdminRoutes)
 app.use('/api/admin/system-control', adminSystemControlRoutes)
 app.use('/api/admin/resource-cost', adminResourceCostRoutes)
+app.use('/api/shadow-ai/preorder', shadowAiPreOrderRoutes)
+app.use('/api/admin/shadow-ai', adminShadowAiRoutes)
 app.use('/api/story-episode-push', storyEpisodePushWakeRoutes)
 app.use('/api/media-direct', mediaUploadRouteSpamGuard, mediaDirectRoutes)
 app.use((req, res) => {
