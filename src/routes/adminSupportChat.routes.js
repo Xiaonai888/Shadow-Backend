@@ -1,6 +1,7 @@
 import express from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
+import { readChatDeletionSync } from '../services/chatDeletionSync.service.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
 import { normalizeSmartSearch, scoreSmartSearchResult } from '../services/smartSearchCore.service.js'
 
@@ -153,11 +154,11 @@ if (conversationId !== undefined && (typeof conversationId !== 'string' || !UUID
     res.set('Cache-Control', 'no-store')
     return res.json({
       ok: true,
-      messages,
-      ...(deletionSync ? { deletion_sync: deletionSync } : {}),
-      limit: 20,
-      has_more: (data || []).length > 20,
-      next_before: page.length ? page[0].created_at : null,
+      conversations,
+      limit: PAGE_SIZE,
+      page: pageNumber,
+      next_page: hasMore ? pageNumber + 1 : null,
+      has_more: hasMore,
     })
   } catch (error) {
     return failed(res, error, 'inbox')
@@ -273,6 +274,12 @@ router.get('/conversations/:conversationId/messages', preAuthLimit, viewChat, in
     if (before) query = query.lt('created_at', new Date(before).toISOString())
     const { data, error } = await query.limit(21)
     if (error) throw error
+    const deletionSync = !before ? await readChatDeletionSync({
+      db: supabase,
+      table: 'admin_support_messages',
+      conversationId: id,
+      rawIds: req.query.deletion_check_ids,
+    }).catch(() => null) : null
     const page = (data || []).slice(0, 20).map(message =>
   message.deleted_at
     ? { ...message, message_text: 'Message deleted', attachments: [] }
@@ -301,6 +308,7 @@ router.get('/conversations/:conversationId/messages', preAuthLimit, viewChat, in
     return res.json({
       ok: true,
       messages,
+      ...(deletionSync ? { deletion_sync: deletionSync } : {}),
       limit: 20,
       has_more: (data || []).length > 20,
       next_before: page.length ? page[0].created_at : null,
