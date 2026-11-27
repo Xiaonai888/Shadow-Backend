@@ -194,9 +194,6 @@ import { storyCreationErrorPublicRoutes, storyCreationErrorAdminRoutes } from '.
 import { adminSupportDeletedContentRoutes } from './src/routes/adminSupportDeletedContent.routes.js'
 import { startSupportDeletedCleanup } from './src/services/supportDeletedCleanup.service.js'
 import { deletePrivateSupportImage } from './src/services/supportChatPrivateR2.service.js'
-import { adminSupportDeletedContentRoutes } from './src/routes/adminSupportDeletedContent.routes.js'
-import { startSupportDeletedCleanup } from './src/services/supportDeletedCleanup.service.js'
-import { deletePrivateSupportImage } from './src/services/supportChatPrivateR2.service.js'
 
 dotenv.config()
 
@@ -1133,7 +1130,6 @@ app.use('/api/admin/support-chat', adminSupportBlockRoutes)
 app.use('/api/admin/support-chat', adminSupportImagesRoutes)
 app.use('/api/admin/support-chat', adminSupportPinsRoutes)
 app.use('/api/admin/support-chat', adminSupportDeletedContentRoutes)
-app.use('/api/admin/support-chat', adminSupportDeletedContentRoutes)
 app.use('/api/reader/support-chat', readerSupportChatRoutes)
 app.use('/api/reader/support-chat', readerSupportSeenRoutes)
 app.use('/api/reader/support-chat', readerSupportBlockRoutes)
@@ -1217,11 +1213,6 @@ app.listen(PORT, () => {
   startReaderLibraryTrashCleanup()
   startStudioYoutubeHealthWorker()
   startChatRetentionCleanup()
-  startSupportDeletedCleanup({
-    db: lifecycleSupabase,
-    deleteImage: deletePrivateSupportImage,
-    enabled: process.env.ENABLE_SUPPORT_DELETED_CLEANUP === 'true',
-  })
   startSupportDeletedCleanup({
     db: lifecycleSupabase,
     deleteImage: deletePrivateSupportImage,
