@@ -1,4 +1,5 @@
 import { publishPaymentStatus } from '../services/paymentEvents.service.js'
+import { resolvePaymentReportIdentity, paymentReportIdentityLines, orderPaymentReportIdentityLines } from '../services/telegram.service.js'
 import { supabase } from '../config/supabase.js'
 import {
   describeTelegramReportError,
@@ -302,16 +303,8 @@ function isAuthorPdfOrder(order) {
 }
 
 async function getUser(userId) {
-  const { data, error } = await supabase
-    .from('users')
-    .select('id, username, name, email')
-    .eq('id', userId)
-    .maybeSingle()
-
-  if (error) throw error
-  return data || null
+  return resolvePaymentReportIdentity(supabase, userId)
 }
-
 async function saveTelegramPayment(parsed, message) {
   const { data: existing, error: existingError } = await supabase
     .from('telegram_payments')
@@ -505,7 +498,7 @@ async function markAuthorPdfOrderCompleted(order, telegramPayment, parsed) {
   return data
 }
 
-function authorStoreOrderUnderReviewMessage(order, authorPage) {
+async function authorStoreOrderUnderReviewMessage(order, authorPage) {
   const buyer = order.buyer_profile || {}
   const delivery = order.delivery_company || {}
   const items = getOrderItems(order)
@@ -527,6 +520,7 @@ function authorStoreOrderUnderReviewMessage(order, authorPage) {
     order.aba_transaction_id ? `🧾 Trx ID: <code>${html(order.aba_transaction_id)}</code>` : '',
     '',
     `👤 Buyer: <b>${html(buyer.name || order.buyer_name || order.buyer_id)}</b>`,
+...await orderPaymentReportIdentityLines(supabase, order),
     buyer.phone_number || order.buyer_phone ? `📞 Phone: <code>${html(buyer.phone_number || order.buyer_phone)}</code>` : '',
     buyer.telegram_username ? `💬 Telegram: ${html(buyer.telegram_username)}` : '',
     buyer.facebook_link ? `🔗 Facebook: ${html(buyer.facebook_link)}` : '',
@@ -559,13 +553,13 @@ async function sendAuthorStoreOrderReport(order) {
 
   const authorPage = await getAuthorPageForStoreOrder(order)
 
-  return sendAuthorStoreTelegramMessage(authorStoreOrderUnderReviewMessage(order, authorPage), {
+  return sendAuthorStoreTelegramMessage(await authorStoreOrderUnderReviewMessage(order, authorPage), {
   chat_id: chatId,
   reply_markup: authorStoreOrderKeyboard(order.order_id || order.order_number),
 })
 }
 
-function authorPdfCompletedMessage(order, authorPage) {
+async function authorPdfCompletedMessage(order, authorPage) {
   const buyer = order.buyer_profile || {}
   const items = getOrderItems(order)
 
@@ -603,7 +597,7 @@ async function sendAuthorPdfCompletedReport(order) {
 
   const authorPage = await getAuthorPageForStoreOrder(order)
 
-  return sendTelegramMessage(authorPdfCompletedMessage(order, authorPage), {
+  return sendTelegramMessage(await authorPdfCompletedMessage(order, authorPage), {
     chat_id: chatId,
   })
 }
@@ -792,7 +786,7 @@ function releasedMessage(payment, user, title = '✅ APPROVED') {
     `💵 Amount: <b>${html(money(payment.amount_usd))}</b>`,
     `💎 ${alreadyApproved ? 'Previously released' : 'Released'}: <b>${html(Number(payment.diamonds || 0).toLocaleString())} Diamonds</b>`,
     isPremium ? '⭐ Premium: <b>Included in the released purchase</b>' : '',
-    `👤 User: <b>${html(user?.username ? '@' + user.username : user?.name || payment.user_id)}</b>`,
+    ...paymentReportIdentityLines(user, payment.user_id),
     `📦 Order ID: <code>${html(payment.order_id)}</code>`,
     payment.aba_trx_id ? `🧾 Trx ID: <code>${html(payment.aba_trx_id)}</code>` : '',
     '',
@@ -808,7 +802,7 @@ function needApprovalMessage(payment, user, reason) {
     '',
     `💰 Payment Source: <b>${html(paymentSourceLabel(payment))}</b>`,
     `💵 Amount: <b>${html(money(payment.amount_usd))}</b>`,
-    `👤 User: <b>${html(user?.username ? '@' + user.username : user?.name || payment.user_id)}</b>`,
+    ...paymentReportIdentityLines(user, payment.user_id),
     `💎 Diamonds if approved: <b>${html(Number(payment.diamonds || 0).toLocaleString())}</b>`,
     `📦 Order ID: <code>${html(payment.order_id)}</code>`,
     payment.aba_trx_id ? `🧾 Trx ID: <code>${html(payment.aba_trx_id)}</code>` : '',
@@ -818,7 +812,7 @@ function needApprovalMessage(payment, user, reason) {
   ].filter(Boolean).join('\n')
 }
 
-function mallOrderUnderReviewMessage(order) {
+async function mallOrderUnderReviewMessage(order) {
   const buyer = order.buyer_profile || {}
   const delivery = order.delivery_company || {}
   const items = Array.isArray(order.items) ? order.items : []
@@ -835,7 +829,8 @@ function mallOrderUnderReviewMessage(order) {
     `💵 Amount: <b>${html(money(order.total_usd))}</b>`,
     order.aba_transaction_id ? `🧾 Trx ID: <code>${html(order.aba_transaction_id)}</code>` : '',
     '',
-    `👤 Buyer: <b>${html(buyer.name || order.user_id)}</b>`,
+   `👤 Buyer: <b>${html(buyer.name || order.user_id)}</b>`,
+...await orderPaymentReportIdentityLines(supabase, order),
     buyer.phone_number ? `📞 Phone: <code>${html(buyer.phone_number)}</code>` : '',
     buyer.telegram_username ? `💬 Telegram: ${html(buyer.telegram_username)}` : '',
     buyer.facebook_link ? `🔗 Facebook: ${html(buyer.facebook_link)}` : '',
@@ -869,7 +864,7 @@ async function sendShadowMallOrderReport(order) {
   const chatId = process.env.TELEGRAM_SHADOW_MALL_CHAT_ID
   if (!chatId) return { ok: false, skipped: true }
 
-  return sendTelegramMessage(mallOrderUnderReviewMessage(order), {
+  return sendTelegramMessage(await mallOrderUnderReviewMessage(order), {
     chat_id: chatId,
     reply_markup: shadowMallOrderKeyboard(order.order_id),
   })
@@ -950,7 +945,8 @@ async function rejectPaymentFromTelegram(paymentId) {
       '❌ <b>REJECTED</b>',
       '',
       `💰 Payment Source: <b>${html(paymentSourceLabel(data))}</b>`,
-      `💵 Amount: <b>${html(money(data.amount_usd))}</b>`,
+     `💵 Amount: <b>${html(money(data.amount_usd))}</b>`,
+...paymentReportIdentityLines(await getUser(data.user_id), data.user_id),
       `📦 Order ID: <code>${html(data.order_id)}</code>`,
       data.aba_trx_id ? `🧾 Trx ID: <code>${html(data.aba_trx_id)}</code>` : '',
       'Status: <b>Rejected — no Diamonds released by this action.</b>',
@@ -996,7 +992,7 @@ export async function handleCallbackQuery(callbackQuery) {
       await editTelegramMessage(
         chatId,
         messageId,
-        mallOrderUnderReviewMessage(updatedOrder),
+        await mallOrderUnderReviewMessage(updatedOrder),
         {
           reply_markup: shadowMallOrderKeyboard(updatedOrder.order_id),
         }
@@ -1033,7 +1029,7 @@ export async function handleCallbackQuery(callbackQuery) {
       await editAuthorStoreTelegramMessage(
   chatId,
   messageId,
-  authorStoreOrderUnderReviewMessage(updatedOrder, authorPage),
+  await authorStoreOrderUnderReviewMessage(updatedOrder, authorPage),
   {
     reply_markup: authorStoreOrderKeyboard(updatedOrder.order_id || updatedOrder.order_number),
   }
@@ -1208,7 +1204,8 @@ async function processAbaMessage(parsed, message) {
         '💰 Payment Source: <b>Shadow Mall · ABA / PayWay</b>',
         `📦 Order ID: <code>${html(updatedMallOrder.order_id)}</code>`,
         `💵 Amount: <b>${html(money(updatedMallOrder.total_usd))}</b>`,
-        `🧾 Trx ID: <code>${html(updatedMallOrder.aba_transaction_id)}</code>`,
+       `🧾 Trx ID: <code>${html(updatedMallOrder.aba_transaction_id)}</code>`,
+...await orderPaymentReportIdentityLines(supabase, updatedMallOrder),
         '',
         'Status: <b>Under Review</b>',
         'Report sent to Shadow Mall group.',
@@ -1258,6 +1255,7 @@ async function processAbaMessage(parsed, message) {
         '💰 Payment Source: <b>Author PDF Store · ABA / PayWay</b>',
         `📦 Order ID: <code>${html(paidOrder.order_id || paidOrder.order_number)}</code>`,
         `🧾 Trx ID: <code>${html(paidOrder.aba_transaction_id)}</code>`,
+...await orderPaymentReportIdentityLines(supabase, paidOrder),
         'Payment has been recorded, but PDF access requires admin review.',
       ].join('\n'))
       return
@@ -1286,7 +1284,8 @@ async function processAbaMessage(parsed, message) {
         `📦 Order ID: <code>${html(completedOrder.order_id || completedOrder.order_number)}</code>`,
         `💵 Amount: <b>${html(money(completedOrder.total_usd || completedOrder.total_amount))}</b>`,
         `🧾 Trx ID: <code>${html(completedOrder.aba_transaction_id)}</code>`,
-        `👤 Buyer: <b>${html(completedOrder.buyer_profile?.name || completedOrder.buyer_name || completedOrder.buyer_id)}</b>`,
+       `👤 Buyer: <b>${html(completedOrder.buyer_profile?.name || completedOrder.buyer_name || completedOrder.buyer_id)}</b>`,
+...await orderPaymentReportIdentityLines(supabase, completedOrder),
         ...getOrderItems(completedOrder).filter((item) => String(item.product_type || '').toLowerCase() === 'pdf').slice(0, 8).map((item) => `📄 PDF: ${html(item.product_title || item.title || 'PDF')} x${html(item.quantity || 1)}`),
         `💜 Author Income: <b>${html(money(completedOrder.author_income_usd))}</b>`,
         'Status: <b>Completed</b>',
@@ -1329,7 +1328,8 @@ async function processAbaMessage(parsed, message) {
         ...buildAuthorStoreAttributionReportLines(updatedAuthorOrder),
         `📦 Order ID: <code>${html(updatedAuthorOrder.order_id || updatedAuthorOrder.order_number)}</code>`,
       `💵 Amount: <b>${html(money(updatedAuthorOrder.total_usd || updatedAuthorOrder.total_amount))}</b>`,
-      `🧾 Trx ID: <code>${html(updatedAuthorOrder.aba_transaction_id)}</code>`,
+   `🧾 Trx ID: <code>${html(updatedAuthorOrder.aba_transaction_id)}</code>`,
+...await orderPaymentReportIdentityLines(supabase, updatedAuthorOrder),
       '',
       'Status: <b>Under Review</b>',
       'Report sent to Author Store group.',
