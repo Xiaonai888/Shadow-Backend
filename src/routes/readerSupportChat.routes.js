@@ -4,6 +4,7 @@ import { rateLimit } from 'express-rate-limit'
 import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { notifyReaderSupportMessage } from '../services/adminSupportNotificationEvents.service.js'
+import { readChatDeletionSync } from '../services/chatDeletionSync.service.js'
 
 const router = express.Router()
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -70,9 +71,15 @@ async function getOwnConversation(userId) {
 
 router.get('/mine', preAuthLimit, requireUser, readLimit, async (req, res) => {
   try {
-    const conversation = await getOwnConversation(req.user.user_id)
+        const conversation = await getOwnConversation(req.user.user_id)
+    const deletionSync = conversation ? await readChatDeletionSync({
+      db: supabase,
+      table: 'admin_support_messages',
+      conversationId: conversation.id,
+      rawIds: req.query.deletion_check_ids,
+    }).catch(() => null) : null
     res.set('Cache-Control', 'no-store')
-    return res.json({ ok: true, conversation })
+    return res.json({ ok: true, conversation, ...(deletionSync ? { deletion_sync: deletionSync } : {}) })
   } catch (error) {
     return unavailable(res, error)
   }
