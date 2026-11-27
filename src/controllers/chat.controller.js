@@ -147,6 +147,7 @@ export async function getConversationMessagesController(
       before: req.query?.before,
       after: req.query?.after,
       limit: req.query?.limit,
+      deletionCheckIds: req.query?.deletion_check_ids,
     })
 
     return res.status(200).json({
