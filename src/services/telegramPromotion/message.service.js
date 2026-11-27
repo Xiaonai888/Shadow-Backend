@@ -26,9 +26,8 @@ function buildUpdateMessage({ story, episode, lang, copy, authorName, links, con
   const [heading, ...labels] = UPDATE_COPY[lang]
   const title = clean(story.title, 180)
   const author = clean(authorName, 80)
-  const episodeLabel = `${copy[6]}${lang === 'ja' ? '' : ' '}${clean(episode.episode_number, 12)}`
-  const metadata = [author ? `✍️ ${author}` : '', episodeLabel].filter(Boolean).join(' · ')
-  const header = `${heading}\n\n${title}\n\n${metadata}`
+  const episodeLabel = clean(episode.title, 180)
+const header = [heading, [title, episodeLabel].filter(Boolean).join('\n'), author ? `✍️ ${author}` : ''].filter(Boolean).join('\n\n')
   const footer = `${labels[0]}  ${labels[1]}\n${labels[2]}  ${labels[3]}`
   const budget = PROMOTION_POLICY.maxCaption - header.length - footer.length - 4
   const excerpt = extractPromotionText(content, { budget })
