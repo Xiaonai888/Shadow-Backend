@@ -1,0 +1,15 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { createShadowLocalPlayground, createShadowLocalKnowledgeHistory } from '../services/shadowAi/local/shadowLocalPlayground.service.js'
+import { createShadowLocalDictionary } from '../services/shadowAi/local/shadowLocalDictionary.js'
+const play=createShadowLocalPlayground({knowledgeStore:{getDictionary:async()=>createShadowLocalDictionary()}})
+const reader=(text,extra={})=>play({task:'reader_message',text,...extra})
+test('synthetic booking is never an order',async()=>{const r=await reader('ចង់កក់ Moon Limited ២ក្បាល');assert.equal(r.result.draft.items[0].quantity,2);assert.equal(r.result.draft.items[0].edition,'limited');assert.equal(r.order_created,false);assert.equal(r.payment_created,false);assert.equal(r.inventory_reserved,false);assert.equal(r.external_requests,0)})
+test('follow up uses only synthetic scenario',async()=>{const r=await reader('Limited',{scenario:'book_selected'});assert.equal(r.result.draft.items[0].edition,'limited')})
+test('stock shortage is validated',async()=>{const r=await reader('reserve Moon limited 3 copies');assert.equal(r.result.validation.ready,false);assert.ok(r.result.validation.issues.some(x=>x.startsWith('STOCK_UNAVAILABLE:')))})
+test('requirement test uses old validator',async()=>{const r=await play({task:'author_requirements',text:'require Telegram for Limited'});assert.deepEqual(r.result.rules,[{field:'telegram_username',condition:'limited'}]);assert.equal(r.result.confirmed,false)})
+test('unknown requirements require review',async()=>{const r=await play({task:'author_requirements',text:'require OTP'});assert.equal(r.result.rules.length,0);assert.equal(r.result.needs_review.length,1)})
+test('unpublished aliases preview only',async()=>{const r=await reader('តម្លៃសរុប',{aliases:[{group:'questions',alias:'តម្លៃសរុប',canonical:'price'}]});assert.equal(r.result.question,'price');assert.equal(r.dictionary_version,'preview');assert.equal((await reader('តម្លៃសរុប')).result.intent,'unclear')})
+test('rejects unsupported input and scenario',async()=>{for(const input of [{task:'reader_message',text:'x',scenario:'other'},{task:'reader_message',text:'x',campaignId:'x'},{task:'reader_message',text:'x'.repeat(2001)},{task:'author_requirements',text:'x'.repeat(301)}])await assert.rejects(play(input),{code:'SHADOW_AI_PLAYGROUND_INVALID'})})
+test('history is bounded and cursor is sent to RPC',async()=>{let call;const history=createShadowLocalKnowledgeHistory({db:{rpc(name,args){call={name,args};return {abortSignal:async()=>({data:{versions:[],has_more:false,next_before:null},error:null})}}}});await history({before:'9',limit:'10'});assert.deepEqual(call,{name:'shadow_ai_local_knowledge_history_v1',args:{p_before:9,p_limit:10}});await assert.rejects(history({limit:31}));await assert.rejects(history({before:['9']}))})
+test('history database failure fails closed',async()=>{const history=createShadowLocalKnowledgeHistory({db:{rpc(){return {abortSignal:async()=>({error:{message:'secret'}})}}}});await assert.rejects(history(),{code:'SHADOW_AI_KNOWLEDGE_UNAVAILABLE'})})
