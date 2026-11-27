@@ -1,5 +1,6 @@
 import { reloadActiveWorkKillSwitches } from './workKillSwitch.service.js'
 import { publishSecurityEvent, reportGuardState } from './securityControlPlane.service.js'
+import { runOutsideRequestDiagnostics } from './trafficDiagnostic.service.js'
 
 const RETRY_MS = 30 * 1000
 const REFRESH_MS = 60 * 1000
@@ -77,7 +78,7 @@ export function ensureKillSwitchBootstrapVerified(forceRefresh = false) {
   retryAfter = Date.now() + RETRY_MS
   const startedAt = Date.now()
 
-  loading = reloadActiveWorkKillSwitches()
+  loading = runOutsideRequestDiagnostics(() => reloadActiveWorkKillSwitches()
     .then((records) => {
       if (!Array.isArray(records) || records.length >= MAX_ACTIVE_SWITCHES) {
         const error = new Error('Kill Switch bootstrap returned an incomplete active switch list')
