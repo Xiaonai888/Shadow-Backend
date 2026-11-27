@@ -153,11 +153,11 @@ if (conversationId !== undefined && (typeof conversationId !== 'string' || !UUID
     res.set('Cache-Control', 'no-store')
     return res.json({
       ok: true,
-      conversations,
-      limit: PAGE_SIZE,
-      page: pageNumber,
-      next_page: hasMore ? pageNumber + 1 : null,
-      has_more: hasMore,
+      messages,
+      ...(deletionSync ? { deletion_sync: deletionSync } : {}),
+      limit: 20,
+      has_more: (data || []).length > 20,
+      next_before: page.length ? page[0].created_at : null,
     })
   } catch (error) {
     return failed(res, error, 'inbox')
