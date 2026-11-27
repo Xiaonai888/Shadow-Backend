@@ -89,24 +89,17 @@ export async function readSmartPdfCandidatePage({
   const version = epoch
   const task = (async () => {
     const products = check(await db.from('author_store_products')
-      .select(PRODUCT_COLUMNS)
+      .select(`${PRODUCT_COLUMNS},author_page:author_pages!author_store_products_author_page_id_fkey(id,status,page_name,page_username)`)
+.eq('author_page.status', 'active')
       .eq('product_type', 'pdf')
       .eq('status', 'active')
       .eq('novel_type', SMART_PDF_LANGUAGE_NAMES[selected])
       .order('created_at', { ascending: false })
       .order('id', { ascending: true })
       .range(start, start + take - 1), 'PDF catalog products')
-    const authorIds = [...new Set(products.map((item) => String(item.author_page_id || '')).filter(Boolean))]
-    const authors = authorIds.length
-      ? check(await db.from('author_pages')
-        .select('id,status,page_name,page_username')
-        .in('id', authorIds)
-        .eq('status', 'active'), 'PDF catalog author pages')
-      : []
-    const authorsById = new Map(authors.map((author) => [String(author.id), author]))
-    const records = []
+        const records = []
     for (const item of products) {
-      const decision = evaluateSmartPdfEligibility(item, authorsById.get(String(item.author_page_id)), selected)
+      const decision = evaluateSmartPdfEligibility(item, item.author_page, selected)
       if (decision.eligible) records.push(decision.record)
     }
     const result = {
