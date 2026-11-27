@@ -409,6 +409,14 @@ function publicReadingMissionProgress(mission, progressRow = null) {
     claimable: completed && !claimed,
     completed_at: progressRow?.completed_at || null,
     claimed_at: progressRow?.claimed_at || null,
+    ...(mission.smart_auto ? {
+      smart_auto: true,
+      smart_auto_expires_at: claimed ? null : (
+        activeSeconds > 0 || completed
+          ? mission.smart_auto_day_end
+          : mission.smart_auto_window_end
+      ),
+    } : {}),
   }
 }
 
