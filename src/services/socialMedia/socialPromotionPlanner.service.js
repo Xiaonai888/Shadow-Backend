@@ -7,8 +7,8 @@ function scope(rule){
   if(rule.selection_mode==='stories'&&(!storyIds.length||authorIds.length)||rule.selection_mode==='authors'&&(!authorIds.length||storyIds.length)||rule.selection_mode==='mixed'&&!storyIds.length&&!authorIds.length||rule.selection_mode==='smart'&&(storyIds.length||authorIds.length))throw new TypeError('SOCIAL_PLANNER_SCOPE_INVALID')
   return {storyIds,authorIds,storyTypes:rule.story_types}
 }
-export function createSocialPromotionPlanner({source,selection,chooseCaption,queue,updateSource}){
-  if(!source?.candidatePage||!selection?.group||!selection?.solo||typeof chooseCaption!=='function'||!queue?.history||!queue?.enqueue||typeof updateSource?.candidates!=='function')throw new TypeError('SOCIAL_PLANNER_DEPENDENCIES')
+export function createSocialPromotionPlanner({source,selection,chooseCaption,queue,updateSource,exceptions}){
+  if(!source?.candidatePage||!selection?.group||!selection?.solo||typeof chooseCaption!=='function'||!queue?.history||!queue?.enqueue||typeof updateSource?.candidates!=='function'||typeof exceptions?.allowedStoryIds!=='function')throw new TypeError('SOCIAL_PLANNER_DEPENDENCIES')
   return {async plan({rule,slot,now=Date.now()}){
     if(rule?.enabled!==true)return {state:'disabled'}
     const filters=scope(rule),language=rule.language,topic=rule.source_topic,seed=`${slot.slice(0,10)}:${topic}`
@@ -24,7 +24,11 @@ export function createSocialPromotionPlanner({source,selection,chooseCaption,que
         if(page.scanned<100)break
       }
     }
-    const candidates=[...all.values()]
+    const collected=[...all.values()]
+    if(!collected.length)return {state:'empty'}
+    const allowed=await exceptions.allowedStoryIds([...new Set(collected.map(c=>c.story.id))])
+    if(!(allowed instanceof Set))throw new Error('SOCIAL_PLANNER_EXCEPTION_RESPONSE')
+    const candidates=collected.filter(c=>allowed.has(c.story.id))
     if(!candidates.length)return {state:'empty'}
     const {history,captionHistory}=await queue.history({connectionId:rule.connection_id,language,storyIds:[...new Set(candidates.map(c=>c.story.id))]})
     const enqueue=(kind,rows,captionId=null)=>queue.enqueue({ruleId:rule.id,revision:rule.updated_at,slot,kind,items:rows.map(c=>({storyId:c.story.id,episodeId:c.episode.id})),captionId})
