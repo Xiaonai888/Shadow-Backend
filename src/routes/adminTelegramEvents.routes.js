@@ -1,16 +1,10 @@
 import express from 'express'
 import { rateLimit,ipKeyGenerator } from 'express-rate-limit'
 import { requireAdminSession } from '../middleware/adminPermission.middleware.js'
-import { supabase } from '../config/supabase.js'
-import { createEventAdmin } from '../services/telegramEvent/admin.service.js'
+import { telegramEventAdmin as admin, telegramEventPostNow } from '../services/telegramEvent/integration.service.js'
 import { EventAdminError } from '../services/telegramEvent/validation.service.js'
 
 const router=express.Router()
-const admin=createEventAdmin(supabase,{
-  publicUrl:process.env.R2_PUBLIC_URL,
-  tokenConfigured:()=>/^\d+:[A-Za-z0-9_-]+$/.test(String(process.env.TELEGRAM_EVENT_BOT_TOKEN||'').trim()),
-  runtimeEnabled:()=>process.env.TELEGRAM_EVENT_ENABLED==='true'
-})
 const identity=req=>String(req.admin?.admin_id||ipKeyGenerator(req.ip))
 const reads=rateLimit({windowMs:60000,limit:60,keyGenerator:identity,standardHeaders:'draft-8',legacyHeaders:false})
 const writes=rateLimit({windowMs:60000,limit:15,keyGenerator:identity,standardHeaders:'draft-8',legacyHeaders:false})
@@ -40,4 +34,5 @@ router.post('/',writes,handle(req=>admin.create(req.body),201))
 router.put('/:id',writes,handle(req=>admin.update(req.params.id,req.body)))
 router.post('/:id/duplicate',writes,handle(req=>admin.duplicate(req.params.id,req.body?.revision),201))
 router.post('/:id/archive',writes,handle(req=>admin.archive(req.params.id,req.body?.revision)))
+router.post('/:id/post-now',writes,handle(req=>telegramEventPostNow(req.params.id,req.body),202))
 export default router
