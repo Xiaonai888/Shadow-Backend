@@ -1,0 +1,26 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import {sendPromotionV2,editPromotionCaptionV2} from '../src/services/telegramPromotion/telegramV2.service.js'
+import {createPromotionQueueV2} from '../src/services/telegramPromotion/queueV2.service.js'
+const token='123456:test_token',chatId='-1001234567890'
+const media=[1,2,3].map((n,i)=>({type:'photo',media:`https://example.com/${n}.jpg`,...(i===0?{caption:'Read',caption_entities:[{type:'bold',offset:0,length:4}]}:{}),has_spoiler:true}))
+const reply=(result)=>({ok:true,json:async()=>({ok:true,result})})
+const messages=media.map((_,i)=>({message_id:i+1,media_group_id:'album',chat:{id:chatId}}))
+const id=n=>`00000000-0000-0000-0000-${String(n).padStart(12,'0')}`
+const candidates=[1,2,3].map(n=>({story:{id:id(n)},episode:{id:id(n+3)}}))
+const slot={slotKey:'2026-11-27T21:00',dueAt:'2026-11-27T14:00:00Z',expiresAt:'2026-11-27T16:00:00Z'}
+const message={media,storyIds:candidates.map(c=>c.story.id)}
+const params={language:'km',slot,postType:'group',topic:'night',captionId:'km:night:0',candidates,message,cooldownDays:7}
+test('album submits once, preserves spoiler and caption, returns all IDs',async()=>{let count=0;const out=await sendPromotionV2({token,chatId,message,fetchImpl:async(url,opts)=>{count++;assert.ok(url.endsWith('/sendMediaGroup'));const body=JSON.parse(opts.body);assert.deepEqual(body.media,media);assert.equal(body.reply_markup,undefined);return reply(messages)}});assert.equal(count,1);assert.deepEqual(out.messageIds,[1,2,3]);assert.equal(out.mediaGroupId,'album')})
+test('reject invalid album count before network',async()=>{await assert.rejects(sendPromotionV2({token,chatId,message:{media:media.slice(0,2)},fetchImpl:()=>assert.fail()}),/album size/)})
+test('reject duplicate album URLs',async()=>{await assert.rejects(sendPromotionV2({token,chatId,message:{media:[media[0],media[1],media[1]]},fetchImpl:()=>assert.fail()}),/Duplicate/)})
+test('incomplete album response is uncertain',async()=>{await assert.rejects(sendPromotionV2({token,chatId,message,fetchImpl:async()=>reply(messages.slice(0,2))}),e=>e.uncertain===true)})
+test('network error does not reveal secret and is uncertain',async()=>{await assert.rejects(sendPromotionV2({token,chatId,message,fetchImpl:async()=>{throw Error(token)}}),e=>e.uncertain&&!e.message.includes(token))})
+test('rate limit propagates retry delay',async()=>{await assert.rejects(sendPromotionV2({token,chatId,message,fetchImpl:async()=>({ok:false,status:429,json:async()=>({ok:false,error_code:429,parameters:{retry_after:90}})})}),e=>e.status===429&&e.retryAfter===90&&!e.uncertain)})
+test('single photo preserves text spoiler with keyboard',async()=>{const out=await sendPromotionV2({token,chatId,message:{photo:media[0].media,caption:'Read',caption_entities:[{type:'spoiler',offset:0,length:4}],reply_markup:{inline_keyboard:[[{text:'Read',url:'https://example.com'}]]}},fetchImpl:async(url,opts)=>{assert.ok(url.endsWith('/sendPhoto'));const body=JSON.parse(opts.body);assert.equal(body.caption_entities[0].type,'spoiler');assert.equal(body.reply_markup.inline_keyboard.length,1);return reply({message_id:9,chat:{id:chatId},photo:[{file_id:'cached'}]})}});assert.equal(out.fileId,'cached');assert.deepEqual(out.messageIds,[9])})
+test('caption edit targets first message without reupload',async()=>{const out=await editPromotionCaptionV2({token,chatId,messageId:1,message:{caption:'UP +2'},fetchImpl:async(url,opts)=>{assert.ok(url.endsWith('/editMessageCaption'));assert.deepEqual(JSON.parse(opts.body),{chat_id:chatId,message_id:1,caption:'UP +2'});return reply(messages[0])}});assert.equal(out.unchanged,false)})
+test('unchanged edit is idempotent success',async()=>{const out=await editPromotionCaptionV2({token,chatId,messageId:1,message:{caption:'UP +2'},fetchImpl:async()=>({ok:false,status:400,json:async()=>({ok:false,error_code:400,description:'Bad Request: message is not modified'})})});assert.equal(out.unchanged,true)})
+test('enqueue one RPC with compatible payload and group member IDs',async()=>{const q=createPromotionQueueV2({rpc:async(name,args)=>{assert.equal(name,'telegram_promotion_v2_enqueue_optional');assert.equal(args.p_payload.photo,media[0].media);assert.equal(args.p_items.length,3);assert.equal(args.p_cooldown_days,7);return {data:id(9)}}});assert.equal(await q.enqueueOptional(params),id(9))})
+test('reject mismatching album member order',async()=>{const q=createPromotionQueueV2({rpc:()=>assert.fail()});await assert.rejects(q.enqueueOptional({...params,message:{...message,storyIds:[...message.storyIds].reverse()}}),/order mismatch/)})
+test('finish stores all message IDs in one RPC',async()=>{const q=createPromotionQueueV2({rpc:async(name,args)=>{assert.equal(name,'telegram_promotion_v2_finish');assert.deepEqual(args.p_message_ids,[1,2,3]);assert.equal(args.p_media_group_id,'album');return {data:true}}});assert.equal(await q.finish({id:id(9),attempts:1,payload:{media}},'sent',{sent:{messageId:1,messageIds:[1,2,3],mediaGroupId:'album'}}),true)})
+test('finish refuses partial success',async()=>{const q=createPromotionQueueV2({rpc:()=>assert.fail()});await assert.rejects(q.finish({id:id(9),attempts:1,payload:{media}},'sent',{sent:{messageId:1,messageIds:[1],mediaGroupId:'album'}}),/Invalid delivery result/)})
