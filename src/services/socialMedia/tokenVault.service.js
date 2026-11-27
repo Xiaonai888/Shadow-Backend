@@ -8,7 +8,7 @@ function keyFromEnv() {
 
 function contextBytes(context) {
   const { ownerType, ownerId, platform, externalId } = context || {}
-  if (!['admin', 'author'].includes(ownerType) || typeof ownerId !== 'string' || !ownerId || ownerId.length > 128 || (ownerType === 'admin' && ownerId !== 'shadow') || platform !== 'facebook' || typeof externalId !== 'string' || !/^[0-9]{1,40}$/.test(externalId)) throw new Error('SOCIAL_MEDIA_CONTEXT_INVALID')
+  if (!['admin', 'author'].includes(ownerType) || typeof ownerId !== 'string' || !ownerId || ownerId.length > 128 || (ownerType === 'admin' && ownerId !== 'shadow') || !['facebook', 'instagram'].includes(platform) || typeof externalId !== 'string' || !/^[0-9]{1,40}$/.test(externalId)) throw new Error('SOCIAL_MEDIA_CONTEXT_INVALID')
   return Buffer.from(JSON.stringify(['v1', ownerType, ownerId, platform, externalId]), 'utf8')
 }
 
