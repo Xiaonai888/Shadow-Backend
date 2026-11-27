@@ -96,6 +96,55 @@ export function html(value) {
   return escapeHtml(value)
 }
 
+export function paymentReportIdentityLines(user, userId) {
+  const name = String(user?.name || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 160)
+  const username = String(user?.username || '').replace(/[\r\n\t]+/g, ' ').trim().replace(/^@+/, '').slice(0, 160)
+
+  return [
+    `👤 Name: <b>${html(name || 'Unavailable')}</b>`,
+    `🔗 Username: <b>${html(username ? '@' + username : 'Unavailable')}</b>`,
+    !username && userId ? `🆔 User ID: <code>${html(userId)}</code>` : '',
+  ].filter(Boolean)
+}
+
+export async function resolvePaymentReportIdentity(db, userId) {
+  if (!userId) return null
+
+  try {
+    const { data, error } = await db
+      .from('users')
+      .select('name,username')
+      .eq('id', userId)
+      .maybeSingle()
+
+    if (error) throw error
+    return data || null
+  } catch {
+    return null
+  }
+}
+
+const paymentReportIdentities = new WeakMap()
+
+export async function orderPaymentReportIdentityLines(db, order) {
+  const userId = order?.buyer_id || order?.user_id
+
+  if (!order || typeof order !== 'object') {
+    return paymentReportIdentityLines(null, userId)
+  }
+
+  if (!paymentReportIdentities.has(order)) {
+    paymentReportIdentities.set(
+      order,
+      resolvePaymentReportIdentity(db, userId)
+    )
+  }
+
+  return paymentReportIdentityLines(
+    await paymentReportIdentities.get(order),
+    userId
+  )
+}
 export async function callTelegram(method, payload) {
   if (!isTelegramConfigured()) {
     return { ok: false, skipped: true }
