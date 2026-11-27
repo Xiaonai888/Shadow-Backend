@@ -22,6 +22,8 @@ export function createSocialPromotionQueue(db){
       const time=date(slot,'SOCIAL_QUEUE_SLOT_INVALID')
       if(Date.parse(time)%60000!==0)throw new TypeError('SOCIAL_QUEUE_SLOT_INVALID')
       const {data,error}=await db.rpc('social_promotion_enqueue_v2',{p_rule_id:normalizeSocialId(ruleId),p_revision:date(revision,'SOCIAL_QUEUE_REVISION_INVALID'),p_slot:time,p_kind:kind,p_items:listItems(items,kind),p_caption_id:captionId})
+      if(error?.code==='23514'&&error.message==='SOCIAL_EXCEPTION_BLOCKED')return {state:'ineligible'}
+      if(error?.code==='23514'&&error.message==='SOCIAL_ACCOUNT_DAILY_LIMIT')return {state:'daily_limit'}
       if(error||!data||!states.has(data.state))throw new Error('SOCIAL_QUEUE_ENQUEUE_FAILED')
       if(['queued','existing'].includes(data.state))return {state:data.state,jobId:normalizeSocialId(data.jobId)}
       return {state:data.state}
