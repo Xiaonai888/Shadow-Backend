@@ -1,4 +1,5 @@
 import { supabase } from '../config/supabase.js'
+import { orderPaymentReportIdentityLines, resolvePaymentReportIdentity, paymentReportIdentityLines } from './telegram.service.js'
 import { replyTelegram, sendTelegramMessage, sendAuthorStoreTelegramMessage, html } from './telegram.service.js'
 import { buildAuthorStoreAttributionReportLines } from '../controllers/authorStore.controller.js'
 import { recordTelegramReportError, resolveTelegramReportErrors } from './telegramReportErrorHistory.service.js'
@@ -96,7 +97,23 @@ async function restoreFailedReport(row, error) {
   if (updateError) throw updateError
 }
 
-async function deliverFailedReport(row) {
+async function refreshLegacyPaymentReportIdentity(text, userId) {
+  const source = String(text || '')
+  const oldLine = /^👤 User: <b>[^\r\n]*<\/b>$/m
+
+  if (!oldLine.test(source) || !userId) return source
+
+  const user = await resolvePaymentReportIdentity(supabase, userId)
+
+  if (!user?.name && !user?.username) return source
+
+  return source.replace(
+    oldLine,
+    () => paymentReportIdentityLines(user, userId).join('\n')
+  )
+}
+
+async function deliverFailedReport(row, userId) {
   const claim = await claimFailedReport(row)
   if (!claim) return false
 
@@ -105,7 +122,7 @@ async function deliverFailedReport(row) {
     response = await replyTelegram(
       claim.telegram_chat_id,
       claim.telegram_message_id,
-      claim.report_text
+      await refreshLegacyPaymentReportIdentity(claim.report_text, userId)
     )
     if (!response?.ok || response?.skipped || !response?.result?.message_id) {
       throw new Error('Telegram did not confirm report delivery')
@@ -247,7 +264,7 @@ async function flagUnknownPdfDelivery(row) {
   return recipients
 }
 
-function pdfReportMessage(order, authorPage) {
+async function pdfReportMessage(order, authorPage) {
   const buyer = order.buyer_profile || {}
   const money = (value) => `$${Number(value || 0).toFixed(2)}`
   const items = order.items || []
@@ -263,6 +280,7 @@ function pdfReportMessage(order, authorPage) {
     order.aba_transaction_id ? `🧾 Trx ID: <code>${html(order.aba_transaction_id)}</code>` : '',
     '',
     `👤 Buyer: <b>${html(buyer.name || order.buyer_name || order.buyer_id || 'Reader')}</b>`,
+...await orderPaymentReportIdentityLines(supabase, order),
     buyer.phone_number || order.buyer_phone ? `📞 Phone: <code>${html(buyer.phone_number || order.buyer_phone)}</code>` : '',
     '',
     '<b>PDF:</b>',
@@ -365,10 +383,10 @@ async function retrySinglePdfReport(row) {
     return false
   }
 
-  const message = pdfReportMessage(row, authorPage)
   const claim = await claimPdfReport(row)
-  if (!claim) return false
-  try {
+if (!claim) return false
+try {
+  const message = await pdfReportMessage(row, authorPage)
     const send = recipient === 'admin' ? sendTelegramMessage : sendAuthorStoreTelegramMessage
     const response = await send(message, { chat_id: String(chatId) })
     if (response?.ok !== true || !response?.result?.message_id) {
@@ -481,7 +499,7 @@ export async function recoverMissingTelegramReports() {
       if (payment.telegram_payment_id && String(payment.telegram_payment_id) !== String(report.id)) continue
 
       attemptsThisRun += 1
-      await deliverFailedReport(report)
+      await deliverFailedReport(report, payment.user_id)
     }
   } catch (error) {
     console.error('TELEGRAM MISSING REPORT RECOVERY ERROR:', safeError(error))
