@@ -27,6 +27,7 @@ export function createPromotionScheduler({queue,source,candidates,worker,recover
   if (![queue,source,candidates,worker,recovery].every(Boolean)) throw new TypeError('Missing scheduler dependencies')
   let running=false,started=false,timer=null,timerDue=Infinity,wakePending=false,failures=0
   const attemptedSlots=new Map()
+  const completionChecks=new Map()
   const report = (error,language=null) => { try { onError({code:'TELEGRAM_PROMOTION_SCHEDULER_FAILED',language,message:safe(error)}) } catch {} }
   const canSend = settings => settings?.enabled && settings.channel_id && /^\d+:[A-Za-z0-9_-]+$/.test(String(token(settings.language)||'').trim())
   async function tick() {
@@ -73,6 +74,13 @@ export function createPromotionScheduler({queue,source,candidates,worker,recover
           next=Math.min(next,editDue)
         }
         if (!blocked && !edited) {
+          if (modern && v2.completion && (completionChecks.get(settings.language)||0)<=current) {
+            const completion=await v2.completion.run(settings)
+            const nextCheck=current+(completion.queued>=3?60000:IDLE)
+            completionChecks.set(settings.language,nextCheck)
+            next=Math.min(next,nextCheck)
+            if(completion.queued>0)due=await recovery.due(settings.language)
+          }
           let attempted=false
           const slots=modern?v2.slots(current,settings.enabled_at ?? null):recoverablePromotionSlots(settings.schedule,current,settings.enabled_at ?? null)
           for (const slot of slots) {
@@ -99,6 +107,7 @@ export function createPromotionScheduler({queue,source,candidates,worker,recover
         else next=Math.min(next,eventDue)
         if (sendDue>end) next=Math.min(next,sendDue)
         else if (!pendingEvent && !restored.more || due.update_ready) next=Math.min(next,end+RECOVERY_CONTINUE)
+        if(modern && v2.completion && !blocked && !edited)next=Math.min(next,completionChecks.get(settings.language)||end+IDLE)
         next=Math.min(next,modern?v2.nextSlot(end):nextPromotionSlot(settings.schedule,end),nextRecoveryCheckpoint(end))
         await heartbeat(settings.language,true)
       } catch(error) { errorCount++; report(error,settings.language); await heartbeat(settings.language,false,error) }
