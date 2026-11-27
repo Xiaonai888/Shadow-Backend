@@ -6,7 +6,7 @@ const reader='10000000-0000-4000-8000-000000000001', chat='10000000-0000-4000-80
 const now=Date.parse('2026-11-27T00:00:00Z')
 const scope={actorUserId:reader,conversationId:chat}
 const valid={id:campaign,title:'Book',close_at:'2026-12-01T00:00:00Z',can_book:true}
-function fixture({env={SHADOW_AI_ENABLED:'true',SHADOW_AI_MODEL:'test-model',OPENAI_API_KEY:'test-key'},settings={enabled:true,preorder_enabled:true},delivery=[{company_key:'jnt',is_active:true}],payload={campaigns:[valid],has_more:false,next_offset:null},deny=false,rpcError=false}={}) {
+function fixture({env={SHADOW_AI_ENABLED:'true',SHADOW_AI_ENGINE:'local'},settings={enabled:true,preorder_enabled:true},delivery=[{company_key:'jnt',is_active:true}],payload={campaigns:[valid],has_more:false,next_offset:null},deny=false,rpcError=false}={}) {
   const calls=[]
   const chain={select(){return this},eq(){return this},maybeSingle(){return this},async abortSignal(){return {data:settings,error:null}}}
   const db={from(name){calls.push(name);return chain},rpc(name,args){calls.push([name,args]);return {async abortSignal(){return {data:payload,error:rpcError?{}:null}}}}}
@@ -23,3 +23,5 @@ test('expired campaign is hidden',async()=>{const f=fixture({payload:{campaigns:
 test('unverified response fails closed',async()=>{const f=fixture({payload:{campaigns:[{...valid,can_book:false}],has_more:false,next_offset:null}});await assert.rejects(f.run(scope),{code:'SHADOW_AI_ELIGIBILITY_UNAVAILABLE'})})
 test('RPC errors do not claim stock verified',async()=>{const f=fixture({rpcError:true});await assert.rejects(f.run(scope),{code:'SHADOW_AI_ELIGIBILITY_UNAVAILABLE'})})
 test('pagination is bounded',async()=>{const f=fixture({payload:{campaigns:[],has_more:true,next_offset:20}});assert.equal((await f.run({...scope,offset:10})).next_offset,20);await assert.rejects(f.run({...scope,offset:1001}),{code:'SHADOW_AI_INVALID_REQUEST'})})
+
+test('unsupported external engine cannot access booking eligibility even with a key',async()=>{const f=fixture({env:{SHADOW_AI_ENABLED:'true',SHADOW_AI_ENGINE:'openai',SHADOW_AI_MODEL:'test-model',OPENAI_API_KEY:'test-key'}});assert.equal((await f.run(scope)).enabled,false);assert.deepEqual(f.calls,[])})
