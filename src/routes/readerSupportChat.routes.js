@@ -5,7 +5,6 @@ import { supabase } from '../config/supabase.js'
 import { requireUser } from '../middleware/user.middleware.js'
 import { notifyReaderSupportMessage } from '../services/adminSupportNotificationEvents.service.js'
 import { readChatDeletionSync } from '../services/chatDeletionSync.service.js'
-import { readChatDeletionSync } from '../services/chatDeletionSync.service.js'
 
 const router = express.Router()
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -102,12 +101,7 @@ router.get('/mine/messages', preAuthLimit, requireUser, readLimit, async (req, r
     if (before) query = query.lt('created_at', new Date(before).toISOString())
     const { data, error } = await query.limit(21)
     if (error) throw error
-    const deletionSync = !before ? await readChatDeletionSync({
-      db: supabase,
-      table: 'admin_support_messages',
-      conversationId: id,
-      rawIds: req.query.deletion_check_ids,
-    }).catch(() => null) : null
+
     const page = (data || []).slice(0, 20).map(message => message.deleted_at
       ? { ...message, message_text: null, attachments: [] }
       : message)
