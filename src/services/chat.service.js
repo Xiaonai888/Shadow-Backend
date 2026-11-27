@@ -1,3 +1,4 @@
+import { readChatDeletionSync } from './chatDeletionSync.service.js'
 import { supabase } from '../config/supabase.js'
 import { canStartReaderMessageRequest } from './readerMessagesRepliesSettings.service.js'
 import { sendChatPush } from './chatPush.service.js'
@@ -1642,6 +1643,7 @@ export async function getConversationMessages({
   before,
   after,
   limit,
+  deletionCheckIds,
 }) {
   const safeUserId = requireUuid(
     userId,
@@ -1927,9 +1929,17 @@ export async function getConversationMessages({
     })
 
   if (isIncremental) {
+    const deletionSync = await readChatDeletionSync({
+      db: supabase,
+      table: 'chat_messages',
+      conversationId: conversation.id,
+      rawIds: deletionCheckIds,
+      visibilityCutoff,
+    }).catch(() => null)
     return {
       conversation: null,
       messages: formattedMessages,
+      ...(deletionSync ? { deletion_sync: deletionSync } : {}),
       selection_limit: 100,
       next_before: null,
       incremental: true,
