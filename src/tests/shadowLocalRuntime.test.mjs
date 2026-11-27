@@ -1,0 +1,32 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { shadowLocalRuntimeConfig } from '../services/shadowAi/local/shadowLocalRuntimeConfig.js'
+import { createShadowLocalRuntimeDb } from '../services/shadowAi/local/shadowLocalRuntimeDb.service.js'
+import { createShadowLocalRuntime } from '../services/shadowAi/local/shadowLocalRuntime.service.js'
+import { createShadowLocalDictionary } from '../services/shadowAi/local/shadowLocalDictionary.js'
+import { parseShadowPreOrderMessage } from '../services/shadowAi/shadowAiPreOrderMessage.js'
+import { previewShadowPreOrderRequirements } from '../services/shadowAi/shadowAiPreOrderRequirements.js'
+
+const id='11111111-1111-4111-8111-111111111111',other='22222222-2222-4222-8222-222222222222'
+const env={SHADOW_AI_ENABLED:'true',SHADOW_AI_ENGINE:'local'}
+const catalog={books:[{id,title:'Moon',editions:['standard','limited']}],delivery_companies:[],signature_enabled:true}
+const req=(message,draft={},actorUserId=id)=>({role:'preorder',task:'reader_message',actorUserId,input:{message,catalog,current_draft:draft},schema:{type:'object',additionalProperties:false}})
+const draft={items:[{book_id:id,edition:null,quantity:null}]}
+function fixture({deny=null,finish=true,snapshot={version:2,aliases:[{group:'questions',alias:'book cost please',canonical:'price'}]}}={}) {
+  const calls=[]
+  const db={rpc(name,args){calls.push({name,args});return {async abortSignal(){if(name==='shadow_ai_reserve_request_v1')return {data:deny?{ok:false,code:deny}:{ok:true,request_id:args.p_request_id}};if(name==='shadow_ai_finish_request_v1')return {data:finish};if(name==='shadow_ai_local_knowledge_read_v1')return {data:snapshot};throw Error('unexpected RPC')}}}}
+  return {...createShadowLocalRuntimeDb({db,env}),calls}
+}
+test('local config does not require external key and refuses external mode',()=>{assert.equal(shadowLocalRuntimeConfig(env).engine,'local');assert.throws(()=>shadowLocalRuntimeConfig({}),{code:'SHADOW_AI_DISABLED'});assert.throws(()=>shadowLocalRuntimeConfig({...env,SHADOW_AI_ENGINE:'gemini'}),{code:'SHADOW_AI_NOT_CONFIGURED'})})
+test('knowledge alias used and warm cache reuses snapshot',async()=>{const f=fixture();for(let i=0;i<2;i++){const r=await f.runShadowAi(req('book cost please'));assert.equal(r.data.question,'price');assert.equal(r.usage.inputTokens,null);assert.equal(r.dictionaryVersion,'shadow-local-km-en-v1-knowledge-2')}assert.equal(f.calls.filter(c=>c.name.includes('knowledge_read')).length,1);assert.equal(f.calls.filter(c=>c.name.includes('reserve_request')).length,2);assert.equal(f.calls.filter(c=>c.name.includes('finish_request')).length,2);assert.ok(f.calls.filter(c=>c.name.includes('finish_request')).every(c=>c.args.p_input_tokens===null&&c.args.p_output_tokens===null))})
+test('single pending edition and quantity with units',async()=>{const f=fixture();const r=await f.runShadowAi(req('Limited',draft));assert.deepEqual(r.data.items,[{book_id:id,edition:'limited',quantity:null}]);const q=await f.runShadowAi(req('២ក្បាល',{items:r.data.items}));assert.equal(q.data.items[0].quantity,2)})
+test('does not overwrite filled quantity or guess bare number',async()=>{const f=fixture();assert.equal((await f.runShadowAi(req('2',draft))).data.intent,'unclear');assert.equal((await f.runShadowAi(req('3 copies',{items:[{book_id:id,edition:'standard',quantity:2}]}))).data.intent,'unclear')})
+test('no item selected does not guess edition',async()=>assert.equal((await fixture().runShadowAi(req('Limited'))).data.intent,'unclear'))
+test('quota refusal does not load knowledge or finish',async()=>{const f=fixture({deny:'SHADOW_AI_DAILY_LIMIT'});await assert.rejects(f.runShadowAi(req('price')),{code:'SHADOW_AI_DAILY_LIMIT'});assert.equal(f.calls.length,1)})
+test('finish failure is reported and never returns success',async()=>{const f=fixture({finish:false});await assert.rejects(f.runShadowAi(req('price')),{code:'SHADOW_AI_USAGE_UNAVAILABLE'});await assert.rejects(f.runShadowAi(req('price')),{code:'SHADOW_AI_USAGE_UNAVAILABLE'})})
+test('invalid task does not reserve',async()=>{const f=fixture();await assert.rejects(f.runShadowAi({...req('price'),task:'other'}),{code:'SHADOW_AI_INVALID_REQUEST'});assert.equal(f.calls.length,0)})
+test('fallback dictionary when knowledge unavailable',async()=>{const f=fixture({snapshot:null});const r=await f.runShadowAi(req('price'));assert.equal(r.data.question,'price');assert.equal(r.dictionaryVersion,'shadow-local-km-en-v1')})
+test('error records sanitized code',async()=>{const f=fixture();await assert.rejects(f.runShadowAi(req('x'.repeat(2001))),{code:'SHADOW_AI_INVALID_REQUEST'});const end=f.calls.at(-1);assert.equal(end.args.p_status,'error');assert.equal(end.args.p_error_code,'SHADOW_AI_INVALID_REQUEST');assert.equal(end.args.p_input_tokens,null)})
+test('one request per actor and two concurrent slots',async()=>{let release;const gate=new Promise(r=>{release=r});const engine=createShadowLocalRuntime({env,reserve:()=>gate,finish:async()=>{},knowledgeStore:{getDictionary:async()=>createShadowLocalDictionary()}});const first=engine(req('price'));await assert.rejects(engine(req('price')),{code:'SHADOW_AI_BUSY'});const second=engine(req('price',{},other));await assert.rejects(engine(req('price',{},'33333333-3333-4333-8333-333333333333')),{code:'SHADOW_AI_BUSY'});release();await Promise.all([first,second]);assert.equal((await engine(req('price'))).data.question,'price')})
+test('both current validators work with runtime and no external fetch',async()=>{const f=fixture();const old=globalThis.fetch;globalThis.fetch=()=>{throw Error('external network forbidden')};try{const context={...catalog,books:catalog.books.map(b=>({...b,editions:b.editions.map(edition=>({edition}))}))};const r=await parseShadowPreOrderMessage({actorUserId:id,message:'2 copies',context,draft,rules:[],runAi:f.runShadowAi});assert.equal(r.patch.items[0].quantity,2);const a=await previewShadowPreOrderRequirements({actorUserId:id,instruction:'require telegram for limited',runAi:f.runShadowAi});assert.deepEqual(a.rules,[{field:'telegram_username',condition:'limited'}]);assert.deepEqual(a.needs_review,[])}finally{globalThis.fetch=old}})
+test('malformed catalog cannot crash or infer selection',async()=>{const f=fixture();const request=req('limited',draft);delete request.input.catalog;assert.equal((await f.runShadowAi(request)).data.intent,'unclear');request.input.catalog={books:[{id,title:'Moon',editions:null}],delivery_companies:[]};assert.equal((await f.runShadowAi(request)).data.intent,'unclear')})
