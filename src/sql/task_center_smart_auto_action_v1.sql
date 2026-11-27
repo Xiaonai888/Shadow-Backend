@@ -51,7 +51,7 @@ BEGIN
   END IF;
 
   SELECT * INTO v_template FROM public.task_center_reading_missions
-  WHERE id = p_mission_id AND is_active = true AND audience = (v_entry->>'audience');
+  WHERE id = p_mission_id AND is_active = true AND audience = (v_entry->>'audience') FOR SHARE;
   IF NOT FOUND THEN
     RETURN jsonb_build_object('ok',false,'status',404,'message','Reading mission not found');
   END IF;
@@ -62,8 +62,13 @@ BEGIN
   END IF;
 
   v_story_id := (v_entry->>'storyId')::uuid;
-  v_target := (v_entry->>'targetMinutes')::integer * 60;
-  v_reward := (v_entry->>'rewardCoins')::integer;
+  IF v_entry->>'status' IN ('claimable', 'claimed') THEN
+    v_target := (v_entry->>'targetMinutes')::integer * 60;
+    v_reward := (v_entry->>'rewardCoins')::integer;
+  ELSE
+    v_target := v_template.target_minutes * 60;
+    v_reward := v_template.reward_coins;
+  END IF;
   IF v_target IS NULL OR v_target NOT BETWEEN 60 AND 18000 OR v_reward IS NULL OR v_reward NOT BETWEEN 0 AND 100000 THEN
     RAISE EXCEPTION 'Invalid stored mission configuration';
   END IF;
@@ -79,6 +84,14 @@ BEGIN
 
   SELECT * INTO v_progress FROM public.reader_reading_mission_progress
   WHERE user_id = p_user_id AND mission_id = p_mission_id FOR UPDATE;
+  IF p_action = 'track' AND v_entry->>'status' = 'assigned'
+     AND extract(epoch FROM v_now) * 1000 >= (v_entry->>'windowStart')::bigint + 21600000
+     AND NOT coalesce(v_progress.id IS NOT NULL
+       AND timezone('Asia/Phnom_Penh', v_progress.updated_at)::date = v_day
+       AND v_progress.story_id = v_story_id
+       AND (v_progress.active_seconds > 0 OR v_progress.completed_at IS NOT NULL OR v_progress.claimed_at IS NOT NULL), false) THEN
+    RETURN jsonb_build_object('ok',false,'status',409,'message','Reading mission has expired. Open Task Center again.');
+  END IF;
   IF v_progress.id IS NOT NULL AND timezone('Asia/Phnom_Penh', v_progress.updated_at)::date IS DISTINCT FROM v_day THEN
     IF p_action = 'claim' THEN
       RETURN jsonb_build_object('ok',false,'status',400,'message','Reading mission is not completed yet');
@@ -105,7 +118,7 @@ BEGIN
       END IF;
     END IF;
     IF v_progress.claimed_at IS NULL AND v_progress.completed_at IS NULL THEN
-      v_seconds := least(v_target, greatest(0,coalesce(v_progress.active_seconds,0)) + p_seconds);
+      v_seconds := greatest(coalesce(v_progress.active_seconds,0), least(v_target, greatest(0,coalesce(v_progress.active_seconds,0)) + p_seconds));
       UPDATE public.reader_reading_mission_progress
       SET story_id = v_story_id, active_seconds = v_seconds,
           completed_at = CASE WHEN v_seconds >= v_target THEN v_now ELSE NULL END,
@@ -116,7 +129,8 @@ BEGIN
     IF v_entry->>'status' IS DISTINCT FROM v_status THEN
       v_state_changed := true;
       UPDATE public.task_center_smart_auto_state
-      SET missions = jsonb_set(missions,ARRAY[v_index::text,'status'],to_jsonb(v_status)),
+      SET missions = jsonb_set(missions,ARRAY[v_index::text],
+        v_entry || jsonb_build_object('status',v_status,'targetMinutes',v_target / 60,'rewardCoins',v_reward)),
           revision = revision + 1, updated_at = v_now WHERE reader_id = p_user_id::text;
     END IF;
     RETURN jsonb_build_object('ok',true,'progress',to_jsonb(v_progress),'state_changed',v_state_changed);
@@ -138,15 +152,16 @@ BEGIN
   IF NOT FOUND THEN RAISE EXCEPTION 'Reader wallet not found'; END IF;
 
   UPDATE public.reader_reading_mission_progress
-  SET claimed_at = v_now, updated_at = v_now WHERE id = v_progress.id RETURNING * INTO v_progress;
+  SET completed_at = coalesce(completed_at,v_now), claimed_at = v_now, updated_at = v_now WHERE id = v_progress.id RETURNING * INTO v_progress;
 
   INSERT INTO public.reader_reward_history(user_id,source_key,source_title,amount_gems,amount_vouchers,story_cards,metadata)
-  VALUES(p_user_id,'reading_mission','Read ' || (v_entry->>'targetMinutes') || ' minutes',v_reward,0,0,
-    jsonb_build_object('mission_id',p_mission_id,'story_link','/story/' || v_story_id::text,'target_minutes',(v_entry->>'targetMinutes')::integer,'active_seconds',v_progress.active_seconds,'coins',v_reward))
+  VALUES(p_user_id,'reading_mission','Read ' || (v_target / 60)::text || ' minutes',v_reward,0,0,
+    jsonb_build_object('mission_id',p_mission_id,'story_link','/story/' || v_story_id::text,'target_minutes',v_target / 60,'active_seconds',v_progress.active_seconds,'coins',v_reward))
   RETURNING * INTO v_history;
 
   UPDATE public.task_center_smart_auto_state
-  SET missions = jsonb_set(missions,ARRAY[v_index::text,'status'],to_jsonb('claimed'::text)),
+  SET missions = jsonb_set(missions,ARRAY[v_index::text],
+    v_entry || jsonb_build_object('status','claimed','targetMinutes',v_target / 60,'rewardCoins',v_reward)),
       revision = revision + 1, updated_at = v_now WHERE reader_id = p_user_id::text;
 
   RETURN jsonb_build_object('ok',true,'progress',to_jsonb(v_progress),'wallet',to_jsonb(v_wallet),'history_item',to_jsonb(v_history),'reward_coins',v_reward);
