@@ -3,6 +3,8 @@ import { rateLimit,ipKeyGenerator } from 'express-rate-limit'
 import { requireAdminSession } from '../middleware/adminPermission.middleware.js'
 import { listSocialConnections,connectSocialAccount,revokeSocialAccount,listSocialRules,createSocialRule,replaceSocialRule,listSocialJobs,cancelSocialJob } from '../controllers/adminSocialPromotion.controller.js'
 
+import { listSocialExceptions,searchSocialExceptions,addSocialException,removeSocialException } from '../controllers/adminSocialPromotionExceptions.controller.js'
+
 const router=express.Router()
 const identity=req=>String(req.admin?.admin_id||ipKeyGenerator(req.ip))
 const reads=rateLimit({windowMs:60000,limit:60,keyGenerator:identity,standardHeaders:'draft-8',legacyHeaders:false})
@@ -23,4 +25,8 @@ router.post('/rules',writes,createSocialRule)
 router.put('/rules/:id',writes,replaceSocialRule)
 router.get('/jobs',reads,listSocialJobs)
 router.post('/jobs/:id/cancel',writes,cancelSocialJob)
+router.get('/exceptions',reads,listSocialExceptions)
+router.get('/exceptions/search',reads,searchSocialExceptions)
+router.post('/exceptions',writes,addSocialException)
+router.delete('/exceptions/:kind/:id',writes,removeSocialException)
 export default router
