@@ -1,4 +1,5 @@
-import { shadowAiConfig, shadowAiError } from './shadowAiPolicy.js'
+import { shadowAiError } from './shadowAiPolicy.js'
+import { shadowLocalRuntimeConfig } from './local/shadowLocalRuntimeConfig.js'
 
 export function shadowAiAdminPeriod(raw) {
   if (raw === undefined) return 1
@@ -20,8 +21,8 @@ export function shadowAiAdminSettings(input) {
 export function createShadowAiAdminService({db,env=process.env}={}) {
   if (typeof db?.rpc!=='function') throw new TypeError('Admin database required')
   function runtime() {
-    try { return { configured:true,model:shadowAiConfig(env).model } }
-    catch { return { configured:false,model:null } }
+    try { return { configured:true,engine:'local',model:shadowLocalRuntimeConfig(env).model } }
+    catch { return { configured:false,engine:'local',model:null } }
   }
   async function rpc(name,args) {
     const {data,error}=await db.rpc(name,args).abortSignal(AbortSignal.timeout(8000))

@@ -1,4 +1,5 @@
-import { shadowAiConfig, shadowAiError } from './shadowAiPolicy.js'
+import { shadowAiError } from './shadowAiPolicy.js'
+import { shadowLocalRuntimeConfig } from './local/shadowLocalRuntimeConfig.js'
 import { shadowAiId } from './shadowAiPreOrderAccess.service.js'
 
 const unavailable = () => shadowAiError('SHADOW_AI_ELIGIBILITY_UNAVAILABLE','AI booking availability could not be verified',503)
@@ -9,7 +10,7 @@ export function createShadowAiEligibility({ db, resolve, getDeliverySettings, en
     const actor = shadowAiId(actorUserId), chat = shadowAiId(conversationId)
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > 1000) throw shadowAiError('SHADOW_AI_INVALID_REQUEST','Invalid campaign offset',400)
     const empty = { conversation_id:chat, enabled:false, stock_verified:false, campaigns:[], has_more:false, next_offset:null }
-    try { shadowAiConfig(env) } catch { return empty }
+    try { shadowLocalRuntimeConfig(env) } catch { return empty }
     const {data:settings,error} = await db.from('shadow_ai_settings').select('enabled,preorder_enabled').eq('id',1).maybeSingle().abortSignal(AbortSignal.timeout(5000))
     if (error || !settings) throw unavailable()
     if (settings.enabled !== true || settings.preorder_enabled !== true) return empty
