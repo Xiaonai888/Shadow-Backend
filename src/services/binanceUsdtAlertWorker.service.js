@@ -1,6 +1,6 @@
 import { supabase } from '../config/supabase.js'
 import { fetchBinanceUsdtIncome } from './binanceUsdtPay.service.js'
-import { html, sendTelegramMessage, editTelegramMessage } from './telegram.service.js'
+import { html, sendTelegramMessage, editTelegramMessage, resolvePaymentReportIdentity, paymentReportIdentityLines } from './telegram.service.js'
 import { publishPaymentStatus } from './paymentEvents.service.js'
 
 const POLL_INTERVAL_MS = 10 * 60 * 1000
@@ -122,20 +122,14 @@ async function findVerifiedReportContext(transactionId) {
     if (error) throw error
     if (!data) return null
 
-    let buyer = ''
-    if (data.user_id) {
-      const { data: user, error: userError } = await supabase
-        .from('users')
-        .select('name,username')
-        .eq('id', data.user_id)
-        .maybeSingle()
-      if (userError) throw userError
-      buyer = user?.username ? '@' + user.username : String(user?.name || '')
-    }
+    const buyerIdentity = await resolvePaymentReportIdentity(supabase, data.user_id)
+    const buyer = buyerIdentity?.username ? '@' + buyerIdentity.username : String(buyerIdentity?.name || '')
     return {
       purchaseKind: String(data.purchase_kind || '').toLowerCase(),
             fulfillmentKey: String(data.fulfillment_key || ''),
       buyer,
+      buyerIdentity,
+      buyerId: data.user_id,
       purchasePage: await getVerifiedPdfPurchasePage(data),
     }
   } catch (error) {
@@ -184,7 +178,9 @@ export function formatBinanceUsdtAlertMessage(row, verifiedContext = null) {
         verifiedContext?.purchasePage
       ? `📍 Purchase Page: <b>${html(verifiedContext.purchasePage)}</b>`
       : null,
-    verifiedContext?.buyer ? `👤 Shadow Buyer: <b>${html(verifiedContext.buyer)}</b>` : null,
+    ...(verifiedContext?.buyerId
+      ? paymentReportIdentityLines(verifiedContext.buyerIdentity, verifiedContext.buyerId)
+      : [verifiedContext?.buyer ? `👤 Shadow Buyer: <b>${html(verifiedContext.buyer)}</b>` : null]),
     verifiedContext?.fulfillmentKey ? `📦 Order Reference: <code>${html(verifiedContext.fulfillmentKey)}</code>` : null,
     `📋 Status: <b>${verifiedContext ? 'Fulfillment recorded' : 'Received · Awaiting order verification'}</b>`,
     `🧾 Transaction ID: <code>${html(row?.transaction_id)}</code>`,
@@ -458,17 +454,14 @@ async function getTelegramEditPayload(task) {
     throw new Error('ORIGINAL_TELEGRAM_MESSAGE_MISSING: existing report must be sent first')
   }
 
-  const { data: user, error: userError } = await supabase
-    .from('users')
-    .select('username,name')
-    .eq('id', claim.user_id)
-    .maybeSingle()
-  if (userError) throw userError
+  const user = await resolvePaymentReportIdentity(supabase, claim.user_id)
 
   const verifiedContext = {
     purchaseKind: claim.purchase_kind,
     fulfillmentKey: claim.fulfillment_key,
     buyer: user?.username ? '@' + user.username : String(user?.name || ''),
+    buyerIdentity: user,
+    buyerId: claim.user_id,
     purchasePage: await getVerifiedPdfPurchasePage(claim),
   }
   return { messageId, text: formatBinanceUsdtAlertMessage(receipt, verifiedContext) }
