@@ -1,51 +1,44 @@
-import { sendPromotionPhoto } from './telegram.service.js'
+import { eventBotKey,safeEventError } from './queue.service.js'
 
-const safeError = error => String(error?.message || error || 'UNKNOWN').replace(/\b\d+:[A-Za-z0-9_-]{10,}\b/g, '[redacted]').slice(0, 300)
-
-export function createPromotionWorker({ queue, candidates, token, send = sendPromotionPhoto, onError = () => {} }) {
-  if (!queue?.claim || !candidates?.validate) throw new TypeError('Missing promotion worker dependencies')
-  const notify = (code, job, error) => {
-    try { onError({ code, job_id: job?.id || null, language: job?.language || null, message: safeError(error) }) } catch {}
-  }
-  const finish = async (job, outcome, options) => {
-    if (!await queue.finish(job, outcome, options)) throw new Error('Promotion job lease lost')
-    return { state: outcome, jobId: job.id }
+export function createEventWorker({queue,token,send,onError=()=>{}}) {
+  if (!queue?.claim || !queue?.finish || typeof send!=='function') throw new TypeError('Missing event worker dependencies')
+  const report=(code,job,error)=>{try {onError({code,job_id:job?.id||null,language:job?.language||null,message:safeEventError(error)})} catch {}}
+  async function finish(job,state,options) {
+    if (!await queue.finish(job,state,options)) {
+      report('EVENT_LEASE_LOST',job,'Delivery outcome requires review')
+      return {state:'uncertain',id:job.id}
+    }
+    return {state,id:job.id}
   }
   return {
-    async run(settings) {
-      const secret = String(typeof token === 'function' ? token(settings?.language) : token || '').trim()
-      if (!settings?.enabled || !settings.channel_id || !/^\d+:[A-Za-z0-9_-]+$/.test(secret)) return { state: 'disabled' }
-      const job = await queue.claim(settings.language)
-      if (!job) return { state: 'idle' }
-      let fileId = null
-      try {
-        const decision = await candidates.validate(job)
-        if (!decision.eligible) return await finish(job, 'cancelled', { error: decision.reason })
-        try { fileId = await queue.getFileId(secret, job.payload.photo) } catch (error) { notify('PROMOTION_CACHE_READ_FAILED', job, error) }
-      } catch (error) {
-        notify('PROMOTION_VALIDATE_FAILED', job, error)
-        return await finish(job, 'retry', { error: safeError(error), retrySeconds: 300 })
-      }
+    async run() {
+      const secret=String(typeof token==='function'?token():token||'').trim()
+      if (!/^\d+:[A-Za-z0-9_-]+$/.test(secret)) return {state:'disabled'}
+      const job=await queue.claim()
+      if (!job) return {state:'idle'}
+      const botKey=eventBotKey(secret)
+      const fileId=job.image_url && job.photo_bot_key===botKey?job.photo_file_id:null
       let sent
       try {
-        try {
-          sent = await send({ token: secret, chatId: job.telegram_chat_id, message: job.payload, fileId })
-        } catch (error) {
-          if (!fileId || error.status !== 400 || error.uncertain) throw error
-          try { await queue.removeFileId(secret, job.payload.photo) } catch (cacheError) { notify('PROMOTION_CACHE_REMOVE_FAILED', job, cacheError) }
-          sent = await send({ token: secret, chatId: job.telegram_chat_id, message: job.payload, fileId: null })
+        try {sent=await send({token:secret,job,fileId})}
+        catch(error) {
+          if (!fileId || error?.uncertain || error?.status!==400 || error?.code!=='INVALID_FILE_ID') throw error
+          sent=await send({token:secret,job,fileId:null})
         }
-      } catch (error) {
-        notify('PROMOTION_SEND_FAILED', job, error)
-        if (error.uncertain || !error.status || error.status >= 500) return await finish(job, 'uncertain', { error: safeError(error) })
-        if (error.status === 429) return await finish(job, 'retry', { error: safeError(error), retrySeconds: Math.max(60, Math.min(2147483647, Math.ceil(error.retryAfter || 300))) })
-        return await finish(job, 'failed', { error: safeError(error) })
+      } catch(error) {
+        report('EVENT_SEND_FAILED',job,error)
+        const status=Number(error?.status)
+        const code=`TELEGRAM_${Number.isInteger(status)&&status>0?status:'UNKNOWN'}`
+        if (error?.uncertain || !status || status>=500) return finish(job,'uncertain',{code,error})
+        if (status===429) {
+          const delay=Number(error.retryAfter)
+          const retrySeconds=Number.isFinite(delay)&&delay>0?Math.min(86400,Math.max(1,Math.ceil(delay))):60
+          return finish(job,'retry',{code,error,retrySeconds})
+        }
+        return finish(job,'failed',{code,error})
       }
-      const outcome = await finish(job, 'sent', { messageId: sent.messageId })
-      if (sent.fileId) {
-        try { await queue.saveFileId(secret, job.payload.photo, sent.fileId) } catch (error) { notify('PROMOTION_CACHE_WRITE_FAILED', job, error) }
-      }
-      return outcome
-    },
+      if (!Number.isSafeInteger(sent?.messageId) || sent.messageId<=0) return finish(job,'uncertain',{code:'INVALID_TELEGRAM_RESPONSE',error:'No confirmed message ID'})
+      return finish(job,'sent',{messageId:sent.messageId,fileId:job.image_url&&typeof sent.fileId==='string'&&sent.fileId.length<=1024?sent.fileId:null,botKey})
+    }
   }
 }
