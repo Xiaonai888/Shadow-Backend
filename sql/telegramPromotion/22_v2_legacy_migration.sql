@@ -191,7 +191,7 @@ declare
 begin
   perform 1 from public.telegram_promotion_settings where language in ('km','en') order by language for update;
   if exists(select 1 from public.telegram_promotion_queue q join public.telegram_promotion_settings s on s.language=q.language and s.enabled where q.language in ('km','en') and q.status in ('ready','sending') and not exists(select 1 from public.telegram_promotion_v2_message_meta m where m.queue_id=q.id)) then raise exception 'LEGACY_QUEUE_NOT_DRAINED: enable V1 to finish active jobs, then pause it again';end if;
-  if exists(select 1 from public.telegram_promotion_queue q join public.telegram_promotion_settings s on s.language=q.language and s.enabled where q.language in ('km','en') and q.status='uncertain' and q.updated_at>=v_start) then raise exception 'UNCERTAIN_TELEGRAM_DELIVERY: verify old messages before cutover';end if;
+  if exists(select 1 from public.telegram_promotion_queue q join public.telegram_promotion_settings s on s.language=q.language and s.enabled where q.language in ('km','en') and q.kind='update' and q.status='uncertain' and q.updated_at>=v_start) then raise exception 'UNCERTAIN_UPDATE_DELIVERY: verify old update messages before cutover';end if;
   for v_scope in select distinct q.language,q.story_id from public.telegram_promotion_queue q join public.telegram_promotion_settings s on s.language=q.language and s.enabled join public.episodes e on e.id=q.episode_id where q.language in ('km','en') and q.kind='update' and q.status='sent' and e.first_published_at>=v_start and e.first_published_at<v_end and not exists(select 1 from public.telegram_promotion_v2_update_episodes u where u.language=q.language and u.episode_id=q.episode_id) loop
     perform public.telegram_promotion_v2_import_legacy_day(v_scope.language,v_scope.story_id,v_day);
   end loop;
@@ -211,7 +211,9 @@ with bounds as (
     (select count(*) from public.telegram_promotion_v2_update_groups g join public.telegram_promotion_queue q on q.id=g.queue_id where g.language=s.language and g.local_day=b.day and q.payload->>'v2_legacy_imported'='true') as legacy_anchors,
     (select count(*) from public.telegram_promotion_queue q join public.episodes e on e.id=q.episode_id where q.language=s.language and q.kind='update' and q.status='sent' and e.first_published_at>=b.day::timestamp at time zone 'Asia/Phnom_Penh' and e.first_published_at<(b.day+1)::timestamp at time zone 'Asia/Phnom_Penh' and not exists(select 1 from public.telegram_promotion_v2_update_episodes u where u.language=q.language and u.episode_id=q.episode_id)) as unmapped_sent,
     (select count(*) from public.telegram_promotion_queue q where q.language=s.language and q.status in ('ready','sending') and not exists(select 1 from public.telegram_promotion_v2_message_meta m where m.queue_id=q.id)) as legacy_active,
-    (select count(*) from public.telegram_promotion_events e where e.language=s.language and e.state='pending' and e.due_at<=now()) as pending_events
+    (select count(*) from public.telegram_promotion_events e where e.language=s.language and e.state='pending' and e.due_at<=now()) as pending_events,
+    (select count(*) from public.telegram_promotion_queue q where q.language=s.language and q.kind<>'update' and q.status='uncertain') as optional_uncertain_preserved,
+    (select count(*) from public.telegram_promotion_queue q where q.language=s.language and q.kind='update' and q.status='uncertain' and q.updated_at>=b.day::timestamp at time zone 'Asia/Phnom_Penh') as uncertain_updates_today
   from public.telegram_promotion_settings s cross join bounds b where s.language in ('km','en')
 )
-select *,case when not enabled then 'DISABLED' when unmapped_sent=0 and legacy_active=0 then 'READY_FOR_V2' else 'REVIEW_REQUIRED' end as cutover_status from stats order by language;
+select *,case when not enabled then 'DISABLED' when unmapped_sent=0 and legacy_active=0 and uncertain_updates_today=0 then 'READY_FOR_V2' else 'REVIEW_REQUIRED' end as cutover_status from stats order by language;
