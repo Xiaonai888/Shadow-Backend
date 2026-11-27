@@ -1,0 +1,23 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { BOOKING_TEXT_LIMITS, parseShadowPreOrderMessage } from '../services/shadowAi/shadowAiPreOrderMessage.js'
+import { mergeShadowBookingDraft, inspectShadowBookingDraft } from '../services/shadowAi/shadowAiPreOrderDraft.js'
+import { createShadowPreOrderBooking } from '../services/shadowAi/shadowAiPreOrderBooking.service.js'
+
+const context = {campaign_id:'campaign',author_page_id:'author',can_book:true,stock_verified:true,signature_enabled:false,books:[{id:'a',title:'A',editions:[{edition:'standard',available:4,price_usd:10}]},{id:'b',title:'B',editions:[{edition:'limited',available:2,price_usd:15},{edition:'standard',available:3,price_usd:10}]}],delivery_companies:[{company_key:'jnt',company_name:'J&T',fee_usd:1.5}]}
+const sample = {items:[{book_id:'a',edition:null,quantity:2}],name:'Dara',phone_number:'012345678',delivery_address:'PP'}
+const output = (patch={}) => ({intent:'booking',question:null,items:null,signature_requested:null,...Object.fromEntries(Object.keys(BOOKING_TEXT_LIMITS).map(k=>[k,null])),...patch})
+const run = (data) => async () => ({data})
+const parse = (data) => parseShadowPreOrderMessage({actorUserId:'reader',message:'test',context,draft:{},rules:[],runAi:run(data)})
+test('short PP accepted, sole carrier and edition default',()=>{const draft=mergeShadowBookingDraft(context,{},sample);assert.equal(draft.delivery_company_key,'jnt');assert.equal(draft.items[0].edition,'standard');assert.equal(draft.signature_requested,false);const r=inspectShadowBookingDraft(context,draft);assert.equal(r.ready,true);assert.equal(r.province_city,'ភ្នំពេញ')})
+test('missing buyer details only',()=>{const draft=mergeShadowBookingDraft(context,{}, {items:sample.items,name:'Dara'});assert.deepEqual(inspectShadowBookingDraft(context,draft).missing,['phone_number','delivery_address'])})
+test('province-only address accepted',()=>{const draft=mergeShadowBookingDraft(context,{}, {...sample,delivery_address:'សៀមរាប'});assert.equal(inspectShadowBookingDraft(context,draft).ready,true)})
+test('ambiguous address rejected',()=>{const draft=mergeShadowBookingDraft(context,{}, {...sample,delivery_address:'PP ឬ សៀមរាប'});assert.ok(inspectShadowBookingDraft(context,draft).missing.includes('delivery_address'))})
+test('multiple books and stock shortage',()=>{const draft=mergeShadowBookingDraft(context,{}, {...sample,items:[...sample.items,{book_id:'b',edition:'limited',quantity:3}]});assert.deepEqual(inspectShadowBookingDraft(context,draft).issues,['STOCK_UNAVAILABLE:b'])})
+test('signature name condition',()=>{const c={...context,signature_enabled:true};const draft=mergeShadowBookingDraft(c,{}, {...sample,signature_requested:true});assert.ok(inspectShadowBookingDraft(c,draft).missing.includes('signature_name'))})
+test('conditional second phone outside Phnom Penh',()=>{const rules=[{field:'second_phone',condition:'outside_phnom_penh'}];const draft=mergeShadowBookingDraft(context,{}, {...sample,delivery_address:'Kandal'});assert.ok(inspectShadowBookingDraft(context,draft,rules).missing.includes('second_phone'));assert.equal(inspectShadowBookingDraft(context,mergeShadowBookingDraft(context,draft,{second_phone:'0971234567'}),rules).ready,true)})
+test('unknown book and duplicate selection rejected',async()=>{await assert.rejects(parse(output({items:[{book_id:'other',edition:'limited',quantity:1}]})));await assert.rejects(parse(output({items:[sample.items[0],sample.items[0]]})))})
+test('unrelated message cannot mutate draft',async()=>{const result=await parse(output({intent:'unrelated',name:'Other'}));assert.deepEqual(result.patch,{})})
+test('null preserves earlier data, explicit clear removes',async()=>{const p=await parse(output({buyer_note:'',name:null}));const draft=mergeShadowBookingDraft(context,{...sample,buyer_note:'previous'},p.patch);assert.equal(draft.name,'Dara');assert.equal(draft.buyer_note,'')})
+test('invalid carrier or extra output rejected',async()=>{await assert.rejects(parse(output({delivery_company_key:'other'})));await assert.rejects(parse({...output(),extra:true}))})
+test('turn needs verified author requirements and never creates order',async()=>{const build=(confirmed)=>createShadowPreOrderBooking({contextService:{detail:async()=>context},runAi:run(output({name:'Dara'})),loadConfirmedRules:async()=>({confirmed,rules:[]})});const args={actorUserId:'reader',authorPageId:'author',campaignId:'campaign',previousDraft:sample,message:'Dara'};await assert.rejects(build(false)(args),{code:'SHADOW_AI_REQUIREMENTS_UNCONFIRMED'});const r=await build(true)(args);assert.equal(r.ready_for_review,true);assert.equal(r.order_created,false);assert.equal(r.payment_created,false);assert.equal(r.inventory_reserved,false)})
