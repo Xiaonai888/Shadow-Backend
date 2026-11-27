@@ -1,0 +1,17 @@
+import React,{useEffect,useRef,useState} from 'react'
+import {loadLocalKnowledgeHistory,loadLocalKnowledgeVersion} from '../../services/shadowLocalAiAdminApi'
+import {localPanel,localButton,localPrimary,localMuted} from './ShadowLocalKnowledgeEditor'
+export default function ShadowLocalKnowledgeHistory({version,canManage,dirty,busy,onRollback}) {
+  const [cursors,setCursors]=useState([null]),[data,setData]=useState(null),[error,setError]=useState(''),[loading,setLoading]=useState(true),[preview,setPreview]=useState(null),[previewBusy,setPreviewBusy]=useState(false)
+  const previewRequest=useRef(null)
+  const before=cursors[cursors.length-1]
+  useEffect(()=>{setCursors([null]);setPreview(null)},[version])
+  useEffect(()=>{const ctrl=new AbortController();setLoading(true);setError('');setData(null);loadLocalKnowledgeHistory(before,ctrl.signal).then(r=>{if(!ctrl.signal.aborted)setData(r)}).catch(e=>{if(!ctrl.signal.aborted)setError(e.message)}).finally(()=>{if(!ctrl.signal.aborted)setLoading(false)});return()=>ctrl.abort()},[before,version])
+  useEffect(()=>()=>{previewRequest.current?.abort();previewRequest.current=null},[version,before])
+  async function inspect(v){previewRequest.current?.abort();const ctrl=new AbortController();previewRequest.current=ctrl;setPreviewBusy(true);setPreview(null);setError('');try{const r=await loadLocalKnowledgeVersion(v,ctrl.signal);if(!ctrl.signal.aborted)setPreview(r)}catch(e){if(!ctrl.signal.aborted)setError(e.message)}finally{if(previewRequest.current===ctrl){previewRequest.current=null;setPreviewBusy(false)}}}
+  return <section style={{...localPanel,display:'grid',gap:12}}><h3 style={{margin:0}}>Version History</h3><p style={localMuted}>Active version {version}. Rollback creates a new version; existing history is preserved.</p>
+    {dirty&&<p style={localMuted}>Discard or publish the current draft before rollback.</p>}{error&&<p role="alert" style={{color:'#b91c1c'}}>{error}</p>}{loading&&<p role="status">Loading history…</p>}
+    {data&&<><div style={{overflowX:'auto'}}><table style={{width:'100%',textAlign:'left',fontSize:13}}><thead><tr><th>Version</th><th>Date</th><th>Aliases</th><th>Restored from</th><th>Action</th></tr></thead><tbody>{data.versions.map(r=><tr key={r.version}><td>{r.version}{r.version===version?' · Active':''}</td><td>{new Date(r.created_at).toLocaleString('en-GB',{timeZone:'Asia/Phnom_Penh'})}</td><td>{r.alias_count}</td><td>{r.source_version??'—'}</td><td><button style={localButton} disabled={busy||previewBusy} onClick={()=>inspect(r.version)}>View</button></td></tr>)}</tbody></table></div><div style={{display:'flex',gap:8}}><button style={localButton} disabled={cursors.length===1||previewBusy||busy} onClick={()=>{setPreview(null);setCursors(c=>c.slice(0,-1))}}>Previous</button><button style={localButton} disabled={!data.has_more||previewBusy||busy} onClick={()=>{setPreview(null);setCursors(c=>[...c,data.next_before])}}>Next</button></div></>}
+    {previewBusy&&<p role="status">Loading version…</p>}{preview&&<div style={{...localPanel,background:'transparent'}}><strong>Version {preview.version}</strong><pre style={{maxHeight:300,overflow:'auto',whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(preview.aliases,null,2)}</pre>{canManage&&preview.version<version&&<button style={localPrimary} disabled={dirty||busy||previewBusy} onClick={()=>onRollback(preview.version)}>Restore this version</button>}</div>}
+  </section>
+}
