@@ -164,19 +164,25 @@ function currentDayProgress(row, window) {
 
 function stateMission(entry, template) {
   if (!entry || !UUID.test(String(entry.storyId || '')) || !UUID.test(String(entry.slotId || ''))) return null
+  const settled = entry.status === 'claimable' || entry.status === 'claimed'
+  const targetMinutes = Number(settled ? entry.targetMinutes : template.target_minutes)
+  const rewardCoins = Number(settled ? entry.rewardCoins : template.reward_coins)
+  const window = getWindow(Number(entry.windowStart))
   return {
     id: entry.slotId,
     audience: entry.audience,
     is_active: true,
-    title: `Read ${entry.targetMinutes} minutes`,
+    title: `Read ${targetMinutes} minutes`,
     subtitle: entry.storyTitle || 'Reading Mission',
-    reward_coins: entry.rewardCoins,
-    target_minutes: entry.targetMinutes,
+    reward_coins: rewardCoins,
+    target_minutes: targetMinutes,
     story_link: `/story/${entry.storyId}`,
     button_text: template?.button_text || entry.buttonText || 'Go',
     sort_order: template?.sort_order ?? entry.sortOrder ?? 0,
     smart_auto: true,
     smart_story_id: entry.storyId,
+    smart_auto_window_end: window.end,
+    smart_auto_day_end: window.dayEnd,
   }
 }
 
