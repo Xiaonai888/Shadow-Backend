@@ -305,6 +305,44 @@ function isAuthorPdfOrder(order) {
 async function getUser(userId) {
   return resolvePaymentReportIdentity(supabase, userId)
 }
+
+async function buildReviewOrderLines(orders, isAuthorStore = false) {
+  const selected = orders.slice(0, 6)
+  const ids = [...new Set(selected.map(order =>
+    isAuthorStore ? order.buyer_id : order.user_id
+  ).filter(Boolean))]
+
+  const users = new Map()
+
+  if (ids.length) {
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('id,name,username')
+        .in('id', ids)
+
+      if (!error) {
+        for (const user of data || []) {
+          users.set(String(user.id), user)
+        }
+      }
+    } catch {}
+  }
+
+  return selected.map(order => {
+    const userId = isAuthorStore ? order.buyer_id : order.user_id
+    const user = users.get(String(userId))
+    const buyer = order.buyer_profile || {}
+    const orderId = order.order_id || order.order_number
+
+    return [
+      `📦 <code>${html(orderId)}</code> — ${html(money(order.total_usd || order.total_amount))}`,
+      `Buyer: ${html(buyer.name || userId || 'Reader')}`,
+      ...paymentReportIdentityLines(user, userId),
+      '',
+    ].join('\n')
+  })
+}
 async function saveTelegramPayment(parsed, message) {
   const { data: existing, error: existingError } = await supabase
     .from('telegram_payments')
@@ -1370,10 +1408,7 @@ async function processAbaMessage(parsed, message) {
       match_reason: reason,
     })
 
-    const mallLines = mallMatches.slice(0, 6).map((order) => {
-      const buyer = order.buyer_profile || {}
-      return `📦 <code>${html(order.order_id)}</code> — ${html(buyer.name || order.user_id)} — ${html(money(order.total_usd))}`
-    })
+    const mallLines = await buildReviewOrderLines(mallMatches)
 
     const needReviewText = [
       '🟠 <b>SHADOW MALL NEED REVIEW</b>',
@@ -1410,10 +1445,7 @@ async function processAbaMessage(parsed, message) {
       match_reason: reason,
     })
 
-    const authorLines = authorStoreMatches.slice(0, 6).map((order) => {
-      const buyer = order.buyer_profile || {}
-      return `📦 <code>${html(order.order_id || order.order_number)}</code> — ${html(buyer.name || order.buyer_id)} — ${html(money(order.total_usd || order.total_amount))}`
-    })
+    const authorLines = await buildReviewOrderLines(authorStoreMatches, true)
 
     const needReviewText = [
       '🟠 <b>AUTHOR STORE NEED REVIEW</b>',
