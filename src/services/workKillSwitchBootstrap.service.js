@@ -143,6 +143,6 @@ export function ensureKillSwitchBootstrapVerified(forceRefresh = false) {
       })
     })
     .finally(() => {
-      loading = null
-    })
+  loading = null
+}))
 }
