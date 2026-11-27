@@ -80,6 +80,7 @@ const CATEGORIES = Object.freeze({
   author_page_avatar: { scope: 'author', folder: 'author-page/avatars', maxBytes: 2 * MB, trackQuota: true },
   admin_media_library: { scope: 'admin', folder: 'admin-media-library/images', maxBytes: 5 * MB },
   admin_banner: { scope: 'admin', folder: 'slides', maxBytes: 5 * MB },
+  admin_telegram_event: { scope: 'admin', folder: 'telegram-events/images', maxBytes: 5 * MB },
   admin_advertisement: { scope: 'admin', folder: 'advertisements', maxBytes: 5 * MB },
   admin_shadow_mall: { scope: 'admin', folder: 'shadow-mall/media', maxBytes: 5 * MB },
   admin_music_image: { scope: 'admin', folder: 'music/images', maxBytes: 5 * MB },
