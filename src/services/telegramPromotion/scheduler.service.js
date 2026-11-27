@@ -23,7 +23,7 @@ export function nextPromotionSlot(schedule, now = Date.now()) {
   }
   return next
 }
-export function createPromotionScheduler({queue,source,candidates,worker,recovery,enabled=()=>false,token=()=>'',onError=()=>{},clock=Date.now,prepare=prepareUpdateEvents,monitor=null}) {
+export function createPromotionScheduler({queue,source,candidates,worker,recovery,enabled=()=>false,token=()=>'',onError=()=>{},clock=Date.now,prepare=prepareUpdateEvents,monitor=null,v2=null}) {
   if (![queue,source,candidates,worker,recovery].every(Boolean)) throw new TypeError('Missing scheduler dependencies')
   let running=false,started=false,timer=null,timerDue=Infinity,wakePending=false,failures=0
   const attemptedSlots=new Map()
@@ -45,24 +45,42 @@ export function createPromotionScheduler({queue,source,candidates,worker,recover
         continue
       }
       try {
+        const modern=Boolean(v2?.supports(settings.language))
         const restored=await recovery.step(settings,clock())
         if (restored.more) next=Math.min(next,clock()+RECOVERY_CONTINUE)
         let due=await recovery.due(settings.language)
         if (dateMs(due.event_due_at)<=clock()) {
-          await prepare({source,queue,settings,now:clock(),onError})
+          await (modern?v2.prepare:prepare)({source,queue,settings,now:clock(),onError})
           due=await recovery.due(settings.language)
         }
         const current=clock()
         const pendingEvent=dateMs(due.event_due_at)<=current
         const blocked=Boolean(due.update_waiting || pendingEvent || restored.more)
-        if (!blocked) {
+        let editDue=Infinity
+        let edited=false
+        if (modern && !blocked) {
+          editDue=dateMs(await v2.updateQueue.nextEditDue(settings.language))
+          if (editDue<=current) {
+            const outcome=await v2.editWorker.run(settings)
+            edited=outcome.state!=='idle' && outcome.state!=='disabled'
+            if (edited) {
+              due=await recovery.due(settings.language)
+              editDue=dateMs(await v2.updateQueue.nextEditDue(settings.language))
+            } else {
+              editDue=current+60000
+            }
+          }
+          next=Math.min(next,editDue)
+        }
+        if (!blocked && !edited) {
           let attempted=false
-          for (const slot of recoverablePromotionSlots(settings.schedule,current,settings.enabled_at ?? null)) {
+          const slots=modern?v2.slots(current,settings.enabled_at ?? null):recoverablePromotionSlots(settings.schedule,current,settings.enabled_at ?? null)
+          for (const slot of slots) {
             const key=`${settings.language}:${slot.slotKey}`
             const prior=attemptedSlots.get(key)
             if (prior?.retryAt>current) { next=Math.min(next,prior.retryAt); continue }
             attempted=true
-            const id=await candidates.enqueue({queue,settings,slot,now:current})
+            const id=await (modern?v2.optional:candidates).enqueue({queue,settings,slot,now:current})
             const retryAt=id?slot.expiresAt:Math.min(slot.expiresAt,current+SLOT_RETRY)
             attemptedSlots.set(key,{expiresAt:slot.expiresAt,retryAt})
             next=Math.min(next,retryAt)
@@ -70,8 +88,8 @@ export function createPromotionScheduler({queue,source,candidates,worker,recover
           if (attempted) due=await recovery.due(settings.language)
         }
         const queueDue=dateMs(due.queue_due_at)
-        if (queueDue<=clock() && (!(pendingEvent || restored.more) || due.update_ready)) {
-          await worker.run(settings)
+        if (!edited && queueDue<=clock() && (!(pendingEvent || restored.more) || due.update_ready)) {
+          await (v2?.worker || worker).run(settings)
           due=await recovery.due(settings.language)
         }
         const end=clock()
@@ -81,7 +99,7 @@ export function createPromotionScheduler({queue,source,candidates,worker,recover
         else next=Math.min(next,eventDue)
         if (sendDue>end) next=Math.min(next,sendDue)
         else if (!pendingEvent && !restored.more || due.update_ready) next=Math.min(next,end+RECOVERY_CONTINUE)
-        next=Math.min(next,nextPromotionSlot(settings.schedule,end),nextRecoveryCheckpoint(end))
+        next=Math.min(next,modern?v2.nextSlot(end):nextPromotionSlot(settings.schedule,end),nextRecoveryCheckpoint(end))
         await heartbeat(settings.language,true)
       } catch(error) { errorCount++; report(error,settings.language); await heartbeat(settings.language,false,error) }
     }
