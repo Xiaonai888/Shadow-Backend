@@ -13,7 +13,7 @@ export function createSocialOAuthAccountStore({db,encryptToken=encryptSocialToke
     for(const account of accounts){
       const {platform,externalId,displayName,token,expiresAt=null}=account??{}
       const key=`${platform}:${externalId}`
-      if(!['facebook','instagram'].includes(platform)||!idValid(externalId)||!nameValid(displayName)||!tokenValid(token)||seen.has(key)||!Number.isFinite(now)||(platform==='instagram'&&expiresAt===null)||(expiresAt!==null&&(typeof expiresAt!=='string'||!Number.isFinite(Date.parse(expiresAt))||Date.parse(expiresAt)<=now)))throw new SocialOAuthError('SOCIAL_OAUTH_IMPORT_INVALID')
+      if(!['facebook','instagram','threads'].includes(platform)||!idValid(externalId)||!nameValid(displayName)||!tokenValid(token)||seen.has(key)||!Number.isFinite(now)||(['instagram','threads'].includes(platform)&&expiresAt===null)||(expiresAt!==null&&(typeof expiresAt!=='string'||!Number.isFinite(Date.parse(expiresAt))||Date.parse(expiresAt)<=now)))throw new SocialOAuthError('SOCIAL_OAUTH_IMPORT_INVALID')
       seen.add(key)
       let ciphertext
       try{ciphertext=encryptToken(token,{ownerType:'admin',ownerId:'shadow',platform,externalId})}catch{throw new SocialOAuthError('SOCIAL_OAUTH_VAULT_UNAVAILABLE',503)}
