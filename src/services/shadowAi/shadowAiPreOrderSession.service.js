@@ -3,12 +3,14 @@ import { mergeShadowBookingDraft, inspectShadowBookingDraft } from './shadowAiPr
 import { normalizeShadowPreOrderRules } from './shadowAiPreOrderRequirements.js'
 import { shadowAiError } from './shadowAiPolicy.js'
 
-export function createShadowAiPreOrderSession({ authorize, contextService, loadConfirmedRules, draftStore, bookingTurn, checkoutReview } = {}) {
-  if ([authorize,contextService?.detail,loadConfirmedRules,draftStore?.load,draftStore?.save,bookingTurn,checkoutReview].some(fn=>typeof fn !== 'function')) throw new TypeError('Booking session dependencies required')
+export function createShadowAiPreOrderSession({ authorize, authorizeInitial = authorize, contextService, loadConfirmedRules, draftStore, bookingTurn, checkoutReview } = {}) {
+  if ([authorize,authorizeInitial,contextService?.detail,loadConfirmedRules,draftStore?.load,draftStore?.save,bookingTurn,checkoutReview].some(fn=>typeof fn !== 'function')) throw new TypeError('Booking session dependencies required')
   async function scopeFor(input) {
     const scope = normalizeShadowDraftScope(input)
     if (typeof input.conversationId !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(input.conversationId)) throw shadowAiError('SHADOW_AI_SESSION_INVALID','Invalid booking session',400)
-    if (await authorize({...scope,conversationId:input.conversationId.toLowerCase()}) !== true) throw shadowAiError('SHADOW_AI_SESSION_DENIED','Booking session is unavailable',403)
+    const initialScope = {...scope,conversationId:input.conversationId.toLowerCase()}
+    if (input.accessProof !== undefined) initialScope.accessProof = input.accessProof
+    if (await authorizeInitial(initialScope) !== true) throw shadowAiError('SHADOW_AI_SESSION_DENIED','Booking session is unavailable',403)
     return scope
   }
   async function getReady(scope) {
