@@ -8,7 +8,7 @@ export function shadowGeminiConfig(env = process.env) {
   if (env.SHADOW_GEMINI_FREE_PROJECT_CONFIRMED !== 'true') throw geminiError('SHADOW_AI_GEMINI_FREE_PROJECT_REQUIRED')
   const apiKey = env.GEMINI_API_KEY
   if (typeof apiKey !== 'string' || !/^[A-Za-z0-9_-]{20,512}$/u.test(apiKey)) throw geminiError('SHADOW_AI_GEMINI_NOT_CONFIGURED')
-  const raw = env.SHADOW_GEMINI_DAILY_LIMIT ?? '450'
+  const raw = env.SHADOW_GEMINI_DAILY_LIMIT ?? '500'
   if (typeof raw !== 'string' || !/^\d{1,3}$/u.test(raw) || Number(raw) < 1 || Number(raw) > SHADOW_GEMINI_MAX_DAILY_LIMIT) throw geminiError('SHADOW_AI_GEMINI_LIMIT_INVALID')
   return Object.freeze({ model: SHADOW_GEMINI_MODEL, apiKey, dailyLimit: Number(raw), timeoutMs: 8000 })
 }
