@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS public.smart_ad_reader_exposure (
   reader_hash text NOT NULL CHECK (reader_hash ~ '^[0-9a-f]{64}$'),
   slot_key text NOT NULL CHECK (slot_key ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T(00|06|12|18):00$'),
   story_id uuid NOT NULL REFERENCES public.stories(id) ON DELETE CASCADE,
-  first_placement text NOT NULL CHECK (first_placement IN ('discover', 'opening', 'freeUnlock', 'me')),
+  first_placement text NOT NULL CHECK (first_placement IN ('discover', 'opening', 'freeUnlock', 'me', 'taskCenter')),
   first_seen_at timestamptz NOT NULL DEFAULT now(),
   clicked_at timestamptz,
   PRIMARY KEY (reader_hash, slot_key, story_id)
@@ -49,7 +49,8 @@ DECLARE
 BEGIN
   IF p_reader_hash IS NULL OR p_reader_hash !~ '^[0-9a-f]{64}$'
     OR p_slot_key IS NULL OR p_slot_key !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T(00|06|12|18):00$'
-    OR p_placement NOT IN ('discover', 'opening', 'freeUnlock', 'me')
+    OR p_placement NOT IN ('discover', 'opening', 'freeUnlock', 'me', 'taskCenter')
+    OR (p_placement = 'taskCenter' AND p_event_type IS DISTINCT FROM 'impression')
     OR p_event_type NOT IN ('impression', 'click')
     OR p_story_ids IS NULL OR cardinality(p_story_ids) NOT BETWEEN 1 AND 10 THEN
     RAISE EXCEPTION 'Invalid Smart Ad tracking request';
