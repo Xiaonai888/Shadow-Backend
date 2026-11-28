@@ -742,14 +742,19 @@ async function getDailyVoteRewardState(userId) {
     user,
     wallet,
     checkInRow,
-    readingRewardRow,
+    readingRewardResult,
     readingMissions,
     claimResult,
   ] = await Promise.all([
     getUserProfile(userId),
     getOrCreateWallet(userId),
     getCheckInRow(userId),
-    getOrCreateReadingReward(userId),
+    supabase
+      .from('reader_reading_rewards')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('reward_date', todayKey)
+      .maybeSingle(),
     getReaderReadingMissions(userId),
     supabase
       .from('reader_daily_vote_rewards')
@@ -759,18 +764,20 @@ async function getDailyVoteRewardState(userId) {
       .maybeSingle(),
   ])
 
+  if (readingRewardResult.error) throw readingRewardResult.error
   if (claimResult.error) throw claimResult.error
 
   return buildDailyVoteRewardState({
     user,
     wallet,
     checkInRow,
-    readingRewardRow,
+    readingRewardRow: readingRewardResult.data || null,
     readingMissions,
     claimRow: claimResult.data || null,
     rewardDate: todayKey,
   })
 }
+
 
 export async function getTaskOverview(req, res) {
   try {
