@@ -13,15 +13,17 @@ import { createShadowAiDraftStore } from '../services/shadowAi/shadowAiPreOrderD
 import { createShadowAiPreOrderSession } from '../services/shadowAi/shadowAiPreOrderSession.service.js'
 import { createShadowAiCheckoutBridge } from '../services/shadowAi/shadowAiPreOrderCheckoutBridge.service.js'
 import { createShadowAiPreOrderAccess } from '../services/shadowAi/shadowAiPreOrderAccess.service.js'
+import { createShadowAiPreOrderInitialAccess } from '../services/shadowAi/shadowAiPreOrderInitialAccess.service.js'
 import { createShadowAiRequirementsStore } from '../services/shadowAi/shadowAiPreOrderRequirementsStore.service.js'
 import { createShadowAiEligibility } from '../services/shadowAi/shadowAiPreOrderEligibility.service.js'
 import { getAuthorCheckoutDeliverySettings } from '../controllers/authorStore.controller.js'
 
 const router=express.Router()
 const access=createShadowAiPreOrderAccess({db:supabase})
+const initialAccess=createShadowAiPreOrderInitialAccess({access})
 const eligibility=createShadowAiEligibility({db:supabase,resolve:access.resolve,getDeliverySettings:getAuthorCheckoutDeliverySettings})
 const requirements=createShadowAiRequirementsStore({db:supabase,runAi:runShadowAi,requireOwner:requireCambodianAuthorPreOrderOwner,getOwnedCampaign:getOwnedAuthorPreOrder})
-const session=createShadowAiPreOrderSession({authorize:access.authorize,contextService,loadConfirmedRules:requirements.loadConfirmedRules,draftStore:createShadowAiDraftStore({db:supabase}),bookingTurn:createShadowPreOrderBooking({contextService,runAi:runShadowAi,loadConfirmedRules:requirements.loadConfirmedRules}),checkoutReview:createShadowAiCheckoutBridge({prepareReview:prepareAuthorPreOrderReview})})
+const session=createShadowAiPreOrderSession({authorize:access.authorize,authorizeInitial:initialAccess.authorizeInitial,contextService,loadConfirmedRules:requirements.loadConfirmedRules,draftStore:createShadowAiDraftStore({db:supabase}),bookingTurn:createShadowPreOrderBooking({contextService,runAi:runShadowAi,loadConfirmedRules:requirements.loadConfirmedRules}),checkoutReview:createShadowAiCheckoutBridge({prepareReview:prepareAuthorPreOrderReview})})
 const limiter=(limit,keyGenerator)=>rateLimit({windowMs:60000,limit,keyGenerator,standardHeaders:'draft-8',legacyHeaders:false,message:{ok:false,code:'SHADOW_AI_RATE_LIMITED',message:'Too many requests'}})
 const edge=limiter(60,req=>ipKeyGenerator(req.ip))
 const reader=limiter(20,req=>String(req.user.user_id))
@@ -46,8 +48,7 @@ const handle=(fn)=>async(req,res)=>{
 router.use(edge,requireUser,reader)
 async function scope(req) {
   await enabled()
-  const base={actorUserId:actor(req),conversationId:req.params.conversationId}
-  return {...base,authorPageId:await access.resolve(base),campaignId:req.params.campaignId}
+  return initialAccess.prepare({actorUserId:actor(req),conversationId:req.params.conversationId,campaignId:req.params.campaignId})
 }
 router.get('/conversations/:conversationId/campaigns',handle(req=>eligibility({actorUserId:actor(req),conversationId:req.params.conversationId,offset:Number(req.query.offset??0)})))
 router.get('/conversations/:conversationId/campaigns/:campaignId/session',handle(async req=>session.open(await scope(req))))
