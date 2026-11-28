@@ -17,7 +17,7 @@ export function createSocialOAuthReconnect({db,encryptToken=encryptSocialToken,c
     try{result=await db.from('social_media_connections').select('id,platform,external_id').eq('owner_type','admin').eq('owner_id','shadow').eq('id',id).maybeSingle()}catch{throw new SocialOAuthError('SOCIAL_OAUTH_RECONNECT_DATABASE_FAILED',503)}
     if(result?.error)throw new SocialOAuthError('SOCIAL_OAUTH_RECONNECT_DATABASE_FAILED',503)
     const row=result?.data
-    if(!row||row.id!==id||!['facebook','instagram'].includes(row.platform)||!metaId(row.external_id))throw new SocialOAuthError('SOCIAL_OAUTH_CONNECTION_NOT_FOUND',404)
+    if(!row||row.id!==id||!['facebook','instagram','threads'].includes(row.platform)||!metaId(row.external_id))throw new SocialOAuthError('SOCIAL_OAUTH_CONNECTION_NOT_FOUND',404)
     return row
   }
   return {target,async reconnect(id,accounts){
@@ -27,7 +27,7 @@ export function createSocialOAuthReconnect({db,encryptToken=encryptSocialToken,c
     if(matched.length!==1)throw new SocialOAuthError('SOCIAL_OAUTH_RECONNECT_ACCOUNT_NOT_GRANTED',403)
     const {platform,externalId,displayName,token,expiresAt=null}=matched[0]
     const now=clock()
-    if(typeof displayName!=='string'||!displayName.trim()||displayName.length>300||typeof token!=='string'||!token||token.length>16384||/\s/.test(token)||!Number.isFinite(now)||(platform==='instagram'&&expiresAt===null)||(expiresAt!==null&&(typeof expiresAt!=='string'||!Number.isFinite(Date.parse(expiresAt))||Date.parse(expiresAt)<=now)))throw new SocialOAuthError('SOCIAL_OAUTH_RECONNECT_INVALID')
+    if(typeof displayName!=='string'||!displayName.trim()||displayName.length>300||typeof token!=='string'||!token||token.length>16384||/\s/.test(token)||!Number.isFinite(now)||(['instagram','threads'].includes(platform)&&expiresAt===null)||(expiresAt!==null&&(typeof expiresAt!=='string'||!Number.isFinite(Date.parse(expiresAt))||Date.parse(expiresAt)<=now)))throw new SocialOAuthError('SOCIAL_OAUTH_RECONNECT_INVALID')
     let cipher
     try{cipher=encryptToken(token,{ownerType:'admin',ownerId:'shadow',platform,externalId})}catch{throw new SocialOAuthError('SOCIAL_OAUTH_VAULT_UNAVAILABLE',503)}
     if(typeof cipher!=='string'||cipher===token||cipher.length>100000||!/^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(cipher))throw new SocialOAuthError('SOCIAL_OAUTH_VAULT_UNAVAILABLE',503)
