@@ -27,7 +27,9 @@ function handle(fn,status=200) {
 }
 router.get('/',reads,handle(req=>admin.list(req.query)))
 router.get('/channels',reads,handle(()=>admin.channels()))
-router.patch('/channels/:language',writes,handle(async req=>({item:await admin.updateChannel(req.params.language,req.body)})))
+router.patch('/channels/:language',writes,handle(()=>{throw new EventAdminError('Update Admin and use Social Connections',410,'EVENT_DESTINATIONS_REQUIRED')}))
+router.get('/destinations',reads,handle(()=>admin.channels()))
+router.patch('/destinations/:language',writes,handle(async req=>({item:await admin.updateDestinations(req.params.language,req.body)})))
 router.get('/history',reads,handle(req=>admin.history(req.query)))
 router.get('/:id',reads,handle(async req=>({item:await admin.detail(req.params.id)})))
 router.post('/',writes,handle(req=>admin.create(req.body),201))
