@@ -26,10 +26,10 @@ const eligibility=createShadowAiEligibility({db:supabase,resolve:access.resolve,
 const requirements=createShadowAiRequirementsStore({db:supabase,runAi:runShadowAi,requireOwner:requireCambodianAuthorPreOrderOwner,getOwnedCampaign:getOwnedAuthorPreOrder})
 const preOrderBridge=shadowLocalInstance.preOrderBridge
 const session=createShadowAiPreOrderSession({authorize:access.authorize,authorizeInitial:initialAccess.authorizeInitial,contextService,loadConfirmedRules:requirements.loadConfirmedRules,draftStore:createShadowAiDraftStore({db:supabase}),bookingTurn:createShadowPreOrderBooking({contextService,runAi:runShadowAi,loadConfirmedRules:requirements.loadConfirmedRules,preOrderBridge}),commitTurn:preOrderBridge.commitTurn,checkoutReview:createShadowAiCheckoutBridge({prepareReview:prepareAuthorPreOrderReview})})
-const limiter=(limit,keyGenerator)=>rateLimit({windowMs:60000,limit,keyGenerator,standardHeaders:'draft-8',legacyHeaders:false,message:{ok:false,code:'SHADOW_AI_RATE_LIMITED',message:'Too many requests'}})
-const edge=limiter(60,req=>ipKeyGenerator(req.ip))
-const reader=limiter(20,req=>String(req.user.user_id))
-const writes=limiter(6,req=>String(req.user.user_id))
+const limiterOptions={windowMs:60000,standardHeaders:'draft-8',legacyHeaders:false,message:{ok:false,code:'SHADOW_AI_RATE_LIMITED',message:'Too many requests'}}
+const edge=rateLimit({...limiterOptions,limit:60,keyGenerator:req=>ipKeyGenerator(req.ip)})
+const reader=rateLimit({...limiterOptions,limit:20,keyGenerator:req=>String(req.user.user_id)})
+const writes=rateLimit({...limiterOptions,limit:6,keyGenerator:req=>String(req.user.user_id)})
 const actor=req=>req.user.user_id
 async function enabled() {
   shadowLocalRuntimeConfig()
@@ -47,16 +47,15 @@ const handle=(fn)=>async(req,res)=>{
     return res.status(known?e.statusCode:503).json({ok:false,code:known?e.code:'SHADOW_AI_UNAVAILABLE',message:known?e.message:'AI booking is temporarily unavailable'})
   }
 }
-router.use(edge,requireUser,reader)
 async function scope(req) {
   await enabled()
   return initialAccess.prepare({actorUserId:actor(req),conversationId:req.params.conversationId,campaignId:req.params.campaignId})
 }
-router.get('/conversations/:conversationId/campaigns',handle(req=>eligibility({actorUserId:actor(req),conversationId:req.params.conversationId,offset:Number(req.query.offset??0)})))
-router.get('/conversations/:conversationId/campaigns/:campaignId/session',handle(async req=>session.open(await scope(req))))
-router.post('/conversations/:conversationId/campaigns/:campaignId/message',writes,handle(async req=>session.message({...await scope(req),message:req.body?.message,revision:req.body?.revision,locale:typeof req.body?.locale==='string'&&req.body.locale.length<=32?req.body.locale:undefined})))
-router.post('/conversations/:conversationId/campaigns/:campaignId/review',writes,handle(async req=>session.review({...await scope(req),revision:req.body?.revision})))
-router.get('/author/campaigns/:campaignId/requirements',handle(req=>requirements.get(actor(req),req.params.campaignId)))
-router.post('/author/campaigns/:campaignId/requirements/preview',writes,handle(req=>requirements.preview(actor(req),req.params.campaignId,req.body?.template_rules??[])))
-router.put('/author/campaigns/:campaignId/requirements',writes,handle(req=>requirements.confirm(actor(req),req.params.campaignId,req.body)))
+router.get('/conversations/:conversationId/campaigns',edge,requireUser,reader,handle(req=>eligibility({actorUserId:actor(req),conversationId:req.params.conversationId,offset:Number(req.query.offset??0)})))
+router.get('/conversations/:conversationId/campaigns/:campaignId/session',edge,requireUser,reader,handle(async req=>session.open(await scope(req))))
+router.post('/conversations/:conversationId/campaigns/:campaignId/message',edge,requireUser,reader,writes,handle(async req=>session.message({...await scope(req),message:req.body?.message,revision:req.body?.revision,locale:typeof req.body?.locale==='string'&&req.body.locale.length<=32?req.body.locale:undefined})))
+router.post('/conversations/:conversationId/campaigns/:campaignId/review',edge,requireUser,reader,writes,handle(async req=>session.review({...await scope(req),revision:req.body?.revision})))
+router.get('/author/campaigns/:campaignId/requirements',edge,requireUser,reader,handle(req=>requirements.get(actor(req),req.params.campaignId)))
+router.post('/author/campaigns/:campaignId/requirements/preview',edge,requireUser,reader,writes,handle(req=>requirements.preview(actor(req),req.params.campaignId,req.body?.template_rules??[])))
+router.put('/author/campaigns/:campaignId/requirements',edge,requireUser,reader,writes,handle(req=>requirements.confirm(actor(req),req.params.campaignId,req.body)))
 export default router
