@@ -4,7 +4,7 @@ import { connectionFields, safeConnection, SocialAdminError } from './socialProm
 const ruleFields='id,connection_id,name,enabled,language,source_topic,selection_mode,story_ids,author_ids,story_types,daily_limit,publish_times,timezone,created_at,updated_at'
 const jobFields='id,connection_id,rule_id,story_id,episode_id,language,post_kind,source_topic,status,scheduled_at,started_at,finished_at,external_post_id,error_code,created_at,social_media_job_items(position,story_id,episode_id)'
 const states=new Set(['queued','publishing','published','failed','needs_review','cancelled'])
-const platforms=new Set(['facebook','instagram'])
+const platforms=new Set(['facebook','instagram','threads'])
 function pageNumber(value=1){
   if(!/^[1-9]\d{0,3}$/.test(String(value)))throw new SocialAdminError('SOCIAL_ADMIN_PAGE_INVALID')
   return Number(value)
@@ -32,6 +32,11 @@ export function createSocialPromotionAdmin({db,rules,clock=Date.now}={}){
     if(error)throw new SocialAdminError('SOCIAL_CONNECTION_READ_FAILED',500)
     if(!data||!platforms.has(data.platform))throw new SocialAdminError('SOCIAL_CONNECTION_NOT_FOUND',404)
     if(row.enabled&&(data.status!=='connected'||(data.token_expires_at&&Date.parse(data.token_expires_at)<=clock())))throw new SocialAdminError('SOCIAL_CONNECTION_NOT_ACTIVE',409)
+    if(row.enabled){
+      const {data:assignment,error:assignmentError}=await scope(db.from('social_media_bot_assignments').select('connection_id')).eq('connection_id',row.connection_id).eq('bot_key','promotion').maybeSingle()
+      if(assignmentError)throw new SocialAdminError('SOCIAL_BOT_DATABASE_FAILED',503)
+      if(!assignment)throw new SocialAdminError('SOCIAL_BOT_ASSIGNMENT_REQUIRED',409)
+    }
   }
   return {
     listConnections(query={}){
