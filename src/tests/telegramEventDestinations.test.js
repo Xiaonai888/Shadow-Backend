@@ -30,3 +30,63 @@ test('reject swapped group and channel',async()=>{const {verify}=fake({chatMap:{
 test('reject channel bot without posting permission',async()=>{const {verify}=fake({chatMap:{[channel.id]:channel},memberMap:{[channel.id]:{status:'administrator',can_post_messages:false}}});await assert.rejects(verify({channel:String(channel.id)}),{code:'EVENT_DESTINATION_PERMISSION'})})
 test('reject group bot without photo permission',async()=>{const {verify}=fake({chatMap:{[group.id]:{...group,permissions:{can_send_messages:true,can_send_photos:false}}},memberMap:{[group.id]:{status:'member'}}});await assert.rejects(verify({group:String(group.id)}),{code:'EVENT_DESTINATION_PERMISSION'})})
 test('network failure never exposes token',async()=>{const {verify}=fake({reject:true});await assert.rejects(verify({group:'@ShadowGroup'}),e=>e.code==='EVENT_DESTINATION_UNAVAILABLE'&&!e.message.includes(token))})
+
+import {createEventAdmin} from '../services/telegramEvent/admin.service.js'
+import {createTelegramEventRuntime} from '../services/telegramEvent/runtime.service.js'
+import {buildEventTelegramPayload,sendEventTelegram} from '../services/telegramEvent/telegram.service.js'
+
+const version='2026-11-27T00:00:00.000Z'
+function fakeStore({conflict=false}={}){
+  const calls=[]
+  const db={rpc:()=>assert.fail('unexpected RPC'),from(table){
+    assert.equal(table,'telegram_event_channels')
+    const row={}
+    return {update(patch){calls.push(['update',patch]);Object.assign(row,patch);return this},eq(key,value){calls.push(['eq',key,value]);if(key==='language')row.language=value;return this},select(fields){calls.push(['select',fields]);return this},maybeSingle:async()=>({data:conflict?null:{...row,updated_at:version}}),order:async()=>({data:[]})}
+  }}
+  return {db,calls}
+}
+test('settings update is language scoped and atomic for both targets',async()=>{
+  const {db,calls}=fakeStore();let wakes=0
+  const admin=createEventAdmin(db,{verifyDestinations:async input=>{assert.deepEqual(input,{channel:'@ShadowChannel',group:'-123456789'});return {channel:{id:String(channel.id),name:'Channel'},group:{id:String(group.id),name:'Group'}}},wake:()=>wakes++})
+  const row=await admin.updateDestinations('km',{channel:'@ShadowChannel',group:'-123456789',updated_at:version})
+  assert.equal(row.channel_id,String(channel.id));assert.equal(row.group_id,String(group.id));assert.equal(row.enabled,true);assert.equal(wakes,1)
+  assert.deepEqual(calls.slice(1,3),[['eq','language','km'],['eq','updated_at',version]])
+})
+test('group only, then clear both without token or Telegram calls',async()=>{
+  const {db,calls}=fakeStore();const admin=createEventAdmin(db,{verifyDestinations:async input=>({channel:null,group:input.group?{id:String(group.id),name:'Group'}:null})})
+  assert.equal((await admin.updateDestinations('en',{channel:null,group:String(group.id),updated_at:version})).enabled,false)
+  const row=await admin.updateDestinations('en',{channel:null,group:null,updated_at:version});assert.equal(row.group_id,null);assert.equal(row.channel_id,null);assert.equal(row.enabled,false);assert.equal(calls.filter(x=>x[0]==='update').length,2)
+})
+test('invalid or incomplete settings do not verify or write',async()=>{
+  const admin=createEventAdmin({from:()=>assert.fail('database called')},{verifyDestinations:()=>assert.fail('Telegram called')})
+  for(const [language,input] of [['xx',{channel:null,group:null,updated_at:version}],['km',{channel:null,updated_at:version}],['km',{channel:null,group:null,updated_at:'invalid'}],['km',{channel:null,group:null,updated_at:version,enabled:true}]])await assert.rejects(admin.updateDestinations(language,input),{status:400})
+})
+test('verification failure prevents writes and stale settings do not wake',async()=>{
+  const {db,calls}=fakeStore({conflict:true});const failed=createEventAdmin(db,{verifyDestinations:async()=>{throw new Error('verification failed')}})
+  await assert.rejects(failed.updateDestinations('km',{channel:null,group:null,updated_at:version}),/verification failed/);assert.equal(calls.length,0)
+  const admin=createEventAdmin(db,{verifyDestinations:async()=>({channel:null,group:null}),wake:()=>assert.fail('wake called')})
+  await assert.rejects(admin.updateDestinations('km',{channel:null,group:null,updated_at:version}),{code:'EVENT_CONFLICT'})
+})
+test('runtime uses actual verifier even with scheduler disabled',async()=>{
+  const {db,calls}=fakeStore();let requests=0
+  const runtime=createTelegramEventRuntime({db,env:{TELEGRAM_EVENT_ENABLED:'false',TELEGRAM_EVENT_BOT_TOKEN:token},destinationFetch:async(url,opts)=>{
+    requests++;const method=url.split('/').at(-1);const body=JSON.parse(opts.body)
+    const result=method==='getMe'?{id:1,is_bot:true}:method==='getChat'?group:{user:{id:1},status:'member'}
+    if(method==='getChat')assert.equal(body.chat_id,String(group.id))
+    return {ok:true,status:200,json:async()=>({ok:true,result})}
+  }})
+  assert.equal(runtime.enabled(),false);const row=await runtime.admin.updateDestinations('km',{channel:null,group:String(group.id),updated_at:version});assert.equal(row.group_id,String(group.id));assert.equal(requests,3);assert.equal(calls.filter(x=>x[0]==='update').length,1)
+})
+test('transport supports basic group and supergroup but not invalid type or personal ID',async()=>{
+  for(const chat of [group,supergroup]){
+    const job={destination_kind:'group',channel_id:String(chat.id),message:'Event'}
+    assert.equal(buildEventTelegramPayload(job).payload.chat_id,String(chat.id))
+    const sent=await sendEventTelegram({token,job,fetchImpl:async(url,opts)=>{assert.ok(url.endsWith('/sendMessage'));assert.equal(JSON.parse(opts.body).chat_id,String(chat.id));return {ok:true,status:200,json:async()=>({ok:true,result:{message_id:42,chat:{id:chat.id}}})}}})
+    assert.equal(sent.messageId,42)
+  }
+  for(const job of [{destination_kind:'channel',channel_id:String(group.id)},{destination_kind:'group',channel_id:'12345'},{destination_kind:'unknown',channel_id:String(group.id)}])assert.throws(()=>buildEventTelegramPayload({...job,message:'Event'}),{code:'INVALID_PAYLOAD'})
+})
+test('history includes destination kind without additional lookup',async()=>{
+  let count=0;const db={from(table){assert.equal(table,'telegram_event_history');count++;return {select(fields){assert.ok(fields.includes('destination_kind'));return this},eq(){return this},order(){return this},range:async()=>({data:[{destination_kind:'group'}]})}}}
+  const admin=createEventAdmin(db);const data=await admin.history({language:'km'});assert.equal(data.items[0].destination_kind,'group');assert.equal(count,1)
+})
