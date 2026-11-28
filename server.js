@@ -175,6 +175,7 @@ import shadowAiPreOrderRoutes from './src/routes/shadowAiPreOrder.routes.js'
 import adminShadowAiRoutes from './src/routes/adminShadowAi.routes.js'
 import adminShadowLocalAiRoutes from './src/routes/adminShadowLocalAi.routes.js'
 import adminShadowGeminiRoutes from './src/routes/adminShadowGemini.routes.js'
+import { shadowGeminiLearningInstance } from './src/services/shadowAi/gemini/shadowGeminiLearningInstance.service.js'
 import { startSystemUsagePersistence } from './src/services/systemUsagePersistence.service.js'
 import { startDatabaseIoMonitor } from './src/services/databaseIoMonitor.service.js'
 import { startSystemUsageAnomalyDetector } from './src/services/systemUsageAnomaly.service.js'
@@ -1244,6 +1245,7 @@ app.listen(PORT, () => {
   startTelegramEventScheduler()
   startSmartAdMaintenanceScheduler()
   startBinanceUsdtAlertWorker()
+  shadowGeminiLearningInstance.start()
   startTelegramMissingReportRecovery()
   startAuthorStorePdfAutoRecovery()
   startShadowReadEventDailySettlement()
