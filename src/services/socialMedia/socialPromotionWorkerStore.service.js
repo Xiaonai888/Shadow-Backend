@@ -23,7 +23,7 @@ export function createSocialPromotionWorkerStore(db) {
     async context(job) {
       const data=await call('social_promotion_worker_context_v3',key(job))
       if(data===null) return null
-      if(data?.rule?.id!==job.rule_id||data?.connection?.id!==job.connection_id||data.connection.owner_type!=='admin'||data.connection.owner_id!=='shadow'||!['facebook','instagram'].includes(data.connection.platform)||!data.connection.token_ciphertext) throw new Error('SOCIAL_WORKER_CONTEXT_INVALID')
+      if(data?.rule?.id!==job.rule_id||data?.connection?.id!==job.connection_id||data.connection.owner_type!=='admin'||data.connection.owner_id!=='shadow'||!['facebook','instagram','threads'].includes(data.connection.platform)||!data.connection.token_ciphertext) throw new Error('SOCIAL_WORKER_CONTEXT_INVALID')
       return data
     },
     async finish(job,status,{postId=null,errorCode=null}={}) {
