@@ -240,21 +240,47 @@ async function getViewerParticipant(conversationId, userId) {
 }
 
 async function getConversationAccess(conversationId, userId) {
-  const safeConversationId = requireUuid(
-    conversationId,
-    'Conversation ID'
-  )
+  const safeConversationId = requireUuid(conversationId, 'Conversation ID')
 
-  const [conversation, participant] = await Promise.all([
-    getConversation(safeConversationId),
-    getViewerParticipant(safeConversationId, userId),
-  ])
+  const { data, error } = await supabase
+    .from('chat_conversations')
+    .select('id, conversation_type, direct_key, created_by_user_id, author_page_id, request_status, request_decided_at, last_message_at, cleared_for_all_at, is_group, group_name, group_avatar_url, created_at, updated_at, viewer_participant:chat_participants!chat_participants_conversation_id_fkey(id, conversation_id, user_id, participant_role, last_read_at, muted_at, archived_at, deleted_at, cleared_at, created_at)')
+    .eq('id', safeConversationId)
+    .eq('viewer_participant.user_id', userId)
+    .is('viewer_participant.deleted_at', null)
+    .maybeSingle()
 
-  return {
-    conversation,
-    participant,
+  if (error) {
+    if (['PGRST200', 'PGRST201'].includes(error.code)) {
+      const [conversation, participant] = await Promise.all([
+        getConversation(safeConversationId),
+        getViewerParticipant(safeConversationId, userId),
+      ])
+      return { conversation, participant }
+    }
+    throw databaseFailure(error, 'Failed to verify chat access')
   }
+
+  if (!data) {
+    fail(404, 'CONVERSATION_NOT_FOUND', 'Conversation not found')
+  }
+
+  const { viewer_participant: participants, ...conversation } = data
+
+  if (!Array.isArray(participants) || participants.length > 1) {
+    throw databaseFailure(new Error('Invalid chat participant response'), 'Failed to verify chat access')
+  }
+
+  const participant = participants[0]
+  if (!participant || participant.deleted_at !== null ||
+      String(participant.user_id).toLowerCase() !== String(userId).toLowerCase() ||
+      String(participant.conversation_id).toLowerCase() !== String(safeConversationId).toLowerCase()) {
+    fail(403, 'CHAT_ACCESS_DENIED', 'You cannot access this conversation')
+  }
+
+  return { conversation, participant }
 }
+
 
 async function getOtherParticipant(conversationId, userId) {
   const { data, error } = await supabase
