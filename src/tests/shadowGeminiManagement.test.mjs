@@ -48,3 +48,16 @@ test('adult tool confirmation and free project confirmation both required', asyn
 test('denied or unavailable quota prevents external requests', async () => {
   for (const [options, code] of [[{ quota: false }, 'SHADOW_AI_GEMINI_QUOTA'], [{ rpcError: true }, 'SHADOW_AI_GEMINI_QUOTA_UNAVAILABLE']]) { const f = fixture(options); await assert.rejects(f.service.testExample({ example_id: 'price_en' }), { code }); assert.equal(f.calls.length, 1); assert.equal(f.calls[0][0], 'rpc') }
 })
+
+test('500 quota displays correctly at and above the previous cap',async()=>{
+  for(const used of [450,451,499,500]) {
+    const f=fixture({settings:{...env,SHADOW_GEMINI_DAILY_LIMIT:'500'},row:{quota_day:'2026-11-27',day_count:used,minute_started_at:'2026-11-27T08:29:45Z',minute_count:2}})
+    const r=await f.service.status();assert.equal(r.available,true);assert.equal(r.quota.reserved_today,used);assert.equal(r.quota.daily_limit,500);assert.equal(r.quota.remaining_local,500-used)
+  }
+  const invalid=await fixture({row:{quota_day:'2026-11-27',day_count:501,minute_started_at:'2026-11-27T08:29:45Z',minute_count:2}}).service.status();assert.equal(invalid.available,false)
+})
+test('500 daily limit reaches shared reserve and quota denial prevents fetch',async()=>{
+  const settings={...env,SHADOW_GEMINI_DAILY_LIMIT:'500'}
+  const f=fixture({settings});await f.service.testExample({example_id:'price_en'});assert.deepEqual(f.calls[0],['rpc','shadow_ai_gemini_reserve_v1',{p_daily_limit:500}])
+  const denied=fixture({settings,quota:false});await assert.rejects(denied.service.testExample({example_id:'price_en'}),{code:'SHADOW_AI_GEMINI_QUOTA'});assert.equal(denied.calls.length,1)
+})
