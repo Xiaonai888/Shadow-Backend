@@ -7,6 +7,7 @@ import { prepareAuthorPreOrderReview } from '../services/authorPreOrderOrderPrep
 import { shadowAiError } from '../services/shadowAi/shadowAiPolicy.js'
 import { shadowLocalRuntimeConfig } from '../services/shadowAi/local/shadowLocalRuntimeConfig.js'
 import { runShadowAi } from '../services/shadowAi/shadowAiUsage.service.js'
+import { shadowLocalInstance } from '../services/shadowAi/local/shadowLocalInstance.service.js'
 import { shadowAiPreOrderContext as contextService } from '../services/shadowAi/shadowAiPreOrderCatalog.service.js'
 import { createShadowPreOrderBooking } from '../services/shadowAi/shadowAiPreOrderBooking.service.js'
 import { createShadowAiDraftStore } from '../services/shadowAi/shadowAiPreOrderDraftStore.service.js'
@@ -23,7 +24,8 @@ const access=createShadowAiPreOrderAccess({db:supabase})
 const initialAccess=createShadowAiPreOrderInitialAccess({access})
 const eligibility=createShadowAiEligibility({db:supabase,resolve:access.resolve,getDeliverySettings:getAuthorCheckoutDeliverySettings})
 const requirements=createShadowAiRequirementsStore({db:supabase,runAi:runShadowAi,requireOwner:requireCambodianAuthorPreOrderOwner,getOwnedCampaign:getOwnedAuthorPreOrder})
-const session=createShadowAiPreOrderSession({authorize:access.authorize,authorizeInitial:initialAccess.authorizeInitial,contextService,loadConfirmedRules:requirements.loadConfirmedRules,draftStore:createShadowAiDraftStore({db:supabase}),bookingTurn:createShadowPreOrderBooking({contextService,runAi:runShadowAi,loadConfirmedRules:requirements.loadConfirmedRules}),checkoutReview:createShadowAiCheckoutBridge({prepareReview:prepareAuthorPreOrderReview})})
+const preOrderBridge=shadowLocalInstance.preOrderBridge
+const session=createShadowAiPreOrderSession({authorize:access.authorize,authorizeInitial:initialAccess.authorizeInitial,contextService,loadConfirmedRules:requirements.loadConfirmedRules,draftStore:createShadowAiDraftStore({db:supabase}),bookingTurn:createShadowPreOrderBooking({contextService,runAi:runShadowAi,loadConfirmedRules:requirements.loadConfirmedRules,preOrderBridge}),commitTurn:preOrderBridge.commitTurn,checkoutReview:createShadowAiCheckoutBridge({prepareReview:prepareAuthorPreOrderReview})})
 const limiter=(limit,keyGenerator)=>rateLimit({windowMs:60000,limit,keyGenerator,standardHeaders:'draft-8',legacyHeaders:false,message:{ok:false,code:'SHADOW_AI_RATE_LIMITED',message:'Too many requests'}})
 const edge=limiter(60,req=>ipKeyGenerator(req.ip))
 const reader=limiter(20,req=>String(req.user.user_id))
@@ -52,7 +54,7 @@ async function scope(req) {
 }
 router.get('/conversations/:conversationId/campaigns',handle(req=>eligibility({actorUserId:actor(req),conversationId:req.params.conversationId,offset:Number(req.query.offset??0)})))
 router.get('/conversations/:conversationId/campaigns/:campaignId/session',handle(async req=>session.open(await scope(req))))
-router.post('/conversations/:conversationId/campaigns/:campaignId/message',writes,handle(async req=>session.message({...await scope(req),message:req.body?.message,revision:req.body?.revision})))
+router.post('/conversations/:conversationId/campaigns/:campaignId/message',writes,handle(async req=>session.message({...await scope(req),message:req.body?.message,revision:req.body?.revision,locale:typeof req.body?.locale==='string'&&req.body.locale.length<=32?req.body.locale:undefined})))
 router.post('/conversations/:conversationId/campaigns/:campaignId/review',writes,handle(async req=>session.review({...await scope(req),revision:req.body?.revision})))
 router.get('/author/campaigns/:campaignId/requirements',handle(req=>requirements.get(actor(req),req.params.campaignId)))
 router.post('/author/campaigns/:campaignId/requirements/preview',writes,handle(req=>requirements.preview(actor(req),req.params.campaignId,req.body?.template_rules??[])))
