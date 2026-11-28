@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
+import { orderPaymentReportIdentityLines, resolvePaymentReportIdentity, paymentReportIdentityLines } from '../services/telegram.service.js'
 
 const source = readFileSync(new URL('../services/telegramMissingReportRecovery.service.js', import.meta.url), 'utf8')
   .replace(/^import .*\n/gm, '')
@@ -30,6 +31,7 @@ async function run({
     } },
   }
   const sent = []
+  const messages = []
   const logs = []
   const updates = []
 
@@ -46,6 +48,10 @@ async function run({
     order() { return this }
     limit() { return this }
     result(single = false) {
+      if (this.table === 'users') {
+        const user = { id: 'reader-id', name: 'Reader & Friend', username: 'reader' }
+        return { data: this.filters.every(fn => fn(user)) ? copy(user) : null, error: null }
+      }
       if (this.table === 'telegram_payments') return { data: single ? null : [], error: null }
       if (this.table === 'author_pages') return {
         data: { page_name: 'Author', page_username: 'author', telegram_chat_id: authorChat ? 'author-chat' : null },
@@ -63,8 +69,9 @@ async function run({
     maybeSingle() { return Promise.resolve(this.result(true)) }
     then(resolve, reject) { return Promise.resolve(this.result()).then(resolve, reject) }
   }
-  const send = async (target) => {
+  const send = async (target, message) => {
     sent.push(target)
+    messages.push(message)
     if (sendError) throw new Error(sendError)
     return { ok: true, result: { message_id: target === 'admin' ? 101 : 102 } }
   }
@@ -76,8 +83,11 @@ async function run({
   const context = {
     supabase: { from: table => new Query(table) },
     replyTelegram: () => Promise.resolve({ ok: true, result: { message_id: 5 } }),
-    sendTelegramMessage: () => send('admin'),
-    sendAuthorStoreTelegramMessage: () => send('author'),
+    sendTelegramMessage: message => send('admin', message),
+    sendAuthorStoreTelegramMessage: message => send('author', message),
+    orderPaymentReportIdentityLines,
+    resolvePaymentReportIdentity,
+    paymentReportIdentityLines,
     html: value => String(value || '').replaceAll('&', '&amp;').replaceAll('<', '&lt;'),
     buildAuthorStoreAttributionReportLines: () => [],
     console: { info: (...values) => logs.push(['info', ...values]), warn: (...values) => logs.push(['warn', ...values]), error: (...values) => logs.push(['error', ...values]) },
@@ -87,7 +97,7 @@ async function run({
   }
   vm.runInNewContext(source, context, { timeout: 2000 })
   await context.api.recoverMissingTelegramReports()
-  return { record, sent, updates, logs }
+  return { record, sent, messages, updates, logs }
 }
 
 test('uncertain admin network result requires manual review, not an unsafe automatic resend', async () => {
@@ -110,6 +120,8 @@ test('author-only bot can recover a known Telegram HTTP error independently', as
   assert.deepEqual(result.sent, ['author'])
   assert.equal(result.record.request_payload.pdf_telegram_reports.author.status, 'sent')
   assert.equal(result.record.telegram_status, 'sent')
+  assert.match(result.messages[0], /Name: <b>Reader &amp; Friend<\/b>/)
+  assert.match(result.messages[0], /Username: <b>@reader<\/b>/)
 })
 
 test('known retry error for author works while admin bot is unavailable', async () => {
