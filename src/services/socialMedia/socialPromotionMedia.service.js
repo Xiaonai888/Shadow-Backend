@@ -49,7 +49,7 @@ export function createSocialPromotionMedia({publicUrl,uploadFile,deleteFile,admi
   if(![uploadFile,deleteFile,admit,fetchImpl,convert,lifecycleReady].every(fn=>typeof fn==='function'))throw new TypeError('SOCIAL_MEDIA_DEPENDENCIES')
   let busy=false
   return async function prepareMedia({platform,post}={}){
-    if(post?.platform!==platform||!['facebook','instagram'].includes(platform)||!Array.isArray(post.photos)||!['photo','carousel'].includes(post.mediaType)||(post.mediaType==='photo'?post.photos.length!==1:post.photos.length<3||post.photos.length>5))throw fail('SOCIAL_MEDIA_POST_INVALID')
+    if(post?.platform!==platform||!['facebook','instagram','threads'].includes(platform)||!Array.isArray(post.photos)||!['photo','carousel'].includes(post.mediaType)||(post.mediaType==='photo'?post.photos.length!==1:post.photos.length<3||post.photos.length>5))throw fail('SOCIAL_MEDIA_POST_INVALID')
     if(platform==='facebook')return post
     if(!lifecycleReady())throw fail('SOCIAL_MEDIA_LIFECYCLE_REQUIRED')
     if(busy)throw fail('SOCIAL_MEDIA_BUSY')
