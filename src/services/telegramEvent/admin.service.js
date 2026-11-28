@@ -1,9 +1,9 @@
-import { EventAdminError, requireId, requireRevision, requireLanguage, validateSave, validateList, validateChannel } from './validation.service.js'
+import { EventAdminError, requireId, requireRevision, requireLanguage, validateSave, validateList } from './validation.service.js'
 const eventFields='id,name,audience,status,schedule_mode,schedule_slots,starts_on,ends_on,next_publish_at,revision,created_at,updated_at'
 const contentFields='language,enabled,message,image_url,image_key,button_label,button_url,updated_at'
-const channelFields='language,channel_id,channel_name,enabled,updated_at'
-const historyFields='id,event_id,language,channel_id,job_kind,scheduled_at,status,attempts,telegram_message_id,error_code,error_message,created_at,finished_at'
-const errorMap={EVENT_NOT_FOUND:[404,'Event not found'],EVENT_CONFLICT:[409,'Event changed; reload first'],EVENT_INVALID_INPUT:[400,'Invalid event data'],EVENT_INVALID_STATUS:[400,'Invalid event status'],EVENT_INVALID_SCHEDULE:[400,'Invalid schedule'],EVENT_NO_FUTURE_SLOT:[400,'No future schedule'],EVENT_NO_ENABLED_CONTENT:[400,'Enable at least one language'],EVENT_CHANNEL_NOT_READY:[400,'Configure and enable channels first']}
+const channelFields='language,channel_id,channel_name,enabled,group_id,group_name,updated_at'
+const historyFields='id,event_id,language,channel_id,destination_kind,job_kind,scheduled_at,status,attempts,telegram_message_id,error_code,error_message,created_at,finished_at'
+const errorMap={EVENT_NOT_FOUND:[404,'Event not found'],EVENT_CONFLICT:[409,'Event changed; reload first'],EVENT_INVALID_INPUT:[400,'Invalid event data'],EVENT_INVALID_STATUS:[400,'Invalid event status'],EVENT_INVALID_SCHEDULE:[400,'Invalid schedule'],EVENT_NO_FUTURE_SLOT:[400,'No future schedule'],EVENT_NO_ENABLED_CONTENT:[400,'Enable at least one language'],EVENT_CHANNEL_NOT_READY:[400,'Configure a Telegram Channel or Group first']}
 function check(response) {
   if (!response.error) return response.data
   const code=String(response.error.message||'')
@@ -12,7 +12,7 @@ function check(response) {
   if (['23514','23502','22P02','22007','22008'].includes(response.error.code)) throw new EventAdminError('Invalid event data',400)
   throw new Error(`Telegram event database: ${response.error.code||'UNKNOWN'}`)
 }
-export function createEventAdmin(db,{publicUrl,tokenConfigured=()=>false,runtimeEnabled=()=>false,wake=()=>{}}={}) {
+export function createEventAdmin(db,{publicUrl,tokenConfigured=()=>false,runtimeEnabled=()=>false,wake=()=>{},verifyDestinations}={}) {
   const notify=()=>{try { wake() } catch {}}
   async function detail(id) {
     const row=check(await db.from('telegram_events').select(`${eventFields},contents:telegram_event_contents(${contentFields})`).eq('id',requireId(id)).maybeSingle())
@@ -59,12 +59,14 @@ export function createEventAdmin(db,{publicUrl,tokenConfigured=()=>false,runtime
       const rows=check(await db.from('telegram_event_channels').select(channelFields).order('language'))||[]
       return {items:rows,bot_configured:Boolean(tokenConfigured()),runtime_enabled:Boolean(runtimeEnabled())}
     },
-    async updateChannel(language,input) {
+    async updateDestinations(language,input) {
       requireLanguage(language)
-      const {version,patch}=validateChannel(input)
-      if (patch.enabled && !tokenConfigured()) throw new EventAdminError('Configure event bot before enabling channel')
-      const row=check(await db.from('telegram_event_channels').update(patch).eq('language',language).eq('updated_at',version).select(channelFields).maybeSingle())
-      if (!row) throw new EventAdminError('Channel settings changed; reload first',409,'EVENT_CONFLICT')
+      if (!input || typeof input!=='object' || Array.isArray(input) || Object.keys(input).some(key=>!['channel','group','updated_at'].includes(key)) || !Object.hasOwn(input,'channel') || !Object.hasOwn(input,'group') || typeof input.updated_at!=='string' || !Number.isFinite(Date.parse(input.updated_at))) throw new EventAdminError('Invalid destination settings or version')
+      if (typeof verifyDestinations!=='function') throw new EventAdminError('Telegram destination verifier unavailable',503,'EVENT_DESTINATION_UNAVAILABLE')
+      const {channel,group}=await verifyDestinations({channel:input.channel,group:input.group})
+      const patch={channel_id:channel?.id??null,channel_name:channel?.name??null,enabled:Boolean(channel),group_id:group?.id??null,group_name:group?.name??null}
+      const row=check(await db.from('telegram_event_channels').update(patch).eq('language',language).eq('updated_at',input.updated_at).select(channelFields).maybeSingle())
+      if (!row) throw new EventAdminError('Destination settings changed; reload first',409,'EVENT_CONFLICT')
       notify()
       return row
     },
