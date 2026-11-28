@@ -8,7 +8,8 @@ const id='10000000-0000-4000-8000-000000000001',other='10000000-0000-4000-8000-0
 const now=Date.parse('2026-11-28T07:00:00Z'),clock=()=>now
 const iso=ms=>new Date(ms).toISOString()
 const account={platform:'threads',externalId:'123',displayName:'Shadow',token:'private-token',expiresAt:iso(now+86400000*60)}
-const req=(body={},token='admin-bearer')=>({admin:{admin_id:'admin-1',has_all_permissions:true},headers:{authorization:`Bearer ${token}`},body})
+const session='20000000-0000-4000-8000-000000000001',device='30000000-0000-4000-8000-000000000001'
+const req=(body={},token='admin-bearer',sessionId=session,deviceId=device)=>({admin:{admin_id:'admin-1',has_all_permissions:true,session:{id:sessionId},device:{id:deviceId}},headers:{authorization:`Bearer ${token}`},body})
 function adminFixture(overrides={}){
   let binding;const calls=[]
   const deps={stateStore:{issue:async c=>{binding=JSON.stringify(c);calls.push('issue');return state},consume:async(c,s)=>{if(binding!==JSON.stringify(c)||s!==state)throw new SocialOAuthError('SOCIAL_OAUTH_STATE_INVALID');binding=null;calls.push('consume')}},threads:{authorizationUrl:s=>'https://threads.net/oauth/authorize?state='+s,complete:async()=>{calls.push('exchange');return account}},accountStore:{importAdmin:async a=>{assert.deepEqual(a,[account]);calls.push('import');return {saved:1,skipped:0}}},reconnect:{target:async i=>{assert.equal(i,id);calls.push('target');return {platform:'threads'}},reconnect:async(i,a)=>{assert.equal(i,id);assert.deepEqual(a,[account]);calls.push('reconnect');return {saved:1,skipped:0,disabledRules:1,cancelledJobs:2}}},...overrides}
@@ -33,7 +34,7 @@ test('Threads callback consumes bound state before import and returns no token',
   const {service,calls}=adminFixture();await service.start(req());const result=await service.complete(req({state,code:'auth-code'}));assert.deepEqual(calls,['issue','consume','exchange','import']);assert.deepEqual(result,{mode:'sync',threadsFound:1,saved:1,skipped:0});assert.ok(!JSON.stringify(result).includes(account.token));await assert.rejects(service.complete(req({state,code:'auth-code'})),/STATE_INVALID/)
 })
 test('Threads reconnect binds account and admin session, not arbitrary callback',async()=>{
-  const {service,calls}=adminFixture();await service.start(req({connectionId:id}));await assert.rejects(service.complete(req({state,code:'code',connectionId:id},'wrong-session')),/STATE_INVALID/);await assert.rejects(service.complete(req({state,code:'code'})),/STATE_INVALID/);const result=await service.complete(req({state,code:'code',connectionId:id}));assert.equal(result.mode,'reconnect');assert.equal(result.disabledRules,1);assert.equal(result.cancelledJobs,2);assert.deepEqual(calls,['target','issue','consume','target','exchange','reconnect'])
+  const {service,calls}=adminFixture();await service.start(req({connectionId:id}));await assert.rejects(service.complete(req({state,code:'code',connectionId:id},'wrong-session',other)),/STATE_INVALID/);await assert.rejects(service.complete(req({state,code:'code'})),/STATE_INVALID/);await assert.rejects(service.complete(req({state,code:'code',connectionId:id},'wrong-device',session,other)),/STATE_INVALID/);const result=await service.complete(req({state,code:'code',connectionId:id},'renewed-token'));assert.equal(result.mode,'reconnect');assert.equal(result.disabledRules,1);assert.equal(result.cancelledJobs,2);assert.deepEqual(calls,['target','issue','consume','target','exchange','reconnect'])
 })
 test('Threads non-full-admin and Facebook reconnect are rejected',async()=>{
   const {service}=adminFixture({reconnect:{target:async()=>({platform:'facebook'}),reconnect:async()=>{throw new Error('unexpected')}}});await assert.rejects(service.start({...req(),admin:{has_all_permissions:false}}),/PERMISSION_REQUIRED/);await assert.rejects(service.start(req({connectionId:id})),/CONNECTION_NOT_FOUND/)
@@ -59,3 +60,5 @@ test('wrong refreshed account or expired lease never writes credentials',async()
 test('maintenance never overlaps local runs',async()=>{
   let release;const {service}=refreshFixture({db:{rpc:()=>new Promise(r=>{release=r})}});const pending=service.run();assert.deepEqual(await service.run(),{state:'busy'});release({data:[]});assert.equal((await pending).claimed,0)
 })
+
+test('Threads requires a verified session and device',async()=>{const {service,calls}=adminFixture();for(const key of ['session','device']){const r=req();delete r.admin[key];await assert.rejects(service.start(r),/IDENTITY_INVALID/)}assert.equal(calls.length,0)})
