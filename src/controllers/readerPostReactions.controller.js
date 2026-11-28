@@ -166,49 +166,16 @@ async function readReaderPost(postId) {
 }
 
 async function readReactionStats(postId) {
-  const results = await Promise.all(
-    REACTION_ORDER.map(
-      async (reactionType) => {
-        const { count, error } =
-          await supabase
-            .from(
-              'reader_post_reactions'
-            )
-            .select('id', {
-              count: 'exact',
-              head: true,
-            })
-            .eq('post_id', postId)
-            .eq(
-              'reaction_type',
-              reactionType
-            )
-
-        if (error) throw error
-
-        return [
-          reactionType,
-          Number(count || 0),
-        ]
-      }
-    )
-  )
-
-  const counts = Object.fromEntries(
-    results
-  )
-  const likeCount = results.reduce(
-    (total, [, count]) =>
-      total + Number(count || 0),
-    0
-  )
-
-  return {
-    counts,
-    likeCount,
-    summary:
-      buildReactionSummary(counts),
-  }
+  const { data, error } = await supabase.rpc('shadow_reader_post_reaction_counts_v1', { p_post_id: postId })
+  if (error) throw error
+  const results = REACTION_ORDER.map((type) => {
+    const count = data?.[type]
+    if (!Number.isSafeInteger(count) || count < 0) throw new Error('Invalid reaction counts')
+    return [type, count]
+  })
+  const counts = Object.fromEntries(results)
+  const likeCount = results.reduce((total, [, count]) => total + count, 0)
+  return { counts, likeCount, summary: buildReactionSummary(counts) }
 }
 
 async function readMyReaction(
