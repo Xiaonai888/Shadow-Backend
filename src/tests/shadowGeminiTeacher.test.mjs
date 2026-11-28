@@ -18,7 +18,7 @@ test('defaults disabled and requires owner confirmation',()=>{
 })
 test('invalid key and limits fail closed',()=>{
   assert.throws(()=>shadowGeminiConfig({...env,GEMINI_API_KEY:'bad'}),{code:'SHADOW_AI_GEMINI_NOT_CONFIGURED'})
-  for(const limit of ['0','451','500','1e2','-1']) assert.throws(()=>shadowGeminiConfig({...env,SHADOW_GEMINI_DAILY_LIMIT:limit}),{code:'SHADOW_AI_GEMINI_LIMIT_INVALID'})
+  for(const limit of ['0','501','999','1e2','-1']) assert.throws(()=>shadowGeminiConfig({...env,SHADOW_GEMINI_DAILY_LIMIT:limit}),{code:'SHADOW_AI_GEMINI_LIMIT_INVALID'})
 })
 test('fixed examples contain no submitted chat data',async()=>{
   const f=fixture();await assert.rejects(f.run('name: private data'),{code:'SHADOW_AI_GEMINI_EXAMPLE_INVALID'});await assert.rejects(f.run({id:'price_km',text:'private'}),{code:'SHADOW_AI_GEMINI_EXAMPLE_INVALID'});assert.equal(f.calls.length,0);assert.equal(listShadowGeminiExamples().length,11)
@@ -32,3 +32,10 @@ test('invalid category rejected',async()=>{const f=fixture({fetchImpl:async()=>r
 test('blocked and oversized output rejected',async()=>{for(const response of [new Response(JSON.stringify({candidates:[]})),new Response('x'.repeat(33000))]){const f=fixture({fetchImpl:async()=>response});await assert.rejects(f.run('price_km'),{code:'SHADOW_AI_GEMINI_INVALID_RESPONSE'})}})
 test('single in flight and release on completion',async()=>{let release;const f=fixture({reserve:()=>new Promise(r=>{release=r})});const pending=f.run('price_km');await assert.rejects(f.run('stock_km'),{code:'SHADOW_AI_GEMINI_BUSY'});release(true);assert.equal((await pending).question,'price')})
 test('network error is sanitized without leaking key',async()=>{const f=fixture({fetchImpl:async()=>{throw new Error(env.GEMINI_API_KEY)}});await assert.rejects(f.run('price_km'),{code:'SHADOW_AI_GEMINI_UNAVAILABLE',message:'SHADOW_AI_GEMINI_UNAVAILABLE'})})
+
+test('500 is accepted and forwarded to reserve while default remains 450',async()=>{
+  const {SHADOW_GEMINI_DAILY_LIMIT,...defaults}=env
+  assert.equal(shadowGeminiConfig(defaults).dailyLimit,450)
+  for(const limit of ['450','451','499','500']) assert.equal(shadowGeminiConfig({...env,SHADOW_GEMINI_DAILY_LIMIT:limit}).dailyLimit,Number(limit))
+  const f=fixture({env:{...env,SHADOW_GEMINI_DAILY_LIMIT:'500'}});await f.run('price_km');assert.deepEqual(f.calls[0],['reserve',{dailyLimit:500}])
+})
