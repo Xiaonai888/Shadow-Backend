@@ -30,23 +30,23 @@ const https = v => {
 }
 export function validateSchedule(input,status) {
   const mode=input.schedule_mode
-  if (!['weekly','dates'].includes(mode) || !Array.isArray(input.schedule_slots) || input.schedule_slots.length>100) bad('Invalid schedule')
+  if (!['weekly','biweekly','dates'].includes(mode) || !Array.isArray(input.schedule_slots) || input.schedule_slots.length>100) bad('Invalid schedule')
   const start=input.starts_on??null, end=input.ends_on??null
   if (!input.schedule_slots.length && status==='draft' && start===null && end===null) return {schedule_mode:mode,schedule_slots:[],starts_on:null,ends_on:null}
   if (!input.schedule_slots.length) bad('Add at least one schedule')
-  if (mode==='weekly') { validDate(start); if (end!==null && validDate(end)<start) bad('End date precedes start date') }
+  if (mode!=='dates') { validDate(start); if (end!==null && validDate(end)<start) bad('End date precedes start date') }
   else if (start!==null || end!==null) bad('Specific dates do not use start/end dates')
   const seen=new Set()
   const slots=input.schedule_slots.map(s=>{
-    record(s,mode==='weekly'?['day','time']:['date','time'])
+    record(s,mode!=='dates'?['day','time']:['date','time'])
     if (typeof s.time!=='string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(s.time)) bad('Invalid time')
-    if (mode==='weekly' && (!Number.isInteger(s.day) || s.day<0 || s.day>6)) bad('Invalid weekday')
-    const first=mode==='weekly'?s.day:validDate(s.date)
+    if (mode!=='dates' && (!Number.isInteger(s.day) || s.day<0 || s.day>6)) bad('Invalid weekday')
+    const first=mode!=='dates'?s.day:validDate(s.date)
     const key=`${first}T${s.time}`
     if (seen.has(key)) bad('Duplicate schedule')
     seen.add(key)
-    return mode==='weekly'?{day:first,time:s.time}:{date:first,time:s.time}
-  }).sort((a,b)=>mode==='weekly'?(a.day-b.day||a.time.localeCompare(b.time)):(a.date.localeCompare(b.date)||a.time.localeCompare(b.time)))
+    return mode!=='dates'?{day:first,time:s.time}:{date:first,time:s.time}
+  }).sort((a,b)=>mode!=='dates'?(a.day-b.day||a.time.localeCompare(b.time)):(a.date.localeCompare(b.date)||a.time.localeCompare(b.time)))
   return {schedule_mode:mode,schedule_slots:slots,starts_on:start,ends_on:end}
 }
 export function validateContent(input,{publicUrl}={}) {
