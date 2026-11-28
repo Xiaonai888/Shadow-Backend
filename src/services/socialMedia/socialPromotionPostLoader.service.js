@@ -8,7 +8,7 @@ export function createSocialPromotionPostLoader({freshSource,sharedSource,postCo
   if(!freshSource?.fresh||!sharedSource?.mangaPages||!postContent?.build||typeof adaptPost!=='function'||!statusSource?.status||typeof clock!=='function')throw new TypeError('SOCIAL_LOADER_DEPENDENCIES')
   return async function loadPost({job,items,rule,platform}={}){
     const now=clock()
-    if(!Number.isFinite(now)||!languages.has(job?.language)||!kinds.has(job?.post_kind)||!['facebook','instagram'].includes(platform)||rule?.id!==job.rule_id||rule?.language!==job.language||rule?.source_topic!==job.source_topic||rule?.updated_at!==job.rule_revision||!Array.isArray(items)||!Number.isFinite(Date.parse(job.scheduled_at)))return null
+    if(!Number.isFinite(now)||!languages.has(job?.language)||!kinds.has(job?.post_kind)||!['facebook','instagram','threads'].includes(platform)||rule?.id!==job.rule_id||rule?.language!==job.language||rule?.source_topic!==job.source_topic||rule?.updated_at!==job.rule_revision||!Array.isArray(items)||!Number.isFinite(Date.parse(job.scheduled_at)))return null
     const kind=job.post_kind,topic=job.source_topic
     if(kind==='group'?items.length<3||items.length>5||!job.caption_id:items.length!==1||job.caption_id!=null)return null
     const candidates=[]
