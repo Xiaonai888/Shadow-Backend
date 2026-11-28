@@ -3,6 +3,8 @@ import { sharedSelection, chooseSharedCaption } from '../smartContent/telegramCo
 import { sharedSocialPostContent } from '../smartContent/socialPostContentBridge.service.js'
 import { createPromotionStatusSourceV2 } from '../telegramPromotion/statusSourceV2.service.js'
 import { adaptSocialPromotionPost } from './platformPostAdapter.service.js'
+import { adaptThreadsPromotionPost } from './threadsPostAdapter.service.js'
+import { createThreadsPromotionPublisher } from './threadsPromotionPublisher.service.js'
 import { createSocialPromotionQueue } from './socialPromotionQueue.service.js'
 import { createSocialPromotionWorkerStore } from './socialPromotionWorkerStore.service.js'
 import { createSocialPromotionExceptions } from './socialPromotionExceptions.service.js'
@@ -20,9 +22,9 @@ export function createSocialPromotionIntegration({db,decryptToken,prepareMedia,c
   const queue=createSocialPromotionQueue(db)
   const store=createSocialPromotionWorkerStore(db)
   const statusSource=createPromotionStatusSourceV2(db)
-  const loadPost=createSocialPromotionPostLoader({freshSource,sharedSource:source,postContent:sharedSocialPostContent,adaptPost:adaptSocialPromotionPost,statusSource,clock})
+  const loadPost=createSocialPromotionPostLoader({freshSource,sharedSource:source,postContent:sharedSocialPostContent,adaptPost:input=>input.platform==='threads'?adaptThreadsPromotionPost(input):adaptSocialPromotionPost(input),statusSource,clock})
   const planner=createSocialPromotionPlanner({source,selection:sharedSelection,chooseCaption:chooseSharedCaption,queue,updateSource:freshSource,exceptions:createSocialPromotionExceptions(db)})
-  const worker=createSocialPromotionWorker({store,loadPost,decryptToken,prepareMedia,publishFacebook:publishFacebookPromotion,prepareInstagram:prepareInstagramPromotion,createInstagramCarousel,publishInstagramContainer})
+  const worker=createSocialPromotionWorker({store,loadPost,decryptToken,prepareMedia,publishFacebook:publishFacebookPromotion,prepareInstagram:prepareInstagramPromotion,createInstagramCarousel,publishInstagramContainer,threadsPublisher:createThreadsPromotionPublisher()})
   return {
     plan(options){return planner.plan({...options,now:clock()})},
     runWorker(){return worker.run()},
