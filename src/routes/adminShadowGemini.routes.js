@@ -1,12 +1,10 @@
 import express from 'express'
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit'
-import { supabase } from '../config/supabase.js'
 import { requireAdminPermission } from '../middleware/adminPermission.middleware.js'
-import { shadowLocalInstance } from '../services/shadowAi/local/shadowLocalInstance.service.js'
-import { createShadowGeminiManagement } from '../services/shadowAi/gemini/shadowGeminiManagement.service.js'
+import { shadowGeminiLearningInstance } from '../services/shadowAi/gemini/shadowGeminiLearningInstance.service.js'
 
 const router = express.Router()
-const service = createShadowGeminiManagement({ db: supabase, knowledgeStore: shadowLocalInstance.knowledgeStore })
+const service = shadowGeminiLearningInstance
 const preAuthLimit = rateLimit({ windowMs: 60000, limit: 20, keyGenerator: req => ipKeyGenerator(req.ip), standardHeaders: 'draft-8', legacyHeaders: false, message: { ok: false, code: 'SHADOW_AI_GEMINI_RATE_LIMITED' } })
 const reads = rateLimit({ windowMs: 60000, limit: 10, keyGenerator: req => String(req.admin.admin_id), standardHeaders: 'draft-8', legacyHeaders: false, message: { ok: false, code: 'SHADOW_AI_GEMINI_RATE_LIMITED' } })
 const writes = rateLimit({ windowMs: 60000, limit: 5, keyGenerator: req => String(req.admin.admin_id), standardHeaders: 'draft-8', legacyHeaders: false, message: { ok: false, code: 'SHADOW_AI_GEMINI_RATE_LIMITED' } })
@@ -21,4 +19,6 @@ const handle = fn => async (req, res) => {
 router.use((req, res, next) => { res.set('Cache-Control', 'private, no-store'); res.set('Vary', 'Authorization'); next() })
 router.get('/status', preAuthLimit, requireAdminPermission('system_control.manage'), owner, reads, handle(() => service.status()))
 router.post('/test', preAuthLimit, requireAdminPermission('system_control.manage'), owner, writes, handle(req => service.testExample(req.body)))
+router.get('/learning/candidates', preAuthLimit, requireAdminPermission('system_control.manage'), owner, reads, handle(() => service.listCandidates()))
+router.post('/learning/approve', preAuthLimit, requireAdminPermission('system_control.manage'), owner, writes, handle(req => service.approve(req.admin.admin_id, req.body)))
 export default router
