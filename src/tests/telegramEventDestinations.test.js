@@ -90,3 +90,42 @@ test('history includes destination kind without additional lookup',async()=>{
   let count=0;const db={from(table){assert.equal(table,'telegram_event_history');count++;return {select(fields){assert.ok(fields.includes('destination_kind'));return this},eq(){return this},order(){return this},range:async()=>({data:[{destination_kind:'group'}]})}}}
   const admin=createEventAdmin(db);const data=await admin.history({language:'km'});assert.equal(data.items[0].destination_kind,'group');assert.equal(count,1)
 })
+
+test('verification is sequential and retries only failed lookup',async()=>{
+  const calls=[];let active=0,failed=false
+  const verify=createEventDestinationVerifier({token,fetchImpl:async(url,opts)=>{
+    const method=url.split('/').at(-1),body=JSON.parse(opts.body)
+    calls.push([method,body.chat_id??null]);assert.equal(++active,1)
+    try{
+      await new Promise(resolve=>setTimeout(resolve,5))
+      if(method==='getChat'&&body.chat_id==='@ShadowGroup'&&!failed){failed=true;throw Object.assign(new TypeError('fetch failed'),{cause:{code:'ETIMEDOUT'}})}
+      const result=method==='getMe'?{id:1,is_bot:true}:method==='getChat'?(body.chat_id==='@ShadowChannel'?channel:group):{user:{id:1},status:'administrator',can_post_messages:true}
+      return {ok:true,status:200,json:async()=>({ok:true,result})}
+    }finally{active--}
+  }})
+  const result=await verify({channel:'@ShadowChannel',group:'@ShadowGroup'})
+  assert.equal(result.channel.id,String(channel.id));assert.equal(result.group.id,String(group.id))
+  assert.deepEqual(calls,[['getMe',null],['getChat','@ShadowChannel'],['getChatMember',String(channel.id)],['getChat','@ShadowGroup'],['getChat','@ShadowGroup'],['getChatMember',String(group.id)]])
+})
+test('persistent timeout retries once and reports safe method and cause',async()=>{
+  let calls=0
+  const verify=createEventDestinationVerifier({token,fetchImpl:async()=>{calls++;throw Object.assign(new Error(token),{cause:{code:'ETIMEDOUT'}})}})
+  await assert.rejects(verify({group:'@ShadowGroup'}),e=>e.code==='EVENT_DESTINATION_UNAVAILABLE'&&e.message.includes('Bot getMe')&&e.message.includes('ETIMEDOUT')&&!e.message.includes(token));assert.equal(calls,2)
+})
+test('HTTP 429 and 401 do not retry',async()=>{
+  for(const status of [429,401]){
+    let calls=0
+    const verify=createEventDestinationVerifier({token,fetchImpl:async()=>{calls++;return {status,ok:false,json:async()=>({ok:false,error_code:status})}}})
+    await assert.rejects(verify({group:'@ShadowGroup'}),e=>e.message.includes(String(status)));assert.equal(calls,1)
+  }
+})
+test('temporary HTTP 503 recovers without repeating successful lookups',async()=>{
+  let calls=0
+  const verify=createEventDestinationVerifier({token,fetchImpl:async(url)=>{
+    calls++;const method=url.split('/').at(-1)
+    if(calls===1)return {ok:false,status:503,json:async()=>({ok:false})}
+    const result=method==='getMe'?{id:1,is_bot:true}:method==='getChat'?group:{user:{id:1},status:'member'}
+    return {ok:true,status:200,json:async()=>({ok:true,result})}
+  }})
+  assert.equal((await verify({group:String(group.id)})).group.id,String(group.id));assert.equal(calls,4)
+})
