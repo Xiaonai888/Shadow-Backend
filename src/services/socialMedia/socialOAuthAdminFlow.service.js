@@ -20,7 +20,7 @@ export function createSocialOAuthAdminFlow({stateStore,facebook,grantedPermissio
   return {
     async start(req){
       const {connectionId,context}=requestContext(req)
-      if(connectionId)await reconnect.target(connectionId)
+      if(connectionId&&(await reconnect.target(connectionId))?.platform==='threads')throw new SocialOAuthError('SOCIAL_OAUTH_CONNECTION_NOT_FOUND',404)
       return sync.start(context)
     },
     async complete(req){
@@ -33,9 +33,9 @@ export function createSocialOAuthAdminFlow({stateStore,facebook,grantedPermissio
     }
   }
 }
-export function createSocialOAuthAdminHandlers(flow,{onError=()=>{}}={}){
-  if(!flow?.start||!flow?.complete)throw new TypeError('SOCIAL_OAUTH_FLOW_REQUIRED')
-  const wrap=fn=>async(req,res)=>{
+export function wrapSocialOAuthAdminOperation(fn,{onError=()=>{}}={}){
+  if(typeof fn!=='function')throw new TypeError('SOCIAL_OAUTH_OPERATION_REQUIRED')
+  return async(req,res)=>{
     try{return res.json({ok:true,...await fn(req)})}
     catch(error){
       const known=error instanceof SocialOAuthError&&/^SOCIAL_[A-Z0-9_]{1,90}$/.test(error.code||'')&&Number.isInteger(error.status)&&error.status>=400&&error.status<=599
@@ -44,5 +44,8 @@ export function createSocialOAuthAdminHandlers(flow,{onError=()=>{}}={}){
       return res.status(status).json({ok:false,code,message:code})
     }
   }
-  return {start:wrap(flow.start),complete:wrap(flow.complete)}
+}
+export function createSocialOAuthAdminHandlers(flow,options={}){
+  if(!flow?.start||!flow?.complete)throw new TypeError('SOCIAL_OAUTH_FLOW_REQUIRED')
+  return {start:wrapSocialOAuthAdminOperation(flow.start,options),complete:wrapSocialOAuthAdminOperation(flow.complete,options)}
 }
