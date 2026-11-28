@@ -150,6 +150,8 @@ import { startStoryEpisodePushScheduler } from './src/services/storyEpisodePushS
 import { startTelegramPromotionScheduler } from './src/services/telegramPromotion/runtime.service.js'
 import adminTelegramPromotionRoutes from './src/routes/adminTelegramPromotion.routes.js'
 import adminSocialPromotionRoutes from './src/routes/adminSocialPromotion.routes.js'
+import adminSocialOAuthRoutes from './src/routes/adminSocialOAuth.routes.js'
+import { startThreadsTokenMaintenance } from './src/services/socialMedia/threadsTokenRuntime.service.js'
 import { startSocialPromotionScheduler } from './src/services/socialMedia/runtime.service.js'
 import adminTelegramEventsRoutes from './src/routes/adminTelegramEvents.routes.js'
 import { startTelegramEventScheduler } from './src/services/telegramEvent/integration.service.js'
@@ -1149,6 +1151,7 @@ app.use('/api/admin/boost', adminBoostInsightsRoutes)
 app.use('/api/admin/author-ads', adminAuthorAdsRoutes)
 app.use('/api/admin/telegram-promotion', adminTelegramPromotionRoutes)
 app.use('/api/admin/social-promotion', adminSocialPromotionRoutes)
+app.use('/api/admin/social-oauth', adminSocialOAuthRoutes)
 app.use('/api/admin/telegram-events', adminTelegramEventsRoutes)
 app.use('/api/music', musicRoutes)
 app.use('/api/story-translation', storyTranslationSpamGuard, storyTranslationRoutes)
@@ -1242,6 +1245,7 @@ app.listen(PORT, () => {
   startStoryEpisodePushScheduler()
   startTelegramPromotionScheduler()
   startSocialPromotionScheduler()
+  startThreadsTokenMaintenance()
   startTelegramEventScheduler()
   startSmartAdMaintenanceScheduler()
   startBinanceUsdtAlertWorker()
