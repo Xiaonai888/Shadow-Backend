@@ -7,10 +7,9 @@ import { createShadowGeminiManagement } from '../services/shadowAi/gemini/shadow
 
 const router = express.Router()
 const service = createShadowGeminiManagement({ db: supabase, knowledgeStore: shadowLocalInstance.knowledgeStore })
-const guard = (limit, keyGenerator) => rateLimit({ windowMs: 60000, limit, keyGenerator, standardHeaders: 'draft-8', legacyHeaders: false, message: { ok: false, code: 'SHADOW_AI_GEMINI_RATE_LIMITED' } })
-const edge = guard(20, req => ipKeyGenerator(req.ip))
-const reads = guard(10, req => String(req.admin.admin_id))
-const writes = guard(5, req => String(req.admin.admin_id))
+const preAuthLimit = rateLimit({ windowMs: 60000, limit: 20, keyGenerator: req => ipKeyGenerator(req.ip), standardHeaders: 'draft-8', legacyHeaders: false, message: { ok: false, code: 'SHADOW_AI_GEMINI_RATE_LIMITED' } })
+const reads = rateLimit({ windowMs: 60000, limit: 10, keyGenerator: req => String(req.admin.admin_id), standardHeaders: 'draft-8', legacyHeaders: false, message: { ok: false, code: 'SHADOW_AI_GEMINI_RATE_LIMITED' } })
+const writes = rateLimit({ windowMs: 60000, limit: 5, keyGenerator: req => String(req.admin.admin_id), standardHeaders: 'draft-8', legacyHeaders: false, message: { ok: false, code: 'SHADOW_AI_GEMINI_RATE_LIMITED' } })
 const owner = (req, res, next) => req.admin?.role === 'owner' ? next() : res.status(403).json({ ok: false, code: 'SHADOW_AI_GEMINI_OWNER_REQUIRED' })
 const handle = fn => async (req, res) => {
   try { return res.json({ ok: true, ...await fn(req) }) }
@@ -20,6 +19,6 @@ const handle = fn => async (req, res) => {
   }
 }
 router.use((req, res, next) => { res.set('Cache-Control', 'private, no-store'); res.set('Vary', 'Authorization'); next() })
-router.get('/status', edge, requireAdminPermission('system_control.manage'), owner, reads, handle(() => service.status()))
-router.post('/test', edge, requireAdminPermission('system_control.manage'), owner, writes, handle(req => service.testExample(req.body)))
+router.get('/status', preAuthLimit, requireAdminPermission('system_control.manage'), owner, reads, handle(() => service.status()))
+router.post('/test', preAuthLimit, requireAdminPermission('system_control.manage'), owner, writes, handle(req => service.testExample(req.body)))
 export default router
