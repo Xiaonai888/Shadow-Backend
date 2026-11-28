@@ -1,3 +1,5 @@
+import {isEventChatId} from './destinations.service.js'
+
 export class EventTelegramError extends Error {
   constructor(message,{status=null,code=null,retryAfter=null,uncertain=false}={}) {
     super(message)
@@ -10,7 +12,8 @@ const https=value=>{
   try {const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password&&typeof value==='string'&&value.length<=2048} catch {return false}
 }
 export function buildEventTelegramPayload(job,fileId=null) {
-  if (!job || typeof job.channel_id!=='string' || !/^-100\d{5,17}$/.test(job.channel_id)) throw invalid('Invalid event channel')
+  const kind=job?.destination_kind??'channel'
+  if (!job || !['channel','group'].includes(kind) || !isEventChatId(job.channel_id) || (kind==='channel'&&!/^-100\d{5,17}$/.test(job.channel_id))) throw invalid('Invalid event destination')
   const message=job.message
   const photo=Boolean(job.image_url)
   if (typeof message!=='string'||Array.from(message).length>(photo?1000:4000)||(!photo&&!message.trim())) throw invalid('Invalid event message')
