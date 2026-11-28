@@ -13,6 +13,8 @@ const runtime=createSocialPromotionRuntime({onError,async initialize(){
     import('../memoryGuard.service.js')
   ])
   const db=dbModule.supabase
+  const ready=await db.rpc('social_promotion_assignment_ready_v5')
+  if(ready.error||ready.data!==true)throw new Error('SOCIAL_RUNTIME_ASSIGNMENT_GUARD_NOT_READY')
   const {data,error}=await db.rpc('social_promotion_poll_v5',{p_skip:[]})
   if(error||!Array.isArray(data?.due)||typeof data.hasWork!=='boolean')throw new Error('SOCIAL_RUNTIME_DATABASE_NOT_READY')
   const prepareMedia=mediaModule.createSocialPromotionMedia({
