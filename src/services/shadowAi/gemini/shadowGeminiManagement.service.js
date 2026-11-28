@@ -1,4 +1,4 @@
-import { shadowGeminiConfig, geminiError, SHADOW_GEMINI_MODEL } from './shadowGeminiConfig.js'
+import { shadowGeminiConfig, geminiError, SHADOW_GEMINI_MODEL, SHADOW_GEMINI_MAX_DAILY_LIMIT } from './shadowGeminiConfig.js'
 import { listShadowGeminiExamples, getShadowGeminiExample, SHADOW_GEMINI_QUESTION_TYPES } from './shadowGeminiExamples.js'
 import { createShadowGeminiTeacher } from './shadowGeminiTeacher.service.js'
 import { shadowMatchKey } from '../local/shadowLocalText.js'
@@ -28,7 +28,7 @@ export function createShadowGeminiManagement({ db, knowledgeStore, env = process
     try {
       const { data, error } = await db.from('shadow_ai_gemini_quota').select('quota_day,day_count,minute_started_at,minute_count').eq('id', 1).maybeSingle().abortSignal(AbortSignal.timeout(5000))
       const ms = now(), day = quotaDay(ms), start = Date.parse(data?.minute_started_at)
-      if (!error && data && /^\d{4}-\d{2}-\d{2}$/u.test(data.quota_day) && data.quota_day <= day && Number.isInteger(data.day_count) && data.day_count >= 0 && data.day_count <= 450 && Number.isInteger(data.minute_count) && data.minute_count >= 0 && data.minute_count <= 5 && Number.isFinite(start) && start <= ms) {
+      if (!error && data && /^\d{4}-\d{2}-\d{2}$/u.test(data.quota_day) && data.quota_day <= day && Number.isInteger(data.day_count) && data.day_count >= 0 && data.day_count <= SHADOW_GEMINI_MAX_DAILY_LIMIT && Number.isInteger(data.minute_count) && data.minute_count >= 0 && data.minute_count <= 5 && Number.isFinite(start) && start <= ms) {
         const used = data.quota_day === day ? data.day_count : 0
         quota = { day, reserved_today: used, daily_limit: config?.dailyLimit ?? null, remaining_local: config ? Math.max(0, config.dailyLimit - used) : null, minute_limit: 5, reserved_this_window: ms - start < 60000 ? data.minute_count : 0, timezone: 'America/Los_Angeles' }
       }
